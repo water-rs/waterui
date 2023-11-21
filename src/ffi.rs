@@ -1,21 +1,34 @@
-use crate::View;
+use crate::{attributed_string, reactive::BoxWatcher, View};
 use std::{
     mem::{size_of, transmute},
+    ops::Deref,
     ptr::write,
 };
 
-#[repr(C)]
-pub struct Binding {}
+use crate::component;
 
 #[repr(C)]
 pub struct Text {
+    text: AttributedString,
+}
+
+impl From<component::Text> for Text {
+    fn from(value: component::Text) -> Self {
+        let text = value.text.get().deref().clone();
+        Self { text: text.into() }
+    }
+}
+
+#[repr(C)]
+pub struct AttributedString {
     text: Buf,
 }
 
-impl Text {
-    pub fn new(text: crate::Text) -> Self {
-        let text = text.text.into_wrapped();
-        Self { text: text.into() }
+impl From<attributed_string::AttributedString> for AttributedString {
+    fn from(value: attributed_string::AttributedString) -> Self {
+        Self {
+            text: value.text.into(),
+        }
     }
 }
 
@@ -26,7 +39,15 @@ pub struct ViewObject {
 
 #[repr(C)]
 pub struct Stack {
-    content: Array<ViewObject>,
+    content: ViewObjects,
+}
+
+impl From<component::Stack> for Stack {
+    fn from(value: component::Stack) -> Self {
+        Self {
+            content: value.content.into(),
+        }
+    }
 }
 
 impl ViewObject {
@@ -52,7 +73,7 @@ macro_rules! view_as {
             unsafe {
                 let view = view.into_boxed();
                 if let Ok(text) = view.downcast::<$view_type>() {
-                    write(ptr, <$ffi_type>::new(*text));
+                    write(ptr, <$ffi_type>::from(*text));
                     true
                 } else {
                     false
@@ -62,30 +83,47 @@ macro_rules! view_as {
     };
 }
 
-view_as!(view_as_text, crate::Text, Text);
+view_as!(view_as_text, component::Text, Text);
+view_as!(view_as_stack, component::Stack, Stack);
 
-#[repr(C)]
-struct Array<T> {
-    head: *const T,
-    len: usize,
+macro_rules! impl_buf {
+    ($name:ident,$element_ty:ty) => {
+        #[repr(C)]
+        pub struct $name {
+            head: *const $element_ty,
+            len: usize,
+        }
+
+        impl $name {
+            pub fn new(head: *const $element_ty, len: usize) -> Self {
+                Self { head, len }
+            }
+        }
+
+        impl From<Vec<$element_ty>> for $name {
+            fn from(value: Vec<$element_ty>) -> Self {
+                Self::new(value.as_ptr(), value.len())
+            }
+        }
+    };
 }
 
-type Buf = Array<u8>;
-
-impl<T> Array<T> {
-    pub fn new(head: *const T, len: usize) -> Self {
-        Self { head, len }
-    }
-}
-
-impl From<Vec<u8>> for Buf {
-    fn from(value: Vec<u8>) -> Self {
-        Self::new(value.as_ptr(), value.len())
-    }
-}
+impl_buf!(Buf, u8);
+impl_buf!(ViewObjects, ViewObject);
+impl_buf!(Watchers, BoxWatcher);
 
 impl From<String> for Buf {
     fn from(value: String) -> Self {
         Self::new(value.as_ptr(), value.len())
+    }
+}
+
+impl From<Vec<Box<dyn View>>> for ViewObjects {
+    fn from(value: Vec<Box<dyn View>>) -> Self {
+        let head = value.as_ptr();
+        unsafe {
+            let head: *const ViewObject = transmute(head);
+            ViewObjects::new(head, value.len())
+        }
     }
 }
