@@ -1,13 +1,11 @@
 use crate::{
-    reactive::{IntoRef, Ref},
+    binding::BoxSubscriber,
     view::{Alignment, BoxView},
-    View,
+    Binding, View,
 };
 
-use super::{stack::DisplayMode, ReactiveView, Stack};
-use std::{collections::HashMap, hash::Hash};
+use super::{stack::DisplayMode, Stack};
 pub struct ForEach {
-    reactive: Ref<()>,
     builder: Box<dyn ViewBuilder>,
     mode: DisplayMode,
     alignment: Alignment,
@@ -15,42 +13,70 @@ pub struct ForEach {
 
 struct IntoView<F, Iter: 'static> {
     f: F,
-    iter: Ref<Iter>,
+    iter: Binding<Iter>,
 }
 
 trait ViewBuilder: 'static {
-    fn build(&self) -> Vec<BoxView>;
+    fn build(&mut self) -> Vec<BoxView>;
+    fn subscribe(&self, subscriber: BoxSubscriber);
 }
 
 impl<F, Iter, V> ViewBuilder for IntoView<F, Iter>
 where
-    F: 'static + Fn(Iter::Item) -> V,
-    Iter: 'static + IntoIterator,
+    F: 'static + Fn(<&Iter as IntoIterator>::Item) -> V,
+    for<'a> &'a Iter: IntoIterator,
     V: View,
 {
-    fn build(&self) -> Vec<BoxView> {
+    fn build(&mut self) -> Vec<BoxView> {
         let mut vec = Vec::new();
-        for item in self.iter.into_inner().into_iter() {
+        for item in self.iter.get().into_iter() {
             let view: BoxView = Box::new((self.f)(item));
             vec.push(view);
         }
         vec
     }
+
+    fn subscribe(&self, subscriber: BoxSubscriber) {
+        self.iter.add_boxed_subscriber(subscriber);
+    }
+}
+
+impl ViewBuilder for Option<Vec<BoxView>> {
+    fn build(&mut self) -> Vec<BoxView> {
+        self.take().unwrap()
+    }
+
+    fn subscribe(&self, _subscriber: BoxSubscriber) {}
 }
 
 impl ForEach {
-    pub fn new<Iter: IntoIterator + 'static, V: View>(
-        iter: impl IntoRef<Iter>,
-        f: impl 'static + Fn(Iter::Item) -> V,
+    pub fn new<Iter, V, F>(iter: Iter, f: F) -> Self
+    where
+        Iter: IntoIterator + 'static,
+        V: View,
+        F: Fn(Iter::Item) -> V,
+    {
+        let mut content = Vec::new();
+        for item in iter.into_iter() {
+            let view: BoxView = Box::new((f)(item));
+            content.push(view);
+        }
+        Self {
+            builder: Box::new(Some(content)),
+            mode: DisplayMode::Vertical,
+            alignment: Alignment::Default,
+        }
+    }
+
+    pub fn binding<Iter: 'static, V: View>(
+        iter: Binding<Iter>,
+        f: impl 'static + Fn(<&Iter as IntoIterator>::Item) -> V,
     ) -> Self
     where
-        Iter::Item: Hash + Eq,
+        for<'a> &'a Iter: IntoIterator,
     {
-        let reactive = Ref::new_with_updater(|| {});
-        let iter: Ref<Iter> = iter.into_ref();
-        iter.subcribe(reactive.clone());
+        let iter: Binding<Iter> = iter.into();
         Self {
-            reactive,
             builder: Box::new(IntoView { iter, f }),
             mode: DisplayMode::Vertical,
             alignment: Alignment::Default,
@@ -74,10 +100,11 @@ impl ForEach {
 }
 
 impl View for ForEach {
-    fn view(&self) -> Box<dyn View> {
-        Box::new(ReactiveView::new(
-            self.reactive.clone(),
-            Stack::new(self.builder.build(), self.mode.clone()),
-        ))
+    fn view(&mut self) -> Box<dyn View> {
+        Box::new(Stack::new(self.builder.build(), self.mode.clone()))
+    }
+
+    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
+        self.builder.subscribe(subscriber());
     }
 }

@@ -5,23 +5,23 @@ use std::{
     marker::PhantomData,
 };
 
-use crate::{component::TapGesture, Event};
+use crate::{binding::BoxSubscriber, component::TapGesture, Event};
 
 #[derive(Debug, Clone)]
 pub enum Alignment {
     Default,
-    Left,
+    Leading,
     Center,
-    Right,
+    Trailing,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Size {
     Default,
-    Certain(usize),
+    Px(u16),
+    Percent(f64),
     Maximum(usize),
     Minimum(usize),
-    Full,
 }
 
 impl Default for Size {
@@ -30,8 +30,16 @@ impl Default for Size {
     }
 }
 
+impl_from!(Size, u16, Px);
+
 pub trait View: 'static {
-    fn view(&self) -> Box<dyn View>;
+    fn view(&mut self) -> Box<dyn View>;
+
+    fn subscribe(&self, _subscriber: fn() -> BoxSubscriber) {}
+    fn is_reactive(&self) -> bool {
+        false
+    }
+
     fn frame(&self) -> crate::view::Frame {
         Default::default()
     }
@@ -47,20 +55,79 @@ pub trait View: 'static {
     }
 }
 
+native_implement!(());
+
 mod sealed {
     pub struct Sealed;
 }
 
 #[derive(Debug, Default, Clone)]
+#[repr(C)]
 pub struct Frame {
-    width: Size,
-    height: Size,
+    pub width: Size,
+    pub height: Size,
+    pub margin: Edge,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, PartialOrd)]
+#[repr(C)]
+pub struct Edge {
+    pub top: Size,
+    pub right: Size,
+    pub bottom: Size,
+    pub left: Size,
+}
+
+impl Edge {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn vertical(size: impl Into<Size>) -> Self {
+        let size = size.into();
+        Self::new().left(size.clone()).right(size)
+    }
+
+    pub fn horizontal(size: impl Into<Size>) -> Self {
+        let size = size.into();
+
+        Self::new().top(size.clone()).bottom(size)
+    }
+
+    pub fn round(size: impl Into<Size>) -> Self {
+        let size = size.into();
+
+        Self::new()
+            .top(size.clone())
+            .left(size.clone())
+            .right(size.clone())
+            .bottom(size)
+    }
+
+    pub fn top(mut self, size: impl Into<Size>) -> Self {
+        self.top = size.into();
+        self
+    }
+
+    pub fn left(mut self, size: impl Into<Size>) -> Self {
+        self.left = size.into();
+        self
+    }
+    pub fn right(mut self, size: impl Into<Size>) -> Self {
+        self.right = size.into();
+        self
+    }
+    pub fn bottom(mut self, size: impl Into<Size>) -> Self {
+        self.bottom = size.into();
+        self
+    }
 }
 
 pub trait ViewExt {
     fn on_tap(self, event: impl Event) -> TapGesture;
-    fn width(self, size: Size) -> Self;
-    fn height(self, size: Size) -> Self;
+    fn width(self, size: impl Into<Size>) -> Self;
+    fn height(self, size: impl Into<Size>) -> Self;
+    fn margin(self, size: impl Into<Edge>) -> Self;
     fn into_boxed(self) -> BoxView;
 }
 
@@ -69,16 +136,23 @@ impl<V: View> ViewExt for V {
         TapGesture::new(Box::new(self), Box::new(event))
     }
 
-    fn width(mut self, size: Size) -> Self {
+    fn width(mut self, size: impl Into<Size>) -> Self {
         let mut frame = self.frame();
-        frame.width = size;
+        frame.width = size.into();
         self.set_frame(frame);
         self
     }
 
-    fn height(mut self, size: Size) -> Self {
+    fn height(mut self, size: impl Into<Size>) -> Self {
         let mut frame = self.frame();
-        frame.height = size;
+        frame.height = size.into();
+        self.set_frame(frame);
+        self
+    }
+
+    fn margin(mut self, size: impl Into<Edge>) -> Self {
+        let mut frame = self.frame();
+        frame.margin = size.into();
         self.set_frame(frame);
         self
     }
@@ -194,7 +268,7 @@ impl<T: 'static> Renderer<T> {
             .insert(TypeId::of::<V>(), Box::new(IntoHook::new(hook)));
     }
 
-    pub fn call(&self, view: BoxView, state: &mut T) {
+    pub fn call(&self, mut view: BoxView, state: &mut T) {
         if let Some(hook) = self.map.get(&view.inner_type_id()) {
             hook.call_hook(state, self, view);
         } else {
