@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::{
     component,
-    reactive::Ref,
+    reactive::{RawRef, Ref},
     view::{BoxView, Renderer},
-    BoxEvent,
+    BoxEvent, View,
 };
 
 pub struct HtmlRenderer {
@@ -68,6 +68,8 @@ impl HtmlRenderer {
             state.buf.push_str("\">");
 
             state.buf.push_str(view.text.get().as_ref());
+            view.text.watch(|r: &RawRef<_>| {});
+
             state.buf.push_str("</p>");
         });
 
@@ -101,6 +103,9 @@ impl HtmlRenderer {
             state.buf.push_str("</div>");
         });
 
+        renderer
+            .add(|state, renderer, view: component::ReactiveView| renderer.call(view.view, state));
+
         Self { renderer, state }
     }
 
@@ -118,14 +123,14 @@ mod test {
     use super::HtmlRenderer;
     use crate::{
         component::{text, Text},
-        stack,
         view::ViewExt,
+        vstack,
     };
 
     #[test]
     fn test() {
         let renderer = HtmlRenderer::new();
-        let view = stack![text("233"), text("233"), text("233")];
+        let view = vstack![text("233"), text("233"), text("233")];
         let view = view.on_tap(|| {});
         let html = renderer.renderer(Box::new(view));
 

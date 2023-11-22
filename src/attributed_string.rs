@@ -12,9 +12,28 @@ pub struct AttributedString {
     pub text: String,
     attributes: Vec<(Range, Attribute)>,
 }
-impl IntoRef<AttributedString> for &str {
+impl<T: Into<String>> IntoRef<AttributedString> for T {
     fn into_ref(self) -> Ref<AttributedString> {
         Ref::new(AttributedString::new(self))
+    }
+}
+
+impl IntoRef<AttributedString> for Ref<&str> {
+    fn into_ref(self) -> Ref<AttributedString> {
+        let oringal_ref = self.clone();
+        let r = Ref::new_with_updater(move || AttributedString::new(*self.get().deref()));
+        r.subcribe(oringal_ref);
+        r
+    }
+}
+
+impl IntoRef<AttributedString> for &Ref<&str> {
+    fn into_ref(self) -> Ref<AttributedString> {
+        let oringal_ref = self.clone();
+        let oringal_ref_2 = self.clone();
+        let r = Ref::new_with_updater(move || AttributedString::new(*oringal_ref.get().deref()));
+        r.subcribe(oringal_ref_2);
+        r
     }
 }
 

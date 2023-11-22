@@ -1,23 +1,25 @@
-use crate::reactive::Ref;
-
-use crate::{BoxEvent, Event};
+use crate::{
+    attributed_string::AttributedString,
+    reactive::{IntoRef, Ref},
+    view::Frame,
+};
 
 pub struct Button {
-    pub label: Ref<String>,
-    on_click: BoxEvent,
-    on_press: BoxEvent,
+    frame: Frame,
+    pub label: Ref<AttributedString>,
 }
 
 impl Button {
-    pub fn on_click(mut self, event: impl Event) -> Self {
-        self.on_click = Box::new(event);
-        self
-    }
-
-    pub fn on_press(mut self, event: impl Event) -> Self {
-        self.on_press = Box::new(event);
-        self
+    pub fn new(label: impl IntoRef<AttributedString>) -> Self {
+        Self {
+            label: label.into_ref(),
+            frame: Default::default(),
+        }
     }
 }
 
-native_implement!(Button);
+native_implement_with_frame!(Button);
+
+pub fn button(label: impl IntoRef<AttributedString>) -> Button {
+    Button::new(label)
+}

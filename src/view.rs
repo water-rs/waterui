@@ -7,8 +7,36 @@ use std::{
 
 use crate::{component::TapGesture, Event};
 
+#[derive(Debug, Clone)]
+pub enum Alignment {
+    Default,
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone)]
+pub enum Size {
+    Default,
+    Certain(usize),
+    Maximum(usize),
+    Minimum(usize),
+    Full,
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 pub trait View: 'static {
     fn view(&self) -> Box<dyn View>;
+    fn frame(&self) -> crate::view::Frame {
+        Default::default()
+    }
+    fn set_frame(&mut self, _frame: crate::view::Frame) {}
+
     fn name(&self) -> &'static str {
         type_name::<Self>()
     }
@@ -23,13 +51,40 @@ mod sealed {
     pub struct Sealed;
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct Frame {
+    width: Size,
+    height: Size,
+}
+
 pub trait ViewExt {
     fn on_tap(self, event: impl Event) -> TapGesture;
+    fn width(self, size: Size) -> Self;
+    fn height(self, size: Size) -> Self;
+    fn into_boxed(self) -> BoxView;
 }
 
 impl<V: View> ViewExt for V {
     fn on_tap(self, event: impl Event) -> TapGesture {
         TapGesture::new(Box::new(self), Box::new(event))
+    }
+
+    fn width(mut self, size: Size) -> Self {
+        let mut frame = self.frame();
+        frame.width = size;
+        self.set_frame(frame);
+        self
+    }
+
+    fn height(mut self, size: Size) -> Self {
+        let mut frame = self.frame();
+        frame.height = size;
+        self.set_frame(frame);
+        self
+    }
+
+    fn into_boxed(self) -> BoxView {
+        Box::new(self)
     }
 }
 
@@ -143,8 +198,6 @@ impl<T: 'static> Renderer<T> {
         if let Some(hook) = self.map.get(&view.inner_type_id()) {
             hook.call_hook(state, self, view);
         } else {
-            println!("this path2");
-
             self.call(view.view(), state);
         }
     }
