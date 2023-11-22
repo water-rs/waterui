@@ -3,13 +3,14 @@ use std::{collections::HashMap, ops::Deref};
 #[macro_use]
 mod macros;
 pub mod attributed_string;
+pub mod binding;
+pub use binding::Binding;
 pub mod component;
 pub mod ffi;
 mod html;
-pub mod reactive;
 pub mod view;
-use reactive::Ref;
 pub use view::View;
+pub mod utils;
 use view::{downcast_view, BoxView, Renderer};
 pub trait Event: 'static {
     fn call_event(&self);

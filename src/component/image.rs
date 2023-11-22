@@ -1,0 +1,17 @@
+use crate::{utils::Resource, view::Frame};
+
+pub struct Image {
+    frame: Frame,
+    resource: Resource,
+}
+
+impl Image {
+    pub fn new(resource: impl Into<Resource>) -> Self {
+        Self {
+            frame: Frame::default(),
+            resource: resource.into(),
+        }
+    }
+}
+
+native_implement_with_frame!(Image);
