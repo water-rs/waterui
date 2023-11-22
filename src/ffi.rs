@@ -1,4 +1,4 @@
-use crate::{attributed_string, reactive::BoxWatcher, View};
+use crate::{attributed_string, View};
 use std::{
     mem::{size_of, transmute},
     ops::Deref,
@@ -110,7 +110,6 @@ macro_rules! impl_buf {
 
 impl_buf!(Buf, u8);
 impl_buf!(ViewObjects, ViewObject);
-impl_buf!(Watchers, BoxWatcher);
 
 impl From<String> for Buf {
     fn from(value: String) -> Self {
