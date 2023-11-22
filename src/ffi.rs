@@ -14,8 +14,7 @@ pub struct Text {
 
 impl From<component::Text> for Text {
     fn from(value: component::Text) -> Self {
-        let text = value.text.get().deref().clone();
-        Self { text: text.into() }
+        todo!()
     }
 }
 
@@ -26,9 +25,7 @@ pub struct AttributedString {
 
 impl From<attributed_string::AttributedString> for AttributedString {
     fn from(value: attributed_string::AttributedString) -> Self {
-        Self {
-            text: value.text.into(),
-        }
+        todo!()
     }
 }
 
