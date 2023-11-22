@@ -1,12 +1,19 @@
 use std::{
-    fmt::Display,
+    fmt::{Arguments, Display},
     ops::{Add, Deref, DerefMut},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-#[derive(Clone)]
 pub struct Ref<T: 'static> {
     inner: Arc<RawRef<T>>,
+}
+
+impl<T: 'static> Clone for Ref<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 pub trait IntoRef<T> {
@@ -15,13 +22,13 @@ pub trait IntoRef<T> {
 
 impl<T> IntoRef<T> for T {
     fn into_ref(self) -> Ref<T> {
-        Ref::new(self)
+        Ref::once(self)
     }
 }
 
-impl IntoRef<String> for Ref<&str> {
-    fn into_ref(self) -> Ref<String> {
-        Ref::new_with_updater(move || self.get().to_string())
+impl<T> IntoRef<T> for &Ref<T> {
+    fn into_ref(self) -> Ref<T> {
+        self.clone()
     }
 }
 
@@ -63,6 +70,12 @@ impl<T> Updater<T> for Once<T> {
 impl<T> Ref<T> {
     pub fn new(value: T) -> Self
     where
+        T: Clone,
+    {
+        Self::new_with_updater(move || value.clone())
+    }
+    pub fn once(value: T) -> Self
+    where
         T: 'static,
     {
         Self::new_with_updater(Once::new(value))
@@ -81,7 +94,7 @@ impl<T> Ref<T> {
 
 impl<T: 'static> From<T> for Ref<T> {
     fn from(value: T) -> Self {
-        Self::new(value)
+        Self::once(value)
     }
 }
 impl Ref<String> {
@@ -126,24 +139,22 @@ impl<'a, T> Drop for MutRefGuard<'a, T> {
     }
 }
 
-pub trait Watcher {
-    fn call_watcher(&self);
+pub trait Watcher<T> {
+    fn call_watcher(&self, r: &RawRef<T>);
 }
 
-impl<F> Watcher for F
+impl<F, T> Watcher<T> for F
 where
-    F: Fn(),
+    F: Fn(&RawRef<T>),
 {
-    fn call_watcher(&self) {
-        (self)()
+    fn call_watcher(&self, r: &RawRef<T>) {
+        (self)(r)
     }
 }
 
-pub type BoxWatcher = Box<dyn Watcher>;
-
 pub struct RawRef<T: 'static> {
     value: RwLock<Option<T>>,
-    watchers: RwLock<Vec<BoxWatcher>>,
+    watchers: RwLock<Vec<Box<dyn Watcher<T>>>>,
     updater: BoxUpdater<T>,
 }
 
@@ -171,12 +182,12 @@ impl<T> RawRef<T> {
         }
     }
 
-    pub fn watch(&self, watcher: impl Watcher + 'static) {
+    pub fn watch(&self, watcher: impl Watcher<T> + 'static) {
         self.watchers.write().unwrap().push(Box::new(watcher));
     }
 
     pub fn subcribe<R>(&self, r: Ref<R>) {
-        self.watch(move || {
+        self.watch(move |_: &_| {
             r.need_update();
         });
     }
@@ -187,7 +198,7 @@ impl<T> RawRef<T> {
             .read()
             .unwrap()
             .iter()
-            .map(|watcher| watcher.call_watcher());
+            .map(|watcher| watcher.call_watcher(self));
     }
 
     pub fn need_update(&self) {
@@ -218,6 +229,11 @@ impl<T> RawRef<T> {
 
     pub fn set(&self, value: impl Into<T>) {
         *self.get_mut() = value.into();
+    }
+
+    pub fn into_inner(&self) -> T {
+        self.update();
+        self.value.write().unwrap().take().unwrap()
     }
 }
 
@@ -306,7 +322,7 @@ impl_str_reactive!(
 );
 
 pub fn reactive<T: 'static>(value: T) -> Ref<T> {
-    Ref::new(value)
+    Ref::once(value)
 }
 
 #[test]
