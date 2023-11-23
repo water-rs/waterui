@@ -44,6 +44,7 @@ impl Default for Background {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Resource {
     URL(Url),
     Data(Vec<u8>),

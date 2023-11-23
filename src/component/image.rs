@@ -1,8 +1,9 @@
 use crate::{utils::Resource, view::Frame};
 
+#[derive(Debug)]
 pub struct Image {
     frame: Frame,
-    resource: Resource,
+    pub resource: Resource,
 }
 
 impl Image {

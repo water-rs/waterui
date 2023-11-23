@@ -1,28 +1,29 @@
-use crate::utils::Color;
 use crate::Binding;
 use crate::View;
 
-use super::button;
 use super::foreach::ForEach;
 use super::text;
 use super::Button;
-use crate::hstack;
+use super::Stack;
 use crate::view::BoxView;
 use crate::view::Frame;
 use crate::view::ViewExt;
 use crate::vstack;
 use chrono::DateTime;
+use chrono::Datelike;
+use chrono::Days;
 use chrono::Local;
 use chrono::NaiveDate;
 use chrono::Weekday;
+use itertools::Itertools;
 use text::Text;
 
-pub struct Calendar {
+pub struct DatePicker {
     frame: Frame,
     date: Binding<DateTime<Local>>,
 }
 
-impl Calendar {
+impl DatePicker {
     pub fn new(date: impl Into<Binding<DateTime<Local>>>) -> Self {
         Self {
             frame: Frame::default(),
@@ -35,16 +36,21 @@ impl Calendar {
     }
 }
 
-impl View for Calendar {
+impl View for DatePicker {
     fn view(&mut self) -> BoxView {
+        let first_day = self.date.get().with_day(1).unwrap();
+        let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
+        let day = first_day - weekday;
+        let day_iter: Vec<NaiveDate> = day.date_naive().iter_days().take(5 * 7).collect_vec();
+        let day_iter = day_iter.into_iter().map(|date| date.day0()).chunks(7);
+        let day_iter = day_iter.into_iter().map(|chunk| {
+            Stack::new(chunk.map(|v| Button::display(v).width(30).height(30))).horizontal()
+        });
+
         vstack![
             text(self.date.get().format("%B %e").to_string()).bold(),
-            ForEach::new(1..=7, |weekday| {
-                ForEach::new(1..=4, |week| {
-                    Button::display(week * 7 + weekday).height(30).width(30)
-                })
-            })
-            .horizontal()
+            ForEach::new(0..7, |n| Text::display(Weekday::try_from(n).unwrap())).horizontal(),
+            Stack::new(day_iter)
         ]
         .into_boxed()
     }
@@ -55,21 +61,30 @@ impl View for Calendar {
     fn set_frame(&mut self, frame: crate::view::Frame) {
         self.frame = frame
     }
+
+    fn is_reactive(&self) -> bool {
+        true
+    }
+
+    fn subscribe(&self, subscriber: fn() -> crate::binding::BoxSubscriber) {
+        self.date.add_boxed_subscriber((subscriber)());
+    }
 }
 
+#[cfg(test)]
 mod test {
 
     use std::time::Instant;
 
     use crate::html::HtmlRenderer;
 
-    use super::Calendar;
+    use super::DatePicker;
 
     #[test]
     fn test() {
         let start = Instant::now();
 
-        let s = HtmlRenderer::new().renderer(Box::new(Calendar::now()));
+        let s = HtmlRenderer::new().renderer(Box::new(DatePicker::now()));
         let duration = start.elapsed();
         println!("{s}");
         println!("Duration:{duration:?}");

@@ -180,14 +180,14 @@ impl HtmlRenderer {
     pub fn new() -> Self {
         let mut renderer: Renderer<HtmlRenderState> = Renderer::new();
         let state = HtmlRenderState::new();
-        renderer.add(|state, renderer, view: component::Text| {
+        renderer.add(|state, _renderer, view: component::Text| {
             let mut tag = Tag::new("p");
             frame_builder(&mut tag, view.frame());
             tag.set_content(view.text.into_html());
             state.buf.extend([tag]);
         });
 
-        renderer.add(|state, renderer, view: component::Button| {
+        renderer.add(|state, _renderer, view: component::Button| {
             let mut tag = Tag::new("button");
             frame_builder(&mut tag, view.frame());
             padding_builder(&mut tag, view.padding);
