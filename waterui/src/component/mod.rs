@@ -10,7 +10,7 @@ pub use stack::Stack;
 mod foreach;
 pub use foreach::ForEach;
 
-mod date_picker;
-pub use date_picker::DatePicker;
 mod image;
 pub use image::Image;
+mod date_picker;
+pub use date_picker::DatePicker;

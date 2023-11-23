@@ -1,5 +1,6 @@
-use crate::{view::BoxView, BoxEvent};
+use crate::{view::BoxView, view::Frame, widget, BoxEvent};
 
+#[widget]
 pub struct TapGesture {
     pub view: BoxView,
     pub event: BoxEvent,
@@ -7,7 +8,11 @@ pub struct TapGesture {
 
 impl TapGesture {
     pub fn new(view: BoxView, event: BoxEvent) -> Self {
-        Self { view, event }
+        Self {
+            view,
+            event,
+            frame: Frame::default(),
+        }
     }
 }
 
