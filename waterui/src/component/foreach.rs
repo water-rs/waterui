@@ -1,10 +1,13 @@
+use crate::view::Frame;
+
 use crate::{
     binding::BoxSubscriber,
     view::{Alignment, BoxView},
-    Binding, View,
+    widget, Binding, View,
 };
 
 use super::{stack::DisplayMode, Stack};
+#[widget]
 pub struct ForEach {
     builder: Box<dyn ViewBuilder>,
     mode: DisplayMode,
@@ -62,9 +65,10 @@ impl ForEach {
             content.push(view);
         }
         Self {
+            frame: Frame::default(),
             builder: Box::new(Some(content)),
             mode: DisplayMode::Vertical,
-            alignment: Alignment::Default,
+            alignment: Alignment::Leading,
         }
     }
 
@@ -77,9 +81,11 @@ impl ForEach {
     {
         let iter: Binding<Iter> = iter.into();
         Self {
+            frame: Frame::default(),
+
             builder: Box::new(IntoView { iter, f }),
             mode: DisplayMode::Vertical,
-            alignment: Alignment::Default,
+            alignment: Alignment::Leading,
         }
     }
 
@@ -99,12 +105,9 @@ impl ForEach {
     }
 }
 
+#[widget]
 impl View for ForEach {
-    fn view(&mut self) -> Box<dyn View> {
-        Box::new(Stack::new(self.builder.build()).mode(self.mode.clone()))
-    }
-
-    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
-        self.builder.subscribe(subscriber());
+    fn view(&mut self) -> Stack {
+        Stack::new(self.builder.build()).mode(self.mode.clone())
     }
 }

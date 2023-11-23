@@ -1,11 +1,19 @@
 use std::{
-    fmt::Display,
+    any::type_name,
+    fmt::{Debug, Display},
     ops::{Deref, DerefMut},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+#[derive(Default)]
 pub struct Binding<T: 'static> {
     inner: Arc<RawBinding<T>>,
+}
+
+impl<T> Debug for Binding<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(type_name::<Self>())
+    }
 }
 
 impl<T> From<T> for Binding<T> {
@@ -35,6 +43,7 @@ impl<T> Clone for Binding<T> {
     }
 }
 
+#[derive(Default)]
 struct RawBinding<T: 'static> {
     value: RwLock<T>,
     watchers: RwLock<Vec<BoxWatcher<T>>>,

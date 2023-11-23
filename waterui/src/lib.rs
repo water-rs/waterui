@@ -1,8 +1,7 @@
 #[macro_use]
 mod macros;
 pub mod attributed_string;
-pub mod binding;
-pub use binding::Binding;
+pub use waterui_core::binding::{self, Binding};
 pub mod component;
 pub mod ffi;
 mod html;
@@ -22,3 +21,4 @@ where
 }
 
 pub type BoxEvent = Box<dyn Event>;
+pub use waterui_derive::widget;

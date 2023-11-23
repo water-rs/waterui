@@ -1,10 +1,12 @@
+use crate::view::IntoViews;
+
 use crate::{
     view::{Alignment, BoxView, Frame, ViewExt},
-    View,
+    widget, View,
 };
 
+#[widget]
 pub struct Stack {
-    frame: Frame,
     pub alignment: Alignment,
     pub mode: DisplayMode,
     pub content: Vec<BoxView>,
@@ -20,16 +22,19 @@ pub enum DisplayMode {
 impl From<Vec<BoxView>> for Stack {
     fn from(value: Vec<BoxView>) -> Self {
         Self {
+            frame: Frame::default(),
             content: value,
             alignment: Alignment::Default,
             mode: DisplayMode::Vertical,
-            frame: Default::default(),
         }
     }
 }
 
 impl Stack {
-    pub fn new<Iter>(content: Iter) -> Self
+    pub fn new(views: impl IntoViews) -> Self {
+        Self::from(views.into_views())
+    }
+    pub fn from_iter<Iter>(content: Iter) -> Self
     where
         Iter: IntoIterator,
         Iter::Item: View,
@@ -59,34 +64,12 @@ impl Stack {
     }
 }
 
-#[macro_export]
-macro_rules! vstack {
-    ($($view:expr),*) => {
-        {
-            #[allow(unused_mut)]
-            let mut content:Vec<Box<dyn crate::View>>=Vec::new();
-            $(
-                let view:Box<dyn crate::View>=Box::new($view);
-                content.push(view);
-            )*
-            crate::component::Stack::new(content).vertical()
-        }
-    };
+pub fn vstack(views: impl IntoViews) -> Stack {
+    Stack::new(views).vertical()
 }
 
-#[macro_export]
-macro_rules! hstack {
-    ($($view:expr),*) => {
-        {
-            #[allow(unused_mut)]
-            let mut content=Vec::new();
-            $(
-                let view:Box<dyn crate::View>=Box::new($view);
-                content.push(view);
-            )*
-            crate::component::Stack::new(content,crate::component::stack::DisplayMode::Horizontal)
-        }
-    };
+pub fn hstack(views: impl IntoViews) -> Stack {
+    Stack::new(views).horizontal()
 }
 
-native_implement_with_frame!(Stack);
+native_implement!(Stack);
