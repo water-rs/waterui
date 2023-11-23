@@ -1,4 +1,4 @@
-macro_rules! native_implement_with_frame {
+macro_rules! native_implement {
     ($ty:ty) => {
         impl crate::View for $ty {
             fn view(&mut self) -> crate::view::BoxView {
@@ -10,16 +10,6 @@ macro_rules! native_implement_with_frame {
             }
             fn set_frame(&mut self, frame: crate::view::Frame) {
                 self.frame = frame
-            }
-        }
-    };
-}
-
-macro_rules! native_implement {
-    ($ty:ty) => {
-        impl crate::View for $ty {
-            fn view(&mut self) -> crate::view::BoxView {
-                panic!("[Native implement]");
             }
         }
     };

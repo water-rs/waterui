@@ -1,13 +1,9 @@
+use crate::widget;
+use crate::{attributed_string::AttributedString, utils::Background, view::Edge};
 use std::fmt::Display;
 
-use crate::{
-    attributed_string::AttributedString,
-    utils::Background,
-    view::{Edge, Frame},
-};
-
+#[widget]
 pub struct Button {
-    frame: Frame,
     pub background: Background,
     pub padding: Edge,
     pub label: AttributedString,
@@ -38,7 +34,7 @@ impl Button {
     }
 }
 
-native_implement_with_frame!(Button);
+native_implement!(Button);
 
 pub fn button(label: impl Into<AttributedString>) -> Button {
     Button::new(label)

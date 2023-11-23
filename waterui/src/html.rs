@@ -80,7 +80,7 @@ impl Tag {
 
     pub fn extend_head(&mut self, buf: &mut String) {
         if !self.classes.is_empty() {
-            self.set_attribute("class", self.classes.concat());
+            self.set_attribute("class", self.classes.join(" "));
         }
 
         let style = take(&mut self.style);
@@ -184,6 +184,12 @@ impl HtmlRenderer {
             let mut tag = Tag::new("p");
             frame_builder(&mut tag, view.frame());
             tag.set_content(view.text.into_html());
+            match view.alignment {
+                Alignment::Leading => tag.add_class("water-text-leading"),
+                Alignment::Center => tag.add_class("water-text-center"),
+                Alignment::Trailing => tag.add_class("water-text-trailing"),
+                _ => {}
+            }
             state.buf.extend([tag]);
         });
 
@@ -192,6 +198,7 @@ impl HtmlRenderer {
             frame_builder(&mut tag, view.frame());
             padding_builder(&mut tag, view.padding);
             background_builder(&mut tag, view.background);
+
             tag.set_content(view.label.into_html());
             state.buf.extend([tag]);
         });
@@ -206,10 +213,10 @@ impl HtmlRenderer {
             }
 
             match view.alignment {
-                Alignment::Default => {}
                 Alignment::Leading => tag.add_class("water-leading"),
                 Alignment::Center => tag.add_class("water-center"),
                 Alignment::Trailing => tag.add_class("water-trailing"),
+                _ => {}
             }
 
             tag.extend_head(&mut state.buf);

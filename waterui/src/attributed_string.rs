@@ -117,7 +117,8 @@ impl AttributedString {
                             }
                             let style = font.into_style();
                             if !style.is_empty() {
-                                buf = format!("<label style=\"{}\"></label>", font.into_style());
+                                buf =
+                                    format!("<label style=\"{}\">{buf}</label>", font.into_style());
                             }
                         }
                     }
@@ -179,6 +180,11 @@ impl Font {
         font
     }
 
+    pub fn size(mut self, size: impl Into<Size>) -> Self {
+        self.size = size.into();
+        self
+    }
+
     fn into_style(&self) -> String {
         let mut buf = String::new();
         if !self.name.is_empty() {
@@ -186,7 +192,7 @@ impl Font {
         }
 
         match self.size {
-            Size::Px(px) => write!(buf, "font-size:{px};").unwrap(),
+            Size::Px(px) => write!(buf, "font-size:{px}px;").unwrap(),
             _ => {}
         }
 
