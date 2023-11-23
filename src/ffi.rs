@@ -1,7 +1,6 @@
 use crate::{attributed_string, View};
 use std::{
     mem::{size_of, transmute},
-    ops::Deref,
     ptr::write,
 };
 
@@ -13,7 +12,7 @@ pub struct Text {
 }
 
 impl From<component::Text> for Text {
-    fn from(value: component::Text) -> Self {
+    fn from(_value: component::Text) -> Self {
         todo!()
     }
 }
@@ -24,7 +23,7 @@ pub struct AttributedString {
 }
 
 impl From<attributed_string::AttributedString> for AttributedString {
-    fn from(value: attributed_string::AttributedString) -> Self {
+    fn from(_value: attributed_string::AttributedString) -> Self {
         todo!()
     }
 }

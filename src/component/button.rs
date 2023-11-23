@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use crate::{
     attributed_string::AttributedString,
-    utils::{Background, Color},
-    view::{Edge, Frame, Size},
+    utils::Background,
+    view::{Edge, Frame},
 };
 
 pub struct Button {

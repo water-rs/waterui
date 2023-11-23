@@ -101,7 +101,7 @@ impl ForEach {
 
 impl View for ForEach {
     fn view(&mut self) -> Box<dyn View> {
-        Box::new(Stack::new(self.builder.build(), self.mode.clone()))
+        Box::new(Stack::new(self.builder.build()).mode(self.mode.clone()))
     }
 
     fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {

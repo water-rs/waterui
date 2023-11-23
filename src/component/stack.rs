@@ -1,4 +1,7 @@
-use crate::view::{Alignment, BoxView, Frame};
+use crate::{
+    view::{Alignment, BoxView, Frame, ViewExt},
+    View,
+};
 
 pub struct Stack {
     frame: Frame,
@@ -14,14 +17,25 @@ pub enum DisplayMode {
     Horizontal,
 }
 
-impl Stack {
-    pub fn new(content: Vec<BoxView>, mode: DisplayMode) -> Self {
+impl From<Vec<BoxView>> for Stack {
+    fn from(value: Vec<BoxView>) -> Self {
         Self {
-            content,
+            content: value,
             alignment: Alignment::Default,
-            mode,
+            mode: DisplayMode::Vertical,
             frame: Default::default(),
         }
+    }
+}
+
+impl Stack {
+    pub fn new<Iter>(content: Iter) -> Self
+    where
+        Iter: IntoIterator,
+        Iter::Item: View,
+    {
+        let content: Vec<BoxView> = content.into_iter().map(|v| v.into_boxed()).collect();
+        Self::from(content)
     }
 
     pub fn vertical(mut self) -> Self {
@@ -38,6 +52,11 @@ impl Stack {
         self.alignment = alignment;
         self
     }
+
+    pub fn mode(mut self, mode: DisplayMode) -> Self {
+        self.mode = mode;
+        self
+    }
 }
 
 #[macro_export]
@@ -45,12 +64,12 @@ macro_rules! vstack {
     ($($view:expr),*) => {
         {
             #[allow(unused_mut)]
-            let mut content=Vec::new();
+            let mut content:Vec<Box<dyn crate::View>>=Vec::new();
             $(
                 let view:Box<dyn crate::View>=Box::new($view);
                 content.push(view);
             )*
-            crate::component::Stack::new(content,crate::component::stack::DisplayMode::Vertical)
+            crate::component::Stack::new(content).vertical()
         }
     };
 }

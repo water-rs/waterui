@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     marker::PhantomData,
+    ops::{Deref, DerefMut},
 };
 
 use crate::{binding::BoxSubscriber, component::TapGesture, Event};
@@ -191,33 +192,35 @@ impl dyn View {
     }
 }
 
+pub trait Reactive {}
+
 pub type BoxView = Box<dyn View>;
 
-pub struct AnyView(BoxView);
+impl View for BoxView {
+    fn view(&mut self) -> Box<dyn View> {
+        self.deref_mut().view()
+    }
 
-impl AnyView {
-    pub fn into_inner(self) -> BoxView {
-        self.0
+    fn frame(&self) -> crate::view::Frame {
+        self.deref().frame()
+    }
+
+    fn set_frame(&mut self, frame: crate::view::Frame) {
+        self.deref_mut().set_frame(frame)
+    }
+
+    fn is_reactive(&self) -> bool {
+        self.deref().is_reactive()
+    }
+
+    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
+        self.deref().subscribe(subscriber)
     }
 }
 
 impl Debug for dyn View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("dyn View")
-    }
-}
-
-native_implement!(AnyView);
-
-pub fn downcast_view<T: View>(mut view: BoxView) -> Result<T, BoxView> {
-    match view.downcast::<T>() {
-        Ok(v) => return Ok(*v),
-        Err(boxed) => view = boxed,
-    }
-
-    match view.downcast::<AnyView>() {
-        Ok(v) => downcast_view(v.into_inner()),
-        Err(boxed) => Err(boxed),
     }
 }
 
@@ -268,11 +271,14 @@ impl<T: 'static> Renderer<T> {
             .insert(TypeId::of::<V>(), Box::new(IntoHook::new(hook)));
     }
 
-    pub fn call(&self, mut view: BoxView, state: &mut T) {
+    pub fn call(&self, view: BoxView, state: &mut T) {
         if let Some(hook) = self.map.get(&view.inner_type_id()) {
             hook.call_hook(state, self, view);
         } else {
-            self.call(view.view(), state);
+            match view.downcast::<BoxView>() {
+                Ok(v) => self.call(*v, state),
+                Err(mut boxed) => self.call(boxed.view(), state),
+            }
         }
     }
 }
