@@ -91,6 +91,12 @@ impl<T> RawBinding<T> {
         }
     }
 
+    pub fn make_effect(&self) {
+        for watcher in self.watchers.read().unwrap().deref() {
+            watcher.call_watcher(self.get().deref());
+        }
+    }
+
     pub fn add_watcher(&self, watcher: BoxWatcher<T>) {
         self.watchers.write().unwrap().push(watcher)
     }
@@ -121,6 +127,10 @@ impl<T> Binding<T> {
 
     pub fn add_boxed_subscriber(&self, subscriber: BoxSubscriber) {
         self.inner.add_subscriber(subscriber)
+    }
+
+    pub fn make_effect(&self) {
+        self.inner.make_effect();
     }
 }
 

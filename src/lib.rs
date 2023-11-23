@@ -1,5 +1,3 @@
-use std::{collections::HashMap, ops::Deref};
-
 #[macro_use]
 mod macros;
 pub mod attributed_string;
@@ -11,7 +9,6 @@ mod html;
 pub mod view;
 pub use view::View;
 pub mod utils;
-use view::{downcast_view, BoxView, Renderer};
 pub trait Event: 'static {
     fn call_event(&self);
 }

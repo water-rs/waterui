@@ -1,5 +1,4 @@
 use std::fmt::{Display, Write};
-use std::iter::repeat;
 use std::{
     ops::{Add, Bound, Deref, Range, RangeBounds},
     slice::Iter,
@@ -82,7 +81,7 @@ impl AttributedString {
         self.attributes.iter()
     }
 
-    pub fn bold(mut self) -> Self {
+    pub fn bold(self) -> Self {
         self.attribute(.., Font::bold())
     }
 
@@ -100,9 +99,9 @@ impl AttributedString {
         ranges.sort_unstable();
         let mut result = String::new();
 
-        let mut iter = ranges.into_iter().enumerate().peekable();
-        while let Some((index, start)) = iter.next() {
-            if let Some((_, end)) = iter.peek() {
+        let mut iter = ranges.into_iter().peekable();
+        while let Some(start) = iter.next() {
+            if let Some(end) = iter.peek() {
                 let split_range: Range<usize> = start..*end;
                 let mut buf = self.text[split_range.clone()].to_string();
 
@@ -110,7 +109,7 @@ impl AttributedString {
                     .attributes
                     .iter()
                     .filter(|(range, _)| contain(range.clone(), split_range.clone()));
-                for (range, attribute) in attribute_iter {
+                for (_, attribute) in attribute_iter {
                     match attribute {
                         Attribute::Font(font) => {
                             if font.bold {
