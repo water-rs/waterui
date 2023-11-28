@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{Display, Write};
 use std::{
     ops::{Add, Bound, Deref, Range, RangeBounds},
@@ -5,10 +6,11 @@ use std::{
 };
 
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 use crate::view::Size;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AttributedString {
     text: String,
     attributes: Vec<(Range<usize>, Attribute)>,
@@ -55,13 +57,12 @@ impl AttributedString {
         range: impl RangeBounds<usize>,
         attribute: impl Into<Attribute>,
     ) {
-        let left;
         let right;
-        match range.start_bound() {
-            Bound::Included(v) => left = *v,
-            Bound::Excluded(v) => left = v - 1,
-            Bound::Unbounded => left = 0,
-        }
+        let left = match range.start_bound() {
+            Bound::Included(v) => *v,
+            Bound::Excluded(v) => v - 1,
+            Bound::Unbounded => 0,
+        };
         match range.end_bound() {
             Bound::Included(v) => right = *v,
             Bound::Excluded(v) => right = v - 1,
@@ -92,8 +93,7 @@ impl AttributedString {
         let mut ranges: Vec<usize> = self
             .attributes
             .iter()
-            .map(|(range, _)| [range.start, range.end])
-            .flatten()
+            .flat_map(|(range, _)| [range.start, range.end])
             .unique()
             .collect();
         ranges.sort_unstable();
@@ -115,10 +115,9 @@ impl AttributedString {
                             if font.bold {
                                 buf = format!("<b>{buf}</b>");
                             }
-                            let style = font.into_style();
+                            let style = font.html_style();
                             if !style.is_empty() {
-                                buf =
-                                    format!("<label style=\"{}\">{buf}</label>", font.into_style());
+                                buf = format!("<label style=\"{}\">{buf}</label>", style);
                             }
                         }
                     }
@@ -151,26 +150,32 @@ impl Add<AttributedString> for AttributedString {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Attribute {
     Font(Font),
 }
 
 impl_from!(Attribute, Font);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Font {
-    name: &'static str,
+    name: Cow<'static, str>,
     bold: bool,
     size: Size,
 }
 
+impl Default for Font {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Font {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            name: "",
+            name: Cow::Borrowed(""),
             bold: false,
-            size: Size::default(),
+            size: Size::Default,
         }
     }
 
@@ -185,7 +190,7 @@ impl Font {
         self
     }
 
-    fn into_style(&self) -> String {
+    fn html_style(&self) -> String {
         let mut buf = String::new();
         if !self.name.is_empty() {
             write!(buf, "font-family:{};", self.name).unwrap();
@@ -193,6 +198,7 @@ impl Font {
 
         match self.size {
             Size::Px(px) => write!(buf, "font-size:{px}px;").unwrap(),
+            Size::Percent(percent) => write!(buf, "font-size:{percent}%;").unwrap(),
             _ => {}
         }
 

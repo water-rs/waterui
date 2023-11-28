@@ -1,15 +1,19 @@
-use std::{collections::HashMap, mem::take};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    mem::take,
+};
 
 use crate::{
-    component::{self, stack::DisplayMode},
+    component::{self, stack::DisplayMode, Button, FrameView, Stack, Text},
     utils::{Background, Color},
-    view::{Alignment, BoxView, Edge, Frame, Renderer, Size},
+    view::{Alignment, BoxView, Edge, Frame, RendererBuilder, Size},
     BoxEvent, View,
 };
 
 pub struct HtmlRenderer {
     state: HtmlRenderState,
-    renderer: Renderer<HtmlRenderState>,
+    renderer: RendererBuilder<HtmlRenderState, HtmlRendererLocalState, HtmlRendererMessage>,
 }
 
 struct Manager {
@@ -36,6 +40,29 @@ struct HtmlRenderState {
     manager: Manager,
 }
 
+struct HtmlRendererLocalState {
+    tag: Tag,
+}
+
+#[derive(Default)]
+struct HtmlRendererMessage {
+    attributes: Vec<(&'static str, String)>,
+}
+
+impl HtmlRendererMessage {
+    pub fn attributes(attributes: impl Into<Vec<(&'static str, String)>>) -> Self {
+        Self {
+            attributes: attributes.into(),
+        }
+    }
+}
+
+impl Default for HtmlRendererLocalState {
+    fn default() -> Self {
+        Self { tag: Tag::new("") }
+    }
+}
+
 impl HtmlRenderState {
     pub fn new() -> Self {
         Self {
@@ -53,9 +80,8 @@ impl HtmlRenderState {
 
 struct Tag {
     name: &'static str,
-    attributes: Vec<(&'static str, String)>,
-    classes: Vec<&'static str>,
-    style: String,
+    attributes: HashMap<&'static str, String>,
+
     content: String,
 }
 
@@ -63,15 +89,30 @@ impl Tag {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            attributes: Vec::new(),
-            classes: Vec::new(),
-            style: String::new(),
+            attributes: HashMap::new(),
+
             content: String::new(),
         }
     }
 
-    pub fn set_attribute(&mut self, key: &'static str, value: impl Into<String>) {
-        self.attributes.push((key, value.into()));
+    pub fn set_attribute<'a>(&mut self, key: &'static str, value: impl Into<Cow<'a, str>>) {
+        let attribute = self.attributes.entry(key).or_default();
+        let value = value.into();
+        match key {
+            "class" => {
+                attribute.push_str(value.as_ref());
+                attribute.push(' ');
+            }
+            "style" => {
+                attribute.push_str(value.as_ref());
+                attribute.push(';');
+            }
+            _ => *attribute = value.into_owned(),
+        }
+    }
+
+    pub fn set_name(&mut self, name: &'static str) {
+        self.name = name;
     }
 
     pub fn set_content(&mut self, content: String) {
@@ -79,15 +120,6 @@ impl Tag {
     }
 
     pub fn extend_head(&mut self, buf: &mut String) {
-        if !self.classes.is_empty() {
-            self.set_attribute("class", self.classes.join(" "));
-        }
-
-        let style = take(&mut self.style);
-
-        if !style.is_empty() {
-            self.set_attribute("style", style);
-        }
         buf.push('<');
         buf.push_str(self.name);
         for (key, value) in self.attributes.iter() {
@@ -101,11 +133,11 @@ impl Tag {
     }
 
     pub fn add_class(&mut self, class: &'static str) {
-        self.classes.push(class);
+        self.set_attribute("class", class);
     }
 
-    pub fn add_style(&mut self, style: &str) {
-        self.style.push_str(style);
+    pub fn add_style<'a>(&mut self, style: impl Into<Cow<'a, str>>) {
+        self.set_attribute("style", style);
     }
 
     pub fn extend_tail(&self, buf: &mut String) {
@@ -115,8 +147,8 @@ impl Tag {
     }
 }
 
-impl Extend<Tag> for String {
-    fn extend<T: IntoIterator<Item = Tag>>(&mut self, iter: T) {
+impl<'a> Extend<&'a mut Tag> for String {
+    fn extend<T: IntoIterator<Item = &'a mut Tag>>(&mut self, iter: T) {
         for mut tag in iter {
             tag.extend_head(self);
             self.push_str(tag.content.as_str());
@@ -135,22 +167,24 @@ fn size_to_css(size: Size) -> String {
     }
 }
 
-fn frame_builder(tag: &mut Tag, frame: Frame) {
+fn frame_to_style(frame: Frame) -> String {
+    let mut result = String::new();
     if frame.height != Size::default() {
-        tag.add_style(&format!("height:{};", size_to_css(frame.height)));
+        result += &format!("height:{};", size_to_css(frame.height));
     }
     if frame.width != Size::default() {
-        tag.add_style(&format!("width:{};", size_to_css(frame.width)));
+        result += &format!("width:{};", size_to_css(frame.width));
     }
     if frame.margin != Edge::default() {
-        tag.add_style(&format!(
+        result += &format!(
             "margin:{} {} {} {};",
             size_to_css(frame.margin.top),
             size_to_css(frame.margin.right),
             size_to_css(frame.margin.bottom),
             size_to_css(frame.margin.left)
-        ));
+        );
     }
+    result
 }
 
 fn padding_builder(tag: &mut Tag, edge: Edge) {
@@ -178,11 +212,19 @@ fn background_builder(tag: &mut Tag, background: Background) {
 
 impl HtmlRenderer {
     pub fn new() -> Self {
-        let mut renderer: Renderer<HtmlRenderState> = Renderer::new();
-        let state = HtmlRenderState::new();
-        renderer.add(|state, _renderer, view: component::Text| {
-            let mut tag = Tag::new("p");
-            frame_builder(&mut tag, view.frame());
+        let mut renderer: RendererBuilder<
+            HtmlRenderState,
+            HtmlRendererLocalState,
+            HtmlRendererMessage,
+        > = RendererBuilder::new().global_hook_before(|state, local_state, message| {
+            for (key, value) in &message.attributes {
+                local_state.tag.set_attribute(key, value);
+            }
+        });
+
+        renderer.add(|view: Text, state, mut local_state, message, render| {
+            let tag = &mut local_state.tag;
+            tag.set_name("p");
             tag.set_content(view.text.into_html());
             match view.alignment {
                 Alignment::Leading => tag.add_class("water-text-leading"),
@@ -190,23 +232,35 @@ impl HtmlRenderer {
                 Alignment::Trailing => tag.add_class("water-text-trailing"),
                 _ => {}
             }
+            if !view.selectable {
+                tag.add_class("disable-select");
+            }
             state.buf.extend([tag]);
         });
 
-        renderer.add(|state, _renderer, view: component::Button| {
-            let mut tag = Tag::new("button");
-            frame_builder(&mut tag, view.frame());
-            padding_builder(&mut tag, view.padding);
-            background_builder(&mut tag, view.background);
+        renderer.add(|view: Button, state, local_state, message, renderer| {
+            let tag = &mut local_state.tag;
+            tag.set_name("button");
+            padding_builder(tag, view.padding);
+            background_builder(tag, view.background);
 
             tag.set_content(view.label.into_html());
             state.buf.extend([tag]);
         });
 
-        renderer.add(|state, renderer, view: component::Stack| {
-            let mut tag = Tag::new("div");
-            frame_builder(&mut tag, view.frame());
+        renderer.add(
+            |view: FrameView, state, local_state, message, mut renderer| {
+                renderer.call_with_message(
+                    view.content,
+                    state,
+                    HtmlRendererMessage::attributes([("style", frame_to_style(view.frame))]),
+                );
+            },
+        );
 
+        renderer.add(|view: Stack, state, local_state, message, renderer| {
+            let tag = &mut local_state.tag;
+            tag.set_name("div");
             match view.mode {
                 DisplayMode::Vertical => {}
                 DisplayMode::Horizontal => tag.add_class("water-horizontal"),
@@ -227,19 +281,10 @@ impl HtmlRenderer {
             tag.extend_tail(&mut state.buf);
         });
 
-        renderer.add(|state, renderer, view: component::TapGesture| {
-            state.buf.push_str("<div id=\"water-");
-            let id = state.get_id();
-            //tag.set_attribute("id", format!("wui-{id}"));
-
-            state.buf.push_str(id.to_string().as_str());
-            state.buf.push_str("\">");
-            state.manager.on_click(id, view.event);
-            renderer.call(view.view, state);
-            state.buf.push_str("</div>");
-        });
-
-        Self { renderer, state }
+        Self {
+            renderer,
+            state: HtmlRenderState::new(),
+        }
     }
 
     pub fn renderer(mut self, view: BoxView) -> String {

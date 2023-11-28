@@ -1,39 +1,26 @@
 pub use waterui_core::view::*;
 
+use crate::component::FrameView;
 use crate::{component::TapGesture, Event};
-
 pub trait ViewExt {
     fn on_tap(self, event: impl Event) -> TapGesture;
-    fn width(self, size: impl Into<Size>) -> Self;
-    fn height(self, size: impl Into<Size>) -> Self;
-    fn margin(self, size: impl Into<Edge>) -> Self;
+    fn width(self, size: impl Into<Size>) -> FrameView;
+    fn height(self, size: impl Into<Size>) -> FrameView;
+
     fn into_boxed(self) -> BoxView;
 }
 
-impl<V: View> ViewExt for V {
+impl<V: View + 'static> ViewExt for V {
     fn on_tap(self, event: impl Event) -> TapGesture {
         TapGesture::new(Box::new(self), Box::new(event))
     }
 
-    fn width(mut self, size: impl Into<Size>) -> Self {
-        let mut frame = self.frame();
-        frame.width = size.into();
-        self.set_frame(frame);
-        self
+    fn width(self, size: impl Into<Size>) -> FrameView {
+        FrameView::new(self).width(size)
     }
 
-    fn height(mut self, size: impl Into<Size>) -> Self {
-        let mut frame = self.frame();
-        frame.height = size.into();
-        self.set_frame(frame);
-        self
-    }
-
-    fn margin(mut self, size: impl Into<Edge>) -> Self {
-        let mut frame = self.frame();
-        frame.margin = size.into();
-        self.set_frame(frame);
-        self
+    fn height(self, size: impl Into<Size>) -> FrameView {
+        FrameView::new(self).height(size)
     }
 
     fn into_boxed(self) -> BoxView {

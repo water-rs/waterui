@@ -6,7 +6,7 @@ use std::{
 };
 
 #[derive(Default)]
-pub struct Binding<T: 'static> {
+pub struct Binding<T: ?Sized> {
     inner: Arc<RawBinding<T>>,
 }
 
@@ -44,16 +44,16 @@ impl<T> Clone for Binding<T> {
 }
 
 #[derive(Default)]
-struct RawBinding<T: 'static> {
-    value: RwLock<T>,
+struct RawBinding<T: ?Sized> {
     watchers: RwLock<Vec<BoxWatcher<T>>>,
+    value: RwLock<T>,
 }
 
-pub trait Watcher<T>: 'static {
+pub trait Watcher<T> {
     fn call_watcher(&self, value: &T);
 }
 
-impl<T: 'static> Watcher<T> for BoxWatcher<T> {
+impl<T> Watcher<T> for BoxWatcher<T> {
     fn call_watcher(&self, value: &T) {
         self.deref().call_watcher(value)
     }
@@ -65,11 +65,11 @@ impl Subscriber for BoxSubscriber {
     }
 }
 
-pub trait Subscriber: 'static {
+pub trait Subscriber {
     fn call_subscriber(&self);
 }
 
-impl<T: 'static, S> Watcher<T> for S
+impl<T, S> Watcher<T> for S
 where
     S: Subscriber,
 {
@@ -130,6 +130,10 @@ impl<T> Binding<T> {
         self.inner.get_mut()
     }
 
+    pub fn set(&self, value: T) {
+        *self.get_mut() = value;
+    }
+
     pub fn add_boxed_watcher(&self, watcher: BoxWatcher<T>) {
         self.inner.add_watcher(watcher)
     }
@@ -149,7 +153,7 @@ impl Binding<String> {
     }
 }
 
-pub struct MutGuard<'a, T: 'static> {
+pub struct MutGuard<'a, T> {
     guard: RwLockWriteGuard<'a, T>,
     watchers: RwLockReadGuard<'a, Vec<BoxWatcher<T>>>,
 }

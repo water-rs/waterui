@@ -8,19 +8,26 @@ use crate::widget;
 
 use crate::attributed_string::{AttributedString, Font};
 
+#[derive(Debug, Clone)]
 #[widget]
 pub struct Text {
     pub text: AttributedString,
     pub alignment: Alignment,
+    pub selectable: bool,
 }
 
 impl Text {
     pub fn new(text: impl Into<AttributedString>) -> Self {
         Self {
             text: text.into(),
-            frame: Default::default(),
             alignment: Alignment::Default,
+            selectable: true,
         }
+    }
+
+    pub fn disable_select(mut self) -> Self {
+        self.selectable = false;
+        self
     }
 
     pub fn display(value: impl Display) -> Self {

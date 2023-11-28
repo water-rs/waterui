@@ -9,3 +9,11 @@ pub struct Image {
 }
 
 native_implement!(Image);
+
+impl Image {
+    pub fn new(resource: impl Into<Resource>) -> Self {
+        Self {
+            resource: resource.into(),
+        }
+    }
+}
