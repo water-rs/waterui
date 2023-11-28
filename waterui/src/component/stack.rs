@@ -1,7 +1,7 @@
 use crate::view::IntoViews;
 
 use crate::{
-    view::{Alignment, BoxView, Frame, ViewExt},
+    view::{Alignment, BoxView, ViewExt},
     widget, View,
 };
 
@@ -22,7 +22,6 @@ pub enum DisplayMode {
 impl From<Vec<BoxView>> for Stack {
     fn from(value: Vec<BoxView>) -> Self {
         Self {
-            frame: Frame::default(),
             content: value,
             alignment: Alignment::Default,
             mode: DisplayMode::Vertical,
@@ -30,17 +29,16 @@ impl From<Vec<BoxView>> for Stack {
     }
 }
 
+impl<V: View + 'static> FromIterator<V> for Stack {
+    fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
+        let content: Vec<BoxView> = iter.into_iter().map(|v| v.into_boxed()).collect();
+        Self::from(content)
+    }
+}
+
 impl Stack {
     pub fn new(views: impl IntoViews) -> Self {
         Self::from(views.into_views())
-    }
-    pub fn from_iter<Iter>(content: Iter) -> Self
-    where
-        Iter: IntoIterator,
-        Iter::Item: View,
-    {
-        let content: Vec<BoxView> = content.into_iter().map(|v| v.into_boxed()).collect();
-        Self::from(content)
     }
 
     pub fn vertical(mut self) -> Self {

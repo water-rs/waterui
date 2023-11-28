@@ -1,12 +1,17 @@
-use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
+use std::{fmt::Debug, future::Future};
 use url::Url;
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct Color {
     pub red: u8,
     pub green: u8,
     pub blue: u8,
     pub opacity: f64,
+}
+
+pub fn task(_fut: impl Future) {
+    todo!()
 }
 
 impl Color {
@@ -28,7 +33,7 @@ impl Color {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum Background {
     Default,
     Image(Url),
@@ -44,7 +49,7 @@ impl Default for Background {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub enum Resource {
     URL(Url),
     Data(Vec<u8>),
