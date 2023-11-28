@@ -1,5 +1,8 @@
 use std::fmt::Display;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::view::Alignment;
 
 use crate::view::Size;
@@ -8,7 +11,7 @@ use crate::widget;
 
 use crate::attributed_string::{AttributedString, Font};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[widget]
 pub struct Text {
     pub text: AttributedString,

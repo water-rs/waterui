@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::view::IntoViews;
 
 use crate::{
@@ -9,11 +11,11 @@ use crate::{
 pub struct Stack {
     pub alignment: Alignment,
     pub mode: DisplayMode,
-    pub content: Vec<BoxView>,
+    pub contents: Vec<BoxView>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum DisplayMode {
     Vertical,
     Horizontal,
@@ -22,7 +24,7 @@ pub enum DisplayMode {
 impl From<Vec<BoxView>> for Stack {
     fn from(value: Vec<BoxView>) -> Self {
         Self {
-            content: value,
+            contents: value,
             alignment: Alignment::Default,
             mode: DisplayMode::Vertical,
         }

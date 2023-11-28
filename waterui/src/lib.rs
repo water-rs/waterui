@@ -6,6 +6,7 @@ pub mod component;
 mod html;
 pub mod view;
 pub use view::{BoxView, View, ViewExt};
+pub mod renderer;
 pub mod utils;
 mod vdom;
 pub trait Event: 'static {

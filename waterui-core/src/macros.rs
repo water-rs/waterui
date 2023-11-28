@@ -18,7 +18,6 @@ macro_rules! impl_from {
 
 macro_rules! tuples {
     ($macro:ident) => {
-        $macro!();
         $macro!(T0);
         $macro!(T0, T1);
         $macro!(T0, T1, T2);
