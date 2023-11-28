@@ -1,13 +1,15 @@
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use waterui_core::view::{Alignment, Frame};
 
 use crate::{
     component::{stack::DisplayMode, Button, Image, Text},
-    renderer::{renderer, Visitor},
+    renderer::{render, Visitor},
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Node {
+    id: usize,
     inner: NodeInner,
     frame: Frame,
 }
@@ -15,6 +17,7 @@ pub struct Node {
 impl<T: Into<NodeInner>> From<T> for Node {
     fn from(value: T) -> Self {
         Self {
+            id: 1,
             inner: value.into(),
             frame: Frame::default(),
         }
@@ -39,55 +42,104 @@ impl_from!(NodeInner, Stack);
 pub struct Stack {
     alignment: Alignment,
     mode: DisplayMode,
-    contents_num: usize,
+    contents: Vec<Node>,
 }
 
-pub struct VDOMVisitor {
-    buf: Vec<Node>,
-}
+pub struct VDOMVisitor;
 
 impl VDOMVisitor {
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self
     }
 }
 
 #[derive(Debug)]
 pub enum Patch {
     Update(usize, Box<Node>),
+    Insert(usize, Box<Node>),
     Delete(usize),
 }
 
-pub fn diff(original: &[Node], new: &[Node]) -> Vec<Patch> {
-    let mut patch = Vec::new();
-    diff_inner(original, 0, new, 0, &mut patch);
-    patch
+impl Visitor for VDOMVisitor {
+    type Value = Node;
+
+    fn visit_empty(self) -> Self::Value {
+        NodeInner::Empty.into()
+    }
+    fn visit_text(self, text: Text) -> Self::Value {
+        text.into()
+    }
+
+    fn visit_button(self, button: Button) -> Self::Value {
+        button.into()
+    }
+
+    fn visit_stack(self, stack: crate::component::Stack) -> Self::Value {
+        Stack {
+            alignment: stack.alignment,
+            mode: stack.mode,
+            contents: stack
+                .contents
+                .into_iter()
+                .map(|content| render(content, VDOMVisitor::new()))
+                .collect_vec(),
+        }
+        .into()
+    }
+
+    fn visit_image(self, image: Image) -> Self::Value {
+        image.into()
+    }
+
+    fn visit_frameview(self, frameview: crate::component::FrameView) -> Self::Value {
+        let mut node = render(frameview.content, self);
+        node.frame = frameview.frame;
+        node
+    }
 }
 
-fn diff_inner(
-    original: &[Node],
-    original_head: usize,
-    new: &[Node],
-    new_head: usize,
-    patch: &mut Vec<Patch>,
-) {
-    let left = &original[original_head];
-    if let Some(right) = new.get(new_head) {
-        if !shallow_eq(left, right) {
-            patch.push(Patch::Update(
-                original_head,
-                Box::new(new[new_head].clone()),
-            ))
-        }
-        if let NodeInner::Stack(_stack) = &left.inner {
-            if let NodeInner::Stack(new_stack) = &right.inner {
-                for i in 1..=new_stack.contents_num {
-                    diff_inner(original, original_head + i, new, new_head + i, patch);
+impl Node {
+    pub fn diff(&self, new: &Node) -> Vec<Patch> {
+        let mut patch = Vec::new();
+        diff_inner(self, new, &mut patch);
+        patch
+    }
+}
+
+fn diff_inner(old: &Node, new: &Node, patch: &mut Vec<Patch>) {
+    if !shallow_eq(old, new) {
+        patch.push(Patch::Update(old.id, Box::new(new.clone())))
+    }
+
+    if let NodeInner::Stack(stack) = &old.inner {
+        if let NodeInner::Stack(new_stack) = &new.inner {
+            let stack_len = stack.contents.len();
+            let new_stack_len = new_stack.contents.len();
+            if stack_len >= new_stack_len {
+                for i in 0..stack_len {
+                    let old = &stack.contents[i];
+                    let new = if let Some(new) = new_stack.contents.get(i) {
+                        new
+                    } else {
+                        patch.push(Patch::Delete(i));
+                        continue;
+                    };
+                    diff_inner(old, new, patch);
+                }
+            } else {
+                for i in 0..new_stack_len {
+                    let new = &new_stack.contents[i];
+                    let old = if let Some(old) = stack.contents.get(i) {
+                        old
+                    } else {
+                        println!("!");
+                        patch.push(Patch::Insert(i, Box::new(new.clone())));
+                        continue;
+                    };
+                    diff_inner(old, new, patch);
                 }
             }
         }
-    } else {
-        patch.push(Patch::Delete(original_head))
     }
 }
 
@@ -108,56 +160,6 @@ fn shallow_eq(left: &Node, right: &Node) -> bool {
     }
 }
 
-impl Visitor for VDOMVisitor {
-    type Value = Vec<Node>;
-
-    fn visit_empty(mut self) -> Self::Value {
-        self.buf.push(NodeInner::Empty.into());
-        self.buf
-    }
-    fn visit_text(mut self, text: Text) -> Self::Value {
-        self.buf.push(text.into());
-        self.buf
-    }
-
-    fn visit_button(mut self, button: Button) -> Self::Value {
-        self.buf.push(button.into());
-        self.buf
-    }
-
-    fn visit_stack(self, stack: crate::component::Stack) -> Self::Value {
-        let mut visitor = self;
-        let len = stack.contents.len();
-
-        visitor.buf.push(
-            Stack {
-                alignment: stack.alignment,
-                mode: stack.mode,
-                contents_num: len,
-            }
-            .into(),
-        );
-        for content in stack.contents {
-            visitor = Self {
-                buf: renderer(content, visitor),
-            };
-        }
-
-        visitor.buf
-    }
-
-    fn visit_image(mut self, image: Image) -> Self::Value {
-        self.buf.push(image.into());
-        self.buf
-    }
-
-    fn visit_frameview(self, frameview: crate::component::FrameView) -> Self::Value {
-        let mut buf = renderer(frameview.content, self);
-        buf.last_mut().unwrap().frame = frameview.frame;
-        buf
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
@@ -165,8 +167,7 @@ mod test {
             stack::{hstack, vstack},
             text, DatePicker,
         },
-        renderer::renderer,
-        vdom::diff,
+        renderer::render,
         ViewExt,
     };
 
@@ -175,10 +176,11 @@ mod test {
     #[test]
     fn test() {
         let view = vstack(());
-        let view2 = vstack(vstack((vstack(()), text("233"))));
+        let view2 = DatePicker::now();
 
-        let output = renderer(view.into_boxed(), VDOMVisitor::new());
-        let output2 = renderer(view2.into_boxed(), VDOMVisitor::new());
-        println!("{:?}", diff(&output, &output2));
+        let output = render(view.into_boxed(), VDOMVisitor::new());
+        let output2 = render(view2.into_boxed(), VDOMVisitor::new());
+        let diff = output.diff(&output2);
+        println!("{diff:?}");
     }
 }
