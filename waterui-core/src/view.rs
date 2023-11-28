@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::binding::BoxSubscriber;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub enum Alignment {
     Default,
@@ -77,6 +77,15 @@ macro_rules! impl_view_builder {
 
 tuples!(impl_view_builder);
 
+impl<F, V: View + 'static> ViewBuilder<V, ()> for F
+where
+    F: Fn() -> V,
+{
+    fn build(&self, _context: ()) -> V {
+        (self)()
+    }
+}
+
 pub trait IntoViews {
     fn into_views(self) -> Vec<BoxView>;
 }
@@ -91,9 +100,10 @@ macro_rules! impl_tuple_views {
     ($($ty:ident),*) => {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
-        impl <$($ty:View+'static,)*>IntoViews for ($($ty,)*){
+        #[allow(unused_parens)]
+        impl <$($ty:View+'static,)*>IntoViews for ($($ty),*){
             fn into_views(self) -> Vec<BoxView> {
-                let ($($ty,)*)=self;
+                let ($($ty),*)=self;
                 vec![$(Box::new($ty)),*]
             }
         }
@@ -121,7 +131,7 @@ mod sealed {
     pub struct Sealed;
 }
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[repr(C)]
 pub struct Frame {
     pub width: Size,

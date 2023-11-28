@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::view::Size;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+
 pub struct AttributedString {
     text: String,
     attributes: Vec<(Range<usize>, Attribute)>,
@@ -150,14 +151,16 @@ impl Add<AttributedString> for AttributedString {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
+
 pub enum Attribute {
     Font(Font),
 }
 
 impl_from!(Attribute, Font);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
+
 pub struct Font {
     name: Cow<'static, str>,
     bold: bool,
