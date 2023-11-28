@@ -14,11 +14,11 @@ pub trait Visitor {
     where
         Self: Sized,
     {
-        renderer(view.view(), self)
+        render(view.view(), self)
     }
 }
 
-pub fn renderer<V: Visitor>(mut view: BoxView, visitor: V) -> V::Value {
+pub fn render<V: Visitor>(mut view: BoxView, visitor: V) -> V::Value {
     match view.downcast::<()>() {
         Ok(text) => return visitor.visit_empty(),
         Err(boxed) => view = boxed,
@@ -49,7 +49,7 @@ pub fn renderer<V: Visitor>(mut view: BoxView, visitor: V) -> V::Value {
     }
 
     match view.downcast::<BoxView>() {
-        Ok(view) => return renderer(*view, visitor),
+        Ok(view) => return render(*view, visitor),
         Err(boxed) => view = boxed,
     }
 
