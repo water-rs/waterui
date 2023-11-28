@@ -275,7 +275,7 @@ impl HtmlRenderer {
 
             tag.extend_head(&mut state.buf);
 
-            for view in view.content {
+            for view in view.contents {
                 renderer.call(view, state);
             }
             tag.extend_tail(&mut state.buf);
