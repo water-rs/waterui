@@ -8,11 +8,8 @@
 use proc_macro::TokenStream;
 
 use proc_macro2::Span;
-use quote::quote;
-use syn::{
-    parse, parse::Nothing, token::Colon, Error, Field, Fields, Ident, ImplItem, ImplItemFn,
-    ItemImpl, ItemStruct,
-};
+use quote::{quote, ToTokens};
+use syn::{parse, parse::Nothing, Error, Ident, ImplItemFn, ItemImpl, ItemStruct, Type};
 
 #[proc_macro_attribute]
 pub fn widget(attribute: TokenStream, item: TokenStream) -> TokenStream {
@@ -24,33 +21,38 @@ pub fn widget(attribute: TokenStream, item: TokenStream) -> TokenStream {
 
 fn widget_inner(attribute: TokenStream, input: TokenStream) -> Result<TokenStream, Error> {
     let _: Nothing = parse(attribute)?;
-    match parse(input.clone()) {
-        Ok(input) => return Ok(widget_struct(input)?),
-        _ => {}
+    if let Ok(input) = parse(input.clone()) {
+        return widget_struct(input);
     }
 
     widget_impl(parse(input)?)
 }
 
 fn widget_impl(mut input: ItemImpl) -> Result<TokenStream, Error> {
+    let mut stream = TokenStream::new();
+    let generics = input.generics.clone();
+    let (_impl_generics, _ty_generics, _where_clause) = generics.split_for_impl();
+
     for item in &mut input.items {
         match item {
             syn::ImplItem::Fn(f) => {
                 let view = Ident::new("view", Span::call_site());
 
                 let sig = f.sig.clone();
-                let mut user_f = f.clone();
-                user_f.sig.ident = Ident::new("__view", Span::call_site());
-                let ty = *input.self_ty.clone();
+                let mut return_ty: Type = match sig.output {
+                    syn::ReturnType::Default => parse(quote!(()).into())?,
+                    syn::ReturnType::Type(_, ty) => *ty,
+                };
+                if let Type::ImplTrait(_impltrait) = return_ty {
+                    return_ty = parse(quote!(_).into())?;
+                }
+                let block = f.block.clone();
                 if sig.ident == view {
                     let new_f: ImplItemFn = parse(
-                        quote! {fn view(&mut self) -> ::waterui_core::view::BoxView{
-
-                            impl #ty{
-                                #user_f
-                            }
-
-                            Box::new(self.__view())
+                        quote! {fn view(&self) -> ::waterui_core::view::BoxView{
+                            let __view:#return_ty={#block};
+                            let __check:&dyn ::waterui_core::view::View=&__view;
+                            Box::new(__view)
                         }}
                         .into(),
                     )?;
@@ -62,23 +64,18 @@ fn widget_impl(mut input: ItemImpl) -> Result<TokenStream, Error> {
         }
     }
 
-    let frame_impl: ImplItem =
-        parse(quote! {fn frame(&self) -> ::waterui_core::view::Frame{self.frame.clone()}}.into())?;
-    let set_frame_impl: ImplItem = parse(
-        quote! { fn set_frame(&mut self,frame: ::waterui_core::view::Frame){self.frame = frame;} }
-            .into(),
-    )?;
+    stream.extend::<TokenStream>(input.into_token_stream().into());
 
-    input.items.push(frame_impl);
-    input.items.push(set_frame_impl);
-
-    Ok(quote!(#input).into())
+    Ok(stream)
 }
 
 fn widget_struct(mut input: ItemStruct) -> Result<TokenStream, Error> {
     let mut state_field = Vec::new();
 
     let struct_name = input.ident.clone();
+    let generics = input.generics.clone();
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let mut output = TokenStream::new();
 
     for field in input.fields.iter_mut() {
@@ -103,28 +100,10 @@ fn widget_struct(mut input: ItemStruct) -> Result<TokenStream, Error> {
         }
     }
 
-    let frame = Field {
-        attrs: Vec::new(),
-        vis: syn::Visibility::Inherited,
-        mutability: syn::FieldMutability::None,
-        ident: Some(Ident::new("frame", Span::call_site())),
-        colon_token: Some(Colon::default()),
-        ty: parse(quote!(::waterui_core::view::Frame).into())?,
-    };
-
-    let fields;
-
-    match &mut input.fields {
-        Fields::Named(named_fields) => fields = named_fields,
-        _ => unreachable!(),
-    }
-
-    fields.named.push(frame);
-
     output.extend::<TokenStream>(
         quote! {
             #input
-            impl ::waterui_core::view::Reactive for #struct_name{
+            impl #impl_generics ::waterui_core::view::Reactive for #struct_name #ty_generics #where_clause{
                 fn is_reactive(&self) -> bool {
                     true
                 }

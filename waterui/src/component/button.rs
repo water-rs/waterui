@@ -15,7 +15,6 @@ impl Button {
             label: label.into(),
             background: Background::default(),
             padding: Edge::default(),
-            frame: Default::default(),
         }
     }
 

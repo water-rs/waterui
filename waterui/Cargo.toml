@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.31"
 itertools = "0.12.0"
-url = "2.4.1"
-waterui-derive = {path = "../waterui-derive"}
-waterui-core = {path="../waterui-core"}
+url = { version = "2.4.1", features = ["serde"]}
+waterui-derive = { path = "../waterui-derive"}
+waterui-core = { path = "../waterui-core"}
+serde = "1.0.193"
