@@ -3,13 +3,13 @@ use waterui_derive::widget;
 
 use crate::view::{Frame, ViewExt};
 
-#[widget]
+#[widget(use_core)]
 pub struct FrameView {
     pub frame: Frame,
     pub content: BoxView,
 }
 
-#[widget]
+#[widget(use_core)]
 impl View for FrameView {
     fn view(&self) {}
 }

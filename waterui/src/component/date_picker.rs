@@ -6,7 +6,7 @@ use chrono::{DateTime, Datelike, Days, Local, Weekday};
 use itertools::Itertools;
 use text::Text;
 
-#[widget]
+#[widget(use_core)]
 pub struct DatePicker {
     date: Binding<DateTime<Local>>,
 }
@@ -21,9 +21,9 @@ impl DatePicker {
     }
 }
 
-#[widget]
+#[widget(use_core)]
 impl View for DatePicker {
-    fn view(&mut self) -> Stack {
+    fn view(&self) -> Stack {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;

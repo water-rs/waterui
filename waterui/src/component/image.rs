@@ -5,7 +5,7 @@ use crate::widget;
 use crate::utils::Resource;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget]
+#[widget(use_core)]
 pub struct Image {
     pub resource: Resource,
 }

@@ -1,6 +1,6 @@
 use crate::{view::BoxView, widget, BoxEvent};
 
-#[widget]
+#[widget(use_core)]
 pub struct TapGesture {
     pub view: BoxView,
     pub event: BoxEvent,
