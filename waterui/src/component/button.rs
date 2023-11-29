@@ -7,9 +7,9 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[widget]
 pub struct Button {
-    pub background: Background,
-    pub padding: Edge,
-    pub label: AttributedString,
+    background: Background,
+    padding: Edge,
+    label: AttributedString,
 }
 
 impl Button {
@@ -27,6 +27,11 @@ impl Button {
 
     pub fn padding(mut self, padding: Edge) -> Self {
         self.padding = padding;
+        self
+    }
+
+    pub fn label(mut self, label: AttributedString) -> Self {
+        self.label = label;
         self
     }
 

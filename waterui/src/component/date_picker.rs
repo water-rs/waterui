@@ -61,23 +61,3 @@ impl View for DatePicker {
         ))
     }
 }
-
-#[cfg(test)]
-mod test {
-
-    use std::time::Instant;
-
-    use crate::html::HtmlRenderer;
-
-    use super::DatePicker;
-
-    #[test]
-    fn test() {
-        let start = Instant::now();
-
-        let s = HtmlRenderer::new().renderer(Box::new(DatePicker::now()));
-        let duration = start.elapsed();
-        println!("{s}");
-        println!("Duration:{duration:?}");
-    }
-}

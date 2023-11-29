@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, future::Future};
 use url::Url;
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Color {
     pub red: u8,
     pub green: u8,
@@ -32,8 +31,7 @@ impl Color {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum Background {
     Default,
     Image(Url),
