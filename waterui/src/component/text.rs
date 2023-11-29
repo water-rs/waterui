@@ -12,7 +12,7 @@ use crate::widget;
 use crate::attributed_string::{AttributedString, Font};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget]
+#[widget(use_core)]
 pub struct Text {
     pub text: AttributedString,
     pub alignment: Alignment,

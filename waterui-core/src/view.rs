@@ -23,10 +23,22 @@ pub enum Alignment {
 #[repr(C)]
 pub enum Size {
     Default,
-    Px(u16),
+    Px(usize),
     Percent(f64),
     Maximum(usize),
     Minimum(usize),
+}
+
+impl Size {
+    pub fn to_px(self, parent: usize) -> Option<usize> {
+        match self {
+            Size::Default => None,
+            Size::Px(px) => Some(px),
+            Size::Percent(percent) => Some((parent as f64 * percent) as usize),
+            Size::Maximum(maximum) => Some(maximum.min(parent)),
+            Size::Minimum(minimum) => Some(minimum.min(minimum)),
+        }
+    }
 }
 
 impl Default for Size {
@@ -35,7 +47,7 @@ impl Default for Size {
     }
 }
 
-impl_from!(Size, u16, Px);
+impl_from!(Size, usize, Px);
 
 pub trait View: Reactive {
     fn view(&self) -> BoxView;
