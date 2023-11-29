@@ -155,7 +155,7 @@ impl Add<AttributedString> for AttributedString {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 
 pub enum Attribute {
     Font(Font),
@@ -163,7 +163,7 @@ pub enum Attribute {
 
 impl_from!(Attribute, Font);
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 
 pub struct Font {
     name: Cow<'static, str>,
