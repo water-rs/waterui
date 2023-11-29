@@ -1,61 +1,42 @@
-use std::sync::{Mutex, RwLock};
-
-use waterui_core::view::Frame;
+use std::marker::PhantomData;
 
 use crate::{
+    ffi::FFIWindowManager,
     view::{BoxView, View},
     ViewExt,
 };
 
 #[derive(Debug, Clone)]
-pub struct Window {
+pub struct Window<Manager: WindowManager = GlobalManager> {
     id: usize,
+    _marker: PhantomData<Manager>,
 }
 
 pub trait WindowManager: Send + Sync {
-    fn create(&mut self, view: BoxView) -> Window;
-    fn frame(&self, window: &Window) -> Frame;
-    fn set_frame(&self, frame: Frame);
-    fn close(&mut self, window: Window);
+    fn create(view: BoxView) -> usize;
+
+    fn close(id: usize);
 }
 
-pub struct UnimplementedWindowManager;
+type GlobalManager = FFIWindowManager;
 
-impl WindowManager for UnimplementedWindowManager {
-    fn create(&mut self, _view: BoxView) -> Window {
-        todo!()
-    }
-
-    fn set_frame(&self, _frame: Frame) {
-        todo!()
-    }
-
-    fn frame(&self, _window: &Window) -> Frame {
-        todo!()
-    }
-
-    fn close(&mut self, _window: Window) {
-        todo!()
-    }
-}
-
-pub static GLOBAL_MANAGER: RwLock<UnimplementedWindowManager> =
-    RwLock::new(UnimplementedWindowManager);
-
-impl Window {
+impl<Manager: WindowManager> Window<Manager> {
     pub fn new(view: impl View + 'static) -> Self {
-        GLOBAL_MANAGER.write().unwrap().create(view.into_boxed())
+        Self::from_raw(Manager::create(view.into_boxed()))
     }
 
-    pub fn frame(&self) -> Frame {
-        GLOBAL_MANAGER.read().unwrap().frame(self)
+    pub fn id(&self) -> usize {
+        self.id
     }
 
-    pub fn set_frame(&self, frame: Frame) {
-        GLOBAL_MANAGER.write().unwrap().set_frame(frame)
+    pub fn from_raw(id: usize) -> Self {
+        Self {
+            id,
+            _marker: PhantomData,
+        }
     }
 
     pub fn close(self) {
-        GLOBAL_MANAGER.write().unwrap().close(self);
+        Manager::close(self.id)
     }
 }

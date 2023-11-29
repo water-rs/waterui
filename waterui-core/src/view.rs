@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::binding::BoxSubscriber;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(C)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Alignment {
     Default,
     Leading,
@@ -19,7 +19,7 @@ pub enum Alignment {
     Trailing,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[repr(C)]
 pub enum Size {
     Default,
@@ -133,14 +133,16 @@ mod sealed {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[repr(C)]
+
 pub struct Frame {
     pub width: Size,
     pub height: Size,
     pub margin: Edge,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
 #[repr(C)]
+
 pub struct Edge {
     pub top: Size,
     pub right: Size,

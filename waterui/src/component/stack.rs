@@ -14,7 +14,6 @@ pub struct Stack {
     pub contents: Vec<BoxView>,
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum DisplayMode {
     Vertical,

@@ -20,7 +20,7 @@ pub trait Visitor {
 
 pub fn render<V: Visitor>(mut view: BoxView, visitor: V) -> V::Value {
     match view.downcast::<()>() {
-        Ok(text) => return visitor.visit_empty(),
+        Ok(_) => return visitor.visit_empty(),
         Err(boxed) => view = boxed,
     }
     match view.downcast() {
