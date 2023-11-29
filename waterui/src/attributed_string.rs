@@ -44,6 +44,10 @@ impl AttributedString {
         }
     }
 
+    pub fn into_plain(self) -> String {
+        self.text
+    }
+
     pub fn attribute(
         mut self,
         range: impl RangeBounds<usize>,

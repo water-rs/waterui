@@ -9,9 +9,9 @@ use crate::{
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Node {
-    id: usize,
-    inner: NodeInner,
-    frame: Frame,
+    pub(crate) id: usize,
+    pub(crate) inner: NodeInner,
+    pub(crate) frame: Frame,
 }
 
 impl<T: Into<NodeInner>> From<T> for Node {
@@ -163,10 +163,7 @@ fn shallow_eq(left: &Node, right: &Node) -> bool {
 #[cfg(test)]
 mod test {
     use crate::{
-        component::{
-            stack::{hstack, vstack},
-            text, DatePicker,
-        },
+        component::{stack::vstack, DatePicker},
         renderer::render,
         ViewExt,
     };

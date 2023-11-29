@@ -3,12 +3,14 @@ mod macros;
 pub mod attributed_string;
 pub use waterui_core::binding::{self, Binding};
 pub mod component;
+pub mod ffi;
 mod html;
 pub mod view;
 pub use view::{BoxView, View, ViewExt};
 pub mod renderer;
 pub mod utils;
 mod vdom;
+mod window;
 pub trait Event: 'static {
     fn call_event(&self);
 }
