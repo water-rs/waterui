@@ -7,7 +7,7 @@ use crate::{
     widget, View,
 };
 
-#[widget]
+#[widget(use_core)]
 pub struct Stack {
     pub alignment: Alignment,
     pub mode: DisplayMode,

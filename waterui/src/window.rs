@@ -18,13 +18,15 @@ pub trait WindowManager: Send + Sync {
     fn close(id: usize);
 }
 
-type GlobalManager = FFIWindowManager;
+pub type GlobalManager = FFIWindowManager;
+
+impl Window<GlobalManager> {
+    pub fn new(view: impl View + 'static) -> Self {
+        Self::from_raw(GlobalManager::create(view.into_boxed()))
+    }
+}
 
 impl<Manager: WindowManager> Window<Manager> {
-    pub fn new(view: impl View + 'static) -> Self {
-        Self::from_raw(Manager::create(view.into_boxed()))
-    }
-
     pub fn id(&self) -> usize {
         self.id
     }

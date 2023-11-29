@@ -5,7 +5,7 @@ use crate::{attributed_string::AttributedString, utils::Background, view::Edge};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget]
+#[widget(use_core)]
 pub struct Button {
     background: Background,
     padding: Edge,

@@ -1,4 +1,4 @@
-use waterui_core::view::{BoxView, Frame};
+use waterui_core::view::{BoxView, Frame, Size};
 
 use crate::{
     component,
@@ -64,9 +64,14 @@ impl From<vdom::Node> for Node {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn size_to_px(size: Size, parent: usize) -> isize {
+    size.to_px(parent).map(|v| v as isize).unwrap_or(-1)
+}
+
 extern "C" {
-    pub fn create_window(view: Node) -> usize;
-    pub fn close_window(id: usize);
+    pub fn __water_create_window(view: Node) -> usize;
+    pub fn __water_close_window(id: usize);
 }
 
 pub struct FFIWindowManager;
@@ -74,11 +79,12 @@ pub struct FFIWindowManager;
 impl WindowManager for FFIWindowManager {
     fn create(view: BoxView) -> usize {
         let node = render(view, VDOMVisitor);
-        unsafe { create_window(Node::from(node)) }
+        println!("create window");
+        unsafe { __water_create_window(Node::from(node)) }
     }
     fn close(id: usize) {
         unsafe {
-            close_window(id);
+            __water_close_window(id);
         }
     }
 }

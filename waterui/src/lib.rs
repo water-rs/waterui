@@ -9,7 +9,7 @@ pub mod ffi;
 pub mod renderer;
 pub mod utils;
 mod vdom;
-mod window;
+pub mod window;
 pub use window::Window;
 pub trait Event: 'static {
     fn call_event(&self);

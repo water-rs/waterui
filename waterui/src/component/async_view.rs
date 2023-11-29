@@ -1,10 +1,9 @@
+use crate::utils::task;
+use crate::widget;
 use std::fmt::Display;
 use std::future::Future;
 use std::mem::take;
 use std::ops::DerefMut;
-
-use crate::utils::task;
-use crate::widget;
 use waterui_core::binding::Binding;
 use waterui_core::view::{BoxView, ViewBuilder};
 
@@ -15,7 +14,7 @@ use std::error::Error as StdError;
 use super::stack::vstack;
 use super::{text, Stack};
 type BoxError = Box<dyn StdError>;
-#[widget]
+#[widget(use_core)]
 pub struct AsyncView<MainView, LoadingView, ErrorView> {
     view: Binding<AsyncViewState<MainView>>,
     loading_view: Box<dyn ViewBuilder<LoadingView, ()>>,
@@ -39,12 +38,12 @@ impl<V> Default for AsyncViewState<V> {
 type BoxErrorViewBuilder<V> = Box<dyn for<'a> ViewBuilder<V, (BoxError, &'a dyn Fn())>>;
 
 #[derive(Debug, Clone)]
-#[widget]
+#[widget(use_core)]
 struct LoadingPage;
 
-#[widget]
+#[widget(use_core)]
 impl View for LoadingPage {
-    fn view(&mut self) -> impl View {
+    fn view(&self) -> impl View {
         text("Loading...")
     }
 }
@@ -77,7 +76,7 @@ where
     }
 }
 
-#[widget]
+#[widget(use_core)]
 struct ErrorPage {
     message: String,
 }
@@ -90,18 +89,18 @@ impl ErrorPage {
     }
 }
 
-#[widget]
+#[widget(use_core)]
 impl View for ErrorPage {
     fn view(&self) -> Stack {
         vstack((text("Oop! Something is wrong"), text(&self.message)))
     }
 }
 
-#[widget]
+#[widget(use_core)]
 impl<MainView: View + 'static, LoadingView: View + 'static, ErrorView: View + 'static> View
     for AsyncView<MainView, LoadingView, ErrorView>
 {
-    fn view(&mut self) -> BoxView {
+    fn view(&self) -> BoxView {
         match take(self.view.get_mut().deref_mut()) {
             AsyncViewState::Initial => {
                 (self.retry)();
