@@ -31,7 +31,7 @@ impl From<Vec<BoxView>> for Stack {
 
 impl<V: View + 'static> FromIterator<V> for Stack {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let content: Vec<BoxView> = iter.into_iter().map(|v| v.into_boxed()).collect();
+        let content: Vec<BoxView> = iter.into_iter().map(|v| v.boxed()).collect();
         Self::from(content)
     }
 }
