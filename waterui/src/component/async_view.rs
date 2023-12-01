@@ -1,5 +1,5 @@
 use crate::utils::task;
-use crate::widget;
+use crate::view;
 use std::fmt::Display;
 use std::future::Future;
 use std::mem::take;
@@ -14,7 +14,7 @@ use std::error::Error as StdError;
 use super::stack::vstack;
 use super::{text, Stack};
 type BoxError = Box<dyn StdError>;
-#[widget(use_core)]
+#[view(use_core)]
 pub struct AsyncView<MainView, LoadingView, ErrorView> {
     view: Binding<AsyncViewState<MainView>>,
     loading_view: Box<dyn ViewBuilder<LoadingView, ()>>,
@@ -38,10 +38,10 @@ impl<V> Default for AsyncViewState<V> {
 type BoxErrorViewBuilder<V> = Box<dyn for<'a> ViewBuilder<V, (BoxError, &'a dyn Fn())>>;
 
 #[derive(Debug, Clone)]
-#[widget(use_core)]
+#[view(use_core)]
 struct LoadingPage;
 
-#[widget(use_core)]
+#[view(use_core)]
 impl View for LoadingPage {
     fn view(&self) -> impl View {
         text("Loading...")
@@ -76,7 +76,7 @@ where
     }
 }
 
-#[widget(use_core)]
+#[view(use_core)]
 struct ErrorPage {
     message: String,
 }
@@ -89,14 +89,14 @@ impl ErrorPage {
     }
 }
 
-#[widget(use_core)]
+#[view(use_core)]
 impl View for ErrorPage {
     fn view(&self) -> Stack {
         vstack((text("Oop! Something is wrong"), text(&self.message)))
     }
 }
 
-#[widget(use_core)]
+#[view(use_core)]
 impl<MainView: View + 'static, LoadingView: View + 'static, ErrorView: View + 'static> View
     for AsyncView<MainView, LoadingView, ErrorView>
 {

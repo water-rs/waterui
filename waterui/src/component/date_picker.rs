@@ -1,12 +1,12 @@
 use super::Button;
 use super::Stack;
 use super::{stack::vstack, text};
-use crate::{view::ViewExt, widget, Binding, View};
+use crate::{view, view::ViewExt, Binding, View};
 use chrono::{DateTime, Datelike, Days, Local, Weekday};
 use itertools::Itertools;
 use text::Text;
 
-#[widget(use_core)]
+#[view(use_core)]
 pub struct DatePicker {
     date: Binding<DateTime<Local>>,
 }
@@ -21,7 +21,7 @@ impl DatePicker {
     }
 }
 
-#[widget(use_core)]
+#[view(use_core)]
 impl View for DatePicker {
     fn view(&self) -> Stack {
         let first_day = self.date.get().with_day(1).unwrap();

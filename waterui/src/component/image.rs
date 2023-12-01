@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::widget;
+use crate::view;
 
 use crate::utils::Resource;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget(use_core)]
+#[view(use_core)]
 pub struct Image {
     pub resource: Resource,
 }

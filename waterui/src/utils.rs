@@ -38,6 +38,10 @@ pub enum Background {
     Color(Color),
 }
 
+pub enum Filter {
+    Blur(usize),
+}
+
 impl_from!(Background, Color);
 impl_from!(Background, Url, Image);
 

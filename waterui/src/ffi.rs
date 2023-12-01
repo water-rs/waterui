@@ -1,62 +1,118 @@
-use waterui_core::view::{BoxView, Frame, Size};
+use std::ffi::c_char;
 
-use crate::{
-    component,
-    renderer::render,
-    vdom::{self, VDOMVisitor},
-    window::WindowManager,
-};
+use crate::component::Text;
+use crate::widget::WidgetInner;
+use crate::widget::{Stack, Widget};
+use itertools::Itertools;
 
-#[repr(C)]
-pub struct Text {
-    buf: Buf,
-}
+pub type WaterUISize = crate::layout::Size;
+pub type WaterUIEdge = crate::layout::Edge;
+pub type WaterUIFrame = crate::layout::Frame;
 
 #[repr(C)]
-pub struct Buf {
-    head: *const u8,
+pub struct WaterUIBuf {
+    head: *const c_char,
     len: usize,
 }
 
-impl From<String> for Buf {
+impl From<String> for WaterUIBuf {
     fn from(value: String) -> Self {
+        let value = value.into_bytes();
+        let len = value.len();
+        let boxed = value.into_boxed_slice();
         Self {
-            head: value.as_ptr(),
-            len: value.len(),
-        }
-    }
-}
-
-impl From<component::Text> for Text {
-    fn from(value: component::Text) -> Self {
-        Self {
-            buf: value.text.into_plain().into(),
+            head: Box::into_raw(boxed) as *const i8,
+            len,
         }
     }
 }
 
 #[repr(C)]
-pub enum NodeInner {
-    Text(Text),
+pub struct WaterUIText {
+    buf: WaterUIBuf,
 }
 
 #[repr(C)]
-pub struct Node {
-    frame: Frame,
-    inner: NodeInner,
+pub struct WaterUIWidgets {
+    head: *const WaterUIWidget,
+    len: usize,
 }
 
-impl From<vdom::NodeInner> for NodeInner {
-    fn from(value: vdom::NodeInner) -> Self {
+impl From<Vec<Widget>> for WaterUIWidgets {
+    fn from(value: Vec<Widget>) -> Self {
+        let value: Vec<WaterUIWidget> = value.into_iter().map(|v| v.into()).collect_vec();
+        let len = value.len();
+        let boxed = value.into_boxed_slice();
+        Self {
+            head: Box::into_raw(boxed) as *const WaterUIWidget,
+            len,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct WaterUIStack {
+    contents: WaterUIWidgets,
+}
+
+#[repr(C)]
+pub struct WaterUIButton {
+    label: WaterUIBuf,
+}
+
+impl From<Stack> for WaterUIStack {
+    fn from(value: Stack) -> Self {
+        Self {
+            contents: value.contents.into(),
+        }
+    }
+}
+
+impl From<Text> for WaterUIText {
+    fn from(value: Text) -> Self {
+        let text: String = value.text.into_plain();
+        Self { buf: text.into() }
+    }
+}
+
+#[repr(C)]
+pub enum WaterUIWidgetInner {
+    Empty,
+    Text(WaterUIText),
+    Stack(WaterUIStack),
+}
+
+impl_from!(WaterUIWidgetInner, WaterUIText, Text);
+impl_from!(WaterUIWidgetInner, WaterUIStack, Stack);
+
+#[repr(C)]
+pub struct WaterUIWidget {
+    frame: WaterUIFrame,
+    inner: WaterUIWidgetInner,
+}
+
+impl<T: Into<WaterUIWidgetInner>> From<T> for WaterUIWidget {
+    fn from(value: T) -> Self {
+        Self {
+            frame: WaterUIFrame::default(),
+            inner: value.into(),
+        }
+    }
+}
+
+impl From<WidgetInner> for WaterUIWidgetInner {
+    fn from(value: WidgetInner) -> Self {
         match value {
-            vdom::NodeInner::Text(text) => NodeInner::Text(text.into()),
+            WidgetInner::Text(text) => WaterUIText::from(text).into(),
+            WidgetInner::Stack(stack) => WaterUIWidgetInner::Stack(stack.into()),
+            WidgetInner::Empty => WaterUIWidgetInner::Empty,
             _ => todo!(),
         }
     }
 }
 
-impl From<vdom::Node> for Node {
-    fn from(value: vdom::Node) -> Self {
+impl From<Widget> for WaterUIWidget {
+    fn from(value: Widget) -> Self {
         Self {
             frame: value.frame,
             inner: value.inner.into(),
@@ -64,27 +120,9 @@ impl From<vdom::Node> for Node {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn size_to_px(size: Size, parent: usize) -> isize {
-    size.to_px(parent).map(|v| v as isize).unwrap_or(-1)
-}
-
 extern "C" {
-    pub fn __water_create_window(view: Node) -> usize;
-    pub fn __water_close_window(id: usize);
-}
-
-pub struct FFIWindowManager;
-
-impl WindowManager for FFIWindowManager {
-    fn create(view: BoxView) -> usize {
-        let node = render(view, VDOMVisitor);
-        println!("create window");
-        unsafe { __water_create_window(Node::from(node)) }
-    }
-    fn close(id: usize) {
-        unsafe {
-            __water_close_window(id);
-        }
-    }
+    pub fn waterui_create_window(title: WaterUIBuf, widget: WaterUIWidget) -> usize;
+    pub fn waterui_window_closeable(id: usize, is: bool);
+    pub fn waterui_close_window(id: usize);
+    pub fn waterui_main() -> WaterUIWidget;
 }

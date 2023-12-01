@@ -12,7 +12,7 @@ use quote::{quote, ToTokens};
 use syn::{parse, parse::Nothing, Error, Ident, ItemImpl, ItemStruct, Meta, Type};
 #[doc(hidden)]
 #[proc_macro_attribute]
-pub fn widget(attribute: TokenStream, item: TokenStream) -> TokenStream {
+pub fn view(attribute: TokenStream, item: TokenStream) -> TokenStream {
     match widget_inner(attribute, item) {
         Ok(stream) => stream,
         Err(error) => error.into_compile_error().into(),

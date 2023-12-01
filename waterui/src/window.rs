@@ -1,44 +1,34 @@
-use std::marker::PhantomData;
-
 use crate::{
-    ffi::FFIWindowManager,
-    view::{BoxView, View},
-    ViewExt,
+    ffi::{waterui_close_window, waterui_create_window, waterui_window_closeable},
+    view::View,
+    widget::Widget,
 };
 
 #[derive(Debug, Clone)]
-pub struct Window<Manager: WindowManager = GlobalManager> {
+pub struct Window {
     id: usize,
-    _marker: PhantomData<Manager>,
 }
 
-pub trait WindowManager: Send + Sync {
-    fn create(view: BoxView) -> usize;
-
-    fn close(id: usize);
-}
-
-pub type GlobalManager = FFIWindowManager;
-
-impl Window<GlobalManager> {
-    pub fn new(view: impl View + 'static) -> Self {
-        Self::from_raw(GlobalManager::create(view.into_boxed()))
+impl Window {
+    pub fn new(title: impl Into<String>, view: impl View + 'static) -> Self {
+        let title = title.into();
+        let widget = Widget::from_view(view);
+        unsafe { Self::from_raw(waterui_create_window(title.into(), widget.into())) }
     }
-}
 
-impl<Manager: WindowManager> Window<Manager> {
     pub fn id(&self) -> usize {
         self.id
     }
 
-    pub fn from_raw(id: usize) -> Self {
-        Self {
-            id,
-            _marker: PhantomData,
-        }
+    pub fn disable_close(&self) {
+        unsafe { waterui_window_closeable(self.id, false) }
+    }
+
+    unsafe fn from_raw(id: usize) -> Self {
+        Self { id }
     }
 
     pub fn close(self) {
-        Manager::close(self.id)
+        unsafe { waterui_close_window(self.id) }
     }
 }
