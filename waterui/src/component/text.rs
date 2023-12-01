@@ -3,16 +3,14 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::view::Alignment;
+use crate::layout::{Alignment, Size};
 
-use crate::view::Size;
-
-use crate::widget;
+use crate::view;
 
 use crate::attributed_string::{AttributedString, Font};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget(use_core)]
+#[view(use_core)]
 pub struct Text {
     pub text: AttributedString,
     pub alignment: Alignment,

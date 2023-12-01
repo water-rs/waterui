@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::widget;
-use crate::{attributed_string::AttributedString, utils::Background, view::Edge};
+use crate::view;
+use crate::{attributed_string::AttributedString, layout::Edge, utils::Background};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[widget(use_core)]
+#[view(use_core)]
 pub struct Button {
     background: Background,
     padding: Edge,

@@ -1,15 +1,16 @@
-use waterui_core::view::{BoxView, Edge, Size, View};
-use waterui_derive::widget;
+use crate::layout::{Edge, Frame, Size};
+use crate::view;
+use crate::view::{BoxView, View};
 
-use crate::view::{Frame, ViewExt};
+use crate::view::ViewExt;
 
-#[widget(use_core)]
+#[view(use_core)]
 pub struct FrameView {
     pub frame: Frame,
     pub content: BoxView,
 }
 
-#[widget(use_core)]
+#[view(use_core)]
 impl View for FrameView {
     fn view(&self) {}
 }

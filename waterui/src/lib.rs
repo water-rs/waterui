@@ -1,14 +1,13 @@
 #[macro_use]
 mod macros;
 pub mod attributed_string;
-pub use waterui_core::binding::{self, Binding};
+pub use waterui_core::{binding, binding::Binding, layout};
 pub mod component;
 pub mod view;
 pub use view::{BoxView, View, ViewExt};
 pub mod ffi;
-pub mod renderer;
 pub mod utils;
-mod vdom;
+pub mod widget;
 pub mod window;
 pub use window::Window;
 pub trait Event: 'static {
@@ -24,4 +23,4 @@ where
 }
 
 pub type BoxEvent = Box<dyn Event>;
-pub use waterui_derive::widget;
+pub use waterui_derive::view;
