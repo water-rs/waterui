@@ -19,7 +19,7 @@ impl FrameView {
     pub fn new(content: impl View + 'static) -> Self {
         Self {
             frame: Frame::default(),
-            content: content.into_boxed(),
+            content: content.boxed(),
         }
     }
     pub fn width(mut self, size: impl Into<Size>) -> Self {
