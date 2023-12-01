@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::view::IntoViews;
 
 use crate::{
-    view::{Alignment, BoxView, ViewExt},
-    widget, View,
+    view,
+    view::{BoxView, ViewExt},
+    View,
 };
 
-#[widget(use_core)]
+#[view(use_core)]
 pub struct Stack {
-    pub alignment: Alignment,
     pub mode: DisplayMode,
     pub contents: Vec<BoxView>,
 }
@@ -24,7 +24,6 @@ impl From<Vec<BoxView>> for Stack {
     fn from(value: Vec<BoxView>) -> Self {
         Self {
             contents: value,
-            alignment: Alignment::Default,
             mode: DisplayMode::Vertical,
         }
     }
@@ -49,11 +48,6 @@ impl Stack {
 
     pub fn horizontal(mut self) -> Self {
         self.mode = DisplayMode::Horizontal;
-        self
-    }
-
-    pub fn alignment(mut self, alignment: Alignment) -> Self {
-        self.alignment = alignment;
         self
     }
 

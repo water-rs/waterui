@@ -8,7 +8,7 @@ use std::{
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::view::Size;
+use crate::layout::Size;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 

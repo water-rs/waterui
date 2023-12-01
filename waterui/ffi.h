@@ -1,65 +1,84 @@
 #include <stdio.h>
+#include <stdbool.h>
 
-typedef struct Buf
+typedef struct WaterUIBuf
 {
-    unsigned short *head;
+    char *head;
     size_t len;
-} Buf;
+} WaterUIBuf;
 
-typedef struct Text
-{
-    Buf buf;
-} Text;
-
-typedef struct Size
+typedef struct WaterUISize
 {
     enum
     {
         DefaultSize,
         PxSize,
         PercentSize,
-        MaximumSize,
-        MinimumSize
     } tag;
     union
     {
         size_t px;
         double percent;
-        size_t maximum;
-        size_t minimum;
     } value;
-} Size;
+} WaterUISize;
 
-typedef struct Edge
+typedef struct WaterUIEdge
 {
-    Size top;
-    Size right;
-    Size bottom;
-    Size left;
-} Edge;
+    WaterUISize top;
+    WaterUISize right;
+    WaterUISize bottom;
+    WaterUISize left;
+} WaterUIEdge;
 
-typedef struct Frame
+typedef struct WaterUIFrame
 {
 
-    Size width;
-    Size height;
-    Edge margin;
-} Frame;
+    WaterUISize width;
+    WaterUISize min_width;
+    WaterUISize max_width;
 
-typedef struct Node
+    WaterUISize height;
+    WaterUISize min_height;
+    WaterUISize max_height;
+
+    WaterUIEdge margin;
+} WaterUIFrame;
+
+typedef struct WaterUIText
 {
-    Frame frame;
+    WaterUIBuf buf;
+} WaterUIText;
+
+typedef struct WaterUIWidget WaterUIWidget;
+
+typedef struct WaterUIWidgets
+{
+    WaterUIWidget *head;
+    size_t len;
+} WaterUIWidgets;
+
+typedef struct WaterUIStack
+{
+    WaterUIWidgets contents;
+} WaterUIStack;
+
+typedef struct WaterUIWidget
+{
+    WaterUIFrame frame;
     enum
     {
-        TextNode
+        WaterUIEmptyTag,
+        WaterUITextTag,
+        WaterUIStackTag
     } tag;
     union
     {
-        Text text;
+        WaterUIText text;
+        WaterUIStack stack;
     } value;
-} Node;
+} WaterUIWidget;
 
-ssize_t size_to_px(Size size, size_t parent);
-
-size_t __water_create_window(Node view);
-void __water_init_app();
+size_t waterui_create_window(WaterUIWidget view);
+void waterui_window_closeable(size_t id, bool is);
+void waterui_close_window(size_t id);
+WaterUIWidget waterui_main();
