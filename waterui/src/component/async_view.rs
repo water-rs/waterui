@@ -104,11 +104,11 @@ impl<MainView: View + 'static, LoadingView: View + 'static, ErrorView: View + 's
         match take(self.view.get_mut().deref_mut()) {
             AsyncViewState::Initial => {
                 (self.retry)();
-                self.loading_view.build(()).into_boxed()
+                self.loading_view.build(()).boxed()
             }
-            AsyncViewState::Loading => self.loading_view.build(()).into_boxed(),
-            AsyncViewState::Ready(view) => view.into_boxed(),
-            AsyncViewState::Fail(error) => self.error_view.build((error, &self.retry)).into_boxed(),
+            AsyncViewState::Loading => self.loading_view.build(()).boxed(),
+            AsyncViewState::Ready(view) => view.boxed(),
+            AsyncViewState::Fail(error) => self.error_view.build((error, &self.retry)).boxed(),
         }
     }
 }

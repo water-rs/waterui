@@ -63,7 +63,7 @@ pub trait ViewExt {
     fn width(self, size: impl Into<Size>) -> FrameView;
     fn height(self, size: impl Into<Size>) -> FrameView;
 
-    fn into_boxed(self) -> BoxView;
+    fn boxed(self) -> BoxView;
 }
 
 impl<V: View + 'static> ViewExt for V {
@@ -79,7 +79,7 @@ impl<V: View + 'static> ViewExt for V {
         FrameView::new(self).height(size)
     }
 
-    fn into_boxed(self) -> BoxView {
+    fn boxed(self) -> BoxView {
         Box::new(self)
     }
 }
