@@ -1,68 +1,44 @@
-use serde::{Deserialize, Serialize};
-
 use crate::view::IntoViews;
 
 use crate::{
-    view,
     view::{BoxView, ViewExt},
     View,
 };
 
-#[view(use_core)]
-pub struct Stack {
-    pub mode: DisplayMode,
-    pub contents: Vec<BoxView>,
+macro_rules! impl_frame {
+    ($($ty:ident),*) => {
+        $(
+            pub struct $ty {
+                pub(crate)contents: Vec<BoxView>,
+            }
+
+            impl<V: View + 'static> FromIterator<V> for $ty {
+                fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
+                    let content: Vec<BoxView> = iter.into_iter().map(|v| v.boxed()).collect();
+                    Self::new(content)
+                }
+            }
+
+            impl $ty {
+                pub fn new(views: impl IntoViews) -> Self {
+                    let contents = views.into_views();
+                    Self { contents }
+                }
+            }
+        )*
+
+    };
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub enum DisplayMode {
-    Vertical,
-    Horizontal,
+impl_frame!(VStack, HStack);
+
+pub fn vstack(contents: impl IntoViews) -> VStack {
+    VStack::new(contents)
 }
 
-impl From<Vec<BoxView>> for Stack {
-    fn from(value: Vec<BoxView>) -> Self {
-        Self {
-            contents: value,
-            mode: DisplayMode::Vertical,
-        }
-    }
+pub fn hstack(views: impl IntoViews) -> HStack {
+    HStack::new(views)
 }
 
-impl<V: View + 'static> FromIterator<V> for Stack {
-    fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let content: Vec<BoxView> = iter.into_iter().map(|v| v.boxed()).collect();
-        Self::from(content)
-    }
-}
-
-impl Stack {
-    pub fn new(views: impl IntoViews) -> Self {
-        Self::from(views.into_views())
-    }
-
-    pub fn vertical(mut self) -> Self {
-        self.mode = DisplayMode::Vertical;
-        self
-    }
-
-    pub fn horizontal(mut self) -> Self {
-        self.mode = DisplayMode::Horizontal;
-        self
-    }
-
-    pub fn mode(mut self, mode: DisplayMode) -> Self {
-        self.mode = mode;
-        self
-    }
-}
-
-pub fn vstack(views: impl IntoViews) -> Stack {
-    Stack::new(views).vertical()
-}
-
-pub fn hstack(views: impl IntoViews) -> Stack {
-    Stack::new(views).horizontal()
-}
-
-native_implement!(Stack);
+native_implement!(VStack);
+native_implement!(HStack);

@@ -1,10 +1,12 @@
 macro_rules! native_implement {
     ($ty:ty) => {
         impl crate::View for $ty {
-            fn view(self) -> crate::view::BoxView {
+            fn view(&self) -> crate::view::BoxView {
                 panic!("[Native implement]");
             }
         }
+
+        impl crate::view::Reactive for $ty {}
     };
 }
 

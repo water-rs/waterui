@@ -85,7 +85,7 @@ fn widget_struct(mut input: ItemStruct, root: Ident) -> Result<TokenStream, Erro
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let mut output = TokenStream::new();
-
+    let mut reactive = false;
     for field in input.fields.iter_mut() {
         let state = field
             .attrs
@@ -93,6 +93,7 @@ fn widget_struct(mut input: ItemStruct, root: Ident) -> Result<TokenStream, Erro
             .filter(|attribute| {
                 if let Some(name) = attribute.meta.path().get_ident() {
                     let state = Ident::new("state", Span::call_site());
+                    reactive = true;
                     *name == state
                 } else {
                     false
@@ -113,7 +114,7 @@ fn widget_struct(mut input: ItemStruct, root: Ident) -> Result<TokenStream, Erro
             #input
             impl #impl_generics ::#root::view::Reactive for #struct_name #ty_generics #where_clause{
                 fn is_reactive(&self) -> bool {
-                    true
+                    #reactive
                 }
 
                 fn subscribe(&self, subscriber: fn() -> ::#root::binding::BoxSubscriber) {

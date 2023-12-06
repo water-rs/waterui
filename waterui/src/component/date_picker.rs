@@ -1,5 +1,6 @@
 use super::Button;
-use super::Stack;
+use super::HStack;
+use super::VStack;
 use super::{stack::vstack, text};
 use crate::{view, view::ViewExt, Binding, View};
 use chrono::{DateTime, Datelike, Days, Local, Weekday};
@@ -8,7 +9,8 @@ use text::Text;
 
 #[view(use_core)]
 pub struct DatePicker {
-    date: Binding<DateTime<Local>>,
+    #[state]
+    date: DateTime<Local>,
 }
 
 impl DatePicker {
@@ -23,7 +25,7 @@ impl DatePicker {
 
 #[view(use_core)]
 impl View for DatePicker {
-    fn view(&self) -> Stack {
+    fn view(&self) -> VStack {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;
@@ -45,7 +47,7 @@ impl View for DatePicker {
                 Text::display(Weekday::try_from(n as u8).unwrap())
                     .size(13)
                     .disable_select(),
-                Stack::from_iter(
+                VStack::from_iter(
                     chunk
                         .into_iter()
                         .map(|v| Button::display(v).width(30).height(30)),
@@ -57,7 +59,7 @@ impl View for DatePicker {
             text(self.date.get().format("%B %e").to_string())
                 .bold()
                 .leading(),
-            Stack::from_iter(day_iter).horizontal(),
+            HStack::from_iter(day_iter),
         ))
     }
 }

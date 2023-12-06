@@ -1,0 +1,6 @@
+language = "C"
+[enum]
+prefix_with_name = true
+
+[export]
+prefix = "WaterUI"
