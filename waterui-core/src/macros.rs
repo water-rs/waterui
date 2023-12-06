@@ -1,18 +1,12 @@
-macro_rules! impl_from {
-    ($enum_ty:ty,$ty:tt) => {
-        impl From<$ty> for $enum_ty {
-            fn from(value: $ty) -> Self {
-                Self::$ty(value)
+macro_rules! native_implement {
+    ($ty:ty) => {
+        impl crate::view::View for $ty {
+            fn view(&self) -> crate::view::BoxView {
+                panic!("[Native implement]");
             }
         }
-    };
 
-    ($enum_ty:ty,$ty:ty,$variant_name:ident) => {
-        impl From<$ty> for $enum_ty {
-            fn from(value: $ty) -> Self {
-                Self::$variant_name(value)
-            }
-        }
+        impl crate::view::Reactive for $ty {}
     };
 }
 

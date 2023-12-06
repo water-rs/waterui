@@ -3,25 +3,20 @@ use std::fmt::Display;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::layout::{Alignment, Size};
-
-use crate::view;
+use crate::layout::Size;
 
 use crate::attributed_string::{AttributedString, Font};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[view(use_core)]
 pub struct Text {
-    pub text: AttributedString,
-    pub alignment: Alignment,
-    pub selectable: bool,
+    pub(crate) text: AttributedString,
+    pub(crate) selectable: bool,
 }
 
 impl Text {
     pub fn new(text: impl Into<AttributedString>) -> Self {
         Self {
             text: text.into(),
-            alignment: Alignment::Default,
             selectable: true,
         }
     }
@@ -33,11 +28,6 @@ impl Text {
 
     pub fn display(value: impl Display) -> Self {
         Self::new(value.to_string())
-    }
-
-    pub fn leading(mut self) -> Self {
-        self.alignment = Alignment::Leading;
-        self
     }
 
     pub fn bold(mut self) -> Self {
