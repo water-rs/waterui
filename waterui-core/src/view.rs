@@ -6,7 +6,7 @@ use std::{
 
 use crate::binding::BoxSubscriber;
 pub trait View: Reactive {
-    fn view(self) -> BoxView;
+    fn view(&self) -> BoxView;
 
     fn name(&self) -> &'static str {
         type_name::<Self>()
@@ -18,42 +18,6 @@ pub trait View: Reactive {
         Self: 'static,
     {
         TypeId::of::<Self>()
-    }
-}
-
-pub trait ViewBuilder<T = ()> {
-    type Output: View + 'static;
-    fn build(&self, context: T) -> Self::Output;
-}
-
-macro_rules! impl_view_builder {
-    ($($ty:ident),*) => {
-        #[allow(non_snake_case)]
-        #[allow(unused_variables)]
-        impl<F,V:View+'static,$($ty,)*> ViewBuilder<($($ty,)*)> for F
-        where
-            F: Fn($($ty,)*) -> V,
-        {
-            type Output=V;
-            #[allow(unused_variables)]
-            fn build(&self, context: ($($ty,)*)) -> V {
-                let ($($ty,)*)=context;
-                (self)($($ty,)*)
-            }
-        }
-
-    };
-}
-
-tuples!(impl_view_builder);
-
-impl<F, V: View + 'static> ViewBuilder<()> for F
-where
-    F: Fn() -> V,
-{
-    type Output = V;
-    fn build(&self, _context: ()) -> V {
-        (self)()
     }
 }
 
@@ -83,13 +47,7 @@ macro_rules! impl_tuple_views {
 
 tuples!(impl_tuple_views);
 
-impl View for () {
-    fn view(self) -> crate::view::BoxView {
-        panic!("[Native implement]");
-    }
-}
-
-impl Reactive for () {}
+native_implement!(());
 
 pub trait Reactive {
     fn subscribe(&self, _subscriber: fn() -> BoxSubscriber) {}
@@ -131,13 +89,7 @@ impl dyn View {
     }
 }
 
-pub type BoxView = Box<dyn View>;
-
-impl View for BoxView {
-    fn view(self) -> Box<dyn View> {
-        self
-    }
-}
+pub type BoxView = Box<dyn View + 'static>;
 
 impl<V: Reactive> Reactive for &V {
     fn is_reactive(&self) -> bool {
@@ -149,7 +101,7 @@ impl<V: Reactive> Reactive for &V {
     }
 }
 
-impl<V: Reactive> Reactive for Box<V> {
+impl<V: Reactive + ?Sized> Reactive for Box<V> {
     fn is_reactive(&self) -> bool {
         self.deref().is_reactive()
     }
@@ -159,19 +111,9 @@ impl<V: Reactive> Reactive for Box<V> {
     }
 }
 
-impl<V: View + 'static> View for Box<V> {
-    fn view(self) -> Box<dyn View> {
-        Box::new(self)
-    }
-}
-
-impl Reactive for BoxView {
-    fn is_reactive(&self) -> bool {
-        self.deref().is_reactive()
-    }
-
-    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
-        self.deref().subscribe(subscriber)
+impl<V: View + ?Sized + 'static> View for Box<V> {
+    fn view(&self) -> Box<dyn View> {
+        self.deref().view()
     }
 }
 

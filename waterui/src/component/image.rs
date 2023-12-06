@@ -1,21 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-use crate::view;
-
-use crate::utils::Resource;
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[view(use_core)]
 pub struct Image {
-    pub resource: Resource,
+    pub(crate) data: Vec<u8>,
 }
 
 native_implement!(Image);
 
 impl Image {
-    pub fn new(resource: impl Into<Resource>) -> Self {
-        Self {
-            resource: resource.into(),
-        }
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
     }
 }

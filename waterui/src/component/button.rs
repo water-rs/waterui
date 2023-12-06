@@ -1,22 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-use crate::view;
-use crate::{attributed_string::AttributedString, layout::Edge, utils::Background};
+use crate::{attributed_string::AttributedString, layout::Edge};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[view(use_core)]
 pub struct Button {
-    background: Background,
     padding: Edge,
-    label: AttributedString,
+    pub(crate) label: AttributedString,
 }
 
 impl Button {
     pub fn new(label: impl Into<AttributedString>) -> Self {
         Self {
             label: label.into(),
-            background: Background::default(),
             padding: Edge::default(),
         }
     }
@@ -32,11 +28,6 @@ impl Button {
 
     pub fn label(mut self, label: AttributedString) -> Self {
         self.label = label;
-        self
-    }
-
-    pub fn background(mut self, background: impl Into<Background>) -> Self {
-        self.background = background.into();
         self
     }
 }

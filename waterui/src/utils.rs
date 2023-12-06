@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, future::Future};
-use url::Url;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[repr(C)]
 pub struct Color {
     pub red: u8,
     pub green: u8,
@@ -29,43 +29,23 @@ impl Color {
             opacity,
         }
     }
+
+    pub fn opacity(mut self, opacity: f64) -> Self {
+        self.opacity = opacity;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum Background {
     Default,
-    Image(Url),
     Color(Color),
 }
 
-pub enum Filter {
-    Blur(usize),
-}
-
 impl_from!(Background, Color);
-impl_from!(Background, Url, Image);
 
 impl Default for Background {
     fn default() -> Self {
         Self::Default
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub enum Resource {
-    URL(Url),
-    Data(Vec<u8>),
-}
-
-impl_from!(Resource, Url, URL);
-impl_from!(Resource, Vec<u8>, Data);
-
-impl Resource {
-    pub fn url<U>(url: U) -> Self
-    where
-        U: TryInto<Url>,
-        U::Error: Debug,
-    {
-        Self::URL(url.try_into().unwrap())
     }
 }
