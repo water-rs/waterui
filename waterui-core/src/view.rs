@@ -4,7 +4,8 @@ use std::{
     ops::Deref,
 };
 
-use crate::binding::BoxSubscriber;
+use crate::binding::SubscriberObject;
+
 pub trait View: Reactive {
     fn view(&self) -> BoxView;
 
@@ -50,7 +51,7 @@ tuples!(impl_tuple_views);
 native_implement!(());
 
 pub trait Reactive {
-    fn subscribe(&self, _subscriber: fn() -> BoxSubscriber) {}
+    fn subscribe(&self, _subscriber: extern "C" fn() -> SubscriberObject) {}
     fn is_reactive(&self) -> bool {
         false
     }
@@ -96,7 +97,7 @@ impl<V: Reactive> Reactive for &V {
         (*self).is_reactive()
     }
 
-    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
+    fn subscribe(&self, subscriber: extern "C" fn() -> SubscriberObject) {
         (*self).subscribe(subscriber)
     }
 }
@@ -106,7 +107,7 @@ impl<V: Reactive + ?Sized> Reactive for Box<V> {
         self.deref().is_reactive()
     }
 
-    fn subscribe(&self, subscriber: fn() -> BoxSubscriber) {
+    fn subscribe(&self, subscriber: extern "C" fn() -> SubscriberObject) {
         self.deref().subscribe(subscriber)
     }
 }
