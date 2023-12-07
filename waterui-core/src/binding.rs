@@ -1,6 +1,7 @@
 use std::{
     any::type_name,
     fmt::{Debug, Display},
+    hash::Hash,
     ops::{Deref, DerefMut},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
@@ -10,15 +11,38 @@ pub struct Binding<T: ?Sized> {
     inner: Arc<RawBinding<T>>,
 }
 
-impl<T> Debug for Binding<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(type_name::<Self>())
+impl<T: PartialEq + ?Sized> PartialEq for Binding<T> {
+    fn eq(&self, other: &Self) -> bool {
+        let left = self.inner.value.read().unwrap();
+        let right = other.inner.value.read().unwrap();
+        left.deref() == right.deref()
     }
 }
 
-impl<T> From<T> for Binding<T> {
-    fn from(value: T) -> Self {
-        Self::new(value)
+impl<T: Eq + ?Sized> Eq for Binding<T> {}
+
+impl<T: PartialEq> PartialEq<T> for Binding<T> {
+    fn eq(&self, other: &T) -> bool {
+        let left = self.get();
+        left.deref() == other
+    }
+}
+
+impl<T: Hash> Hash for Binding<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.get().hash(state)
+    }
+}
+
+impl<A, T: Extend<A>> Extend<A> for Binding<T> {
+    fn extend<Iter: IntoIterator<Item = A>>(&mut self, iter: Iter) {
+        self.get_mut().extend(iter)
+    }
+}
+
+impl<T> Debug for Binding<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(type_name::<Self>())
     }
 }
 
@@ -45,47 +69,48 @@ impl<T> Clone for Binding<T> {
 
 #[derive(Default)]
 struct RawBinding<T: ?Sized> {
-    watchers: RwLock<Vec<BoxWatcher<T>>>,
+    subscribers: RwLock<Vec<SubscriberObject>>,
     value: RwLock<T>,
 }
 
-pub trait Watcher<T> {
-    fn call_watcher(&self, value: &T);
+#[repr(C)]
+#[derive(Debug)]
+pub struct SubscriberObject {
+    state: *const (),
+    subscriber: unsafe extern "C" fn(*const ()),
 }
 
-impl<T> Watcher<T> for BoxWatcher<T> {
-    fn call_watcher(&self, value: &T) {
-        self.deref().call_watcher(value)
+impl SubscriberObject {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(),
+    {
+        let boxed: Box<dyn Fn()> = Box::new(f);
+        let state = Box::into_raw(boxed) as *const ();
+        extern "C" fn from_fn_impl(state: *const ()) {
+            let boxed = state as *const Box<dyn Fn()>;
+            unsafe {
+                let f = &*boxed;
+                (f)()
+            }
+        }
+        Self::from_raw(state, from_fn_impl)
+    }
+
+    pub fn call(&self) {
+        unsafe { (self.subscriber)(self.state) }
+    }
+
+    fn from_raw(state: *const (), subscriber: unsafe extern "C" fn(*const ())) -> Self {
+        Self { state, subscriber }
     }
 }
-
-impl Subscriber for BoxSubscriber {
-    fn call_subscriber(&self) {
-        self.deref().call_subscriber()
-    }
-}
-
-pub trait Subscriber {
-    fn call_subscriber(&self);
-}
-
-impl<T, S> Watcher<T> for S
-where
-    S: Subscriber,
-{
-    fn call_watcher(&self, _value: &T) {
-        self.call_subscriber();
-    }
-}
-
-pub type BoxWatcher<T> = Box<dyn Watcher<T>>;
-pub type BoxSubscriber = Box<dyn Subscriber>;
 
 impl<T> RawBinding<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: RwLock::new(value),
-            watchers: RwLock::new(Vec::new()),
+            subscribers: RwLock::new(Vec::new()),
         }
     }
 
@@ -96,22 +121,14 @@ impl<T> RawBinding<T> {
     pub fn get_mut(&self) -> MutGuard<T> {
         MutGuard {
             guard: self.value.write().unwrap(),
-            watchers: self.watchers.read().unwrap(),
+            subscribers: self.subscribers.read().unwrap(),
         }
     }
 
     pub fn make_effect(&self) {
-        for watcher in self.watchers.read().unwrap().deref() {
-            watcher.call_watcher(self.get().deref());
+        for subscriber in self.subscribers.read().unwrap().deref() {
+            subscriber.call();
         }
-    }
-
-    pub fn add_watcher(&self, watcher: BoxWatcher<T>) {
-        self.watchers.write().unwrap().push(watcher)
-    }
-
-    pub fn add_subscriber(&self, subscriber: BoxSubscriber) {
-        self.watchers.write().unwrap().push(Box::new(subscriber))
     }
 }
 
@@ -134,16 +151,25 @@ impl<T> Binding<T> {
         *self.get_mut() = value;
     }
 
-    pub fn add_boxed_watcher(&self, watcher: BoxWatcher<T>) {
-        self.inner.add_watcher(watcher)
-    }
-
-    pub fn add_boxed_subscriber(&self, subscriber: BoxSubscriber) {
-        self.inner.add_subscriber(subscriber)
-    }
-
     pub fn make_effect(&self) {
         self.inner.make_effect();
+    }
+
+    pub fn add_subscriber(&self, subscriber: SubscriberObject) {
+        self.inner.subscribers.write().unwrap().push(subscriber);
+    }
+
+    pub fn watch<F>(&self, watcher: F)
+    where
+        F: Fn(&T),
+    {
+        let weak = Arc::downgrade(&self.inner);
+        let subscriber = SubscriberObject::new(move || {
+            let value = weak.upgrade().unwrap();
+            let value = value.get();
+            (watcher)(&value)
+        });
+        self.add_subscriber(subscriber);
     }
 }
 
@@ -155,7 +181,7 @@ impl Binding<String> {
 
 pub struct MutGuard<'a, T> {
     guard: RwLockWriteGuard<'a, T>,
-    watchers: RwLockReadGuard<'a, Vec<BoxWatcher<T>>>,
+    subscribers: RwLockReadGuard<'a, Vec<SubscriberObject>>,
 }
 
 impl<'a, T> Deref for MutGuard<'a, T> {
@@ -173,8 +199,34 @@ impl<'a, T> DerefMut for MutGuard<'a, T> {
 
 impl<'a, T> Drop for MutGuard<'a, T> {
     fn drop(&mut self) {
-        for watcher in self.watchers.deref() {
-            watcher.call_watcher(&self.guard)
+        for subscriber in self.subscribers.deref() {
+            subscriber.call();
         }
     }
 }
+
+impl Binding<bool> {
+    pub fn toggle(&self) {
+        let mut guard = self.get_mut();
+        let new_value = !*guard.deref();
+        *guard.deref_mut() = new_value
+    }
+}
+
+macro_rules! impl_num {
+    ($($ty:ty),*) => {
+        $(
+            impl Binding<$ty> {
+                pub fn increase(&self, num: $ty) {
+                    *self.get_mut() += num;
+                }
+
+                pub fn decrease(&self, num: $ty) {
+                    *self.get_mut() -= num;
+                }
+            }
+        )*
+    };
+}
+
+impl_num!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
