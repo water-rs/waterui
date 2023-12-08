@@ -1,3 +1,4 @@
 [workspace]
-members = ["waterui", "waterui-core", "waterui-derive"]
+members = ["waterui", "waterui-*"]
 resolver = "2"
+exclude = ["examples/tour/src-water"]
