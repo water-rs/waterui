@@ -1,8 +1,8 @@
 mod text;
 
-pub use text::{text, Text};
+pub use text::Text;
 mod button;
-pub use button::{button, Button};
+pub use button::Button;
 mod gesture;
 pub use gesture::TapGesture;
 pub mod stack;
