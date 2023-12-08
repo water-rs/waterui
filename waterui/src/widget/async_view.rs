@@ -1,4 +1,4 @@
-use crate::utils::task;
+use crate::task;
 use crate::view;
 use std::future::Future;
 use std::mem::take;
@@ -10,8 +10,8 @@ use crate::view::{View, ViewExt};
 
 use std::error::Error as StdError;
 
-use crate::component::text;
-type BoxError = Box<dyn StdError>;
+use crate::widget::text;
+type BoxError = Box<dyn StdError + Send>;
 
 #[view(use_core)]
 pub struct AsyncView<LoadingViewBuilder, ErrorViewBuilder> {
@@ -40,7 +40,7 @@ impl AsyncView<(), ()> {
     where
         F: 'static + Fn() -> Fut,
         V: View + 'static,
-        Fut: Future<Output = Result<V, BoxError>>,
+        Fut: Future<Output = Result<V, BoxError>> + 'static,
     {
         let binding = Binding::new(AsyncViewState::Initial);
         Self {
@@ -48,14 +48,16 @@ impl AsyncView<(), ()> {
             loading_view: (),
             error_view: (),
             retry: Box::new(move || {
-                task(async {
-                    binding.set(AsyncViewState::Loading);
-                    let result = f().await;
+                let binding = binding.clone();
+                let fut = f();
+                binding.set(AsyncViewState::Loading);
+                task(async move {
+                    let result = fut.await;
                     match result {
                         Ok(view) => binding.set(AsyncViewState::Ready(view.boxed())),
                         Err(error) => binding.set(AsyncViewState::Fail(error)),
                     }
-                })
+                });
             }),
         }
     }

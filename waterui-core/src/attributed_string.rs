@@ -203,10 +203,8 @@ impl Font {
             write!(buf, "font-family:{};", self.name).unwrap();
         }
 
-        match self.size {
-            Size::Px(px) => write!(buf, "font-size:{px}px;").unwrap(),
-            Size::Percent(percent) => write!(buf, "font-size:{percent}%;").unwrap(),
-            _ => {}
+        if let Size::Size(size) = self.size {
+            write!(buf, "font-size:{size}px;").unwrap()
         }
 
         buf

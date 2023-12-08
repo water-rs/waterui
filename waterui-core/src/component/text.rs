@@ -38,7 +38,3 @@ impl Text {
         self
     }
 }
-
-pub fn text(text: impl Into<AttributedString>) -> Text {
-    Text::new(text)
-}

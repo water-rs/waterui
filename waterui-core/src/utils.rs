@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fmt::Debug, future::Future};
+use std::fmt::Debug;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[repr(C)]
 pub struct Color {
@@ -7,10 +7,6 @@ pub struct Color {
     pub green: u8,
     pub blue: u8,
     pub opacity: f64,
-}
-
-pub fn task(_fut: impl Future) {
-    todo!()
 }
 
 impl Color {
