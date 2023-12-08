@@ -1,5 +1,7 @@
 use crate::{
-    ffi::{waterui_close_window, waterui_create_window, waterui_window_closeable, Widget},
+    ffi::{
+        utils::ViewObject, waterui_close_window, waterui_create_window, waterui_window_closeable,
+    },
     view::View,
     ViewExt,
 };
@@ -12,7 +14,7 @@ pub struct Window {
 impl Window {
     pub fn new(title: impl Into<String>, view: impl View + 'static) -> Self {
         let title = title.into();
-        let widget = Widget::from_boxed_view(view.boxed());
+        let widget = ViewObject::from(view.boxed());
         unsafe { Self::from_raw(waterui_create_window(title.into(), widget)) }
     }
 

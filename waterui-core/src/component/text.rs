@@ -1,17 +1,15 @@
-use std::fmt::Display;
-
-use serde::Deserialize;
-use serde::Serialize;
-
 use crate::layout::Size;
+use std::fmt::Display;
 
 use crate::attributed_string::{AttributedString, Font};
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub(crate) text: AttributedString,
     pub(crate) selectable: bool,
 }
+
+native_implement!(Text);
 
 impl Text {
     pub fn new(text: impl Into<AttributedString>) -> Self {
@@ -40,8 +38,6 @@ impl Text {
         self
     }
 }
-
-native_implement!(Text);
 
 pub fn text(text: impl Into<AttributedString>) -> Text {
     Text::new(text)

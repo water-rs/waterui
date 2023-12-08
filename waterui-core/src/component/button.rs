@@ -1,12 +1,10 @@
-use serde::{Deserialize, Serialize};
-
 use crate::{attributed_string::AttributedString, layout::Edge};
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Button {
     padding: Edge,
     pub(crate) label: AttributedString,
+    pub(crate) action: Box<dyn Fn()>,
 }
 
 impl Button {
@@ -14,7 +12,13 @@ impl Button {
         Self {
             label: label.into(),
             padding: Edge::default(),
+            action: Box::new(|| {}),
         }
+    }
+
+    pub fn action(mut self, f: impl Fn() + 'static) -> Self {
+        self.action = Box::new(f);
+        self
     }
 
     pub fn display(v: impl Display) -> Self {

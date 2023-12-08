@@ -1,9 +1,7 @@
-use std::ffi::c_char;
-
 #[derive(Debug)]
 #[repr(C)]
 pub struct Buf {
-    head: *const c_char,
+    head: *const u8,
     len: usize,
 }
 
@@ -18,7 +16,7 @@ impl From<Vec<u8>> for Buf {
         let len = value.len();
         let boxed = value.into_boxed_slice();
         Self {
-            head: Box::into_raw(boxed) as *const i8,
+            head: Box::into_raw(boxed) as *const u8,
             len,
         }
     }

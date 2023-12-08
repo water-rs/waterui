@@ -1,27 +1,4 @@
-#[macro_use]
-mod macros;
-pub mod attributed_string;
-pub use waterui_core::{binding, binding::Binding};
-pub mod component;
-pub mod view;
-pub use view::{BoxView, View, ViewExt};
-pub mod ffi;
-pub mod modifier;
-pub mod utils;
-pub mod window;
-pub use window::Window;
-pub mod layout;
-pub trait Event: 'static {
-    fn call_event(&self);
-}
-impl<F> Event for F
-where
-    F: 'static + Fn(),
-{
-    fn call_event(&self) {
-        (self)()
-    }
-}
+pub mod widget;
 
-pub type BoxEvent = Box<dyn Event>;
+pub use waterui_core::*;
 pub use waterui_derive::view;
