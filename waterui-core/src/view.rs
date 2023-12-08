@@ -1,10 +1,14 @@
+use crate::layout::Size;
+
+use crate::component::TapGesture;
+use crate::modifier::FrameModifier;
 use std::{
     any::{type_name, TypeId},
     fmt::Debug,
     ops::Deref,
 };
 
-use crate::binding::SubscriberObject;
+use crate::binding::SubscriberBuilderObject;
 
 pub trait View: Reactive {
     fn view(&self) -> BoxView;
@@ -51,7 +55,7 @@ tuples!(impl_tuple_views);
 native_implement!(());
 
 pub trait Reactive {
-    fn subscribe(&self, _subscriber: extern "C" fn() -> SubscriberObject) {}
+    fn subscribe(&self, _builder: SubscriberBuilderObject) {}
     fn is_reactive(&self) -> bool {
         false
     }
@@ -97,7 +101,7 @@ impl<V: Reactive> Reactive for &V {
         (*self).is_reactive()
     }
 
-    fn subscribe(&self, subscriber: extern "C" fn() -> SubscriberObject) {
+    fn subscribe(&self, subscriber: SubscriberBuilderObject) {
         (*self).subscribe(subscriber)
     }
 }
@@ -107,7 +111,7 @@ impl<V: Reactive + ?Sized> Reactive for Box<V> {
         self.deref().is_reactive()
     }
 
-    fn subscribe(&self, subscriber: extern "C" fn() -> SubscriberObject) {
+    fn subscribe(&self, subscriber: SubscriberBuilderObject) {
         self.deref().subscribe(subscriber)
     }
 }
@@ -116,10 +120,50 @@ impl<V: View + ?Sized + 'static> View for Box<V> {
     fn view(&self) -> Box<dyn View> {
         self.deref().view()
     }
+
+    fn name(&self) -> &'static str {
+        self.deref().name()
+    }
 }
 
 impl Debug for dyn View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("dyn View")
+    }
+}
+
+pub trait ViewExt: View {
+    fn on_tap(self, event: impl Fn() + 'static) -> TapGesture;
+    fn width(self, size: impl Into<Size>) -> FrameModifier
+    where
+        Self: Sized;
+    fn height(self, size: impl Into<Size>) -> FrameModifier
+    where
+        Self: Sized;
+
+    fn leading(self) -> FrameModifier;
+
+    fn boxed(self) -> BoxView;
+}
+
+impl<V: View + 'static> ViewExt for V {
+    fn on_tap(self, event: impl Fn() + 'static) -> TapGesture {
+        TapGesture::new(Box::new(self), Box::new(event))
+    }
+
+    fn width(self, size: impl Into<Size>) -> FrameModifier {
+        FrameModifier::new(self.boxed()).width(size)
+    }
+
+    fn height(self, size: impl Into<Size>) -> FrameModifier {
+        FrameModifier::new(self.boxed()).height(size)
+    }
+
+    fn leading(self) -> FrameModifier {
+        FrameModifier::new(self.boxed()).leading()
+    }
+
+    fn boxed(self) -> BoxView {
+        Box::new(self)
     }
 }

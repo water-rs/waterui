@@ -80,12 +80,48 @@ pub struct SubscriberObject {
     subscriber: unsafe extern "C" fn(*const ()),
 }
 
+#[repr(C)]
+#[derive(Debug)]
+pub struct SubscriberBuilderObject {
+    state: *const (),
+    subscriber: unsafe extern "C" fn(*const ()) -> SubscriberObject,
+}
+
+impl SubscriberBuilderObject {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn() -> SubscriberObject,
+    {
+        let boxed: Box<Box<dyn Fn() -> SubscriberObject>> = Box::new(Box::new(f));
+        let state = Box::into_raw(boxed) as *const ();
+        extern "C" fn from_fn_impl(state: *const ()) -> SubscriberObject {
+            let boxed = state as *const Box<dyn Fn() -> SubscriberObject>;
+            unsafe {
+                let f = &*boxed;
+                (f)()
+            }
+        }
+        Self::from_raw(state, from_fn_impl)
+    }
+
+    pub fn build(&self) -> SubscriberObject {
+        unsafe { (self.subscriber)(self.state) }
+    }
+
+    fn from_raw(
+        state: *const (),
+        subscriber: unsafe extern "C" fn(*const ()) -> SubscriberObject,
+    ) -> Self {
+        Self { state, subscriber }
+    }
+}
+
 impl SubscriberObject {
     pub fn new<F>(f: F) -> Self
     where
         F: Fn(),
     {
-        let boxed: Box<dyn Fn()> = Box::new(f);
+        let boxed: Box<Box<dyn Fn()>> = Box::new(Box::new(f));
         let state = Box::into_raw(boxed) as *const ();
         extern "C" fn from_fn_impl(state: *const ()) {
             let boxed = state as *const Box<dyn Fn()>;
@@ -217,12 +253,16 @@ macro_rules! impl_num {
     ($($ty:ty),*) => {
         $(
             impl Binding<$ty> {
-                pub fn increase(&self, num: $ty) {
-                    *self.get_mut() += num;
+                pub fn increase(&self, num: $ty) -> $ty{
+                    let mut guard=self.get_mut();
+                    *guard += num;
+                    *guard
                 }
 
-                pub fn decrease(&self, num: $ty) {
-                    *self.get_mut() -= num;
+                pub fn decrease(&self, num: $ty) -> $ty{
+                    let mut guard=self.get_mut();
+                    *guard -= num;
+                    *guard
                 }
             }
         )*

@@ -43,8 +43,8 @@ pub fn impl_reactive(mut input: ItemStruct, root: Ident) -> Result<TokenStream, 
                     #reactive
                 }
 
-                fn subscribe(&self, subscriber: extern "C" fn() -> ::#root::binding::SubscriberObject) {
-                    #(self.#state_field.add_subscriber((subscriber)()));*
+                fn subscribe(&self, builder: ::#root::binding::SubscriberBuilderObject) {
+                    #(self.#state_field.add_subscriber(builder.build()));*
                 }
             }
         }
