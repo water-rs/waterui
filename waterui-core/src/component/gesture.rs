@@ -1,12 +1,12 @@
-use crate::{view::BoxView, BoxEvent};
+use crate::view::BoxView;
 
 pub struct TapGesture {
     pub view: BoxView,
-    pub event: BoxEvent,
+    pub event: Box<dyn Fn() + 'static>,
 }
 
 impl TapGesture {
-    pub fn new(view: BoxView, event: BoxEvent) -> Self {
+    pub fn new(view: BoxView, event: Box<dyn Fn() + 'static>) -> Self {
         Self { view, event }
     }
 }

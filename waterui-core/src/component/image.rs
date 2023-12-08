@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct Image {
+pub struct RawImage {
     pub(crate) data: Vec<u8>,
 }
 
-native_implement!(Image);
+native_implement!(RawImage);
 
-impl Image {
+impl RawImage {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
