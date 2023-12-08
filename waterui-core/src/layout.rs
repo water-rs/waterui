@@ -1,7 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[repr(C)]
+pub enum Size {
+    Default,
+    Size(f64),
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl From<f64> for Size {
+    fn from(value: f64) -> Self {
+        Self::Size(value)
+    }
+}
+
+impl From<u64> for Size {
+    fn from(value: u64) -> Self {
+        (value as f64).into()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[repr(u8)]
+#[repr(C)]
 pub enum Alignment {
     Default,
     Leading,
@@ -14,32 +39,6 @@ impl Default for Alignment {
         Self::Default
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[repr(C)]
-pub enum Size {
-    Default,
-    Px(usize),
-    Percent(f64),
-}
-
-impl Size {
-    pub fn to_px(self, parent: usize) -> Option<usize> {
-        match self {
-            Size::Default => None,
-            Size::Px(px) => Some(px),
-            Size::Percent(percent) => Some((parent as f64 * percent) as usize),
-        }
-    }
-}
-
-impl Default for Size {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-impl_from!(Size, usize, Px);
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[repr(C)]
@@ -78,23 +77,19 @@ impl Edge {
 
     pub fn vertical(size: impl Into<Size>) -> Self {
         let size = size.into();
-        Self::new().left(size.clone()).right(size)
+        Self::new().left(size).right(size)
     }
 
     pub fn horizontal(size: impl Into<Size>) -> Self {
         let size = size.into();
 
-        Self::new().top(size.clone()).bottom(size)
+        Self::new().top(size).bottom(size)
     }
 
     pub fn round(size: impl Into<Size>) -> Self {
         let size = size.into();
 
-        Self::new()
-            .top(size.clone())
-            .left(size.clone())
-            .right(size.clone())
-            .bottom(size)
+        Self::new().top(size).left(size).right(size).bottom(size)
     }
 
     pub fn top(mut self, size: impl Into<Size>) -> Self {

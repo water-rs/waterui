@@ -1,6 +1,7 @@
 #[macro_use]
 mod macros;
 pub mod attributed_string;
+pub use attributed_string::AttributedString;
 pub mod component;
 pub mod view;
 pub use view::{BoxView, View, ViewExt};

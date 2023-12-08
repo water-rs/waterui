@@ -194,7 +194,7 @@ pub struct Stack {
     contents: Views,
 }
 
-#[repr(u8)]
+#[repr(C)]
 pub enum StackMode {
     Vertical,
     Horizonal,
@@ -202,7 +202,7 @@ pub enum StackMode {
 
 #[repr(C)]
 pub struct Button {
-    label: Buf,
+    label: ViewObject,
     action: EventObject,
 }
 
@@ -231,9 +231,8 @@ impl From<component::Text> for Text {
 
 impl From<component::Button> for Button {
     fn from(value: component::Button) -> Self {
-        let label: String = value.label.into_plain();
         Self {
-            label: label.into(),
+            label: value.label.into(),
             action: value.action.into(),
         }
     }
