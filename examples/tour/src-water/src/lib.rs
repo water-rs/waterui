@@ -1,32 +1,35 @@
 use waterui::{
     self,
-    component::{stack::vstack, text, Stack, Text},
-    ffi::WaterUIWidget,
+    component::{button, stack::vstack, text},
+    ffi::utils::{EventObject, ViewObject},
     view,
-    widget::Widget,
-    View,
+    widget::Text,
+    View, ViewExt,
 };
 
 #[no_mangle]
-pub extern "C" fn waterui_main() -> WaterUIWidget {
-    let view = Home;
-
-    let widget = Widget::from_view(view);
-    widget.into()
+pub extern "C" fn waterui_main() -> ViewObject {
+    let view = Home::default();
+    ViewObject::from(Home::default().boxed())
 }
 
+#[derive(Debug, Default)]
 #[view]
-struct Home;
+struct Home {
+    #[state]
+    num: u64,
+}
 
 #[view]
 impl View for Home {
     fn view(&self) -> impl View {
-        vstack((text("Lexo:"), text("WaterUI")))
+        let num = self.num.clone();
+        vstack((
+            text("Counter"),
+            Text::display(self.num.get()),
+            button("Increase").action(move || {
+                *num.get_mut() += 1;
+            }),
+        ))
     }
-}
-
-#[test]
-fn test() {
-    let widget = Widget::from_view(Home);
-    println!("{:?}", widget);
 }
