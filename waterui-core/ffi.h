@@ -3,19 +3,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-enum WaterUIAlignment {
+typedef enum WaterUIAlignment {
   WaterUIAlignment_Default,
   WaterUIAlignment_Leading,
   WaterUIAlignment_Center,
   WaterUIAlignment_Trailing,
-};
-typedef uint8_t WaterUIAlignment;
+} WaterUIAlignment;
 
-enum WaterUIStackMode {
+typedef enum WaterUIStackMode {
   WaterUIStackMode_Vertical,
   WaterUIStackMode_Horizonal,
-};
-typedef uint8_t WaterUIStackMode;
+} WaterUIStackMode;
 
 typedef struct WaterUIEventObject {
   uintptr_t inner[2];
@@ -36,7 +34,7 @@ typedef struct WaterUIText {
 } WaterUIText;
 
 typedef struct WaterUIButton {
-  struct WaterUIBuf label;
+  struct WaterUIViewObject label;
   struct WaterUIEventObject action;
 } WaterUIButton;
 
@@ -47,18 +45,14 @@ typedef struct WaterUITapGesture {
 
 typedef enum WaterUISize_Tag {
   WaterUISize_Default,
-  WaterUISize_Px,
-  WaterUISize_Percent,
+  WaterUISize_Size,
 } WaterUISize_Tag;
 
 typedef struct WaterUISize {
   WaterUISize_Tag tag;
   union {
     struct {
-      uintptr_t px;
-    };
-    struct {
-      double percent;
+      double size;
     };
   };
 } WaterUISize;
@@ -78,7 +72,7 @@ typedef struct WaterUIFrame {
   struct WaterUISize min_height;
   struct WaterUISize max_height;
   struct WaterUIEdge margin;
-  WaterUIAlignment alignment;
+  enum WaterUIAlignment alignment;
 } WaterUIFrame;
 
 typedef struct WaterUIFrameModifier {
@@ -92,7 +86,7 @@ typedef struct WaterUIViews {
 } WaterUIViews;
 
 typedef struct WaterUIStack {
-  WaterUIStackMode mode;
+  enum WaterUIStackMode mode;
   struct WaterUIViews contents;
 } WaterUIStack;
 

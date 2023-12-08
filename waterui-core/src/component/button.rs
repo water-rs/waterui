@@ -1,19 +1,27 @@
-use crate::{attributed_string::AttributedString, layout::Edge};
+use crate::{attributed_string::AttributedString, layout::Edge, BoxView, View, ViewExt};
 use std::fmt::Display;
+
+use super::Text;
 
 pub struct Button {
     padding: Edge,
-    pub(crate) label: AttributedString,
+    pub(crate) label: BoxView,
     pub(crate) action: Box<dyn Fn()>,
+}
+
+impl Default for Button {
+    fn default() -> Self {
+        Self {
+            label: ().boxed(),
+            padding: Edge::default(),
+            action: Box::new(|| {}),
+        }
+    }
 }
 
 impl Button {
     pub fn new(label: impl Into<AttributedString>) -> Self {
-        Self {
-            label: label.into(),
-            padding: Edge::default(),
-            action: Box::new(|| {}),
-        }
+        Self::default().label(Text::new(label))
     }
 
     pub fn action(mut self, f: impl Fn() + 'static) -> Self {
@@ -30,14 +38,10 @@ impl Button {
         self
     }
 
-    pub fn label(mut self, label: AttributedString) -> Self {
-        self.label = label;
+    pub fn label(mut self, label: impl View + 'static) -> Self {
+        self.label = label.boxed();
         self
     }
 }
 
 native_implement!(Button);
-
-pub fn button(label: impl Into<AttributedString>) -> Button {
-    Button::new(label)
-}
