@@ -16,8 +16,8 @@ use self::utils::{EventObject, ViewObject};
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
-    (object.as_ref())();
+pub unsafe extern "C" fn waterui_call_event_object(mut object: EventObject) {
+    (object.as_mut())();
 }
 
 macro_rules! impl_component{
@@ -120,18 +120,18 @@ pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Sta
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_view(view: ViewObject) -> ViewObject {
-    view.as_ref().view().into()
+pub unsafe extern "C" fn waterui_call_view(mut view: ViewObject) -> ViewObject {
+    view.as_mut().view().into()
 }
 
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_add_subscriber(
-    view: ViewObject,
+    mut view: ViewObject,
     subscriber: SubscriberBuilderObject,
 ) {
-    view.as_ref().subscribe(subscriber);
+    view.as_mut().subscribe(subscriber);
 }
 
 #[repr(C)]

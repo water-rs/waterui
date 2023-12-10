@@ -32,13 +32,5 @@ macro_rules! impl_frame {
 
 impl_frame!(VStack, HStack);
 
-pub fn vstack(contents: impl IntoViews) -> VStack {
-    VStack::new(contents)
-}
-
-pub fn hstack(views: impl IntoViews) -> HStack {
-    HStack::new(views)
-}
-
 native_implement!(VStack);
 native_implement!(HStack);
