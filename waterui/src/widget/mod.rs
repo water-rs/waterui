@@ -5,6 +5,7 @@ pub use async_view::AsyncView;
 use waterui_core::view::IntoViews;
 mod date_picker;
 pub use date_picker::DatePicker;
+mod image;
 
 pub fn text(text: impl Into<AttributedString>) -> Text {
     Text::new(text)

@@ -1,4 +1,4 @@
-use super::{stack::vstack, text, Button, HStack, Text, VStack};
+use super::{text, vstack, Button, HStack, Text, VStack};
 use crate::{view, view::ViewExt, Binding, View};
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use itertools::Itertools;
@@ -17,7 +17,7 @@ impl DatePicker {
 
 #[view(use_core)]
 impl View for DatePicker {
-    fn view(&self) -> VStack {
+    fn view(&mut self) -> VStack {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;
