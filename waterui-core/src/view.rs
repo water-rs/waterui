@@ -5,13 +5,24 @@ use crate::modifier::FrameModifier;
 use std::{
     any::{type_name, TypeId},
     fmt::Debug,
-    ops::Deref,
+    ops::{Deref, DerefMut},
 };
 
 use crate::binding::SubscriberBuilderObject;
 
+/// View represents a part of the user interface.
+///
+/// You can create your custom view by implement this trait. You just need to implement fit.
 pub trait View: Reactive {
-    fn view(&self) -> BoxView;
+    /// Build this view and return the content.
+    ///
+    /// `self` is mutable reference only for more optimization. In most cases, it is not expected to change the state of view.
+    ///
+    /// WARNING: This method should not be called directly by user.
+    /// # Panic
+    /// - If this view is a not a [reactive view](Reactive) but you call it twice. It may panic.
+    /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
+    fn view(&mut self) -> BoxView;
 
     fn name(&self) -> &'static str {
         type_name::<Self>()
@@ -56,6 +67,7 @@ native_implement!(());
 
 pub trait Reactive {
     fn subscribe(&self, _builder: SubscriberBuilderObject) {}
+    /// If this method return `true`, the view is considered as a "reactive view".
     fn is_reactive(&self) -> bool {
         false
     }
@@ -117,8 +129,8 @@ impl<V: Reactive + ?Sized> Reactive for Box<V> {
 }
 
 impl<V: View + ?Sized + 'static> View for Box<V> {
-    fn view(&self) -> Box<dyn View> {
-        self.deref().view()
+    fn view(&mut self) -> Box<dyn View> {
+        self.deref_mut().view()
     }
 
     fn name(&self) -> &'static str {
