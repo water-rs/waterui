@@ -8,10 +8,7 @@ use waterui_core::view::BoxView;
 
 use crate::view::{View, ViewExt};
 
-use std::error::Error as StdError;
-
 use crate::widget::text;
-type BoxError = Box<dyn StdError + Send>;
 
 #[view(use_core)]
 pub struct AsyncView<LoadingViewBuilder, ErrorViewBuilder> {
@@ -19,14 +16,14 @@ pub struct AsyncView<LoadingViewBuilder, ErrorViewBuilder> {
     content: AsyncViewState,
     loading_view: LoadingViewBuilder,
     error_view: ErrorViewBuilder,
-    retry: Box<dyn Fn()>,
+    retry: Box<dyn FnMut()>,
 }
 
 enum AsyncViewState {
     Initial,
     Loading,
     Ready(BoxView),
-    Fail(BoxError),
+    Fail(anyhow::Error),
 }
 
 impl Default for AsyncViewState {
@@ -36,11 +33,11 @@ impl Default for AsyncViewState {
 }
 
 impl AsyncView<(), ()> {
-    pub fn new<F, Fut, V>(f: F) -> Self
+    pub fn new<F, Fut, V>(mut f: F) -> Self
     where
-        F: 'static + Fn() -> Fut,
+        F: 'static + FnMut() -> Fut,
         V: View + 'static,
-        Fut: Future<Output = Result<V, BoxError>> + 'static,
+        Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
     {
         let binding = Binding::new(AsyncViewState::Initial);
         Self {
@@ -61,6 +58,25 @@ impl AsyncView<(), ()> {
             }),
         }
     }
+
+    pub fn once<F, Fut, V>(f: F)
+    where
+        F: 'static + FnOnce() -> Fut,
+        V: View + 'static,
+        Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
+    {
+        let mut f = Some(f);
+        Self::new(move || {
+            let f = f.take();
+            async move {
+                if let Some(f) = f {
+                    f().await
+                } else {
+                    Err(anyhow::Error::msg("Once async view cannot retry"))
+                }
+            }
+        });
+    }
 }
 
 impl<LoadingView, LoadingViewBuilder, ErrorView, ErrorViewBuilder> View
@@ -69,9 +85,9 @@ where
     LoadingView: View + 'static,
     LoadingViewBuilder: Fn() -> LoadingView,
     ErrorView: View + 'static,
-    ErrorViewBuilder: Fn(BoxError) -> ErrorView,
+    ErrorViewBuilder: Fn(anyhow::Error) -> ErrorView,
 {
-    fn view(&self) -> BoxView {
+    fn view(&mut self) -> BoxView {
         let state = take(self.content.get_mut().deref_mut());
         match state {
             AsyncViewState::Initial => {
@@ -86,7 +102,7 @@ where
 }
 
 impl View for AsyncView<(), ()> {
-    fn view(&self) -> BoxView {
+    fn view(&mut self) -> BoxView {
         let state = take(self.content.get_mut().deref_mut());
 
         match state {
@@ -105,6 +121,6 @@ fn default_loading_view() -> impl View {
     text("loading...")
 }
 
-fn default_error_view(error: BoxError) -> impl View {
+fn default_error_view(error: anyhow::Error) -> impl View {
     text(format!("Error :{error}"))
 }
