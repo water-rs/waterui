@@ -17,7 +17,7 @@ impl DatePicker {
 
 #[view(use_core)]
 impl View for DatePicker {
-    fn view(&mut self) -> VStack {
+    fn view(&self) -> VStack {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;
