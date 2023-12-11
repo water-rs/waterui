@@ -5,8 +5,6 @@ pub struct RawImage {
     pub(crate) data: Vec<u8>,
 }
 
-native_implement!(RawImage);
-
 impl RawImage {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
@@ -16,3 +14,5 @@ impl RawImage {
         &self.data
     }
 }
+
+raw_view!(RawImage);

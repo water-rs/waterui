@@ -10,10 +10,12 @@ pub use stack::{HStack, VStack};
 mod image;
 pub use image::RawImage;
 
-pub fn vstack(contents: impl crate::view::IntoViews) -> VStack {
+use crate::view::IntoViews;
+
+pub fn vstack(contents: impl IntoViews) -> VStack {
     VStack::new(contents)
 }
 
-pub fn hstack(views: impl crate::view::IntoViews) -> HStack {
-    HStack::new(views)
+pub fn hstack(contents: impl IntoViews) -> HStack {
+    HStack::new(contents)
 }

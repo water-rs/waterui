@@ -32,5 +32,5 @@ macro_rules! impl_frame {
 
 impl_frame!(VStack, HStack);
 
-native_implement!(VStack);
-native_implement!(HStack);
+raw_view!(VStack);
+raw_view!(HStack);
