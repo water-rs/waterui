@@ -3,7 +3,7 @@ pub mod utils;
 
 use crate::binding::SubscriberBuilderObject;
 use crate::layout::Frame;
-use crate::modifier;
+use crate::modifier::Modifier;
 use crate::view::View;
 use crate::{component, view::BoxView};
 use buf::Buf;
@@ -16,8 +16,8 @@ use self::utils::{EventObject, ViewObject};
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_event_object(mut object: EventObject) {
-    (object.as_mut())();
+pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
+    (object.as_ref())();
 }
 
 macro_rules! impl_component{
@@ -44,7 +44,7 @@ macro_rules! impl_component{
 }
 
 macro_rules! impl_modifier{
-    ($(($ident:ident,$ty:tt)),*) => {
+    ($(($ident:ident,$modifier:ty,$ty:ty)),*) => {
         $(
             /// # Safety
             /// `EventObject` must be valid
@@ -54,8 +54,8 @@ macro_rules! impl_modifier{
 
                 try_unwrap_boxed_view(&mut view);
 
-                if (*view).is::<modifier::$ty>(){
-                    write(value,read(view as *const modifier::$ty).into());
+                if (*view).is::<Modifier<$modifier>>(){
+                    write(value,read(view as *const Modifier<$modifier>).into());
                     0
                 }
                 else{
@@ -66,11 +66,9 @@ macro_rules! impl_modifier{
     };
 }
 
-fn try_unwrap_boxed_view(view: *mut *const dyn View) {
-    unsafe {
-        if (**view).is::<BoxView>() {
-            *view = read(view as *const *const dyn View)
-        }
+unsafe fn try_unwrap_boxed_view(view: *mut *const dyn View) {
+    if (**view).is::<BoxView>() {
+        *view = read(view as *const *const dyn View)
     }
 }
 
@@ -95,7 +93,7 @@ impl_component!(
     (waterui_view_to_tap_gesture, TapGesture)
 );
 
-impl_modifier!((waterui_view_to_frame_modifier, FrameModifier));
+impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
 
 /// # Safety
 /// `EventObject` must be valid
@@ -120,18 +118,18 @@ pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Sta
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_view(mut view: ViewObject) -> ViewObject {
-    view.as_mut().view().into()
+pub unsafe extern "C" fn waterui_call_view(view: ViewObject) -> ViewObject {
+    view.as_ref().view().into()
 }
 
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_add_subscriber(
-    mut view: ViewObject,
+    view: ViewObject,
     subscriber: SubscriberBuilderObject,
 ) {
-    view.as_mut().subscribe(subscriber);
+    view.as_ref().subscribe(subscriber);
 }
 
 #[repr(C)]
@@ -161,10 +159,10 @@ pub struct FrameModifier {
     view: ViewObject,
 }
 
-impl From<modifier::FrameModifier> for FrameModifier {
-    fn from(value: modifier::FrameModifier) -> Self {
+impl From<Modifier<Frame>> for FrameModifier {
+    fn from(value: Modifier<Frame>) -> Self {
         Self {
-            frame: value.frame,
+            frame: value.modifier,
             view: value.content.into(),
         }
     }

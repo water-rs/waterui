@@ -20,7 +20,7 @@ impl From<BoxView> for ViewObject {
 impl ViewObject {
     /// # Safety
     /// `EventObject` must be valid
-    pub unsafe fn as_mut(&mut self) -> &mut (dyn View + 'static) {
+    pub unsafe fn as_ref(&self) -> &(dyn View + 'static) {
         transmute(self.inner)
     }
 
@@ -37,7 +37,7 @@ pub struct EventObject {
 impl EventObject {
     /// # Safety
     /// `EventObject` must be valid
-    pub unsafe fn as_mut(&mut self) -> &mut (dyn Fn() + 'static) {
+    pub unsafe fn as_ref(&self) -> &(dyn Fn() + 'static) {
         transmute(self.inner)
     }
 }

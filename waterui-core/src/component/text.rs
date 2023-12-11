@@ -9,7 +9,7 @@ pub struct Text {
     pub(crate) selectable: bool,
 }
 
-native_implement!(Text);
+raw_view!(Text);
 
 impl Text {
     pub fn new(text: impl Into<AttributedString>) -> Self {

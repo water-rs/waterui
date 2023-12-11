@@ -2,13 +2,13 @@ use crate::view::BoxView;
 
 pub struct TapGesture {
     pub view: BoxView,
-    pub event: Box<dyn Fn() + 'static>,
+    pub event: Box<dyn Fn()>,
 }
 
 impl TapGesture {
-    pub fn new(view: BoxView, event: Box<dyn Fn() + 'static>) -> Self {
+    pub fn new(view: BoxView, event: Box<dyn Fn()>) -> Self {
         Self { view, event }
     }
 }
 
-native_implement!(TapGesture);
+raw_view!(TapGesture);
