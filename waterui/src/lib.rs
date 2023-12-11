@@ -1,6 +1,7 @@
+pub mod view;
+pub use view::{BoxView, View, ViewExt};
 pub mod widget;
-
-pub use waterui_core::*;
+pub use waterui_core::{attributed_string::AttributedString, layout, modifier::Modifier, Binding};
 pub use waterui_derive::view;
 
 mod task {
