@@ -4,7 +4,7 @@ pub mod attributed_string;
 pub use attributed_string::AttributedString;
 pub mod component;
 pub mod view;
-pub use view::{BoxView, View, ViewExt};
+pub use view::{BoxView, View};
 pub mod binding;
 pub use binding::Binding;
 pub mod ffi;
