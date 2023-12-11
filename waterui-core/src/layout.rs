@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::modifier::ViewModifier;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[repr(C)]
 pub enum Size {
@@ -40,19 +42,22 @@ impl Default for Alignment {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
-#[repr(C)]
-
-pub struct Frame {
-    pub width: Size,
-    pub min_width: Size,
-    pub max_width: Size,
-    pub height: Size,
-    pub min_height: Size,
-    pub max_height: Size,
-    pub margin: Edge,
-    pub alignment: Alignment,
+impl_builder! {
+    #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
+    #[repr(C)]
+    pub struct Frame {
+        pub width: Size,
+        pub min_width: Size,
+        pub max_width: Size,
+        pub height: Size,
+        pub min_height: Size,
+        pub max_height: Size,
+        pub margin: Edge,
+        pub alignment: Alignment
+    }
 }
+
+impl ViewModifier for Frame {}
 
 impl Frame {
     pub fn new() -> Self {
