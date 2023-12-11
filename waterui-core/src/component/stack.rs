@@ -1,9 +1,6 @@
 use crate::view::IntoViews;
 
-use crate::{
-    view::{BoxView, ViewExt},
-    View,
-};
+use crate::{view::BoxView, View};
 
 macro_rules! impl_frame {
     ($($ty:ident),*) => {
@@ -14,7 +11,7 @@ macro_rules! impl_frame {
 
             impl<V: View + 'static> FromIterator<V> for $ty {
                 fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-                    let content: Vec<BoxView> = iter.into_iter().map(|v| v.boxed()).collect();
+                    let content: Vec<BoxView> = iter.into_iter().map(|v| ->BoxView {Box::new(v)}).collect();
                     Self::new(content)
                 }
             }
