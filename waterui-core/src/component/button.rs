@@ -44,4 +44,4 @@ impl Button {
     }
 }
 
-native_implement!(Button);
+raw_view!(Button);

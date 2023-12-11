@@ -16,7 +16,7 @@ pub struct AsyncView<LoadingViewBuilder, ErrorViewBuilder> {
     content: AsyncViewState,
     loading_view: LoadingViewBuilder,
     error_view: ErrorViewBuilder,
-    retry: Box<dyn FnMut()>,
+    retry: Box<dyn Fn()>,
 }
 
 enum AsyncViewState {
@@ -33,9 +33,9 @@ impl Default for AsyncViewState {
 }
 
 impl AsyncView<(), ()> {
-    pub fn new<F, Fut, V>(mut f: F) -> Self
+    pub fn new<F, Fut, V>(f: F) -> Self
     where
-        F: 'static + FnMut() -> Fut,
+        F: 'static + Fn() -> Fut,
         V: View + 'static,
         Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
     {
@@ -58,25 +58,6 @@ impl AsyncView<(), ()> {
             }),
         }
     }
-
-    pub fn once<F, Fut, V>(f: F)
-    where
-        F: 'static + FnOnce() -> Fut,
-        V: View + 'static,
-        Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
-    {
-        let mut f = Some(f);
-        Self::new(move || {
-            let f = f.take();
-            async move {
-                if let Some(f) = f {
-                    f().await
-                } else {
-                    Err(anyhow::Error::msg("Once async view cannot retry"))
-                }
-            }
-        });
-    }
 }
 
 impl<LoadingView, LoadingViewBuilder, ErrorView, ErrorViewBuilder> View
@@ -87,7 +68,7 @@ where
     ErrorView: View + 'static,
     ErrorViewBuilder: Fn(anyhow::Error) -> ErrorView,
 {
-    fn view(&mut self) -> BoxView {
+    fn view(&self) -> BoxView {
         let state = take(self.content.get_mut().deref_mut());
         match state {
             AsyncViewState::Initial => {
@@ -102,7 +83,7 @@ where
 }
 
 impl View for AsyncView<(), ()> {
-    fn view(&mut self) -> BoxView {
+    fn view(&self) -> BoxView {
         let state = take(self.content.get_mut().deref_mut());
 
         match state {

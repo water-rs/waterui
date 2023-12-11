@@ -1,8 +1,8 @@
-macro_rules! native_implement {
+macro_rules! raw_view {
     ($ty:ty) => {
         impl crate::View for $ty {
-            fn view(&mut self) -> crate::view::BoxView {
-                panic!("[Native implement]");
+            fn view(&self) -> crate::view::BoxView {
+                panic!("You cannot call `view` for a raw view");
             }
         }
 
@@ -24,6 +24,24 @@ macro_rules! impl_from {
             fn from(value: $ty) -> Self {
                 Self::$variant_name(value)
             }
+        }
+    };
+}
+
+macro_rules! impl_builder {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident{$($field_vis:vis $field_name:ident:$field_type:ty),*}) => {
+        $(#[$meta])*
+        $vis struct $name{
+            $($field_vis $field_name:$field_type),*
+        }
+
+        impl $name{
+            $(
+                pub fn $field_name(mut self,value:impl Into<$field_type>) -> Self{
+                    self.$field_name=value.into();
+                    self
+                }
+            )*
         }
     };
 }

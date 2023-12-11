@@ -12,7 +12,7 @@ pub struct Image {
 
 #[view(use_core)]
 impl View for Image {
-    fn view(&mut self) -> impl View {
+    fn view(&self) -> impl View {
         let url = self.url.clone();
 
         AsyncView::new(move || {
