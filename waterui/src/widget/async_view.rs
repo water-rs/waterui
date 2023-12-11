@@ -6,7 +6,7 @@ use std::ops::DerefMut;
 use waterui_core::binding::Binding;
 use waterui_core::view::BoxView;
 
-use crate::view::{View, ViewExt};
+use crate::{View, ViewExt};
 
 use crate::widget::text;
 

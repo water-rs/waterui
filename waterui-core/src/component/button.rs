@@ -1,4 +1,4 @@
-use crate::{attributed_string::AttributedString, layout::Edge, BoxView, View, ViewExt};
+use crate::{attributed_string::AttributedString, layout::Edge, BoxView, View};
 use std::fmt::Display;
 
 use super::Text;
@@ -12,7 +12,7 @@ pub struct Button {
 impl Default for Button {
     fn default() -> Self {
         Self {
-            label: ().boxed(),
+            label: Box::new(()),
             padding: Edge::default(),
             action: Box::new(|| {}),
         }
@@ -39,7 +39,7 @@ impl Button {
     }
 
     pub fn label(mut self, label: impl View + 'static) -> Self {
-        self.label = label.boxed();
+        self.label = Box::new(label);
         self
     }
 }
