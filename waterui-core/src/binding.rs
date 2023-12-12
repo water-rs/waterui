@@ -11,6 +11,12 @@ pub struct Binding<T: ?Sized> {
     inner: Arc<RawBinding<T>>,
 }
 
+impl<T> From<T> for Binding<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
 impl<T: PartialEq + ?Sized> PartialEq for Binding<T> {
     fn eq(&self, other: &Self) -> bool {
         let left = self.inner.value.read().unwrap();

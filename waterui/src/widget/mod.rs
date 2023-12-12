@@ -3,7 +3,10 @@ pub use waterui_core::component::*;
 mod async_view;
 pub use async_view::AsyncView;
 use waterui_core::view::IntoViews;
+mod condition;
+pub use condition::{when, Condition};
 mod date_picker;
+
 pub use date_picker::DatePicker;
 mod image;
 
