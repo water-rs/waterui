@@ -17,9 +17,6 @@ pub trait ViewExt: View {
 
     fn leading(self) -> Modifier<Frame>;
 
-    fn when(self, condition: bool) -> BoxView;
-    fn or<Content: View + 'static>(self, condition: bool, content: Content) -> BoxView;
-
     fn boxed(self) -> BoxView;
 }
 
@@ -42,18 +39,6 @@ impl<V: View + 'static> ViewExt for V {
 
     fn leading(self) -> Modifier<Frame> {
         Modifier::new(self.boxed(), Frame::default().alignment(Alignment::Leading))
-    }
-
-    fn when(self, condition: bool) -> BoxView {
-        self.or(condition, ())
-    }
-
-    fn or<Content: View + 'static>(self, condition: bool, content: Content) -> BoxView {
-        if condition {
-            self.boxed()
-        } else {
-            content.boxed()
-        }
     }
 
     fn boxed(self) -> BoxView {
