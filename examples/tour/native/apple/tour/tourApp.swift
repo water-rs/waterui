@@ -12,15 +12,38 @@ import Foundation
 struct tourApp: App {
     var body: some Scene {
         WindowGroup(id:"waterui-0") {
-            WaterView(waterui_main())
+            //WaterView(waterui_main())
+            ContentView()
         }
+    }
+}
+
+class Box:ObservableObject{
+    @Published var box:String = "none"
+    var reloadTrigger:ReloadViewTrigger
+    init(_ trigger:ReloadViewTrigger){
+        reloadTrigger=trigger
+    }
+    
+    func reloadView() {
+        self.objectWillChange.send()
+    }
+
+}
+struct ContentView:View{
+    @StateObject var reloadTrigger = ReloadViewTrigger()
+    var body:some View{
+        let box = Box(reloadTrigger)
+        TextField("field",text:Binding(get: {box.box}, set: {box.box=$0;box.reloadTrigger.reloadView()}))
+        Text(box.box)
+        let _ = print("refresh")
     }
 }
 
 struct WaterView:View{
     var view:WaterUIViewObject
     @StateObject var reloadTrigger = ReloadViewTrigger()
-
+    
     var body:some View{
         AnyView(build_view(view:view, trigger: reloadTrigger))
     }
@@ -28,7 +51,7 @@ struct WaterView:View{
     init(_ view: WaterUIViewObject) {
         self.view = view
     }
-   
+    
 }
 
 class ReloadViewTrigger:ObservableObject{
@@ -37,73 +60,51 @@ class ReloadViewTrigger:ObservableObject{
     }
 }
 
-func build_view(view: WaterUIViewObject, trigger:ReloadViewTrigger) -> any View{
-    var result:(any View)?=nil
-    
-    if waterui_view_to_empty(view) == 0{
-        return EmptyView()
-    }
-
-    var text=WaterUIText()
-    withUnsafeMutablePointer(to: &text){text in
-        if waterui_view_to_text(view, text) == 0{
-            result = Text(text.pointee.buf.to_string())
-        }
-    }
 
 
-    var button=WaterUIButton()
-    withUnsafeMutablePointer(to: &button){button in
-        if waterui_view_to_button(view, button) == 0{
-            let eventObject=button.pointee.action
-
-            result = Button(button.pointee.label.to_string()){
-                waterui_call_event_object(eventObject)
-            }
-        }
-    }
-
-    var stack=WaterUIStack()
-    
-    withUnsafeMutablePointer(to: &stack){stack in
-        if waterui_view_to_stack(view, stack) == 0{
-            result = VStack{
-                let contents=stack.pointee.contents.to_views().map({IdentifiableViewObject($0)})
-                ForEach(contents) {content in
-                    WaterView(content.view)
-                }
-            }
-        }
+func build_view(view: WaterUIViewObject, trigger:ReloadViewTrigger) -> any View{    
+    if let empty = visitEmpty(view){
+        return empty
     }
     
-    
-    var tapGesture=WaterUITapGesture()
-
-
-    withUnsafeMutablePointer(to: &tapGesture){tapGesture in
-        if waterui_view_to_tap_gesture(view, tapGesture) == 0{
-            let eventObject=tapGesture.pointee.event
-            result=WaterView(tapGesture.pointee.view).onTapGesture{
-                waterui_call_event_object(eventObject)
-            }
-        }
+    if let text = visitText(view){
+        return text
     }
     
-    if let result=result{
-        return result
+    if let button = visitButton(view){
+        return button
     }
     
+    if let stack = visitStack(view){
+        return stack
+    }
 
+    if let gesture = visitTapGesture(view){
+        return gesture
+    }
+    
+    if let modifier = visitFrameModifier(view){
+        return modifier
+    }
+    
+    if let menu = visitMenu(view){
+        return menu
+    }
+    
+    if let textField = visitTextField(view){
+        return textField
+    }
+    
     let triggerPointer=UnsafeMutablePointer<ReloadViewTrigger>.allocate(capacity: 1)
     triggerPointer.initialize(to: trigger)
-
+    
     let builder=WaterUISubscriberBuilderObject(state: triggerPointer,subscriber:subscriber_builder)
     waterui_add_subscriber(view, builder)
     
-
+    
     return WaterView(waterui_call_view(view))
     
-
+    
 }
 
 func subscriber_builder(trigger:UnsafeRawPointer!) -> WaterUISubscriberObject{
@@ -153,7 +154,7 @@ class AppWindow: NSWindow {
 
 @_cdecl("waterui_close_window")
 func close_window(id:size_t){
-
+    
 }
 
 
