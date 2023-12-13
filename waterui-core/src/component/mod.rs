@@ -8,7 +8,10 @@ pub use gesture::TapGesture;
 mod stack;
 pub use stack::{HStack, VStack};
 mod image;
+mod menu;
 pub use image::RawImage;
+pub use menu::Action;
+pub use menu::Menu;
 
 use crate::view::IntoViews;
 
