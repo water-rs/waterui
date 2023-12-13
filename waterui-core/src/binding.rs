@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Default)]
-pub struct Binding<T: ?Sized> {
+pub struct Binding<T> {
     inner: Arc<RawBinding<T>>,
 }
 
@@ -17,7 +17,7 @@ impl<T> From<T> for Binding<T> {
     }
 }
 
-impl<T: PartialEq + ?Sized> PartialEq for Binding<T> {
+impl<T: PartialEq> PartialEq for Binding<T> {
     fn eq(&self, other: &Self) -> bool {
         let left = self.inner.value.read().unwrap();
         let right = other.inner.value.read().unwrap();
@@ -25,7 +25,7 @@ impl<T: PartialEq + ?Sized> PartialEq for Binding<T> {
     }
 }
 
-impl<T: Eq + ?Sized> Eq for Binding<T> {}
+impl<T: Eq> Eq for Binding<T> {}
 
 impl<T: PartialEq> PartialEq<T> for Binding<T> {
     fn eq(&self, other: &T) -> bool {
@@ -175,9 +175,9 @@ impl<T> RawBinding<T> {
 }
 
 impl<T> Binding<T> {
-    pub fn new(value: T) -> Self {
+    pub fn new(value: impl Into<T>) -> Self {
         Self {
-            inner: Arc::new(RawBinding::new(value)),
+            inner: Arc::new(RawBinding::new(value.into())),
         }
     }
 
@@ -189,8 +189,8 @@ impl<T> Binding<T> {
         self.inner.get_mut()
     }
 
-    pub fn set(&self, value: T) {
-        *self.get_mut() = value;
+    pub fn set(&self, value: impl Into<T>) {
+        *self.get_mut() = value.into();
     }
 
     pub fn make_effect(&self) {
