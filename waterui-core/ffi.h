@@ -19,14 +19,15 @@ typedef struct WaterUIEventObject {
   uintptr_t inner[2];
 } WaterUIEventObject;
 
-typedef struct WaterUIViewObject {
-  uintptr_t inner[2];
-} WaterUIViewObject;
-
 typedef struct WaterUIBuf {
   uint8_t *head;
   uintptr_t len;
+  uintptr_t capacity;
 } WaterUIBuf;
+
+typedef struct WaterUIViewObject {
+  uintptr_t inner[2];
+} WaterUIViewObject;
 
 typedef struct WaterUIText {
   struct WaterUIBuf buf;
@@ -51,12 +52,19 @@ typedef struct WaterUIAction {
 typedef struct WaterUIActions {
   struct WaterUIAction *head;
   uintptr_t len;
+  uintptr_t capacity;
 } WaterUIActions;
 
 typedef struct WaterUIMenu {
   struct WaterUIViewObject label;
   struct WaterUIActions actions;
 } WaterUIMenu;
+
+typedef struct WaterUITextField {
+  struct WaterUIBuf label;
+  const void *value;
+  struct WaterUIBuf prompt;
+} WaterUITextField;
 
 typedef enum WaterUISize_Tag {
   WaterUISize_Default,
@@ -98,6 +106,7 @@ typedef struct WaterUIFrameModifier {
 typedef struct WaterUIViews {
   struct WaterUIViewObject *head;
   uintptr_t len;
+  uintptr_t capacity;
 } WaterUIViews;
 
 typedef struct WaterUIStack {
@@ -120,6 +129,24 @@ typedef struct WaterUISubscriberBuilderObject {
  * `EventObject` must be valid
  */
 void waterui_call_event_object(struct WaterUIEventObject object);
+
+/**
+ * # Safety
+ * `Binding` must be valid
+ */
+void waterui_drop_string_binding(const void *binding);
+
+/**
+ * # Safety
+ * `Binding` must be valid, and `Buf` is valid UTF-8 string.
+ */
+void waterui_set_string_binding(const void *binding, struct WaterUIBuf string);
+
+/**
+ * # Safety
+ * `Binding` must be valid.
+ */
+struct WaterUIBuf waterui_get_string_binding(const void *binding);
 
 /**
  * # Safety
@@ -150,6 +177,12 @@ int8_t waterui_view_to_tap_gesture(struct WaterUIViewObject view, struct WaterUI
  * `EventObject` must be valid
  */
 int8_t waterui_view_to_menu(struct WaterUIViewObject view, struct WaterUIMenu *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
+int8_t waterui_view_to_text_field(struct WaterUIViewObject view, struct WaterUITextField *value);
 
 /**
  * # Safety
