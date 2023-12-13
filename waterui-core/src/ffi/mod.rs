@@ -7,7 +7,10 @@ use crate::binding::SubscriberBuilderObject;
 use crate::layout::Frame;
 use crate::modifier::Modifier;
 use crate::view::View;
+use crate::Binding;
 use crate::{component, view::BoxView};
+use std::mem::{forget, transmute, ManuallyDrop};
+use std::ops::Deref;
 use std::ptr::read;
 use std::ptr::write;
 
@@ -18,6 +21,31 @@ use self::utils::{EventObject, ViewObject};
 #[no_mangle]
 pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
     (object.as_ref())();
+}
+
+/// # Safety
+/// `Binding` must be valid
+#[no_mangle]
+pub unsafe extern "C" fn waterui_drop_string_binding(binding: *const ()) {
+    let _: Binding<String> = transmute(binding);
+}
+
+/// # Safety
+/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_set_string_binding(binding: *const (), string: Buf) {
+    let binding: Binding<String> = transmute(binding);
+    let binding = ManuallyDrop::new(binding);
+    binding.set(String::from_utf8_unchecked(string.into()))
+}
+
+/// # Safety
+/// `Binding` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_get_string_binding(binding: *const ()) -> Buf {
+    let binding: ManuallyDrop<Binding<String>> = ManuallyDrop::new(transmute(binding));
+    let binding = binding.get();
+    binding.deref().to_string().into()
 }
 
 macro_rules! impl_component{
@@ -97,7 +125,8 @@ impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
     (waterui_view_to_tap_gesture, TapGesture),
-    (waterui_view_to_menu, Menu)
+    (waterui_view_to_menu, Menu),
+    (waterui_view_to_text_field, TextField)
 );
 
 impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
@@ -204,6 +233,26 @@ pub struct Menu {
 pub struct Action {
     label: Buf,
     action: EventObject,
+}
+
+#[repr(C)]
+pub struct TextField {
+    label: Buf,
+    value: *const (),
+    prompt: Buf,
+}
+
+impl From<component::TextField> for TextField {
+    fn from(value: component::TextField) -> Self {
+        unsafe {
+            let pointer: *const () = transmute(value.value);
+            Self {
+                label: value.label.into_plain().into(),
+                value: pointer,
+                prompt: value.prompt.into(),
+            }
+        }
+    }
 }
 
 impl From<component::Action> for Action {
