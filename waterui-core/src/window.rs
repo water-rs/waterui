@@ -2,7 +2,7 @@ use crate::{
     ffi::{
         utils::ViewObject, waterui_close_window, waterui_create_window, waterui_window_closeable,
     },
-    view::View,
+    view::IntoView,
 };
 
 #[derive(Debug, Clone)]
@@ -11,10 +11,9 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(title: impl Into<String>, content: impl View + 'static) -> Self {
+    pub fn new(title: impl Into<String>, content: impl IntoView) -> Self {
         let title = title.into();
-        let content: Box<dyn View> = Box::new(content);
-        let widget = ViewObject::from(content);
+        let widget = ViewObject::from(content.into_boxed_view());
         unsafe { Self::from_raw(waterui_create_window(title.into(), widget)) }
     }
 
