@@ -24,7 +24,7 @@ typedef struct WaterUIViewObject {
 } WaterUIViewObject;
 
 typedef struct WaterUIBuf {
-  const uint8_t *head;
+  uint8_t *head;
   uintptr_t len;
 } WaterUIBuf;
 
@@ -42,6 +42,21 @@ typedef struct WaterUITapGesture {
   struct WaterUIViewObject view;
   struct WaterUIEventObject event;
 } WaterUITapGesture;
+
+typedef struct WaterUIAction {
+  struct WaterUIBuf label;
+  struct WaterUIEventObject action;
+} WaterUIAction;
+
+typedef struct WaterUIActions {
+  struct WaterUIAction *head;
+  uintptr_t len;
+} WaterUIActions;
+
+typedef struct WaterUIMenu {
+  struct WaterUIViewObject label;
+  struct WaterUIActions actions;
+} WaterUIMenu;
 
 typedef enum WaterUISize_Tag {
   WaterUISize_Default,
@@ -81,7 +96,7 @@ typedef struct WaterUIFrameModifier {
 } WaterUIFrameModifier;
 
 typedef struct WaterUIViews {
-  const struct WaterUIViewObject *head;
+  struct WaterUIViewObject *head;
   uintptr_t len;
 } WaterUIViews;
 
@@ -129,6 +144,12 @@ int8_t waterui_view_to_button(struct WaterUIViewObject view, struct WaterUIButto
  * `EventObject` must be valid
  */
 int8_t waterui_view_to_tap_gesture(struct WaterUIViewObject view, struct WaterUITapGesture *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
+int8_t waterui_view_to_menu(struct WaterUIViewObject view, struct WaterUIMenu *value);
 
 /**
  * # Safety
