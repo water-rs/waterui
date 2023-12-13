@@ -1,4 +1,4 @@
-use crate::{attributed_string::AttributedString, layout::Edge, BoxView, View};
+use crate::{attributed_string::AttributedString, layout::Edge, view::IntoView, BoxView};
 use std::fmt::Display;
 
 use super::Text;
@@ -24,8 +24,8 @@ impl Button {
         Self::default().label(Text::new(label))
     }
 
-    pub fn action(mut self, f: impl Fn() + 'static) -> Self {
-        self.action = Box::new(f);
+    pub fn action(mut self, action: impl Fn() + 'static) -> Self {
+        self.action = Box::new(action);
         self
     }
 
@@ -38,8 +38,8 @@ impl Button {
         self
     }
 
-    pub fn label(mut self, label: impl View + 'static) -> Self {
-        self.label = Box::new(label);
+    pub fn label(mut self, label: impl IntoView) -> Self {
+        self.label = Box::new(label.into_view());
         self
     }
 }

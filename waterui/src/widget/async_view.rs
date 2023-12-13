@@ -5,6 +5,7 @@ use std::mem::take;
 use std::ops::DerefMut;
 use waterui_core::binding::Binding;
 use waterui_core::view::BoxView;
+use waterui_core::view::IntoView;
 
 use crate::{View, ViewExt};
 
@@ -36,7 +37,7 @@ impl AsyncView<(), ()> {
     pub fn new<F, Fut, V>(f: F) -> Self
     where
         F: 'static + Fn() -> Fut,
-        V: View + 'static,
+        V: IntoView,
         Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
     {
         let binding = Binding::new(AsyncViewState::Initial);
@@ -51,7 +52,7 @@ impl AsyncView<(), ()> {
                 task(async move {
                     let result = fut.await;
                     match result {
-                        Ok(view) => binding.set(AsyncViewState::Ready(view.boxed())),
+                        Ok(view) => binding.set(AsyncViewState::Ready(view.into_boxed_view())),
                         Err(error) => binding.set(AsyncViewState::Fail(error)),
                     }
                 });
@@ -63,9 +64,9 @@ impl AsyncView<(), ()> {
 impl<LoadingView, LoadingViewBuilder, ErrorView, ErrorViewBuilder> View
     for AsyncView<LoadingViewBuilder, ErrorViewBuilder>
 where
-    LoadingView: View + 'static,
+    LoadingView: IntoView,
     LoadingViewBuilder: Fn() -> LoadingView,
-    ErrorView: View + 'static,
+    ErrorView: IntoView,
     ErrorViewBuilder: Fn(anyhow::Error) -> ErrorView,
 {
     fn view(&self) -> BoxView {
@@ -73,11 +74,11 @@ where
         match state {
             AsyncViewState::Initial => {
                 (self.retry)();
-                (self.loading_view)().boxed()
+                (self.loading_view)().into_boxed_view()
             }
-            AsyncViewState::Loading => (self.loading_view)().boxed(),
+            AsyncViewState::Loading => (self.loading_view)().into_boxed_view(),
             AsyncViewState::Ready(content) => content,
-            AsyncViewState::Fail(error) => (self.error_view)(error).boxed(),
+            AsyncViewState::Fail(error) => (self.error_view)(error).into_boxed_view(),
         }
     }
 }

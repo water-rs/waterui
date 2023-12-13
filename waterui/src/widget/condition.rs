@@ -1,6 +1,4 @@
-use waterui_core::{Binding, BoxView, View};
-
-use crate::{view, ViewExt};
+use crate::{view, view::IntoView, Binding, BoxView, View};
 
 #[derive(Debug)]
 #[view(use_core)]
@@ -11,10 +9,10 @@ pub struct Condition<ContentBuilder, OrBuilder> {
     or: OrBuilder,
 }
 
-impl<ContentBuilder, V> Condition<ContentBuilder, fn()>
+impl<ContentBuilder, Content> Condition<ContentBuilder, fn()>
 where
-    ContentBuilder: Fn() -> V,
-    V: View + 'static,
+    ContentBuilder: Fn() -> Content,
+    Content: IntoView,
 {
     pub fn new(condition: impl Into<Binding<bool>>, content: ContentBuilder) -> Self {
         Self {
@@ -29,10 +27,14 @@ impl<Content, Or, ContentBuilder, OrBuilder> Condition<ContentBuilder, OrBuilder
 where
     ContentBuilder: Fn() -> Content,
     OrBuilder: Fn() -> Or,
-    Content: View + 'static,
-    Or: View + 'static,
+    Content: IntoView,
+    Or: IntoView,
 {
-    pub fn or<V>(self, or: V) -> Condition<ContentBuilder, V> {
+    pub fn or<F, V>(self, or: F) -> Condition<ContentBuilder, F>
+    where
+        F: Fn() -> V,
+        V: IntoView,
+    {
         Condition {
             condition: self.condition,
             content: self.content,
@@ -45,14 +47,14 @@ impl<Content, Or, ContentBuilder, OrBuilder> View for Condition<ContentBuilder, 
 where
     ContentBuilder: Fn() -> Content,
     OrBuilder: Fn() -> Or,
-    Content: View + 'static,
-    Or: View + 'static,
+    Content: IntoView,
+    Or: IntoView,
 {
     fn view(&self) -> BoxView {
         if *self.condition.get() {
-            (self.content)().boxed()
+            (self.content)().into_boxed_view()
         } else {
-            (self.or)().boxed()
+            (self.or)().into_boxed_view()
         }
     }
 }
@@ -63,7 +65,7 @@ pub fn when<ContentBuilder, Content>(
 ) -> Condition<ContentBuilder, fn()>
 where
     ContentBuilder: Fn() -> Content,
-    Content: View + 'static,
+    Content: IntoView,
 {
     Condition::new(condition, content)
 }
