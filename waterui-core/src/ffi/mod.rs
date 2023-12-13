@@ -1,4 +1,6 @@
-pub mod buf;
+#[macro_use]
+mod array;
+pub use array::Buf;
 pub mod utils;
 
 use crate::binding::SubscriberBuilderObject;
@@ -6,8 +8,6 @@ use crate::layout::Frame;
 use crate::modifier::Modifier;
 use crate::view::View;
 use crate::{component, view::BoxView};
-use buf::Buf;
-use itertools::Itertools;
 use std::ptr::read;
 use std::ptr::write;
 
@@ -67,9 +67,15 @@ macro_rules! impl_modifier{
 }
 
 unsafe fn try_unwrap_boxed_view(view: *mut *const dyn View) {
-    if (**view).is::<BoxView>() {
-        *view = read(view as *const *const dyn View)
+    let mut new_view = *view;
+    loop {
+        if (*new_view).is::<BoxView>() {
+            new_view = read(new_view as *const *const dyn View)
+        } else {
+            break;
+        }
     }
+    *view = new_view
 }
 
 /// # Safety
@@ -90,7 +96,8 @@ pub unsafe extern "C" fn waterui_view_to_empty(view: ViewObject) -> i8 {
 impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
-    (waterui_view_to_tap_gesture, TapGesture)
+    (waterui_view_to_tap_gesture, TapGesture),
+    (waterui_view_to_menu, Menu)
 );
 
 impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
@@ -168,24 +175,7 @@ impl From<Modifier<Frame>> for FrameModifier {
     }
 }
 
-#[repr(C)]
-pub struct Views {
-    head: *const ViewObject,
-    len: usize,
-}
-
-impl From<Vec<BoxView>> for Views {
-    fn from(value: Vec<BoxView>) -> Self {
-        let len = value.len();
-        let views = value.into_iter().map(ViewObject::from).collect_vec();
-        let boxed = views.into_boxed_slice();
-        Self {
-            head: Box::into_raw(boxed) as *const ViewObject,
-            len,
-        }
-    }
-}
-
+impl_array!(Views, BoxView, ViewObject);
 #[repr(C)]
 pub struct Stack {
     mode: StackMode,
@@ -202,6 +192,38 @@ pub enum StackMode {
 pub struct Button {
     label: ViewObject,
     action: EventObject,
+}
+
+#[repr(C)]
+pub struct Menu {
+    label: ViewObject,
+    actions: Actions,
+}
+
+#[repr(C)]
+pub struct Action {
+    label: Buf,
+    action: EventObject,
+}
+
+impl From<component::Action> for Action {
+    fn from(value: component::Action) -> Self {
+        Self {
+            label: value.label.into_plain().into(),
+            action: value.action.into(),
+        }
+    }
+}
+
+impl_array!(Actions, component::Action, Action);
+
+impl From<component::Menu> for Menu {
+    fn from(value: component::Menu) -> Self {
+        Self {
+            label: value.label.into(),
+            actions: value.actions.into(),
+        }
+    }
 }
 
 #[repr(C)]
