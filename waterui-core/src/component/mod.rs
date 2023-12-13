@@ -12,6 +12,8 @@ mod menu;
 pub use image::RawImage;
 pub use menu::Action;
 pub use menu::Menu;
+mod text_field;
+pub use text_field::TextField;
 
 use crate::view::IntoViews;
 
