@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
 };
 
-use crate::binding::SubscriberBuilderObject;
+use crate::{binding::SubscriberBuilderObject, component::Text};
 
 /// View represents a part of the user interface.
 ///
@@ -30,6 +30,39 @@ pub trait View: Reactive {
     }
 }
 
+pub trait IntoView {
+    type Output: View + 'static;
+    fn into_view(self) -> Self::Output;
+
+    fn into_boxed_view(self) -> BoxView
+    where
+        Self: Sized,
+    {
+        Box::new(self.into_view())
+    }
+}
+
+impl<V: View + 'static> IntoView for V {
+    type Output = V;
+    fn into_view(self) -> Self::Output {
+        self
+    }
+}
+
+impl IntoView for &str {
+    type Output = Text;
+    fn into_view(self) -> Self::Output {
+        Text::new(self)
+    }
+}
+
+impl IntoView for String {
+    type Output = Text;
+    fn into_view(self) -> Self::Output {
+        Text::new(self)
+    }
+}
+
 pub trait IntoViews {
     fn into_views(self) -> Vec<BoxView>;
 }
@@ -45,10 +78,10 @@ macro_rules! impl_tuple_views {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:View+'static,)*>IntoViews for ($($ty),*){
+        impl <$($ty:IntoView,)*>IntoViews for ($($ty),*){
             fn into_views(self) -> Vec<BoxView> {
                 let ($($ty),*)=self;
-                vec![$(Box::new($ty)),*]
+                vec![$($ty.into_boxed_view()),*]
             }
         }
     };
