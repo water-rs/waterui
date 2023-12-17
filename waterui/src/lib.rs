@@ -2,7 +2,7 @@ pub mod view;
 pub use view::{BoxView, View, ViewExt};
 pub mod widget;
 pub use waterui_core::{
-    attributed_string::AttributedString, binding, ffi, layout, modifier::Modifier, Binding,
+    attributed_string::AttributedString, ffi, layout, modifier::Modifier, Reactive,
 };
 pub use waterui_derive::view;
 
