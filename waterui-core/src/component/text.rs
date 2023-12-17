@@ -1,26 +1,26 @@
-use crate::layout::Size;
+use crate::{layout::Size, reactive::IntoReactive, Reactive};
 use std::fmt::Display;
 
 use crate::attributed_string::{AttributedString, Font};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
-    pub(crate) text: AttributedString,
-    pub(crate) selectable: bool,
+    pub(crate) text: Reactive<AttributedString>,
+    pub(crate) selectable: Reactive<bool>,
 }
 
 raw_view!(Text);
 
 impl Text {
-    pub fn new(text: impl Into<AttributedString>) -> Self {
+    pub fn new(text: impl IntoReactive<AttributedString>) -> Self {
         Self {
-            text: text.into(),
-            selectable: true,
+            text: text.into_reactive(),
+            selectable: Reactive::new(true),
         }
     }
 
-    pub fn disable_select(mut self) -> Self {
-        self.selectable = false;
+    pub fn disable_select(self) -> Self {
+        *self.selectable.get_mut() = false;
         self
     }
 
@@ -28,13 +28,15 @@ impl Text {
         Self::new(value.to_string())
     }
 
-    pub fn bold(mut self) -> Self {
-        self.text.set_attribute(.., Font::bold());
+    pub fn bold(self) -> Self {
+        self.text.get_mut().set_attribute(.., Font::bold());
         self
     }
 
-    pub fn size(mut self, size: impl Into<Size>) -> Self {
-        self.text.set_attribute(.., Font::new().size(size));
+    pub fn size(self, size: impl Into<Size>) -> Self {
+        self.text
+            .get_mut()
+            .set_attribute(.., Font::new().size(size));
         self
     }
 }

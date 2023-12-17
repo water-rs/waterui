@@ -7,12 +7,11 @@ use crate::{
 
 #[repr(C)]
 pub struct ViewObject {
-    inner: [usize; 2], // *const dyn View
+    inner: [usize; 2], // Box<dyn View>
 }
 
 impl From<BoxView> for ViewObject {
     fn from(value: BoxView) -> Self {
-        let value = Box::leak(value);
         unsafe { transmute(value) }
     }
 }
@@ -20,7 +19,7 @@ impl From<BoxView> for ViewObject {
 impl ViewObject {
     /// # Safety
     /// `EventObject` must be valid
-    pub unsafe fn as_ref(&self) -> &(dyn View + 'static) {
+    pub unsafe fn into_box(&self) -> BoxView {
         transmute(self.inner)
     }
 

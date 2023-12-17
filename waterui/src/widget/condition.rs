@@ -1,10 +1,8 @@
-use crate::{view, view::IntoView, Binding, BoxView, View};
+use crate::{view::IntoView, BoxView, Reactive, View, ViewExt};
 
 #[derive(Debug)]
-#[view(use_core)]
 pub struct Condition<ContentBuilder, OrBuilder> {
-    #[state]
-    condition: bool,
+    condition: Reactive<bool>,
     content: ContentBuilder,
     or: OrBuilder,
 }
@@ -14,9 +12,9 @@ where
     ContentBuilder: Fn() -> Content,
     Content: IntoView,
 {
-    pub fn new(condition: impl Into<Binding<bool>>, content: ContentBuilder) -> Self {
+    pub fn new(condition: Reactive<bool>, content: ContentBuilder) -> Self {
         Self {
-            condition: condition.into(),
+            condition,
             content,
             or: || {},
         }
@@ -45,27 +43,19 @@ where
 
 impl<Content, Or, ContentBuilder, OrBuilder> View for Condition<ContentBuilder, OrBuilder>
 where
-    ContentBuilder: Fn() -> Content,
-    OrBuilder: Fn() -> Or,
+    ContentBuilder: 'static + Fn() -> Content,
+    OrBuilder: 'static + Fn() -> Or,
     Content: IntoView,
     Or: IntoView,
 {
-    fn view(&self) -> BoxView {
-        if *self.condition.get() {
-            (self.content)().into_boxed_view()
-        } else {
-            (self.or)().into_boxed_view()
-        }
+    fn view(self) -> BoxView {
+        let result: Reactive<BoxView> = self.condition.to(move |condition| {
+            if *condition {
+                (self.content)().into_boxed_view()
+            } else {
+                (self.or)().into_boxed_view()
+            }
+        });
+        result.boxed()
     }
-}
-
-pub fn when<ContentBuilder, Content>(
-    condition: impl Into<Binding<bool>>,
-    content: ContentBuilder,
-) -> Condition<ContentBuilder, fn()>
-where
-    ContentBuilder: Fn() -> Content,
-    Content: IntoView,
-{
-    Condition::new(condition, content)
 }

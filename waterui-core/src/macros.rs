@@ -1,12 +1,10 @@
 macro_rules! raw_view {
     ($ty:ty) => {
         impl crate::View for $ty {
-            fn view(&self) -> crate::view::BoxView {
+            fn view(self) -> crate::view::BoxView {
                 panic!("You cannot call `view` for a raw view");
             }
         }
-
-        impl crate::view::Reactive for $ty {}
     };
 }
 
