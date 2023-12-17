@@ -1,101 +1,118 @@
 use crate::task;
-use crate::view;
+use crate::{View, ViewExt};
 use std::future::Future;
-use std::mem::take;
-use std::ops::DerefMut;
-use waterui_core::binding::Binding;
+
 use waterui_core::view::BoxView;
 use waterui_core::view::IntoView;
-
-use crate::{View, ViewExt};
+use waterui_core::Reactive;
 
 use crate::widget::text;
 
-#[view(use_core)]
-pub struct AsyncView<LoadingViewBuilder, ErrorViewBuilder> {
-    #[state]
-    content: AsyncViewState,
+pub struct AsyncView<F, LoadingViewBuilder, ErrorViewBuilder> {
+    f: F,
+
     loading_view: LoadingViewBuilder,
     error_view: ErrorViewBuilder,
-    retry: Box<dyn Fn()>,
 }
 
-enum AsyncViewState {
-    Initial,
-    Loading,
-    Ready(BoxView),
-    Fail(anyhow::Error),
-}
-
-impl Default for AsyncViewState {
-    fn default() -> Self {
-        Self::Initial
-    }
-}
-
-impl AsyncView<(), ()> {
-    pub fn new<F, Fut, V>(f: F) -> Self
+impl<F> AsyncView<F, (), ()> {
+    pub fn new<Fut, V>(f: F) -> Self
     where
         F: 'static + Fn() -> Fut,
         V: IntoView,
         Fut: Future<Output = Result<V, anyhow::Error>> + 'static,
     {
-        let binding = Binding::new(AsyncViewState::Initial);
         Self {
-            content: binding.clone(),
+            f,
+
             loading_view: (),
             error_view: (),
-            retry: Box::new(move || {
-                let binding = binding.clone();
-                let fut = f();
-                binding.set(AsyncViewState::Loading);
-                task(async move {
-                    let result = fut.await;
-                    match result {
-                        Ok(view) => binding.set(AsyncViewState::Ready(view.into_boxed_view())),
-                        Err(error) => binding.set(AsyncViewState::Fail(error)),
-                    }
-                });
-            }),
+        }
+    }
+
+    pub fn loading<Builder, V>(self, builder: Builder) -> AsyncView<F, Builder, ()>
+    where
+        Builder: Fn() -> V,
+        V: IntoView,
+    {
+        AsyncView {
+            loading_view: builder,
+            error_view: (),
+            f: self.f,
+        }
+    }
+
+    pub fn error<Builder, V>(self, builder: Builder) -> AsyncView<F, (), Builder>
+    where
+        Builder: Fn() -> V,
+        V: IntoView,
+    {
+        AsyncView {
+            loading_view: (),
+            error_view: builder,
+            f: self.f,
         }
     }
 }
 
-impl<LoadingView, LoadingViewBuilder, ErrorView, ErrorViewBuilder> View
-    for AsyncView<LoadingViewBuilder, ErrorViewBuilder>
+impl<F, ErrorViewBuilder, ErrorView> AsyncView<F, (), ErrorViewBuilder>
 where
-    LoadingView: IntoView,
-    LoadingViewBuilder: Fn() -> LoadingView,
+    ErrorViewBuilder: Fn() -> ErrorView,
     ErrorView: IntoView,
-    ErrorViewBuilder: Fn(anyhow::Error) -> ErrorView,
 {
-    fn view(&self) -> BoxView {
-        let state = take(self.content.get_mut().deref_mut());
-        match state {
-            AsyncViewState::Initial => {
-                (self.retry)();
-                (self.loading_view)().into_boxed_view()
-            }
-            AsyncViewState::Loading => (self.loading_view)().into_boxed_view(),
-            AsyncViewState::Ready(content) => content,
-            AsyncViewState::Fail(error) => (self.error_view)(error).into_boxed_view(),
+    pub fn loading<Builder, V>(self, builder: Builder) -> AsyncView<F, Builder, ErrorViewBuilder>
+    where
+        Builder: Fn() -> V,
+        V: IntoView,
+    {
+        AsyncView {
+            loading_view: builder,
+            error_view: self.error_view,
+            f: self.f,
         }
     }
 }
 
-impl View for AsyncView<(), ()> {
-    fn view(&self) -> BoxView {
-        let state = take(self.content.get_mut().deref_mut());
-
-        match state {
-            AsyncViewState::Initial => {
-                (self.retry)();
-                default_loading_view().boxed()
-            }
-            AsyncViewState::Loading => default_loading_view().boxed(),
-            AsyncViewState::Ready(content) => content,
-            AsyncViewState::Fail(error) => default_error_view(error).boxed(),
+impl<F, LoadingViewBuilder, LoadingView> AsyncView<F, LoadingViewBuilder, ()>
+where
+    LoadingViewBuilder: Fn() -> LoadingView,
+    LoadingView: IntoView,
+{
+    pub fn error<Builder, V>(self, builder: Builder) -> AsyncView<F, LoadingViewBuilder, Builder>
+    where
+        Builder: Fn() -> V,
+        V: IntoView,
+    {
+        AsyncView {
+            loading_view: self.loading_view,
+            error_view: builder,
+            f: self.f,
         }
+    }
+}
+
+impl<F, Content, Fut> View for AsyncView<F, (), ()>
+where
+    F: 'static + Fn() -> Fut,
+    Content: IntoView,
+    Fut: Future<Output = Result<Content, anyhow::Error>> + 'static,
+{
+    fn view(self) -> BoxView {
+        let view = Reactive::new_with_updater(move || default_loading_view().boxed());
+        let handler = view.clone();
+        let retry = move || {
+            task(async move {
+                let view = match (self.f)().await {
+                    Ok(content) => content.into_boxed_view(),
+                    Err(error) => default_error_view(error).boxed(),
+                };
+                handler.set(view);
+            })
+        };
+
+        retry();
+
+        view.boxed()
     }
 }
 
