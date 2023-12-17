@@ -1,23 +1,21 @@
 use super::{text, vstack, Button, HStack, Text, VStack};
-use crate::{view, view::ViewExt, Binding, View};
+use crate::{view::ViewExt, View};
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use itertools::Itertools;
+use waterui_core::{BoxView, Reactive};
 
-#[view(use_core)]
 pub struct DatePicker {
-    #[state]
-    date: NaiveDate,
+    date: Reactive<NaiveDate>,
 }
 
 impl DatePicker {
-    pub fn new(date: Binding<NaiveDate>) -> Self {
-        Self { date }
+    pub fn new(date: &Reactive<NaiveDate>) -> Self {
+        Self { date: date.clone() }
     }
 }
 
-#[view(use_core)]
 impl View for DatePicker {
-    fn view(&self) -> VStack {
+    fn view(self) -> BoxView {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;
@@ -59,5 +57,6 @@ impl View for DatePicker {
                 .leading(),
             HStack::from_iter(day_iter),
         ))
+        .boxed()
     }
 }

@@ -1,18 +1,16 @@
-use crate::{view, View};
+use crate::{View, ViewExt};
 use smol::{fs::File, io::AsyncReadExt, io::BufReader};
 use url::Url;
-use waterui_core::component::RawImage;
+use waterui_core::{component::RawImage, BoxView};
 
 use super::AsyncView;
 
-#[view(use_core)]
 pub struct Image {
     url: Url,
 }
 
-#[view(use_core)]
 impl View for Image {
-    fn view(&self) -> impl View {
+    fn view(self) -> BoxView {
         let url = self.url.clone();
 
         AsyncView::new(move || {
@@ -34,5 +32,6 @@ impl View for Image {
                 }
             }
         })
+        .boxed()
     }
 }

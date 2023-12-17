@@ -1,21 +1,20 @@
 use std::{
     any::{type_name, TypeId},
     fmt::Debug,
-    ops::Deref,
 };
 
-use crate::{binding::SubscriberBuilderObject, component::Text};
+use crate::{component::Text, Reactive};
 
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View: Reactive {
+pub trait View {
     /// Build this view and return the content.
     ///
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn view(&self) -> BoxView;
+    fn view(self) -> BoxView;
 
     fn name(&self) -> &'static str {
         type_name::<Self>()
@@ -91,13 +90,6 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
-pub trait Reactive {
-    fn subscribe(&self, _builder: SubscriberBuilderObject) {}
-    fn is_reactive(&self) -> bool {
-        false
-    }
-}
-
 mod sealed {
     pub struct Sealed;
 }
@@ -132,36 +124,9 @@ impl dyn View {
 }
 
 pub type BoxView = Box<dyn View + 'static>;
+raw_view!(Reactive<BoxView>);
 
-impl<V: Reactive> Reactive for &V {
-    fn is_reactive(&self) -> bool {
-        (*self).is_reactive()
-    }
-
-    fn subscribe(&self, subscriber: SubscriberBuilderObject) {
-        (*self).subscribe(subscriber)
-    }
-}
-
-impl<V: Reactive + ?Sized> Reactive for Box<V> {
-    fn is_reactive(&self) -> bool {
-        self.deref().is_reactive()
-    }
-
-    fn subscribe(&self, subscriber: SubscriberBuilderObject) {
-        self.deref().subscribe(subscriber)
-    }
-}
-
-impl<V: View + ?Sized + 'static> View for Box<V> {
-    fn view(&self) -> Box<dyn View> {
-        self.deref().view()
-    }
-
-    fn name(&self) -> &'static str {
-        self.deref().name()
-    }
-}
+raw_view!(BoxView);
 
 impl Debug for dyn View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

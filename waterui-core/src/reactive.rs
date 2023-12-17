@@ -5,19 +5,61 @@ use std::{
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use crate::AttributedString;
+
 pub struct Reactive<T: 'static> {
     inner: Arc<RawReactive<T>>,
 }
 
-impl From<&str> for Reactive<String> {
-    fn from(value: &str) -> Self {
-        Self::from(value.to_string())
+impl<T: Default> Default for Reactive<T> {
+    fn default() -> Self {
+        Self::new_with_updater(|| T::default())
     }
 }
 
-impl<T: Clone> From<&[T]> for Reactive<Vec<T>> {
-    fn from(value: &[T]) -> Self {
-        Self::from(value.to_vec())
+pub trait IntoReactive<T> {
+    fn into_reactive(self) -> Reactive<T>;
+}
+
+impl<T: Clone> IntoReactive<T> for T {
+    fn into_reactive(self) -> Reactive<T> {
+        Reactive::new(self)
+    }
+}
+
+impl IntoReactive<String> for &str {
+    fn into_reactive(self) -> Reactive<String> {
+        Reactive::new(self)
+    }
+}
+
+impl<T: Clone> IntoReactive<Vec<T>> for &[T] {
+    fn into_reactive(self) -> Reactive<Vec<T>> {
+        Reactive::new(self)
+    }
+}
+
+impl IntoReactive<AttributedString> for &str {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        Reactive::new(self)
+    }
+}
+
+impl IntoReactive<AttributedString> for String {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        Reactive::new(self)
+    }
+}
+
+impl<T> IntoReactive<T> for Reactive<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        self
+    }
+}
+
+impl<T> IntoReactive<T> for &Reactive<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        self.clone()
     }
 }
 
@@ -49,12 +91,6 @@ impl<T: Display> Display for Reactive<T> {
     }
 }
 
-impl<T> From<T> for Reactive<T> {
-    fn from(value: T) -> Self {
-        Self::new(value)
-    }
-}
-
 impl<T> Clone for Reactive<T> {
     fn clone(&self) -> Self {
         Self {
@@ -64,12 +100,14 @@ impl<T> Clone for Reactive<T> {
 }
 
 impl<T> Reactive<T> {
-    pub fn new(value: impl Into<T>) -> Self {
+    pub fn new(value: impl Into<T>) -> Self
+    where
+        T: Clone,
+    {
         Self {
             inner: Arc::new(RawReactive::new(value.into())),
         }
     }
-
     pub fn get(&self) -> ReactiveGuard<T> {
         self.inner.get()
     }
@@ -82,16 +120,32 @@ impl<T> Reactive<T> {
         *self.get_mut() = value.into();
     }
 
+    pub fn take(&self) -> T {
+        self.inner.take()
+    }
+
     pub fn to<T2>(&self, f: impl 'static + Fn(&T) -> T2) -> Reactive<T2> {
-        let binding = self.clone();
-        let reactive = Reactive::<T2>::new_with_updater(move || f(binding.get().deref()));
-        let weak = Arc::downgrade(&reactive.inner);
+        let original = self.clone();
+        let reactive = Reactive::<T2>::new_with_updater(move || f(original.get().deref()));
+        reactive.depend(self);
+
+        reactive
+    }
+
+    fn depend<T2>(&self, dependency: &Reactive<T2>) {
+        let weak = Arc::downgrade(&dependency.inner);
         self.inner.add_subcriber(move || {
             if let Some(weak) = weak.upgrade() {
                 weak.need_update()
             }
         });
-        reactive
+    }
+
+    pub fn with<T2>(&self, with: &Reactive<T2>) -> Reactive<(T, T2)> {
+        let original = self.clone();
+        let with = with.clone();
+
+        Reactive::<(T, T2)>::new_with_updater(move || (original.take(), with.take()))
     }
 
     pub fn new_with_updater<Output: Into<T>>(updater: impl 'static + Fn() -> Output) -> Self {
@@ -152,20 +206,21 @@ impl<'a, T> Drop for MutReactiveGuard<'a, T> {
 type Updater<T> = Box<dyn Fn() -> T>;
 type Subscriber = Box<dyn Fn()>;
 
-struct RawReactive<T> {
+struct RawReactive<T: 'static> {
     value: RwLock<Option<T>>,
     subscribers: RwLock<Vec<Subscriber>>,
     updater: Updater<T>,
 }
 
 impl<T> RawReactive<T> {
-    pub fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self
+    where
+        T: Clone,
+    {
         Self {
-            value: RwLock::new(Some(value)),
+            value: RwLock::new(Some(value.clone())),
             subscribers: RwLock::new(Vec::new()),
-            updater: Box::new(|| {
-                panic!("This Reactive have no dependency and should not be updated")
-            }),
+            updater: Box::new(move || value.clone()),
         }
     }
 
@@ -177,12 +232,16 @@ impl<T> RawReactive<T> {
         }
     }
 
+    pub fn take(&self) -> T {
+        self.get_mut().guard.deref_mut().take().unwrap()
+    }
+
     pub fn add_subcriber(&self, subscriber: impl Fn() + 'static) {
         self.subscribers.write().unwrap().push(Box::new(subscriber))
     }
 
     pub fn need_update(&self) {
-        *self.value.write().unwrap() = None;
+        self.take();
     }
 
     pub fn get(&self) -> ReactiveGuard<T> {

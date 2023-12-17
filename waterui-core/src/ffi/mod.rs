@@ -3,13 +3,11 @@ mod array;
 pub use array::Buf;
 pub mod utils;
 
-use crate::binding::SubscriberBuilderObject;
 use crate::layout::Frame;
 use crate::modifier::Modifier;
 use crate::view::View;
-use crate::Binding;
-use crate::{component, view::BoxView};
-use std::mem::{forget, transmute, ManuallyDrop};
+use crate::{component, view::BoxView, Reactive};
+use std::mem::{transmute, ManuallyDrop};
 use std::ops::Deref;
 use std::ptr::read;
 use std::ptr::write;
@@ -26,15 +24,15 @@ pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
 /// # Safety
 /// `Binding` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_drop_string_binding(binding: *const ()) {
-    let _: Binding<String> = transmute(binding);
+pub unsafe extern "C" fn waterui_drop_reactive_string(binding: *const ()) {
+    let _: Reactive<String> = transmute(binding);
 }
 
 /// # Safety
 /// `Binding` must be valid, and `Buf` is valid UTF-8 string.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_set_string_binding(binding: *const (), string: Buf) {
-    let binding: Binding<String> = transmute(binding);
+pub unsafe extern "C" fn waterui_set_reactive_string(binding: *const (), string: Buf) {
+    let binding: Reactive<String> = transmute(binding);
     let binding = ManuallyDrop::new(binding);
     binding.set(String::from_utf8_unchecked(string.into()))
 }
@@ -42,10 +40,34 @@ pub unsafe extern "C" fn waterui_set_string_binding(binding: *const (), string: 
 /// # Safety
 /// `Binding` must be valid.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_get_string_binding(binding: *const ()) -> Buf {
-    let binding: ManuallyDrop<Binding<String>> = ManuallyDrop::new(transmute(binding));
+pub unsafe extern "C" fn waterui_get_reactive_string(binding: *const ()) -> Buf {
+    let binding: ManuallyDrop<Reactive<String>> = ManuallyDrop::new(transmute(binding));
     let binding = binding.get();
     binding.deref().to_string().into()
+}
+
+/// # Safety
+/// `Binding` must be valid
+#[no_mangle]
+pub unsafe extern "C" fn waterui_drop_reactive_bool(binding: *const ()) {
+    let _: Reactive<bool> = transmute(binding);
+}
+
+/// # Safety
+/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_set_reactive_bool(binding: *const (), bool: bool) {
+    let binding: Reactive<bool> = transmute(binding);
+    let binding = ManuallyDrop::new(binding);
+    binding.set(bool);
+}
+
+/// # Safety
+/// `Binding` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_get_reactive_bool(reactive: *const ()) -> bool {
+    let reactive: ManuallyDrop<Reactive<bool>> = ManuallyDrop::new(transmute(reactive));
+    reactive.take()
 }
 
 macro_rules! impl_component{
@@ -124,8 +146,6 @@ pub unsafe extern "C" fn waterui_view_to_empty(view: ViewObject) -> i8 {
 impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
-    (waterui_view_to_tap_gesture, TapGesture),
-    (waterui_view_to_menu, Menu),
     (waterui_view_to_text_field, TextField)
 );
 
@@ -155,38 +175,13 @@ pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Sta
 /// `EventObject` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_call_view(view: ViewObject) -> ViewObject {
-    view.as_ref().view().into()
-}
-
-/// # Safety
-/// `EventObject` must be valid
-#[no_mangle]
-pub unsafe extern "C" fn waterui_add_subscriber(
-    view: ViewObject,
-    subscriber: SubscriberBuilderObject,
-) {
-    view.as_ref().subscribe(subscriber);
+    view.into_box().view().into()
 }
 
 #[repr(C)]
 pub struct Text {
-    buf: Buf,
-    selectable: bool,
-}
-
-#[repr(C)]
-pub struct TapGesture {
-    view: ViewObject,
-    event: EventObject,
-}
-
-impl From<component::TapGesture> for TapGesture {
-    fn from(value: component::TapGesture) -> Self {
-        Self {
-            view: value.view.into(),
-            event: value.event.into(),
-        }
-    }
+    buf: *const (),
+    selectable: *const (),
 }
 
 #[repr(C)]
@@ -224,53 +219,20 @@ pub struct Button {
 }
 
 #[repr(C)]
-pub struct Menu {
-    label: ViewObject,
-    actions: Actions,
-}
-
-#[repr(C)]
-pub struct Action {
-    label: Buf,
-    action: EventObject,
-}
-
-#[repr(C)]
 pub struct TextField {
-    label: Buf,
+    label: *const (),
     value: *const (),
-    prompt: Buf,
+    prompt: *const (),
 }
 
 impl From<component::TextField> for TextField {
     fn from(value: component::TextField) -> Self {
         unsafe {
-            let pointer: *const () = transmute(value.value);
             Self {
-                label: value.label.into_plain().into(),
-                value: pointer,
-                prompt: value.prompt.into(),
+                label: transmute(value.label),
+                value: transmute(value.value),
+                prompt: transmute(value.prompt),
             }
-        }
-    }
-}
-
-impl From<component::Action> for Action {
-    fn from(value: component::Action) -> Self {
-        Self {
-            label: value.label.into_plain().into(),
-            action: value.action.into(),
-        }
-    }
-}
-
-impl_array!(Actions, component::Action, Action);
-
-impl From<component::Menu> for Menu {
-    fn from(value: component::Menu) -> Self {
-        Self {
-            label: value.label.into(),
-            actions: value.actions.into(),
         }
     }
 }
@@ -290,10 +252,11 @@ impl From<component::RawImage> for Image {
 
 impl From<component::Text> for Text {
     fn from(value: component::Text) -> Self {
-        let text: String = value.text.into_plain();
-        Self {
-            buf: text.into(),
-            selectable: value.selectable,
+        unsafe {
+            Self {
+                buf: transmute(value.text),
+                selectable: transmute(value.selectable),
+            }
         }
     }
 }

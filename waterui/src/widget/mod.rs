@@ -2,19 +2,19 @@ use crate::AttributedString;
 pub use waterui_core::component::*;
 mod async_view;
 pub use async_view::AsyncView;
-use waterui_core::view::IntoViews;
+use waterui_core::{reactive::IntoReactive, view::IntoViews};
 mod condition;
-pub use condition::{when, Condition};
+pub use condition::Condition;
 mod date_picker;
 
 pub use date_picker::DatePicker;
 mod image;
 
-pub fn text(text: impl Into<AttributedString>) -> Text {
+pub fn text(text: impl IntoReactive<AttributedString>) -> Text {
     Text::new(text)
 }
 
-pub fn button(label: impl Into<AttributedString>) -> Button {
+pub fn button(label: impl IntoReactive<AttributedString>) -> Button {
     Button::new(label)
 }
 
