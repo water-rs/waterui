@@ -1,13 +1,11 @@
 use crate::{
     layout::{Alignment, Frame, Size},
-    widget::TapGesture,
     Modifier,
 };
 use waterui_core::modifier::ViewModifier;
 pub use waterui_core::view::*;
 pub trait ViewExt: View {
     fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T>;
-    fn on_tap(self, event: impl Fn() + 'static) -> TapGesture;
     fn width(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
@@ -23,10 +21,6 @@ pub trait ViewExt: View {
 impl<V: View + 'static> ViewExt for V {
     fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T> {
         Modifier::new(self.boxed(), modifier)
-    }
-
-    fn on_tap(self, event: impl Fn() + 'static) -> TapGesture {
-        TapGesture::new(Box::new(self), Box::new(event))
     }
 
     fn width(self, size: impl Into<Size>) -> Modifier<Frame> {

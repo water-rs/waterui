@@ -1,5 +1,4 @@
 use crate::view::BoxView;
-use crate::view::Reactive;
 use crate::View;
 pub struct Modifier<T> {
     pub(crate) content: BoxView,
@@ -15,9 +14,7 @@ impl<T: ViewModifier> Modifier<T> {
 pub trait ViewModifier {}
 
 impl<T> View for Modifier<T> {
-    fn view(&self) -> BoxView {
+    fn view(self) -> BoxView {
         panic!("You cannot call `view` for a raw view");
     }
 }
-
-impl<T> Reactive for Modifier<T> {}
