@@ -28,7 +28,7 @@ fn view_impl(mut input: ItemImpl) -> Result<TokenStream, Error> {
                 if let Type::ImplTrait(_impltrait) = return_ty {
                     return_ty = parse(quote!(_).into())?;
                 }
-                if sig.ident == "view" {
+                if sig.ident == "body" {
                     let block = &f.block;
                     f.sig.output = parse(quote!(-> ::waterui::view::BoxView).into())?;
                     f.block = parse(
