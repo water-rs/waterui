@@ -5,7 +5,7 @@ use super::Text;
 
 pub struct Button {
     pub(crate) label: BoxView,
-    pub(crate) action: Box<dyn Fn()>,
+    pub(crate) action: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Default for Button {
@@ -22,7 +22,7 @@ impl Button {
         Self::default().label(Text::new(label))
     }
 
-    pub fn action(mut self, action: impl Fn() + 'static) -> Self {
+    pub fn action(mut self, action: impl Fn() + Send + Sync + 'static) -> Self {
         self.action = Box::new(action);
         self
     }
