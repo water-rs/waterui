@@ -1,6 +1,8 @@
 use std::{
     any::{type_name, TypeId},
     fmt::Debug,
+    mem::ManuallyDrop,
+    ops::DerefMut,
 };
 
 use crate::{component::Text, Reactive};
@@ -8,13 +10,13 @@ use crate::{component::Text, Reactive};
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View {
+pub trait View: BoxedView + Send + Sync {
     /// Build this view and return the content.
     ///
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn view(self) -> BoxView;
+    fn body(self) -> BoxView;
 
     fn name(&self) -> &'static str {
         type_name::<Self>()
@@ -26,6 +28,16 @@ pub trait View {
         Self: 'static,
     {
         TypeId::of::<Self>()
+    }
+}
+
+pub trait BoxedView {
+    fn boxed_body(self: Box<Self>) -> BoxView;
+}
+
+impl<V: View> BoxedView for V {
+    fn boxed_body(self: Box<Self>) -> BoxView {
+        (*self).body()
     }
 }
 
@@ -126,7 +138,11 @@ impl dyn View {
 pub type BoxView = Box<dyn View + 'static>;
 raw_view!(Reactive<BoxView>);
 
-raw_view!(BoxView);
+impl View for BoxView {
+    fn body(self) -> BoxView {
+        self.boxed_body()
+    }
+}
 
 impl Debug for dyn View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
