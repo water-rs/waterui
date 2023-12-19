@@ -15,7 +15,7 @@ impl DatePicker {
 }
 
 impl View for DatePicker {
-    fn view(self) -> BoxView {
+    fn body(self) -> BoxView {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;

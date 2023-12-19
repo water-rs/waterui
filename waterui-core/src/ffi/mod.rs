@@ -5,6 +5,7 @@ pub mod utils;
 
 use crate::layout::Frame;
 use crate::modifier::Modifier;
+use crate::reactive::{ReactiveInner, Subscriber};
 use crate::view::View;
 use crate::{component, view::BoxView, Reactive};
 use std::mem::{transmute, ManuallyDrop};
@@ -25,15 +26,15 @@ pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
 /// `Binding` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_drop_reactive_string(binding: *const ()) {
-    let _: Reactive<String> = transmute(binding);
+    let _: Reactive<String> = Reactive::from_raw(binding as *const ReactiveInner<String>);
 }
 
 /// # Safety
 /// `Binding` must be valid, and `Buf` is valid UTF-8 string.
 #[no_mangle]
 pub unsafe extern "C" fn waterui_set_reactive_string(binding: *const (), string: Buf) {
-    let binding: Reactive<String> = transmute(binding);
-    let binding = ManuallyDrop::new(binding);
+    let binding: ManuallyDrop<Reactive<String>> =
+        ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<String>));
     binding.set(String::from_utf8_unchecked(string.into()))
 }
 
@@ -41,15 +42,28 @@ pub unsafe extern "C" fn waterui_set_reactive_string(binding: *const (), string:
 /// `Binding` must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn waterui_get_reactive_string(binding: *const ()) -> Buf {
-    let binding: ManuallyDrop<Reactive<String>> = ManuallyDrop::new(transmute(binding));
+    let binding: ManuallyDrop<Reactive<String>> =
+        ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<String>));
     let binding = binding.get();
     binding.deref().to_string().into()
 }
 
 /// # Safety
+/// `Binding` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_subscribe_reactive_string(
+    reactive: *const (),
+    subscriber: Subscriber,
+) {
+    let reactive: ManuallyDrop<Reactive<String>> =
+        ManuallyDrop::new(Reactive::from_raw(reactive as *mut ReactiveInner<String>));
+    reactive.add_subcriber(subscriber);
+}
+
+/// # Safety
 /// `Binding` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_drop_reactive_bool(binding: *const ()) {
+pub unsafe extern "C" fn waterui_drop_reactive_bool(binding: *mut ()) {
     let _: Reactive<bool> = transmute(binding);
 }
 
@@ -67,7 +81,19 @@ pub unsafe extern "C" fn waterui_set_reactive_bool(binding: *const (), bool: boo
 #[no_mangle]
 pub unsafe extern "C" fn waterui_get_reactive_bool(reactive: *const ()) -> bool {
     let reactive: ManuallyDrop<Reactive<bool>> = ManuallyDrop::new(transmute(reactive));
-    reactive.take()
+    let guard = reactive.get();
+    guard.to_owned()
+}
+
+/// # Safety
+/// `Binding` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_subscribe_reactive_bool(
+    reactive: *const (),
+    subscriber: Subscriber,
+) {
+    let reactive: ManuallyDrop<Reactive<bool>> = ManuallyDrop::new(transmute(reactive));
+    reactive.add_subcriber(subscriber);
 }
 
 macro_rules! impl_component{
@@ -175,12 +201,12 @@ pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Sta
 /// `EventObject` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_call_view(view: ViewObject) -> ViewObject {
-    view.into_box().view().into()
+    view.into_box().body().into()
 }
 
 #[repr(C)]
 pub struct Text {
-    buf: *const (),
+    text: *const (),
     selectable: *const (),
 }
 
@@ -227,12 +253,10 @@ pub struct TextField {
 
 impl From<component::TextField> for TextField {
     fn from(value: component::TextField) -> Self {
-        unsafe {
-            Self {
-                label: transmute(value.label),
-                value: transmute(value.value),
-                prompt: transmute(value.prompt),
-            }
+        Self {
+            label: value.label.into_raw() as *const (),
+            value: value.value.into_raw() as *const (),
+            prompt: value.prompt.into_raw() as *const (),
         }
     }
 }
@@ -252,11 +276,11 @@ impl From<component::RawImage> for Image {
 
 impl From<component::Text> for Text {
     fn from(value: component::Text) -> Self {
-        unsafe {
-            Self {
-                buf: transmute(value.text),
-                selectable: transmute(value.selectable),
-            }
+        let text: Reactive<String> = value.text.to(|v| v.clone().into_plain());
+
+        Self {
+            text: text.into_raw() as *const (),
+            selectable: value.selectable.into_raw() as *const (),
         }
     }
 }

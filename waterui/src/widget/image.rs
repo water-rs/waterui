@@ -10,7 +10,7 @@ pub struct Image {
 }
 
 impl View for Image {
-    fn view(self) -> BoxView {
+    fn body(self) -> BoxView {
         let url = self.url.clone();
 
         AsyncView::new(move || {

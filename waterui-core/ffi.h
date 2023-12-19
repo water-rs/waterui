@@ -25,13 +25,18 @@ typedef struct WaterUIBuf {
   uintptr_t capacity;
 } WaterUIBuf;
 
+typedef struct WaterUISubscriber {
+  void *state;
+  void (*subscriber)(void*);
+} WaterUISubscriber;
+
 typedef struct WaterUIViewObject {
   uintptr_t inner[2];
 } WaterUIViewObject;
 
 typedef struct WaterUIText {
-  struct WaterUIBuf buf;
-  bool selectable;
+  const void *text;
+  const void *selectable;
 } WaterUIText;
 
 typedef struct WaterUIButton {
@@ -39,31 +44,10 @@ typedef struct WaterUIButton {
   struct WaterUIEventObject action;
 } WaterUIButton;
 
-typedef struct WaterUITapGesture {
-  struct WaterUIViewObject view;
-  struct WaterUIEventObject event;
-} WaterUITapGesture;
-
-typedef struct WaterUIAction {
-  struct WaterUIBuf label;
-  struct WaterUIEventObject action;
-} WaterUIAction;
-
-typedef struct WaterUIActions {
-  struct WaterUIAction *head;
-  uintptr_t len;
-  uintptr_t capacity;
-} WaterUIActions;
-
-typedef struct WaterUIMenu {
-  struct WaterUIViewObject label;
-  struct WaterUIActions actions;
-} WaterUIMenu;
-
 typedef struct WaterUITextField {
-  struct WaterUIBuf label;
+  const void *label;
   const void *value;
-  struct WaterUIBuf prompt;
+  const void *prompt;
 } WaterUITextField;
 
 typedef enum WaterUISize_Tag {
@@ -114,16 +98,6 @@ typedef struct WaterUIStack {
   struct WaterUIViews contents;
 } WaterUIStack;
 
-typedef struct WaterUISubscriberObject {
-  const void *state;
-  void (*subscriber)(const void*);
-} WaterUISubscriberObject;
-
-typedef struct WaterUISubscriberBuilderObject {
-  const void *state;
-  struct WaterUISubscriberObject (*subscriber)(const void*);
-} WaterUISubscriberBuilderObject;
-
 /**
  * # Safety
  * `EventObject` must be valid
@@ -134,19 +108,49 @@ void waterui_call_event_object(struct WaterUIEventObject object);
  * # Safety
  * `Binding` must be valid
  */
-void waterui_drop_string_binding(const void *binding);
+void waterui_drop_reactive_string(const void *binding);
 
 /**
  * # Safety
  * `Binding` must be valid, and `Buf` is valid UTF-8 string.
  */
-void waterui_set_string_binding(const void *binding, struct WaterUIBuf string);
+void waterui_set_reactive_string(const void *binding, struct WaterUIBuf string);
 
 /**
  * # Safety
  * `Binding` must be valid.
  */
-struct WaterUIBuf waterui_get_string_binding(const void *binding);
+struct WaterUIBuf waterui_get_reactive_string(const void *binding);
+
+/**
+ * # Safety
+ * `Binding` must be valid.
+ */
+void waterui_subscribe_reactive_string(const void *reactive, struct WaterUISubscriber subscriber);
+
+/**
+ * # Safety
+ * `Binding` must be valid
+ */
+void waterui_drop_reactive_bool(void *binding);
+
+/**
+ * # Safety
+ * `Binding` must be valid, and `Buf` is valid UTF-8 string.
+ */
+void waterui_set_reactive_bool(const void *binding, bool bool_);
+
+/**
+ * # Safety
+ * `Binding` must be valid.
+ */
+bool waterui_get_reactive_bool(const void *reactive);
+
+/**
+ * # Safety
+ * `Binding` must be valid.
+ */
+void waterui_subscribe_reactive_bool(const void *reactive, struct WaterUISubscriber subscriber);
 
 /**
  * # Safety
@@ -165,18 +169,6 @@ int8_t waterui_view_to_text(struct WaterUIViewObject view, struct WaterUIText *v
  * `EventObject` must be valid
  */
 int8_t waterui_view_to_button(struct WaterUIViewObject view, struct WaterUIButton *value);
-
-/**
- * # Safety
- * `EventObject` must be valid
- */
-int8_t waterui_view_to_tap_gesture(struct WaterUIViewObject view, struct WaterUITapGesture *value);
-
-/**
- * # Safety
- * `EventObject` must be valid
- */
-int8_t waterui_view_to_menu(struct WaterUIViewObject view, struct WaterUIMenu *value);
 
 /**
  * # Safety
@@ -202,13 +194,6 @@ int8_t waterui_view_to_stack(struct WaterUIViewObject view, struct WaterUIStack 
  * `EventObject` must be valid
  */
 struct WaterUIViewObject waterui_call_view(struct WaterUIViewObject view);
-
-/**
- * # Safety
- * `EventObject` must be valid
- */
-void waterui_add_subscriber(struct WaterUIViewObject view,
-                            struct WaterUISubscriberBuilderObject subscriber);
 
 extern uintptr_t waterui_create_window(struct WaterUIBuf title, struct WaterUIViewObject content);
 

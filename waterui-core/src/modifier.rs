@@ -11,10 +11,10 @@ impl<T: ViewModifier> Modifier<T> {
     }
 }
 
-pub trait ViewModifier {}
+pub trait ViewModifier: Send + Sync {}
 
-impl<T> View for Modifier<T> {
-    fn view(self) -> BoxView {
+impl<T: Send + Sync> View for Modifier<T> {
+    fn body(self) -> BoxView {
         panic!("You cannot call `view` for a raw view");
     }
 }

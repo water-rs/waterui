@@ -41,8 +41,8 @@ impl EventObject {
     }
 }
 
-impl From<Box<dyn Fn() + 'static>> for EventObject {
-    fn from(value: Box<dyn Fn() + 'static>) -> Self {
+impl From<Box<dyn Fn() + Send + Sync + 'static>> for EventObject {
+    fn from(value: Box<dyn Fn() + Send + Sync + 'static>) -> Self {
         unsafe { transmute(value) }
     }
 }
