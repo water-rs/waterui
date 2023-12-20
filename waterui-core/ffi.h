@@ -3,75 +3,90 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef enum WaterUIAlignment {
+typedef enum WaterUIAlignment
+{
   WaterUIAlignment_Default,
   WaterUIAlignment_Leading,
   WaterUIAlignment_Center,
   WaterUIAlignment_Trailing,
 } WaterUIAlignment;
 
-typedef enum WaterUIStackMode {
+typedef enum WaterUIStackMode
+{
   WaterUIStackMode_Vertical,
   WaterUIStackMode_Horizonal,
 } WaterUIStackMode;
 
-typedef struct WaterUIEventObject {
+typedef struct WaterUIEventObject
+{
   uintptr_t inner[2];
 } WaterUIEventObject;
 
-typedef struct WaterUIBuf {
+typedef struct WaterUIBuf
+{
   uint8_t *head;
   uintptr_t len;
   uintptr_t capacity;
 } WaterUIBuf;
 
-typedef struct WaterUISubscriber {
-  void *state;
-  void (*subscriber)(void*);
-} WaterUISubscriber;
-
-typedef struct WaterUIViewObject {
+typedef struct WaterUIViewObject
+{
   uintptr_t inner[2];
 } WaterUIViewObject;
 
-typedef struct WaterUIText {
+typedef struct WaterUISubscriber
+{
+  void *state;
+  void (*subscriber)(void *);
+} WaterUISubscriber;
+
+typedef struct WaterUIText
+{
   const void *text;
   const void *selectable;
 } WaterUIText;
 
-typedef struct WaterUIButton {
+typedef struct WaterUIButton
+{
   struct WaterUIViewObject label;
   struct WaterUIEventObject action;
 } WaterUIButton;
 
-typedef struct WaterUITextField {
+typedef struct WaterUITextField
+{
   const void *label;
   const void *value;
   const void *prompt;
 } WaterUITextField;
 
-typedef enum WaterUISize_Tag {
+typedef enum WaterUISize_Tag
+{
   WaterUISize_Default,
   WaterUISize_Size,
 } WaterUISize_Tag;
 
-typedef struct WaterUISize {
+typedef struct WaterUISize
+{
   WaterUISize_Tag tag;
-  union {
-    struct {
+  union
+  {
+    struct
+    {
       double size;
     };
   };
 } WaterUISize;
 
-typedef struct WaterUIEdge {
+typedef struct WaterUIEdge
+{
   struct WaterUISize top;
   struct WaterUISize right;
   struct WaterUISize bottom;
   struct WaterUISize left;
 } WaterUIEdge;
 
-typedef struct WaterUIFrame {
+typedef struct WaterUIFrame
+{
   struct WaterUISize width;
   struct WaterUISize min_width;
   struct WaterUISize max_width;
@@ -82,18 +97,21 @@ typedef struct WaterUIFrame {
   enum WaterUIAlignment alignment;
 } WaterUIFrame;
 
-typedef struct WaterUIFrameModifier {
+typedef struct WaterUIFrameModifier
+{
   struct WaterUIFrame frame;
   struct WaterUIViewObject view;
 } WaterUIFrameModifier;
 
-typedef struct WaterUIViews {
+typedef struct WaterUIViews
+{
   struct WaterUIViewObject *head;
   uintptr_t len;
   uintptr_t capacity;
 } WaterUIViews;
 
-typedef struct WaterUIStack {
+typedef struct WaterUIStack
+{
   enum WaterUIStackMode mode;
   struct WaterUIViews contents;
 } WaterUIStack;
@@ -124,6 +142,26 @@ struct WaterUIBuf waterui_get_reactive_string(const void *binding);
 
 /**
  * # Safety
+ * `Binding` must be valid
+ */
+void waterui_drop_reactive_view(const void *binding);
+
+/**
+ * # Safety
+ * `Binding` must be valid, and `Buf` is valid UTF-8 string.
+ */
+void waterui_set_reactive_view(const void *binding, struct WaterUIViewObject view);
+
+/**
+ * # Safety
+ * `Binding` must be valid.
+ */
+struct WaterUIViewObject waterui_get_reactive_view(const void *binding);
+
+void waterui_subscribe_reactive_view(const void *reactive, struct WaterUISubscriber subscriber);
+
+/**
+ * # Safety
  * `Binding` must be valid.
  */
 void waterui_subscribe_reactive_string(const void *reactive, struct WaterUISubscriber subscriber);
@@ -151,6 +189,8 @@ bool waterui_get_reactive_bool(const void *reactive);
  * `Binding` must be valid.
  */
 void waterui_subscribe_reactive_bool(const void *reactive, struct WaterUISubscriber subscriber);
+
+const void *waterui_view_to_reactive_view(struct WaterUIViewObject view);
 
 /**
  * # Safety
