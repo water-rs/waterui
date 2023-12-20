@@ -7,7 +7,7 @@ pub struct Condition<ContentBuilder, OrBuilder> {
     or: OrBuilder,
 }
 
-impl<ContentBuilder, Content> Condition<ContentBuilder, fn()>
+impl<ContentBuilder, Content> Condition<ContentBuilder, ()>
 where
     ContentBuilder: Fn() -> Content,
     Content: IntoView,
@@ -16,18 +16,10 @@ where
         Self {
             condition,
             content,
-            or: || {},
+            or: (),
         }
     }
-}
 
-impl<Content, Or, ContentBuilder, OrBuilder> Condition<ContentBuilder, OrBuilder>
-where
-    ContentBuilder: Fn() -> Content,
-    OrBuilder: Fn() -> Or,
-    Content: IntoView,
-    Or: IntoView,
-{
     pub fn or<F, V>(self, or: F) -> Condition<ContentBuilder, F>
     where
         F: Fn() -> V,
@@ -43,17 +35,34 @@ where
 
 impl<Content, Or, ContentBuilder, OrBuilder> View for Condition<ContentBuilder, OrBuilder>
 where
-    ContentBuilder: 'static + Fn() -> Content,
-    OrBuilder: 'static + Fn() -> Or,
+    ContentBuilder: 'static + Send + Sync + Fn() -> Content,
+    OrBuilder: 'static + Send + Sync + Fn() -> Or,
     Content: IntoView,
     Or: IntoView,
 {
-    fn view(self) -> BoxView {
+    fn body(self) -> BoxView {
         let result: Reactive<BoxView> = self.condition.to(move |condition| {
             if *condition {
                 (self.content)().into_boxed_view()
             } else {
                 (self.or)().into_boxed_view()
+            }
+        });
+        result.boxed()
+    }
+}
+
+impl<Content, ContentBuilder> View for Condition<ContentBuilder, ()>
+where
+    ContentBuilder: 'static + Send + Sync + Fn() -> Content,
+    Content: IntoView,
+{
+    fn body(self) -> BoxView {
+        let result: Reactive<BoxView> = self.condition.to(move |condition| {
+            if *condition {
+                (self.content)().into_boxed_view()
+            } else {
+                ().into_boxed_view()
             }
         });
         result.boxed()

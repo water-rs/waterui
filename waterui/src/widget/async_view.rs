@@ -10,7 +10,6 @@ use crate::widget::text;
 
 pub struct AsyncView<F, LoadingViewBuilder, ErrorViewBuilder> {
     f: F,
-
     loading_view: LoadingViewBuilder,
     error_view: ErrorViewBuilder,
 }
@@ -93,11 +92,11 @@ where
 
 impl<F, Content, Fut> View for AsyncView<F, (), ()>
 where
-    F: 'static + Fn() -> Fut,
+    F: 'static + Send + Sync + Fn() -> Fut,
     Content: IntoView,
-    Fut: Future<Output = Result<Content, anyhow::Error>> + 'static,
+    Fut: Send + Future<Output = Result<Content, anyhow::Error>> + 'static,
 {
-    fn view(self) -> BoxView {
+    fn body(self) -> BoxView {
         let view = Reactive::new_with_updater(move || default_loading_view().boxed());
         let handler = view.clone();
         let retry = move || {

@@ -39,6 +39,12 @@ where
     }
 }
 
+impl IntoReactive<bool> for bool {
+    fn into_reactive(self) -> Reactive<bool> {
+        Reactive::new(self)
+    }
+}
+
 impl IntoReactive<String> for &str {
     fn into_reactive(self) -> Reactive<String> {
         Reactive::new(self.into())
@@ -125,6 +131,10 @@ impl<T> Reactive<T> {
 
     pub fn get(&self) -> ReactiveGuard<T> {
         self.inner.get()
+    }
+
+    pub fn take(&self) -> Option<T> {
+        self.inner.take()
     }
 
     pub(crate) unsafe fn from_raw(ptr: *const ReactiveInner<T>) -> Self {
@@ -278,7 +288,7 @@ impl Subscriber {
 pub(crate) struct ReactiveInner<T: 'static> {
     value: RwLock<Option<T>>,
     subscribers: RwLock<Vec<Subscriber>>,
-    updater: Updater<T>,
+    updater: Option<Updater<T>>,
 }
 
 impl<T> ReactiveInner<T> {
@@ -286,15 +296,23 @@ impl<T> ReactiveInner<T> {
         Self {
             value: RwLock::new(Some(value)),
             subscribers: RwLock::new(Vec::new()),
-            updater: Box::new(|| panic!("This Reactive is created by `new`, cannot be updated")),
+            updater: None,
         }
     }
     pub fn new_with_updater(updater: impl 'static + Send + Sync + Fn() -> T) -> Self {
         Self {
             value: RwLock::new(None),
             subscribers: RwLock::new(Vec::new()),
-            updater: Box::new(updater),
+            updater: Some(Box::new(updater)),
         }
+    }
+
+    pub fn take(&self) -> Option<T> {
+        let mut guard = self.value.write().unwrap();
+        if guard.is_none() {
+            *guard = self.updater.as_ref().map(|updater| updater())
+        }
+        guard.take()
     }
 
     pub fn add_subcriber(&self, subscriber: Subscriber) {
@@ -316,7 +334,7 @@ impl<T> ReactiveInner<T> {
         let mut guard = self.value.write().unwrap();
 
         if guard.is_none() {
-            *(guard.deref_mut()) = Some((self.updater)())
+            *(guard.deref_mut()) = Some((self.updater.as_ref().unwrap())())
         }
     }
 
@@ -338,7 +356,7 @@ impl<T> ReactiveInner<T> {
         let mut guard = self.value.write().unwrap();
 
         if guard.is_none() {
-            *(guard.deref_mut()) = Some((self.updater)())
+            *(guard.deref_mut()) = Some((self.updater.as_ref().unwrap())())
         }
 
         MutReactiveGuard {
