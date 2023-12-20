@@ -1,7 +1,7 @@
 use crate::{reactive::IntoReactive, AttributedString, Reactive};
 
 pub struct TextField {
-    pub(crate) label: Reactive<AttributedString>,
+    pub(crate) label: Reactive<String>,
     pub(crate) value: Reactive<String>,
     pub(crate) prompt: Reactive<String>,
 }
@@ -9,7 +9,7 @@ pub struct TextField {
 raw_view!(TextField);
 
 impl TextField {
-    pub fn new(label: impl IntoReactive<AttributedString>, value: &Reactive<String>) -> Self {
+    pub fn new(label: impl IntoReactive<String>, value: &Reactive<String>) -> Self {
         Self {
             label: label.into_reactive(),
             value: value.clone(),

@@ -10,8 +10,8 @@ use crate::view::View;
 use crate::{component, view::BoxView, Reactive};
 use std::mem::{transmute, ManuallyDrop};
 use std::ops::Deref;
-use std::ptr::read;
 use std::ptr::write;
+use std::ptr::{null, read};
 
 use self::utils::{EventObject, ViewObject};
 
@@ -46,6 +46,38 @@ pub unsafe extern "C" fn waterui_get_reactive_string(binding: *const ()) -> Buf 
         ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<String>));
     let binding = binding.get();
     binding.deref().to_string().into()
+}
+
+/// # Safety
+/// `Binding` must be valid
+#[no_mangle]
+pub unsafe extern "C" fn waterui_drop_reactive_view(binding: *const ()) {
+    let _ = Reactive::from_raw(binding as *const ReactiveInner<BoxView>);
+}
+
+/// # Safety
+/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_set_reactive_view(binding: *const (), view: ViewObject) {
+    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<BoxView>));
+    binding.set(view.into_box())
+}
+
+/// # Safety
+/// `Binding` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_get_reactive_view(binding: *const ()) -> ViewObject {
+    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<BoxView>));
+    binding.take().unwrap().into()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waterui_subscribe_reactive_view(
+    reactive: *const (),
+    subscriber: Subscriber,
+) {
+    let reactive = ManuallyDrop::new(Reactive::from_raw(reactive as *mut ReactiveInner<BoxView>));
+    reactive.add_subcriber(subscriber);
 }
 
 /// # Safety
@@ -140,6 +172,18 @@ macro_rules! impl_modifier{
             }
         )*
     };
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waterui_view_to_reactive_view(view: ViewObject) -> *const () {
+    let mut view = view.into_ptr();
+    try_unwrap_boxed_view(&mut view);
+    if (*view).is::<Reactive<BoxView>>() {
+        let reactive = read(view as *const Reactive<BoxView>);
+        reactive.into_raw() as *const ()
+    } else {
+        null()
+    }
 }
 
 unsafe fn try_unwrap_boxed_view(view: *mut *const dyn View) {
