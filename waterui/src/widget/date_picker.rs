@@ -41,12 +41,10 @@ impl View for DatePicker {
                     .size(13)
                     .disable_select(),
                 VStack::from_iter(chunk.into_iter().map(|(button_date, v)| {
-                    Button::default()
-                        .label(Text::display(v).width(30).height(30))
-                        .action({
-                            let date = self.date.clone();
-                            move || date.set(button_date)
-                        })
+                    let date = self.date.clone();
+                    Button::new(Text::display(v).width(30).height(30), move || {
+                        date.set(button_date)
+                    })
                 })),
             ))
         });
