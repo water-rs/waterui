@@ -75,7 +75,7 @@ impl<T> Reactive<T> {
     /// Constructs a `Reactive<T>` from a raw pointer
     /// # Safety
     /// The raw pointer must have been previously returned by a call to Reactive<T>::into_raw
-    pub unsafe fn from_raw(ptr: *const ()) -> Self {
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
         unsafe {
             Self {
                 inner: Arc::from_raw(ptr as *const ReactiveInner<T>),
@@ -85,8 +85,8 @@ impl<T> Reactive<T> {
 
     /// Consumes the Reactive, returning the wrapped pointer.
     /// To avoid a memory leak the pointer must be converted back to a Reactive using Reactive::from_raw.
-    pub fn into_raw(self) -> *const () {
-        Arc::into_raw(self.inner) as *const ()
+    pub fn into_raw(self) -> *const T {
+        Arc::into_raw(self.inner) as *const T
     }
 }
 
