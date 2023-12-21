@@ -104,6 +104,23 @@ impl<T> Binding<T> {
     pub fn set(&self, value: impl Into<T>) {
         *self.get_mut() = value.into();
     }
+
+    /// Constructs a `Binding<T>` from a raw pointer
+    /// # Safety
+    /// The raw pointer must have been previously returned by a call to Binding<T>::into_raw
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        unsafe {
+            Self {
+                inner: Arc::from_raw(ptr as *const BindingInner<T>),
+            }
+        }
+    }
+
+    /// Consumes the Reactive, returning the wrapped pointer.
+    /// To avoid a memory leak the pointer must be converted back to a Binding using Binding::from_raw.
+    pub fn into_raw(self) -> *const T {
+        Arc::into_raw(self.inner) as *const T
+    }
 }
 
 impl<T> From<T> for Binding<T> {
