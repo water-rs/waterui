@@ -1,15 +1,15 @@
 use crate::{View, ViewExt};
 use smol::{fs::File, io::AsyncReadExt, io::BufReader};
 use url::Url;
-use waterui_core::{component::RawImage, BoxView};
+use waterui_core::{component::Image, BoxView};
 
 use super::AsyncView;
 
-pub struct Image {
+pub struct AsyncImage {
     url: Url,
 }
 
-impl View for Image {
+impl View for AsyncImage {
     fn body(self) -> BoxView {
         let url = self.url.clone();
 
@@ -23,7 +23,7 @@ impl View for Image {
                         let mut file = BufReader::new(file);
                         let mut buf = Vec::with_capacity(len as usize);
                         file.read_to_end(&mut buf).await?;
-                        Ok(RawImage::new(buf))
+                        Ok(Image::new(buf))
                     }
                     "http" | "https" => {
                         todo!()

@@ -10,7 +10,8 @@ anyhow = "1.0.75"
 chrono = "0.4.31"
 itertools = "0.12.0"
 pin-project-lite = "0.2.13"
+serde = { version = "1.0.193", features = ["derive"]}
 smol = "1.3.0"
 url = "2.5.0"
-waterui-core = { path = "../waterui-core"}
 waterui-derive = { path = "../waterui-derive" }
+waterui-reactive = { path = "../waterui-reactive" }

@@ -1,11 +1,9 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct RawImage {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Image {
     pub(crate) data: Vec<u8>,
 }
 
-impl RawImage {
+impl Image {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
@@ -15,4 +13,4 @@ impl RawImage {
     }
 }
 
-raw_view!(RawImage);
+raw_view!(Image);

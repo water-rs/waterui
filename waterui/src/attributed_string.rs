@@ -7,6 +7,7 @@ use std::{
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use waterui_reactive::reactive::{IntoReactive, Reactive};
 
 use crate::layout::Size;
 
@@ -33,6 +34,31 @@ impl Deref for AttributedString {
     type Target = str;
     fn deref(&self) -> &Self::Target {
         self.text.deref()
+    }
+}
+
+impl IntoReactive<AttributedString> for Reactive<&str> {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        self.to(|v| v.into())
+    }
+}
+
+impl IntoReactive<AttributedString> for &str {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        let string = String::from(self);
+        Reactive::new(move || string.clone().into())
+    }
+}
+
+impl IntoReactive<AttributedString> for String {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        Reactive::new(move || self.clone().into())
+    }
+}
+
+impl IntoReactive<AttributedString> for Reactive<String> {
+    fn into_reactive(self) -> Reactive<AttributedString> {
+        self.to(|v| v.into())
     }
 }
 
