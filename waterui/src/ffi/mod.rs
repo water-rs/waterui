@@ -1,17 +1,18 @@
 #[macro_use]
 mod array;
 pub use array::Buf;
+use waterui_reactive::binding::Binding;
 pub mod utils;
 
 use crate::layout::Frame;
 use crate::modifier::Modifier;
-use crate::reactive::{ReactiveInner, Subscriber};
 use crate::view::View;
 use crate::{component, view::BoxView, Reactive};
-use std::mem::{transmute, ManuallyDrop};
+use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::write;
 use std::ptr::{null, read};
+use waterui_reactive::Subscriber;
 
 use self::utils::{EventObject, ViewObject};
 
@@ -23,109 +24,72 @@ pub unsafe extern "C" fn waterui_call_event_object(object: EventObject) {
 }
 
 /// # Safety
-/// `Binding` must be valid
+/// Must be valid `Reactive<String>`.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_drop_reactive_string(binding: *const ()) {
-    let _: Reactive<String> = Reactive::from_raw(binding as *const ReactiveInner<String>);
+pub unsafe extern "C" fn waterui_get_reactive_string(reactive: *const ()) -> Buf {
+    let reactive: ManuallyDrop<Reactive<String>> =
+        ManuallyDrop::new(Reactive::from_raw(reactive as *mut String));
+    let reactive = reactive.get();
+    reactive.deref().to_string().into()
 }
 
 /// # Safety
-/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn waterui_set_reactive_string(binding: *const (), string: Buf) {
-    let binding: ManuallyDrop<Reactive<String>> =
-        ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<String>));
-    binding.set(String::from_utf8_unchecked(string.into()))
-}
-
-/// # Safety
-/// `Binding` must be valid.
-#[no_mangle]
-pub unsafe extern "C" fn waterui_get_reactive_string(binding: *const ()) -> Buf {
-    let binding: ManuallyDrop<Reactive<String>> =
-        ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<String>));
-    let binding = binding.get();
-    binding.deref().to_string().into()
-}
-
-/// # Safety
-/// `Binding` must be valid
-#[no_mangle]
-pub unsafe extern "C" fn waterui_drop_reactive_view(binding: *const ()) {
-    let _ = Reactive::from_raw(binding as *const ReactiveInner<BoxView>);
-}
-
-/// # Safety
-/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn waterui_set_reactive_view(binding: *const (), view: ViewObject) {
-    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<BoxView>));
-    binding.set(view.into_box())
-}
-
-/// # Safety
-/// `Binding` must be valid.
-#[no_mangle]
-pub unsafe extern "C" fn waterui_get_reactive_view(binding: *const ()) -> ViewObject {
-    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *mut ReactiveInner<BoxView>));
-    binding.take().unwrap().into()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn waterui_subscribe_reactive_view(
-    reactive: *const (),
-    subscriber: Subscriber,
-) {
-    let reactive = ManuallyDrop::new(Reactive::from_raw(reactive as *mut ReactiveInner<BoxView>));
-    reactive.add_subcriber(subscriber);
-}
-
-/// # Safety
-/// `Binding` must be valid.
+/// Must be valid `Reactive<String>`
 #[no_mangle]
 pub unsafe extern "C" fn waterui_subscribe_reactive_string(
     reactive: *const (),
     subscriber: Subscriber,
 ) {
     let reactive: ManuallyDrop<Reactive<String>> =
-        ManuallyDrop::new(Reactive::from_raw(reactive as *mut ReactiveInner<String>));
-    reactive.add_subcriber(subscriber);
+        ManuallyDrop::new(Reactive::from_raw(reactive as *mut String));
+    reactive.on_update(subscriber);
 }
 
 /// # Safety
-/// `Binding` must be valid
+/// Must be valid `Reactive<BoxView>`.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_drop_reactive_bool(binding: *mut ()) {
-    let _: Reactive<bool> = transmute(binding);
+pub unsafe extern "C" fn waterui_get_reactive_view(binding: *const ()) -> ViewObject {
+    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *const BoxView));
+    binding.take().into()
 }
 
 /// # Safety
-/// `Binding` must be valid, and `Buf` is valid UTF-8 string.
+/// Must be valid `Reactive<BoxView>`.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_set_reactive_bool(binding: *const (), bool: bool) {
-    let binding: Reactive<bool> = transmute(binding);
-    let binding = ManuallyDrop::new(binding);
-    binding.set(bool);
+pub unsafe extern "C" fn waterui_subscribe_reactive_view(
+    reactive: *const (),
+    subscriber: Subscriber,
+) {
+    let reactive = ManuallyDrop::new(Reactive::from_raw(reactive as *const BoxView));
+    reactive.on_update(subscriber)
 }
 
 /// # Safety
-/// `Binding` must be valid.
+/// Must be valid `Binding<bool>`
 #[no_mangle]
-pub unsafe extern "C" fn waterui_get_reactive_bool(reactive: *const ()) -> bool {
-    let reactive: ManuallyDrop<Reactive<bool>> = ManuallyDrop::new(transmute(reactive));
-    let guard = reactive.get();
+pub unsafe extern "C" fn waterui_get_binding_bool(binding: *const ()) -> bool {
+    let binding = ManuallyDrop::new(Binding::from_raw(binding as *const bool));
+    let guard = binding.get();
     guard.to_owned()
 }
 
 /// # Safety
-/// `Binding` must be valid.
+/// Must be valid `Binding<bool>`
 #[no_mangle]
-pub unsafe extern "C" fn waterui_subscribe_reactive_bool(
-    reactive: *const (),
+pub unsafe extern "C" fn waterui_set_binding_bool(binding: *const (), bool: bool) {
+    let binding = ManuallyDrop::new(Binding::from_raw(binding as *const bool));
+    binding.set(bool);
+}
+
+/// # Safety
+/// Must be valid `Binding<bool>`
+#[no_mangle]
+pub unsafe extern "C" fn waterui_subscribe_binding_bool(
+    binding: *const (),
     subscriber: Subscriber,
 ) {
-    let reactive: ManuallyDrop<Reactive<bool>> = ManuallyDrop::new(transmute(reactive));
-    reactive.add_subcriber(subscriber);
+    let binding = ManuallyDrop::new(Binding::from_raw(binding as *const bool));
+    binding.subscribe(subscriber);
 }
 
 macro_rules! impl_component{
@@ -174,6 +138,8 @@ macro_rules! impl_modifier{
     };
 }
 
+/// # Safety
+/// Must be valid `Reactive<BoxView>`.
 #[no_mangle]
 pub unsafe extern "C" fn waterui_view_to_reactive_view(view: ViewObject) -> *const () {
     let mut view = view.into_ptr();
@@ -310,8 +276,8 @@ pub struct Image {
     data: Buf,
 }
 
-impl From<component::RawImage> for Image {
-    fn from(value: component::RawImage) -> Self {
+impl From<component::Image> for Image {
+    fn from(value: component::Image) -> Self {
         Self {
             data: value.data.into(),
         }

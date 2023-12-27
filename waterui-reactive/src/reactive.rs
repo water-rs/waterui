@@ -10,7 +10,13 @@ use std::{
 };
 
 pub struct Reactive<T: 'static> {
-    inner: Arc<ReactiveInner<T>>,
+    pub(crate) inner: Arc<ReactiveInner<T>>,
+}
+
+impl<T: Default> Default for Reactive<T> {
+    fn default() -> Self {
+        Self::new(|| T::default())
+    }
 }
 
 impl<T: PartialEq> PartialEq for Reactive<T> {
@@ -60,8 +66,28 @@ impl<T> Reactive<T> {
         self.inner.get()
     }
 
-    pub fn on_update(&mut self, subscriber: impl Into<Subscriber>) {
+    pub fn on_update(&self, subscriber: impl Into<Subscriber>) {
         self.inner.on_update(subscriber)
+    }
+
+    pub fn to_with_ref<Output>(
+        &self,
+        f: impl 'static + Send + Sync + Fn(&T) -> Output,
+    ) -> Reactive<Output>
+    where
+        T: Send + Sync,
+    {
+        let reactive = self.clone();
+        let output = Reactive::new(move || f(reactive.get().deref()));
+        output
+    }
+
+    pub fn to<Output>(&self, f: impl 'static + Send + Sync + Fn(T) -> Output) -> Reactive<Output>
+    where
+        T: Send + Sync,
+    {
+        let reactive = self.clone();
+        Reactive::new(move || f(reactive.take()))
     }
 
     pub fn take(&self) -> T {
@@ -102,7 +128,7 @@ impl<'a, T> Deref for ReactiveGuard<'a, T> {
 }
 
 type Updater<T> = Box<dyn Send + Sync + Fn() -> T>;
-struct ReactiveInner<T: 'static> {
+pub(crate) struct ReactiveInner<T: 'static> {
     value: RwLock<Option<T>>,
     updater: RwLock<Updater<T>>,
 }
@@ -147,5 +173,21 @@ impl<T> ReactiveInner<T> {
 
     pub fn need_update(&self) {
         self.value.write().unwrap().take();
+    }
+}
+
+impl<T: Clone + Send + Sync> From<T> for Reactive<T> {
+    fn from(value: T) -> Self {
+        Reactive::new(move || value.clone())
+    }
+}
+
+pub trait IntoReactive<T> {
+    fn into_reactive(self) -> Reactive<T>;
+}
+
+impl<T: Clone + Send + Sync> IntoReactive<T> for T {
+    fn into_reactive(self) -> Reactive<T> {
+        Reactive::new(move || self.clone())
     }
 }

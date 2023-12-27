@@ -1,12 +1,27 @@
 use std::{
+    fmt::Debug,
+    mem::replace,
     ops::{Deref, DerefMut},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use crate::subscriber::Subscriber;
+use crate::{reactive::Reactive, subscriber::Subscriber};
 
 pub struct Binding<T> {
     inner: Arc<BindingInner<T>>,
+}
+
+impl<T: Debug> Debug for Binding<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+impl<T> Clone for Binding<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 struct BindingInner<T> {
@@ -69,8 +84,8 @@ impl<T> BindingInner<T> {
         }
     }
 
-    pub fn subscribe(&self, subscriber: Subscriber) {
-        self.subscribers.write().unwrap().push(subscriber)
+    pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
+        self.subscribers.write().unwrap().push(subscriber.into())
     }
 }
 
@@ -88,7 +103,28 @@ impl<T> Binding<T> {
     }
 
     pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
-        self.inner.subscribe(subscriber.into())
+        self.inner.subscribe(subscriber)
+    }
+
+    pub fn to<Output: 'static>(
+        &self,
+        f: impl 'static + Send + Sync + Fn(&T) -> Output,
+    ) -> Reactive<Output>
+    where
+        T: Send + Sync + 'static,
+        Output: Send + Sync,
+    {
+        let reactive = self.inner.clone();
+
+        let output = Reactive::new(move || f(reactive.get().deref()));
+        let output_weak = Arc::downgrade(&output.inner);
+
+        self.subscribe(move || {
+            if let Some(output) = output_weak.upgrade() {
+                output.need_update()
+            }
+        });
+        output
     }
 
     pub fn make_effect(&self) {
@@ -101,8 +137,12 @@ impl<T> Binding<T> {
             .map(Subscriber::call);
     }
 
+    pub fn replace(&self, value: impl Into<T>) -> T {
+        replace(self.get_mut().deref_mut(), value.into())
+    }
+
     pub fn set(&self, value: impl Into<T>) {
-        *self.get_mut() = value.into();
+        let _ = self.replace(value);
     }
 
     /// Constructs a `Binding<T>` from a raw pointer
