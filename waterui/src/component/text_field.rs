@@ -1,15 +1,17 @@
-use crate::{reactive::IntoReactive, AttributedString, Reactive};
+use waterui_reactive::{binding::Binding, reactive::IntoReactive};
+
+use crate::Reactive;
 
 pub struct TextField {
     pub(crate) label: Reactive<String>,
-    pub(crate) value: Reactive<String>,
+    pub(crate) value: Binding<String>,
     pub(crate) prompt: Reactive<String>,
 }
 
 raw_view!(TextField);
 
 impl TextField {
-    pub fn new(label: impl IntoReactive<String>, value: &Reactive<String>) -> Self {
+    pub fn new(label: impl IntoReactive<String>, value: &Binding<String>) -> Self {
         Self {
             label: label.into_reactive(),
             value: value.clone(),
