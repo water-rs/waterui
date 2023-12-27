@@ -1,7 +1,5 @@
-use crate::{attributed_string::AttributedString, reactive::IntoReactive, view::IntoView, BoxView};
+use crate::{view::IntoView, BoxView};
 use std::fmt::Display;
-
-use super::Text;
 
 pub struct Button {
     pub(crate) label: BoxView,

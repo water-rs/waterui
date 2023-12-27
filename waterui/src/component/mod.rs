@@ -6,7 +6,7 @@ pub use button::Button;
 mod stack;
 pub use stack::{HStack, VStack};
 mod image;
-pub use image::RawImage;
+pub use image::Image;
 mod text_field;
 pub use text_field::TextField;
 
