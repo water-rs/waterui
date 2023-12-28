@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     component::Text,
+    env::Environment,
     layout::{Alignment, Frame, Size},
     modifier::{Modifier, ViewModifier},
     Reactive,
@@ -19,7 +20,7 @@ pub trait View: BoxedView + Send + Sync {
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self) -> BoxView;
+    fn body(self, env: Environment) -> BoxView;
 
     fn name(&self) -> &'static str {
         type_name::<Self>()
@@ -35,12 +36,12 @@ pub trait View: BoxedView + Send + Sync {
 }
 
 pub trait BoxedView {
-    fn boxed_body(self: Box<Self>) -> BoxView;
+    fn boxed_body(self: Box<Self>, env: Environment) -> BoxView;
 }
 
 impl<V: View> BoxedView for V {
-    fn boxed_body(self: Box<Self>) -> BoxView {
-        (*self).body()
+    fn boxed_body(self: Box<Self>, env: Environment) -> BoxView {
+        (*self).body(env)
     }
 }
 
@@ -146,11 +147,12 @@ impl dyn View {
 }
 
 pub type BoxView = Box<dyn View + 'static>;
+pub type BoxViewBuilder = Box<dyn Fn() -> BoxView>;
 raw_view!(Reactive<BoxView>);
 
 impl View for BoxView {
-    fn body(self) -> BoxView {
-        self.boxed_body()
+    fn body(self, env: Environment) -> BoxView {
+        self.boxed_body(env)
     }
 }
 
