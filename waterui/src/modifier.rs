@@ -1,5 +1,5 @@
 use crate::view::BoxView;
-use crate::View;
+use crate::{Environment, View};
 pub struct Modifier<T> {
     pub(crate) content: BoxView,
     pub(crate) modifier: T,
@@ -14,7 +14,7 @@ impl<T: ViewModifier> Modifier<T> {
 pub trait ViewModifier: Send + Sync {}
 
 impl<T: Send + Sync> View for Modifier<T> {
-    fn body(self) -> BoxView {
+    fn body(self, _env: Environment) -> BoxView {
         panic!("You cannot call `view` for a raw view");
     }
 }

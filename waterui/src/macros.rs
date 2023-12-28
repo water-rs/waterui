@@ -1,7 +1,7 @@
 macro_rules! raw_view {
     ($ty:ty) => {
         impl crate::View for $ty {
-            fn body(self) -> crate::view::BoxView {
+            fn body(self, _env: crate::Environment) -> crate::view::BoxView {
                 panic!("You cannot call `view` for a raw view");
             }
         }

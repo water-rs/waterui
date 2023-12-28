@@ -4,9 +4,11 @@ pub use array::Buf;
 use waterui_reactive::binding::Binding;
 pub mod utils;
 
+use crate::env::EnvironmentBuilder;
 use crate::layout::Frame;
 use crate::modifier::Modifier;
 use crate::view::View;
+use crate::Environment;
 use crate::{component, view::BoxView, Reactive};
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
@@ -210,8 +212,10 @@ pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Sta
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_view(view: ViewObject) -> ViewObject {
-    view.into_box().body().into()
+pub unsafe extern "C" fn waterui_call_view(view: ViewObject, env: *const ()) -> ViewObject {
+    view.into_box()
+        .body(Environment::from_raw(env as *const EnvironmentBuilder))
+        .into()
 }
 
 #[repr(C)]
@@ -327,4 +331,5 @@ extern "C" {
     pub fn waterui_window_closeable(id: usize, is: bool);
     pub fn waterui_close_window(id: usize);
     pub fn waterui_main() -> ViewObject;
+    pub fn waterui_init_environment() -> *const ();
 }
