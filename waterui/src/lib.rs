@@ -10,6 +10,7 @@ pub mod modifier;
 mod task;
 pub use task::task;
 pub mod env;
+pub use env::Environment;
 pub mod utils;
 //pub mod window;
 //pub use window::Window;
