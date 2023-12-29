@@ -14,10 +14,12 @@ pub struct DefaultErrorView {
 
 pub trait AsyncView: Send + Sync {
     fn body(self, env: Environment) -> impl Future<Output = BoxView> + Send;
+
     fn loading(env: Environment) -> BoxView {
         let builder = env.get::<DefaultLoadingView>().unwrap();
         (builder.content)()
     }
+
     fn error(env: Environment) -> BoxView {
         let builder = env.get::<DefaultErrorView>().unwrap();
         (builder.content)()
