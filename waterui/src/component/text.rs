@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use waterui_reactive::{binding::Binding, reactive::IntoReactive};
 
 use crate::{layout::Size, Reactive};
@@ -18,6 +20,11 @@ impl Text {
             text: text.into_reactive(),
             selectable: Binding::new(true),
         }
+    }
+
+    // Warning: Reactive tracking is unavailable
+    pub fn display(value: impl Display) -> Self {
+        Self::new(value.to_string())
     }
 
     pub fn disable_select(self) -> Self {
@@ -42,4 +49,8 @@ impl Text {
         });
         self
     }
+}
+
+pub fn text(text: impl IntoReactive<AttributedString>) -> Text {
+    Text::new(text)
 }

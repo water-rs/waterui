@@ -67,7 +67,8 @@ impl<V: View + 'static> IntoView for V {
 impl IntoView for &str {
     type Output = Text;
     fn into_view(self) -> Self::Output {
-        Text::new(self)
+        let value = self.to_string();
+        Text::new(value)
     }
 }
 
