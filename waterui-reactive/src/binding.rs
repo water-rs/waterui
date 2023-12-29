@@ -1,5 +1,5 @@
 use std::{
-    fmt::Debug,
+    fmt::{Debug, Display},
     mem::replace,
     ops::{Deref, DerefMut},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -9,6 +9,12 @@ use crate::{reactive::Reactive, subscriber::Subscriber};
 
 pub struct Binding<T> {
     inner: Arc<BindingInner<T>>,
+}
+
+impl<T: Default> Default for Binding<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
 }
 
 impl<T: Debug> Debug for Binding<T> {
@@ -127,6 +133,14 @@ impl<T> Binding<T> {
         output
     }
 
+    pub fn transform<Output: for<'a> From<&'a T>>(self) -> Reactive<Output>
+    where
+        T: Send + Sync + 'static,
+        Output: Send + Sync,
+    {
+        self.to(|v| v.into())
+    }
+
     pub fn make_effect(&self) {
         let _ = self
             .inner
@@ -163,11 +177,30 @@ impl<T> Binding<T> {
     }
 }
 
+impl Binding<bool> {
+    pub fn toggle(&self) {
+        let mut guard = self.get_mut();
+        *guard.deref_mut() = !guard.deref();
+    }
+}
+
+impl<T: Display + Send + Sync + 'static> Binding<T> {
+    pub fn display(self) -> Reactive<String> {
+        self.to(|v| v.to_string())
+    }
+}
+
 impl<T> From<T> for Binding<T> {
     fn from(value: T) -> Self {
         Self {
             inner: Arc::new(BindingInner::from(value)),
         }
+    }
+}
+
+impl<T> From<&Binding<T>> for Binding<T> {
+    fn from(value: &Binding<T>) -> Self {
+        value.clone()
     }
 }
 
