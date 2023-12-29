@@ -31,3 +31,11 @@ impl_frame!(VStack, HStack);
 
 raw_view!(VStack);
 raw_view!(HStack);
+
+pub fn vstack(contents: impl IntoViews) -> VStack {
+    VStack::new(contents)
+}
+
+pub fn hstack(contents: impl IntoViews) -> HStack {
+    HStack::new(contents)
+}

@@ -1,7 +1,8 @@
 use take_mut::take;
 
-use crate::subscriber::Subscriber;
+use crate::{subscriber::Subscriber, Binding};
 use std::{
+    borrow::Cow,
     fmt::{Debug, Display},
     hash::Hash,
     ops::{Deref, DerefMut},
@@ -85,9 +86,25 @@ impl<T> Reactive<T> {
     pub fn to<Output>(&self, f: impl 'static + Send + Sync + Fn(T) -> Output) -> Reactive<Output>
     where
         T: Send + Sync,
+        Output: Send + Sync,
     {
         let reactive = self.clone();
-        Reactive::new(move || f(reactive.take()))
+        let output = Reactive::new(move || f(reactive.take()));
+        let output_weak = Arc::downgrade(&output.inner);
+        self.on_update(move || {
+            if let Some(handle) = output_weak.upgrade() {
+                handle.need_update();
+            }
+        });
+        output
+    }
+
+    pub fn transform<Output: From<T>>(self) -> Reactive<Output>
+    where
+        T: Send + Sync,
+        Output: Send + Sync,
+    {
+        self.to(|v| v.into())
     }
 
     pub fn take(&self) -> T {
@@ -113,6 +130,12 @@ impl<T> Reactive<T> {
     /// To avoid a memory leak the pointer must be converted back to a Reactive using Reactive::from_raw.
     pub fn into_raw(self) -> *const T {
         Arc::into_raw(self.inner) as *const T
+    }
+}
+
+impl<T: Display + Send + Sync + 'static> Reactive<T> {
+    pub fn display(self) -> Reactive<String> {
+        self.to_with_ref(|v| v.to_string())
     }
 }
 
@@ -182,12 +205,59 @@ impl<T: Clone + Send + Sync> From<T> for Reactive<T> {
     }
 }
 
+impl<T> From<&Reactive<T>> for Reactive<T> {
+    fn from(value: &Reactive<T>) -> Self {
+        value.clone()
+    }
+}
+
 pub trait IntoReactive<T> {
     fn into_reactive(self) -> Reactive<T>;
 }
 
-impl<T: Clone + Send + Sync> IntoReactive<T> for T {
+impl<T: Send + Sync + Clone> IntoReactive<T> for T {
     fn into_reactive(self) -> Reactive<T> {
         Reactive::new(move || self.clone())
     }
 }
+
+impl<T> IntoReactive<T> for Reactive<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        todo!()
+    }
+}
+
+impl<T> IntoReactive<T> for Binding<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        todo!()
+    }
+}
+
+#[macro_export]
+macro_rules! impl_into_reactive {
+    ($target:ty,($($source:ty),*)) => {
+        $(
+            impl $crate::reactive::IntoReactive<$target> for $source {
+                fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
+                    let value:$target=self.into();
+                    $crate::reactive::Reactive::new(move|| value.clone())
+                }
+            }
+
+            impl $crate::reactive::IntoReactive<$target> for $crate::binding::Binding<$source> {
+                fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
+                    self.to(|v| {v.clone().into()})
+                }
+            }
+
+
+            impl $crate::reactive::IntoReactive<$target> for $crate::reactive::Reactive<$source> {
+                fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
+                    self.transform()
+                }
+            }
+        )*
+    };
+}
+
+impl_into_reactive!(String, (Box<str>, Cow<'static, str>, &'static str));

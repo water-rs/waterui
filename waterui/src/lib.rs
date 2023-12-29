@@ -4,7 +4,7 @@ pub mod attributed_string;
 pub use attributed_string::AttributedString;
 pub mod component;
 pub mod view;
-pub use view::{BoxView, View};
+pub use view::{BoxView, View, ViewExt};
 pub mod ffi;
 pub mod modifier;
 mod task;
@@ -20,3 +20,5 @@ pub use waterui_reactive::{
     binding::Binding,
     reactive::{IntoReactive, Reactive},
 };
+
+pub use waterui_derive::view;

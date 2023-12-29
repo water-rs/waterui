@@ -1,4 +1,6 @@
-use crate::{view::IntoView, BoxView, Reactive, View, ViewExt};
+use waterui_reactive::reactive::IntoReactive;
+
+use crate::{view::IntoView, BoxView, Environment, Reactive, View, ViewExt};
 
 #[derive(Debug)]
 pub struct Condition<ContentBuilder, OrBuilder> {
@@ -12,9 +14,9 @@ where
     ContentBuilder: Fn() -> Content,
     Content: IntoView,
 {
-    pub fn new(condition: Reactive<bool>, content: ContentBuilder) -> Self {
+    pub fn new(condition: impl IntoReactive<bool>, content: ContentBuilder) -> Self {
         Self {
-            condition,
+            condition: condition.into_reactive(),
             content,
             or: (),
         }
@@ -40,15 +42,15 @@ where
     Content: IntoView,
     Or: IntoView,
 {
-    fn body(self) -> BoxView {
-        let result: Reactive<BoxView> = self.condition.to(move |condition| {
-            if *condition {
+    fn body(self, _env: Environment) -> BoxView {
+        let output: Reactive<BoxView> = self.condition.to(move |condition| {
+            if condition {
                 (self.content)().into_boxed_view()
             } else {
                 (self.or)().into_boxed_view()
             }
         });
-        result.boxed()
+        output.boxed()
     }
 }
 
@@ -57,9 +59,9 @@ where
     ContentBuilder: 'static + Send + Sync + Fn() -> Content,
     Content: IntoView,
 {
-    fn body(self) -> BoxView {
+    fn body(self, _env: Environment) -> BoxView {
         let result: Reactive<BoxView> = self.condition.to(move |condition| {
-            if *condition {
+            if condition {
                 (self.content)().into_boxed_view()
             } else {
                 ().into_boxed_view()
@@ -67,4 +69,15 @@ where
         });
         result.boxed()
     }
+}
+
+pub fn when<ContentBuilder, Content>(
+    condition: impl IntoReactive<bool>,
+    content: ContentBuilder,
+) -> Condition<ContentBuilder, ()>
+where
+    ContentBuilder: Fn() -> Content,
+    Content: IntoView,
+{
+    Condition::new(condition, content)
 }
