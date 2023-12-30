@@ -1,26 +1,35 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
+    future::Future,
     sync::Arc,
 };
 
+use async_executor::{Executor, Task};
+
 pub struct Environment {
-    map: Arc<EnvironmentBuilder>,
+    inner: Arc<EnvironmentBuilder>,
 }
 
 impl Clone for Environment {
     fn clone(&self) -> Self {
         Self {
-            map: self.map.clone(),
+            inner: self.inner.clone(),
         }
     }
 }
 
+#[derive(Default)]
 pub struct EnvironmentBuilder {
+    runtime: Executor<'static>,
     map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl EnvironmentBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
@@ -42,24 +51,54 @@ impl EnvironmentBuilder {
                 *boxed
             })
     }
+
+    pub fn task<Fut>(&self, fut: Fut) -> Task<Fut::Output>
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send,
+    {
+        self.runtime.spawn(fut)
+    }
+
+    pub fn build(self) -> Environment {
+        Environment::new(self)
+    }
 }
 
 impl Environment {
+    fn new(builder: EnvironmentBuilder) -> Self {
+        Self {
+            inner: Arc::new(builder),
+        }
+    }
+
+    pub fn builder() -> EnvironmentBuilder {
+        EnvironmentBuilder::new()
+    }
+
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.map.get()
+        self.inner.get()
     }
     /// Constructs an `Environment` from a raw pointer
     /// # Safety
     /// The raw pointer must have been previously returned by a call to Environment::into_raw
     pub unsafe fn from_raw(ptr: *const EnvironmentBuilder) -> Self {
         Self {
-            map: Arc::from_raw(ptr),
+            inner: Arc::from_raw(ptr),
         }
     }
 
     /// Consumes the Environment, returning the wrapped pointer.
     /// To avoid a memory leak the pointer must be converted back to an Environment using Environment::from_raw.
     pub fn into_raw(self) -> *const EnvironmentBuilder {
-        Arc::into_raw(self.map)
+        Arc::into_raw(self.inner)
+    }
+
+    pub fn task<Fut>(&self, fut: Fut) -> Task<Fut::Output>
+    where
+        Fut: Future + Send + 'static,
+        Fut::Output: Send,
+    {
+        self.inner.task(fut)
     }
 }

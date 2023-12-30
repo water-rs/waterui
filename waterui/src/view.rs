@@ -1,10 +1,5 @@
-use std::{
-    any::{type_name, TypeId},
-    fmt::Debug,
-};
-
 use crate::{
-    component::Text,
+    component::{AnyView, Text},
     env::Environment,
     layout::{Alignment, Frame, Size},
     modifier::{Modifier, ViewModifier},
@@ -14,46 +9,20 @@ use crate::{
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View: BoxedView + Send + Sync {
+pub trait View: Send + Sync {
     /// Build this view and return the content.
     ///
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self, env: Environment) -> BoxView;
-
-    fn name(&self) -> &'static str {
-        type_name::<Self>()
-    }
-
-    #[doc(hidden)]
-    fn type_id(&self, _sealed: sealed::Sealed) -> TypeId
-    where
-        Self: 'static,
-    {
-        TypeId::of::<Self>()
-    }
+    fn body(self, _env: Environment) -> impl View;
 }
 
-pub trait BoxedView {
-    fn boxed_body(self: Box<Self>, env: Environment) -> BoxView;
-}
-
-impl<V: View> BoxedView for V {
-    fn boxed_body(self: Box<Self>, env: Environment) -> BoxView {
-        (*self).body(env)
-    }
-}
-
-pub trait IntoView {
+pub trait IntoView: Sized {
     type Output: View + 'static;
     fn into_view(self) -> Self::Output;
-
-    fn into_boxed_view(self) -> BoxView
-    where
-        Self: Sized,
-    {
-        Box::new(self.into_view())
+    fn into_anyview(self) -> AnyView {
+        AnyView::new(self.into_view())
     }
 }
 
@@ -63,6 +32,8 @@ impl<V: View + 'static> IntoView for V {
         self
     }
 }
+
+pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 
 impl IntoView for &str {
     type Output = Text;
@@ -86,12 +57,19 @@ impl IntoView for Reactive<String> {
     }
 }
 
-pub trait IntoViews {
-    fn into_views(self) -> Vec<BoxView>;
+impl IntoView for Reactive<&str> {
+    type Output = Text;
+    fn into_view(self) -> Self::Output {
+        Text::new(self)
+    }
 }
 
-impl IntoViews for Vec<BoxView> {
-    fn into_views(self) -> Vec<BoxView> {
+pub trait IntoViews {
+    fn into_views(self) -> Vec<AnyView>;
+}
+
+impl IntoViews for Vec<AnyView> {
+    fn into_views(self) -> Vec<AnyView> {
         self
     }
 }
@@ -102,9 +80,9 @@ macro_rules! impl_tuple_views {
         #[allow(unused_variables)]
         #[allow(unused_parens)]
         impl <$($ty:IntoView,)*>IntoViews for ($($ty),*){
-            fn into_views(self) -> Vec<BoxView> {
+            fn into_views(self) -> Vec<AnyView> {
                 let ($($ty),*)=self;
-                vec![$($ty.into_boxed_view()),*]
+                vec![$($ty.into_anyview()),*]
             }
         }
     };
@@ -114,54 +92,7 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
-mod sealed {
-    pub struct Sealed;
-}
-
-impl dyn View {
-    pub fn inner_type_id(&self) -> TypeId {
-        self.type_id(sealed::Sealed)
-    }
-
-    pub fn is<T: View + 'static>(&self) -> bool {
-        self.inner_type_id() == TypeId::of::<T>()
-    }
-
-    pub fn downcast_ref<T: View + 'static>(&self) -> Option<&T> {
-        if self.is::<T>() {
-            unsafe { Some(&*(self as *const dyn View as *const T)) }
-        } else {
-            None
-        }
-    }
-
-    pub fn downcast<T: View + 'static>(self: Box<Self>) -> Result<Box<T>, Box<dyn View>> {
-        if self.is::<T>() {
-            unsafe {
-                let raw: *mut dyn View = Box::into_raw(self);
-                Ok(Box::from_raw(raw as *mut T))
-            }
-        } else {
-            Err(self)
-        }
-    }
-}
-
-pub type BoxView = Box<dyn View + 'static>;
-pub type BoxViewBuilder = Box<dyn Fn() -> BoxView>;
-raw_view!(Reactive<BoxView>);
-
-impl View for BoxView {
-    fn body(self, env: Environment) -> BoxView {
-        self.boxed_body(env)
-    }
-}
-
-impl Debug for dyn View {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("dyn View")
-    }
-}
+raw_view!(Reactive<AnyView>);
 
 pub trait ViewExt: View {
     fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T>;
@@ -173,28 +104,30 @@ pub trait ViewExt: View {
         Self: Sized;
 
     fn leading(self) -> Modifier<Frame>;
-
-    fn boxed(self) -> BoxView;
+    fn anyview(self) -> AnyView;
 }
 
 impl<V: View + 'static> ViewExt for V {
     fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T> {
-        Modifier::new(self.boxed(), modifier)
+        Modifier::new(self.anyview(), modifier)
     }
 
     fn width(self, size: impl Into<Size>) -> Modifier<Frame> {
-        Modifier::new(self.boxed(), Frame::default().width(size))
+        Modifier::new(self.anyview(), Frame::default().width(size))
     }
 
     fn height(self, size: impl Into<Size>) -> Modifier<Frame> {
-        Modifier::new(self.boxed(), Frame::default().height(size))
+        Modifier::new(self.anyview(), Frame::default().height(size))
     }
 
     fn leading(self) -> Modifier<Frame> {
-        Modifier::new(self.boxed(), Frame::default().alignment(Alignment::Leading))
+        Modifier::new(
+            self.anyview(),
+            Frame::default().alignment(Alignment::Leading),
+        )
     }
 
-    fn boxed(self) -> BoxView {
-        Box::new(self)
+    fn anyview(self) -> AnyView {
+        AnyView::new(self)
     }
 }

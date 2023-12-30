@@ -6,4 +6,4 @@ prefix_with_name = true
 prefix = "WaterUI"
 
 [parse.expand]
-crates = ["waterui-core"]
+crates = ["waterui"]

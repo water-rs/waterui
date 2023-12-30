@@ -7,7 +7,7 @@ pub struct Subscriber {
 
 impl<F> From<F> for Subscriber
 where
-    F: FnMut() + Send + Sync,
+    F: Fn() + Send + Sync,
 {
     fn from(value: F) -> Self {
         Self::new(value)
@@ -26,9 +26,9 @@ impl Drop for Subscriber {
 impl Subscriber {
     pub fn new<F>(f: F) -> Self
     where
-        F: FnMut() + Send + Sync,
+        F: Fn() + Send + Sync,
     {
-        let boxed: Box<Box<dyn FnMut()>> = Box::new(Box::new(f));
+        let boxed: Box<Box<dyn Fn()>> = Box::new(Box::new(f));
         let state = Box::into_raw(boxed) as *mut ();
         extern "C" fn from_fn_impl(state: *mut ()) {
             let boxed = state as *mut Box<dyn Fn()>;
