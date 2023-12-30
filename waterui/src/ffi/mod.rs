@@ -1,19 +1,23 @@
 #[macro_use]
 mod array;
 pub use array::Buf;
-use waterui_reactive::binding::Binding;
+use take_mut::take;
 pub mod utils;
 
-use crate::env::EnvironmentBuilder;
-use crate::layout::Frame;
-use crate::modifier::Modifier;
-use crate::view::View;
-use crate::Environment;
-use crate::{component, view::BoxView, Reactive};
-use std::mem::ManuallyDrop;
-use std::ops::Deref;
-use std::ptr::write;
-use std::ptr::{null, read};
+use crate::{
+    component::{self, anyview::AnyViewTrait, stack::StackMode, AnyView},
+    env::EnvironmentBuilder,
+    layout::Frame,
+    modifier::Modifier,
+    view::View,
+    Binding, Environment, Reactive, ViewExt,
+};
+use std::{
+    any::TypeId,
+    mem::{forget, transmute, ManuallyDrop},
+    ops::Deref,
+    ptr::{null, read, write},
+};
 use waterui_reactive::Subscriber;
 
 use self::utils::{EventObject, ViewObject};
@@ -35,35 +39,77 @@ pub unsafe extern "C" fn waterui_get_reactive_string(reactive: *const ()) -> Buf
     reactive.deref().to_string().into()
 }
 
+macro_rules! impl_reactive_subscribe {
+    ($(($ident:ident,$ty:ty)),*) => {
+        $(
+            /// # Safety
+            /// Must be valid `Reactive`
+            #[no_mangle]
+            pub unsafe extern "C" fn $ident(
+                reactive: *const (),
+                subscriber: Subscriber,
+            ) {
+                let reactive: ManuallyDrop<Reactive<$ty>> =
+                    ManuallyDrop::new(Reactive::from_raw(reactive as *mut $ty));
+                reactive.subscribe(subscriber);
+            }
+        )*
+    };
+}
+
+macro_rules! impl_binding_subscribe {
+    ($(($ident:ident,$ty:ty)),*) => {
+        $(
+            /// # Safety
+            /// Must be valid `Binding`
+            #[no_mangle]
+            pub unsafe extern "C" fn $ident(
+                binding: *const (),
+                subscriber: Subscriber,
+            ) {
+                let binding: ManuallyDrop<Binding<$ty>> =
+                    ManuallyDrop::new(Binding::from_raw(binding as *mut $ty));
+                binding.subscribe(subscriber);
+            }
+        )*
+    };
+}
+
+impl_reactive_subscribe![
+    (waterui_subscribe_reactive_string, String),
+    (waterui_subscribe_reactive_view, AnyView)
+];
+
+impl_binding_subscribe![
+    (waterui_subscribe_binding_string, String),
+    (waterui_subscribe_binding_bool, bool)
+];
+
 /// # Safety
-/// Must be valid `Reactive<String>`
+/// Must be valid `Binding<String>`.
 #[no_mangle]
-pub unsafe extern "C" fn waterui_subscribe_reactive_string(
-    reactive: *const (),
-    subscriber: Subscriber,
-) {
-    let reactive: ManuallyDrop<Reactive<String>> =
-        ManuallyDrop::new(Reactive::from_raw(reactive as *mut String));
-    reactive.on_update(subscriber);
+pub unsafe extern "C" fn waterui_get_binding_string(binding: *const ()) -> Buf {
+    let binding: ManuallyDrop<Binding<String>> =
+        ManuallyDrop::new(Binding::from_raw(binding as *mut String));
+    let binding = binding.get();
+    binding.deref().to_string().into()
+}
+
+/// # Safety
+/// `Binding<String>` must be valid, and `Buf` must be valid UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_set_binding_string(binding: *const (), string: Buf) {
+    let binding: ManuallyDrop<Binding<String>> =
+        ManuallyDrop::new(Binding::from_raw(binding as *mut String));
+    binding.set(String::from_utf8_unchecked(string.to_vec()))
 }
 
 /// # Safety
 /// Must be valid `Reactive<BoxView>`.
 #[no_mangle]
 pub unsafe extern "C" fn waterui_get_reactive_view(binding: *const ()) -> ViewObject {
-    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *const BoxView));
+    let binding = ManuallyDrop::new(Reactive::from_raw(binding as *const AnyView));
     binding.take().into()
-}
-
-/// # Safety
-/// Must be valid `Reactive<BoxView>`.
-#[no_mangle]
-pub unsafe extern "C" fn waterui_subscribe_reactive_view(
-    reactive: *const (),
-    subscriber: Subscriber,
-) {
-    let reactive = ManuallyDrop::new(Reactive::from_raw(reactive as *const BoxView));
-    reactive.on_update(subscriber)
 }
 
 /// # Safety
@@ -83,17 +129,6 @@ pub unsafe extern "C" fn waterui_set_binding_bool(binding: *const (), bool: bool
     binding.set(bool);
 }
 
-/// # Safety
-/// Must be valid `Binding<bool>`
-#[no_mangle]
-pub unsafe extern "C" fn waterui_subscribe_binding_bool(
-    binding: *const (),
-    subscriber: Subscriber,
-) {
-    let binding = ManuallyDrop::new(Binding::from_raw(binding as *const bool));
-    binding.subscribe(subscriber);
-}
-
 macro_rules! impl_component{
     ($(($ident:ident,$ty:tt)),*) => {
         $(
@@ -101,12 +136,8 @@ macro_rules! impl_component{
             /// `EventObject` must be valid
             #[no_mangle]
             pub unsafe extern "C" fn $ident(view: ViewObject,value:*mut $ty) -> i8{
-                let mut view = view.into_ptr();
-
-                try_unwrap_boxed_view(&mut view);
-
-                if (*view).is::<component::$ty>(){
-                    write(value,read(view as *const component::$ty).into());
+                if let Some(component) =  downcast::<component::$ty>(view){
+                    write(value,component.into());
                     0
                 }
                 else{
@@ -124,12 +155,8 @@ macro_rules! impl_modifier{
             /// `EventObject` must be valid
             #[no_mangle]
             pub unsafe extern "C" fn $ident(view: ViewObject,value:*mut $ty) -> i8{
-                let mut view = view.into_ptr();
-
-                try_unwrap_boxed_view(&mut view);
-
-                if (*view).is::<Modifier<$modifier>>(){
-                    write(value,read(view as *const Modifier<$modifier>).into());
+                if let Some(modifier) =  downcast::<Modifier<$modifier>>(view){
+                    write(value,modifier.into());
                     0
                 }
                 else{
@@ -144,37 +171,35 @@ macro_rules! impl_modifier{
 /// Must be valid `Reactive<BoxView>`.
 #[no_mangle]
 pub unsafe extern "C" fn waterui_view_to_reactive_view(view: ViewObject) -> *const () {
-    let mut view = view.into_ptr();
-    try_unwrap_boxed_view(&mut view);
-    if (*view).is::<Reactive<BoxView>>() {
-        let reactive = read(view as *const Reactive<BoxView>);
-        reactive.into_raw() as *const ()
-    } else {
-        null()
-    }
+    downcast::<Reactive<AnyView>>(view)
+        .map(|v| v.into_raw() as *const ())
+        .unwrap_or(null())
 }
 
-unsafe fn try_unwrap_boxed_view(view: *mut *const dyn View) {
-    let mut new_view = *view;
-    loop {
-        if (*new_view).is::<BoxView>() {
-            new_view = read(new_view as *const *const dyn View)
-        } else {
-            break;
+#[no_mangle]
+pub unsafe extern "C" fn waterui_unwrap_anyview(mut view: ViewObject) -> ViewObject {
+    while let Some(anyview) = downcast::<AnyView>(view) {
+        view = anyview.into();
+    }
+    view
+}
+
+unsafe fn downcast<T: 'static>(view: ViewObject) -> Option<T> {
+    let view = view.into_anyview();
+    match view.downcast::<T>() {
+        Ok(output) => Some(*output),
+        Err(view) => {
+            forget(view);
+            None
         }
     }
-    *view = new_view
 }
 
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
 pub unsafe extern "C" fn waterui_view_to_empty(view: ViewObject) -> i8 {
-    let mut view = view.into_ptr();
-
-    try_unwrap_boxed_view(&mut view);
-
-    if (*view).is::<()>() {
+    if downcast::<()>(view).is_some() {
         0
     } else {
         -1
@@ -184,7 +209,8 @@ pub unsafe extern "C" fn waterui_view_to_empty(view: ViewObject) -> i8 {
 impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
-    (waterui_view_to_text_field, TextField)
+    (waterui_view_to_text_field, TextField),
+    (waterui_view_to_stack, Stack)
 );
 
 impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
@@ -192,29 +218,11 @@ impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
 /// # Safety
 /// `EventObject` must be valid
 #[no_mangle]
-pub unsafe extern "C" fn waterui_view_to_stack(view: ViewObject, value: *mut Stack) -> i8 {
-    let mut view = view.into_ptr();
-
-    if (*view).is::<component::VStack>() {
-        *value = read(view as *const component::VStack).into();
-        return 0;
-    }
-
-    if (*view).is::<component::HStack>() {
-        *value = read(view as *const component::HStack).into();
-        return 0;
-    }
-
-    try_unwrap_boxed_view(&mut view);
-    -1
-}
-
-/// # Safety
-/// `EventObject` must be valid
-#[no_mangle]
 pub unsafe extern "C" fn waterui_call_view(view: ViewObject, env: *const ()) -> ViewObject {
-    view.into_box()
-        .body(Environment::from_raw(env as *const EnvironmentBuilder))
+    view.into_anyview()
+        //.body(Environment::from_raw(env as *const EnvironmentBuilder))
+        .body(Environment::builder().build())
+        .anyview()
         .into()
 }
 
@@ -239,17 +247,11 @@ impl From<Modifier<Frame>> for FrameModifier {
     }
 }
 
-impl_array!(Views, BoxView, ViewObject);
+impl_array!(Views, AnyView, ViewObject);
 #[repr(C)]
 pub struct Stack {
     mode: StackMode,
     contents: Views,
-}
-
-#[repr(C)]
-pub enum StackMode {
-    Vertical,
-    Horizonal,
 }
 
 #[repr(C)]
@@ -280,6 +282,21 @@ pub struct Image {
     data: Buf,
 }
 
+#[repr(C)]
+pub struct App {
+    view: ViewObject,
+    env: *const (),
+}
+
+impl From<crate::App> for App {
+    fn from(value: crate::App) -> Self {
+        Self {
+            view: value.view.into(),
+            env: value.environment.into_raw() as *const (),
+        }
+    }
+}
+
 impl From<component::Image> for Image {
     fn from(value: component::Image) -> Self {
         Self {
@@ -308,8 +325,8 @@ impl From<component::Button> for Button {
     }
 }
 
-impl From<component::VStack> for Stack {
-    fn from(value: component::VStack) -> Self {
+impl From<component::Stack> for Stack {
+    fn from(value: component::Stack) -> Self {
         Self {
             mode: StackMode::Vertical,
             contents: value.contents.into(),
@@ -317,19 +334,20 @@ impl From<component::VStack> for Stack {
     }
 }
 
-impl From<component::HStack> for Stack {
-    fn from(value: component::HStack) -> Self {
-        Self {
-            mode: StackMode::Horizonal,
-            contents: value.contents.into(),
-        }
-    }
+#[no_mangle]
+pub unsafe extern "C" fn waterui_env_increment_count(env: *const ()) {
+    let env = ManuallyDrop::new(Environment::from_raw(env as *const EnvironmentBuilder));
+    let _ = env.clone();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waterui_env_decrement_count(env: *const ()) {
+    Environment::from_raw(env as *const EnvironmentBuilder);
 }
 
 extern "C" {
     pub fn waterui_create_window(title: Buf, content: ViewObject) -> usize;
     pub fn waterui_window_closeable(id: usize, is: bool);
     pub fn waterui_close_window(id: usize);
-    pub fn waterui_main() -> ViewObject;
-    pub fn waterui_init_environment() -> *const ();
+    pub fn waterui_main() -> App;
 }

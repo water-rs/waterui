@@ -22,6 +22,13 @@ impl<T: Debug> Debug for Binding<T> {
         self.get().fmt(f)
     }
 }
+
+impl<T: Display> Display for Binding<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
 impl<T> Clone for Binding<T> {
     fn clone(&self) -> Self {
         Self {
@@ -67,12 +74,11 @@ impl<T> DerefMut for BindingWriteGuard<'_, T> {
 impl<T> Drop for BindingWriteGuard<'_, T> {
     fn drop(&mut self) {
         let _ = self.guard.take();
-        let _ = self
-            .subscribers
+        self.subscribers
             .read()
             .unwrap()
             .iter()
-            .map(Subscriber::call);
+            .for_each(Subscriber::call);
     }
 }
 
@@ -133,7 +139,7 @@ impl<T> Binding<T> {
         output
     }
 
-    pub fn transform<Output: for<'a> From<&'a T>>(self) -> Reactive<Output>
+    pub fn transform<Output: for<'a> From<&'a T>>(&self) -> Reactive<Output>
     where
         T: Send + Sync + 'static,
         Output: Send + Sync,
@@ -182,10 +188,26 @@ impl Binding<bool> {
         let mut guard = self.get_mut();
         *guard.deref_mut() = !guard.deref();
     }
+
+    pub fn condition<Output: Send + Sync + Clone>(
+        &self,
+        truthy: Output,
+        falsy: Output,
+    ) -> Reactive<Output> {
+        self.condition_else(move || truthy.clone(), move || falsy.clone())
+    }
+
+    pub fn condition_else<Output: Send + Sync>(
+        &self,
+        truthy: impl 'static + Send + Sync + Fn() -> Output,
+        falsy: impl 'static + Send + Sync + Fn() -> Output,
+    ) -> Reactive<Output> {
+        self.to(move |condition| if *condition { truthy() } else { falsy() })
+    }
 }
 
 impl<T: Display + Send + Sync + 'static> Binding<T> {
-    pub fn display(self) -> Reactive<String> {
+    pub fn display(&self) -> Reactive<String> {
         self.to(|v| v.to_string())
     }
 }
