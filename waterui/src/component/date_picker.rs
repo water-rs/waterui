@@ -1,6 +1,6 @@
 use super::{text, vstack, Button, HStack, Text, VStack};
+use crate::Environment;
 use crate::{view::ViewExt, Binding, View};
-use crate::{BoxView, Environment};
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use itertools::Itertools;
 
@@ -15,7 +15,7 @@ impl DatePicker {
 }
 
 impl View for DatePicker {
-    fn body(self, _env: Environment) -> BoxView {
+    fn body(self, _env: Environment) -> impl View {
         let first_day = self.date.get().with_day(1).unwrap();
         let weekday = Days::new(first_day.weekday().num_days_from_monday() as u64);
         let day = first_day - weekday;
@@ -55,6 +55,5 @@ impl View for DatePicker {
                 .leading(),
             HStack::from_iter(day_iter),
         ))
-        .boxed()
     }
 }

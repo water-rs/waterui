@@ -1,11 +1,9 @@
-use take_mut::take;
-
 use crate::{subscriber::Subscriber, Binding};
 use std::{
     borrow::Cow,
     fmt::{Debug, Display},
     hash::Hash,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     sync::Arc,
     sync::{RwLock, RwLockReadGuard},
 };
@@ -67,8 +65,8 @@ impl<T> Reactive<T> {
         self.inner.get()
     }
 
-    pub fn on_update(&self, subscriber: impl Into<Subscriber>) {
-        self.inner.on_update(subscriber)
+    pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
+        self.inner.subscribe(subscriber)
     }
 
     pub fn to_with_ref<Output>(
@@ -91,7 +89,7 @@ impl<T> Reactive<T> {
         let reactive = self.clone();
         let output = Reactive::new(move || f(reactive.take()));
         let output_weak = Arc::downgrade(&output.inner);
-        self.on_update(move || {
+        self.subscribe(move || {
             if let Some(handle) = output_weak.upgrade() {
                 handle.need_update();
             }
@@ -99,7 +97,7 @@ impl<T> Reactive<T> {
         output
     }
 
-    pub fn transform<Output: From<T>>(self) -> Reactive<Output>
+    pub fn transform<Output: From<T>>(&self) -> Reactive<Output>
     where
         T: Send + Sync,
         Output: Send + Sync,
@@ -109,10 +107,6 @@ impl<T> Reactive<T> {
 
     pub fn take(&self) -> T {
         self.inner.take()
-    }
-
-    pub fn need_update(&self) {
-        self.inner.need_update()
     }
 
     /// Constructs a `Reactive<T>` from a raw pointer
@@ -134,7 +128,7 @@ impl<T> Reactive<T> {
 }
 
 impl<T: Display + Send + Sync + 'static> Reactive<T> {
-    pub fn display(self) -> Reactive<String> {
+    pub fn display(&self) -> Reactive<String> {
         self.to_with_ref(|v| v.to_string())
     }
 }
@@ -153,22 +147,26 @@ impl<'a, T> Deref for ReactiveGuard<'a, T> {
 type Updater<T> = Box<dyn Send + Sync + Fn() -> T>;
 pub(crate) struct ReactiveInner<T: 'static> {
     value: RwLock<Option<T>>,
-    updater: RwLock<Updater<T>>,
+    updater: Updater<T>,
+    subscribers: RwLock<Vec<Subscriber>>,
 }
 
 impl<T> ReactiveInner<T> {
     pub fn new(updater: impl 'static + Send + Sync + Fn() -> T) -> Self {
         Self {
             value: RwLock::new(None),
-            updater: RwLock::new(Box::new(updater)),
+            updater: Box::new(updater),
+            subscribers: RwLock::new(Vec::new()),
         }
     }
 
     pub fn get(&self) -> ReactiveGuard<T> {
         let mut guard = self.value.write().unwrap();
         if guard.is_none() {
-            *guard = Some((self.updater.read().unwrap())());
+            *guard = Some((self.updater)());
         }
+
+        drop(guard);
 
         ReactiveGuard {
             guard: self.value.read().unwrap(),
@@ -180,22 +178,20 @@ impl<T> ReactiveInner<T> {
             .write()
             .unwrap()
             .take()
-            .unwrap_or((self.updater.read().unwrap())())
-    }
-
-    pub fn on_update(&self, subscriber: impl Into<Subscriber>) {
-        let subscriber = subscriber.into();
-        take(self.updater.write().unwrap().deref_mut(), |value| {
-            Box::new(move || {
-                let new_value = value();
-                subscriber.call();
-                new_value
-            })
-        })
+            .unwrap_or((self.updater)())
     }
 
     pub fn need_update(&self) {
         self.value.write().unwrap().take();
+        self.subscribers
+            .read()
+            .unwrap()
+            .iter()
+            .for_each(Subscriber::call);
+    }
+
+    pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
+        self.subscribers.write().unwrap().push(subscriber.into())
     }
 }
 
@@ -223,13 +219,25 @@ impl<T: Send + Sync + Clone> IntoReactive<T> for T {
 
 impl<T> IntoReactive<T> for Reactive<T> {
     fn into_reactive(self) -> Reactive<T> {
-        todo!()
+        self
     }
 }
 
-impl<T> IntoReactive<T> for Binding<T> {
+impl<T> IntoReactive<T> for &Reactive<T> {
     fn into_reactive(self) -> Reactive<T> {
-        todo!()
+        self.clone()
+    }
+}
+
+impl<T: Send + Sync + Clone> IntoReactive<T> for Binding<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        (&self).into_reactive()
+    }
+}
+
+impl<T: Send + Sync + Clone> IntoReactive<T> for &Binding<T> {
+    fn into_reactive(self) -> Reactive<T> {
+        self.to(|v| v.clone())
     }
 }
 
@@ -250,8 +258,20 @@ macro_rules! impl_into_reactive {
                 }
             }
 
+            impl $crate::reactive::IntoReactive<$target> for &$crate::binding::Binding<$source> {
+                fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
+                    self.to(|v| {v.clone().into()})
+                }
+            }
+
 
             impl $crate::reactive::IntoReactive<$target> for $crate::reactive::Reactive<$source> {
+                fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
+                    self.transform()
+                }
+            }
+
+            impl $crate::reactive::IntoReactive<$target> for &$crate::reactive::Reactive<$source> {
                 fn into_reactive(self) -> $crate::reactive::Reactive<$target> {
                     self.transform()
                 }
