@@ -30,6 +30,13 @@ pub struct Buf {
     len: usize,
     capacity: usize,
 }
+
+impl Buf {
+    pub fn to_vec(self) -> Vec<u8> {
+        unsafe { Vec::from_raw_parts(self.head, self.len, self.capacity) }
+    }
+}
+
 impl From<Vec<u8>> for Buf {
     fn from(value: Vec<u8>) -> Self {
         use std::mem::ManuallyDrop;

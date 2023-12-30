@@ -1,25 +1,14 @@
+use crate::component::AnyView;
 use crate::view::IntoViews;
+use crate::View;
 
-use crate::{view::BoxView, View};
-
-macro_rules! impl_frame {
+macro_rules! impl_from_iter {
     ($($ty:ident),*) => {
         $(
-            pub struct $ty {
-                pub(crate)contents: Vec<BoxView>,
-            }
-
             impl<V: View + 'static> FromIterator<V> for $ty {
                 fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-                    let content: Vec<BoxView> = iter.into_iter().map(|v| ->BoxView {Box::new(v)}).collect();
+                    let content: Vec<_> = iter.into_iter().map(|v| {AnyView::new(v)}).collect();
                     Self::new(content)
-                }
-            }
-
-            impl $ty {
-                pub fn new(views: impl IntoViews) -> Self {
-                    let contents = views.into_views();
-                    Self { contents }
                 }
             }
         )*
@@ -27,10 +16,82 @@ macro_rules! impl_frame {
     };
 }
 
-impl_frame!(VStack, HStack);
+impl_from_iter!(Stack, VStack, HStack);
 
-raw_view!(VStack);
-raw_view!(HStack);
+pub struct Stack {
+    pub(crate) contents: Vec<AnyView>,
+    pub(crate) mode: StackMode,
+}
+
+#[repr(C)]
+pub enum StackMode {
+    Vertical,
+    Horizonal,
+}
+
+impl Stack {
+    pub fn new(contents: impl IntoViews) -> Self {
+        Self {
+            contents: contents.into_views(),
+            mode: StackMode::Vertical,
+        }
+    }
+    fn set_mode(&mut self, mode: StackMode) {
+        self.mode = mode;
+    }
+
+    pub fn vertical(mut self) -> Self {
+        self.set_mode(StackMode::Vertical);
+        self
+    }
+
+    pub fn horizonal(mut self) -> Self {
+        self.set_mode(StackMode::Horizonal);
+        self
+    }
+}
+
+raw_view!(Stack);
+
+pub struct VStack {
+    contents: Vec<AnyView>,
+}
+
+impl VStack {
+    pub fn new(contents: impl IntoViews) -> Self {
+        Self {
+            contents: contents.into_views(),
+        }
+    }
+}
+
+pub struct HStack {
+    contents: Vec<AnyView>,
+}
+
+impl HStack {
+    pub fn new(contents: impl IntoViews) -> Self {
+        Self {
+            contents: contents.into_views(),
+        }
+    }
+}
+
+impl View for VStack {
+    fn body(self, _env: crate::Environment) -> impl View {
+        Stack::new(self.contents).vertical()
+    }
+}
+
+impl View for HStack {
+    fn body(self, _env: crate::Environment) -> impl View {
+        Stack::new(self.contents).horizonal()
+    }
+}
+
+pub fn stack(contents: impl IntoViews) -> Stack {
+    Stack::new(contents)
+}
 
 pub fn vstack(contents: impl IntoViews) -> VStack {
     VStack::new(contents)

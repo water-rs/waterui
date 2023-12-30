@@ -3,10 +3,11 @@ name = "waterui-derive"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-proc-macro = true
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-proc-macro2 = "1.0.69"
 quote = "1.0.33"
-syn = { version = "2.0.39", features = ["full","extra-traits"] }
+syn = { version = "2.0.43", features = ["full"] }
+
+[lib]
+proc-macro = true
