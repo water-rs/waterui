@@ -1,17 +1,18 @@
-use std::mem::transmute;
+use std::mem::{size_of, transmute};
 
 use crate::{
+    component::AnyView,
     utils::{self, Color},
-    BoxView, View,
 };
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ViewObject {
-    inner: [usize; 2], // Box<dyn View>
+    inner: [u8; size_of::<AnyView>()], // *const dyn AnyViewTrait
 }
 
-impl From<BoxView> for ViewObject {
-    fn from(value: BoxView) -> Self {
+impl From<AnyView> for ViewObject {
+    fn from(value: AnyView) -> Self {
         unsafe { transmute(value) }
     }
 }
@@ -19,12 +20,8 @@ impl From<BoxView> for ViewObject {
 impl ViewObject {
     /// # Safety
     /// `EventObject` must be valid
-    pub unsafe fn into_box(&self) -> BoxView {
+    pub unsafe fn into_anyview(&self) -> AnyView {
         transmute(self.inner)
-    }
-
-    pub fn into_ptr(self) -> *const dyn View {
-        unsafe { transmute(self) }
     }
 }
 

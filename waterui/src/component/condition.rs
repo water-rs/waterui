@@ -1,6 +1,8 @@
 use waterui_reactive::reactive::IntoReactive;
 
-use crate::{view::IntoView, BoxView, Environment, Reactive, View, ViewExt};
+use crate::{modifier::ViewModifier, view::IntoView, Environment, Reactive, View};
+
+use super::AnyView;
 
 #[derive(Debug)]
 pub struct Condition<ContentBuilder, OrBuilder> {
@@ -42,15 +44,15 @@ where
     Content: IntoView,
     Or: IntoView,
 {
-    fn body(self, _env: Environment) -> BoxView {
-        let output: Reactive<BoxView> = self.condition.to(move |condition| {
+    fn body(self, _env: Environment) -> impl View {
+        let output: Reactive<AnyView> = self.condition.to(move |condition| {
             if condition {
-                (self.content)().into_boxed_view()
+                (self.content)().into_anyview()
             } else {
-                (self.or)().into_boxed_view()
+                (self.or)().into_anyview()
             }
         });
-        output.boxed()
+        output
     }
 }
 
@@ -59,15 +61,15 @@ where
     ContentBuilder: 'static + Send + Sync + Fn() -> Content,
     Content: IntoView,
 {
-    fn body(self, _env: Environment) -> BoxView {
-        let result: Reactive<BoxView> = self.condition.to(move |condition| {
+    fn body(self, _env: Environment) -> impl View {
+        let result: Reactive<AnyView> = self.condition.to(move |condition| {
             if condition {
-                (self.content)().into_boxed_view()
+                (self.content)().into_anyview()
             } else {
-                ().into_boxed_view()
+                ().into_anyview()
             }
         });
-        result.boxed()
+        result
     }
 }
 
@@ -81,3 +83,7 @@ where
 {
     Condition::new(condition, content)
 }
+
+#[derive(Clone)]
+pub struct Display(bool);
+impl ViewModifier for Display {}

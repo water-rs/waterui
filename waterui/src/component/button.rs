@@ -1,15 +1,16 @@
-use crate::{view::IntoView, BoxView};
+use crate::component::AnyView;
+use crate::view::IntoView;
 use std::fmt::Display;
 
 pub struct Button {
-    pub(crate) label: BoxView,
+    pub(crate) label: AnyView,
     pub(crate) action: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Button {
     pub fn new(label: impl IntoView, action: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
-            label: label.into_boxed_view(),
+            label: label.into_anyview(),
             action: Box::new(action),
         }
     }
