@@ -15,3 +15,5 @@ mod condition;
 pub use condition::{when, Condition};
 pub(crate) mod anyview;
 pub use anyview::AnyView;
+mod toggle;
+pub use toggle::{toggle, Toggle};
