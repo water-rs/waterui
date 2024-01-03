@@ -1,22 +1,20 @@
 #[macro_use]
 mod array;
 pub use array::Buf;
-use take_mut::take;
 pub mod utils;
 
 use crate::{
-    component::{self, anyview::AnyViewTrait, stack::StackMode, AnyView},
+    component::{self, stack::StackMode, AnyView},
     env::EnvironmentBuilder,
     layout::Frame,
-    modifier::Modifier,
+    modifier::{self, ViewModifier},
     view::View,
     Binding, Environment, Reactive, ViewExt,
 };
 use std::{
-    any::TypeId,
-    mem::{forget, transmute, ManuallyDrop},
+    mem::{forget, ManuallyDrop},
     ops::Deref,
-    ptr::{null, read, write},
+    ptr::{null, write},
 };
 use waterui_reactive::Subscriber;
 
@@ -149,13 +147,13 @@ macro_rules! impl_component{
 }
 
 macro_rules! impl_modifier{
-    ($(($ident:ident,$modifier:ty,$ty:ty)),*) => {
+    ($(($ident:ident,$modifier:ty)),*) => {
         $(
             /// # Safety
             /// `EventObject` must be valid
             #[no_mangle]
-            pub unsafe extern "C" fn $ident(view: ViewObject,value:*mut $ty) -> i8{
-                if let Some(modifier) =  downcast::<Modifier<$modifier>>(view){
+            pub unsafe extern "C" fn $ident(view: ViewObject,value:*mut Modifier) -> i8{
+                if let Some(modifier) =  downcast::<modifier::Modifier<$modifier>>(view){
                     write(value,modifier.into());
                     0
                 }
@@ -210,10 +208,11 @@ impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
     (waterui_view_to_text_field, TextField),
-    (waterui_view_to_stack, Stack)
+    (waterui_view_to_stack, Stack),
+    (waterui_view_to_toggle, Toggle)
 );
 
-impl_modifier!((waterui_view_to_frame_modifier, Frame, FrameModifier));
+impl_modifier!((waterui_view_to_frame_modifier, Frame));
 
 /// # Safety
 /// `EventObject` must be valid
@@ -233,15 +232,15 @@ pub struct Text {
 }
 
 #[repr(C)]
-pub struct FrameModifier {
-    frame: Frame,
+pub struct Modifier {
+    modifier: *const (),
     view: ViewObject,
 }
 
-impl From<Modifier<Frame>> for FrameModifier {
-    fn from(value: Modifier<Frame>) -> Self {
+impl<T: ViewModifier> From<modifier::Modifier<T>> for Modifier {
+    fn from(value: modifier::Modifier<T>) -> Self {
         Self {
-            frame: value.modifier,
+            modifier: value.modifier.into_raw() as *const (),
             view: value.content.into(),
         }
     }
@@ -330,6 +329,21 @@ impl From<component::Stack> for Stack {
         Self {
             mode: StackMode::Vertical,
             contents: value.contents.into(),
+        }
+    }
+}
+
+#[repr(C)]
+pub struct Toggle {
+    label: ViewObject,
+    toggle: *const (),
+}
+
+impl From<component::Toggle> for Toggle {
+    fn from(value: component::Toggle) -> Self {
+        Self {
+            label: value.label.into(),
+            toggle: value.toggle.into_raw() as *const (),
         }
     }
 }
