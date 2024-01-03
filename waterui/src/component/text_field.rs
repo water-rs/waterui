@@ -24,3 +24,7 @@ impl TextField {
         self
     }
 }
+
+pub fn field(label: impl IntoReactive<String>, value: &Binding<String>) -> TextField {
+    TextField::new(label, value)
+}
