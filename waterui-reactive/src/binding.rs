@@ -234,3 +234,21 @@ impl<T> From<T> for BindingInner<T> {
         }
     }
 }
+
+macro_rules! impl_num {
+    ($($ty:ty),*) => {
+        $(
+            impl Binding<$ty> {
+                pub fn increment(&self, num: $ty) {
+                    *self.get_mut() += num;
+                }
+
+                pub fn decrement(&self, num: $ty) {
+                    *self.get_mut() -= num;
+                }
+            }
+        )*
+    };
+}
+
+impl_num!(u64, i64);
