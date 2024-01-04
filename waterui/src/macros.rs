@@ -8,6 +8,16 @@ macro_rules! raw_view {
     };
 }
 
+macro_rules! impl_debug {
+    ($ty:ty) => {
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(stringify!($ty))
+            }
+        }
+    };
+}
+
 macro_rules! impl_from {
     ($enum_ty:ty,$ty:tt) => {
         impl From<$ty> for $enum_ty {
