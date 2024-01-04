@@ -2,6 +2,7 @@ use crate::{view::IntoView, Binding, ViewExt};
 
 use super::{text, AnyView};
 
+#[derive(Debug)]
 pub struct Stepper {
     pub(crate) text: AnyView,
     pub(crate) value: Binding<i64>,

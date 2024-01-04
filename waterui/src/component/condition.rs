@@ -1,6 +1,6 @@
 use waterui_reactive::reactive::IntoReactive;
 
-use crate::{modifier::ViewModifier, view::IntoView, Environment, Reactive, View};
+use crate::{view::IntoView, Environment, Reactive, View};
 
 use super::AnyView;
 
@@ -83,7 +83,3 @@ where
 {
     Condition::new(condition, content)
 }
-
-#[derive(Clone)]
-pub struct Display(bool);
-impl ViewModifier for Display {}
