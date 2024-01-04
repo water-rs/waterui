@@ -7,7 +7,7 @@ use crate::{
     component::{self, stack::StackMode, AnyView},
     env::EnvironmentBuilder,
     layout::Frame,
-    modifier::{self, ViewModifier},
+    modifier::{self, Display, ViewModifier},
     view::View,
     Binding, Environment, Reactive, ViewExt,
 };
@@ -75,12 +75,14 @@ macro_rules! impl_binding_subscribe {
 
 impl_reactive_subscribe![
     (waterui_subscribe_reactive_string, String),
-    (waterui_subscribe_reactive_view, AnyView)
+    (waterui_subscribe_reactive_view, AnyView),
+    (waterui_subscribe_reactive_bool, bool)
 ];
 
 impl_binding_subscribe![
     (waterui_subscribe_binding_string, String),
-    (waterui_subscribe_binding_bool, bool)
+    (waterui_subscribe_binding_bool, bool),
+    (waterui_subscribe_binding_int, i64)
 ];
 
 /// # Safety
@@ -91,6 +93,24 @@ pub unsafe extern "C" fn waterui_get_binding_string(binding: *const ()) -> Buf {
         ManuallyDrop::new(Binding::from_raw(binding as *mut String));
     let binding = binding.get();
     binding.deref().to_string().into()
+}
+
+/// # Safety
+/// Must be valid `Binding<i64>`.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_get_binding_int(binding: *const ()) -> i64 {
+    let binding = ManuallyDrop::new(Binding::from_raw(binding as *mut i64));
+    let guard = binding.get();
+    *guard
+}
+
+/// # Safety
+/// Must be valid `Binding<u64>`.
+#[no_mangle]
+pub unsafe extern "C" fn waterui_increment_binding_int(binding: *const (), num: i64) {
+    let binding: ManuallyDrop<Binding<i64>> =
+        ManuallyDrop::new(Binding::from_raw(binding as *mut i64));
+    binding.increment(num);
 }
 
 /// # Safety
@@ -117,6 +137,14 @@ pub unsafe extern "C" fn waterui_get_binding_bool(binding: *const ()) -> bool {
     let binding = ManuallyDrop::new(Binding::from_raw(binding as *const bool));
     let guard = binding.get();
     guard.to_owned()
+}
+
+/// # Safety
+/// Must be valid `Reactive<bool>`
+#[no_mangle]
+pub unsafe extern "C" fn waterui_get_reactive_bool(reactive: *const ()) -> bool {
+    let reactive = ManuallyDrop::new(Reactive::from_raw(reactive as *const bool));
+    reactive.take()
 }
 
 /// # Safety
@@ -207,12 +235,17 @@ pub unsafe extern "C" fn waterui_view_to_empty(view: ViewObject) -> i8 {
 impl_component!(
     (waterui_view_to_text, Text),
     (waterui_view_to_button, Button),
+    (waterui_view_to_image, Image),
     (waterui_view_to_text_field, TextField),
     (waterui_view_to_stack, Stack),
-    (waterui_view_to_toggle, Toggle)
+    (waterui_view_to_toggle, Toggle),
+    (waterui_view_to_stepper, Stepper)
 );
 
-impl_modifier!((waterui_view_to_frame_modifier, Frame));
+impl_modifier!(
+    (waterui_view_to_frame_modifier, Frame),
+    (waterui_view_to_display_modifier, Display)
+);
 
 /// # Safety
 /// `EventObject` must be valid
@@ -348,6 +381,23 @@ impl From<component::Toggle> for Toggle {
     }
 }
 
+#[repr(C)]
+pub struct Stepper {
+    text: ViewObject,
+    value: *const (),
+    step: u64,
+}
+
+impl From<component::Stepper> for Stepper {
+    fn from(value: component::Stepper) -> Self {
+        Self {
+            text: value.text.into(),
+            value: value.value.into_raw() as *const (),
+            step: value.step,
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn waterui_env_increment_count(env: *const ()) {
     let env = ManuallyDrop::new(Environment::from_raw(env as *const EnvironmentBuilder));
@@ -360,8 +410,9 @@ pub unsafe extern "C" fn waterui_env_decrement_count(env: *const ()) {
 }
 
 extern "C" {
+    /*
     pub fn waterui_create_window(title: Buf, content: ViewObject) -> usize;
     pub fn waterui_window_closeable(id: usize, is: bool);
-    pub fn waterui_close_window(id: usize);
+    pub fn waterui_close_window(id: usize);*/
     pub fn waterui_main() -> App;
 }

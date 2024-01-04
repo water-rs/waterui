@@ -17,3 +17,5 @@ waterui-reactive = { path = "../waterui-reactive" }
 waterui-derive = { path = "../waterui-derive" }
 futures-lite = "2.1.0"
 take_mut = "0.2.2"
+surf = { version = "2.3.2", features = ["h1-client-rustls"], default-features = false}
+smol = "2.0.0"

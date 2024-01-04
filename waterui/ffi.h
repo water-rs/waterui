@@ -14,14 +14,6 @@ typedef struct WaterUIViewObject
   uintptr_t inner[2];
 } WaterUIViewObject;
 
-typedef enum WaterUIAlignment
-{
-  WaterUIAlignment_Default,
-  WaterUIAlignment_Leading,
-  WaterUIAlignment_Center,
-  WaterUIAlignment_Trailing,
-} WaterUIAlignment;
-
 typedef enum WaterUIStackMode
 {
   WaterUIStackMode_Vertical,
@@ -52,6 +44,11 @@ typedef struct WaterUIButton
   struct WaterUIEventObject action;
 } WaterUIButton;
 
+typedef struct WaterUIImage
+{
+  struct WaterUIBuf data;
+} WaterUIImage;
+
 typedef struct WaterUITextField
 {
   const void *label;
@@ -72,49 +69,24 @@ typedef struct WaterUIStack
   struct WaterUIViews contents;
 } WaterUIStack;
 
-typedef enum WaterUISize_Tag
+typedef struct WaterUIToggle
 {
-  WaterUISize_Default,
-  WaterUISize_Size,
-} WaterUISize_Tag;
+  struct WaterUIViewObject label;
+  const void *toggle;
+} WaterUIToggle;
 
-typedef struct WaterUISize
+typedef struct WaterUIStepper
 {
-  WaterUISize_Tag tag;
-  union
-  {
-    struct
-    {
-      double size;
-    };
-  };
-} WaterUISize;
+  struct WaterUIViewObject text;
+  const void *value;
+  uint64_t step;
+} WaterUIStepper;
 
-typedef struct WaterUIEdge
+typedef struct WaterUIModifier
 {
-  struct WaterUISize top;
-  struct WaterUISize right;
-  struct WaterUISize bottom;
-  struct WaterUISize left;
-} WaterUIEdge;
-
-typedef struct WaterUIFrame
-{
-  struct WaterUISize width;
-  struct WaterUISize min_width;
-  struct WaterUISize max_width;
-  struct WaterUISize height;
-  struct WaterUISize min_height;
-  struct WaterUISize max_height;
-  struct WaterUIEdge margin;
-  enum WaterUIAlignment alignment;
-} WaterUIFrame;
-
-typedef struct WaterUIFrameModifier
-{
-  struct WaterUIFrame frame;
+  const void *modifier;
   struct WaterUIViewObject view;
-} WaterUIFrameModifier;
+} WaterUIModifier;
 
 typedef struct WaterUIApp
 {
@@ -148,6 +120,12 @@ void waterui_subscribe_reactive_view(const void *reactive, WaterUISubscriber sub
 
 /**
  * # Safety
+ * Must be valid `Reactive`
+ */
+void waterui_subscribe_reactive_bool(const void *reactive, WaterUISubscriber subscriber);
+
+/**
+ * # Safety
  * Must be valid `Binding`
  */
 void waterui_subscribe_binding_string(const void *binding, WaterUISubscriber subscriber);
@@ -160,9 +138,27 @@ void waterui_subscribe_binding_bool(const void *binding, WaterUISubscriber subsc
 
 /**
  * # Safety
+ * Must be valid `Binding`
+ */
+void waterui_subscribe_binding_int(const void *binding, WaterUISubscriber subscriber);
+
+/**
+ * # Safety
  * Must be valid `Binding<String>`.
  */
 struct WaterUIBuf waterui_get_binding_string(const void *binding);
+
+/**
+ * # Safety
+ * Must be valid `Binding<i64>`.
+ */
+int64_t waterui_get_binding_int(const void *binding);
+
+/**
+ * # Safety
+ * Must be valid `Binding<u64>`.
+ */
+void waterui_increment_binding_int(const void *binding, int64_t num);
 
 /**
  * # Safety
@@ -181,6 +177,12 @@ struct WaterUIViewObject waterui_get_reactive_view(const void *binding);
  * Must be valid `Binding<bool>`
  */
 bool waterui_get_binding_bool(const void *binding);
+
+/**
+ * # Safety
+ * Must be valid `Reactive<bool>`
+ */
+bool waterui_get_reactive_bool(const void *reactive);
 
 /**
  * # Safety
@@ -218,6 +220,12 @@ int8_t waterui_view_to_button(struct WaterUIViewObject view, struct WaterUIButto
  * # Safety
  * `EventObject` must be valid
  */
+int8_t waterui_view_to_image(struct WaterUIViewObject view, struct WaterUIImage *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
 int8_t waterui_view_to_text_field(struct WaterUIViewObject view, struct WaterUITextField *value);
 
 /**
@@ -230,8 +238,26 @@ int8_t waterui_view_to_stack(struct WaterUIViewObject view, struct WaterUIStack 
  * # Safety
  * `EventObject` must be valid
  */
-int8_t waterui_view_to_frame_modifier(struct WaterUIViewObject view,
-                                      struct WaterUIFrameModifier *value);
+int8_t waterui_view_to_toggle(struct WaterUIViewObject view, struct WaterUIToggle *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
+int8_t waterui_view_to_stepper(struct WaterUIViewObject view, struct WaterUIStepper *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
+int8_t waterui_view_to_frame_modifier(struct WaterUIViewObject view, struct WaterUIModifier *value);
+
+/**
+ * # Safety
+ * `EventObject` must be valid
+ */
+int8_t waterui_view_to_display_modifier(struct WaterUIViewObject view,
+                                        struct WaterUIModifier *value);
 
 /**
  * # Safety
@@ -242,11 +268,5 @@ struct WaterUIViewObject waterui_call_view(struct WaterUIViewObject view, const 
 void waterui_env_increment_count(const void *env);
 
 void waterui_env_decrement_count(const void *env);
-
-extern uintptr_t waterui_create_window(struct WaterUIBuf title, struct WaterUIViewObject content);
-
-extern void waterui_window_closeable(uintptr_t id, bool is);
-
-extern void waterui_close_window(uintptr_t id);
 
 extern struct WaterUIApp waterui_main(void);
