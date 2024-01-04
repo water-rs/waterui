@@ -1,8 +1,10 @@
+use waterui_reactive::reactive::IntoReactive;
+
 use crate::{
     component::{AnyView, Text},
     env::Environment,
     layout::{Alignment, Frame, Size},
-    modifier::{Modifier, ViewModifier},
+    modifier::{Display, Modifier, ViewModifier},
     Reactive,
 };
 
@@ -33,7 +35,7 @@ impl<V: View + 'static> IntoView for V {
     }
 }
 
-pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
+pub type ViewBuilder = Box<dyn Send + Sync + Fn() -> AnyView>;
 
 impl IntoView for &str {
     type Output = Text;
@@ -95,20 +97,20 @@ raw_view!(());
 raw_view!(Reactive<AnyView>);
 
 pub trait ViewExt: View {
-    fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T>;
+    fn modifier<T: ViewModifier>(self, modifier: impl IntoReactive<T>) -> Modifier<T>;
     fn width(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
     fn height(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
-
+    fn show(self, condition: impl IntoReactive<bool>) -> Modifier<Display>;
     fn leading(self) -> Modifier<Frame>;
     fn anyview(self) -> AnyView;
 }
 
 impl<V: View + 'static> ViewExt for V {
-    fn modifier<T: ViewModifier>(self, modifier: T) -> Modifier<T> {
+    fn modifier<T: ViewModifier>(self, modifier: impl IntoReactive<T>) -> Modifier<T> {
         Modifier::new(self.anyview(), modifier)
     }
 
@@ -118,6 +120,10 @@ impl<V: View + 'static> ViewExt for V {
 
     fn height(self, size: impl Into<Size>) -> Modifier<Frame> {
         Modifier::new(self.anyview(), Frame::default().height(size))
+    }
+
+    fn show(self, condition: impl IntoReactive<bool>) -> Modifier<Display> {
+        self.modifier(condition.into_reactive().to(Display::new))
     }
 
     fn leading(self) -> Modifier<Frame> {
