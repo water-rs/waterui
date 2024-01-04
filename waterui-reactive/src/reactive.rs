@@ -97,6 +97,19 @@ impl<T> Reactive<T> {
         output
     }
 
+    pub(crate) fn depend_binding<B>(&self, binding: &Binding<B>)
+    where
+        T: Send + Sync,
+    {
+        let reactive = Arc::downgrade(&self.inner);
+
+        binding.subscribe(move || {
+            if let Some(reactive) = reactive.upgrade() {
+                reactive.need_update()
+            }
+        });
+    }
+
     pub fn transform<Output: From<T>>(&self) -> Reactive<Output>
     where
         T: Send + Sync,
@@ -124,6 +137,10 @@ impl<T> Reactive<T> {
     /// To avoid a memory leak the pointer must be converted back to a Reactive using Reactive::from_raw.
     pub fn into_raw(self) -> *const T {
         Arc::into_raw(self.inner) as *const T
+    }
+
+    pub fn need_update(&self) {
+        self.inner.need_update();
     }
 }
 
@@ -188,10 +205,12 @@ impl<T> ReactiveInner<T> {
             .unwrap()
             .iter()
             .for_each(Subscriber::call);
+        println!("updated");
     }
 
     pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
-        self.subscribers.write().unwrap().push(subscriber.into())
+        self.subscribers.write().unwrap().push(subscriber.into());
+        println!("subscribed");
     }
 }
 
