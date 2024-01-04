@@ -96,6 +96,11 @@ impl<T> BindingInner<T> {
         }
     }
 
+    pub fn replace(&self, value: impl Into<T>) -> T {
+        let mut guard = self.get_mut();
+        replace(guard.deref_mut(), value.into())
+    }
+
     pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
         self.subscribers.write().unwrap().push(subscriber.into())
     }
@@ -118,6 +123,10 @@ impl<T> Binding<T> {
         self.inner.subscribe(subscriber)
     }
 
+    pub fn replace(&self, value: impl Into<T>) -> T {
+        self.inner.replace(value)
+    }
+
     pub fn to<Output: 'static>(
         &self,
         f: impl 'static + Send + Sync + Fn(&T) -> Output,
@@ -126,16 +135,10 @@ impl<T> Binding<T> {
         T: Send + Sync + 'static,
         Output: Send + Sync,
     {
-        let reactive = self.inner.clone();
+        let binding = self.clone();
 
-        let output = Reactive::new(move || f(reactive.get().deref()));
-        let output_weak = Arc::downgrade(&output.inner);
-
-        self.subscribe(move || {
-            if let Some(output) = output_weak.upgrade() {
-                output.need_update()
-            }
-        });
+        let output = Reactive::new(move || f(binding.get().deref()));
+        output.depend_binding(self);
         output
     }
 
@@ -155,10 +158,6 @@ impl<T> Binding<T> {
             .unwrap()
             .iter()
             .map(Subscriber::call);
-    }
-
-    pub fn replace(&self, value: impl Into<T>) -> T {
-        replace(self.get_mut().deref_mut(), value.into())
     }
 
     pub fn set(&self, value: impl Into<T>) {
