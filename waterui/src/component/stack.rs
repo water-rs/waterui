@@ -18,11 +18,13 @@ macro_rules! impl_from_iter {
 
 impl_from_iter!(Stack, VStack, HStack);
 
+#[derive(Debug)]
 pub struct Stack {
     pub(crate) contents: Vec<AnyView>,
     pub(crate) mode: StackMode,
 }
 
+#[derive(Debug)]
 #[repr(C)]
 pub enum StackMode {
     Vertical,
@@ -53,6 +55,7 @@ impl Stack {
 
 raw_view!(Stack);
 
+#[derive(Debug)]
 pub struct VStack {
     contents: Vec<AnyView>,
 }
@@ -65,6 +68,7 @@ impl VStack {
     }
 }
 
+#[derive(Debug)]
 pub struct HStack {
     contents: Vec<AnyView>,
 }
