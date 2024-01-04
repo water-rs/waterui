@@ -19,3 +19,5 @@ mod toggle;
 pub use toggle::{toggle, Toggle};
 mod stepper;
 pub use stepper::{stepper, Stepper};
+mod async_image;
+pub use async_image::AsyncImage;
