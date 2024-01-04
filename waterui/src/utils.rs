@@ -1,5 +1,7 @@
+use async_executor::Task;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::future::Future;
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[repr(C)]
 pub struct Color {
@@ -44,4 +46,12 @@ impl Default for Background {
     fn default() -> Self {
         Self::Default
     }
+}
+
+pub fn task<Fut>(fut: Fut) -> Task<Fut::Output>
+where
+    Fut: Future + Send + 'static,
+    Fut::Output: Send,
+{
+    smol::spawn(fut)
 }

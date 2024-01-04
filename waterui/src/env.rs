@@ -1,11 +1,10 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
-    future::Future,
     sync::Arc,
 };
 
-use async_executor::{Executor, Task};
+use crate::async_view::{DefaultErrorView, DefaultLoadingView};
 
 pub struct Environment {
     inner: Arc<EnvironmentBuilder>,
@@ -21,13 +20,15 @@ impl Clone for Environment {
 
 #[derive(Default)]
 pub struct EnvironmentBuilder {
-    runtime: Executor<'static>,
     map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl EnvironmentBuilder {
     pub fn new() -> Self {
-        Self::default()
+        let mut env = Self::default();
+        env.insert(DefaultLoadingView::default());
+        env.insert(DefaultErrorView::default());
+        env
     }
 
     pub fn get<T: 'static>(&self) -> Option<&T> {
@@ -50,14 +51,6 @@ impl EnvironmentBuilder {
                 let boxed: Box<T> = Box::from_raw(any as *mut T);
                 *boxed
             })
-    }
-
-    pub fn task<Fut>(&self, fut: Fut) -> Task<Fut::Output>
-    where
-        Fut: Future + Send + 'static,
-        Fut::Output: Send,
-    {
-        self.runtime.spawn(fut)
     }
 
     pub fn build(self) -> Environment {
@@ -92,13 +85,5 @@ impl Environment {
     /// To avoid a memory leak the pointer must be converted back to an Environment using Environment::from_raw.
     pub fn into_raw(self) -> *const EnvironmentBuilder {
         Arc::into_raw(self.inner)
-    }
-
-    pub fn task<Fut>(&self, fut: Fut) -> Task<Fut::Output>
-    where
-        Fut: Future + Send + 'static,
-        Fut::Output: Send,
-    {
-        self.inner.task(fut)
     }
 }
