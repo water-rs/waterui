@@ -23,6 +23,8 @@ pub struct AnyView {
     inner: Box<dyn AnyViewTrait>,
 }
 
+impl_debug!(AnyView);
+
 impl AnyView {
     pub fn new(view: impl View + 'static) -> Self {
         Self {

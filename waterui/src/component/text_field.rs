@@ -2,6 +2,7 @@ use waterui_reactive::{binding::Binding, reactive::IntoReactive};
 
 use crate::Reactive;
 
+#[derive(Debug)]
 pub struct TextField {
     pub(crate) label: Reactive<String>,
     pub(crate) value: Binding<String>,

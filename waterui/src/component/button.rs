@@ -21,6 +21,7 @@ impl Button {
 }
 
 raw_view!(Button);
+impl_debug!(Button);
 
 pub fn button(label: impl IntoView, action: impl Fn() + Send + Sync + 'static) -> Button {
     Button::new(label, action)

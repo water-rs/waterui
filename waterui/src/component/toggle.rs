@@ -4,6 +4,7 @@ use crate::view::IntoView;
 
 use super::AnyView;
 
+#[derive(Debug)]
 pub struct Toggle {
     pub(crate) label: AnyView,
     pub(crate) toggle: Binding<bool>,
