@@ -1,32 +1,9 @@
-use std::{
-    fmt::{Debug, Display},
-    mem::replace,
-    ops::{Deref, DerefMut},
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-};
+use std::sync::{Arc, RwLock};
 
-use crate::{reactive::Reactive, subscriber::Subscriber};
+use crate::{subscriber::SubscriberManager, Subscriber};
 
 pub struct Binding<T> {
     inner: Arc<BindingInner<T>>,
-}
-
-impl<T: Default> Default for Binding<T> {
-    fn default() -> Self {
-        Self::new(T::default())
-    }
-}
-
-impl<T: Debug> Debug for Binding<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
-}
-
-impl<T: Display> Display for Binding<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
 }
 
 impl<T> Clone for Binding<T> {
@@ -37,217 +14,68 @@ impl<T> Clone for Binding<T> {
     }
 }
 
-struct BindingInner<T> {
-    value: RwLock<T>,
-    subscribers: RwLock<Vec<Subscriber>>,
-}
-
-pub struct BindingReadGuard<'a, T> {
-    guard: RwLockReadGuard<'a, T>,
-}
-
-impl<T> Deref for BindingReadGuard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.guard.deref()
-    }
-}
-
-pub struct BindingWriteGuard<'a, T> {
-    guard: Option<RwLockWriteGuard<'a, T>>,
-    subscribers: &'a RwLock<Vec<Subscriber>>,
-}
-
-impl<T> Deref for BindingWriteGuard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.guard.as_deref().unwrap()
-    }
-}
-
-impl<T> DerefMut for BindingWriteGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.guard.as_deref_mut().unwrap()
-    }
-}
-
-impl<T> Drop for BindingWriteGuard<'_, T> {
-    fn drop(&mut self) {
-        let _ = self.guard.take();
-        self.subscribers
-            .read()
-            .unwrap()
-            .iter()
-            .for_each(Subscriber::call);
-    }
-}
-
-impl<T> BindingInner<T> {
-    pub fn get(&self) -> BindingReadGuard<T> {
-        BindingReadGuard {
-            guard: self.value.read().unwrap(),
-        }
-    }
-
-    pub fn get_mut(&self) -> BindingWriteGuard<T> {
-        BindingWriteGuard {
-            guard: Some(self.value.write().unwrap()),
-            subscribers: &self.subscribers,
-        }
-    }
-
-    pub fn replace(&self, value: impl Into<T>) -> T {
-        let mut guard = self.get_mut();
-        replace(guard.deref_mut(), value.into())
-    }
-
-    pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
-        self.subscribers.write().unwrap().push(subscriber.into())
-    }
-}
-
 impl<T> Binding<T> {
-    pub fn new(value: impl Into<T>) -> Self {
-        Self::from(value.into())
+    pub fn get(&self) -> T {
+        self.inner.inner.get()
     }
 
-    pub fn get(&self) -> BindingReadGuard<T> {
-        self.inner.get()
+    pub fn set(&self, value: T) {
+        self.inner.inner.set(value);
+        self.inner.subscribers.read().unwrap().notify();
     }
 
-    pub fn get_mut(&self) -> BindingWriteGuard<T> {
-        self.inner.get_mut()
-    }
-
-    pub fn subscribe(&self, subscriber: impl Into<Subscriber>) {
-        self.inner.subscribe(subscriber)
-    }
-
-    pub fn replace(&self, value: impl Into<T>) -> T {
-        self.inner.replace(value)
-    }
-
-    pub fn to<Output: 'static>(
-        &self,
-        f: impl 'static + Send + Sync + Fn(&T) -> Output,
-    ) -> Reactive<Output>
-    where
-        T: Send + Sync + 'static,
-        Output: Send + Sync,
-    {
-        let binding = self.clone();
-
-        let output = Reactive::new(move || f(binding.get().deref()));
-        output.depend_binding(self);
-        output
-    }
-
-    pub fn transform<Output: for<'a> From<&'a T>>(&self) -> Reactive<Output>
-    where
-        T: Send + Sync + 'static,
-        Output: Send + Sync,
-    {
-        self.to(|v| v.into())
-    }
-
-    pub fn make_effect(&self) {
-        let _ = self
-            .inner
+    pub fn subscribe(&self, subscriber: Subscriber) -> usize {
+        self.inner
             .subscribers
-            .read()
+            .write()
             .unwrap()
-            .iter()
-            .map(Subscriber::call);
+            .subscribe(subscriber)
     }
 
-    pub fn set(&self, value: impl Into<T>) {
-        let _ = self.replace(value);
-    }
-
-    /// Constructs a `Binding<T>` from a raw pointer
-    /// # Safety
-    /// The raw pointer must have been previously returned by a call to Binding<T>::into_raw
-    pub unsafe fn from_raw(ptr: *const T) -> Self {
-        unsafe {
-            Self {
-                inner: Arc::from_raw(ptr as *const BindingInner<T>),
-            }
-        }
-    }
-
-    /// Consumes the Reactive, returning the wrapped pointer.
-    /// To avoid a memory leak the pointer must be converted back to a Binding using Binding::from_raw.
-    pub fn into_raw(self) -> *const T {
-        Arc::into_raw(self.inner) as *const T
+    pub fn unsubscribe(&self, id: usize) {
+        self.inner.subscribers.write().unwrap().unsubscribe(id);
     }
 }
 
-impl Binding<bool> {
-    pub fn toggle(&self) {
-        let mut guard = self.get_mut();
-        *guard.deref_mut() = !guard.deref();
+struct BindingInner<T> {
+    subscribers: RwLock<SubscriberManager>,
+    inner: dyn BindingImpl<T>,
+}
+
+trait BindingImpl<T> {
+    fn get(&self) -> T;
+    fn set(&self, value: T);
+}
+
+struct BindingContainer<T> {
+    value: RwLock<T>,
+}
+
+struct CustomBinding<Getter, Setter> {
+    getter: Getter,
+    setter: Setter,
+}
+
+impl<T: Clone> BindingImpl<T> for BindingContainer<T> {
+    fn get(&self) -> T {
+        self.value.read().unwrap().clone()
     }
 
-    pub fn condition<Output: Send + Sync + Clone>(
-        &self,
-        truthy: Output,
-        falsy: Output,
-    ) -> Reactive<Output> {
-        self.condition_else(move || truthy.clone(), move || falsy.clone())
-    }
-
-    pub fn condition_else<Output: Send + Sync>(
-        &self,
-        truthy: impl 'static + Send + Sync + Fn() -> Output,
-        falsy: impl 'static + Send + Sync + Fn() -> Output,
-    ) -> Reactive<Output> {
-        self.to(move |condition| if *condition { truthy() } else { falsy() })
+    fn set(&self, value: T) {
+        *self.value.write().unwrap() = value;
     }
 }
 
-impl<T: Display + Send + Sync + 'static> Binding<T> {
-    pub fn display(&self) -> Reactive<String> {
-        self.to(|v| v.to_string())
+impl<T, Getter, Setter> BindingImpl<T> for CustomBinding<Getter, Setter>
+where
+    Getter: Fn() -> T,
+    Setter: Fn(T),
+{
+    fn get(&self) -> T {
+        (self.getter)()
+    }
+
+    fn set(&self, value: T) {
+        (self.setter)(value)
     }
 }
-
-impl<T> From<T> for Binding<T> {
-    fn from(value: T) -> Self {
-        Self {
-            inner: Arc::new(BindingInner::from(value)),
-        }
-    }
-}
-
-impl<T> From<&Binding<T>> for Binding<T> {
-    fn from(value: &Binding<T>) -> Self {
-        value.clone()
-    }
-}
-
-impl<T> From<T> for BindingInner<T> {
-    fn from(value: T) -> Self {
-        Self {
-            value: RwLock::new(value),
-            subscribers: RwLock::new(Vec::new()),
-        }
-    }
-}
-
-macro_rules! impl_num {
-    ($($ty:ty),*) => {
-        $(
-            impl Binding<$ty> {
-                pub fn increment(&self, num: $ty) {
-                    *self.get_mut() += num;
-                }
-
-                pub fn decrement(&self, num: $ty) {
-                    *self.get_mut() -= num;
-                }
-            }
-        )*
-    };
-}
-
-impl_num!(u64, i64);
