@@ -1,6 +1,6 @@
 pub mod binding;
 pub use binding::Binding;
-pub mod reactive;
-pub use reactive::Reactive;
+pub mod compute;
+pub use compute::Computed;
 mod subscriber;
 pub use subscriber::Subscriber;
