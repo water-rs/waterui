@@ -2,50 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, sync::RwLock};
 
 use crate::Compute;
 
-pub struct Subscriber {
-    inner: Box<dyn Fn() + Send + Sync>,
-}
-
-impl<F: Fn() + Send + Sync + 'static> From<F> for Subscriber {
-    fn from(value: F) -> Self {
-        Self::new(value)
-    }
-}
-
-impl Subscriber {
-    pub fn new<F: Fn() + Send + Sync + 'static>(f: F) -> Self {
-        Self { inner: Box::new(f) }
-    }
-
-    pub unsafe fn from_raw(data: *mut (), f: extern "C" fn(*mut ())) -> Self {
-        let function = ExternFunction::new(data, f);
-        Self::new(move || function.call())
-    }
-
-    pub fn notify(&self) {
-        (self.inner)()
-    }
-}
-
-struct ExternFunction {
-    data: *mut (),
-    f: extern "C" fn(*mut ()),
-}
-
-impl ExternFunction {
-    // Warning: You must promise it satisify `Send` and `Sync`.
-
-    pub unsafe fn new(data: *mut (), f: extern "C" fn(*mut ())) -> Self {
-        Self { data, f }
-    }
-
-    pub fn call(&self) {
-        (self.f)(self.data)
-    }
-}
-
-unsafe impl Send for ExternFunction {}
-unsafe impl Sync for ExternFunction {}
+pub type Subscriber = Box<dyn Fn() + Send + Sync>;
 
 pub struct SubscriberManager {
     inner: RwLock<SubscriberManagerInner>,
@@ -99,7 +56,7 @@ impl SubscriberManagerInner {
 
     pub fn notify(&self) {
         for (_, subscriber) in self.map.iter() {
-            subscriber.notify()
+            subscriber()
         }
     }
 

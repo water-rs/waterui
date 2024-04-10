@@ -8,45 +8,43 @@ WaterUI is a UI framework written in Rust, providing a fun coding experience for
 - Build your own component!
 
 # Overview
+- View : The core trait for declaring your component, they keep their own stationary state in struct
+- Reactive<T> : Read-only source of trust, updated automatically
+- Binding<T> : Creating a two-way connection between stored data and view
+- Environment : Provide environment value for view, it can be set manually before call a view
 
-- You declare your component with `View` trait, they keep their own stationary state in struct
-- And the component update their state automatically with `Reactive<T>`
-
+Let's build a simple example - a counter in WaterUI to provide you a general view!
+ 
 `View` is the core trait of WaterUI, it declares your UI :
-
 ```rust
 pub trait View{
-    fn body(self) -> BoxView;
+    fn body(self) -> impl View;
 }
 ```
-The build-in components have implement `View` trait, and you can build your own component by just implementing `View`
 
-
+The build-in components have implement `View` trait, and you can align your ui logic,
+building your own component by just implementing `View`
 
 ```rust
-struct Counter{
-  counter:Reactive<u64>
-}
+struct Counter;
 
-#[view]
-impl View for Counter{
-    fn body(self) -> VStack{
+impl View for Counter {
+    fn body(self, _env: Environment) -> impl View {
+        let count: Binding<u64> = Binding::from(0);
         vstack((
-          text(self.counter.to(|n| n.to_string())),
-          button("click it!",move ||{
-            *self.counter.get_mut() += 1;
-          })
+            text(count.display()),
+            button("Click it!", move || {
+                count.increment(1);
+            }),
         ))
     }
 }
+
 ```
 
-This is an example of counter in WaterUI. It uses `Reactive<u64>` and `Reactive<String>`,
-we use `.to()` to transform `Reactive<u64>` to `Reactive<String>`
+This is an example of a counter in WaterUI. We create a binding named `count` to store the number.
 
+`text()` can input any type implementing `IntoReactive<AttributedString>`, we just call `.display()` for this binding,
+it creates a `Reactive<String>`, which implements `IntoReactive<AttributedString>`.
 
-`text()` can input `&Reactive<String>` because it implements `IntoReactive<AttributedString>`
-
-
-If it doesn't depend any `Reactive`, `Reactive<T>` behaves just like `Arc<RwLock<T>>`,
-you can set it value and other value depend it will be updated automatically. Just like `Reacitve<u64>` in this example.
+We align our view logic, and retur

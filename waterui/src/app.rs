@@ -1,27 +1,27 @@
 use crate::{component::AnyView, env::EnvironmentBuilder, Environment, View, ViewExt};
 
 pub struct AppBuilder {
-    view: AnyView,
-    environment: EnvironmentBuilder,
+    content: AnyView,
+    env: EnvironmentBuilder,
 }
 
 impl AppBuilder {
-    pub fn new(view: impl View + 'static) -> Self {
+    pub fn new(content: impl View + 'static) -> Self {
         Self {
-            view: view.anyview(),
-            environment: EnvironmentBuilder::new(),
+            content: content.anyview(),
+            env: EnvironmentBuilder::new(),
         }
     }
 
     pub fn env<T: Send + Sync + 'static>(mut self, value: T) -> Self {
-        self.environment.insert(value);
+        self.env.insert(value);
         self
     }
 }
 
 pub struct App {
-    pub(crate) view: AnyView,
-    pub(crate) environment: Environment,
+    pub _content: AnyView,
+    pub _env: Environment,
 }
 
 impl App {
@@ -33,8 +33,8 @@ impl App {
 impl AppBuilder {
     pub fn build(self) -> App {
         App {
-            view: self.view,
-            environment: self.environment.build(),
+            _content: self.content,
+            _env: self.env.build(),
         }
     }
 }

@@ -1,31 +1,33 @@
-use waterui_reactive::{binding::Binding, reactive::IntoReactive};
-
-use crate::Reactive;
+use crate::{Binding, Compute, Computed};
 
 #[derive(Debug)]
 pub struct TextField {
-    pub(crate) label: Reactive<String>,
-    pub(crate) value: Binding<String>,
-    pub(crate) prompt: Reactive<String>,
+    pub _label: Computed<String>,
+    pub _value: Binding<String>,
+    pub _prompt: Computed<String>,
 }
 
 raw_view!(TextField);
 
 impl TextField {
-    pub fn new(label: impl IntoReactive<String>, value: &Binding<String>) -> Self {
+    pub fn new(label: impl Compute<String>, value: &Binding<String>) -> Self {
         Self {
-            label: label.into_reactive(),
-            value: value.clone(),
-            prompt: Reactive::default(),
+            _label: label.computed(),
+            _value: value.clone(),
+            _prompt: String::new().computed(),
         }
     }
 
-    pub fn prompt(mut self, prompt: impl IntoReactive<String>) -> Self {
-        self.prompt = prompt.into_reactive();
+    pub fn binding(value: &Binding<String>) -> Self {
+        Self::new("", value)
+    }
+
+    pub fn prompt(mut self, prompt: impl Compute<String>) -> Self {
+        self._prompt = prompt.computed();
         self
     }
 }
 
-pub fn field(label: impl IntoReactive<String>, value: &Binding<String>) -> TextField {
+pub fn field(label: impl Compute<String>, value: &Binding<String>) -> TextField {
     TextField::new(label, value)
 }
