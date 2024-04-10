@@ -10,7 +10,7 @@ pub struct Toggle {
 }
 
 impl Toggle {
-    pub fn new(label: impl Compute<String>, toggle: &Binding<bool>) -> Self {
+    pub fn new(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Self {
         Self {
             _label: Text::new(label).anyview(),
             _toggle: toggle.clone(),
@@ -29,6 +29,6 @@ impl Toggle {
 
 raw_view!(Toggle);
 
-pub fn toggle(label: impl Compute<String>, toggle: &Binding<bool>) -> Toggle {
+pub fn toggle(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Toggle {
     Toggle::new(label, toggle)
 }

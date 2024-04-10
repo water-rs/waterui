@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use crate::subscriber::SubscriberManager;
+use crate::{subscriber::SubscriberManager, Subscriber};
 
 pub struct Binding<T> {
     inner: Arc<BindingInner<T>>,
@@ -71,7 +71,7 @@ impl<T> Binding<T> {
             let result = result.clone();
             let source = self.clone();
 
-            move || result.set(f(source.read().deref()))
+            Box::new(move || result.set(f(source.read().deref())))
         });
         result
     }
@@ -107,8 +107,8 @@ impl<T> Binding<T> {
         self.notify();
     }
 
-    pub fn register_subscriber(&self, subscriber: impl Fn() + Send + Sync + 'static) -> usize {
-        self.inner.subscribers.register(Box::new(subscriber))
+    pub fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+        self.inner.subscribers.register(subscriber)
     }
 
     pub fn cancel_subscriber(&self, id: usize) {

@@ -51,20 +51,20 @@ raw_view!(());
 raw_view!(Computed<AnyView>);
 
 pub trait ViewExt: View {
-    fn modifier<T: ViewModifier>(self, modifier: impl Compute<T>) -> Modifier<T>;
+    fn modifier<T: ViewModifier>(self, modifier: impl Compute<Output = T>) -> Modifier<T>;
     fn width(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
     fn height(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
-    fn show(self, condition: impl Compute<bool>) -> Modifier<Display>;
+    fn show(self, condition: impl Compute<Output = bool>) -> Modifier<Display>;
     fn leading(self) -> Modifier<Frame>;
     fn anyview(self) -> AnyView;
 }
 
 impl<V: View + 'static> ViewExt for V {
-    fn modifier<T: ViewModifier>(self, modifier: impl Compute<T>) -> Modifier<T> {
+    fn modifier<T: ViewModifier>(self, modifier: impl Compute<Output = T>) -> Modifier<T> {
         Modifier::new(self.anyview(), modifier)
     }
 
@@ -76,7 +76,7 @@ impl<V: View + 'static> ViewExt for V {
         Modifier::new(self.anyview(), Frame::default().height(size))
     }
 
-    fn show(self, condition: impl Compute<bool>) -> Modifier<Display> {
+    fn show(self, condition: impl Compute<Output = bool>) -> Modifier<Display> {
         self.modifier(condition.computed().transform(Display::new))
     }
 
