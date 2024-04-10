@@ -1,56 +1,27 @@
-use std::fmt::Display;
-
-use waterui_reactive::{binding::Binding, reactive::IntoReactive};
-
-use crate::{layout::Size, Reactive};
-
-use crate::attributed_string::{AttributedString, Font};
+use crate::{Compute, Computed};
 
 #[derive(Debug, Clone)]
 pub struct Text {
-    pub(crate) text: Reactive<AttributedString>,
-    pub(crate) selectable: Binding<bool>,
+    pub _content: Computed<String>,
+    pub _selectable: Computed<bool>,
 }
 
 raw_view!(Text);
 
 impl Text {
-    pub fn new(text: impl IntoReactive<AttributedString>) -> Self {
+    pub fn new(text: impl Compute<String>) -> Self {
         Self {
-            text: text.into_reactive(),
-            selectable: Binding::new(true),
+            _content: text.computed(),
+            _selectable: Computed::constant(true),
         }
     }
 
-    // Warning: Reactive tracking is unavailable
-    pub fn display(value: impl Display) -> Self {
-        Self::new(value.to_string())
-    }
-
-    pub fn disable_select(self) -> Self {
-        *self.selectable.get_mut() = false;
-        self
-    }
-
-    pub fn bold(mut self) -> Self {
-        self.text = self.text.to(|mut string| {
-            string.set_attribute(.., Font::bold());
-            string
-        });
-
-        self
-    }
-
-    pub fn size(mut self, size: impl Into<Size>) -> Self {
-        let size = size.into();
-        self.text = self.text.to(move |mut string| {
-            string.set_attribute(.., Font::new().size(size));
-            string
-        });
+    pub fn selectable(mut self, selectable: impl Compute<bool>) -> Self {
+        self._selectable = selectable.computed();
         self
     }
 }
 
-pub fn text(text: impl IntoReactive<AttributedString>) -> Text {
+pub fn text(text: impl Compute<String>) -> Text {
     Text::new(text)
 }

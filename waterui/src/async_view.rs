@@ -1,23 +1,25 @@
 use std::{
     future::Future,
-    mem::replace,
-    ops::DerefMut,
     sync::{Arc, RwLock},
 };
 
-use waterui_reactive::binding::Binding;
-
-use crate::{env::Environment, utils::task, view::ViewBuilder, Reactive, View, ViewExt};
+use crate::{
+    component::AnyView, env::Environment, utils::task, view::ViewBuilder, Computed, View, ViewExt,
+};
 
 pub struct DefaultLoadingView {
-    content: ViewBuilder,
+    builder: ViewBuilder,
 }
 
 impl DefaultLoadingView {
     pub fn new<V: View + 'static>(builder: impl Send + Sync + 'static + Fn() -> V) -> Self {
         Self {
-            content: Box::new(move || builder().anyview()),
+            builder: Box::new(move || builder().anyview()),
         }
+    }
+
+    pub fn spawn(&self) -> AnyView {
+        (self.builder)()
     }
 }
 
@@ -28,20 +30,26 @@ impl Default for DefaultLoadingView {
 }
 
 pub struct DefaultErrorView {
-    content: ViewBuilder,
+    pub builder: Box<dyn Send + Sync + Fn(anyhow::Error) -> AnyView>,
 }
 
 impl DefaultErrorView {
-    pub fn new<V: View + 'static>(builder: impl Send + Sync + 'static + Fn() -> V) -> Self {
+    pub fn new<V: View + 'static>(
+        builder: impl Send + Sync + 'static + Fn(anyhow::Error) -> V,
+    ) -> Self {
         Self {
-            content: Box::new(move || builder().anyview()),
+            builder: Box::new(move |error| builder(error).anyview()),
         }
+    }
+
+    pub fn spawn(&self, error: anyhow::Error) -> AnyView {
+        (self.builder)(error)
     }
 }
 
 impl Default for DefaultErrorView {
     fn default() -> Self {
-        Self::new(|| {})
+        Self::new(|_| {})
     }
 }
 
@@ -52,49 +60,38 @@ pub trait AsyncView: Send + Sync {
     ) -> impl Future<Output = Result<impl View, anyhow::Error>> + Send;
 
     fn loading(env: Environment) -> impl View {
-        /*let builder = env.get::<DefaultLoadingView>().unwrap();
-        (builder.content)()*/
+        let builder = env.get::<DefaultLoadingView>().unwrap();
+        builder.spawn()
     }
 
     fn error(error: anyhow::Error, env: Environment) -> impl View {
-        /*let builder = env.get::<DefaultErrorView>().unwrap();
-        (builder.content)()*/
+        let builder = env.get::<DefaultErrorView>().unwrap();
+        builder.spawn(error)
     }
 }
 
 impl<V: AsyncView + 'static> View for V {
     fn body(self, env: Environment) -> impl View {
-        let handle = Arc::new(RwLock::new(Self::loading(env.clone()).anyview()));
-
-        let output = Reactive::new({
+        let handle = Arc::new(RwLock::new(Some(Self::loading(env.clone()).anyview())));
+        let (result, manager) = Computed::new({
             let handle = handle.clone();
-            let env = env.clone();
-            move || {
-                replace(
-                    handle.write().unwrap().deref_mut(),
-                    Self::loading(env.clone()).anyview(),
-                )
-            }
+            move || handle.write().unwrap().take().unwrap()
         });
 
-        let future = {
-            let env = env.clone();
-            self.body(env)
-        };
-
         task({
-            let output = output.clone();
+            let env = env.clone();
             async move {
-                let view = future.await;
-
-                let view = view
-                    .map(|v| v.anyview())
-                    .unwrap_or_else(|error| Self::error(error, env).anyview());
-                *handle.write().unwrap() = view;
-                output.need_update();
+                let output = self.body(env.clone()).await;
+                manager.notify();
+                match output {
+                    Ok(view) => *handle.write().unwrap() = Some(view.anyview()),
+                    Err(error) => {
+                        *handle.write().unwrap() = Some(Self::error(error, env).anyview())
+                    }
+                }
             }
         })
         .detach();
-        output
+        result
     }
 }

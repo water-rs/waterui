@@ -1,14 +1,14 @@
-use crate::{component::AnyView, Environment, IntoReactive, Reactive, View};
+use crate::{component::AnyView, Compute, Computed, Environment, View};
 pub struct Modifier<T: 'static> {
-    pub(crate) content: AnyView,
-    pub(crate) modifier: Reactive<T>,
+    pub _content: AnyView,
+    pub _modifier: Computed<T>,
 }
 
 impl<T: ViewModifier> Modifier<T> {
-    pub fn new(content: AnyView, modifier: impl IntoReactive<T>) -> Self {
+    pub fn new(content: AnyView, modifier: impl Compute<T>) -> Self {
         Self {
-            content,
-            modifier: modifier.into_reactive(),
+            _content: content,
+            _modifier: modifier.computed(),
         }
     }
 }

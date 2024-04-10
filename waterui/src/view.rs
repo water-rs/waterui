@@ -1,11 +1,9 @@
-use waterui_reactive::reactive::IntoReactive;
-
 use crate::{
-    component::{AnyView, Text},
+    component::AnyView,
     env::Environment,
     layout::{Alignment, Frame, Size},
     modifier::{Display, Modifier, ViewModifier},
-    Reactive,
+    Compute, ComputeExt, Computed,
 };
 
 /// View represents a part of the user interface.
@@ -20,51 +18,7 @@ pub trait View: Send + Sync {
     fn body(self, _env: Environment) -> impl View;
 }
 
-pub trait IntoView: Sized {
-    type Output: View + 'static;
-    fn into_view(self) -> Self::Output;
-    fn into_anyview(self) -> AnyView {
-        AnyView::new(self.into_view())
-    }
-}
-
-impl<V: View + 'static> IntoView for V {
-    type Output = V;
-    fn into_view(self) -> Self::Output {
-        self
-    }
-}
-
 pub type ViewBuilder = Box<dyn Send + Sync + Fn() -> AnyView>;
-
-impl IntoView for &str {
-    type Output = Text;
-    fn into_view(self) -> Self::Output {
-        let value = self.to_string();
-        Text::new(value)
-    }
-}
-
-impl IntoView for String {
-    type Output = Text;
-    fn into_view(self) -> Self::Output {
-        Text::new(self)
-    }
-}
-
-impl IntoView for Reactive<String> {
-    type Output = Text;
-    fn into_view(self) -> Self::Output {
-        Text::new(self)
-    }
-}
-
-impl IntoView for Reactive<&str> {
-    type Output = Text;
-    fn into_view(self) -> Self::Output {
-        Text::new(self)
-    }
-}
 
 pub trait IntoViews {
     fn into_views(self) -> Vec<AnyView>;
@@ -81,10 +35,10 @@ macro_rules! impl_tuple_views {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:IntoView,)*>IntoViews for ($($ty),*){
+        impl <$($ty:View+'static,)*>IntoViews for ($($ty),*){
             fn into_views(self) -> Vec<AnyView> {
                 let ($($ty),*)=self;
-                vec![$($ty.into_anyview()),*]
+                vec![$($ty.anyview()),*]
             }
         }
     };
@@ -94,23 +48,23 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
-raw_view!(Reactive<AnyView>);
+raw_view!(Computed<AnyView>);
 
 pub trait ViewExt: View {
-    fn modifier<T: ViewModifier>(self, modifier: impl IntoReactive<T>) -> Modifier<T>;
+    fn modifier<T: ViewModifier>(self, modifier: impl Compute<T>) -> Modifier<T>;
     fn width(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
     fn height(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
-    fn show(self, condition: impl IntoReactive<bool>) -> Modifier<Display>;
+    fn show(self, condition: impl Compute<bool>) -> Modifier<Display>;
     fn leading(self) -> Modifier<Frame>;
     fn anyview(self) -> AnyView;
 }
 
 impl<V: View + 'static> ViewExt for V {
-    fn modifier<T: ViewModifier>(self, modifier: impl IntoReactive<T>) -> Modifier<T> {
+    fn modifier<T: ViewModifier>(self, modifier: impl Compute<T>) -> Modifier<T> {
         Modifier::new(self.anyview(), modifier)
     }
 
@@ -122,8 +76,8 @@ impl<V: View + 'static> ViewExt for V {
         Modifier::new(self.anyview(), Frame::default().height(size))
     }
 
-    fn show(self, condition: impl IntoReactive<bool>) -> Modifier<Display> {
-        self.modifier(condition.into_reactive().to(Display::new))
+    fn show(self, condition: impl Compute<bool>) -> Modifier<Display> {
+        self.modifier(condition.computed().transform(Display::new))
     }
 
     fn leading(self) -> Modifier<Frame> {
