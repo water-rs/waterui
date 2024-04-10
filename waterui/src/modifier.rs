@@ -5,7 +5,7 @@ pub struct Modifier<T: 'static> {
 }
 
 impl<T: ViewModifier> Modifier<T> {
-    pub fn new(content: AnyView, modifier: impl Compute<T>) -> Self {
+    pub fn new(content: AnyView, modifier: impl Compute<Output = T>) -> Self {
         Self {
             _content: content,
             _modifier: modifier.computed(),

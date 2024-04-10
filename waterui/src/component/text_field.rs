@@ -10,7 +10,7 @@ pub struct TextField {
 raw_view!(TextField);
 
 impl TextField {
-    pub fn new(label: impl Compute<String>, value: &Binding<String>) -> Self {
+    pub fn new(label: impl Compute<Output = String>, value: &Binding<String>) -> Self {
         Self {
             _label: label.computed(),
             _value: value.clone(),
@@ -22,12 +22,12 @@ impl TextField {
         Self::new("", value)
     }
 
-    pub fn prompt(mut self, prompt: impl Compute<String>) -> Self {
+    pub fn prompt(mut self, prompt: impl Compute<Output = String>) -> Self {
         self._prompt = prompt.computed();
         self
     }
 }
 
-pub fn field(label: impl Compute<String>, value: &Binding<String>) -> TextField {
+pub fn field(label: impl Compute<Output = String>, value: &Binding<String>) -> TextField {
     TextField::new(label, value)
 }
