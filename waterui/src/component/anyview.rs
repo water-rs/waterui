@@ -5,14 +5,14 @@ use std::{
 
 use crate::{Environment, View, ViewExt};
 
-pub(crate) trait AnyViewTrait: Send + Sync + 'static {
+pub(crate) trait AnyViewImpl: Send + Sync + 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn inner_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
 
-impl<T: View + 'static> AnyViewTrait for T {
+impl<T: View + 'static> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
         View::body(*self, env).anyview()
     }
@@ -20,7 +20,7 @@ impl<T: View + 'static> AnyViewTrait for T {
 
 #[repr(transparent)]
 pub struct AnyView {
-    inner: Box<dyn AnyViewTrait>,
+    inner: Box<dyn AnyViewImpl>,
 }
 
 impl_debug!(AnyView);
@@ -46,7 +46,7 @@ impl AnyView {
 
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         if self.is::<T>() {
-            unsafe { Some(&*(self.inner.deref() as *const dyn AnyViewTrait as *const T)) }
+            unsafe { Some(&*(self.inner.deref() as *const dyn AnyViewImpl as *const T)) }
         } else {
             None
         }
@@ -54,7 +54,7 @@ impl AnyView {
 
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
         if self.is::<T>() {
-            unsafe { Some(&mut *(self.inner.deref_mut() as *mut dyn AnyViewTrait as *mut T)) }
+            unsafe { Some(&mut *(self.inner.deref_mut() as *mut dyn AnyViewImpl as *mut T)) }
         } else {
             None
         }
