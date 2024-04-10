@@ -20,8 +20,8 @@ impl_from_iter!(Stack, VStack, HStack);
 
 #[derive(Debug)]
 pub struct Stack {
-    pub(crate) contents: Vec<AnyView>,
-    pub(crate) mode: StackMode,
+    pub _views: Vec<AnyView>,
+    pub _mode: StackMode,
 }
 
 #[derive(Debug)]
@@ -34,21 +34,18 @@ pub enum StackMode {
 impl Stack {
     pub fn new(contents: impl IntoViews) -> Self {
         Self {
-            contents: contents.into_views(),
-            mode: StackMode::Vertical,
+            _views: contents.into_views(),
+            _mode: StackMode::Vertical,
         }
-    }
-    fn set_mode(&mut self, mode: StackMode) {
-        self.mode = mode;
     }
 
     pub fn vertical(mut self) -> Self {
-        self.set_mode(StackMode::Vertical);
+        self._mode = StackMode::Vertical;
         self
     }
 
     pub fn horizonal(mut self) -> Self {
-        self.set_mode(StackMode::Horizonal);
+        self._mode = StackMode::Horizonal;
         self
     }
 }
