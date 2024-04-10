@@ -8,7 +8,10 @@ pub struct Button {
 }
 
 impl Button {
-    pub fn new(label: impl Compute<String>, action: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(
+        label: impl Compute<Output = String>,
+        action: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         Self {
             _label: Text::new(label).anyview(),
             _action: Box::new(action),
@@ -28,6 +31,9 @@ impl Button {
 raw_view!(Button);
 impl_debug!(Button);
 
-pub fn button(label: impl Compute<String>, action: impl Fn() + Send + Sync + 'static) -> Button {
+pub fn button(
+    label: impl Compute<Output = String>,
+    action: impl Fn() + Send + Sync + 'static,
+) -> Button {
     Button::new(label, action)
 }

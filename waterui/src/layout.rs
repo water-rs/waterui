@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use waterui_reactive::impl_constant;
 
 use crate::modifier::ViewModifier;
 
@@ -26,6 +27,8 @@ impl From<u64> for Size {
         (value as f64).into()
     }
 }
+
+impl_constant!(Size, Frame, Edge);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[repr(C)]
