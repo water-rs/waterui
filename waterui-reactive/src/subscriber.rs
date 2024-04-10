@@ -1,9 +1,12 @@
-use std::{collections::BTreeMap, marker::PhantomData, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 use crate::Compute;
 
 pub type Subscriber = Box<dyn Fn() + Send + Sync>;
-
+pub type SharedSubscriberManager = Arc<SubscriberManager>;
 pub struct SubscriberManager {
     inner: RwLock<SubscriberManagerInner>,
 }
@@ -65,54 +68,26 @@ impl SubscriberManagerInner {
     }
 }
 
-#[doc(hidden)]
-pub trait SubscribeManage<T, const TLEN: usize> {
-    fn register_subscriber(&self, subscriber: impl Fn() -> Subscriber) -> [usize; TLEN];
-    fn cancel_subscriber(&self, guard: [usize; TLEN]);
-}
-
-impl<V1, V2, T1, T2> SubscribeManage<(T1, T2), 2> for (V1, V2)
+pub struct SubscribeGuard<'a, V: ?Sized>
 where
-    V1: Compute<T1>,
-    V2: Compute<T2>,
-{
-    fn register_subscriber(&self, subscriber: impl Fn() -> Subscriber) -> [usize; 2] {
-        [
-            self.0.register_subscriber(subscriber()),
-            self.1.register_subscriber(subscriber()),
-        ]
-    }
-    fn cancel_subscriber(&self, guard: [usize; 2]) {
-        self.0.cancel_subscriber(guard[0]);
-        self.1.cancel_subscriber(guard[1]);
-    }
-}
-
-pub struct SubscribeGuard<'a, V, T>
-where
-    V: Compute<T>,
+    V: Compute,
 {
     source: &'a V,
     id: usize,
-    _marker: PhantomData<T>,
 }
 
-impl<'a, V, T> SubscribeGuard<'a, V, T>
+impl<'a, V> SubscribeGuard<'a, V>
 where
-    V: Compute<T>,
+    V: Compute,
 {
     pub fn new(source: &'a V, id: usize) -> Self {
-        Self {
-            source,
-            id,
-            _marker: PhantomData,
-        }
+        Self { source, id }
     }
 }
 
-impl<'a, V, T> Drop for SubscribeGuard<'a, V, T>
+impl<'a, V> Drop for SubscribeGuard<'a, V>
 where
-    V: Compute<T>,
+    V: Compute + ?Sized,
 {
     fn drop(&mut self) {
         self.source.cancel_subscriber(self.id);

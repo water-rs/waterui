@@ -73,7 +73,7 @@ pub trait AsyncView: Send + Sync {
 impl<V: AsyncView + 'static> View for V {
     fn body(self, env: Environment) -> impl View {
         let handle = Arc::new(RwLock::new(Some(Self::loading(env.clone()).anyview())));
-        let (result, manager) = Computed::new({
+        let (result, manager) = Computed::compute({
             let handle = handle.clone();
             move || handle.write().unwrap().take().unwrap()
         });
