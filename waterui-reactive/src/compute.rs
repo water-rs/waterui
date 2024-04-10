@@ -14,6 +14,23 @@ pub trait Compute<T>: Send + Sync {
     fn compute(&self) -> T;
     fn register_subscriber(&self, subscriber: Subscriber) -> usize;
     fn cancel_subscriber(&self, id: usize);
+    fn computed(self) -> Computed<T>;
+}
+
+impl Compute<String> for &str {
+    fn compute(&self) -> String {
+        self.to_string()
+    }
+
+    fn register_subscriber(&self, _subscriber: Subscriber) -> usize {
+        0
+    }
+
+    fn cancel_subscriber(&self, _id: usize) {}
+
+    fn computed(self) -> Computed<String> {
+        Computed::constant(self.to_string())
+    }
 }
 
 impl<T: Debug + 'static> Debug for Computed<T> {
@@ -28,6 +45,32 @@ impl<T: Display + 'static> Display for Computed<T> {
     }
 }
 
+struct ComputeImpl<F> {
+    compute: F,
+    subscribers: Arc<SubscriberManager>,
+}
+
+impl<F, T> Compute<T> for ComputeImpl<F>
+where
+    F: 'static + Send + Sync + Fn() -> T,
+{
+    fn compute(&self) -> T {
+        (self.compute)()
+    }
+
+    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+        self.subscribers.register_subscriber(subscriber)
+    }
+
+    fn cancel_subscriber(&self, id: usize) {
+        self.subscribers.cancel_subscriber(id)
+    }
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self)
+    }
+}
+
 pub trait ComputeExt<T> {
     fn subscribe(&self, subscriber: impl Into<Subscriber>) -> SubscribeGuard<'_, Self, T>
     where
@@ -39,15 +82,11 @@ pub trait ComputeExt<T> {
     ) -> impl Compute<Output>
     where
         T: Send + Sync + 'static;
-
-    fn computed(self) -> Computed<T>
-    where
-        Self: 'static;
 }
 
 impl<V, T> ComputeExt<T> for V
 where
-    Self: Compute<T> + Sized,
+    Self: Compute<T> + Sized + 'static,
 {
     fn subscribe(&self, subscriber: impl Into<Subscriber>) -> SubscribeGuard<'_, Self, T> {
         SubscribeGuard::new(self, self.register_subscriber(subscriber.into()))
@@ -62,17 +101,32 @@ where
     {
         ComputeTransformer::new(self, transformer)
     }
-
-    fn computed(self) -> Computed<T>
-    where
-        Self: 'static,
-    {
-        Computed::from_compute(self)
-    }
 }
 
 pub struct Computed<T> {
     inner: Arc<dyn Compute<T>>,
+}
+
+impl<T> Computed<T> {
+    pub fn new(
+        compute: impl 'static + Send + Sync + Fn() -> T,
+    ) -> (Computed<T>, Arc<SubscriberManager>) {
+        let subscribers = Arc::new(SubscriberManager::new());
+        (
+            ComputeImpl {
+                compute,
+                subscribers: subscribers.clone(),
+            }
+            .computed(),
+            subscribers,
+        )
+    }
+}
+
+impl<T: Send + Sync + Clone + 'static> Computed<T> {
+    pub fn constant(value: T) -> Self {
+        value.computed()
+    }
 }
 
 impl<T> Clone for Computed<T> {
@@ -95,6 +149,28 @@ impl<T: 'static> Compute<T> for Computed<T> {
     fn cancel_subscriber(&self, id: usize) {
         Compute::cancel_subscriber(self.inner.deref(), id)
     }
+
+    fn computed(self) -> Computed<T> {
+        self
+    }
+}
+
+impl<T: 'static> Compute<T> for &Computed<T> {
+    fn compute(&self) -> T {
+        Compute::compute(self.inner.deref())
+    }
+
+    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+        Compute::register_subscriber(self.inner.deref(), subscriber)
+    }
+
+    fn cancel_subscriber(&self, id: usize) {
+        Compute::cancel_subscriber(self.inner.deref(), id)
+    }
+
+    fn computed(self) -> Computed<T> {
+        self.clone()
+    }
 }
 
 impl<T: Send + Sync + Clone + 'static> Compute<T> for T {
@@ -107,6 +183,26 @@ impl<T: Send + Sync + Clone + 'static> Compute<T> for T {
     }
 
     fn cancel_subscriber(&self, _id: usize) {}
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self)
+    }
+}
+
+impl<T: Send + Sync + Clone + 'static> Compute<T> for &T {
+    fn compute(&self) -> T {
+        Clone::clone(self)
+    }
+
+    fn register_subscriber(&self, _subscriber: Subscriber) -> usize {
+        0
+    }
+
+    fn cancel_subscriber(&self, _id: usize) {}
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self.clone())
+    }
 }
 
 pub struct GroupedCompute<V, const VLEN: usize, T>
@@ -131,7 +227,7 @@ where
         let value = (v1, v2);
         let guards = value.register_subscriber(|| {
             let subscribers = subscribers.clone();
-            Subscriber::new(move || subscribers.notify())
+            Box::new(move || subscribers.notify())
         });
 
         Self {
@@ -156,8 +252,8 @@ impl<V1, V2, T1, T2> Compute<(T1, T2)> for GroupedCompute<(V1, V2), 2, (T1, T2)>
 where
     T1: Send + Sync + 'static,
     T2: Send + Sync + 'static,
-    V1: Compute<T1>,
-    V2: Compute<T2>,
+    V1: Compute<T1> + 'static,
+    V2: Compute<T2> + 'static,
 {
     fn compute(&self) -> (T1, T2) {
         (self.value.0.compute(), self.value.1.compute())
@@ -169,6 +265,10 @@ where
 
     fn cancel_subscriber(&self, id: usize) {
         self.subscribers.cancel_subscriber(id)
+    }
+
+    fn computed(self) -> Computed<(T1, T2)> {
+        Computed::from_compute(self)
     }
 }
 
@@ -192,9 +292,13 @@ impl<T: Send + Clone + Sync + 'static> Compute<T> for Binding<T> {
     fn cancel_subscriber(&self, id: usize) {
         <&Self as Compute<T>>::cancel_subscriber(&self, id)
     }
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self)
+    }
 }
 
-impl<'a, T: Send + Sync + Clone> Compute<T> for &'a Binding<T> {
+impl<T: Send + Sync + Clone + 'static> Compute<T> for &Binding<T> {
     fn compute(&self) -> T {
         Binding::get(self)
     }
@@ -205,6 +309,10 @@ impl<'a, T: Send + Sync + Clone> Compute<T> for &'a Binding<T> {
 
     fn cancel_subscriber(&self, id: usize) {
         Binding::cancel_subscriber(self, id)
+    }
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self.clone())
     }
 }
 
@@ -219,6 +327,28 @@ impl<T: Default + Send + Sync + 'static> Compute<T> for Binding<Option<T>> {
 
     fn cancel_subscriber(&self, id: usize) {
         Binding::cancel_subscriber(self, id)
+    }
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self)
+    }
+}
+
+impl<T: Default + Send + Sync + 'static> Compute<T> for &Binding<Option<T>> {
+    fn compute(&self) -> T {
+        Binding::take(self).unwrap_or_default()
+    }
+
+    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+        Binding::register_subscriber(self, subscriber)
+    }
+
+    fn cancel_subscriber(&self, id: usize) {
+        Binding::cancel_subscriber(self, id)
+    }
+
+    fn computed(self) -> Computed<T> {
+        Computed::from_compute(self.clone())
     }
 }
 
@@ -245,7 +375,7 @@ impl<V, T, F> ComputeTransformer<V, T, F> {
 impl<V, T, F, Output> Compute<Output> for ComputeTransformer<V, T, F>
 where
     F: 'static + Send + Sync + Fn(T) -> Output,
-    V: Compute<T>,
+    V: Compute<T> + 'static,
     T: Send + Sync + 'static,
 {
     fn compute(&self) -> Output {
@@ -257,5 +387,9 @@ where
 
     fn cancel_subscriber(&self, id: usize) {
         V::cancel_subscriber(&self.value, id)
+    }
+
+    fn computed(self) -> Computed<Output> {
+        Computed::from_compute(self)
     }
 }
