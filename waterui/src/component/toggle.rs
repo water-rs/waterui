@@ -4,6 +4,7 @@ use super::{AnyView, Text};
 use crate::{Compute, View, ViewExt};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Toggle {
     pub _label: AnyView,
     pub _toggle: Binding<bool>,
