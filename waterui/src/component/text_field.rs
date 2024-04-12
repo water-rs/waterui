@@ -1,6 +1,7 @@
 use crate::{Binding, Compute, Computed};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TextField {
     pub _label: Computed<String>,
     pub _value: Binding<String>,
