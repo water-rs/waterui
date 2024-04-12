@@ -1,6 +1,7 @@
 use crate::{Compute, Computed};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Text {
     pub _content: Computed<String>,
     pub _selectable: Computed<bool>,

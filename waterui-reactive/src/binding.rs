@@ -114,6 +114,21 @@ impl<T> Binding<T> {
     pub fn cancel_subscriber(&self, id: usize) {
         self.inner.subscribers.cancel(id);
     }
+
+    pub fn into_raw(self) -> *const T {
+        Arc::into_raw(self.inner) as *const T
+    }
+
+    /// # Safety
+    ///
+    /// This function is unsafe because improper use may lead to
+    /// memory problems. For example, a double-free may occur if the
+    /// function is called twice on the same raw pointer.
+    pub unsafe fn from_raw(raw: *const T) -> Self {
+        Self {
+            inner: Arc::from_raw(raw as *const BindingInner<T>),
+        }
+    }
 }
 
 struct BindingInner<T> {

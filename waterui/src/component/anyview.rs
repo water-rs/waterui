@@ -5,7 +5,7 @@ use std::{
 
 use crate::{Environment, View, ViewExt};
 
-pub(crate) trait AnyViewImpl: Send + Sync + 'static {
+trait AnyViewImpl: Send + Sync + 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn inner_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
@@ -38,10 +38,20 @@ impl AnyView {
 
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, AnyView> {
         if self.is::<T>() {
-            unsafe { Ok(Box::from_raw(Box::into_raw(self.inner) as *mut T)) }
+            unsafe { Ok(self.downcast_unchecked()) }
         } else {
             Err(self)
         }
+    }
+
+    pub fn inner_type_id(&self) -> TypeId {
+        AnyViewImpl::inner_type_id(self.inner.deref())
+    }
+
+    /// # Safety
+    /// Calling this method with the incorrect type is undefined behavior.
+    pub unsafe fn downcast_unchecked<T: 'static>(self) -> Box<T> {
+        unsafe { Box::from_raw(Box::into_raw(self.inner) as *mut T) }
     }
 
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
