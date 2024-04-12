@@ -19,6 +19,7 @@ macro_rules! impl_from_iter {
 impl_from_iter!(Stack, VStack, HStack);
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Stack {
     pub _views: Vec<AnyView>,
     pub _mode: StackMode,

@@ -2,6 +2,7 @@ use crate::component::AnyView;
 use crate::{Compute, View, ViewExt};
 
 use super::Text;
+#[non_exhaustive]
 pub struct Button {
     pub _label: AnyView,
     pub _action: Box<dyn Fn() + Send + Sync>,
