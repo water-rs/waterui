@@ -43,7 +43,7 @@ impl<C: Compute + Clone + 'static> Compute for &C {
 }
 
 pub trait ComputeExt: Compute {
-    fn subscribe(&self, subscriber: impl Into<Subscriber>) -> SubscribeGuard<'_, Self>;
+    fn subscribe(&self, subscriber: impl Fn() + Send + Sync + 'static) -> SubscribeGuard<'_, Self>;
     fn transform<Output>(
         self,
         transformer: impl 'static + Send + Sync + Fn(Self::Output) -> Output,
@@ -53,8 +53,8 @@ pub trait ComputeExt: Compute {
 }
 
 impl<C: Compute> ComputeExt for C {
-    fn subscribe(&self, subscriber: impl Into<Subscriber>) -> SubscribeGuard<'_, Self> {
-        SubscribeGuard::new(self, self.register_subscriber(subscriber.into()))
+    fn subscribe(&self, subscriber: impl Fn() + Send + Sync + 'static) -> SubscribeGuard<'_, Self> {
+        SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
     }
 
     fn transform<Output>(
@@ -84,6 +84,10 @@ impl<T> Computed<T> {
             }),
             subscribers,
         )
+    }
+
+    pub fn into_inner(self) -> Box<dyn Compute<Output = T>> {
+        self.inner
     }
 }
 
@@ -183,6 +187,21 @@ impl<T> Computed<T> {
     pub fn new(compute: impl Compute<Output = T> + 'static) -> Self {
         Self {
             inner: Box::new(compute),
+        }
+    }
+
+    pub fn into_raw(self) -> *mut T {
+        Box::into_raw(Box::new(self.inner)) as *mut T
+    }
+
+    /// # Safety
+    ///
+    /// This function is unsafe because improper use may lead to
+    /// memory problems. For example, a double-free may occur if the
+    /// function is called twice on the same raw pointer.
+    pub unsafe fn from_raw(raw: *mut T) -> Self {
+        Self {
+            inner: *Box::from_raw(raw as *mut Box<dyn Compute<Output = T>>),
         }
     }
 }
