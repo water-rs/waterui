@@ -1,0 +1,2 @@
+#!/bin/sh
+cbindgen --config cbindgen.toml --crate waterui --output waterui.h
