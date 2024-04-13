@@ -12,7 +12,7 @@ mod async_view;
 pub mod layout;
 pub mod utils;
 pub use waterui_reactive::*;
-mod ffi;
+pub mod ffi;
 
 #[doc(hidden)]
 pub use futures_lite::future::block_on as __block_on;
