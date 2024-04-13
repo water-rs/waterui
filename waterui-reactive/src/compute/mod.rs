@@ -189,19 +189,4 @@ impl<T> Computed<T> {
             inner: Box::new(compute),
         }
     }
-
-    pub fn into_raw(self) -> *mut T {
-        Box::into_raw(Box::new(self.inner)) as *mut T
-    }
-
-    /// # Safety
-    ///
-    /// This function is unsafe because improper use may lead to
-    /// memory problems. For example, a double-free may occur if the
-    /// function is called twice on the same raw pointer.
-    pub unsafe fn from_raw(raw: *mut T) -> Self {
-        Self {
-            inner: *Box::from_raw(raw as *mut Box<dyn Compute<Output = T>>),
-        }
-    }
 }
