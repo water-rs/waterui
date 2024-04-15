@@ -58,7 +58,7 @@ pub trait ViewExt: View {
     fn height(self, size: impl Into<Size>) -> Modifier<Frame>
     where
         Self: Sized;
-    fn show(self, condition: impl Compute<Output = bool>) -> Modifier<Display>;
+    fn show(self, condition: impl Compute<Output = bool> + Clone) -> Modifier<Display>;
     fn leading(self) -> Modifier<Frame>;
     fn anyview(self) -> AnyView;
 }
@@ -76,8 +76,8 @@ impl<V: View + 'static> ViewExt for V {
         Modifier::new(self.anyview(), Frame::default().height(size))
     }
 
-    fn show(self, condition: impl Compute<Output = bool>) -> Modifier<Display> {
-        self.modifier(condition.computed().transform(Display::new))
+    fn show(self, condition: impl Compute<Output = bool> + Clone) -> Modifier<Display> {
+        self.modifier(condition.transform(Display::new))
     }
 
     fn leading(self) -> Modifier<Frame> {
