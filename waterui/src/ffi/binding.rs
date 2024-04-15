@@ -60,7 +60,7 @@ impl_binding!(
     waterui_subscribe_binding_str,
     waterui_unsubscribe_binding_str,
     waterui_drop_binding_str,
-    BindingUtf8Data,
+    BindingStr,
     String,
     Utf8Data
 );

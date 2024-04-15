@@ -52,13 +52,14 @@ impl SubscriberManagerInner {
             .id
             .checked_add(1)
             .expect("`id` grows beyond `usize::MAX`");
+        self.id = id; // fix bug!
 
         self.map.insert(id, subscriber);
         id
     }
 
     pub fn notify(&self) {
-        for (_, subscriber) in self.map.iter() {
+        for subscriber in self.map.values() {
             subscriber()
         }
     }
@@ -68,6 +69,7 @@ impl SubscriberManagerInner {
     }
 }
 
+#[must_use]
 pub struct SubscribeGuard<'a, V: ?Sized>
 where
     V: Compute,
