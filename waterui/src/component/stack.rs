@@ -30,6 +30,7 @@ pub struct Stack {
 pub enum StackMode {
     Vertical,
     Horizonal,
+    Layered,
 }
 
 impl Stack {
@@ -48,6 +49,10 @@ impl Stack {
         self.mode(StackMode::Horizonal)
     }
 
+    pub fn layered(self) -> Self {
+        self.mode(StackMode::Layered)
+    }
+
     pub fn mode(mut self, mode: StackMode) -> Self {
         self._mode = mode;
         self
@@ -56,31 +61,27 @@ impl Stack {
 
 raw_view!(Stack);
 
-#[derive(Debug)]
-pub struct VStack {
-    contents: Vec<AnyView>,
-}
-
-impl VStack {
-    pub fn new(contents: impl IntoViews) -> Self {
-        Self {
-            contents: contents.into_views(),
+macro_rules! impl_stacks {
+    ($ty:ident) => {
+        #[derive(Debug)]
+        pub struct $ty {
+            contents: Vec<AnyView>,
         }
-    }
-}
 
-#[derive(Debug)]
-pub struct HStack {
-    contents: Vec<AnyView>,
-}
-
-impl HStack {
-    pub fn new(contents: impl IntoViews) -> Self {
-        Self {
-            contents: contents.into_views(),
+        impl $ty {
+            pub fn new(contents: impl IntoViews) -> Self {
+                Self {
+                    contents: contents.into_views(),
+                }
+            }
         }
-    }
+    };
 }
+
+impl_stacks!(VStack);
+
+impl_stacks!(HStack);
+impl_stacks!(ZStack);
 
 impl View for VStack {
     fn body(self, _env: crate::Environment) -> impl View {
@@ -94,6 +95,12 @@ impl View for HStack {
     }
 }
 
+impl View for ZStack {
+    fn body(self, _env: crate::Environment) -> impl View {
+        Stack::new(self.contents).layered()
+    }
+}
+
 pub fn stack(contents: impl IntoViews) -> Stack {
     Stack::new(contents)
 }
@@ -104,4 +111,8 @@ pub fn vstack(contents: impl IntoViews) -> VStack {
 
 pub fn hstack(contents: impl IntoViews) -> HStack {
     HStack::new(contents)
+}
+
+pub fn zstack(contents: impl IntoViews) -> ZStack {
+    ZStack::new(contents)
 }

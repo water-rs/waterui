@@ -1,5 +1,4 @@
 mod computed;
-pub(crate) use computed::*;
 
 mod binding;
 
@@ -9,7 +8,7 @@ use std::mem::ManuallyDrop;
 pub(crate) use ty::*;
 
 #[doc(inline)]
-pub use components::ViewObject;
+pub use components::AnyView;
 
 type Int = isize;
 

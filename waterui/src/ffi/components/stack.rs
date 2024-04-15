@@ -15,12 +15,6 @@ impl From<crate::component::Stack> for Stack {
     }
 }
 
-impl From<Stack> for crate::component::Stack {
-    fn from(value: Stack) -> Self {
-        Self::new(Vec::from(value.views)).mode(value.mode)
-    }
-}
-
 impl_view!(Stack, waterui_view_force_as_stack, waterui_view_stack_id);
 
 impl_array!(Views, crate::component::AnyView, crate::ffi::AnyView);

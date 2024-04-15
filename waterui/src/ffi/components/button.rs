@@ -1,8 +1,8 @@
-use crate::ffi::{Action, ViewObject};
+use crate::ffi::{Action, AnyView};
 
 #[repr(C)]
 pub struct Button {
-    label: ViewObject,
+    label: AnyView,
     action: Action,
 }
 
@@ -12,13 +12,6 @@ impl From<crate::component::Button> for Button {
             label: value._label.into(),
             action: value._action.into(),
         }
-    }
-}
-
-impl From<Button> for crate::component::Button {
-    fn from(value: Button) -> Self {
-        let f: Box<dyn Fn() + Send + Sync> = value.action.into();
-        Self::action(f).label(crate::component::AnyView::from(value.label))
     }
 }
 
