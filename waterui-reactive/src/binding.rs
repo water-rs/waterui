@@ -82,8 +82,8 @@ impl<T> Binding<T> {
         result
     }
 
-    pub fn set(&self, value: T) {
-        let _ = self.replace(value);
+    pub fn set(&self, value: impl Into<T>) {
+        let _ = self.replace(value.into());
     }
 
     fn read(&self) -> RwLockReadGuard<'_, T> {

@@ -59,6 +59,7 @@ pub struct TypeId {
     _marker: std::marker::PhantomData<(*const (), std::marker::PhantomPinned)>,
 }
 
+#[allow(clippy::missing_transmute_annotations)]
 impl From<std::any::TypeId> for TypeId {
     fn from(value: std::any::TypeId) -> Self {
         unsafe {
