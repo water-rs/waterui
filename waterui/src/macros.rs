@@ -73,3 +73,104 @@ macro_rules! tuples {
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
     };
 }
+
+macro_rules! impl_view {
+    ($ty:ident,$force_as:ident,$id:ident) => {
+        #[no_mangle]
+        unsafe extern "C" fn $force_as(view: $crate::ffi::ViewObject) -> $ty {
+            let view: $crate::component::AnyView = view.into();
+            (*view.downcast_unchecked::<$crate::component::$ty>()).into()
+        }
+
+        #[no_mangle]
+        unsafe extern "C" fn $id() -> $crate::ffi::TypeId {
+            std::any::TypeId::of::<$crate::component::$ty>().into()
+        }
+    };
+}
+
+macro_rules! impl_computed {
+    ($read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$computed_ty:ident,$ty:ty,$output_ty:ty) => {
+        ffi_opaque!(Computed<$ty>, $computed_ty, 2);
+
+        #[no_mangle]
+        unsafe extern "C" fn $read(computed: $computed_ty) -> $output_ty {
+            let computed = ManuallyDrop::new(Computed::from(computed));
+            computed.compute().into()
+        }
+
+        #[no_mangle]
+        unsafe extern "C" fn $subscribe(computed: $computed_ty, subscriber: Subscriber) -> usize {
+            let computed = ManuallyDrop::new(Computed::from(computed));
+            computed.register_subscriber(Box::new(move || subscriber.call()))
+        }
+
+        #[no_mangle]
+        unsafe extern "C" fn $unsubscribe(computed: $computed_ty, id: usize) {
+            let computed = ManuallyDrop::new(Computed::from(computed));
+            computed.cancel_subscriber(id);
+        }
+
+        #[no_mangle]
+        unsafe extern "C" fn $drop(computed: $computed_ty) {
+            let _ = Computed::from(computed);
+        }
+    };
+}
+
+macro_rules! ffi_opaque {
+    ($from:ty,$to:ident,$word:expr) => {
+        #[repr(C)]
+        pub struct $to {
+            inner: [usize; $word],
+            _marker: std::marker::PhantomData<(*const (), std::marker::PhantomPinned)>,
+        }
+
+        impl From<$from> for $to {
+            fn from(value: $from) -> Self {
+                unsafe {
+                    Self {
+                        inner: std::mem::transmute(value),
+                        _marker: std::marker::PhantomData,
+                    }
+                }
+            }
+        }
+
+        impl From<$to> for $from {
+            fn from(value: $to) -> Self {
+                unsafe { std::mem::transmute(value.inner) }
+            }
+        }
+    };
+}
+
+macro_rules! impl_array {
+    ($name:ident,$from:ty,$to:ty) => {
+        #[repr(C)]
+        pub struct $name {
+            head: *mut $from,
+            len: usize,
+        }
+
+        impl From<Vec<$from>> for $name {
+            fn from(value: Vec<$from>) -> Self {
+                let len = value.len();
+                let head = Box::into_raw(value.into_boxed_slice()) as *mut $from;
+
+                Self { head, len }
+            }
+        }
+
+        impl From<$name> for Vec<$from> {
+            fn from(value: $name) -> Self {
+                unsafe {
+                    Box::from_raw(
+                        std::ptr::slice_from_raw_parts_mut(value.head, value.len) as *mut [$from]
+                    )
+                    .into_vec()
+                }
+            }
+        }
+    };
+}
