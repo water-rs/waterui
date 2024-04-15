@@ -29,3 +29,6 @@ macro_rules! impl_constant {
         )*
     };
 }
+
+#[cfg(feature = "url")]
+impl_constant!(url::Url);

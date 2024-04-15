@@ -126,6 +126,7 @@ macro_rules! ffi_opaque {
             _marker: std::marker::PhantomData<(*const (), std::marker::PhantomPinned)>,
         }
 
+        #[allow(clippy::missing_transmute_annotations)]
         impl From<$from> for $to {
             fn from(value: $from) -> Self {
                 unsafe {
