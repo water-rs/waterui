@@ -32,7 +32,7 @@ macro_rules! impl_binding {
         #[no_mangle]
         unsafe extern "C" fn $write(binding: $binding_ty, value: $output_ty) {
             let binding = ManuallyDrop::new(Binding::from_raw(binding.pointer));
-            binding.set(value.into());
+            binding.set(value);
         }
 
         #[no_mangle]

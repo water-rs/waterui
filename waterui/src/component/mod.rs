@@ -15,3 +15,5 @@ mod toggle;
 pub use toggle::{toggle, Toggle};
 mod stepper;
 pub use stepper::{stepper, Stepper};
+mod remote_image;
+pub use remote_image::{remoteimg, RemoteImage};
