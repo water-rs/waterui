@@ -1,20 +1,20 @@
-use crate::component::AnyView;
+use crate::component;
 use crate::View;
+ffi_opaque!(component::AnyView, AnyView, 2);
 
-ffi_opaque!(crate::component::AnyView, ViewObject, 2);
-
-impl ViewObject {
+impl AnyView {
     pub fn new(view: impl View + 'static) -> Self {
-        Self::from(AnyView::new(view))
+        Self::from(component::AnyView::new(view))
     }
 }
 
 #[no_mangle]
-unsafe extern "C" fn waterui_view_force_as_anyview(view: ViewObject) -> ViewObject {
-    let view: AnyView = view.into();
-    (*view.downcast_unchecked::<AnyView>()).into()
+unsafe extern "C" fn waterui_view_force_as_anyview(view: AnyView) -> AnyView {
+    let view: component::AnyView = view.into();
+    (*view.downcast_unchecked::<component::AnyView>()).into()
 }
+
 #[no_mangle]
 unsafe extern "C" fn waterui_view_anyview_id() -> super::TypeId {
-    std::any::TypeId::of::<AnyView>().into()
+    std::any::TypeId::of::<component::AnyView>().into()
 }
