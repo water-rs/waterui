@@ -1,7 +1,7 @@
 use std::{
     fmt::{Debug, Display},
     mem::replace,
-    ops::{Deref, DerefMut},
+    ops::{AddAssign, Deref, DerefMut, SubAssign},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -128,6 +128,22 @@ impl<T> Binding<T> {
         Self {
             inner: Arc::from_raw(raw as *const BindingInner<T>),
         }
+    }
+}
+
+impl<T: AddAssign> Binding<T> {
+    pub fn add(&self, n: T) {
+        self.peek_mut(move |v| {
+            v.add_assign(n);
+        });
+    }
+}
+
+impl<T: SubAssign> Binding<T> {
+    pub fn sub(&self, n: T) {
+        self.peek_mut(move |v| {
+            v.sub_assign(n);
+        });
     }
 }
 

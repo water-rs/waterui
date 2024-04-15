@@ -45,11 +45,12 @@ impl<C: Compute + Clone + 'static> Compute for &C {
 pub trait ComputeExt: Compute {
     fn subscribe(&self, subscriber: impl Fn() + Send + Sync + 'static) -> SubscribeGuard<'_, Self>;
     fn transform<Output>(
-        self,
+        &self,
         transformer: impl 'static + Send + Sync + Fn(Self::Output) -> Output,
     ) -> impl Compute<Output = Output>
     where
-        Self::Output: 'static;
+        Self::Output: 'static,
+        Self: Clone;
 }
 
 impl<C: Compute> ComputeExt for C {
@@ -58,13 +59,14 @@ impl<C: Compute> ComputeExt for C {
     }
 
     fn transform<Output>(
-        self,
+        &self,
         transformer: impl 'static + Send + Sync + Fn(Self::Output) -> Output,
     ) -> impl Compute<Output = Output>
     where
         Self::Output: 'static,
+        Self: Clone,
     {
-        ComputeTransformer::new(self.computed(), transformer)
+        ComputeTransformer::new(self.clone().computed(), transformer)
     }
 }
 

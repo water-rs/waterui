@@ -3,7 +3,7 @@ mod text;
 pub use text::{text, Text};
 mod button;
 pub use button::{button, Button};
-mod stack;
+pub mod stack;
 pub use stack::{hstack, stack, vstack, HStack, Stack, VStack};
 mod image;
 pub use image::Image;

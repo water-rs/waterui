@@ -40,13 +40,16 @@ impl Stack {
         }
     }
 
-    pub fn vertical(mut self) -> Self {
-        self._mode = StackMode::Vertical;
-        self
+    pub fn vertical(self) -> Self {
+        self.mode(StackMode::Vertical)
     }
 
-    pub fn horizonal(mut self) -> Self {
-        self._mode = StackMode::Horizonal;
+    pub fn horizonal(self) -> Self {
+        self.mode(StackMode::Horizonal)
+    }
+
+    pub fn mode(mut self, mode: StackMode) -> Self {
+        self._mode = mode;
         self
     }
 }
