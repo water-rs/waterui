@@ -1,10 +1,8 @@
-use waterui_reactive::Computed;
-
-use crate::ffi::ComputedUtf8Data;
+use crate::ffi::computed::ComputedStr;
 
 #[repr(C)]
 pub struct Text {
-    content: ComputedUtf8Data,
+    content: ComputedStr,
 }
 
 impl From<crate::component::Text> for Text {
@@ -12,12 +10,6 @@ impl From<crate::component::Text> for Text {
         Self {
             content: value._content.into(),
         }
-    }
-}
-
-impl From<Text> for crate::component::Text {
-    fn from(value: Text) -> Self {
-        Self::new(Computed::from(value.content))
     }
 }
 

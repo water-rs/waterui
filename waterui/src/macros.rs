@@ -77,7 +77,7 @@ macro_rules! tuples {
 macro_rules! impl_view {
     ($ty:ident,$force_as:ident,$id:ident) => {
         #[no_mangle]
-        unsafe extern "C" fn $force_as(view: $crate::ffi::ViewObject) -> $ty {
+        unsafe extern "C" fn $force_as(view: $crate::ffi::AnyView) -> $ty {
             let view: $crate::component::AnyView = view.into();
             (*view.downcast_unchecked::<$crate::component::$ty>()).into()
         }
@@ -149,14 +149,14 @@ macro_rules! impl_array {
     ($name:ident,$from:ty,$to:ty) => {
         #[repr(C)]
         pub struct $name {
-            head: *mut $from,
+            head: *mut $to,
             len: usize,
         }
 
         impl From<Vec<$from>> for $name {
             fn from(value: Vec<$from>) -> Self {
                 let len = value.len();
-                let head = Box::into_raw(value.into_boxed_slice()) as *mut $from;
+                let head = Box::into_raw(value.into_boxed_slice()) as *mut $to;
 
                 Self { head, len }
             }

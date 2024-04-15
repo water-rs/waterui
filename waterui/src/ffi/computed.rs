@@ -18,7 +18,7 @@ impl_computed!(
     waterui_subscribe_computed_str,
     waterui_unsubscribe_computed_str,
     waterui_drop_computed_str,
-    ComputedUtf8Data,
+    ComputedStr,
     String,
     Utf8Data
 );
