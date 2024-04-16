@@ -5,33 +5,49 @@ use crate::component::AnyView;
 use crate::{Compute, View, ViewExt};
 
 use super::Text;
+
 #[non_exhaustive]
-pub struct Button {
+pub struct Button<Label> {
+    label: Label,
+    action: Box<dyn Fn()>,
+}
+
+#[non_exhaustive]
+pub struct RawButton {
     pub _label: AnyView,
     pub _action: Box<dyn Fn()>,
 }
 
-impl Button {
-    pub fn new(label: impl Compute<Output = String>, action: impl Fn() + 'static) -> Self {
+impl<Label: View + 'static> Button<Label> {
+    pub fn label(label: Label) -> Self {
         Self {
-            _label: Text::new(label).anyview(),
-            _action: Box::new(action),
+            label,
+            action: Box::new(|| {}),
         }
     }
 
-    pub fn action(action: impl Fn() + 'static) -> Self {
-        Self::new("", action)
-    }
-
-    pub fn label(mut self, label: impl View + 'static) -> Self {
-        self._label = label.anyview();
+    pub fn action(mut self, action: impl Fn() + 'static) -> Self {
+        self.action = Box::new(action);
         self
     }
 }
 
-raw_view!(Button);
-impl_debug!(Button);
-
-pub fn button(label: impl Compute<Output = String>, action: impl Fn() + 'static) -> Button {
-    Button::new(label, action)
+impl Button<Text> {
+    pub fn new(label: impl Compute<Output = String>) -> Self {
+        Self::label(Text::new(label))
+    }
 }
+
+impl_label!(Button);
+
+impl<Label: View + 'static> View for Button<Label> {
+    fn body(self, _env: crate::Environment) -> impl View {
+        RawButton {
+            _label: self.label.anyview(),
+            _action: self.action,
+        }
+    }
+}
+
+raw_view!(RawButton);
+impl_debug!(RawButton);

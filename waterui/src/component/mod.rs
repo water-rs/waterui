@@ -1,18 +1,18 @@
 mod text;
 
 pub use text::{text, Text};
-mod button;
-pub use button::{button, Button};
+pub mod button;
+pub use button::Button;
 pub mod stack;
 pub use stack::{hstack, stack, vstack, HStack, Stack, VStack};
 mod image;
 pub use image::Image;
-mod text_field;
-pub use text_field::{field, TextField};
+pub mod text_field;
+pub use text_field::TextField;
 mod anyview;
 pub use anyview::AnyView;
-mod toggle;
-pub use toggle::{toggle, Toggle};
+pub mod toggle;
+pub use toggle::Toggle;
 mod stepper;
 pub use stepper::{stepper, Stepper};
 #[cfg(feature = "remote-image")]

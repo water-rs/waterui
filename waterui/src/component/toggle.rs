@@ -5,8 +5,15 @@ use super::{AnyView, Text};
 use crate::{Compute, View, ViewExt};
 
 #[derive(Debug)]
+pub struct Toggle<Label> {
+    label: Label,
+    toggle: Binding<bool>,
+    style: ToggleStyle,
+}
+
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct Toggle {
+pub struct RawToggle {
     pub _label: AnyView,
     pub _toggle: Binding<bool>,
     pub _style: ToggleStyle,
@@ -26,28 +33,38 @@ impl Default for ToggleStyle {
         Self::Default
     }
 }
-
-impl Toggle {
+impl Toggle<Text> {
     pub fn new(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Self {
-        Self {
-            _label: Text::new(label).anyview(),
-            _toggle: toggle.clone(),
-            _style: ToggleStyle::default(),
-        }
-    }
-
-    pub fn binding(toggle: &Binding<bool>) -> Self {
-        Self::new("", toggle)
-    }
-
-    pub fn label(mut self, label: impl View + 'static) -> Self {
-        self._label = label.anyview();
-        self
+        Self::label(Text::new(label), toggle)
     }
 }
 
-raw_view!(Toggle);
+impl_label!(Toggle);
 
-pub fn toggle(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Toggle {
-    Toggle::new(label, toggle)
+impl Toggle<()> {
+    pub fn binding(toggle: &Binding<bool>) -> Self {
+        Self::label((), toggle)
+    }
+}
+
+impl<Label: View + 'static> Toggle<Label> {
+    pub fn label(label: Label, toggle: &Binding<bool>) -> Self {
+        Self {
+            label,
+            toggle: toggle.clone(),
+            style: ToggleStyle::default(),
+        }
+    }
+}
+
+raw_view!(RawToggle);
+
+impl<Label: View + 'static> View for Toggle<Label> {
+    fn body(self, _env: crate::Environment) -> impl View {
+        RawToggle {
+            _label: self.label.anyview(),
+            _toggle: self.toggle,
+            _style: self.style,
+        }
+    }
 }

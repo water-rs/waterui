@@ -1,56 +1,36 @@
-use super::{Int, Subscriber, Utf8Data};
+use super::{Closure, Int, Utf8Data};
 use alloc::{boxed::Box, string::String};
-use core::mem::ManuallyDrop;
 use waterui_reactive::Binding;
+
+// WARNING: Binding<T> must be called on the Rust thread!!!
 
 macro_rules! impl_binding {
     ($read:ident,$write:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$binding_ty:ident,$ty:ty,$output_ty:ty) => {
-        #[repr(C)]
-        pub struct $binding_ty {
-            pointer: *const $ty,
-        }
+        ffi_opaque!(Binding<$ty>, $binding_ty, 1);
 
-        impl From<Binding<$ty>> for $binding_ty {
-            fn from(value: Binding<$ty>) -> Self {
-                Self {
-                    pointer: value.into_raw(),
-                }
-            }
-        }
-
-        impl From<$binding_ty> for Binding<$ty> {
-            fn from(value: $binding_ty) -> Self {
-                unsafe { Self::from_raw(value.pointer) }
-            }
+        #[no_mangle]
+        unsafe extern "C" fn $read(binding: *const $binding_ty) -> $output_ty {
+            (*binding).get().into()
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $read(binding: $binding_ty) -> $output_ty {
-            let binding = ManuallyDrop::new(Binding::from_raw(binding.pointer));
-            binding.get().into()
+        unsafe extern "C" fn $write(binding: *const $binding_ty, value: $output_ty) {
+            (*binding).set(value);
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $write(binding: $binding_ty, value: $output_ty) {
-            let binding = ManuallyDrop::new(Binding::from_raw(binding.pointer));
-            binding.set(value);
+        unsafe extern "C" fn $subscribe(binding: *const $binding_ty, subscriber: Closure) -> usize {
+            (*binding).register_subscriber(Box::new(move || subscriber.call()))
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $subscribe(binding: $binding_ty, subscriber: Subscriber) -> usize {
-            let binding = ManuallyDrop::new(Binding::from_raw(binding.pointer));
-            binding.register_subscriber(Box::new(move || subscriber.call()))
-        }
-
-        #[no_mangle]
-        unsafe extern "C" fn $unsubscribe(binding: $binding_ty, id: usize) {
-            let binding = ManuallyDrop::new(Binding::from_raw(binding.pointer));
-            binding.cancel_subscriber(id);
+        unsafe extern "C" fn $unsubscribe(binding: *const $binding_ty, id: usize) {
+            (*binding).cancel_subscriber(id);
         }
 
         #[no_mangle]
         unsafe extern "C" fn $drop(binding: $binding_ty) {
-            let _ = Binding::from_raw(binding.pointer);
+            let _ = binding.into_ty();
         }
     };
 }
