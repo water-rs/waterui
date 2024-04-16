@@ -1,4 +1,4 @@
-use std::mem::ManuallyDrop;
+use core::mem::ManuallyDrop;
 
 use crate::{Environment, View, ViewExt};
 

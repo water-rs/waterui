@@ -1,5 +1,6 @@
 use super::{Int, Subscriber, Utf8Data};
-use std::mem::ManuallyDrop;
+use alloc::{boxed::Box, string::String};
+use core::mem::ManuallyDrop;
 use waterui_reactive::Binding;
 
 macro_rules! impl_binding {
