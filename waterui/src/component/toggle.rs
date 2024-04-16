@@ -8,6 +8,22 @@ use crate::{Compute, View, ViewExt};
 pub struct Toggle {
     pub _label: AnyView,
     pub _toggle: Binding<bool>,
+    pub _style: ToggleStyle,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+#[non_exhaustive]
+pub enum ToggleStyle {
+    Default,
+    CheckBox,
+    Switch,
+}
+
+impl Default for ToggleStyle {
+    fn default() -> Self {
+        Self::Default
+    }
 }
 
 impl Toggle {
@@ -15,6 +31,7 @@ impl Toggle {
         Self {
             _label: Text::new(label).anyview(),
             _toggle: toggle.clone(),
+            _style: ToggleStyle::default(),
         }
     }
 
