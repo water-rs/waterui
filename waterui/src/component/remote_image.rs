@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 use url::Url;
 use waterui_reactive::{Compute, Computed};

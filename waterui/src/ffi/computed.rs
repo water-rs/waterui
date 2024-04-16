@@ -1,6 +1,7 @@
-use std::mem::ManuallyDrop;
+use core::mem::ManuallyDrop;
 
 use super::{Data, Int, Subscriber, Utf8Data};
+use alloc::{string::String, vec::Vec};
 use waterui_reactive::{Compute, Computed};
 
 impl_computed!(

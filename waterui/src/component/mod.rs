@@ -15,7 +15,9 @@ mod toggle;
 pub use toggle::{toggle, Toggle};
 mod stepper;
 pub use stepper::{stepper, Stepper};
+#[cfg(feature = "remote-image")]
 mod remote_image;
+#[cfg(feature = "remote-image")]
 pub use remote_image::{remoteimg, RemoteImage};
 pub mod radio;
 pub use radio::{Radio, RadioGroup};

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::component::AnyView;
 use crate::view::IntoViews;
 use crate::View;

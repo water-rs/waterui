@@ -1,8 +1,6 @@
-use async_executor::Task;
-use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
-use std::future::Future;
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+use core::fmt::Debug;
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 pub struct Color {
     pub red: u8,
@@ -34,7 +32,8 @@ impl Color {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Background {
     Default,
     Color(Color),
@@ -46,12 +45,4 @@ impl Default for Background {
     fn default() -> Self {
         Self::Default
     }
-}
-
-pub fn task<Fut>(fut: Fut) -> Task<Fut::Output>
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send,
-{
-    smol::spawn(fut)
 }

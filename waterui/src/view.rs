@@ -6,10 +6,12 @@ use crate::{
     Compute, ComputeExt, Computed,
 };
 
+use alloc::{boxed::Box, vec, vec::Vec};
+
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View: Send + Sync {
+pub trait View {
     /// Build this view and return the content.
     ///
     /// WARNING: This method should not be called directly by user.
@@ -18,7 +20,7 @@ pub trait View: Send + Sync {
     fn body(self, _env: Environment) -> impl View;
 }
 
-pub type ViewBuilder = Box<dyn Send + Sync + Fn() -> AnyView>;
+pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 
 pub trait IntoViews {
     fn into_views(self) -> Vec<AnyView>;

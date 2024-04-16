@@ -1,24 +1,26 @@
-use std::{
+use core::{
+    cell::{Ref, RefCell, RefMut},
     fmt::{Debug, Display},
     mem::replace,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
+
+use alloc::{boxed::Box, rc::Rc};
 
 use crate::{subscriber::SubscriberManager, Subscriber};
 
 pub struct Binding<T> {
-    inner: Arc<BindingInner<T>>,
+    inner: Rc<BindingInner<T>>,
 }
 
 impl<T: Debug> Debug for Binding<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.read().fmt(f)
     }
 }
 
 impl<T: Display> Display for Binding<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.read().fmt(f)
     }
 }
@@ -41,7 +43,7 @@ impl<T> Binding<Option<T>> {
 
 impl<T: Clone> Binding<T> {
     pub fn get(&self) -> T {
-        self.inner.value.read().unwrap().clone()
+        self.read().clone()
     }
 }
 
@@ -52,8 +54,8 @@ impl<T> Binding<T> {
 
     pub fn constant(value: T) -> Self {
         Self {
-            inner: Arc::new(BindingInner {
-                value: RwLock::new(value),
+            inner: Rc::new(BindingInner {
+                value: RefCell::new(value),
                 subscribers: SubscriberManager::new(),
             }),
         }
@@ -61,9 +63,9 @@ impl<T> Binding<T> {
 
     pub fn bridge<F, Output>(&self, f: F) -> Binding<Output>
     where
-        F: 'static + Send + Sync + Fn(&T) -> Output,
-        Output: Send + Sync + 'static,
-        T: Send + Sync + 'static,
+        F: 'static + Fn(&T) -> Output,
+        Output: 'static,
+        T: 'static,
     {
         let result = Binding::new(f(self.read().deref()));
 
@@ -86,12 +88,12 @@ impl<T> Binding<T> {
         let _ = self.replace(value.into());
     }
 
-    fn read(&self) -> RwLockReadGuard<'_, T> {
-        self.inner.value.read().unwrap()
+    fn read(&self) -> Ref<'_, T> {
+        self.inner.value.borrow()
     }
 
-    fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.inner.value.write().unwrap()
+    fn write(&self) -> RefMut<'_, T> {
+        self.inner.value.borrow_mut()
     }
 
     fn notify(&self) {
@@ -116,7 +118,7 @@ impl<T> Binding<T> {
     }
 
     pub fn into_raw(self) -> *const T {
-        Arc::into_raw(self.inner) as *const T
+        Rc::into_raw(self.inner) as *const T
     }
 
     /// # Safety
@@ -126,7 +128,7 @@ impl<T> Binding<T> {
     /// function is called twice on the same raw pointer.
     pub unsafe fn from_raw(raw: *const T) -> Self {
         Self {
-            inner: Arc::from_raw(raw as *const BindingInner<T>),
+            inner: Rc::from_raw(raw as *const BindingInner<T>),
         }
     }
 }
@@ -148,6 +150,6 @@ impl<T: SubAssign> Binding<T> {
 }
 
 struct BindingInner<T> {
-    value: RwLock<T>,
+    value: RefCell<T>,
     subscribers: SubscriberManager,
 }

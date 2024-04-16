@@ -1,18 +1,15 @@
-use std::{
-    future::Future,
-    sync::{Arc, RwLock},
-};
+use core::{cell::RefCell, future::Future};
 
-use crate::{
-    component::AnyView, env::Environment, utils::task, view::ViewBuilder, Computed, View, ViewExt,
-};
+use alloc::{boxed::Box, rc::Rc};
+
+use crate::{component::AnyView, env::Environment, view::ViewBuilder, Computed, View, ViewExt};
 
 pub struct DefaultLoadingView {
     builder: ViewBuilder,
 }
 
 impl DefaultLoadingView {
-    pub fn new<V: View + 'static>(builder: impl Send + Sync + 'static + Fn() -> V) -> Self {
+    pub fn new<V: View + 'static>(builder: impl 'static + Fn() -> V) -> Self {
         Self {
             builder: Box::new(move || builder().anyview()),
         }
@@ -30,13 +27,11 @@ impl Default for DefaultLoadingView {
 }
 
 pub struct DefaultErrorView {
-    pub builder: Box<dyn Send + Sync + Fn(anyhow::Error) -> AnyView>,
+    pub builder: Box<dyn Fn(anyhow::Error) -> AnyView>,
 }
 
 impl DefaultErrorView {
-    pub fn new<V: View + 'static>(
-        builder: impl Send + Sync + 'static + Fn(anyhow::Error) -> V,
-    ) -> Self {
+    pub fn new<V: View + 'static>(builder: impl 'static + Fn(anyhow::Error) -> V) -> Self {
         Self {
             builder: Box::new(move |error| builder(error).anyview()),
         }
@@ -53,7 +48,7 @@ impl Default for DefaultErrorView {
     }
 }
 
-pub trait AsyncView: Send + Sync {
+pub trait AsyncView {
     fn body(
         self,
         env: Environment,
@@ -72,22 +67,20 @@ pub trait AsyncView: Send + Sync {
 
 impl<V: AsyncView + 'static> View for V {
     fn body(self, env: Environment) -> impl View {
-        let handle = Arc::new(RwLock::new(Some(Self::loading(env.clone()).anyview())));
+        let handle = Rc::new(RefCell::new(Some(Self::loading(env.clone()).anyview())));
         let (result, manager) = Computed::compute({
             let handle = handle.clone();
-            move || handle.write().unwrap().take().unwrap()
+            move || handle.borrow_mut().take().unwrap()
         });
 
-        task({
+        env.task({
             let env = env.clone();
             async move {
                 let output = self.body(env.clone()).await;
                 manager.notify();
                 match output {
-                    Ok(view) => *handle.write().unwrap() = Some(view.anyview()),
-                    Err(error) => {
-                        *handle.write().unwrap() = Some(Self::error(error, env).anyview())
-                    }
+                    Ok(view) => *handle.borrow_mut() = Some(view.anyview()),
+                    Err(error) => *handle.borrow_mut() = Some(Self::error(error, env).anyview()),
                 }
             }
         })
