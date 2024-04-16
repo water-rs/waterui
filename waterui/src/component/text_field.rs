@@ -6,6 +6,23 @@ pub struct TextField {
     pub _label: Computed<String>,
     pub _value: Binding<String>,
     pub _prompt: Computed<String>,
+    pub _style: TextFieldStyle,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+#[non_exhaustive]
+pub enum TextFieldStyle {
+    Default,
+    Plain,
+    Outlined,
+    Underlined,
+}
+
+impl Default for TextFieldStyle {
+    fn default() -> Self {
+        Self::Default
+    }
 }
 
 raw_view!(TextField);
@@ -16,6 +33,7 @@ impl TextField {
             _label: label.computed(),
             _value: value.clone(),
             _prompt: String::new().computed(),
+            _style: TextFieldStyle::default(),
         }
     }
 
