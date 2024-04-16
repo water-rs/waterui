@@ -1,3 +1,5 @@
+use core::any::Any;
+
 use crate::{
     component::AnyView,
     env::Environment,
@@ -92,4 +94,10 @@ impl<V: View + 'static> ViewExt for V {
     fn anyview(self) -> AnyView {
         AnyView::new(self)
     }
+}
+
+pub fn downcast<V: 'static>(view: impl View + 'static) -> Option<V> {
+    let any = &mut Some(view) as &mut dyn Any;
+    let any = any.downcast_mut::<Option<V>>();
+    any.map(|v| v.take().unwrap())
 }

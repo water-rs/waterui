@@ -4,16 +4,13 @@
 #include <stdlib.h>
 
 typedef enum WaterUIStackMode {
+  WaterUIStackMode_Auto,
   WaterUIStackMode_Vertical,
   WaterUIStackMode_Horizonal,
   WaterUIStackMode_Layered,
 } WaterUIStackMode;
 
-typedef struct WaterUIString WaterUIString;
-
-typedef struct WaterUIAction {
-  uintptr_t inner[2];
-} WaterUIAction;
+typedef struct WaterUIEnvironment WaterUIEnvironment;
 
 typedef struct WaterUIData {
   uint8_t *head;
@@ -24,11 +21,11 @@ typedef struct WaterUIComputedData {
   uintptr_t inner[2];
 } WaterUIComputedData;
 
-typedef struct WaterUISubscriber {
+typedef struct WaterUIClosure {
   void *data;
   void (*call)(const void*);
   void (*free)(void*);
-} WaterUISubscriber;
+} WaterUIClosure;
 
 typedef struct WaterUIUtf8Data {
   uint8_t *head;
@@ -46,11 +43,11 @@ typedef struct WaterUIComputedInt {
 } WaterUIComputedInt;
 
 typedef struct WaterUIBindingStr {
-  const struct WaterUIString *pointer;
+  uintptr_t inner[1];
 } WaterUIBindingStr;
 
 typedef struct WaterUIBindingInt {
-  const WaterUIInt *pointer;
+  uintptr_t inner[1];
 } WaterUIBindingInt;
 
 typedef struct WaterUITypeId {
@@ -61,13 +58,17 @@ typedef struct WaterUIAnyView {
   uintptr_t inner[2];
 } WaterUIAnyView;
 
+typedef struct WaterUIAction {
+  uintptr_t inner[2];
+} WaterUIAction;
+
 typedef struct WaterUIButton {
   struct WaterUIAnyView label;
   struct WaterUIAction action;
 } WaterUIButton;
 
 typedef struct WaterUITextField {
-  struct WaterUIComputedStr label;
+  struct WaterUIAnyView label;
   struct WaterUIBindingStr value;
   struct WaterUIComputedStr prompt;
 } WaterUITextField;
@@ -86,62 +87,60 @@ typedef struct WaterUIText {
   struct WaterUIComputedStr content;
 } WaterUIText;
 
-void waterui_free_action(struct WaterUIAction action);
+struct WaterUIData waterui_read_computed_data(const struct WaterUIComputedData *computed);
 
-void waterui_call_action(struct WaterUIAction action);
+uintptr_t waterui_subscribe_computed_data(const struct WaterUIComputedData *computed,
+                                          struct WaterUIClosure subscriber);
 
-struct WaterUIData waterui_read_computed_data(struct WaterUIComputedData computed);
-
-uintptr_t waterui_subscribe_computed_data(struct WaterUIComputedData computed,
-                                          struct WaterUISubscriber subscriber);
-
-void waterui_unsubscribe_computed_data(struct WaterUIComputedData computed, uintptr_t id);
+void waterui_unsubscribe_computed_data(const struct WaterUIComputedData *computed, uintptr_t id);
 
 void waterui_drop_computed_data(struct WaterUIComputedData computed);
 
-struct WaterUIUtf8Data waterui_read_computed_str(struct WaterUIComputedStr computed);
+struct WaterUIUtf8Data waterui_read_computed_str(const struct WaterUIComputedStr *computed);
 
-uintptr_t waterui_subscribe_computed_str(struct WaterUIComputedStr computed,
-                                         struct WaterUISubscriber subscriber);
+uintptr_t waterui_subscribe_computed_str(const struct WaterUIComputedStr *computed,
+                                         struct WaterUIClosure subscriber);
 
-void waterui_unsubscribe_computed_str(struct WaterUIComputedStr computed, uintptr_t id);
+void waterui_unsubscribe_computed_str(const struct WaterUIComputedStr *computed, uintptr_t id);
 
 void waterui_drop_computed_str(struct WaterUIComputedStr computed);
 
-WaterUIInt waterui_read_computed_int(struct WaterUIComputedInt computed);
+WaterUIInt waterui_read_computed_int(const struct WaterUIComputedInt *computed);
 
-uintptr_t waterui_subscribe_computed_int(struct WaterUIComputedInt computed,
-                                         struct WaterUISubscriber subscriber);
+uintptr_t waterui_subscribe_computed_int(const struct WaterUIComputedInt *computed,
+                                         struct WaterUIClosure subscriber);
 
-void waterui_unsubscribe_computed_int(struct WaterUIComputedInt computed, uintptr_t id);
+void waterui_unsubscribe_computed_int(const struct WaterUIComputedInt *computed, uintptr_t id);
 
 void waterui_drop_computed_int(struct WaterUIComputedInt computed);
 
-struct WaterUIUtf8Data waterui_read_binding_str(struct WaterUIBindingStr binding);
+struct WaterUIUtf8Data waterui_read_binding_str(const struct WaterUIBindingStr *binding);
 
-void waterui_write_binding_str(struct WaterUIBindingStr binding, struct WaterUIUtf8Data value);
+void waterui_write_binding_str(const struct WaterUIBindingStr *binding,
+                               struct WaterUIUtf8Data value);
 
-uintptr_t waterui_subscribe_binding_str(struct WaterUIBindingStr binding,
-                                        struct WaterUISubscriber subscriber);
+uintptr_t waterui_subscribe_binding_str(const struct WaterUIBindingStr *binding,
+                                        struct WaterUIClosure subscriber);
 
-void waterui_unsubscribe_binding_str(struct WaterUIBindingStr binding, uintptr_t id);
+void waterui_unsubscribe_binding_str(const struct WaterUIBindingStr *binding, uintptr_t id);
 
 void waterui_drop_binding_str(struct WaterUIBindingStr binding);
 
-WaterUIInt waterui_read_binding_int(struct WaterUIBindingInt binding);
+WaterUIInt waterui_read_binding_int(const struct WaterUIBindingInt *binding);
 
-void waterui_write_binding_int(struct WaterUIBindingInt binding, WaterUIInt value);
+void waterui_write_binding_int(const struct WaterUIBindingInt *binding, WaterUIInt value);
 
-uintptr_t waterui_subscribe_binding_int(struct WaterUIBindingInt binding,
-                                        struct WaterUISubscriber subscriber);
+uintptr_t waterui_subscribe_binding_int(const struct WaterUIBindingInt *binding,
+                                        struct WaterUIClosure subscriber);
 
-void waterui_unsubscribe_binding_int(struct WaterUIBindingInt binding, uintptr_t id);
+void waterui_unsubscribe_binding_int(const struct WaterUIBindingInt *binding, uintptr_t id);
 
 void waterui_drop_binding_int(struct WaterUIBindingInt binding);
 
 struct WaterUITypeId waterui_view_id(struct WaterUIAnyView view);
 
-struct WaterUIAnyView waterui_call_view(struct WaterUIAnyView view);
+struct WaterUIAnyView waterui_call_view(struct WaterUIAnyView view,
+                                        const struct WaterUIEnvironment *env);
 
 struct WaterUIAnyView waterui_view_force_as_anyview(struct WaterUIAnyView view);
 
@@ -162,3 +161,7 @@ struct WaterUITypeId waterui_view_stack_id(void);
 struct WaterUIText waterui_view_force_as_text(struct WaterUIAnyView view);
 
 struct WaterUITypeId waterui_view_text_id(void);
+
+void waterui_free_action(struct WaterUIAction action);
+
+void waterui_call_action(const struct WaterUIAction *action);
