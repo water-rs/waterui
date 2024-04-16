@@ -1,15 +1,17 @@
-use crate::{component::AnyView, env::EnvironmentBuilder, Environment, View, ViewExt};
+extern crate std;
 
-pub struct AppBuilder {
+use crate::{component::AnyView, Environment, View, ViewExt};
+
+pub struct App {
     content: AnyView,
-    env: EnvironmentBuilder,
+    env: Environment,
 }
 
-impl AppBuilder {
-    pub fn new(content: impl View + 'static) -> Self {
+impl App {
+    pub fn new(cntent: impl View + 'static) -> Self {
         Self {
-            content: content.anyview(),
-            env: EnvironmentBuilder::new(),
+            content: cntent.anyview(),
+            env: Environment::new(),
         }
     }
 
@@ -17,24 +19,21 @@ impl AppBuilder {
         self.env.insert(value);
         self
     }
-}
 
-pub struct App {
-    pub _content: AnyView,
-    pub _env: Environment,
-}
+    #[cfg(feature = "async")]
+    pub fn run(self, runtime: impl FnOnce(AnyView, Environment)) {
+        let executor = self.env.executor();
+        runtime(self.content, self.env);
 
-impl App {
-    pub fn builder(view: impl View + 'static) -> AppBuilder {
-        AppBuilder::new(view)
+        smol::block_on(async move {
+            loop {
+                executor.tick().await;
+            }
+        })
     }
-}
 
-impl AppBuilder {
-    pub fn build(self) -> App {
-        App {
-            _content: self.content,
-            _env: self.env.build(),
-        }
+    #[cfg(not(feature = "async"))]
+    pub fn run(self, runtime: impl FnOnce(AnyView, Environment)) {
+        runtime(self.content, self.env);
     }
 }
