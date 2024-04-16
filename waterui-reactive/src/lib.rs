@@ -1,3 +1,6 @@
+#![no_std]
+extern crate alloc;
+
 pub mod binding;
 pub use binding::Binding;
 pub mod compute;

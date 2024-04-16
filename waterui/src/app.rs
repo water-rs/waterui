@@ -13,7 +13,7 @@ impl AppBuilder {
         }
     }
 
-    pub fn env<T: Send + Sync + 'static>(mut self, value: T) -> Self {
+    pub fn env<T: 'static>(mut self, value: T) -> Self {
         self.env.insert(value);
         self
     }

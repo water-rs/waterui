@@ -16,7 +16,7 @@ impl<C, F> ComputeTransformer<C, F> {
 
 impl<C, F, Output> Compute for ComputeTransformer<C, F>
 where
-    F: 'static + Send + Sync + Fn(C::Output) -> Output,
+    F: 'static + Fn(C::Output) -> Output,
     C: Compute,
     C::Output: 'static,
 {

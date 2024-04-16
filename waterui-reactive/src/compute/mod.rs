@@ -1,10 +1,10 @@
-use std::{
+use core::{
     fmt::{Debug, Display},
     ops::Deref,
-    sync::Arc,
 };
 
 mod grouped;
+use alloc::{boxed::Box, rc::Rc};
 pub use grouped::GroupedCompute;
 mod impls;
 mod transformer;
@@ -15,7 +15,7 @@ use crate::{
 
 use self::transformer::ComputeTransformer;
 
-pub trait Compute: Send + Sync {
+pub trait Compute {
     type Output;
     fn compute(&self) -> Self::Output;
     fn register_subscriber(&self, subscriber: Subscriber) -> usize;
@@ -43,10 +43,10 @@ impl<C: Compute + Clone + 'static> Compute for &C {
 }
 
 pub trait ComputeExt: Compute {
-    fn subscribe(&self, subscriber: impl Fn() + Send + Sync + 'static) -> SubscribeGuard<'_, Self>;
+    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self>;
     fn transform<Output>(
         &self,
-        transformer: impl 'static + Send + Sync + Fn(Self::Output) -> Output,
+        transformer: impl 'static + Fn(Self::Output) -> Output,
     ) -> impl Compute<Output = Output>
     where
         Self::Output: 'static,
@@ -54,13 +54,13 @@ pub trait ComputeExt: Compute {
 }
 
 impl<C: Compute> ComputeExt for C {
-    fn subscribe(&self, subscriber: impl Fn() + Send + Sync + 'static) -> SubscribeGuard<'_, Self> {
+    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self> {
         SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
     }
 
     fn transform<Output>(
         &self,
-        transformer: impl 'static + Send + Sync + Fn(Self::Output) -> Output,
+        transformer: impl 'static + Fn(Self::Output) -> Output,
     ) -> impl Compute<Output = Output>
     where
         Self::Output: 'static,
@@ -75,13 +75,11 @@ pub struct Computed<T> {
 }
 
 impl<T> Computed<T> {
-    pub fn compute(
-        compute: impl 'static + Send + Sync + Fn() -> T,
-    ) -> (Computed<T>, Arc<SubscriberManager>) {
-        let subscribers = Arc::new(SubscriberManager::new());
+    pub fn compute(compute: impl 'static + Fn() -> T) -> (Computed<T>, SharedSubscriberManager) {
+        let subscribers = Rc::new(SubscriberManager::new());
         (
             Computed::new(ComputeImpl {
-                compute: Arc::new(compute),
+                compute: Rc::new(compute),
                 subscribers: subscribers.clone(),
             }),
             subscribers,
@@ -94,25 +92,25 @@ impl<T> Computed<T> {
 }
 
 impl<T: Debug + 'static> Debug for Computed<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         Compute::compute(self).fmt(f)
     }
 }
 
 impl<T: Display + 'static> Display for Computed<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         Compute::compute(self).fmt(f)
     }
 }
 
 struct ComputeImpl<F> {
-    compute: Arc<F>,
+    compute: Rc<F>,
     subscribers: SharedSubscriberManager,
 }
 
 impl<F, T> Compute for ComputeImpl<F>
 where
-    F: 'static + Send + Sync + Fn() -> T,
+    F: 'static + Fn() -> T,
 {
     type Output = T;
     fn compute(&self) -> T {
@@ -142,7 +140,7 @@ impl<T> ConsantCompute<T> {
     }
 }
 
-impl<T: Send + Sync + Clone + 'static> Compute for ConsantCompute<T> {
+impl<T: Clone + 'static> Compute for ConsantCompute<T> {
     type Output = T;
 
     fn compute(&self) -> Self::Output {
@@ -160,7 +158,7 @@ impl<T: Send + Sync + Clone + 'static> Compute for ConsantCompute<T> {
     }
 }
 
-impl<T: Send + Sync + Clone + 'static> Computed<T> {
+impl<T: Clone + 'static> Computed<T> {
     pub fn constant(value: T) -> Self {
         Computed::new(ConsantCompute::new(value))
     }

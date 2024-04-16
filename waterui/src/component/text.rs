@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 use crate::{Compute, Computed};
 
 #[derive(Debug)]

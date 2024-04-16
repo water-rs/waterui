@@ -1,13 +1,9 @@
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    sync::Arc,
-};
+use core::any::{Any, TypeId};
 
-use crate::async_view::{DefaultErrorView, DefaultLoadingView};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
 
 pub struct Environment {
-    inner: Arc<EnvironmentBuilder>,
+    inner: Rc<EnvironmentBuilder>,
 }
 
 impl Clone for Environment {
@@ -18,17 +14,16 @@ impl Clone for Environment {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct EnvironmentBuilder {
-    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    map: BTreeMap<TypeId, Box<dyn Any>>,
+    #[cfg(feature = "async")]
+    executor: async_executor::LocalExecutor<'static>,
 }
 
 impl EnvironmentBuilder {
     pub fn new() -> Self {
-        let mut env = Self::default();
-        env.insert(DefaultLoadingView::default());
-        env.insert(DefaultErrorView::default());
-        env
+        Self::default()
     }
 
     pub fn get<T: 'static>(&self) -> Option<&T> {
@@ -43,7 +38,7 @@ impl EnvironmentBuilder {
             .map(|any| unsafe { &mut *(any as *mut dyn Any as *mut T) })
     }
 
-    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) -> Option<T> {
+    pub fn insert<T: 'static>(&mut self, value: T) -> Option<T> {
         self.map
             .insert(TypeId::of::<T>(), Box::new(value))
             .map(|any| unsafe {
@@ -61,8 +56,17 @@ impl EnvironmentBuilder {
 impl Environment {
     fn new(builder: EnvironmentBuilder) -> Self {
         Self {
-            inner: Arc::new(builder),
+            inner: Rc::new(builder),
         }
+    }
+
+    #[cfg(feature = "async")]
+    pub fn task<Fut>(&self, fut: Fut) -> async_executor::Task<Fut::Output>
+    where
+        Fut: core::future::Future + 'static,
+        Fut::Output: 'static,
+    {
+        self.inner.executor.spawn(fut)
     }
 
     pub fn builder() -> EnvironmentBuilder {
@@ -77,13 +81,13 @@ impl Environment {
     /// The raw pointer must have been previously returned by a call to Environment::into_raw
     pub unsafe fn from_raw(ptr: *const EnvironmentBuilder) -> Self {
         Self {
-            inner: Arc::from_raw(ptr),
+            inner: Rc::from_raw(ptr),
         }
     }
 
     /// Consumes the Environment, returning the wrapped pointer.
     /// To avoid a memory leak the pointer must be converted back to an Environment using Environment::from_raw.
     pub fn into_raw(self) -> *const EnvironmentBuilder {
-        Arc::into_raw(self.inner)
+        Rc::into_raw(self.inner)
     }
 }

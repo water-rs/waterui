@@ -16,5 +16,5 @@ unsafe extern "C" fn waterui_view_force_as_anyview(view: AnyView) -> AnyView {
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_anyview_id() -> super::TypeId {
-    std::any::TypeId::of::<component::AnyView>().into()
+    core::any::TypeId::of::<component::AnyView>().into()
 }

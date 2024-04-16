@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use waterui_reactive::impl_constant;
 
 use crate::modifier::ViewModifier;
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 pub enum Size {
     Default,
@@ -30,7 +30,8 @@ impl From<u64> for Size {
 
 impl_constant!(Size, Frame, Edge);
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 pub enum Alignment {
     Default,
@@ -46,7 +47,8 @@ impl Default for Alignment {
 }
 
 impl_builder! {
-    #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Default, Clone, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
     #[repr(C)]
     pub struct Frame {
         pub width: Size,
@@ -68,7 +70,8 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 
 pub struct Edge {
