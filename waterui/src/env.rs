@@ -1,29 +1,40 @@
 use core::any::{Any, TypeId};
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
+use alloc::{collections::BTreeMap, rc::Rc};
 
+#[derive(Clone)]
 pub struct Environment {
-    inner: Rc<EnvironmentBuilder>,
+    map: BTreeMap<TypeId, Rc<dyn Any>>,
+    #[cfg(feature = "async")]
+    bridge: crate::ffi::Bridge,
+    #[cfg(feature = "async")]
+    executor: Rc<smol::LocalExecutor<'static>>,
 }
 
-impl Clone for Environment {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-#[derive(Debug, Default)]
-pub struct EnvironmentBuilder {
-    map: BTreeMap<TypeId, Box<dyn Any>>,
+impl Environment {
     #[cfg(feature = "async")]
-    executor: async_executor::LocalExecutor<'static>,
-}
-
-impl EnvironmentBuilder {
     pub fn new() -> Self {
-        Self::default()
+        let (bridge, fut) = crate::ffi::Bridge::new();
+        let executor = smol::LocalExecutor::new();
+        executor.spawn(fut).detach();
+        Self {
+            map: BTreeMap::new(),
+            bridge,
+            executor: Rc::new(executor),
+        }
+    }
+
+    #[cfg(not(feature = "async"))]
+    pub const fn new() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
     }
 
     pub fn get<T: 'static>(&self) -> Option<&T> {
@@ -32,62 +43,26 @@ impl EnvironmentBuilder {
             .map(|any| unsafe { &*(any as *const dyn Any as *const T) })
     }
 
-    pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.map
-            .get_mut(&TypeId::of::<T>())
-            .map(|any| unsafe { &mut *(any as *mut dyn Any as *mut T) })
-    }
-
-    pub fn insert<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.map
-            .insert(TypeId::of::<T>(), Box::new(value))
-            .map(|any| unsafe {
-                let any: *mut dyn Any = Box::into_raw(any);
-                let boxed: Box<T> = Box::from_raw(any as *mut T);
-                *boxed
-            })
-    }
-
-    pub fn build(self) -> Environment {
-        Environment::new(self)
-    }
-}
-
-impl Environment {
-    fn new(builder: EnvironmentBuilder) -> Self {
-        Self {
-            inner: Rc::new(builder),
-        }
-    }
-
     #[cfg(feature = "async")]
-    pub fn task<Fut>(&self, fut: Fut) -> async_executor::Task<Fut::Output>
+    pub fn task<Fut>(&self, fut: Fut) -> smol::Task<Fut::Output>
     where
         Fut: core::future::Future + 'static,
         Fut::Output: 'static,
     {
-        self.inner.executor.spawn(fut)
+        self.executor.spawn(fut)
     }
 
-    pub fn builder() -> EnvironmentBuilder {
-        EnvironmentBuilder::new()
+    #[cfg(feature = "async")]
+    pub(crate) fn bridge(&self) -> &crate::ffi::Bridge {
+        &self.bridge
     }
 
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.inner.get()
-    }
-    /// Constructs an `Environment` from a raw pointer
-    /// # Safety
-    /// The raw pointer must have been previously returned by a call to Environment::into_raw
-    pub unsafe fn from_raw(ptr: *const EnvironmentBuilder) -> Self {
-        Self {
-            inner: Rc::from_raw(ptr),
-        }
+    #[cfg(feature = "async")]
+    pub(crate) fn executor(&self) -> Rc<smol::LocalExecutor<'static>> {
+        self.executor.clone()
     }
 
-    /// Consumes the Environment, returning the wrapped pointer.
-    /// To avoid a memory leak the pointer must be converted back to an Environment using Environment::from_raw.
-    pub fn into_raw(self) -> *const EnvironmentBuilder {
-        Rc::into_raw(self.inner)
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        self.map.insert(TypeId::of::<T>(), Rc::new(value));
     }
 }

@@ -13,4 +13,9 @@ impl From<crate::component::Text> for Text {
     }
 }
 
-impl_view!(Text, waterui_view_force_as_text, waterui_view_text_id);
+impl_view!(
+    crate::component::Text,
+    Text,
+    waterui_view_force_as_text,
+    waterui_view_text_id
+);

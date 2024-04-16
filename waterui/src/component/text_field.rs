@@ -1,11 +1,21 @@
 use alloc::string::String;
 
-use crate::{Binding, Compute, Computed};
+use crate::{Binding, Compute, Computed, View, ViewExt};
+
+use super::{AnyView, Text};
+
+#[derive(Debug)]
+pub struct TextField<Label> {
+    label: Label,
+    value: Binding<String>,
+    prompt: Computed<String>,
+    style: TextFieldStyle,
+}
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct TextField {
-    pub _label: Computed<String>,
+pub struct RawTextField {
+    pub _label: AnyView,
     pub _value: Binding<String>,
     pub _prompt: Computed<String>,
     pub _style: TextFieldStyle,
@@ -27,28 +37,45 @@ impl Default for TextFieldStyle {
     }
 }
 
-raw_view!(TextField);
+raw_view!(RawTextField);
 
-impl TextField {
+impl TextField<()> {
+    pub fn binding(value: &Binding<String>) -> Self {
+        Self::label((), value)
+    }
+}
+
+impl TextField<Text> {
     pub fn new(label: impl Compute<Output = String>, value: &Binding<String>) -> Self {
+        Self::label(Text::new(label), value)
+    }
+}
+
+impl_label!(TextField);
+
+impl<V: View + 'static> TextField<V> {
+    pub fn label(label: V, value: &Binding<String>) -> Self {
         Self {
-            _label: label.computed(),
-            _value: value.clone(),
-            _prompt: String::new().computed(),
-            _style: TextFieldStyle::default(),
+            label,
+            value: value.clone(),
+            prompt: String::new().computed(),
+            style: TextFieldStyle::default(),
         }
     }
 
-    pub fn binding(value: &Binding<String>) -> Self {
-        Self::new("", value)
-    }
-
     pub fn prompt(mut self, prompt: impl Compute<Output = String>) -> Self {
-        self._prompt = prompt.computed();
+        self.prompt = prompt.computed();
         self
     }
 }
 
-pub fn field(label: impl Compute<Output = String>, value: &Binding<String>) -> TextField {
-    TextField::new(label, value)
+impl<V: View + 'static> View for TextField<V> {
+    fn body(self, _env: crate::Environment) -> impl View {
+        RawTextField {
+            _label: self.label.anyview(),
+            _value: self.value,
+            _prompt: self.prompt,
+            _style: self.style,
+        }
+    }
 }

@@ -15,6 +15,11 @@ impl From<crate::component::Stack> for Stack {
     }
 }
 
-impl_view!(Stack, waterui_view_force_as_stack, waterui_view_stack_id);
+impl_view!(
+    crate::component::Stack,
+    Stack,
+    waterui_view_force_as_stack,
+    waterui_view_stack_id
+);
 
 impl_array!(Views, crate::component::AnyView, crate::ffi::AnyView);

@@ -39,22 +39,22 @@ impl From<String> for Utf8Data {
 }
 
 #[repr(C)]
-pub struct Subscriber {
+pub struct Closure {
     data: *mut (),
     call: unsafe extern "C" fn(*const ()),
     free: unsafe extern "C" fn(*mut ()),
 }
 
-unsafe impl Send for Subscriber {}
-unsafe impl Sync for Subscriber {}
+unsafe impl Send for Closure {}
+unsafe impl Sync for Closure {}
 
-impl Subscriber {
+impl Closure {
     pub fn call(&self) {
         unsafe { (self.call)(self.data) }
     }
 }
 
-impl Drop for Subscriber {
+impl Drop for Closure {
     fn drop(&mut self) {
         unsafe { (self.free)(self.data) }
     }
@@ -77,6 +77,7 @@ impl From<core::any::TypeId> for TypeId {
         }
     }
 }
+
 impl From<TypeId> for core::any::TypeId {
     fn from(value: TypeId) -> Self {
         unsafe { transmute(value.inner) }
@@ -84,3 +85,13 @@ impl From<TypeId> for core::any::TypeId {
 }
 
 ffi_opaque!(Box<dyn Fn()+>, Action, 2);
+
+#[no_mangle]
+unsafe extern "C" fn waterui_free_action(action: Action) {
+    let _ = action.into_ty();
+}
+
+#[no_mangle]
+unsafe extern "C" fn waterui_call_action(action: *const Action) {
+    (*action)();
+}
