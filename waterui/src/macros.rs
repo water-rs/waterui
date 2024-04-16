@@ -36,6 +36,22 @@ macro_rules! impl_from {
     };
 }
 
+macro_rules! impl_label {
+    ($ty:ident) => {
+        impl $ty<Text> {
+            pub fn font(mut self, font: crate::component::text::Font) -> Self {
+                self.label = self.label.font(font);
+                self
+            }
+
+            pub fn size(mut self, size: f64) -> Self {
+                self.label = self.label.size(size);
+                self
+            }
+        }
+    };
+}
+
 macro_rules! impl_builder {
     ($(#[$meta:meta])* $vis:vis struct $name:ident{$($field_vis:vis $field_name:ident:$field_type:ty),*}) => {
         $(#[$meta])*
@@ -75,60 +91,38 @@ macro_rules! tuples {
 }
 
 macro_rules! impl_view {
-    ($ty:ident,$force_as:ident,$id:ident) => {
+    ($ty:ty,$ffi_ty:ty,$force_as:ident,$id:ident) => {
         #[no_mangle]
-        unsafe extern "C" fn $force_as(view: $crate::ffi::AnyView) -> $ty {
+        unsafe extern "C" fn $force_as(view: $crate::ffi::AnyView) -> $ffi_ty {
             let view: $crate::component::AnyView = view.into();
-            (*view.downcast_unchecked::<$crate::component::$ty>()).into()
+            (*view.downcast_unchecked::<$ty>()).into()
         }
 
         #[no_mangle]
         unsafe extern "C" fn $id() -> $crate::ffi::TypeId {
-            core::any::TypeId::of::<$crate::component::$ty>().into()
-        }
-    };
-}
-
-macro_rules! impl_computed {
-    ($read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$computed_ty:ident,$ty:ty,$output_ty:ty) => {
-        ffi_opaque!(Computed<$ty>, $computed_ty, 2);
-
-        #[no_mangle]
-        unsafe extern "C" fn $read(computed: $computed_ty) -> $output_ty {
-            let computed = ManuallyDrop::new(Computed::from(computed));
-            computed.compute().into()
-        }
-
-        #[no_mangle]
-        unsafe extern "C" fn $subscribe(computed: $computed_ty, subscriber: Subscriber) -> usize {
-            let computed = ManuallyDrop::new(Computed::from(computed));
-            computed.register_subscriber(alloc::boxed::Box::new(move || subscriber.call()))
-        }
-
-        #[no_mangle]
-        unsafe extern "C" fn $unsubscribe(computed: $computed_ty, id: usize) {
-            let computed = ManuallyDrop::new(Computed::from(computed));
-            computed.cancel_subscriber(id);
-        }
-
-        #[no_mangle]
-        unsafe extern "C" fn $drop(computed: $computed_ty) {
-            let _ = Computed::from(computed);
+            core::any::TypeId::of::<$ty>().into()
         }
     };
 }
 
 macro_rules! ffi_opaque {
-    ($from:ty,$to:ident,$word:expr) => {
+    ($ty:ty,$ffi_ty:ident,$word:expr) => {
         #[repr(C)]
-        pub struct $to {
+        pub struct $ffi_ty {
             inner: [usize; $word],
             _marker: core::marker::PhantomData<(*const (), core::marker::PhantomPinned)>,
         }
 
+        impl core::ops::Deref for $ffi_ty {
+            type Target = $ty;
+            fn deref(&self) -> &Self::Target {
+                unsafe { core::mem::transmute(&self.inner) }
+            }
+        }
+
         #[allow(clippy::missing_transmute_annotations)]
-        impl From<$from> for $to {
-            fn from(value: $from) -> Self {
+        impl From<$ty> for $ffi_ty {
+            fn from(value: $ty) -> Self {
                 unsafe {
                     Self {
                         inner: core::mem::transmute(value),
@@ -138,9 +132,21 @@ macro_rules! ffi_opaque {
             }
         }
 
-        impl From<$to> for $from {
-            fn from(value: $to) -> Self {
-                unsafe { core::mem::transmute(value.inner) }
+        impl $ffi_ty {
+            pub fn into_ty(self) -> $ty {
+                unsafe { core::mem::transmute(self.inner) }
+            }
+        }
+
+        impl From<$ffi_ty> for $ty {
+            fn from(value: $ffi_ty) -> Self {
+                value.into_ty()
+            }
+        }
+
+        impl Drop for $ffi_ty {
+            fn drop(&mut self) {
+                let _: $ty = unsafe { core::mem::transmute(self.inner) };
             }
         }
     };

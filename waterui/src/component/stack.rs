@@ -30,6 +30,7 @@ pub struct Stack {
 #[derive(Debug)]
 #[repr(C)]
 pub enum StackMode {
+    Auto,
     Vertical,
     Horizonal,
     Layered,
@@ -39,7 +40,7 @@ impl Stack {
     pub fn new(contents: impl IntoViews) -> Self {
         Self {
             _views: contents.into_views(),
-            _mode: StackMode::Vertical,
+            _mode: StackMode::Auto,
         }
     }
 
