@@ -1,3 +1,10 @@
+use core::{
+    marker::{PhantomData, PhantomPinned},
+    mem::transmute,
+};
+
+use alloc::{boxed::Box, string::String};
+
 #[repr(C)]
 pub struct Utf8Data {
     head: *mut u8,
@@ -56,24 +63,24 @@ impl Drop for Subscriber {
 #[repr(C)]
 pub struct TypeId {
     inner: [u64; 2],
-    _marker: std::marker::PhantomData<(*const (), std::marker::PhantomPinned)>,
+    _marker: PhantomData<(*const (), PhantomPinned)>,
 }
 
 #[allow(clippy::missing_transmute_annotations)]
-impl From<std::any::TypeId> for TypeId {
-    fn from(value: std::any::TypeId) -> Self {
+impl From<core::any::TypeId> for TypeId {
+    fn from(value: core::any::TypeId) -> Self {
         unsafe {
             Self {
-                inner: std::mem::transmute(value),
-                _marker: std::marker::PhantomData,
+                inner: transmute(value),
+                _marker: PhantomData,
             }
         }
     }
 }
-impl From<TypeId> for std::any::TypeId {
+impl From<TypeId> for core::any::TypeId {
     fn from(value: TypeId) -> Self {
-        unsafe { std::mem::transmute(value.inner) }
+        unsafe { transmute(value.inner) }
     }
 }
 
-ffi_opaque!(Box<dyn Fn() + Send + Sync>, Action, 2);
+ffi_opaque!(Box<dyn Fn()+>, Action, 2);

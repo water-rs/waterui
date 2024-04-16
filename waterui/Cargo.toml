@@ -6,10 +6,30 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
-serde = { version = "1.0.193", features = ["derive"] }
-async-executor = "1.8.0"
-url = "2.5.0"
 waterui-reactive = { path = "../waterui-reactive" }
-futures-lite = "2.1.0"
-smol = "2.0.0"
+
+[dependencies.url]
+version = "2.5.0"
+optional = true
+
+[dependencies.serde]
+version = "1.0.193"
+default-features = false
+features = ["derive"]
+optional = true
+
+[dependencies.anyhow]
+version = "1.0.82"
+default-features = false
+optional = true
+
+[dependencies.async-executor]
+version = "1.11.0"
+optional = true
+
+[features]
+default = ["async-view","remote-image"]
+remote-image = ["dep:url","waterui-reactive/url"]
+serde = ["dep:serde"]
+async = ["dep:async-executor"]
+async-view = ["async","dep:anyhow"]

@@ -1,3 +1,4 @@
+use alloc::string::String;
 use waterui_reactive::Binding;
 
 use super::{AnyView, Text};
