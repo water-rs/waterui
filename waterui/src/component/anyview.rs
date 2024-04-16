@@ -1,11 +1,13 @@
-use std::{
+use core::{
     any::TypeId,
     ops::{Deref, DerefMut},
 };
 
+use alloc::boxed::Box;
+
 use crate::{Environment, View, ViewExt};
 
-trait AnyViewImpl: Send + Sync + 'static {
+trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn inner_type_id(&self) -> TypeId {
         TypeId::of::<Self>()

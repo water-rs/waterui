@@ -13,9 +13,9 @@ impl<T: ViewModifier> Modifier<T> {
     }
 }
 
-pub trait ViewModifier: Send + Sync + Clone + 'static {}
+pub trait ViewModifier: Clone + 'static {}
 
-impl<T: Send + Sync> View for Modifier<T> {
+impl<T> View for Modifier<T> {
     fn body(self, _env: Environment) -> impl View {
         panic!("You cannot call `view` for a raw view");
     }

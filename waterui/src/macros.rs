@@ -10,8 +10,8 @@ macro_rules! raw_view {
 
 macro_rules! impl_debug {
     ($ty:ty) => {
-        impl std::fmt::Debug for $ty {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 f.write_str(stringify!($ty))
             }
         }
@@ -84,7 +84,7 @@ macro_rules! impl_view {
 
         #[no_mangle]
         unsafe extern "C" fn $id() -> $crate::ffi::TypeId {
-            std::any::TypeId::of::<$crate::component::$ty>().into()
+            core::any::TypeId::of::<$crate::component::$ty>().into()
         }
     };
 }
@@ -102,7 +102,7 @@ macro_rules! impl_computed {
         #[no_mangle]
         unsafe extern "C" fn $subscribe(computed: $computed_ty, subscriber: Subscriber) -> usize {
             let computed = ManuallyDrop::new(Computed::from(computed));
-            computed.register_subscriber(Box::new(move || subscriber.call()))
+            computed.register_subscriber(alloc::boxed::Box::new(move || subscriber.call()))
         }
 
         #[no_mangle]
@@ -123,7 +123,7 @@ macro_rules! ffi_opaque {
         #[repr(C)]
         pub struct $to {
             inner: [usize; $word],
-            _marker: std::marker::PhantomData<(*const (), std::marker::PhantomPinned)>,
+            _marker: core::marker::PhantomData<(*const (), core::marker::PhantomPinned)>,
         }
 
         #[allow(clippy::missing_transmute_annotations)]
@@ -131,8 +131,8 @@ macro_rules! ffi_opaque {
             fn from(value: $from) -> Self {
                 unsafe {
                     Self {
-                        inner: std::mem::transmute(value),
-                        _marker: std::marker::PhantomData,
+                        inner: core::mem::transmute(value),
+                        _marker: core::marker::PhantomData,
                     }
                 }
             }
@@ -140,7 +140,7 @@ macro_rules! ffi_opaque {
 
         impl From<$to> for $from {
             fn from(value: $to) -> Self {
-                unsafe { std::mem::transmute(value.inner) }
+                unsafe { core::mem::transmute(value.inner) }
             }
         }
     };
@@ -154,21 +154,21 @@ macro_rules! impl_array {
             len: usize,
         }
 
-        impl From<Vec<$from>> for $name {
-            fn from(value: Vec<$from>) -> Self {
+        impl From<alloc::vec::Vec<$from>> for $name {
+            fn from(value: alloc::vec::Vec<$from>) -> Self {
                 let len = value.len();
-                let head = Box::into_raw(value.into_boxed_slice()) as *mut $to;
+                let head = alloc::boxed::Box::into_raw(value.into_boxed_slice()) as *mut $to;
 
                 Self { head, len }
             }
         }
 
-        impl From<$name> for Vec<$from> {
+        impl From<$name> for alloc::vec::Vec<$from> {
             fn from(value: $name) -> Self {
                 unsafe {
-                    Box::from_raw(
-                        std::ptr::slice_from_raw_parts_mut(value.head, value.len) as *mut [$from]
-                    )
+                    alloc::boxed::Box::from_raw(core::ptr::slice_from_raw_parts_mut(
+                        value.head, value.len,
+                    ) as *mut [$from])
                     .into_vec()
                 }
             }

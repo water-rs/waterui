@@ -1,14 +1,11 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock},
-};
-
 use crate::Compute;
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
+use core::cell::RefCell;
 
-pub type Subscriber = Box<dyn Fn() + Send + Sync>;
-pub type SharedSubscriberManager = Arc<SubscriberManager>;
+pub type Subscriber = Box<dyn Fn()>;
+pub type SharedSubscriberManager = Rc<SubscriberManager>;
 pub struct SubscriberManager {
-    inner: RwLock<SubscriberManagerInner>,
+    inner: RefCell<SubscriberManagerInner>,
 }
 
 impl Default for SubscriberManager {
@@ -20,19 +17,19 @@ impl Default for SubscriberManager {
 impl SubscriberManager {
     pub const fn new() -> Self {
         Self {
-            inner: RwLock::new(SubscriberManagerInner::new()),
+            inner: RefCell::new(SubscriberManagerInner::new()),
         }
     }
     pub fn register(&self, subscriber: Subscriber) -> usize {
-        self.inner.write().unwrap().register(subscriber)
+        self.inner.borrow_mut().register(subscriber)
     }
 
     pub fn notify(&self) {
-        self.inner.read().unwrap().notify()
+        self.inner.borrow().notify()
     }
 
     pub fn cancel(&self, id: usize) {
-        self.inner.write().unwrap().cancel(id)
+        self.inner.borrow_mut().cancel(id)
     }
 }
 struct SubscriberManagerInner {

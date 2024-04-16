@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use crate::{subscriber::SharedSubscriberManager, Compute, Computed, Subscriber};
 
 pub struct GroupedCompute<C, const LEN: usize>

@@ -9,5 +9,5 @@ edition = "2021"
 url = { version = "2.5.0", optional = true}
 
 [features]
-default = ["url"]
+default = []
 url = ["dep:url"]

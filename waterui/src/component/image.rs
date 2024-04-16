@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 #[derive(Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Image {
