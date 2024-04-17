@@ -4,6 +4,8 @@ prefix_with_name = true
 
 [export]
 prefix = "WaterUI"
+include = ["AppClosure","App"]
+
 
 [parse.expand]
 crates = ["waterui"]
