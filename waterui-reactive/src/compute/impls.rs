@@ -1,6 +1,6 @@
 use crate::{impl_constant, Binding, Compute, Computed};
 use alloc::string::{String, ToString};
-impl<T: Send + Clone + Sync + 'static> Compute for Binding<T> {
+impl<T: Clone + 'static> Compute for Binding<T> {
     type Output = T;
 
     fn compute(&self) -> Self::Output {

@@ -1,14 +1,18 @@
-use core::any::{Any, TypeId};
+use core::{
+    any::{Any, TypeId},
+    ops::Deref,
+};
 
 use alloc::{collections::BTreeMap, rc::Rc};
+
+#[cfg(feature = "async")]
+pub(crate) type SharedExecutor = Rc<smol::LocalExecutor<'static>>;
 
 #[derive(Clone)]
 pub struct Environment {
     map: BTreeMap<TypeId, Rc<dyn Any>>,
     #[cfg(feature = "async")]
-    bridge: crate::ffi::Bridge,
-    #[cfg(feature = "async")]
-    executor: Rc<smol::LocalExecutor<'static>>,
+    executor: SharedExecutor,
 }
 
 impl Default for Environment {
@@ -20,12 +24,9 @@ impl Default for Environment {
 impl Environment {
     #[cfg(feature = "async")]
     pub fn new() -> Self {
-        let (bridge, fut) = crate::ffi::Bridge::new();
         let executor = smol::LocalExecutor::new();
-        executor.spawn(fut).detach();
         Self {
             map: BTreeMap::new(),
-            bridge,
             executor: Rc::new(executor),
         }
     }
@@ -38,9 +39,10 @@ impl Environment {
     }
 
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.map
-            .get(&TypeId::of::<T>())
-            .map(|any| unsafe { &*(any as *const dyn Any as *const T) })
+        self.map.get(&TypeId::of::<T>()).map(|rc| unsafe {
+            let any = rc.deref();
+            &*(any as *const dyn Any as *const T)
+        })
     }
 
     #[cfg(feature = "async")]
@@ -50,11 +52,6 @@ impl Environment {
         Fut::Output: 'static,
     {
         self.executor.spawn(fut)
-    }
-
-    #[cfg(feature = "async")]
-    pub(crate) fn bridge(&self) -> &crate::ffi::Bridge {
-        &self.bridge
     }
 
     #[cfg(feature = "async")]

@@ -5,30 +5,27 @@ use waterui_reactive::{Compute, Computed};
 // WARNING: Computed<T> must be called on the Rust thread!!!
 
 macro_rules! impl_computed {
-    ($read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$computed_ty:ident,$ty:ty,$output_ty:ty) => {
-        ffi_opaque!(Computed<$ty>, $computed_ty, 2);
+    ($read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$name:ident,$ty:ty,$ffi_ty:ty) => {
+        ffi_opaque!(Computed<$ty>, $name, 2);
 
         #[no_mangle]
-        unsafe extern "C" fn $read(computed: *const $computed_ty) -> $output_ty {
+        unsafe extern "C" fn $read(computed: *const $name) -> $ffi_ty {
             (*computed).compute().into()
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $subscribe(
-            computed: *const $computed_ty,
-            subscriber: Closure,
-        ) -> usize {
+        unsafe extern "C" fn $subscribe(computed: *const $name, subscriber: Closure) -> usize {
             (*computed).register_subscriber(alloc::boxed::Box::new(move || subscriber.call()))
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $unsubscribe(computed: *const $computed_ty, id: usize) {
+        unsafe extern "C" fn $unsubscribe(computed: *const $name, id: usize) {
             (*computed).cancel_subscriber(id);
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $drop(computed: $computed_ty) {
-            let _ = computed.into_ty();
+        unsafe extern "C" fn $drop(computed: $name) {
+            let _ = computed;
         }
     };
 }
@@ -61,4 +58,31 @@ impl_computed!(
     ComputedInt,
     Int,
     Int
+);
+
+impl_computed!(
+    waterui_read_computed_bool,
+    waterui_subscribe_computed_bool,
+    waterui_unsubscribe_computed_bool,
+    waterui_drop_computed_bool,
+    ComputedBool,
+    bool,
+    bool
+);
+
+impl_computed!(
+    waterui_read_computed_view,
+    waterui_subscribe_computed_view,
+    waterui_unsubscribe_computed_view,
+    waterui_drop_computed_view,
+    ComputedView,
+    crate::component::AnyView,
+    crate::ffi::AnyView
+);
+
+impl_view!(
+    crate::Computed<crate::component::AnyView>,
+    ComputedView,
+    waterui_view_force_as_dynamic_view,
+    waterui_view_dynamic_view_id
 );

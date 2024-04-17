@@ -49,10 +49,7 @@ impl Default for DefaultErrorView {
 }
 
 pub trait AsyncView {
-    fn body(
-        self,
-        env: Environment,
-    ) -> impl Future<Output = Result<impl View, anyhow::Error>> + Send;
+    fn body(self, env: Environment) -> impl Future<Output = Result<impl View, anyhow::Error>>;
 
     fn loading(env: Environment) -> impl View {
         let builder = env.get::<DefaultLoadingView>().unwrap();

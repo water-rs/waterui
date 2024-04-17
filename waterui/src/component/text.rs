@@ -6,7 +6,7 @@ use crate::{Compute, Computed};
 #[non_exhaustive]
 pub struct Text {
     pub _content: Computed<String>,
-    pub _selectable: Computed<bool>,
+    pub _selection: Computed<bool>,
     pub _font: Font,
 }
 
@@ -14,11 +14,15 @@ pub struct Text {
 #[repr(C)]
 pub struct Font {
     size: f64,
+    bold: bool,
 }
 
 impl Default for Font {
     fn default() -> Self {
-        Self { size: f64::NAN }
+        Self {
+            size: f64::NAN,
+            bold: false,
+        }
     }
 }
 
@@ -28,7 +32,7 @@ impl Text {
     pub fn new(text: impl Compute<Output = String>) -> Self {
         Self {
             _content: text.computed(),
-            _selectable: Computed::constant(true),
+            _selection: Computed::constant(true),
             _font: Font::default(),
         }
     }
@@ -43,8 +47,8 @@ impl Text {
         self
     }
 
-    pub fn selectable(mut self, selectable: impl Compute<Output = bool>) -> Self {
-        self._selectable = selectable.computed();
+    pub fn selection(mut self, selection: impl Compute<Output = bool>) -> Self {
+        self._selection = selection.computed();
         self
     }
 }

@@ -31,7 +31,8 @@ version = "2.2.1"
 optional = true
 
 [features]
-default = ["remote-image"]
+default = ["async-view","remote-image"]
+all = ["async-view","remote-image","serde"]
 remote-image = ["dep:url","waterui-reactive/url"]
 serde = ["dep:serde"]
 async = ["dep:smol","dep:async-channel"]

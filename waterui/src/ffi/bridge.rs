@@ -1,40 +1,27 @@
-use core::future::Future;
+use super::{Closure, Environment};
 
-use async_channel::{bounded, Sender};
+ffi_opaque!(crate::app::Bridge, Bridge, 1);
 
-use crate::Environment;
-
-use super::Closure;
-
-#[derive(Debug, Clone)]
-pub struct Bridge {
-    sender: Sender<Closure>,
-}
-
-impl Bridge {
-    pub fn new() -> (Self, impl Future) {
-        let (sender, receiver) = bounded(64);
-        let bridge = Self { sender };
-        let fut = async move {
-            while let Ok(f) = receiver.recv().await {
-                f.call();
-            }
-        };
-        (bridge, fut)
+#[no_mangle]
+unsafe extern "C" fn waterui_send_to_bridge(bridge: *const Bridge, f: Closure) -> i8 {
+    if (*bridge).send_blocking(move || f.call()).is_ok() {
+        0
+    } else {
+        -1
     }
 }
 
 #[no_mangle]
-unsafe extern "C" fn waterui_run_on_rust(env: *const Environment, f: Closure) {
-    let bridge = (*env).bridge();
-    let mut result = bridge.sender.try_send(f);
-    loop {
-        if let Err(error) = result {
-            if error.is_full() {
-                result = bridge.sender.try_send(error.into_inner());
-                continue;
-            }
-        }
-        break;
-    }
+unsafe extern "C" fn waterui_create_bridge(env: *mut Environment) -> Bridge {
+    crate::app::Bridge::new(&mut *env).into()
+}
+
+#[no_mangle]
+unsafe extern "C" fn waterui_clone_bridge(bridge: *const Bridge) -> Bridge {
+    (*bridge).clone().into()
+}
+
+#[no_mangle]
+unsafe extern "C" fn waterui_drop_bridge(bridge: Bridge) {
+    let _ = bridge;
 }
