@@ -5,6 +5,8 @@ use core::{
 
 use alloc::{boxed::Box, string::String};
 
+use super::app::App;
+
 #[repr(C)]
 pub struct Utf8Data {
     head: *mut u8,
@@ -61,6 +63,28 @@ impl Drop for Closure {
 }
 
 #[repr(C)]
+pub struct AppClosure {
+    data: *mut (),
+    call: unsafe extern "C" fn(*const (), App),
+    free: unsafe extern "C" fn(*mut ()),
+}
+
+unsafe impl Send for AppClosure {}
+unsafe impl Sync for AppClosure {}
+
+impl AppClosure {
+    pub fn call(&self, app: crate::App) {
+        unsafe { (self.call)(self.data, app.into()) }
+    }
+}
+
+impl Drop for AppClosure {
+    fn drop(&mut self) {
+        unsafe { (self.free)(self.data) }
+    }
+}
+
+#[repr(C)]
 pub struct TypeId {
     inner: [u64; 2],
     _marker: PhantomData<(*const (), PhantomPinned)>,
@@ -84,7 +108,24 @@ impl From<TypeId> for core::any::TypeId {
     }
 }
 
-ffi_opaque!(Box<dyn Fn()+>, Action, 2);
+ffi_opaque!(Box<dyn Fn(crate::Environment)>, Action, 2);
+
+#[cfg(feature = "async")]
+ffi_opaque!(crate::Environment, Environment, 4);
+
+#[cfg(not(feature = "async"))]
+ffi_opaque!(crate::Environment, Environment, 3);
+
+// WARNING: You must call this function on Rust thread.
+#[no_mangle]
+unsafe extern "C" fn waterui_clone_env(env: *const Environment) -> Environment {
+    (*env).clone().into()
+}
+
+#[no_mangle]
+unsafe extern "C" fn waterui_drop_env(env: Environment) {
+    let _ = env;
+}
 
 #[no_mangle]
 unsafe extern "C" fn waterui_free_action(action: Action) {
@@ -92,6 +133,6 @@ unsafe extern "C" fn waterui_free_action(action: Action) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn waterui_call_action(action: *const Action) {
-    (*action)();
+unsafe extern "C" fn waterui_call_action(action: *const Action, environment: Environment) {
+    (*action)(environment.into_ty());
 }
