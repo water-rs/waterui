@@ -8,7 +8,7 @@ use crate::{
     Compute, ComputeExt, Computed,
 };
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
 /// View represents a part of the user interface.
 ///
@@ -23,6 +23,7 @@ pub trait View {
 }
 
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
+pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
 
 pub trait IntoViews {
     fn into_views(self) -> Vec<AnyView>;
@@ -42,7 +43,7 @@ macro_rules! impl_tuple_views {
         impl <$($ty:View+'static,)*>IntoViews for ($($ty),*){
             fn into_views(self) -> Vec<AnyView> {
                 let ($($ty),*)=self;
-                vec![$($ty.anyview()),*]
+                alloc::vec![$($ty.anyview()),*]
             }
         }
     };

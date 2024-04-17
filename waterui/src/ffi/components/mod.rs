@@ -1,5 +1,3 @@
-use core::mem::ManuallyDrop;
-
 use crate::{View, ViewExt};
 
 use super::TypeId;
@@ -12,13 +10,17 @@ mod stack;
 mod text;
 
 #[no_mangle]
-unsafe extern "C" fn waterui_view_id(view: AnyView) -> TypeId {
-    let view = ManuallyDrop::new(crate::component::AnyView::from(view));
-    view.inner_type_id().into()
+unsafe extern "C" fn waterui_view_id(view: *const AnyView) -> TypeId {
+    (*view).inner_type_id().into()
 }
 
 #[no_mangle]
-unsafe extern "C" fn waterui_call_view(view: AnyView, env: *const crate::Environment) -> AnyView {
+unsafe extern "C" fn waterui_call_view(view: AnyView, env: crate::ffi::Environment) -> AnyView {
     let view = crate::component::AnyView::from(view);
-    view.body((*env).clone()).anyview().into()
+    view.body(env.into_ty()).anyview().into()
+}
+
+#[no_mangle]
+unsafe extern "C" fn waterui_view_empty_id() -> super::TypeId {
+    core::any::TypeId::of::<()>().into()
 }
