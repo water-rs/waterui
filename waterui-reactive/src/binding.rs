@@ -88,6 +88,13 @@ impl<T> Binding<T> {
         let _ = self.replace(value.into());
     }
 
+    pub fn action<Env>(&self, action: impl Fn(&Self, Env)) -> impl Fn(Env) {
+        let binding = self.clone();
+        move |env| {
+            action(&binding, env);
+        }
+    }
+
     fn read(&self) -> Ref<'_, T> {
         self.inner.value.borrow()
     }
@@ -150,6 +157,6 @@ impl<T: SubAssign> Binding<T> {
 }
 
 struct BindingInner<T> {
-    value: RefCell<T>,
     subscribers: SubscriberManager,
+    value: RefCell<T>,
 }

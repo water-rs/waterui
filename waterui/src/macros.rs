@@ -2,7 +2,7 @@ macro_rules! raw_view {
     ($ty:ty) => {
         impl crate::View for $ty {
             fn body(self, _env: crate::Environment) -> impl crate::view::View {
-                panic!("You cannot call `view` for a raw view");
+                panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually",core::any::type_name::<$ty>());
             }
         }
     };
@@ -120,6 +120,12 @@ macro_rules! ffi_opaque {
             }
         }
 
+        impl core::ops::DerefMut for $ffi_ty {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                unsafe { core::mem::transmute(&mut self.inner) }
+            }
+        }
+
         #[allow(clippy::missing_transmute_annotations)]
         impl From<$ty> for $ffi_ty {
             fn from(value: $ty) -> Self {
@@ -134,7 +140,7 @@ macro_rules! ffi_opaque {
 
         impl $ffi_ty {
             pub fn into_ty(self) -> $ty {
-                unsafe { core::mem::transmute(self.inner) }
+                unsafe { core::mem::transmute(self) }
             }
         }
 
@@ -163,7 +169,9 @@ macro_rules! impl_array {
         impl From<alloc::vec::Vec<$from>> for $name {
             fn from(value: alloc::vec::Vec<$from>) -> Self {
                 let len = value.len();
-                let head = alloc::boxed::Box::into_raw(value.into_boxed_slice()) as *mut $to;
+                let value = value.into_boxed_slice();
+                let head = value.as_ptr() as *mut $to;
+                core::mem::forget(value);
 
                 Self { head, len }
             }

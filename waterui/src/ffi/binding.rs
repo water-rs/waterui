@@ -30,7 +30,7 @@ macro_rules! impl_binding {
 
         #[no_mangle]
         unsafe extern "C" fn $drop(binding: $binding_ty) {
-            let _ = binding.into_ty();
+            let _ = binding;
         }
     };
 }
