@@ -1,8 +1,8 @@
 use alloc::string::String;
 
-use crate::{Binding, Compute, Computed, View, ViewExt};
+use crate::{AnyView, Binding, Compute, Computed, View, ViewExt};
 
-use super::{AnyView, Text};
+use super::Text;
 
 #[derive(Debug)]
 pub struct TextField<Label> {

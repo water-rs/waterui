@@ -1,9 +1,8 @@
-use core::{cell::RefCell, future::Future};
+use core::future::Future;
 
-use alloc::{boxed::Box, rc::Rc};
+use alloc::boxed::Box;
 
-use crate::{component::AnyView, env::Environment, view::ViewBuilder, Computed, View, ViewExt};
-
+use crate::{env::Environment, AnyView, DynamicView, View, ViewBuilder};
 pub struct DefaultLoadingView {
     builder: ViewBuilder,
 }
@@ -11,18 +10,12 @@ pub struct DefaultLoadingView {
 impl DefaultLoadingView {
     pub fn new<V: View + 'static>(builder: impl 'static + Fn() -> V) -> Self {
         Self {
-            builder: Box::new(move || builder().anyview()),
+            builder: Box::new(move || AnyView::new(builder())),
         }
     }
 
     pub fn spawn(&self) -> AnyView {
         (self.builder)()
-    }
-}
-
-impl Default for DefaultLoadingView {
-    fn default() -> Self {
-        Self::new(|| {})
     }
 }
 
@@ -33,7 +26,7 @@ pub struct DefaultErrorView {
 impl DefaultErrorView {
     pub fn new<V: View + 'static>(builder: impl 'static + Fn(anyhow::Error) -> V) -> Self {
         Self {
-            builder: Box::new(move |error| builder(error).anyview()),
+            builder: Box::new(move |error| AnyView::new(builder(error))),
         }
     }
 
@@ -64,24 +57,20 @@ pub trait AsyncView {
 
 impl<V: AsyncView + 'static> View for V {
     fn body(self, env: Environment) -> impl View {
-        let handle = Rc::new(RefCell::new(Some(Self::loading(env.clone()).anyview())));
-        let (result, manager) = Computed::compute({
-            let handle = handle.clone();
-            move || handle.borrow_mut().take().unwrap()
-        });
-
-        env.task({
+        let (view, handle) = {
             let env = env.clone();
-            async move {
-                let output = self.body(env.clone()).await;
-                manager.notify();
-                match output {
-                    Ok(view) => *handle.borrow_mut() = Some(view.anyview()),
-                    Err(error) => *handle.borrow_mut() = Some(Self::error(error, env).anyview()),
+            DynamicView::new(move || V::loading(env.clone()))
+        };
+
+        let executor = env.executor();
+        executor
+            .spawn(async move {
+                match self.body(env.clone()).await {
+                    Ok(view) => handle.set(view),
+                    Err(error) => handle.set(V::error(error, env)),
                 }
-            }
-        })
-        .detach();
-        result
+            })
+            .detach();
+        view
     }
 }

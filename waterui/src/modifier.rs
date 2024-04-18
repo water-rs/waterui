@@ -1,4 +1,4 @@
-use crate::{component::AnyView, Compute, Computed, Environment, View};
+use crate::{AnyView, Compute, Computed, Environment, View};
 pub struct Modifier<T: 'static> {
     pub _content: AnyView,
     pub _modifier: Computed<T>,

@@ -1,22 +1,26 @@
 use core::{
-    any::TypeId,
+    any::{type_name, TypeId},
+    fmt::Debug,
     ops::{Deref, DerefMut},
 };
 
 use alloc::boxed::Box;
 
-use crate::{Environment, View, ViewExt};
+use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn inner_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
+    fn inner_type_name(&self) -> &'static str {
+        type_name::<Self>()
+    }
 }
 
 impl<T: View + 'static> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
-        View::body(*self, env).anyview()
+        AnyView::new(View::body(*self, env))
     }
 }
 
@@ -25,7 +29,11 @@ pub struct AnyView {
     inner: Box<dyn AnyViewImpl>,
 }
 
-impl_debug!(AnyView);
+impl Debug for AnyView {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("AnyView<{}>", self.inner_type_name()))
+    }
+}
 
 impl AnyView {
     pub fn new(view: impl View + 'static) -> Self {
@@ -48,6 +56,10 @@ impl AnyView {
 
     pub fn inner_type_id(&self) -> TypeId {
         AnyViewImpl::inner_type_id(self.inner.deref())
+    }
+
+    pub fn inner_type_name(&self) -> &'static str {
+        AnyViewImpl::inner_type_name(self.inner.deref())
     }
 
     /// # Safety

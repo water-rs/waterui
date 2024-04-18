@@ -16,7 +16,7 @@ unsafe extern "C" fn waterui_view_id(view: *const AnyView) -> TypeId {
 
 #[no_mangle]
 unsafe extern "C" fn waterui_call_view(view: AnyView, env: crate::ffi::Environment) -> AnyView {
-    let view = crate::component::AnyView::from(view);
+    let view = crate::AnyView::from(view);
     view.body(env.into_ty()).anyview().into()
 }
 
