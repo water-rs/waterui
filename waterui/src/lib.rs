@@ -6,14 +6,13 @@ mod macros;
 pub mod component;
 pub mod view;
 pub use view::{View, ViewExt};
-pub mod env;
+
 pub mod modifier;
-pub use env::Environment;
+pub use waterui_reactive::*;
+pub use waterui_view::*;
 pub mod app;
 pub use app::App;
-#[cfg(feature = "async-view")]
-mod async_view;
+
+pub mod ffi;
 pub mod layout;
 pub mod utils;
-pub use waterui_reactive::*;
-pub mod ffi;

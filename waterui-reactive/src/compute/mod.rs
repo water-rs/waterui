@@ -75,7 +75,7 @@ pub struct Computed<T> {
 }
 
 impl<T> Computed<T> {
-    pub fn compute(compute: impl 'static + Fn() -> T) -> (Computed<T>, SharedSubscriberManager) {
+    pub fn from_fn(compute: impl 'static + Fn() -> T) -> (Computed<T>, SharedSubscriberManager) {
         let subscribers = Rc::new(SubscriberManager::new());
         (
             Computed::new(ComputeImpl {
@@ -84,6 +84,16 @@ impl<T> Computed<T> {
             }),
             subscribers,
         )
+    }
+
+    pub fn from_fn_with_subscribers(
+        compute: impl 'static + Fn() -> T,
+        subscribers: SharedSubscriberManager,
+    ) -> Computed<T> {
+        Computed::new(ComputeImpl {
+            compute: Rc::new(compute),
+            subscribers: subscribers.clone(),
+        })
     }
 
     pub fn into_inner(self) -> Box<dyn Compute<Output = T>> {

@@ -1,0 +1,27 @@
+[package]
+name = "waterui-view"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-task = "4.7.0"
+waterui-reactive = { path = "../waterui-reactive" }
+
+[dependencies.serde]
+version = "1.0.193"
+default-features = false
+features = ["derive"]
+optional = true
+
+[dependencies.smol]
+version = "2.0.0"
+optional = true
+
+[dependencies.anyhow]
+version = "1.0.82"
+optional = true
+
+[features]
+default = ["async"]
+serde = ["dep:serde"]
+async = ["dep:smol","dep:anyhow"]
