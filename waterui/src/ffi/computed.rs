@@ -76,12 +76,12 @@ impl_computed!(
     waterui_unsubscribe_computed_view,
     waterui_drop_computed_view,
     ComputedView,
-    crate::component::AnyView,
+    crate::AnyView,
     crate::ffi::AnyView
 );
 
 impl_view!(
-    crate::Computed<crate::component::AnyView>,
+    crate::Computed<crate::AnyView>,
     ComputedView,
     waterui_view_force_as_dynamic_view,
     waterui_view_dynamic_view_id

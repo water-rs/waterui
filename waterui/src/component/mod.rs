@@ -9,8 +9,6 @@ mod image;
 pub use image::Image;
 pub mod text_field;
 pub use text_field::TextField;
-mod anyview;
-pub use anyview::AnyView;
 pub mod toggle;
 pub use toggle::Toggle;
 mod stepper;
