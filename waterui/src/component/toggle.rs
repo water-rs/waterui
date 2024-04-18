@@ -1,8 +1,8 @@
 use alloc::string::String;
 use waterui_reactive::Binding;
 
-use super::{AnyView, Text};
-use crate::{Compute, View, ViewExt};
+use super::Text;
+use crate::{AnyView, Compute, View, ViewExt};
 
 #[derive(Debug)]
 pub struct Toggle<Label> {

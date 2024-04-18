@@ -3,7 +3,7 @@ use waterui_reactive::Binding;
 
 use crate::{View, ViewExt};
 
-use super::AnyView;
+use crate::AnyView;
 
 #[derive(Debug)]
 pub struct RadioGroup {

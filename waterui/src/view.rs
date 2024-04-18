@@ -1,59 +1,17 @@
 use core::any::Any;
 
 use crate::{
-    component::AnyView,
-    env::Environment,
     layout::{Alignment, Frame, Size},
     modifier::{Display, Modifier, ViewModifier},
-    Compute, ComputeExt, Computed,
+    AnyView, Compute, ComputeExt,
 };
 
-use alloc::{boxed::Box, rc::Rc, vec::Vec};
+pub use waterui_view::view::*;
 
-/// View represents a part of the user interface.
-///
-/// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View {
-    /// Build this view and return the content.
-    ///
-    /// WARNING: This method should not be called directly by user.
-    /// # Panic
-    /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self, _env: Environment) -> impl View;
-}
+use alloc::{boxed::Box, rc::Rc};
 
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
-
-pub trait IntoViews {
-    fn into_views(self) -> Vec<AnyView>;
-}
-
-impl IntoViews for Vec<AnyView> {
-    fn into_views(self) -> Vec<AnyView> {
-        self
-    }
-}
-
-macro_rules! impl_tuple_views {
-    ($($ty:ident),*) => {
-        #[allow(non_snake_case)]
-        #[allow(unused_variables)]
-        #[allow(unused_parens)]
-        impl <$($ty:View+'static,)*>IntoViews for ($($ty),*){
-            fn into_views(self) -> Vec<AnyView> {
-                let ($($ty),*)=self;
-                alloc::vec![$($ty.anyview()),*]
-            }
-        }
-    };
-}
-
-tuples!(impl_tuple_views);
-
-raw_view!(());
-
-raw_view!(Computed<AnyView>);
 
 pub trait ViewExt: View {
     fn modifier<T: ViewModifier>(self, modifier: impl Compute<Output = T>) -> Modifier<T>;

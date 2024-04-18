@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 
-use crate::component::AnyView;
+use crate::AnyView;
 use crate::{Compute, Environment, View, ViewExt};
 
 use super::Text;
@@ -58,4 +58,3 @@ impl<Label: View + 'static> View for Button<Label> {
 }
 
 raw_view!(RawButton);
-impl_debug!(RawButton);

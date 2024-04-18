@@ -1,4 +1,4 @@
-use crate::{component::AnyView, Environment, View, ViewExt};
+use crate::{AnyView, Environment, View, ViewExt};
 
 pub struct App {
     pub _content: AnyView,
@@ -69,7 +69,7 @@ impl App {
 
 pub struct AppIgniter {
     #[cfg(feature = "async")]
-    executor: crate::env::SharedExecutor,
+    executor: crate::env::Executor,
 }
 
 impl AppIgniter {
@@ -84,10 +84,6 @@ impl AppIgniter {
 
     pub fn ignite(&self) {
         #[cfg(feature = "async")]
-        smol::block_on(async move {
-            loop {
-                self.executor.tick().await;
-            }
-        })
+        smol::block_on(self.executor.run())
     }
 }

@@ -5,7 +5,7 @@ use waterui_reactive::{Compute, Computed};
 
 use crate::{View, ViewExt};
 
-use super::AnyView;
+use crate::AnyView;
 
 #[derive(Debug)]
 #[non_exhaustive]

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
-use crate::component::AnyView;
 use crate::view::IntoViews;
+use crate::AnyView;
 use crate::View;
 
 macro_rules! impl_from_iter {

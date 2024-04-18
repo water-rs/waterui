@@ -22,4 +22,4 @@ impl_view!(
     waterui_view_stack_id
 );
 
-impl_array!(Views, crate::component::AnyView, crate::ffi::AnyView);
+impl_array!(Views, crate::AnyView, crate::ffi::AnyView);

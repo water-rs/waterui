@@ -1,4 +1,4 @@
 [workspace]
-members = ["waterui"]
+members = ["waterui", "waterui-*"]
 resolver = "2"
 exclude = ["examples/tour/src-water"]
