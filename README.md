@@ -1,50 +1,50 @@
-# WaterUI
+<div align="center">
+<h1>WaterUI</h1>
+ <strong>
+   Bring your app to all plaform, once for all.
+ </strong>
+</div>
 
-WaterUI is a UI framework written in Rust, providing a fun coding experience for app designers.
+WaterUI is a expeirmental UI framework written in Rust. Enable you to build your app in a single codebase,
+then available in all platform, even embedded devices.
 
 # Features
-- Reactive api, easy to use and thread-safe
-- Native appearance
-- Build your own component!
+- Type-safe, declarative and reactive API
+- First-class async support (require std)
+- Platform-independence core
+- `no-std` support
+- Optional macro
 
-# Overview
-- View : The core trait for declaring your component, they keep their own stationary state in struct
-- Reactive<T> : Read-only source of trust, updated automatically
-- Binding<T> : Creating a two-way connection between stored data and view
-- Environment : Provide environment value for view, it can be set manually before call a view
 
-Let's build a simple example - a counter in WaterUI to provide you a general view!
- 
-`View` is the core trait of WaterUI, it declares your UI :
-```rust
-pub trait View{
-    fn body(self) -> impl View;
-}
-```
+# TODO
 
-The build-in components have implement `View` trait, and you can align your ui logic,
-building your own component by just implementing `View`
+- [ ] Better error handling
+- [ ] Support async and error handling without std.
+- [ ] Icon component
+- [ ] Hot reloading
+- [ ] Cli
+- [ ] Muti-window support
+
+# Quick start
 
 ```rust
-struct Counter;
+  use waterui::{
+      component::{button, text, vstack},
+      Binding, ComputeExt, Environment, View,
+  };
 
-impl View for Counter {
-    fn body(self, _env: Environment) -> impl View {
-        let count: Binding<u64> = Binding::from(0);
-        vstack((
-            text(count.display()),
-            button("Click it!", move || {
-                count.increment(1);
-            }),
-        ))
-    }
-}
+  pub struct Counter;
+
+  impl View for Counter {
+      fn body(self, _env: Environment) -> impl View {
+          let count = Binding::constant(0);
+          vstack((
+              text(count.display()),
+              button("Click me!").action(move |_| {
+                  count.add(1);
+              }),
+          ))
+      }
+  }
 
 ```
-
-This is an example of a counter in WaterUI. We create a binding named `count` to store the number.
-
-`text()` can input any type implementing `IntoReactive<AttributedString>`, we just call `.display()` for this binding,
-it creates a `Reactive<String>`, which implements `IntoReactive<AttributedString>`.
-
-We align our view logic, and retur

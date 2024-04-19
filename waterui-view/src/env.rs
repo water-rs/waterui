@@ -1,5 +1,6 @@
 use core::{
     any::{Any, TypeId},
+    future::Future,
     ops::Deref,
 };
 
@@ -85,7 +86,7 @@ impl Environment {
     #[cfg(feature = "async")]
     pub fn task<Fut>(&self, fut: Fut) -> async_task::Task<Fut::Output>
     where
-        Fut: core::future::Future + 'static,
+        Fut: Future + 'static,
         Fut::Output: 'static,
     {
         self.executor.spawn(fut)

@@ -8,7 +8,9 @@ pub mod view;
 pub use view::{View, ViewExt};
 
 pub mod modifier;
+#[doc(inline)]
 pub use waterui_reactive::*;
+#[doc(inline)]
 pub use waterui_view::*;
 pub mod app;
 pub use app::App;

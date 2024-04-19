@@ -58,3 +58,7 @@ impl<Label: View + 'static> View for Button<Label> {
 }
 
 raw_view!(RawButton);
+
+pub fn button(label: impl Compute<Output = String>) -> Button<Text> {
+    Button::new(label)
+}
