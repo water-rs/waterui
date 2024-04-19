@@ -1,4 +1,4 @@
-use core::any::Any;
+use core::{any::Any, future::Future};
 
 use crate::{
     layout::{Alignment, Frame, Size},
@@ -23,7 +23,29 @@ pub trait ViewExt: View {
         Self: Sized;
     fn show(self, condition: impl Compute<Output = bool> + Clone) -> Modifier<Display>;
     fn leading(self) -> Modifier<Frame>;
+    fn task<Fut>(self, fut: Fut) -> WithTask<Self, Fut>
+    where
+        Self: Sized,
+        Fut: Future + 'static,
+        Fut::Output: 'static;
     fn anyview(self) -> AnyView;
+}
+
+pub struct WithTask<V, Fut> {
+    view: V,
+    task: Fut,
+}
+
+impl<V, Fut> View for WithTask<V, Fut>
+where
+    V: View,
+    Fut: Future + 'static,
+    Fut::Output: 'static,
+{
+    fn body(self, env: waterui_view::Environment) -> impl View {
+        env.task(self.task).detach();
+        self.view
+    }
 }
 
 impl<V: View + 'static> ViewExt for V {
@@ -48,6 +70,18 @@ impl<V: View + 'static> ViewExt for V {
             self.anyview(),
             Frame::default().alignment(Alignment::Leading),
         )
+    }
+
+    fn task<Fut>(self, fut: Fut) -> WithTask<Self, Fut>
+    where
+        Self: Sized,
+        Fut: Future + 'static,
+        Fut::Output: 'static,
+    {
+        WithTask {
+            view: self,
+            task: fut,
+        }
     }
 
     fn anyview(self) -> AnyView {
