@@ -2,7 +2,7 @@ use core::future::Future;
 
 use alloc::boxed::Box;
 
-use crate::{env::Environment, AnyView, DynamicView, View, ViewBuilder};
+use crate::{env::Environment, view::ViewBuilder, AnyView, DynamicView, View};
 pub struct DefaultLoadingView {
     builder: ViewBuilder,
 }

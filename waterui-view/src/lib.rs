@@ -15,7 +15,7 @@ pub mod async_view;
 pub mod env;
 pub mod view;
 pub use env::Environment;
-pub use view::*;
+pub use view::View;
 
 pub mod error;
 pub use error::Error;
