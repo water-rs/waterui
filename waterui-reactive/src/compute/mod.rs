@@ -4,7 +4,11 @@ use core::{
 };
 
 mod grouped;
-use alloc::{boxed::Box, rc::Rc};
+use alloc::{
+    boxed::Box,
+    rc::Rc,
+    string::{String, ToString},
+};
 pub use grouped::GroupedCompute;
 mod impls;
 mod transformer;
@@ -51,6 +55,10 @@ pub trait ComputeExt: Compute {
     where
         Self::Output: 'static,
         Self: Clone;
+    fn display(&self) -> impl Compute<Output = String>
+    where
+        Self: Clone,
+        Self::Output: Display + 'static;
 }
 
 impl<C: Compute> ComputeExt for C {
@@ -67,6 +75,14 @@ impl<C: Compute> ComputeExt for C {
         Self: Clone,
     {
         ComputeTransformer::new(self.clone().computed(), transformer)
+    }
+
+    fn display(&self) -> impl Compute<Output = String>
+    where
+        Self: Clone,
+        Self::Output: Display + 'static,
+    {
+        self.transform(|v| v.to_string())
     }
 }
 

@@ -68,3 +68,7 @@ impl<Label: View + 'static> View for Toggle<Label> {
         }
     }
 }
+
+pub fn toggle(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Toggle<Text> {
+    Toggle::new(label, toggle)
+}
