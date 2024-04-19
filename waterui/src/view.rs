@@ -1,34 +1,46 @@
 use core::{any::Any, future::Future};
 
 use crate::{
-    layout::{Alignment, Frame, Size},
-    modifier::{Display, Modifier, ViewModifier},
-    AnyView, Compute, ComputeExt,
+    modifier::{self, Modifer},
+    AnyView,
 };
 
 pub use waterui_view::view::*;
 
 use alloc::{boxed::Box, rc::Rc};
+use waterui_view::Environment;
 
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
 
 pub trait ViewExt: View {
-    fn modifier<T: ViewModifier>(self, modifier: impl Compute<Output = T>) -> Modifier<T>;
-    fn width(self, size: impl Into<Size>) -> Modifier<Frame>
+    fn modifier(self, modifier: impl Modifer) -> impl View;
+    fn task<Fut>(self, fut: Fut) -> impl View
     where
-        Self: Sized;
-    fn height(self, size: impl Into<Size>) -> Modifier<Frame>
-    where
-        Self: Sized;
-    fn show(self, condition: impl Compute<Output = bool> + Clone) -> Modifier<Display>;
-    fn leading(self) -> Modifier<Frame>;
-    fn task<Fut>(self, fut: Fut) -> WithTask<Self, Fut>
-    where
-        Self: Sized,
         Fut: Future + 'static,
         Fut::Output: 'static;
     fn anyview(self) -> AnyView;
+}
+
+pub struct MapEnv<V, F> {
+    view: V,
+    f: F,
+}
+
+impl<V, F> MapEnv<V, F> {
+    pub fn new(view: V, f: F) -> Self {
+        Self { view, f }
+    }
+}
+
+impl<V, F> View for MapEnv<V, F>
+where
+    V: View,
+    F: FnOnce(Environment) -> Environment,
+{
+    fn body(self, env: Environment) -> impl View {
+        self.view.body((self.f)(env))
+    }
 }
 
 pub struct WithTask<V, Fut> {
@@ -48,40 +60,38 @@ where
     }
 }
 
+struct WithModifier<V, M> {
+    view: V,
+    modifier: M,
+}
+
+impl<V, M> View for WithModifier<V, M>
+where
+    V: View,
+    M: Modifer,
+{
+    fn body(self, env: Environment) -> impl View {
+        self.modifier.modify(env, self.view)
+    }
+}
+
+impl<V, M> WithModifier<V, M> {
+    pub fn new(view: V, modifier: M) -> Self {
+        Self { view, modifier }
+    }
+}
+
 impl<V: View + 'static> ViewExt for V {
-    fn modifier<T: ViewModifier>(self, modifier: impl Compute<Output = T>) -> Modifier<T> {
-        Modifier::new(self.anyview(), modifier)
+    fn modifier(self, modifier: impl Modifer) -> impl View {
+        WithModifier::new(self, modifier)
     }
 
-    fn width(self, size: impl Into<Size>) -> Modifier<Frame> {
-        Modifier::new(self.anyview(), Frame::default().width(size))
-    }
-
-    fn height(self, size: impl Into<Size>) -> Modifier<Frame> {
-        Modifier::new(self.anyview(), Frame::default().height(size))
-    }
-
-    fn show(self, condition: impl Compute<Output = bool> + Clone) -> Modifier<Display> {
-        self.modifier(condition.transform(Display::new))
-    }
-
-    fn leading(self) -> Modifier<Frame> {
-        Modifier::new(
-            self.anyview(),
-            Frame::default().alignment(Alignment::Leading),
-        )
-    }
-
-    fn task<Fut>(self, fut: Fut) -> WithTask<Self, Fut>
+    fn task<Fut>(self, fut: Fut) -> impl View
     where
-        Self: Sized,
         Fut: Future + 'static,
         Fut::Output: 'static,
     {
-        WithTask {
-            view: self,
-            task: fut,
-        }
+        self.modifier(modifier::Task::new(fut))
     }
 
     fn anyview(self) -> AnyView {

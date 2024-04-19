@@ -1,7 +1,5 @@
 use waterui_reactive::impl_constant;
 
-use crate::modifier::ViewModifier;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
@@ -61,8 +59,6 @@ impl_builder! {
         pub alignment: Alignment
     }
 }
-
-impl ViewModifier for Frame {}
 
 impl Frame {
     pub fn new() -> Self {

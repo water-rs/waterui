@@ -79,3 +79,7 @@ impl<V: View + 'static> View for TextField<V> {
         }
     }
 }
+
+pub fn field(label: impl Compute<Output = String>, value: &Binding<String>) -> TextField<Text> {
+    TextField::new(label, value)
+}
