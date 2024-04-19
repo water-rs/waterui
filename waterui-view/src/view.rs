@@ -17,6 +17,24 @@ pub trait View {
     fn body(self, _env: Environment) -> impl View;
 }
 
+impl<V: View + 'static, E: View + 'static> View for Result<V, E> {
+    fn body(self, _env: Environment) -> impl View {
+        match self {
+            Ok(view) => AnyView::new(view),
+            Err(view) => AnyView::new(view),
+        }
+    }
+}
+
+impl<V: View + 'static> View for Option<V> {
+    fn body(self, _env: Environment) -> impl View {
+        match self {
+            Some(view) => AnyView::new(view),
+            None => AnyView::new(()),
+        }
+    }
+}
+
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
 
