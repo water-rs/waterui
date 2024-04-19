@@ -19,39 +19,12 @@ impl DefaultLoadingView {
     }
 }
 
-pub struct DefaultErrorView {
-    pub builder: Box<dyn Fn(anyhow::Error) -> AnyView>,
-}
-
-impl DefaultErrorView {
-    pub fn new<V: View + 'static>(builder: impl 'static + Fn(anyhow::Error) -> V) -> Self {
-        Self {
-            builder: Box::new(move |error| AnyView::new(builder(error))),
-        }
-    }
-
-    pub fn spawn(&self, error: anyhow::Error) -> AnyView {
-        (self.builder)(error)
-    }
-}
-
-impl Default for DefaultErrorView {
-    fn default() -> Self {
-        Self::new(|_| {})
-    }
-}
-
 pub trait AsyncView {
-    fn body(self, env: Environment) -> impl Future<Output = Result<impl View, anyhow::Error>>;
+    fn body(self, env: Environment) -> impl Future<Output = impl View>;
 
     fn loading(env: Environment) -> impl View {
         let builder = env.get::<DefaultLoadingView>().unwrap();
         builder.spawn()
-    }
-
-    fn error(error: anyhow::Error, env: Environment) -> impl View {
-        let builder = env.get::<DefaultErrorView>().unwrap();
-        builder.spawn(error)
     }
 }
 
@@ -64,12 +37,7 @@ impl<V: AsyncView + 'static> View for V {
 
         let executor = env.executor();
         executor
-            .spawn(async move {
-                match self.body(env.clone()).await {
-                    Ok(view) => handle.set(view),
-                    Err(error) => handle.set(V::error(error, env)),
-                }
-            })
+            .spawn(async move { handle.set(self.body(env.clone()).await) })
             .detach();
         view
     }
