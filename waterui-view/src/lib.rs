@@ -1,5 +1,9 @@
 #![no_std]
 extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
 #[macro_use]
 mod macros;
 mod anyview;
@@ -12,3 +16,6 @@ pub mod env;
 pub mod view;
 pub use env::Environment;
 pub use view::*;
+
+pub mod error;
+pub use error::Error;
