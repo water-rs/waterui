@@ -15,4 +15,7 @@ mod app;
 #[doc(inline)]
 pub use components::AnyView;
 
+pub use modifier::WithValue;
+
 type Int = isize;
+mod modifier;

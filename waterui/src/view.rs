@@ -22,44 +22,6 @@ pub trait ViewExt: View {
     fn anyview(self) -> AnyView;
 }
 
-pub struct MapEnv<V, F> {
-    view: V,
-    f: F,
-}
-
-impl<V, F> MapEnv<V, F> {
-    pub fn new(view: V, f: F) -> Self {
-        Self { view, f }
-    }
-}
-
-impl<V, F> View for MapEnv<V, F>
-where
-    V: View,
-    F: FnOnce(Environment) -> Environment,
-{
-    fn body(self, env: Environment) -> impl View {
-        self.view.body((self.f)(env))
-    }
-}
-
-pub struct WithTask<V, Fut> {
-    view: V,
-    task: Fut,
-}
-
-impl<V, Fut> View for WithTask<V, Fut>
-where
-    V: View,
-    Fut: Future + 'static,
-    Fut::Output: 'static,
-{
-    fn body(self, env: waterui_view::Environment) -> impl View {
-        env.task(self.task).detach();
-        self.view
-    }
-}
-
 struct WithModifier<V, M> {
     view: V,
     modifier: M,
@@ -67,7 +29,7 @@ struct WithModifier<V, M> {
 
 impl<V, M> View for WithModifier<V, M>
 where
-    V: View,
+    V: View + 'static,
     M: Modifer,
 {
     fn body(self, env: Environment) -> impl View {
