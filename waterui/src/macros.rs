@@ -2,7 +2,7 @@ macro_rules! raw_view {
     ($ty:ty) => {
         impl crate::View for $ty {
             fn body(self, _env: crate::Environment) -> impl crate::view::View {
-                panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually",core::any::type_name::<$ty>());
+                panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually",core::any::type_name::<Self>());
             }
         }
     };
@@ -42,24 +42,6 @@ macro_rules! impl_label {
     };
 }
 
-macro_rules! impl_builder {
-    ($(#[$meta:meta])* $vis:vis struct $name:ident{$($field_vis:vis $field_name:ident:$field_type:ty),*}) => {
-        $(#[$meta])*
-        $vis struct $name{
-            $($field_vis $field_name:$field_type),*
-        }
-
-        impl $name{
-            $(
-                pub fn $field_name(mut self,value:impl Into<$field_type>) -> Self{
-                    self.$field_name=value.into();
-                    self
-                }
-            )*
-        }
-    };
-}
-
 macro_rules! impl_view {
     ($ty:ty,$ffi_ty:ty,$force_as:ident,$id:ident) => {
         #[no_mangle]
@@ -72,6 +54,17 @@ macro_rules! impl_view {
         unsafe extern "C" fn $id() -> $crate::ffi::TypeId {
             core::any::TypeId::of::<$ty>().into()
         }
+    };
+}
+
+macro_rules! impl_modifier_with_value {
+    ($value:ty,$force_as:ident,$id:ident) => {
+        impl_view!(
+            $crate::modifier::WithValue<$value>,
+            $crate::ffi::WithValue<$value>,
+            $force_as,
+            $id
+        );
     };
 }
 
