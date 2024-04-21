@@ -102,6 +102,36 @@ typedef struct WaterUIText {
   struct WaterUIComputedBool selection;
 } WaterUIText;
 
+typedef enum WaterUISize_Tag {
+  WaterUISize_Default,
+  WaterUISize_Size,
+} WaterUISize_Tag;
+
+typedef struct WaterUISize {
+  WaterUISize_Tag tag;
+  union {
+    struct {
+      double size;
+    };
+  };
+} WaterUISize;
+
+typedef struct WaterUIEdge {
+  struct WaterUISize top;
+  struct WaterUISize right;
+  struct WaterUISize bottom;
+  struct WaterUISize left;
+} WaterUIEdge;
+
+typedef struct WaterUIPadding {
+  struct WaterUIEdge _inner;
+} WaterUIPadding;
+
+typedef struct WaterUIWithValue_Padding {
+  struct WaterUIPadding value;
+  struct WaterUIAnyView content;
+} WaterUIWithValue_Padding;
+
 typedef struct WaterUIApp {
   struct WaterUIAnyView content;
   struct WaterUIEnvironment env;
@@ -226,3 +256,7 @@ void waterui_drop_env(struct WaterUIEnvironment env);
 void waterui_free_action(struct WaterUIAction action);
 
 void waterui_call_action(const struct WaterUIAction *action, struct WaterUIEnvironment environment);
+
+struct WaterUIWithValue_Padding waterui_modifier_force_as_padding(struct WaterUIAnyView view);
+
+struct WaterUITypeId waterui_modifier_padding_id(void);

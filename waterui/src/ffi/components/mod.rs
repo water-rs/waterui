@@ -11,7 +11,7 @@ mod text;
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_id(view: *const AnyView) -> TypeId {
-    (*view).inner_type_id().into()
+    (*view).type_id().into()
 }
 
 #[no_mangle]

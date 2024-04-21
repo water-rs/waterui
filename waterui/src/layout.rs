@@ -1,32 +1,6 @@
 use waterui_reactive::impl_constant;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
-pub enum Size {
-    Default,
-    Size(f64),
-}
-
-impl Default for Size {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-impl From<f64> for Size {
-    fn from(value: f64) -> Self {
-        Self::Size(value)
-    }
-}
-
-impl From<u64> for Size {
-    fn from(value: u64) -> Self {
-        (value as f64).into()
-    }
-}
-
-impl_constant!(Size, Frame, Edge);
+impl_constant!(Frame, Edge);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -44,20 +18,18 @@ impl Default for Alignment {
     }
 }
 
-impl_builder! {
-    #[derive(Debug, Default, Clone, PartialEq)]
-    #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-    #[repr(C)]
-    pub struct Frame {
-        pub width: Size,
-        pub min_width: Size,
-        pub max_width: Size,
-        pub height: Size,
-        pub min_height: Size,
-        pub max_height: Size,
-        pub margin: Edge,
-        pub alignment: Alignment
-    }
+#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[repr(C)]
+pub struct Frame {
+    pub width: f64,
+    pub min_width: f64,
+    pub max_width: f64,
+    pub height: f64,
+    pub min_height: f64,
+    pub max_height: f64,
+    pub margin: Edge,
+    pub alignment: Alignment,
 }
 
 impl Frame {
@@ -66,53 +38,69 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 
 pub struct Edge {
-    pub top: Size,
-    pub right: Size,
-    pub bottom: Size,
-    pub left: Size,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+impl Default for Edge {
+    fn default() -> Self {
+        Self {
+            top: f64::NAN,
+            right: f64::NAN,
+            bottom: f64::NAN,
+            left: f64::NAN,
+        }
+    }
 }
 
 impl Edge {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn zero() -> Self {
+        Self {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        }
     }
 
-    pub fn vertical(size: impl Into<Size>) -> Self {
+    pub fn vertical(size: impl Into<f64>) -> Self {
         let size = size.into();
-        Self::new().left(size).right(size)
+        Self::zero().left(size).right(size)
     }
 
-    pub fn horizontal(size: impl Into<Size>) -> Self {
+    pub fn horizontal(size: impl Into<f64>) -> Self {
         let size = size.into();
 
-        Self::new().top(size).bottom(size)
+        Self::zero().top(size).bottom(size)
     }
 
-    pub fn round(size: impl Into<Size>) -> Self {
+    pub fn round(size: impl Into<f64>) -> Self {
         let size = size.into();
 
-        Self::new().top(size).left(size).right(size).bottom(size)
+        Self::zero().top(size).left(size).right(size).bottom(size)
     }
 
-    pub fn top(mut self, size: impl Into<Size>) -> Self {
+    pub fn top(mut self, size: impl Into<f64>) -> Self {
         self.top = size.into();
         self
     }
 
-    pub fn left(mut self, size: impl Into<Size>) -> Self {
+    pub fn left(mut self, size: impl Into<f64>) -> Self {
         self.left = size.into();
         self
     }
-    pub fn right(mut self, size: impl Into<Size>) -> Self {
+    pub fn right(mut self, size: impl Into<f64>) -> Self {
         self.right = size.into();
         self
     }
-    pub fn bottom(mut self, size: impl Into<Size>) -> Self {
+    pub fn bottom(mut self, size: impl Into<f64>) -> Self {
         self.bottom = size.into();
         self
     }

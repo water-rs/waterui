@@ -10,10 +10,10 @@ use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
-    fn inner_type_id(&self) -> TypeId {
+    fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
-    fn inner_type_name(&self) -> &'static str {
+    fn name(&self) -> &'static str {
         type_name::<Self>()
     }
 }
@@ -31,7 +31,7 @@ pub struct AnyView {
 
 impl Debug for AnyView {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("AnyView<{}>", self.inner_type_name()))
+        f.write_fmt(format_args!("AnyView<{}>", self.name()))
     }
 }
 
@@ -43,7 +43,11 @@ impl AnyView {
     }
 
     pub fn is<T: 'static>(&self) -> bool {
-        self.inner.inner_type_id() == TypeId::of::<T>()
+        self.type_id() == TypeId::of::<T>()
+    }
+
+    pub fn type_id(&self) -> TypeId {
+        AnyViewImpl::type_id(self.inner.deref())
     }
 
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, AnyView> {
@@ -54,12 +58,8 @@ impl AnyView {
         }
     }
 
-    pub fn inner_type_id(&self) -> TypeId {
-        AnyViewImpl::inner_type_id(self.inner.deref())
-    }
-
-    pub fn inner_type_name(&self) -> &'static str {
-        AnyViewImpl::inner_type_name(self.inner.deref())
+    pub fn name(&self) -> &'static str {
+        AnyViewImpl::name(self.inner.deref())
     }
 
     /// # Safety
@@ -88,5 +88,17 @@ impl AnyView {
 impl View for AnyView {
     fn body(self, env: Environment) -> impl View {
         self.inner.body(env)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use core::any::TypeId;
+
+    use super::AnyView;
+
+    #[test]
+    pub fn get_type_id() {
+        assert_eq!(AnyView::new(()).type_id(), TypeId::of::<()>())
     }
 }
