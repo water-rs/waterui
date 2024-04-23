@@ -5,7 +5,7 @@ use core::{
     ptr,
 };
 
-use alloc::{boxed::Box, string::String};
+use alloc::{borrow::Cow, boxed::Box, string::String};
 
 use crate::{IntoFFI, IntoRust};
 
@@ -84,6 +84,13 @@ impl IntoFFI for String {
         let head = self.as_mut_ptr();
         core::mem::forget(self);
         Utf8Data { head, len }
+    }
+}
+
+impl IntoFFI for Cow<'static, str> {
+    type FFI = Utf8Data;
+    fn into_ffi(self) -> Self::FFI {
+        self.into_owned().into_ffi()
     }
 }
 

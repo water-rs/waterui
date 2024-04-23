@@ -1,8 +1,7 @@
-use alloc::string::String;
-use waterui_reactive::Binding;
+use waterui_reactive::{compute::ComputeStr, Binding};
 
 use super::Text;
-use crate::{AnyView, Compute, View, ViewExt};
+use crate::{AnyView, View, ViewExt};
 
 #[derive(Debug)]
 pub struct Toggle<Label> {
@@ -34,7 +33,7 @@ impl Default for ToggleStyle {
     }
 }
 impl Toggle<Text> {
-    pub fn new(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Self {
+    pub fn new(label: impl ComputeStr, toggle: &Binding<bool>) -> Self {
         Self::label(Text::new(label), toggle)
     }
 }
@@ -69,7 +68,7 @@ impl<Label: View + 'static> View for Toggle<Label> {
     }
 }
 
-pub fn toggle(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Toggle<Text> {
+pub fn toggle(label: impl ComputeStr, toggle: &Binding<bool>) -> Toggle<Text> {
     Toggle::new(label, toggle)
 }
 

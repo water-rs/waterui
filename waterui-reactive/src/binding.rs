@@ -6,13 +6,15 @@ use core::{
     ops::{AddAssign, Deref, DerefMut, SubAssign},
 };
 
-use alloc::{boxed::Box, rc::Rc};
+use alloc::{borrow::Cow, boxed::Box, rc::Rc};
 
 use crate::{subscriber::SubscriberManager, Subscriber};
 
 pub struct Binding<T> {
     inner: Rc<BindingInner<T>>,
 }
+
+pub type BindingStr = Binding<Cow<'static, str>>;
 
 impl<T: Debug> Debug for Binding<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

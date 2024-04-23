@@ -1,7 +1,7 @@
 use core::num::NonZeroUsize;
 
 use crate::{impl_constant, Binding, Compute, Computed};
-use alloc::string::{String, ToString};
+use alloc::{borrow::Cow, string::String};
 impl<T: Clone + 'static> Compute for Binding<T> {
     type Output = T;
 
@@ -22,13 +22,13 @@ impl<T: Clone + 'static> Compute for Binding<T> {
     }
 }
 
-impl_constant!(String, u64, i64, f64, bool);
+impl_constant!(Cow<'static, str>, u64, i64, f64, bool);
 
-impl Compute for &str {
-    type Output = String;
+impl Compute for &'static str {
+    type Output = Cow<'static, str>;
 
     fn compute(&self) -> Self::Output {
-        self.to_string()
+        (*self).into()
     }
 
     fn register_subscriber(&self, _subscriber: crate::Subscriber) -> Option<NonZeroUsize> {
@@ -38,6 +38,24 @@ impl Compute for &str {
     fn cancel_subscriber(&self, _id: NonZeroUsize) {}
 
     fn computed(self) -> Computed<Self::Output> {
-        Computed::new(self.to_string())
+        Computed::new(self)
+    }
+}
+
+impl Compute for String {
+    type Output = Cow<'static, str>;
+
+    fn compute(&self) -> Self::Output {
+        self.clone().into()
+    }
+
+    fn register_subscriber(&self, _subscriber: crate::Subscriber) -> Option<NonZeroUsize> {
+        None
+    }
+
+    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
+
+    fn computed(self) -> Computed<Self::Output> {
+        Computed::new(self)
     }
 }

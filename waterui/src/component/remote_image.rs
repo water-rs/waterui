@@ -4,18 +4,19 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use url::Url;
-use waterui_reactive::{Compute, ComputeExt, Computed};
+use waterui_reactive::compute::ComputedStr;
+use waterui_reactive::{Compute, ComputeExt};
 use waterui_view::error::{BoxedStdError, OnceErrorViewBuilder};
 
 use crate::{View, ViewExt};
 
 use crate::AnyView;
 
-use super::text;
+use super::{text, Progress};
 
 #[non_exhaustive]
 pub struct RemoteImage {
-    pub _url: Computed<String>,
+    pub _url: ComputedStr,
     pub _loading: AnyView,
     pub _error: OnceErrorViewBuilder,
 }
@@ -25,8 +26,8 @@ raw_view!(RemoteImage); // it would be implemented in the futre, but now we defi
 impl RemoteImage {
     pub fn new(url: impl Compute<Output = Url> + Clone) -> Self {
         Self {
-            _url: url.transform(Into::into).computed(),
-            _loading: text("Loading").anyview(),
+            _url: url.transform(|u| String::from(u).into()).computed(),
+            _loading: Progress::infinity().anyview(),
             _error: Box::new(|error| {
                 if cfg!(debug_assertions) {
                     text(format!("Error: {error}")).anyview()
