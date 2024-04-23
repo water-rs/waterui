@@ -6,9 +6,9 @@ mod anyview;
 pub use anyview::AnyView;
 mod button;
 mod field;
+mod remoteimg;
 mod stack;
 mod text;
-
 #[no_mangle]
 unsafe extern "C" fn waterui_view_id(view: *const AnyView) -> TypeId {
     (*view).type_id().into()

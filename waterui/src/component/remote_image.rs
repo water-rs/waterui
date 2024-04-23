@@ -1,28 +1,39 @@
 use core::fmt::Debug;
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use url::Url;
-use waterui_reactive::{Compute, Computed};
+use waterui_reactive::{Compute, ComputeExt, Computed};
+use waterui_view::error::BoxedStdError;
 
 use crate::{View, ViewExt};
 
 use crate::AnyView;
 
-#[derive(Debug)]
+use super::text;
+
 #[non_exhaustive]
 pub struct RemoteImage {
-    pub _url: Computed<Url>,
+    pub _url: Computed<String>,
     pub _loading: AnyView,
-    pub _error: AnyView,
+    pub _error: Box<dyn FnOnce(BoxedStdError) -> AnyView>,
 }
 
 raw_view!(RemoteImage); // it would be implemented in the futre, but now we define it as a raw view.
 
 impl RemoteImage {
-    pub fn new(url: impl Compute<Output = Url>) -> Self {
+    pub fn new(url: impl Compute<Output = Url> + Clone) -> Self {
         Self {
-            _url: url.computed(),
-            _loading: ().anyview(),
-            _error: ().anyview(),
+            _url: url.transform(Into::into).computed(),
+            _loading: text("Loading").anyview(),
+            _error: Box::new(|error| {
+                if cfg!(debug_assertions) {
+                    text(format!("Error: {error}")).anyview()
+                } else {
+                    text("Error").anyview()
+                }
+            }),
         }
     }
 
@@ -39,8 +50,11 @@ impl RemoteImage {
         self
     }
 
-    pub fn error(mut self, view: impl View + 'static) -> Self {
-        self._error = view.anyview();
+    pub fn error<V: View + 'static>(
+        mut self,
+        builder: impl 'static + FnOnce(BoxedStdError) -> V,
+    ) -> Self {
+        self._error = Box::new(move |error| builder(error).anyview());
         self
     }
 }

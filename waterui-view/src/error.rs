@@ -6,7 +6,7 @@ use core::{
     ops::Deref,
 };
 
-use std::error::Error as StdError;
+pub use std::error::Error as StdError;
 pub struct Error {
     inner: Box<dyn ErrorImpl>,
 }
@@ -22,7 +22,7 @@ trait ErrorImpl: Debug + Display + 'static {
 
 impl<E: StdError + 'static> ErrorImpl for E {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
-        AnyView::new(env.get::<DefaultErrorView>().unwrap().spawn(self))
+        env.default_error_view(self)
     }
 }
 
@@ -101,6 +101,8 @@ impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
 pub struct DefaultErrorView {
     pub builder: Box<dyn Fn(BoxedStdError) -> AnyView>,
 }
+
+pub struct UseDefaultErrorView;
 
 impl DefaultErrorView {
     pub fn new<V: View + 'static>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {

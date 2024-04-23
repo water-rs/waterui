@@ -20,12 +20,16 @@ macro_rules! impl_binding {
 
         #[no_mangle]
         unsafe extern "C" fn $subscribe(binding: *const $binding_ty, subscriber: Closure) -> usize {
-            (*binding).register_subscriber(Box::new(move || subscriber.call()))
+            (*binding)
+                .register_subscriber(Box::new(move || subscriber.call()))
+                .into()
         }
 
         #[no_mangle]
         unsafe extern "C" fn $unsubscribe(binding: *const $binding_ty, id: usize) {
-            (*binding).cancel_subscriber(id);
+            if let Some(id) = core::num::NonZeroUsize::new(id) {
+                (*binding).cancel_subscriber(id);
+            }
         }
 
         #[no_mangle]

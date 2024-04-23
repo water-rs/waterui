@@ -69,8 +69,12 @@ typedef struct WaterUIBridge {
 } WaterUIBridge;
 
 typedef struct WaterUIEnvironment {
-  uintptr_t inner[4];
+  uintptr_t inner[1];
 } WaterUIEnvironment;
+
+typedef struct WaterUIError {
+  struct WaterUIUtf8Data msg;
+} WaterUIError;
 
 typedef struct WaterUIAction {
   uintptr_t inner[2];
@@ -87,6 +91,16 @@ typedef struct WaterUITextField {
   struct WaterUIComputedStr prompt;
 } WaterUITextField;
 
+typedef struct WaterUIErrorViewBuilder {
+  uintptr_t inner[2];
+} WaterUIErrorViewBuilder;
+
+typedef struct WaterUIRemoteImage {
+  struct WaterUIComputedStr url;
+  struct WaterUIAnyView loading;
+  struct WaterUIErrorViewBuilder error;
+} WaterUIRemoteImage;
+
 typedef struct WaterUIViews {
   struct WaterUIAnyView *head;
   uintptr_t len;
@@ -102,25 +116,11 @@ typedef struct WaterUIText {
   struct WaterUIComputedBool selection;
 } WaterUIText;
 
-typedef enum WaterUISize_Tag {
-  WaterUISize_Default,
-  WaterUISize_Size,
-} WaterUISize_Tag;
-
-typedef struct WaterUISize {
-  WaterUISize_Tag tag;
-  union {
-    struct {
-      double size;
-    };
-  };
-} WaterUISize;
-
 typedef struct WaterUIEdge {
-  struct WaterUISize top;
-  struct WaterUISize right;
-  struct WaterUISize bottom;
-  struct WaterUISize left;
+  double top;
+  double right;
+  double bottom;
+  double left;
 } WaterUIEdge;
 
 typedef struct WaterUIPadding {
@@ -223,6 +223,8 @@ struct WaterUIBridge waterui_clone_bridge(const struct WaterUIBridge *bridge);
 
 void waterui_drop_bridge(struct WaterUIBridge bridge);
 
+struct WaterUIError waterui_error(struct WaterUIUtf8Data msg);
+
 struct WaterUITypeId waterui_view_id(const struct WaterUIAnyView *view);
 
 struct WaterUIAnyView waterui_call_view(struct WaterUIAnyView view, struct WaterUIEnvironment env);
@@ -241,6 +243,13 @@ struct WaterUITextField waterui_view_force_as_field(struct WaterUIAnyView view);
 
 struct WaterUITypeId waterui_view_field_id(void);
 
+struct WaterUIRemoteImage waterui_view_force_as_remoteimg(struct WaterUIAnyView view);
+
+struct WaterUITypeId waterui_view_remoteimg_id(void);
+
+struct WaterUIAnyView waterui_build_error_view(struct WaterUIError error,
+                                               struct WaterUIErrorViewBuilder builder);
+
 struct WaterUIStack waterui_view_force_as_stack(struct WaterUIAnyView view);
 
 struct WaterUITypeId waterui_view_stack_id(void);
@@ -255,7 +264,8 @@ void waterui_drop_env(struct WaterUIEnvironment env);
 
 void waterui_free_action(struct WaterUIAction action);
 
-void waterui_call_action(const struct WaterUIAction *action, struct WaterUIEnvironment environment);
+void waterui_call_action(const struct WaterUIAction *action,
+                         const struct WaterUIEnvironment *environment);
 
 struct WaterUIWithValue_Padding waterui_modifier_force_as_padding(struct WaterUIAnyView view);
 

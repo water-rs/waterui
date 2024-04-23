@@ -1,5 +1,6 @@
 use core::{
     fmt::{Debug, Display},
+    num::NonZeroUsize,
     ops::Deref,
 };
 
@@ -22,8 +23,8 @@ use self::transformer::ComputeTransformer;
 pub trait Compute {
     type Output;
     fn compute(&self) -> Self::Output;
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize;
-    fn cancel_subscriber(&self, id: usize);
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize>;
+    fn cancel_subscriber(&self, id: NonZeroUsize);
     fn computed(self) -> Computed<Self::Output>;
 }
 
@@ -33,16 +34,37 @@ impl<C: Compute + Clone + 'static> Compute for &C {
         (*self).compute()
     }
 
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         (*self).register_subscriber(subscriber)
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         (*self).cancel_subscriber(id)
     }
 
     fn computed(self) -> Computed<Self::Output> {
         Computed::new(self.clone())
+    }
+}
+
+impl<C: Compute + 'static> Compute for Option<C> {
+    type Output = Option<C::Output>;
+
+    fn compute(&self) -> Self::Output {
+        self.as_ref().map(C::compute)
+    }
+
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+        self.as_ref()
+            .and_then(|c| c.register_subscriber(subscriber))
+    }
+
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
+        self.as_ref().inspect(|c| c.cancel_subscriber(id));
+    }
+
+    fn computed(self) -> Computed<Self::Output> {
+        Computed::new(self)
     }
 }
 
@@ -143,11 +165,11 @@ where
         (self.compute)()
     }
 
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
-        self.subscribers.register(subscriber)
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+        Some(self.subscribers.register(subscriber))
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.subscribers.cancel(id)
     }
 
@@ -173,11 +195,11 @@ impl<T: Clone + 'static> Compute for ConsantCompute<T> {
         self.value.clone()
     }
 
-    fn register_subscriber(&self, _subscriber: Subscriber) -> usize {
-        0
+    fn register_subscriber(&self, _subscriber: Subscriber) -> Option<NonZeroUsize> {
+        None
     }
 
-    fn cancel_subscriber(&self, _id: usize) {}
+    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
 
     fn computed(self) -> Computed<Self::Output> {
         Computed::new(self)
@@ -196,11 +218,11 @@ impl<T> Compute for Computed<T> {
         Compute::compute(self.inner.deref())
     }
 
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         Compute::register_subscriber(self.inner.deref(), subscriber)
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         Compute::cancel_subscriber(self.inner.deref(), id)
     }
 

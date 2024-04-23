@@ -1,8 +1,9 @@
-mod computed;
+pub mod computed;
 
-mod binding;
+pub mod binding;
 #[cfg(feature = "async")]
 mod bridge;
+mod error;
 #[cfg(feature = "async")]
 pub use bridge::Bridge;
 

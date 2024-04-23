@@ -1,16 +1,30 @@
-use core::{
-    any::{Any, TypeId},
-    future::Future,
-    ops::Deref,
-};
+use core::future::Future;
 
-use alloc::{collections::BTreeMap, rc::Rc};
+use alloc::{boxed::Box, rc::Rc};
+
+pub struct EnvironmentInner {
+    #[cfg(feature = "async")]
+    executor: Executor,
+    default_view: DefaultView,
+}
 
 #[derive(Clone)]
 pub struct Environment {
-    map: BTreeMap<TypeId, Rc<dyn Any>>,
-    #[cfg(feature = "async")]
-    executor: Executor,
+    inner: Rc<EnvironmentInner>,
+}
+
+pub struct DefaultView {
+    error: Box<dyn Fn(BoxedStdError) -> AnyView>,
+    loading: Box<dyn Fn() -> AnyView>,
+}
+
+impl Default for DefaultView {
+    fn default() -> Self {
+        Self {
+            error: Box::new(|_| AnyView::new(())),
+            loading: Box::new(|| AnyView::new(())),
+        }
+    }
 }
 
 impl Default for Environment {
@@ -21,10 +35,9 @@ impl Default for Environment {
 
 #[cfg(feature = "async")]
 mod executor {
-    use alloc::rc::Rc;
 
     pub struct Executor {
-        inner: Rc<smol::LocalExecutor<'static>>,
+        inner: smol::LocalExecutor<'static>,
     }
 
     impl Default for Executor {
@@ -36,7 +49,7 @@ mod executor {
     impl Executor {
         pub fn new() -> Self {
             Self {
-                inner: Rc::new(smol::LocalExecutor::new()),
+                inner: smol::LocalExecutor::new(),
             }
         }
 
@@ -54,33 +67,30 @@ mod executor {
             }
         }
     }
-
-    impl Clone for Executor {
-        fn clone(&self) -> Self {
-            Self {
-                inner: self.inner.clone(),
-            }
-        }
-    }
 }
 
 #[cfg(feature = "async")]
 pub use executor::Executor;
 
+use crate::{error::BoxedStdError, AnyView};
+
 impl Environment {
     pub fn new() -> Self {
         Self {
-            map: BTreeMap::new(),
-            #[cfg(feature = "async")]
-            executor: Executor::new(),
+            inner: Rc::new(EnvironmentInner {
+                #[cfg(feature = "async")]
+                executor: Executor::new(),
+                default_view: DefaultView::default(),
+            }),
         }
     }
 
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.map.get(&TypeId::of::<T>()).map(|rc| unsafe {
-            let any = rc.deref();
-            &*(any as *const dyn Any as *const T)
-        })
+    pub fn default_error_view(&self, error: BoxedStdError) -> AnyView {
+        (self.inner.default_view.error)(error)
+    }
+
+    pub fn default_loading_view(&self) -> AnyView {
+        (self.inner.default_view.loading)()
     }
 
     #[cfg(feature = "async")]
@@ -89,15 +99,11 @@ impl Environment {
         Fut: Future + 'static,
         Fut::Output: 'static,
     {
-        self.executor.spawn(fut)
+        self.inner.executor.spawn(fut)
     }
 
     #[cfg(feature = "async")]
-    pub fn executor(&self) -> Executor {
-        self.executor.clone()
-    }
-
-    pub fn insert<T: 'static>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Rc::new(value));
+    pub fn executor(&self) -> &Executor {
+        &self.inner.executor
     }
 }

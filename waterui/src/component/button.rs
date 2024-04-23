@@ -9,13 +9,13 @@ use super::Text;
 #[non_exhaustive]
 pub struct Button<Label> {
     label: Label,
-    action: Box<dyn Fn(Environment)>,
+    action: Box<dyn Fn(&Environment)>,
 }
 
 #[non_exhaustive]
 pub struct RawButton {
     pub _label: AnyView,
-    pub _action: Box<dyn Fn(Environment)>,
+    pub _action: Box<dyn Fn(&Environment)>,
 }
 
 impl<Label: View + 'static> Button<Label> {
@@ -26,17 +26,21 @@ impl<Label: View + 'static> Button<Label> {
         }
     }
 
-    pub fn action(mut self, action: impl Fn(Environment) + 'static) -> Self {
-        self.action = Box::new(action);
+    pub fn action(self, action: impl Fn() + 'static) -> Self {
+        self.action_env(move |_| action())
+    }
+
+    pub fn action_env(mut self, action: impl Fn(&Environment) + 'static) -> Self {
+        self.action = Box::new(move |env| action(env));
         self
     }
 
     #[cfg(feature = "async")]
-    pub fn action_async<Fut>(self, action: impl 'static + Fn(Environment) -> Fut)
+    pub fn action_async<Fut>(self, action: impl 'static + Fn() -> Fut) -> Self
     where
         Fut: core::future::Future<Output = ()> + 'static,
     {
-        self.action(move |env| env.task(action(env.clone())).detach());
+        self.action_env(move |env| env.task(action()).detach())
     }
 }
 

@@ -1,6 +1,8 @@
 use core::{
     marker::{PhantomData, PhantomPinned},
     mem::transmute,
+    ops::Deref,
+    ptr::slice_from_raw_parts,
 };
 
 use alloc::{boxed::Box, string::String};
@@ -8,9 +10,17 @@ use alloc::{boxed::Box, string::String};
 use super::app::App;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct Utf8Data {
     head: *mut u8,
     len: usize,
+}
+
+impl Deref for Utf8Data {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::str::from_utf8_unchecked(&*slice_from_raw_parts(self.head, self.len)) }
+    }
 }
 
 impl_array!(Data, u8, u8);
@@ -108,13 +118,9 @@ impl From<TypeId> for core::any::TypeId {
     }
 }
 
-ffi_opaque!(Box<dyn Fn(crate::Environment)>, Action, 2);
+ffi_opaque!(Box<dyn Fn(&crate::Environment)>, Action, 2);
 
-#[cfg(feature = "async")]
-ffi_opaque!(crate::Environment, Environment, 4);
-
-#[cfg(not(feature = "async"))]
-ffi_opaque!(crate::Environment, Environment, 3);
+ffi_opaque!(crate::Environment, Environment, 1);
 
 // WARNING: You must call this function on Rust thread.
 #[no_mangle]
@@ -133,6 +139,6 @@ unsafe extern "C" fn waterui_free_action(action: Action) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn waterui_call_action(action: *const Action, environment: Environment) {
-    (*action)(environment.into_ty());
+unsafe extern "C" fn waterui_call_action(action: *const Action, environment: *const Environment) {
+    (*action)((*environment).deref());
 }
