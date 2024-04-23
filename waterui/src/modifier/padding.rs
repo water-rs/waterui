@@ -1,5 +1,6 @@
 use crate::layout::Edge;
 #[repr(C)]
+#[derive(Default)]
 pub struct Padding {
     pub _inner: Edge,
 }
