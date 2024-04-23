@@ -1,12 +1,13 @@
-use waterui_reactive::compute::{ComputeStr, ComputedStr};
-
-use crate::{Compute, Computed};
+use waterui_reactive::{
+    compute::{ComputeBool, ComputeStr, ComputedBool, ComputedStr},
+    Compute,
+};
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Text {
     pub _content: ComputedStr,
-    pub _selection: Computed<bool>,
+    pub _selection: ComputedBool,
     pub _font: Font,
 }
 
@@ -32,7 +33,7 @@ impl Text {
     pub fn new(text: impl ComputeStr) -> Self {
         Self {
             _content: text.computed(),
-            _selection: Computed::constant(true),
+            _selection: true.computed(),
             _font: Font::default(),
         }
     }
@@ -47,7 +48,7 @@ impl Text {
         self
     }
 
-    pub fn selection(mut self, selection: impl Compute<Output = bool>) -> Self {
+    pub fn selection(mut self, selection: impl ComputeBool) -> Self {
         self._selection = selection.computed();
         self
     }

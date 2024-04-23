@@ -1,19 +1,17 @@
-use waterui_reactive::{Compute, Computed};
-
-use crate::Binding;
+use waterui_reactive::{binding::BindingInt, compute::ComputedInt, Compute};
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Stepper {
-    pub _value: Binding<isize>,
-    pub _step: Computed<isize>,
+    pub _value: BindingInt,
+    pub _step: ComputedInt,
 }
 
 impl Stepper {
-    pub fn new(value: &Binding<isize>) -> Self {
+    pub fn new(value: &BindingInt) -> Self {
         Self {
             _value: value.clone(),
-            _step: Computed::constant(1),
+            _step: 1.computed(),
         }
     }
 
@@ -25,7 +23,7 @@ impl Stepper {
 
 raw_view!(Stepper);
 
-pub fn stepper(value: &Binding<isize>) -> Stepper {
+pub fn stepper(value: &BindingInt) -> Stepper {
     Stepper::new(value)
 }
 
