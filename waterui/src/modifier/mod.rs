@@ -7,15 +7,15 @@ pub use with::WithValue;
 
 use waterui_view::{Environment, View};
 
-pub trait Modifer {
+pub trait Modifier {
     fn modify(self, env: Environment, view: impl View + 'static) -> impl View + 'static;
 }
 
-pub trait ModiferExt: Modifer + Sized {
+pub trait ModifierExt: Modifier + Sized {
     fn then<M>(self, modifier: M) -> And<Self, M>;
 }
 
-impl<M1: Modifer> ModiferExt for M1 {
+impl<M1: Modifier> ModifierExt for M1 {
     fn then<M2>(self, m2: M2) -> And<Self, M2> {
         And::new(self, m2)
     }
@@ -32,7 +32,7 @@ impl<M1, M2> And<M1, M2> {
     }
 }
 
-impl<M1: Modifer, M2: Modifer> Modifer for And<M1, M2> {
+impl<M1: Modifier, M2: Modifier> Modifier for And<M1, M2> {
     fn modify(self, env: Environment, view: impl View + 'static) -> impl View + 'static {
         self.m2.modify(env.clone(), self.m1.modify(env, view))
     }

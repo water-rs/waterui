@@ -1,7 +1,7 @@
 use core::{any::Any, future::Future};
 
 use crate::{
-    modifier::{self, Modifer},
+    modifier::{self, Modifier, Padding},
     AnyView,
 };
 
@@ -14,7 +14,8 @@ pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
 
 pub trait ViewExt: View {
-    fn modifier(self, modifier: impl Modifer) -> impl View;
+    fn modifier(self, modifier: impl Modifier) -> impl View;
+    fn padding(self) -> impl View;
     fn task<Fut>(self, fut: Fut) -> impl View
     where
         Fut: Future + 'static,
@@ -30,7 +31,7 @@ struct WithModifier<V, M> {
 impl<V, M> View for WithModifier<V, M>
 where
     V: View + 'static,
-    M: Modifer,
+    M: Modifier,
 {
     fn body(self, env: Environment) -> impl View {
         self.modifier.modify(env, self.view)
@@ -44,8 +45,12 @@ impl<V, M> WithModifier<V, M> {
 }
 
 impl<V: View + 'static> ViewExt for V {
-    fn modifier(self, modifier: impl Modifer) -> impl View {
+    fn modifier(self, modifier: impl Modifier) -> impl View {
         WithModifier::new(self, modifier)
+    }
+
+    fn padding(self) -> impl View {
+        self.modifier(Padding::default())
     }
 
     fn task<Fut>(self, fut: Fut) -> impl View
