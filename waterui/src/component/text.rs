@@ -56,3 +56,33 @@ impl Text {
 pub fn text(text: impl Compute<Output = String>) -> Text {
     Text::new(text)
 }
+
+mod ffi {
+    use waterui_ffi::{
+        computed::{ComputedBool, ComputedStr},
+        ffi_view, IntoFFI,
+    };
+
+    #[repr(C)]
+    pub struct Text {
+        content: ComputedStr,
+        selection: ComputedBool,
+    }
+
+    impl IntoFFI for super::Text {
+        type FFI = Text;
+        fn into_ffi(self) -> Self::FFI {
+            Text {
+                content: self._content.into_ffi(),
+                selection: self._selection.into_ffi(),
+            }
+        }
+    }
+
+    ffi_view!(
+        super::Text,
+        Text,
+        waterui_view_force_as_text,
+        waterui_view_text_id
+    );
+}

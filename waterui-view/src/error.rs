@@ -12,6 +12,8 @@ pub struct Error {
 }
 
 pub type BoxedStdError = Box<dyn StdError>;
+pub type ErrorViewBuilder = Box<dyn Fn(BoxedStdError) -> AnyView>;
+pub type OnceErrorViewBuilder = Box<dyn FnOnce(BoxedStdError) -> AnyView>;
 
 trait ErrorImpl: Debug + Display + 'static {
     fn body(self: Box<Self>, _env: Environment) -> AnyView;
@@ -99,7 +101,7 @@ impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
 }
 
 pub struct DefaultErrorView {
-    pub builder: Box<dyn Fn(BoxedStdError) -> AnyView>,
+    pub builder: ErrorViewBuilder,
 }
 
 pub struct UseDefaultErrorView;

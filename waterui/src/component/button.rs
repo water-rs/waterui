@@ -66,3 +66,31 @@ raw_view!(RawButton);
 pub fn button(label: impl Compute<Output = String>) -> Button<Text> {
     Button::new(label)
 }
+
+mod ffi {
+    use waterui_ffi::{ffi_view, Action, AnyView, IntoFFI};
+
+    #[repr(C)]
+    pub struct Button {
+        label: AnyView,
+        action: Action,
+    }
+
+    impl IntoFFI for super::RawButton {
+        type FFI = Button;
+
+        fn into_ffi(self) -> Self::FFI {
+            Button {
+                label: self._label.into_ffi(),
+                action: self._action.into_ffi(),
+            }
+        }
+    }
+
+    ffi_view!(
+        super::RawButton,
+        Button,
+        waterui_view_force_as_button,
+        waterui_view_button_id
+    );
+}
