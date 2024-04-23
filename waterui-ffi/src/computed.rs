@@ -1,7 +1,7 @@
 use crate::{Data, Utf8Data};
 
 use super::Closure;
-use alloc::{string::String, vec::Vec};
+use alloc::{borrow::Cow, vec::Vec};
 use waterui_reactive::{Compute, Computed};
 
 // WARNING: Computed<T> must be called on the Rust thread!!!
@@ -44,7 +44,7 @@ impl_computed!(
 
 impl_computed!(
     ComputedStr,
-    String,
+    Cow<'static, str>,
     Utf8Data,
     waterui_read_computed_str,
     waterui_subscribe_computed_str,

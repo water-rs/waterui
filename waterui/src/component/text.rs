@@ -1,11 +1,11 @@
-use alloc::string::String;
+use waterui_reactive::compute::{ComputeStr, ComputedStr};
 
 use crate::{Compute, Computed};
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Text {
-    pub _content: Computed<String>,
+    pub _content: ComputedStr,
     pub _selection: Computed<bool>,
     pub _font: Font,
 }
@@ -29,7 +29,7 @@ impl Default for Font {
 raw_view!(Text);
 
 impl Text {
-    pub fn new(text: impl Compute<Output = String>) -> Self {
+    pub fn new(text: impl ComputeStr) -> Self {
         Self {
             _content: text.computed(),
             _selection: Computed::constant(true),
@@ -53,7 +53,7 @@ impl Text {
     }
 }
 
-pub fn text(text: impl Compute<Output = String>) -> Text {
+pub fn text(text: impl ComputeStr) -> Text {
     Text::new(text)
 }
 

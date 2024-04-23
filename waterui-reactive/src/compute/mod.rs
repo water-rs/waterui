@@ -6,6 +6,7 @@ use core::{
 
 mod grouped;
 use alloc::{
+    borrow::Cow,
     boxed::Box,
     rc::Rc,
     string::{String, ToString},
@@ -27,6 +28,20 @@ pub trait Compute {
     fn cancel_subscriber(&self, id: NonZeroUsize);
     fn computed(self) -> Computed<Self::Output>;
 }
+
+macro_rules! alia {
+    ($compute:ident,$computed:ident,$ty:ty) => {
+        pub type $computed = Computed<$ty>;
+
+        pub trait $compute: Compute<Output = $ty> {}
+
+        impl<C> $compute for C where C: Compute<Output = $ty> {}
+    };
+}
+
+alia!(ComputeStr, ComputedStr, Cow<'static, str>);
+alia!(ComputeBool, ComputedBool, bool);
+alia!(ComputeInt, ComputedInt, isize);
 
 impl<C: Compute + Clone + 'static> Compute for &C {
     type Output = C::Output;
