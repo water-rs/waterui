@@ -23,8 +23,7 @@ pub trait AsyncView {
     fn body(self, env: Environment) -> impl Future<Output = impl View>;
 
     fn loading(env: Environment) -> impl View {
-        let builder = env.get::<DefaultLoadingView>().unwrap();
-        builder.spawn()
+        env.default_loading_view()
     }
 }
 
@@ -34,11 +33,14 @@ impl<V: AsyncView + 'static> View for V {
             let env = env.clone();
             DynamicView::new(move || V::loading(env.clone()))
         };
+        let fut;
 
-        let executor = env.executor();
-        executor
-            .spawn(async move { handle.set(self.body(env.clone()).await) })
-            .detach();
+        {
+            let env = env.clone();
+            fut = async move { handle.set(self.body(env.clone()).await) };
+        }
+
+        env.executor().spawn(fut).detach();
         view
     }
 }

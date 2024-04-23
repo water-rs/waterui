@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use crate::{impl_constant, Binding, Compute, Computed};
 use alloc::string::{String, ToString};
 impl<T: Clone + 'static> Compute for Binding<T> {
@@ -7,11 +9,11 @@ impl<T: Clone + 'static> Compute for Binding<T> {
         self.get()
     }
 
-    fn register_subscriber(&self, subscriber: crate::Subscriber) -> usize {
-        Binding::register_subscriber(self, subscriber)
+    fn register_subscriber(&self, subscriber: crate::Subscriber) -> Option<NonZeroUsize> {
+        Some(Binding::register_subscriber(self, subscriber))
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         Binding::cancel_subscriber(self, id)
     }
 
@@ -29,11 +31,11 @@ impl Compute for &str {
         self.to_string()
     }
 
-    fn register_subscriber(&self, _subscriber: crate::Subscriber) -> usize {
-        0
+    fn register_subscriber(&self, _subscriber: crate::Subscriber) -> Option<NonZeroUsize> {
+        None
     }
 
-    fn cancel_subscriber(&self, _id: usize) {}
+    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
 
     fn computed(self) -> Computed<Self::Output> {
         Computed::new(self.to_string())

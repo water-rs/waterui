@@ -2,6 +2,7 @@ use core::{
     cell::{Ref, RefCell, RefMut},
     fmt::{Debug, Display},
     mem::replace,
+    num::NonZeroUsize,
     ops::{AddAssign, Deref, DerefMut, SubAssign},
 };
 
@@ -116,11 +117,11 @@ impl<T> Binding<T> {
         self.notify();
     }
 
-    pub fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+    pub fn register_subscriber(&self, subscriber: Subscriber) -> NonZeroUsize {
         self.inner.subscribers.register(subscriber)
     }
 
-    pub fn cancel_subscriber(&self, id: usize) {
+    pub fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.inner.subscribers.cancel(id);
     }
 
