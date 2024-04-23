@@ -1,16 +1,18 @@
-use super::{Closure, Data, Int, Utf8Data};
+use crate::{Data, Utf8Data};
+
+use super::Closure;
 use alloc::{string::String, vec::Vec};
 use waterui_reactive::{Compute, Computed};
 
 // WARNING: Computed<T> must be called on the Rust thread!!!
 
 macro_rules! impl_computed {
-    ($read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident,$name:ident,$ty:ty,$ffi_ty:ty) => {
-        ffi_opaque!(Computed<$ty>, $name, 2);
+    ($name:ident,$ty:ty,$ffi:ty,$read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
+        ffi_opaque!($name, Computed<$ty>, 2, $drop);
 
         #[no_mangle]
-        unsafe extern "C" fn $read(computed: *const $name) -> $ffi_ty {
-            (*computed).compute().into()
+        unsafe extern "C" fn $read(computed: *const $name) -> $ffi {
+            $crate::IntoFFI::into_ffi((*computed).compute())
         }
 
         #[no_mangle]
@@ -27,67 +29,62 @@ macro_rules! impl_computed {
                 (*computed).cancel_subscriber(id);
             }
         }
-
-        #[no_mangle]
-        unsafe extern "C" fn $drop(computed: $name) {
-            let _ = computed;
-        }
     };
 }
 
 impl_computed!(
+    ComputedData,
+    Vec<u8>,
+    Data,
     waterui_read_computed_data,
     waterui_subscribe_computed_data,
     waterui_unsubscribe_computed_data,
-    waterui_drop_computed_data,
-    ComputedData,
-    Vec<u8>,
-    Data
+    waterui_drop_computed_data
 );
 
 impl_computed!(
+    ComputedStr,
+    String,
+    Utf8Data,
     waterui_read_computed_str,
     waterui_subscribe_computed_str,
     waterui_unsubscribe_computed_str,
-    waterui_drop_computed_str,
-    ComputedStr,
-    String,
-    Utf8Data
+    waterui_drop_computed_str
 );
 
 impl_computed!(
+    ComputedInt,
+    isize,
+    isize,
     waterui_read_computed_int,
     waterui_subscribe_computed_int,
     waterui_unsubscribe_computed_int,
-    waterui_drop_computed_int,
-    ComputedInt,
-    Int,
-    Int
+    waterui_drop_computed_int
 );
 
 impl_computed!(
+    ComputedBool,
+    bool,
+    bool,
     waterui_read_computed_bool,
     waterui_subscribe_computed_bool,
     waterui_unsubscribe_computed_bool,
-    waterui_drop_computed_bool,
-    ComputedBool,
-    bool,
-    bool
+    waterui_drop_computed_bool
 );
 
 impl_computed!(
+    ComputedView,
+    waterui_view::AnyView,
+    crate::AnyView,
     waterui_read_computed_view,
     waterui_subscribe_computed_view,
     waterui_unsubscribe_computed_view,
-    waterui_drop_computed_view,
-    ComputedView,
-    crate::AnyView,
-    crate::ffi::AnyView
+    waterui_drop_computed_view
 );
 
-impl_view!(
-    crate::Computed<crate::AnyView>,
+ffi_view!(
+    Computed<waterui_view::AnyView>,
     ComputedView,
-    waterui_view_force_as_dynamic_view,
-    waterui_view_dynamic_view_id
+    waterui_view_force_as_computed,
+    waterui_view_computed_id
 );

@@ -1,0 +1,8 @@
+[package]
+name = "waterui-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+waterui-reactive = { path = "../waterui-reactive" }
+waterui-view = { path = "../waterui-view" }

@@ -4,8 +4,14 @@ prefix_with_name = true
 
 [export]
 prefix = "WaterUI"
-include = ["AppClosure","App"]
+include = ["App","AppClosure"]
+
+
+[parse]
+parse_deps = true
+include = ["waterui","waterui-ffi"]
+extra_bindings = ["waterui-ffi"]
 
 
 [parse.expand]
-crates = ["waterui"]
+crates = ["waterui","waterui-ffi"]

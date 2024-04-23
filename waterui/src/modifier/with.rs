@@ -22,3 +22,24 @@ impl<T> View for WithValue<T> {
         );
     }
 }
+
+#[doc(hidden)]
+pub mod ffi {
+    use waterui_ffi::{AnyView, IntoFFI};
+
+    #[repr(C)]
+    pub struct WithValue<T> {
+        content: AnyView,
+        value: T,
+    }
+
+    impl<T: IntoFFI> IntoFFI for super::WithValue<T> {
+        type FFI = WithValue<T::FFI>;
+        fn into_ffi(self) -> Self::FFI {
+            WithValue {
+                content: self._content.into_ffi(),
+                value: self._value.into_ffi(),
+            }
+        }
+    }
+}
