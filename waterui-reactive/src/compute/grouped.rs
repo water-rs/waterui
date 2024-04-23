@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use alloc::boxed::Box;
 
 use crate::{subscriber::SharedSubscriberManager, Compute, Computed, Subscriber};
@@ -7,7 +9,7 @@ where
     C: SubscribeManage<LEN>,
 {
     computes: Option<C>,
-    guards: [usize; LEN],
+    guards: [Option<NonZeroUsize>; LEN],
     subscribers: SharedSubscriberManager,
 }
 
@@ -56,11 +58,11 @@ where
         (computes.0.compute(), computes.1.compute())
     }
 
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
-        self.subscribers.register(subscriber)
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+        Some(self.subscribers.register(subscriber))
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.subscribers.cancel(id)
     }
 
@@ -76,8 +78,11 @@ where
 
 #[doc(hidden)]
 pub trait SubscribeManage<const LEN: usize> {
-    fn register_subscribers(&self, subscriber: impl Fn() -> Subscriber) -> [usize; LEN];
-    fn cancel_subscribers(&self, guard: [usize; LEN]);
+    fn register_subscribers(
+        &self,
+        subscriber: impl Fn() -> Subscriber,
+    ) -> [Option<NonZeroUsize>; LEN];
+    fn cancel_subscribers(&self, guard: [Option<NonZeroUsize>; LEN]);
 }
 
 impl<C1, C2> SubscribeManage<2> for (C1, C2)
@@ -85,15 +90,18 @@ where
     C1: Compute,
     C2: Compute,
 {
-    fn register_subscribers(&self, subscriber: impl Fn() -> Subscriber) -> [usize; 2] {
+    fn register_subscribers(
+        &self,
+        subscriber: impl Fn() -> Subscriber,
+    ) -> [Option<NonZeroUsize>; 2] {
         [
             self.0.register_subscriber(subscriber()),
             self.0.register_subscriber(subscriber()),
         ]
     }
 
-    fn cancel_subscribers(&self, guard: [usize; 2]) {
-        self.0.cancel_subscriber(guard[0]);
-        self.1.cancel_subscriber(guard[1]);
+    fn cancel_subscribers(&self, guard: [Option<NonZeroUsize>; 2]) {
+        guard[0].inspect(|id| self.0.cancel_subscriber(*id));
+        guard[1].inspect(|id| self.1.cancel_subscriber(*id));
     }
 }
