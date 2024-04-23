@@ -1,12 +1,13 @@
-use waterui_reactive::{compute::ComputeStr, Binding};
+use waterui_reactive::{binding::BindingBool, compute::ComputeStr, Binding};
+
+use crate::{AnyView, View, ViewExt};
 
 use super::Text;
-use crate::{AnyView, View, ViewExt};
 
 #[derive(Debug)]
 pub struct Toggle<Label> {
     label: Label,
-    toggle: Binding<bool>,
+    toggle: BindingBool,
     style: ToggleStyle,
 }
 
@@ -14,7 +15,7 @@ pub struct Toggle<Label> {
 #[non_exhaustive]
 pub struct RawToggle {
     pub _label: AnyView,
-    pub _toggle: Binding<bool>,
+    pub _toggle: BindingBool,
     pub _style: ToggleStyle,
 }
 
@@ -32,26 +33,28 @@ impl Default for ToggleStyle {
         Self::Default
     }
 }
-impl Toggle<Text> {
-    pub fn new(label: impl ComputeStr, toggle: &Binding<bool>) -> Self {
-        Self::label(Text::new(label), toggle)
-    }
-}
 
 impl_label!(Toggle);
 
 impl Toggle<()> {
-    pub fn binding(toggle: &Binding<bool>) -> Self {
-        Self::label((), toggle)
+    pub fn new(toggle: &Binding<bool>) -> Self {
+        Self {
+            label: (),
+            toggle: toggle.clone(),
+            style: ToggleStyle::Default,
+        }
     }
 }
 
-impl<Label: View + 'static> Toggle<Label> {
-    pub fn label(label: Label, toggle: &Binding<bool>) -> Self {
-        Self {
+impl<Label: View> Toggle<Label> {
+    pub fn label(self, label: impl ComputeStr) -> Toggle<Text> {
+        self.label_view(Text::new(label))
+    }
+    pub fn label_view<V: View>(self, label: V) -> Toggle<V> {
+        Toggle {
             label,
-            toggle: toggle.clone(),
-            style: ToggleStyle::default(),
+            toggle: self.toggle,
+            style: self.style,
         }
     }
 }
@@ -68,8 +71,8 @@ impl<Label: View + 'static> View for Toggle<Label> {
     }
 }
 
-pub fn toggle(label: impl ComputeStr, toggle: &Binding<bool>) -> Toggle<Text> {
-    Toggle::new(label, toggle)
+pub fn toggle(label: impl ComputeStr, toggle: &BindingBool) -> Toggle<Text> {
+    Toggle::new(toggle).label(label)
 }
 
 mod ffi {
