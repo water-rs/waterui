@@ -15,6 +15,8 @@ pub struct Binding<T> {
 }
 
 pub type BindingStr = Binding<Cow<'static, str>>;
+pub type BindingBool = Binding<bool>;
+pub type BindingInt = Binding<isize>;
 
 impl<T: Debug> Debug for Binding<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

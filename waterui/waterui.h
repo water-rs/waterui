@@ -3,6 +3,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef enum WaterUIProgressStyle {
+  WaterUIProgressStyle_Default,
+  WaterUIProgressStyle_Circular,
+  WaterUIProgressStyle_Linear,
+} WaterUIProgressStyle;
+
 typedef enum WaterUIStackMode {
   WaterUIStackMode_Auto,
   WaterUIStackMode_Vertical,
@@ -76,13 +82,19 @@ typedef struct WaterUIToggle {
   enum WaterUIToggleStyle style;
 } WaterUIToggle;
 
-typedef struct WaterUIBindingInt {
-  uintptr_t inner[1];
-} WaterUIBindingInt;
-
 typedef struct WaterUIComputedInt {
   uintptr_t inner[2];
 } WaterUIComputedInt;
+
+typedef struct WaterUIProgress {
+  struct WaterUIAnyView label;
+  struct WaterUIComputedInt progress;
+  enum WaterUIProgressStyle style;
+} WaterUIProgress;
+
+typedef struct WaterUIBindingInt {
+  uintptr_t inner[1];
+} WaterUIBindingInt;
 
 typedef struct WaterUIStepper {
   struct WaterUIBindingInt value;
@@ -185,6 +197,10 @@ struct WaterUITypeId waterui_view_field_id(void);
 struct WaterUIToggle waterui_view_force_as_toggle(struct WaterUIAnyView view);
 
 struct WaterUITypeId waterui_view_toggle_id(void);
+
+struct WaterUIProgress waterui_view_force_as_progress(struct WaterUIAnyView view);
+
+struct WaterUITypeId waterui_view_progress_id(void);
 
 struct WaterUIStepper waterui_view_force_as_stepper(struct WaterUIAnyView view);
 
