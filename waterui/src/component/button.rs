@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
-use alloc::string::String;
+use waterui_reactive::compute::ComputeStr;
 
 use crate::AnyView;
-use crate::{Compute, Environment, View, ViewExt};
+use crate::{Environment, View, ViewExt};
 
 use super::Text;
 
@@ -45,7 +45,7 @@ impl<Label: View + 'static> Button<Label> {
 }
 
 impl Button<Text> {
-    pub fn new(label: impl Compute<Output = String>) -> Self {
+    pub fn new(label: impl ComputeStr) -> Self {
         Self::label(Text::new(label))
     }
 }
@@ -63,7 +63,7 @@ impl<Label: View + 'static> View for Button<Label> {
 
 raw_view!(RawButton);
 
-pub fn button(label: impl Compute<Output = String>) -> Button<Text> {
+pub fn button(label: impl ComputeStr) -> Button<Text> {
     Button::new(label)
 }
 

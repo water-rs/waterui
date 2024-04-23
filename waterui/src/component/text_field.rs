@@ -1,23 +1,25 @@
 use alloc::string::String;
+use waterui_reactive::{
+    binding::BindingStr,
+    compute::{ComputeStr, ComputedStr},
+};
 
-use crate::{AnyView, Binding, Compute, Computed, View, ViewExt};
+use crate::{AnyView, Compute, View, ViewExt};
 
 use super::Text;
 
-#[derive(Debug)]
 pub struct TextField<Label> {
     label: Label,
-    value: Binding<String>,
-    prompt: Computed<String>,
+    value: BindingStr,
+    prompt: ComputedStr,
     style: TextFieldStyle,
 }
 
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct RawTextField {
     pub _label: AnyView,
-    pub _value: Binding<String>,
-    pub _prompt: Computed<String>,
+    pub _value: BindingStr,
+    pub _prompt: ComputedStr,
     pub _style: TextFieldStyle,
 }
 
@@ -40,13 +42,13 @@ impl Default for TextFieldStyle {
 raw_view!(RawTextField);
 
 impl TextField<()> {
-    pub fn binding(value: &Binding<String>) -> Self {
+    pub fn binding(value: &BindingStr) -> Self {
         Self::label((), value)
     }
 }
 
 impl TextField<Text> {
-    pub fn new(label: impl Compute<Output = String>, value: &Binding<String>) -> Self {
+    pub fn new(label: impl ComputeStr, value: &BindingStr) -> Self {
         Self::label(Text::new(label), value)
     }
 }
@@ -54,7 +56,7 @@ impl TextField<Text> {
 impl_label!(TextField);
 
 impl<V: View + 'static> TextField<V> {
-    pub fn label(label: V, value: &Binding<String>) -> Self {
+    pub fn label(label: V, value: &BindingStr) -> Self {
         Self {
             label,
             value: value.clone(),
@@ -63,7 +65,7 @@ impl<V: View + 'static> TextField<V> {
         }
     }
 
-    pub fn prompt(mut self, prompt: impl Compute<Output = String>) -> Self {
+    pub fn prompt(mut self, prompt: impl ComputeStr) -> Self {
         self.prompt = prompt.computed();
         self
     }
@@ -80,7 +82,7 @@ impl<V: View + 'static> View for TextField<V> {
     }
 }
 
-pub fn field(label: impl Compute<Output = String>, value: &Binding<String>) -> TextField<Text> {
+pub fn field(label: impl ComputeStr, value: &BindingStr) -> TextField<Text> {
     TextField::new(label, value)
 }
 

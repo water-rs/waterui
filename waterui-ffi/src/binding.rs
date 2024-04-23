@@ -1,5 +1,5 @@
 use crate::{Closure, Utf8Data};
-use alloc::{boxed::Box, string::String};
+use alloc::{borrow::Cow, boxed::Box};
 use waterui_reactive::Binding;
 
 // WARNING: Binding<T> must be called on the Rust thread!!!
@@ -37,7 +37,7 @@ macro_rules! impl_binding {
 
 impl_binding!(
     BindingStr,
-    String,
+    Cow<'static, str>,
     Utf8Data,
     waterui_read_binding_str,
     waterui_write_binding_str,
