@@ -44,6 +44,16 @@ macro_rules! impl_label {
 
 macro_rules! ffi_with_modifier {
     ($ty:ty,$ffi:ty,$force_as:ident,$id:ident) => {
+        impl $crate::modifier::Modifier for $ty {
+            fn modify(
+                self,
+                _env: $crate::Environment,
+                view: impl $crate::View + 'static,
+            ) -> impl $crate::View + 'static {
+                $crate::modifier::with::WithValue::new(view, self)
+            }
+        }
+
         waterui_ffi::ffi_view!(
             $crate::modifier::with::WithValue<$ty>,
             $crate::modifier::with::ffi::WithValue<$ffi>,

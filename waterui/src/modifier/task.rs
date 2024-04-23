@@ -2,7 +2,7 @@ use core::future::Future;
 
 use waterui_view::{Environment, View};
 
-use super::Modifer;
+use super::Modifier;
 
 pub(crate) struct Task<Fut> {
     fut: Fut,
@@ -14,7 +14,7 @@ impl<Fut> Task<Fut> {
     }
 }
 
-impl<Fut> Modifer for Task<Fut>
+impl<Fut> Modifier for Task<Fut>
 where
     Fut: Future + 'static,
     Fut::Output: 'static,
