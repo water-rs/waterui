@@ -5,7 +5,7 @@ use alloc::format;
 use alloc::string::String;
 use url::Url;
 use waterui_reactive::{Compute, ComputeExt, Computed};
-use waterui_view::error::BoxedStdError;
+use waterui_view::error::{BoxedStdError, OnceErrorViewBuilder};
 
 use crate::{View, ViewExt};
 
@@ -17,7 +17,7 @@ use super::text;
 pub struct RemoteImage {
     pub _url: Computed<String>,
     pub _loading: AnyView,
-    pub _error: Box<dyn FnOnce(BoxedStdError) -> AnyView>,
+    pub _error: OnceErrorViewBuilder,
 }
 
 raw_view!(RemoteImage); // it would be implemented in the futre, but now we define it as a raw view.
@@ -65,4 +65,35 @@ where
     U::Error: Debug,
 {
     RemoteImage::url(url)
+}
+
+mod ffi {
+    use waterui_ffi::{
+        computed::ComputedStr, error::OnceErrorViewBuilder, ffi_view, AnyView, IntoFFI,
+    };
+
+    #[repr(C)]
+    pub struct RemoteImage {
+        url: ComputedStr,
+        loading: AnyView,
+        error: OnceErrorViewBuilder,
+    }
+
+    impl IntoFFI for super::RemoteImage {
+        type FFI = RemoteImage;
+        fn into_ffi(self) -> Self::FFI {
+            RemoteImage {
+                url: self._url.into_ffi(),
+                loading: self._loading.into_ffi(),
+                error: self._error.into_ffi(),
+            }
+        }
+    }
+
+    ffi_view!(
+        super::RemoteImage,
+        RemoteImage,
+        waterui_view_force_as_remoteimg,
+        waterui_view_remoteimg_id
+    );
 }

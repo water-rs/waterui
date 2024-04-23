@@ -15,6 +15,8 @@ pub use waterui_view::*;
 pub mod app;
 pub use app::App;
 
-pub mod ffi;
 pub mod layout;
 pub mod utils;
+
+pub mod bridge;
+pub mod ffi;

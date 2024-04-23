@@ -119,3 +119,32 @@ pub fn hstack(contents: impl IntoViews) -> HStack {
 pub fn zstack(contents: impl IntoViews) -> ZStack {
     ZStack::new(contents)
 }
+
+mod ffi {
+    use waterui_ffi::{ffi_view, IntoFFI, Views};
+
+    use crate::component::stack::StackMode;
+
+    #[repr(C)]
+    pub struct Stack {
+        views: Views,
+        mode: StackMode,
+    }
+
+    impl IntoFFI for super::Stack {
+        type FFI = Stack;
+        fn into_ffi(self) -> Self::FFI {
+            Stack {
+                views: self._views.into_ffi(),
+                mode: self._mode,
+            }
+        }
+    }
+
+    ffi_view!(
+        super::Stack,
+        Stack,
+        waterui_view_force_as_stack,
+        waterui_view_stack_id
+    );
+}

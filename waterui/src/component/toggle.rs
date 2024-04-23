@@ -72,3 +72,34 @@ impl<Label: View + 'static> View for Toggle<Label> {
 pub fn toggle(label: impl Compute<Output = String>, toggle: &Binding<bool>) -> Toggle<Text> {
     Toggle::new(label, toggle)
 }
+
+mod ffi {
+    use waterui_ffi::{binding::BindingBool, ffi_view, AnyView, IntoFFI};
+
+    use super::ToggleStyle;
+
+    #[repr(C)]
+    pub struct Toggle {
+        label: AnyView,
+        toggle: BindingBool,
+        style: ToggleStyle,
+    }
+
+    impl IntoFFI for super::RawToggle {
+        type FFI = Toggle;
+        fn into_ffi(self) -> Self::FFI {
+            Toggle {
+                label: self._label.into_ffi(),
+                toggle: self._toggle.into_ffi(),
+                style: self._style,
+            }
+        }
+    }
+
+    ffi_view!(
+        super::RawToggle,
+        Toggle,
+        waterui_view_force_as_toggle,
+        waterui_view_toggle_id
+    );
+}

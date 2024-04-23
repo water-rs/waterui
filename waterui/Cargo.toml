@@ -9,6 +9,11 @@ edition = "2021"
 log = "0.4.21"
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-view = { path = "../waterui-view" }
+waterui-ffi = { path = "../waterui-ffi" }
+
+[build-dependencies]
+cbindgen = "0.26.0"
+
 
 [dependencies.url]
 version = "2.5.0"

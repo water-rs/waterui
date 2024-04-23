@@ -83,3 +83,32 @@ impl<V: View + 'static> View for TextField<V> {
 pub fn field(label: impl Compute<Output = String>, value: &Binding<String>) -> TextField<Text> {
     TextField::new(label, value)
 }
+
+mod ffi {
+    use waterui_ffi::{binding::BindingStr, computed::ComputedStr, ffi_view, AnyView, IntoFFI};
+
+    #[repr(C)]
+    pub struct TextField {
+        label: AnyView,
+        value: BindingStr,
+        prompt: ComputedStr,
+    }
+
+    impl IntoFFI for super::RawTextField {
+        type FFI = TextField;
+        fn into_ffi(self) -> Self::FFI {
+            TextField {
+                label: self._label.into_ffi(),
+                value: self._value.into_ffi(),
+                prompt: self._prompt.into_ffi(),
+            }
+        }
+    }
+
+    ffi_view!(
+        super::RawTextField,
+        TextField,
+        waterui_view_force_as_field,
+        waterui_view_field_id
+    );
+}
