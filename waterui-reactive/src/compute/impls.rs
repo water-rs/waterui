@@ -22,7 +22,7 @@ impl<T: Clone + 'static> Compute for Binding<T> {
     }
 }
 
-impl_constant!(Cow<'static, str>, u64, i64, f64, bool);
+impl_constant!(Cow<'static, str>, isize, bool);
 
 impl Compute for &'static str {
     type Output = Cow<'static, str>;

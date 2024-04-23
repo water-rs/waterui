@@ -1,4 +1,3 @@
-use alloc::string::String;
 use waterui_reactive::{
     binding::BindingStr,
     compute::{ComputeStr, ComputedStr},
@@ -42,29 +41,34 @@ impl Default for TextFieldStyle {
 raw_view!(RawTextField);
 
 impl TextField<()> {
-    pub fn binding(value: &BindingStr) -> Self {
-        Self::label((), value)
+    pub fn new(value: &BindingStr) -> Self {
+        Self {
+            label: (),
+            value: value.clone(),
+            prompt: "".computed(),
+            style: TextFieldStyle::default(),
+        }
     }
 }
 
-impl TextField<Text> {
-    pub fn new(label: impl ComputeStr, value: &BindingStr) -> Self {
-        Self::label(Text::new(label), value)
+impl<Label> TextField<Label> {
+    pub fn label(self, label: impl ComputeStr) -> TextField<Text> {
+        self.label_view(Text::new(label))
+    }
+
+    pub fn label_view<V: 'static>(self, label: V) -> TextField<V> {
+        TextField {
+            label,
+            value: self.value,
+            prompt: self.prompt,
+            style: self.style,
+        }
     }
 }
 
 impl_label!(TextField);
 
-impl<V: View + 'static> TextField<V> {
-    pub fn label(label: V, value: &BindingStr) -> Self {
-        Self {
-            label,
-            value: value.clone(),
-            prompt: String::new().computed(),
-            style: TextFieldStyle::default(),
-        }
-    }
-
+impl<V: View> TextField<V> {
     pub fn prompt(mut self, prompt: impl ComputeStr) -> Self {
         self.prompt = prompt.computed();
         self
@@ -83,7 +87,7 @@ impl<V: View + 'static> View for TextField<V> {
 }
 
 pub fn field(label: impl ComputeStr, value: &BindingStr) -> TextField<Text> {
-    TextField::new(label, value)
+    TextField::new(value).label(label)
 }
 
 mod ffi {
