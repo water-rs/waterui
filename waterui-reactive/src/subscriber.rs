@@ -1,6 +1,6 @@
 use crate::Compute;
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
-use core::cell::RefCell;
+use core::{cell::RefCell, num::NonZeroUsize};
 
 pub type Subscriber = Box<dyn Fn()>;
 pub type SharedSubscriberManager = Rc<SubscriberManager>;
@@ -20,7 +20,7 @@ impl SubscriberManager {
             inner: RefCell::new(SubscriberManagerInner::new()),
         }
     }
-    pub fn register(&self, subscriber: Subscriber) -> usize {
+    pub fn register(&self, subscriber: Subscriber) -> NonZeroUsize {
         self.inner.borrow_mut().register(subscriber)
     }
 
@@ -28,30 +28,33 @@ impl SubscriberManager {
         self.inner.borrow().notify()
     }
 
-    pub fn cancel(&self, id: usize) {
+    pub fn cancel(&self, id: NonZeroUsize) {
         self.inner.borrow_mut().cancel(id)
     }
 }
 struct SubscriberManagerInner {
-    id: usize,
-    map: BTreeMap<usize, Subscriber>,
+    id: NonZeroUsize,
+    map: BTreeMap<NonZeroUsize, Subscriber>,
 }
 
 impl SubscriberManagerInner {
     pub const fn new() -> Self {
-        Self {
-            id: 0,
-            map: BTreeMap::new(),
+        unsafe {
+            Self {
+                id: NonZeroUsize::new_unchecked(1),
+                map: BTreeMap::new(),
+            }
         }
     }
-    pub fn register(&mut self, subscriber: Subscriber) -> usize {
-        let id = self
+    pub fn register(&mut self, subscriber: Subscriber) -> NonZeroUsize {
+        let id = self.id;
+        self.map.insert(id, subscriber);
+
+        self.id = self
             .id
             .checked_add(1)
             .expect("`id` grows beyond `usize::MAX`");
-        self.id = id; // fix bug!
 
-        self.map.insert(id, subscriber);
         id
     }
 
@@ -61,7 +64,7 @@ impl SubscriberManagerInner {
         }
     }
 
-    pub fn cancel(&mut self, id: usize) {
+    pub fn cancel(&mut self, id: NonZeroUsize) {
         self.map.remove(&id);
     }
 }
@@ -72,14 +75,14 @@ where
     V: Compute,
 {
     source: &'a V,
-    id: usize,
+    id: Option<NonZeroUsize>,
 }
 
 impl<'a, V> SubscribeGuard<'a, V>
 where
     V: Compute,
 {
-    pub fn new(source: &'a V, id: usize) -> Self {
+    pub fn new(source: &'a V, id: Option<NonZeroUsize>) -> Self {
         Self { source, id }
     }
 }
@@ -89,6 +92,6 @@ where
     V: Compute + ?Sized,
 {
     fn drop(&mut self) {
-        self.source.cancel_subscriber(self.id);
+        self.id.inspect(|id| self.source.cancel_subscriber(*id));
     }
 }

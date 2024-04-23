@@ -46,3 +46,28 @@ impl Default for Background {
         Self::Default
     }
 }
+
+pub trait HandleBorrowed<F> {
+    fn handle(self, f: F) -> impl Fn() + 'static;
+}
+
+macro_rules! impl_handle_borrowed {
+    ($($ty:ident),*) => {
+        #[allow(non_snake_case)]
+        #[allow(unused_variables)]
+        #[allow(unused_parens)]
+        impl <F,$($ty:Clone+'static,)*>HandleBorrowed<F> for ($(&$ty),*)
+        where
+            F: Fn($(&$ty),*) + 'static{
+
+            fn handle(self, f: F) -> impl Fn() + 'static {
+                let ($($ty),*) = self;
+                let ($($ty),*) = ($($ty.clone()),*);
+
+                move || f($(&$ty),*)
+            }
+        }
+    };
+}
+
+tuples!(impl_handle_borrowed);

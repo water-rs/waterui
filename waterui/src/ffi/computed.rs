@@ -15,12 +15,17 @@ macro_rules! impl_computed {
 
         #[no_mangle]
         unsafe extern "C" fn $subscribe(computed: *const $name, subscriber: Closure) -> usize {
-            (*computed).register_subscriber(alloc::boxed::Box::new(move || subscriber.call()))
+            (*computed)
+                .register_subscriber(alloc::boxed::Box::new(move || subscriber.call()))
+                .map(Into::into)
+                .unwrap_or(0)
         }
 
         #[no_mangle]
         unsafe extern "C" fn $unsubscribe(computed: *const $name, id: usize) {
-            (*computed).cancel_subscriber(id);
+            if let Some(id) = core::num::NonZeroUsize::new(id) {
+                (*computed).cancel_subscriber(id);
+            }
         }
 
         #[no_mangle]

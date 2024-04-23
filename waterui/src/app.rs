@@ -1,3 +1,5 @@
+use core::future::Future;
+
 use crate::{AnyView, Environment, View, ViewExt};
 
 pub struct App {
@@ -54,36 +56,13 @@ impl App {
         }
     }
 
-    pub fn env<T: 'static>(mut self, value: T) -> Self {
-        self._env.insert(value);
-        self
-    }
-
-    pub fn ready(&self) -> AppIgniter {
-        AppIgniter {
-            #[cfg(feature = "async")]
-            executor: self._env.executor(),
-        }
-    }
-}
-
-pub struct AppIgniter {
-    #[cfg(feature = "async")]
-    executor: crate::env::Executor,
-}
-
-impl AppIgniter {
-    #[cfg(feature = "async")]
-    pub fn task<Fut>(&self, fut: Fut) -> smol::Task<Fut::Output>
+    pub fn run<F, Fut>(self, start: F)
     where
-        Fut: core::future::Future + 'static,
-        Fut::Output: 'static,
+        F: FnOnce(Self) -> Fut,
+        Fut: Future<Output = ()> + 'static,
     {
-        self.executor.spawn(fut)
-    }
-
-    pub fn ignite(&self) {
-        #[cfg(feature = "async")]
-        smol::block_on(self.executor.run())
+        let env = self._env.clone();
+        env.task(start(self)).detach();
+        smol::block_on(env.executor().run());
     }
 }
