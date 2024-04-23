@@ -28,7 +28,7 @@ macro_rules! impl_from {
 
 macro_rules! impl_label {
     ($ty:ident) => {
-        impl $ty<Text> {
+        impl $ty<$crate::component::Text> {
             pub fn font(mut self, font: crate::component::text::Font) -> Self {
                 self.label = self.label.font(font);
                 self
