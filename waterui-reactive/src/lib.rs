@@ -19,11 +19,11 @@ macro_rules! impl_constant {
                     self.clone()
                 }
 
-                fn register_subscriber(&self, _subscriber: $crate::Subscriber) -> usize {
-                    0
+                fn register_subscriber(&self, _subscriber: $crate::Subscriber) -> Option<core::num::NonZeroUsize> {
+                    None
                 }
 
-                fn cancel_subscriber(&self, _id: usize) {}
+                fn cancel_subscriber(&self, _id: core::num::NonZeroUsize) {}
 
                 fn computed(self) -> $crate::Computed<Self::Output> {
                     $crate::Computed::new(self.clone())

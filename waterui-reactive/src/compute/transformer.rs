@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use crate::{Compute, Computed, Subscriber};
 
 pub struct ComputeTransformer<C, F> {
@@ -26,11 +28,11 @@ where
         (self.transformer)(self.source.compute())
     }
 
-    fn register_subscriber(&self, subscriber: Subscriber) -> usize {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         self.source.register_subscriber(subscriber)
     }
 
-    fn cancel_subscriber(&self, id: usize) {
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.source.cancel_subscriber(id)
     }
 
