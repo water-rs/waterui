@@ -63,7 +63,7 @@ typedef struct WaterUIStack {
 } WaterUIStack;
 
 typedef struct WaterUIBindingStr {
-  uintptr_t inner[1];
+  uintptr_t inner[2];
 } WaterUIBindingStr;
 
 typedef struct WaterUITextField {
@@ -73,7 +73,7 @@ typedef struct WaterUITextField {
 } WaterUITextField;
 
 typedef struct WaterUIBindingBool {
-  uintptr_t inner[1];
+  uintptr_t inner[2];
 } WaterUIBindingBool;
 
 typedef struct WaterUIToggle {
@@ -93,7 +93,7 @@ typedef struct WaterUIProgress {
 } WaterUIProgress;
 
 typedef struct WaterUIBindingInt {
-  uintptr_t inner[1];
+  uintptr_t inner[2];
 } WaterUIBindingInt;
 
 typedef struct WaterUIStepper {

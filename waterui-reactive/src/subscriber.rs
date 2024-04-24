@@ -1,4 +1,3 @@
-use crate::Compute;
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
 use core::{cell::RefCell, num::NonZeroUsize};
 
@@ -66,32 +65,5 @@ impl SubscriberManagerInner {
 
     pub fn cancel(&mut self, id: NonZeroUsize) {
         self.map.remove(&id);
-    }
-}
-
-#[must_use]
-pub struct SubscribeGuard<'a, V: ?Sized>
-where
-    V: Compute,
-{
-    source: &'a V,
-    id: Option<NonZeroUsize>,
-}
-
-impl<'a, V> SubscribeGuard<'a, V>
-where
-    V: Compute,
-{
-    pub fn new(source: &'a V, id: Option<NonZeroUsize>) -> Self {
-        Self { source, id }
-    }
-}
-
-impl<'a, V> Drop for SubscribeGuard<'a, V>
-where
-    V: Compute + ?Sized,
-{
-    fn drop(&mut self) {
-        self.id.inspect(|id| self.source.cancel_subscriber(*id));
     }
 }
