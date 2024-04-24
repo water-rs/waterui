@@ -1,16 +1,16 @@
+use super::Text;
 use crate::view::ViewExt;
+use waterui_reactive::ComputeExt;
 use waterui_reactive::{
-    compute::{ComputeStr, ComputedInt},
-    Compute, ComputeExt, Computed,
+    compute::{IntoCompute, IntoComputed},
+    Computed, CowStr,
 };
 use waterui_view::{AnyView, View};
-
-use super::Text;
 
 const PROGRESS_INNER_VALUE_MAX: isize = 10 ^ 5;
 pub struct Progress<Label> {
     label: Label,
-    progress: ComputedInt,
+    progress: Computed<isize>,
     style: ProgressStyle,
 }
 
@@ -39,7 +39,7 @@ impl Progress<()> {
         }
     }
 
-    pub fn new(progress: impl Compute<Output = impl Into<Option<f64>> + 'static> + Clone) -> Self {
+    pub fn new(progress: impl IntoCompute<Option<f64>> + 'static) -> Self {
         Self::infinity().progress(progress)
     }
 }
@@ -50,13 +50,10 @@ impl<Label: View> Progress<Label> {
         self
     }
 
-    pub fn progress(
-        mut self,
-        progress: impl Compute<Output = impl Into<Option<f64>> + 'static> + Clone,
-    ) -> Self {
+    pub fn progress(mut self, progress: impl IntoCompute<Option<f64>> + 'static) -> Self {
         self.progress = progress
-            .transform(|n| {
-                let n = n.into();
+            .into_compute()
+            .map(|n| {
                 if let Some(n) = n {
                     PROGRESS_INNER_VALUE_MAX / ((1.0 / n) as isize)
                 } else {
@@ -75,7 +72,7 @@ impl<Label: View> Progress<Label> {
         }
     }
 
-    pub fn label(self, label: impl ComputeStr) -> Progress<Text> {
+    pub fn label(self, label: impl IntoComputed<CowStr>) -> Progress<Text> {
         self.label_view(Text::new(label))
     }
 }
@@ -92,7 +89,7 @@ impl<Label: View + 'static> View for Progress<Label> {
 
 pub struct RawProgress {
     pub _label: AnyView,
-    pub _progress: ComputedInt,
+    pub _progress: Computed<isize>,
     pub _style: ProgressStyle,
 }
 

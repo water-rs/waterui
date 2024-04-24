@@ -1,12 +1,12 @@
 use core::{cell::RefCell, ops::Deref};
 
+use crate::{AnyView, View};
 use alloc::rc::Rc;
+use waterui_reactive::ComputeExt;
 use waterui_reactive::{
     subscriber::{SharedSubscriberManager, SubscriberManager},
-    Compute, Computed,
+    Binding, Compute, Computed,
 };
-
-use crate::{AnyView, View};
 
 pub struct DynamicView {
     inner: Computed<AnyView>,
@@ -33,7 +33,7 @@ impl DynamicViewHandle {
 }
 
 impl DynamicView {
-    pub fn from_compute(compute: impl Compute<Output = AnyView>) -> Self {
+    pub fn from_compute(compute: impl Compute<Output = AnyView> + 'static) -> Self {
         Self {
             inner: compute.computed(),
         }
@@ -44,23 +44,21 @@ impl DynamicView {
     ) -> (Self, DynamicViewHandle) {
         let subscribers = Rc::new(SubscriberManager::new());
         let handle = DynamicViewHandle::empty(subscribers.clone());
-
-        let computed = Computed::from_fn_with_subscribers(
-            {
-                let handle = handle.clone();
-                move || {
-                    handle
-                        .inner
-                        .deref()
-                        .borrow_mut()
-                        .take()
-                        .unwrap_or(AnyView::new(default_view()))
-                }
+        let container: RefCell<Option<AnyView>> = RefCell::new(None);
+        let binding = Binding::from_fn_with_state(
+            container,
+            move |container| {
+                container
+                    .borrow_mut()
+                    .take()
+                    .unwrap_or_else(|| AnyView::new(default_view()))
             },
-            subscribers,
+            |container, view| {
+                let _ = container.borrow_mut().insert(view);
+            },
         );
 
-        (Self::from_compute(computed), handle)
+        (Self::from_compute(binding), handle)
     }
 }
 
