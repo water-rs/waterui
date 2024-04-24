@@ -1,49 +1,53 @@
-use core::{
-    fmt::{Debug, Display},
-    num::NonZeroUsize,
-    ops::Deref,
-};
+use core::fmt::Debug;
+use core::{any::type_name, num::NonZeroUsize};
 
 mod grouped;
-use alloc::{
-    borrow::Cow,
-    boxed::Box,
-    rc::Rc,
-    string::{String, ToString},
-};
 pub use grouped::GroupedCompute;
-mod impls;
-mod transformer;
-use crate::{
-    subscriber::{SharedSubscriberManager, SubscribeGuard, SubscriberManager},
-    Subscriber,
-};
 
-use self::transformer::ComputeTransformer;
+use alloc::boxed::Box;
+mod impls;
+mod map;
+use crate::{subscriber::SubscriberManager, Subscriber};
+pub use map::Map;
+
+pub trait IntoCompute<T>: Compute {
+    fn into_compute(self) -> impl Compute<Output = T>;
+}
+
+pub trait IntoComputed<T>: IntoCompute<T> + 'static {
+    fn into_computed(self) -> Computed<T>;
+}
+
+impl<C, T> IntoCompute<T> for C
+where
+    C: Compute,
+    C::Output: Into<T>,
+{
+    fn into_compute(self) -> impl Compute<Output = T> {
+        self.map(Into::into)
+    }
+}
+
+impl<C, T> IntoComputed<T> for C
+where
+    C: Compute + 'static,
+    C::Output: Into<T>,
+    T: 'static,
+{
+    fn into_computed(self) -> Computed<T> {
+        Computed::new(self.into_compute())
+    }
+}
 
 pub trait Compute {
     type Output;
     fn compute(&self) -> Self::Output;
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize>;
     fn cancel_subscriber(&self, id: NonZeroUsize);
-    fn computed(self) -> Computed<Self::Output>;
+    fn notify(&self);
 }
 
-macro_rules! alia {
-    ($compute:ident,$computed:ident,$ty:ty) => {
-        pub type $computed = Computed<$ty>;
-
-        pub trait $compute: Compute<Output = $ty> {}
-
-        impl<C> $compute for C where C: Compute<Output = $ty> {}
-    };
-}
-
-alia!(ComputeStr, ComputedStr, Cow<'static, str>);
-alia!(ComputeBool, ComputedBool, bool);
-alia!(ComputeInt, ComputedInt, isize);
-
-impl<C: Compute + Clone + 'static> Compute for &C {
+impl<C: Compute + 'static> Compute for &C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
         (*self).compute()
@@ -57,8 +61,8 @@ impl<C: Compute + Clone + 'static> Compute for &C {
         (*self).cancel_subscriber(id)
     }
 
-    fn computed(self) -> Computed<Self::Output> {
-        Computed::new(self.clone())
+    fn notify(&self) {
+        (*self).notify()
     }
 }
 
@@ -78,24 +82,24 @@ impl<C: Compute + 'static> Compute for Option<C> {
         self.as_ref().inspect(|c| c.cancel_subscriber(id));
     }
 
-    fn computed(self) -> Computed<Self::Output> {
-        Computed::new(self)
+    fn notify(&self) {
+        self.as_ref().inspect(|c| c.notify());
     }
 }
 
 pub trait ComputeExt: Compute {
     fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self>;
-    fn transform<Output>(
-        &self,
-        transformer: impl 'static + Fn(Self::Output) -> Output,
-    ) -> impl Compute<Output = Output>
+    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> SubscribeGuard<'_, Self>
     where
-        Self::Output: 'static,
-        Self: Clone;
-    fn display(&self) -> impl Compute<Output = String>
+        Self: 'static + Clone;
+
+    fn map<F, Output>(self, f: F) -> Map<Self, F>
     where
-        Self: Clone,
-        Self::Output: Display + 'static;
+        F: Fn(Self::Output) -> Output,
+        Self: Sized;
+    fn computed(self) -> Computed<Self::Output>
+    where
+        Self: Sized + 'static;
 }
 
 impl<C: Compute> ComputeExt for C {
@@ -103,23 +107,27 @@ impl<C: Compute> ComputeExt for C {
         SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
     }
 
-    fn transform<Output>(
-        &self,
-        transformer: impl 'static + Fn(Self::Output) -> Output,
-    ) -> impl Compute<Output = Output>
+    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> SubscribeGuard<'_, Self>
     where
-        Self::Output: 'static,
-        Self: Clone,
+        Self: 'static + Clone,
     {
-        ComputeTransformer::new(self.clone().computed(), transformer)
+        let this = self.clone();
+        self.subscribe(move || watcher(this.compute()))
     }
 
-    fn display(&self) -> impl Compute<Output = String>
+    fn map<F, Output>(self, f: F) -> Map<Self, F>
     where
-        Self: Clone,
-        Self::Output: Display + 'static,
+        F: Fn(Self::Output) -> Output,
+        Self: Sized,
     {
-        self.transform(|v| v.to_string())
+        Map::new(self, f)
+    }
+
+    fn computed(self) -> Computed<Self::Output>
+    where
+        Self: Sized + 'static,
+    {
+        Computed::new(self)
     }
 }
 
@@ -127,122 +135,9 @@ pub struct Computed<T> {
     inner: Box<dyn Compute<Output = T>>,
 }
 
-impl<T> Computed<T> {
-    pub fn from_fn(compute: impl 'static + Fn() -> T) -> (Computed<T>, SharedSubscriberManager) {
-        let subscribers = Rc::new(SubscriberManager::new());
-        (
-            Computed::new(ComputeImpl {
-                compute: Rc::new(compute),
-                subscribers: subscribers.clone(),
-            }),
-            subscribers,
-        )
-    }
-
-    pub fn from_fn_with_subscribers(
-        compute: impl 'static + Fn() -> T,
-        subscribers: SharedSubscriberManager,
-    ) -> Computed<T> {
-        Computed::new(ComputeImpl {
-            compute: Rc::new(compute),
-            subscribers: subscribers.clone(),
-        })
-    }
-
-    pub fn into_inner(self) -> Box<dyn Compute<Output = T>> {
-        self.inner
-    }
-}
-
-impl<T: Debug + 'static> Debug for Computed<T> {
+impl<T> Debug for Computed<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        Compute::compute(self).fmt(f)
-    }
-}
-
-impl<T: Display + 'static> Display for Computed<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        Compute::compute(self).fmt(f)
-    }
-}
-
-struct ComputeImpl<F> {
-    compute: Rc<F>,
-    subscribers: SharedSubscriberManager,
-}
-
-impl<F, T> Compute for ComputeImpl<F>
-where
-    F: 'static + Fn() -> T,
-{
-    type Output = T;
-    fn compute(&self) -> T {
-        (self.compute)()
-    }
-
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
-        Some(self.subscribers.register(subscriber))
-    }
-
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        self.subscribers.cancel(id)
-    }
-
-    fn computed(self) -> Computed<Self::Output> {
-        Computed::new(self)
-    }
-}
-
-struct ConsantCompute<T> {
-    value: T,
-}
-
-impl<T> ConsantCompute<T> {
-    pub fn new(value: T) -> Self {
-        Self { value }
-    }
-}
-
-impl<T: Clone + 'static> Compute for ConsantCompute<T> {
-    type Output = T;
-
-    fn compute(&self) -> Self::Output {
-        self.value.clone()
-    }
-
-    fn register_subscriber(&self, _subscriber: Subscriber) -> Option<NonZeroUsize> {
-        None
-    }
-
-    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
-
-    fn computed(self) -> Computed<Self::Output> {
-        Computed::new(self)
-    }
-}
-
-impl<T: Clone + 'static> Computed<T> {
-    pub fn constant(value: T) -> Self {
-        Computed::new(ConsantCompute::new(value))
-    }
-}
-
-impl<T> Compute for Computed<T> {
-    type Output = T;
-    fn compute(&self) -> T {
-        Compute::compute(self.inner.deref())
-    }
-
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
-        Compute::register_subscriber(self.inner.deref(), subscriber)
-    }
-
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        Compute::cancel_subscriber(self.inner.deref(), id)
-    }
-
-    fn computed(self) -> Computed<Self::Output> {
-        self
+        f.write_str(type_name::<Self>())
     }
 }
 
@@ -251,5 +146,111 @@ impl<T> Computed<T> {
         Self {
             inner: Box::new(compute),
         }
+    }
+}
+
+impl<T: Clone + 'static> Computed<T> {
+    pub fn constant(value: T) -> Self {
+        Self::new(Constant::new(value))
+    }
+}
+
+impl<T> Compute for Computed<T> {
+    type Output = T;
+    fn compute(&self) -> Self::Output {
+        self.inner.compute()
+    }
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+        self.inner.register_subscriber(subscriber)
+    }
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
+        self.inner.cancel_subscriber(id)
+    }
+
+    fn notify(&self) {
+        self.inner.notify()
+    }
+}
+
+pub struct ComputeFn<F> {
+    f: F,
+    subscribers: SubscriberManager,
+}
+
+impl<F> ComputeFn<F> {
+    pub fn new(f: F) -> Self {
+        Self {
+            f,
+            subscribers: SubscriberManager::new(),
+        }
+    }
+}
+
+impl<T, F> Compute for ComputeFn<F>
+where
+    F: Fn(&SubscriberManager) -> T,
+{
+    type Output = T;
+    fn compute(&self) -> Self::Output {
+        (self.f)(&self.subscribers)
+    }
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+        Some(self.subscribers.register(subscriber))
+    }
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
+        self.subscribers.cancel(id)
+    }
+
+    fn notify(&self) {
+        self.subscribers.notify();
+    }
+}
+
+pub struct Constant<T> {
+    value: T,
+}
+
+impl<T> Constant<T> {
+    pub fn new(value: T) -> Self {
+        Self { value }
+    }
+}
+
+impl<T: Clone> Compute for Constant<T> {
+    type Output = T;
+    fn compute(&self) -> Self::Output {
+        self.value.clone()
+    }
+    fn register_subscriber(&self, _subscriber: Subscriber) -> Option<NonZeroUsize> {
+        None
+    }
+    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
+    fn notify(&self) {}
+}
+
+#[must_use]
+pub struct SubscribeGuard<'a, V: ?Sized>
+where
+    V: Compute,
+{
+    source: &'a V,
+    id: Option<NonZeroUsize>,
+}
+
+impl<'a, V> SubscribeGuard<'a, V>
+where
+    V: Compute,
+{
+    pub fn new(source: &'a V, id: Option<NonZeroUsize>) -> Self {
+        Self { source, id }
+    }
+}
+
+impl<'a, V> Drop for SubscribeGuard<'a, V>
+where
+    V: Compute + ?Sized,
+{
+    fn drop(&mut self) {
+        self.id.inspect(|id| self.source.cancel_subscriber(*id));
     }
 }

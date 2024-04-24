@@ -1,4 +1,4 @@
-use waterui_reactive::{binding::BindingBool, compute::ComputeStr, Binding};
+use waterui_reactive::{compute::IntoComputed, Binding, CowStr};
 
 use crate::{AnyView, View, ViewExt};
 
@@ -7,7 +7,7 @@ use super::Text;
 #[derive(Debug)]
 pub struct Toggle<Label> {
     label: Label,
-    toggle: BindingBool,
+    toggle: Binding<bool>,
     style: ToggleStyle,
 }
 
@@ -15,7 +15,7 @@ pub struct Toggle<Label> {
 #[non_exhaustive]
 pub struct RawToggle {
     pub _label: AnyView,
-    pub _toggle: BindingBool,
+    pub _toggle: Binding<bool>,
     pub _style: ToggleStyle,
 }
 
@@ -47,7 +47,7 @@ impl Toggle<()> {
 }
 
 impl<Label: View> Toggle<Label> {
-    pub fn label(self, label: impl ComputeStr) -> Toggle<Text> {
+    pub fn label(self, label: impl IntoComputed<CowStr>) -> Toggle<Text> {
         self.label_view(Text::new(label))
     }
     pub fn label_view<V: View>(self, label: V) -> Toggle<V> {
@@ -71,7 +71,7 @@ impl<Label: View + 'static> View for Toggle<Label> {
     }
 }
 
-pub fn toggle(label: impl ComputeStr, toggle: &BindingBool) -> Toggle<Text> {
+pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggle<Text> {
     Toggle::new(toggle).label(label)
 }
 
