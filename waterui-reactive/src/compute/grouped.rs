@@ -2,7 +2,7 @@ use core::num::NonZeroUsize;
 
 use alloc::boxed::Box;
 
-use crate::{subscriber::SharedSubscriberManager, Compute, Computed, Subscriber};
+use crate::{subscriber::SharedSubscriberManager, Compute, Subscriber};
 
 pub struct GroupedCompute<C, const LEN: usize>
 where
@@ -66,13 +66,8 @@ where
         self.subscribers.cancel(id)
     }
 
-    fn computed(mut self) -> Computed<Self::Output> {
-        let computes = self.computes.take().unwrap();
-        Computed::new(GroupedCompute {
-            computes: Some((computes.0.computed(), computes.1.computed())),
-            guards: self.guards,
-            subscribers: self.subscribers.clone(),
-        })
+    fn notify(&self) {
+        self.subscribers.notify();
     }
 }
 

@@ -1,13 +1,10 @@
-use waterui_reactive::{
-    compute::{ComputeBool, ComputeStr, ComputedBool, ComputedStr},
-    Compute,
-};
+use waterui_reactive::{compute::IntoComputed, Computed, CowStr};
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Text {
-    pub _content: ComputedStr,
-    pub _selection: ComputedBool,
+    pub _content: Computed<CowStr>,
+    pub _selection: Computed<bool>,
     pub _font: Font,
 }
 
@@ -30,10 +27,10 @@ impl Default for Font {
 raw_view!(Text);
 
 impl Text {
-    pub fn new(text: impl ComputeStr) -> Self {
+    pub fn new(text: impl IntoComputed<CowStr>) -> Self {
         Self {
-            _content: text.computed(),
-            _selection: true.computed(),
+            _content: text.into_computed(),
+            _selection: true.into_computed(),
             _font: Font::default(),
         }
     }
@@ -48,13 +45,13 @@ impl Text {
         self
     }
 
-    pub fn selection(mut self, selection: impl ComputeBool) -> Self {
-        self._selection = selection.computed();
+    pub fn selection(mut self, selection: impl IntoComputed<bool>) -> Self {
+        self._selection = selection.into_computed();
         self
     }
 }
 
-pub fn text(text: impl ComputeStr) -> Text {
+pub fn text(text: impl IntoComputed<CowStr>) -> Text {
     Text::new(text)
 }
 

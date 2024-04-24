@@ -1,24 +1,21 @@
-use waterui_reactive::{
-    binding::BindingStr,
-    compute::{ComputeStr, ComputedStr},
-};
+use waterui_reactive::{compute::IntoComputed, Binding, Computed, CowStr};
 
-use crate::{AnyView, Compute, View, ViewExt};
+use crate::{AnyView, View, ViewExt};
 
 use super::Text;
 
 pub struct TextField<Label> {
     label: Label,
-    value: BindingStr,
-    prompt: ComputedStr,
+    value: Binding<CowStr>,
+    prompt: Computed<CowStr>,
     style: TextFieldStyle,
 }
 
 #[non_exhaustive]
 pub struct RawTextField {
     pub _label: AnyView,
-    pub _value: BindingStr,
-    pub _prompt: ComputedStr,
+    pub _value: Binding<CowStr>,
+    pub _prompt: Computed<CowStr>,
     pub _style: TextFieldStyle,
 }
 
@@ -41,18 +38,18 @@ impl Default for TextFieldStyle {
 raw_view!(RawTextField);
 
 impl TextField<()> {
-    pub fn new(value: &BindingStr) -> Self {
+    pub fn new(value: &Binding<CowStr>) -> Self {
         Self {
             label: (),
             value: value.clone(),
-            prompt: "".computed(),
+            prompt: "".into_computed(),
             style: TextFieldStyle::default(),
         }
     }
 }
 
 impl<Label> TextField<Label> {
-    pub fn label(self, label: impl ComputeStr) -> TextField<Text> {
+    pub fn label(self, label: impl IntoComputed<CowStr>) -> TextField<Text> {
         self.label_view(Text::new(label))
     }
 
@@ -69,8 +66,8 @@ impl<Label> TextField<Label> {
 impl_label!(TextField);
 
 impl<V: View> TextField<V> {
-    pub fn prompt(mut self, prompt: impl ComputeStr) -> Self {
-        self.prompt = prompt.computed();
+    pub fn prompt(mut self, prompt: impl IntoComputed<CowStr>) -> Self {
+        self.prompt = prompt.into_computed();
         self
     }
 }
@@ -86,7 +83,7 @@ impl<V: View + 'static> View for TextField<V> {
     }
 }
 
-pub fn field(label: impl ComputeStr, value: &BindingStr) -> TextField<Text> {
+pub fn field(label: impl IntoComputed<CowStr>, value: &Binding<CowStr>) -> TextField<Text> {
     TextField::new(value).label(label)
 }
 

@@ -1,16 +1,15 @@
 use crate::{Closure, Utf8Data};
 use alloc::{borrow::Cow, boxed::Box};
-use waterui_reactive::Binding;
-
+use core::num::NonZeroUsize;
+use waterui_reactive::{Binding, Compute};
 // WARNING: Binding<T> must be called on the Rust thread!!!
 
 macro_rules! impl_binding {
     ($name:ident,$ty:ty,$ffi:ty,$read:ident,$write:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
-        ffi_opaque!($name, Binding<$ty>, 1, $drop);
-
+        ffi_opaque!($name, Binding<$ty>, 2, $drop);
         #[no_mangle]
         unsafe extern "C" fn $read(binding: *const $name) -> $ffi {
-            $crate::IntoFFI::into_ffi((*binding).get())
+            $crate::IntoFFI::into_ffi((*binding).compute())
         }
 
         #[no_mangle]
@@ -23,7 +22,8 @@ macro_rules! impl_binding {
         unsafe extern "C" fn $subscribe(binding: *const $name, subscriber: Closure) -> usize {
             (*binding)
                 .register_subscriber(Box::new(move || subscriber.call()))
-                .into()
+                .map(NonZeroUsize::get)
+                .unwrap_or(0)
         }
 
         #[no_mangle]

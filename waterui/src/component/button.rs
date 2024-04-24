@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
-use waterui_reactive::compute::ComputeStr;
+use waterui_reactive::compute::IntoComputed;
+use waterui_reactive::CowStr;
 
 use crate::AnyView;
 use crate::{Environment, View, ViewExt};
@@ -45,7 +46,7 @@ impl<Label: View + 'static> Button<Label> {
 }
 
 impl Button<Text> {
-    pub fn new(label: impl ComputeStr) -> Self {
+    pub fn new(label: impl IntoComputed<CowStr>) -> Self {
         Self::label(Text::new(label))
     }
 }
@@ -63,7 +64,7 @@ impl<Label: View + 'static> View for Button<Label> {
 
 raw_view!(RawButton);
 
-pub fn button(label: impl ComputeStr) -> Button<Text> {
+pub fn button(label: impl IntoComputed<CowStr>) -> Button<Text> {
     Button::new(label)
 }
 

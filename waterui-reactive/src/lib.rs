@@ -2,12 +2,15 @@
 extern crate alloc;
 
 pub mod binding;
+use alloc::borrow::Cow;
 pub use binding::Binding;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
+
 pub mod subscriber;
 pub use subscriber::Subscriber;
 
+pub type CowStr = Cow<'static, str>;
 #[macro_export]
 macro_rules! impl_constant {
     ($($ty:ty),*) => {
@@ -24,10 +27,8 @@ macro_rules! impl_constant {
                 }
 
                 fn cancel_subscriber(&self, _id: core::num::NonZeroUsize) {}
+                fn notify(&self) {}
 
-                fn computed(self) -> $crate::Computed<Self::Output> {
-                    $crate::Computed::new(self.clone())
-                }
             }
         )*
     };
