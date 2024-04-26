@@ -21,7 +21,7 @@ ffi_view!(
     waterui_view_any_id
 );
 
-ffi_opaque!(Environment, waterui_view::Environment, 1, waterui_drop_env);
+ffi_opaque!(Environment, waterui_view::Environment, 4, waterui_drop_env);
 ffi_opaque!(
     Action,
     Box<dyn Fn(&waterui_view::Environment)>,
