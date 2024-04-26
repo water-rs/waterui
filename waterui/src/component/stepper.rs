@@ -1,21 +1,21 @@
-use waterui_reactive::{compute::IntoComputed, Binding, Computed};
+use waterui_reactive::{compute::IntoComputed, Binding, Computed, Int};
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Stepper {
-    pub _value: Binding<isize>,
-    pub _step: Computed<isize>,
+    pub _value: Binding<Int>,
+    pub _step: Computed<Int>,
 }
 
 impl Stepper {
-    pub fn new(value: &Binding<isize>) -> Self {
+    pub fn new(value: &Binding<Int>) -> Self {
         Self {
             _value: value.clone(),
             _step: 1.into_computed(),
         }
     }
 
-    pub fn step(mut self, step: impl IntoComputed<isize>) -> Self {
+    pub fn step(mut self, step: impl IntoComputed<Int>) -> Self {
         self._step = step.into_computed();
         self
     }
@@ -23,17 +23,19 @@ impl Stepper {
 
 raw_view!(Stepper);
 
-pub fn stepper(value: &Binding<isize>) -> Stepper {
+pub fn stepper(value: &Binding<Int>) -> Stepper {
     Stepper::new(value)
 }
 
 mod ffi {
-    use waterui_ffi::{binding::BindingInt, computed::ComputedInt, ffi_view, IntoFFI};
+    use waterui_ffi::{
+        binding::waterui_binding_int, computed::waterui_computed_int, ffi_view, IntoFFI,
+    };
 
     #[repr(C)]
     pub struct Stepper {
-        value: BindingInt,
-        step: ComputedInt,
+        value: *const waterui_binding_int,
+        step: *mut waterui_computed_int,
     }
 
     impl IntoFFI for super::Stepper {
