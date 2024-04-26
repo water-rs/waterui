@@ -6,14 +6,13 @@ use alloc::borrow::Cow;
 pub use binding::Binding;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
-mod container;
-pub use container::Container;
 mod reactive;
 pub use reactive::Reactive;
 pub mod subscriber;
 pub use subscriber::Subscriber;
 
 pub type CowStr = Cow<'static, str>;
+pub type Int = i32;
 #[macro_export]
 macro_rules! impl_constant {
     ($($ty:ty),*) => {
@@ -27,7 +26,7 @@ macro_rules! impl_constant {
 
             }
             impl $crate::Reactive for $ty{
-                fn register_subscriber(&self, _subscriber: $crate::Subscriber) -> Option<core::num::NonZeroUsize> {
+                fn register_subscriber(&self, _subscriber: $crate::subscriber::BoxSubscriber) -> Option<core::num::NonZeroUsize> {
                     None
                 }
 
@@ -42,7 +41,7 @@ impl_constant!(
     &'static str,
     alloc::string::String,
     crate::CowStr,
-    isize,
+    Int,
     bool
 );
 

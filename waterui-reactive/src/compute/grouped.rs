@@ -2,7 +2,10 @@ use core::num::NonZeroUsize;
 
 use alloc::boxed::Box;
 
-use crate::{subscriber::SharedSubscriberManager, Compute, Reactive, Subscriber};
+use crate::{
+    subscriber::{BoxSubscriber, SharedSubscriberManager},
+    Compute, Reactive,
+};
 
 pub struct GroupedCompute<C, const LEN: usize>
 where
@@ -63,7 +66,7 @@ impl<C, const LEN: usize> Reactive for GroupedCompute<C, LEN>
 where
     C: SubscribeManage<LEN>,
 {
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         Some(self.subscribers.register(subscriber))
     }
 
@@ -80,7 +83,7 @@ where
 pub trait SubscribeManage<const LEN: usize> {
     fn register_subscribers(
         &self,
-        subscriber: impl Fn() -> Subscriber,
+        subscriber: impl Fn() -> BoxSubscriber,
     ) -> [Option<NonZeroUsize>; LEN];
     fn cancel_subscribers(&self, guard: [Option<NonZeroUsize>; LEN]);
 }
@@ -92,7 +95,7 @@ where
 {
     fn register_subscribers(
         &self,
-        subscriber: impl Fn() -> Subscriber,
+        subscriber: impl Fn() -> BoxSubscriber,
     ) -> [Option<NonZeroUsize>; 2] {
         [
             self.0.register_subscriber(subscriber()),
