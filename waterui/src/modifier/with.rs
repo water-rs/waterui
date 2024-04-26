@@ -25,11 +25,11 @@ impl<T> View for WithValue<T> {
 
 #[doc(hidden)]
 pub mod ffi {
-    use waterui_ffi::{AnyView, IntoFFI};
+    use waterui_ffi::{waterui_anyview, IntoFFI};
 
     #[repr(C)]
     pub struct WithValue<T> {
-        content: AnyView,
+        content: *mut waterui_anyview,
         value: T,
     }
 

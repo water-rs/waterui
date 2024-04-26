@@ -121,13 +121,13 @@ pub fn zstack(contents: impl IntoViews) -> ZStack {
 }
 
 mod ffi {
-    use waterui_ffi::{ffi_view, IntoFFI, Views};
+    use waterui_ffi::{array::waterui_array, ffi_view, waterui_anyview, IntoFFI};
 
     use crate::component::stack::StackMode;
 
     #[repr(C)]
     pub struct Stack {
-        views: Views,
+        views: waterui_array<waterui_anyview>,
         mode: StackMode,
     }
 

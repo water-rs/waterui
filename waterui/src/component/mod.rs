@@ -13,7 +13,10 @@ mod progress;
 pub use progress::{progress, Progress};
 mod stepper;
 pub use stepper::{stepper, Stepper};
+/*
 #[cfg(feature = "remote-image")]
 mod remote_image;
 #[cfg(feature = "remote-image")]
-pub use remote_image::{remoteimg, RemoteImage};
+pub use remote_image::{remoteimg, RemoteImage};*/
+//mod each;
+mod picker;

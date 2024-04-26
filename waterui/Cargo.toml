@@ -10,6 +10,7 @@ log = "0.4.21"
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-view = { path = "../waterui-view" }
 waterui-ffi = { path = "../waterui-ffi" }
+bimap = "0.6.3"
 
 [build-dependencies]
 cbindgen = "0.26.0"

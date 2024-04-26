@@ -76,21 +76,23 @@ pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggl
 }
 
 mod ffi {
-    use waterui_ffi::{binding::BindingBool, ffi_view, AnyView, IntoFFI};
+    use waterui_ffi::{binding::waterui_binding_bool, ffi_view, waterui_anyview, IntoFFI};
 
-    use super::ToggleStyle;
+    use super::{RawToggle, ToggleStyle};
+
+    pub type waterui_style_toggle = ToggleStyle;
 
     #[repr(C)]
-    pub struct Toggle {
-        label: AnyView,
-        toggle: BindingBool,
-        style: ToggleStyle,
+    pub struct waterui_toggle {
+        label: *mut waterui_anyview,
+        toggle: *const waterui_binding_bool,
+        style: waterui_style_toggle,
     }
 
-    impl IntoFFI for super::RawToggle {
-        type FFI = Toggle;
+    impl IntoFFI for RawToggle {
+        type FFI = waterui_toggle;
         fn into_ffi(self) -> Self::FFI {
-            Toggle {
+            waterui_toggle {
                 label: self._label.into_ffi(),
                 toggle: self._toggle.into_ffi(),
                 style: self._style,
@@ -99,8 +101,8 @@ mod ffi {
     }
 
     ffi_view!(
-        super::RawToggle,
-        Toggle,
+        RawToggle,
+        waterui_toggle,
         waterui_view_force_as_toggle,
         waterui_view_toggle_id
     );
