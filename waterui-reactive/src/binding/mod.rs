@@ -2,9 +2,8 @@ use core::{any::type_name, fmt::Debug, num::NonZeroUsize};
 
 use alloc::rc::{Rc, Weak};
 
-use crate::{Compute, Subscriber};
+use crate::{Compute, Container, Reactive, Subscriber};
 mod bridge;
-mod container;
 mod f;
 
 pub struct Binding<T> {
@@ -31,7 +30,7 @@ impl<T: Clone + 'static> Binding<T> {
     }
     pub fn constant(value: T) -> Self {
         Self {
-            inner: Rc::new(container::ContainerBinding::new(value)),
+            inner: Rc::new(Container::new(value)),
         }
     }
 }
@@ -104,6 +103,9 @@ impl<T> Compute for Binding<T> {
     fn compute(&self) -> Self::Output {
         self.inner.compute()
     }
+}
+
+impl<T> Reactive for Binding<T> {
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         self.inner.register_subscriber(subscriber)
     }
