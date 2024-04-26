@@ -2,7 +2,7 @@ use crate::{Data, Utf8Data};
 
 use super::Closure;
 use alloc::{borrow::Cow, vec::Vec};
-use waterui_reactive::{Compute, Computed};
+use waterui_reactive::{Compute, Computed, Reactive};
 
 // WARNING: Computed<T> must be called on the Rust thread!!!
 

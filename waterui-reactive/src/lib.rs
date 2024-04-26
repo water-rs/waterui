@@ -6,7 +6,10 @@ use alloc::borrow::Cow;
 pub use binding::Binding;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
-
+mod container;
+pub use container::Container;
+mod reactive;
+pub use reactive::Reactive;
 pub mod subscriber;
 pub use subscriber::Subscriber;
 
@@ -22,17 +25,26 @@ macro_rules! impl_constant {
                     self.clone()
                 }
 
+            }
+            impl $crate::Reactive for $ty{
                 fn register_subscriber(&self, _subscriber: $crate::Subscriber) -> Option<core::num::NonZeroUsize> {
                     None
                 }
 
                 fn cancel_subscriber(&self, _id: core::num::NonZeroUsize) {}
                 fn notify(&self) {}
-
             }
         )*
     };
 }
+
+impl_constant!(
+    &'static str,
+    alloc::string::String,
+    crate::CowStr,
+    isize,
+    bool
+);
 
 #[cfg(feature = "url")]
 impl_constant!(url::Url);

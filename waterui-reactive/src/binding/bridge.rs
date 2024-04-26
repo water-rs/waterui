@@ -1,6 +1,6 @@
 use core::{marker::PhantomData, num::NonZeroUsize};
 
-use crate::{Binding, Compute, Subscriber};
+use crate::{Binding, Compute, Reactive, Subscriber};
 
 use super::BindingImpl;
 
@@ -31,6 +31,9 @@ where
     fn compute(&self) -> Self::Output {
         (self.to)(self.source.compute())
     }
+}
+
+impl<Source, T, From, To> Reactive for BirdgeBinding<Source, T, From, To> {
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         self.source.register_subscriber(subscriber)
     }
@@ -81,6 +84,9 @@ where
     fn compute(&self) -> Self::Output {
         (self.to)(&self.state, self.source.compute())
     }
+}
+
+impl<State, Source, T, From, To> Reactive for BirdgeBindingWithState<State, Source, T, From, To> {
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         self.source.register_subscriber(subscriber)
     }
