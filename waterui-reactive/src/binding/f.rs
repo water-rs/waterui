@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use crate::{subscriber::SubscriberManager, Compute, Subscriber};
+use crate::{subscriber::SubscriberManager, Compute, Reactive, Subscriber};
 
 use super::BindingImpl;
 
@@ -39,7 +39,9 @@ where
     fn compute(&self) -> T {
         (self.getter)()
     }
+}
 
+impl<Getter, Setter> Reactive for FnBinding<Getter, Setter> {
     fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.subscribers.cancel(id)
     }
@@ -89,7 +91,9 @@ where
     fn compute(&self) -> T {
         (self.getter)(&self.state)
     }
+}
 
+impl<State, Getter, Setter> Reactive for FnBindingWithState<State, Getter, Setter> {
     fn cancel_subscriber(&self, id: NonZeroUsize) {
         self.subscribers.cancel(id)
     }
