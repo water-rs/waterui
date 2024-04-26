@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+take_mut = "0.2.2"
 url = { version = "2.5.0", optional = true}
 
 [features]

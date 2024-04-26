@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use crate::{Compute, Reactive, Subscriber};
+use crate::{subscriber::BoxSubscriber, Compute, Reactive};
 
 pub struct Map<C, F> {
     source: C,
@@ -26,7 +26,7 @@ where
 }
 
 impl<C: Compute, F> Reactive for Map<C, F> {
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         self.source.register_subscriber(subscriber)
     }
 
