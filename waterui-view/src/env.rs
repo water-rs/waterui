@@ -1,6 +1,9 @@
-use core::future::Future;
+use core::{
+    any::{Any, TypeId},
+    future::Future,
+};
 
-use alloc::{boxed::Box, rc::Rc};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
 
 pub struct EnvironmentInner {
     #[cfg(feature = "async")]
@@ -10,6 +13,7 @@ pub struct EnvironmentInner {
 
 #[derive(Clone)]
 pub struct Environment {
+    map: BTreeMap<TypeId, Rc<dyn Any>>,
     inner: Rc<EnvironmentInner>,
 }
 
@@ -77,6 +81,8 @@ use crate::{error::BoxedStdError, AnyView};
 impl Environment {
     pub fn new() -> Self {
         Self {
+            map: BTreeMap::new(),
+
             inner: Rc::new(EnvironmentInner {
                 #[cfg(feature = "async")]
                 executor: Executor::new(),
@@ -85,6 +91,15 @@ impl Environment {
         }
     }
 
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        self.map.insert(TypeId::of::<T>(), Rc::new(value));
+    }
+
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        self.map
+            .get(&TypeId::of::<T>())
+            .and_then(|v| v.downcast_ref::<T>())
+    }
     pub fn default_error_view(&self, error: BoxedStdError) -> AnyView {
         (self.inner.default_view.error)(error)
     }

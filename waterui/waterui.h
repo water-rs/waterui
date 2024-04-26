@@ -138,7 +138,7 @@ typedef struct WaterUIClosure {
 } WaterUIClosure;
 
 typedef struct WaterUIEnvironment {
-  uintptr_t inner[1];
+  uintptr_t inner[4];
 } WaterUIEnvironment;
 
 typedef struct WaterUIUtf8Data {
