@@ -5,8 +5,8 @@ mod grouped;
 pub use grouped::GroupedCompute;
 
 use alloc::boxed::Box;
-mod impls;
 mod map;
+use crate::Reactive;
 use crate::{subscriber::SubscriberManager, Subscriber};
 pub use map::Map;
 
@@ -39,30 +39,15 @@ where
     }
 }
 
-pub trait Compute {
+pub trait Compute: Reactive {
     type Output;
     fn compute(&self) -> Self::Output;
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize>;
-    fn cancel_subscriber(&self, id: NonZeroUsize);
-    fn notify(&self);
 }
 
 impl<C: Compute + 'static> Compute for &C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
         (*self).compute()
-    }
-
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
-        (*self).register_subscriber(subscriber)
-    }
-
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        (*self).cancel_subscriber(id)
-    }
-
-    fn notify(&self) {
-        (*self).notify()
     }
 }
 
@@ -71,19 +56,6 @@ impl<C: Compute + 'static> Compute for Option<C> {
 
     fn compute(&self) -> Self::Output {
         self.as_ref().map(C::compute)
-    }
-
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
-        self.as_ref()
-            .and_then(|c| c.register_subscriber(subscriber))
-    }
-
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        self.as_ref().inspect(|c| c.cancel_subscriber(id));
-    }
-
-    fn notify(&self) {
-        self.as_ref().inspect(|c| c.notify());
     }
 }
 
@@ -160,6 +132,9 @@ impl<T> Compute for Computed<T> {
     fn compute(&self) -> Self::Output {
         self.inner.compute()
     }
+}
+
+impl<T> Reactive for Computed<T> {
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         self.inner.register_subscriber(subscriber)
     }
@@ -194,6 +169,9 @@ where
     fn compute(&self) -> Self::Output {
         (self.f)(&self.subscribers)
     }
+}
+
+impl<F> Reactive for ComputeFn<F> {
     fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
         Some(self.subscribers.register(subscriber))
     }
@@ -221,6 +199,9 @@ impl<T: Clone> Compute for Constant<T> {
     fn compute(&self) -> Self::Output {
         self.value.clone()
     }
+}
+
+impl<T> Reactive for Constant<T> {
     fn register_subscriber(&self, _subscriber: Subscriber) -> Option<NonZeroUsize> {
         None
     }

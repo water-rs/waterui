@@ -1,7 +1,7 @@
 use crate::{Closure, Utf8Data};
 use alloc::{borrow::Cow, boxed::Box};
 use core::num::NonZeroUsize;
-use waterui_reactive::{Binding, Compute};
+use waterui_reactive::{Binding, Compute, Reactive};
 // WARNING: Binding<T> must be called on the Rust thread!!!
 
 macro_rules! impl_binding {
