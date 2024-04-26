@@ -88,13 +88,16 @@ pub fn field(label: impl IntoComputed<CowStr>, value: &Binding<CowStr>) -> TextF
 }
 
 mod ffi {
-    use waterui_ffi::{binding::BindingStr, computed::ComputedStr, ffi_view, AnyView, IntoFFI};
+    use waterui_ffi::{
+        binding::waterui_binding_str, computed::waterui_computed_str, ffi_view, waterui_anyview,
+        IntoFFI,
+    };
 
     #[repr(C)]
     pub struct TextField {
-        label: AnyView,
-        value: BindingStr,
-        prompt: ComputedStr,
+        label: *mut waterui_anyview,
+        value: *const waterui_binding_str,
+        prompt: *mut waterui_computed_str,
     }
 
     impl IntoFFI for super::RawTextField {

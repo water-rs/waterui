@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(non_camel_case_types)]
 extern crate alloc;
 
 #[macro_use]
@@ -18,5 +19,5 @@ pub use app::App;
 pub mod layout;
 pub mod utils;
 
-pub mod bridge;
+//pub mod bridge;
 pub mod ffi;
