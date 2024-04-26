@@ -1,44 +1,79 @@
-use crate::{Closure, Utf8Data};
-use alloc::{borrow::Cow, boxed::Box};
-use core::num::NonZeroUsize;
-use waterui_reactive::{Binding, Compute, Reactive};
+use crate::{array::waterui_str, closure::waterui_closure, IntoFFI, IntoRust};
+use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
+use core::{marker::PhantomData, mem::ManuallyDrop, ptr::drop_in_place};
+use waterui_reactive::{Binding, Compute, Int, Reactive};
 // WARNING: Binding<T> must be called on the Rust thread!!!
 
+#[repr(C)]
+pub struct waterui_binding<T> {
+    _priv: [u8; 0],
+    _marker: PhantomData<*const T>,
+}
+
+pub type waterui_binding_str = waterui_binding<Cow<'static, str>>;
+pub type waterui_binding_int = waterui_binding<Int>;
+pub type waterui_binding_bool = waterui_binding<bool>;
+pub type waterui_binding_data = waterui_binding<Vec<u8>>;
+
+impl<T> IntoFFI for Binding<T> {
+    type FFI = *const waterui_binding<T>;
+    fn into_ffi(self) -> Self::FFI {
+        self.into_raw() as *const waterui_binding<T>
+    }
+}
+
+impl<T> IntoRust for *const waterui_binding<T> {
+    type Rust = Binding<T>;
+    unsafe fn into_rust(self) -> Self::Rust {
+        Binding::from_raw(self as *const T)
+    }
+}
+
 macro_rules! impl_binding {
-    ($name:ident,$ty:ty,$ffi:ty,$read:ident,$write:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
-        ffi_opaque!($name, Binding<$ty>, 2, $drop);
+    ($ty:ty,$ffi:ty,$read:ident,$write:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
         #[no_mangle]
-        unsafe extern "C" fn $read(binding: *const $name) -> $ffi {
-            $crate::IntoFFI::into_ffi((*binding).compute())
+        pub unsafe extern "C" fn $read(binding: *const waterui_binding<$ty>) -> $ffi {
+            let binding = ManuallyDrop::new(binding.into_rust());
+            binding.compute().into_ffi()
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $write(binding: *const $name, value: $ffi) {
-            let value = $crate::IntoRust::into_rust(value);
-            (*binding).set(value);
+        pub unsafe extern "C" fn $write(binding: *const waterui_binding<$ty>, value: $ffi) {
+            let binding = ManuallyDrop::new(binding.into_rust());
+
+            binding.set(value.into_rust());
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $subscribe(binding: *const $name, subscriber: Closure) -> usize {
-            (*binding)
+        pub unsafe extern "C" fn $subscribe(
+            binding: *const waterui_binding<$ty>,
+            subscriber: waterui_closure,
+        ) -> Int {
+            let binding = ManuallyDrop::new(binding.into_rust());
+            binding
                 .register_subscriber(Box::new(move || subscriber.call()))
-                .map(NonZeroUsize::get)
-                .unwrap_or(0)
+                .map(|v| v.get() as Int)
+                .unwrap_or(-1)
         }
 
         #[no_mangle]
-        unsafe extern "C" fn $unsubscribe(binding: *const $name, id: usize) {
-            if let Some(id) = core::num::NonZeroUsize::new(id) {
-                (*binding).cancel_subscriber(id);
-            }
+        pub unsafe extern "C" fn $unsubscribe(binding: *const waterui_binding<$ty>, id: usize) {
+            let binding = ManuallyDrop::new(binding.into_rust());
+
+            let id = core::num::NonZeroUsize::new(id).unwrap();
+            binding.cancel_subscriber(id);
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn $drop(binding: *mut waterui_binding<$ty>) {
+            drop_in_place(binding);
         }
     };
 }
 
 impl_binding!(
-    BindingStr,
-    Cow<'static, str>,
-    Utf8Data,
+    String,
+    waterui_str,
     waterui_read_binding_str,
     waterui_write_binding_str,
     waterui_subscribe_binding_str,
@@ -47,9 +82,8 @@ impl_binding!(
 );
 
 impl_binding!(
-    BindingInt,
-    isize,
-    isize,
+    Int,
+    Int,
     waterui_read_binding_int,
     waterui_write_binding_int,
     waterui_subscribe_binding_int,
@@ -58,7 +92,6 @@ impl_binding!(
 );
 
 impl_binding!(
-    BindingBool,
     bool,
     bool,
     waterui_read_binding_bool,
