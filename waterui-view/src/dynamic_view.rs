@@ -44,21 +44,15 @@ impl DynamicView {
     ) -> (Self, DynamicViewHandle) {
         let subscribers = Rc::new(SubscriberManager::new());
         let handle = DynamicViewHandle::empty(subscribers.clone());
-        let container: RefCell<Option<AnyView>> = RefCell::new(None);
-        let binding = Binding::from_fn_with_state(
-            container,
-            move |container| {
-                container
-                    .borrow_mut()
-                    .take()
-                    .unwrap_or_else(|| AnyView::new(default_view()))
-            },
-            |container, view| {
-                let _ = container.borrow_mut().insert(view);
-            },
-        );
+        let binding: Binding<Option<AnyView>> = Binding::new(None);
 
-        (Self::from_compute(binding), handle)
+        let compute = binding.to_compute(move |v| {
+            v.get_mut()
+                .take()
+                .unwrap_or_else(|| AnyView::new(default_view()))
+        });
+
+        (Self::from_compute(compute), handle)
     }
 }
 

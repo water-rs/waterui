@@ -5,9 +5,15 @@ mod grouped;
 pub use grouped::GroupedCompute;
 
 use alloc::boxed::Box;
+mod constant;
+pub use constant::Constant;
+
+mod f;
+pub use f::ComputeFn;
 mod map;
+use crate::subscriber::SubscriberManager;
+use crate::subscriber::{BoxSubscriber, SubscribeGuard};
 use crate::Reactive;
-use crate::{subscriber::SubscriberManager, Subscriber};
 pub use map::Map;
 
 pub trait IntoCompute<T>: Compute {
@@ -119,6 +125,20 @@ impl<T> Computed<T> {
             inner: Box::new(compute),
         }
     }
+
+    pub fn from_fn<F>(f: F) -> Self
+    where
+        F: 'static + Fn(&SubscriberManager) -> T,
+    {
+        Self::new(ComputeFn::new(f))
+    }
+
+    pub fn from_fn_with_subscribers<F>(f: F, subscribers: SubscriberManager) -> Self
+    where
+        F: 'static + Fn(&SubscriberManager) -> T,
+    {
+        Self::new(ComputeFn::new_with_subscribers(f, subscribers))
+    }
 }
 
 impl<T: Clone + 'static> Computed<T> {
@@ -135,7 +155,7 @@ impl<T> Compute for Computed<T> {
 }
 
 impl<T> Reactive for Computed<T> {
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         self.inner.register_subscriber(subscriber)
     }
     fn cancel_subscriber(&self, id: NonZeroUsize) {
@@ -144,94 +164,5 @@ impl<T> Reactive for Computed<T> {
 
     fn notify(&self) {
         self.inner.notify()
-    }
-}
-
-pub struct ComputeFn<F> {
-    f: F,
-    subscribers: SubscriberManager,
-}
-
-impl<F> ComputeFn<F> {
-    pub fn new(f: F) -> Self {
-        Self {
-            f,
-            subscribers: SubscriberManager::new(),
-        }
-    }
-}
-
-impl<T, F> Compute for ComputeFn<F>
-where
-    F: Fn(&SubscriberManager) -> T,
-{
-    type Output = T;
-    fn compute(&self) -> Self::Output {
-        (self.f)(&self.subscribers)
-    }
-}
-
-impl<F> Reactive for ComputeFn<F> {
-    fn register_subscriber(&self, subscriber: Subscriber) -> Option<NonZeroUsize> {
-        Some(self.subscribers.register(subscriber))
-    }
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        self.subscribers.cancel(id)
-    }
-
-    fn notify(&self) {
-        self.subscribers.notify();
-    }
-}
-
-pub struct Constant<T> {
-    value: T,
-}
-
-impl<T> Constant<T> {
-    pub fn new(value: T) -> Self {
-        Self { value }
-    }
-}
-
-impl<T: Clone> Compute for Constant<T> {
-    type Output = T;
-    fn compute(&self) -> Self::Output {
-        self.value.clone()
-    }
-}
-
-impl<T> Reactive for Constant<T> {
-    fn register_subscriber(&self, _subscriber: Subscriber) -> Option<NonZeroUsize> {
-        None
-    }
-    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
-    fn notify(&self) {}
-}
-
-#[must_use]
-pub struct SubscribeGuard<'a, V: ?Sized>
-where
-    V: Compute,
-{
-    source: &'a V,
-    id: Option<NonZeroUsize>,
-}
-
-impl<'a, V> SubscribeGuard<'a, V>
-where
-    V: Compute,
-{
-    pub fn new(source: &'a V, id: Option<NonZeroUsize>) -> Self {
-        Self { source, id }
-    }
-}
-
-impl<'a, V> Drop for SubscribeGuard<'a, V>
-where
-    V: Compute + ?Sized,
-{
-    fn drop(&mut self) {
-        self.id.inspect(|id| self.source.cancel_subscriber(*id));
     }
 }
