@@ -9,10 +9,12 @@ pub mod text_field;
 pub use text_field::{field, TextField};
 pub mod toggle;
 pub use toggle::{toggle, Toggle};
-mod progress;
+pub mod progress;
 pub use progress::{progress, Progress};
-mod stepper;
+pub mod stepper;
 pub use stepper::{stepper, Stepper};
+pub mod metadata;
+
 /*
 #[cfg(feature = "remote-image")]
 mod remote_image;

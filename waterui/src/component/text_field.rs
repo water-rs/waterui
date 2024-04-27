@@ -86,35 +86,3 @@ impl<V: View + 'static> View for TextField<V> {
 pub fn field(label: impl IntoComputed<CowStr>, value: &Binding<CowStr>) -> TextField<Text> {
     TextField::new(value).label(label)
 }
-
-mod ffi {
-    use waterui_ffi::{
-        binding::waterui_binding_str, computed::waterui_computed_str, ffi_view, waterui_anyview,
-        IntoFFI,
-    };
-
-    #[repr(C)]
-    pub struct TextField {
-        label: *mut waterui_anyview,
-        value: *const waterui_binding_str,
-        prompt: *mut waterui_computed_str,
-    }
-
-    impl IntoFFI for super::RawTextField {
-        type FFI = TextField;
-        fn into_ffi(self) -> Self::FFI {
-            TextField {
-                label: self._label.into_ffi(),
-                value: self._value.into_ffi(),
-                prompt: self._prompt.into_ffi(),
-            }
-        }
-    }
-
-    ffi_view!(
-        super::RawTextField,
-        TextField,
-        waterui_view_force_as_field,
-        waterui_view_field_id
-    );
-}

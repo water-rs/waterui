@@ -40,8 +40,6 @@ impl Frame {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
-
 pub struct Edge {
     pub top: f64,
     pub right: f64,

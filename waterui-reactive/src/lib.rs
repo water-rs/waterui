@@ -12,7 +12,6 @@ pub mod subscriber;
 pub use subscriber::Subscriber;
 
 pub type CowStr = Cow<'static, str>;
-pub type Int = i32;
 #[macro_export]
 macro_rules! impl_constant {
     ($($ty:ty),*) => {
@@ -41,7 +40,7 @@ impl_constant!(
     &'static str,
     alloc::string::String,
     crate::CowStr,
-    Int,
+    i32,
     bool
 );
 
