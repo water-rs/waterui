@@ -2,7 +2,7 @@ use core::ops::Deref;
 
 use crate::utils::IdentifierMap;
 use alloc::{rc::Rc, vec::Vec};
-use waterui_reactive::{Binding, Int};
+use waterui_reactive::Binding;
 use waterui_view::{AnyView, View};
 pub struct Picker<T> {
     items: Vec<PickerItem<T>>,
@@ -14,14 +14,16 @@ pub struct PickerItem<T> {
     value: T,
 }
 
+#[non_exhaustive]
 pub struct RawPickerItem {
-    label: AnyView,
-    value: usize,
+    pub _label: AnyView,
+    pub _value: usize,
 }
 
+#[non_exhaustive]
 pub struct RawPicker {
-    items: Vec<RawPickerItem>,
-    selection: Binding<Int>,
+    pub _items: Vec<RawPickerItem>,
+    pub _selection: Binding<i32>,
 }
 
 impl<T> View for Picker<T>
@@ -34,8 +36,8 @@ where
             .items
             .into_iter()
             .map(|item| RawPickerItem {
-                label: item.label,
-                value: map.insert(item.value),
+                _label: item.label,
+                _value: map.insert(item.value),
             })
             .collect::<Vec<_>>();
         let map = Rc::new(map);
@@ -46,66 +48,17 @@ where
             },
             move |this| {
                 if let Some(this) = this.get().deref() {
-                    map.to_id(this).map(|v| v as Int).unwrap()
+                    map.to_id(this).map(|v| v as i32).unwrap()
                 } else {
                     -1
                 }
             },
         );
-        RawPicker { items, selection }
+        RawPicker {
+            _items: items,
+            _selection: selection,
+        }
     }
 }
 
 raw_view!(RawPicker);
-
-mod ffi {
-    use alloc::vec::Vec;
-    use waterui_ffi::{
-        array::waterui_array, binding::waterui_binding_int, ffi_view, waterui_anyview, IntoFFI,
-    };
-
-    use super::{RawPicker, RawPickerItem};
-    #[repr(C)]
-    pub struct waterui_picker_item {
-        label: *mut waterui_anyview,
-        value: usize,
-    }
-
-    #[repr(C)]
-    pub struct waterui_picker {
-        items: waterui_array<waterui_picker_item>,
-        selection: *const waterui_binding_int,
-    }
-
-    impl IntoFFI for RawPickerItem {
-        type FFI = waterui_picker_item;
-        fn into_ffi(self) -> Self::FFI {
-            waterui_picker_item {
-                label: self.label.into_ffi(),
-                value: self.value,
-            }
-        }
-    }
-
-    impl IntoFFI for RawPicker {
-        type FFI = waterui_picker;
-        fn into_ffi(self) -> Self::FFI {
-            waterui_picker {
-                items: self
-                    .items
-                    .into_iter()
-                    .map(|v| v.into_ffi())
-                    .collect::<Vec<_>>()
-                    .into_ffi(),
-                selection: self.selection.into_ffi(),
-            }
-        }
-    }
-
-    ffi_view!(
-        RawPicker,
-        waterui_picker,
-        waterui_view_force_as_picker,
-        waterui_view_picker_id
-    );
-}

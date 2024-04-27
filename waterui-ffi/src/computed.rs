@@ -1,74 +1,46 @@
-use crate::{
-    array::{waterui_data, waterui_str},
-    IntoFFI, IntoRust,
-};
+use crate::{array::waterui_str, IntoFFI};
 use core::{num::NonZeroUsize, ptr::drop_in_place};
 
 use crate::closure::waterui_closure;
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use waterui_reactive::{Compute, Computed, Int, Reactive};
+use alloc::boxed::Box;
+use waterui::{Compute, Computed, CowStr, Reactive};
 
-pub type waterui_computed<T> = Computed<T>;
-type waterui_int = Int;
-pub type waterui_computed_str = waterui_computed<Cow<'static, str>>;
-pub type waterui_computed_int = waterui_computed<Int>;
-pub type waterui_computed_bool = waterui_computed<bool>;
-pub type waterui_computed_data = waterui_computed<Vec<u8>>;
-impl<T> IntoFFI for Computed<T> {
-    type FFI = *mut waterui_computed<T>;
-    fn into_ffi(self) -> Self::FFI {
-        Box::into_raw(Box::new(self))
-    }
-}
-
-impl<T> IntoRust for *mut waterui_computed<T> {
-    type Rust = Computed<T>;
-    unsafe fn into_rust(self) -> Self::Rust {
-        *Box::from_raw(self)
-    }
-}
+ffi_type!(waterui_computed_str, Computed<CowStr>);
+ffi_type!(waterui_computed_int, Computed<i32>);
+ffi_type!(waterui_computed_bool, Computed<bool>);
 
 // WARNING: Computed<T> must be called on the Rust thread!!!
 macro_rules! impl_computed {
-    ($name:ty,$ffi:ty,$read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
+    ($computed:ty,$ffi:ty,$read:ident,$subscribe:ident,$unsubscribe:ident,$drop:ident) => {
         #[no_mangle]
-        pub unsafe extern "C" fn $read(computed: *const $name) -> $ffi {
+        pub unsafe extern "C" fn $read(computed: *const $computed) -> $ffi {
             (*computed).compute().into_ffi()
         }
 
         #[no_mangle]
         pub unsafe extern "C" fn $subscribe(
-            computed: *const $name,
+            computed: *const $computed,
             subscriber: waterui_closure,
-        ) -> Int {
+        ) -> isize {
             (*computed)
                 .register_subscriber(Box::new(move || subscriber.call()))
-                .map(|v| v.get() as Int)
+                .map(|v| v.get() as isize)
                 .unwrap_or(-1)
         }
 
         #[no_mangle]
-        pub unsafe extern "C" fn $unsubscribe(computed: *const $name, id: usize) {
+        pub unsafe extern "C" fn $unsubscribe(computed: *const $computed, id: usize) {
             if let Some(id) = NonZeroUsize::new(id) {
                 (*computed).cancel_subscriber(id);
             }
         }
 
         #[no_mangle]
-        pub unsafe extern "C" fn $drop(computed: *mut $name) {
+        pub unsafe extern "C" fn $drop(computed: *mut $computed) {
             drop_in_place(computed);
         }
     };
 }
-
-impl_computed!(
-    waterui_computed_data,
-    waterui_data,
-    waterui_read_computed_data,
-    waterui_subscribe_computed_data,
-    waterui_unsubscribe_computed_data,
-    waterui_drop_computed_data
-);
 
 impl_computed!(
     waterui_computed_str,
@@ -81,7 +53,7 @@ impl_computed!(
 
 impl_computed!(
     waterui_computed_int,
-    waterui_int,
+    i32,
     waterui_read_computed_int,
     waterui_subscribe_computed_int,
     waterui_unsubscribe_computed_int,
