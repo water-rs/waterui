@@ -3,10 +3,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef enum waterui_stack_mode {
+  waterui_stack_mode_AUTO,
+  waterui_stack_mode_VERTICAL,
+  waterui_stack_mode_HORIZONTAL,
+  waterui_stack_mode_LAYERED,
+} waterui_stack_mode;
+
 typedef enum waterui_style_progress {
-  waterui_style_progress_Default,
-  waterui_style_progress_Circular,
-  waterui_style_progress_Linear,
+  waterui_style_progress_DEFAULT,
+  waterui_style_progress_CIRCULAR,
+  waterui_style_progress_LINEAR,
 } waterui_style_progress;
 
 typedef enum waterui_style_toggle {
@@ -52,7 +59,7 @@ typedef struct waterui_array_waterui_anyview {
 
 typedef struct waterui_stack {
   struct waterui_array_waterui_anyview views;
-  waterui_stack_mode mode;
+  enum waterui_stack_mode mode;
 } waterui_stack;
 
 typedef struct waterui_stepper {

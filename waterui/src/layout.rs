@@ -4,7 +4,6 @@ impl_constant!(Frame, Edge);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
 pub enum Alignment {
     Default,
     Leading,
@@ -20,7 +19,6 @@ impl Default for Alignment {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
 pub struct Frame {
     pub width: f64,
     pub min_width: f64,

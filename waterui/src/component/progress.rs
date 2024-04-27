@@ -14,7 +14,6 @@ pub struct Progress<Label> {
     style: ProgressStyle,
 }
 
-#[repr(C)]
 #[non_exhaustive]
 pub enum ProgressStyle {
     Default,

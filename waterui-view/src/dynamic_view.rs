@@ -8,6 +8,7 @@ use waterui_reactive::{
     Binding, Compute, Computed,
 };
 
+#[derive(Debug)]
 pub struct DynamicView {
     inner: Computed<AnyView>,
 }
