@@ -24,7 +24,6 @@ impl<T: View + 'static> AnyViewImpl for T {
     }
 }
 
-#[repr(transparent)]
 pub struct AnyView {
     inner: Box<dyn AnyViewImpl>,
 }

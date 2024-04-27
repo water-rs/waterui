@@ -18,6 +18,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct FnSubscriber<State, F, F2>
 where
     F2: Fn(&State),
@@ -148,6 +149,7 @@ impl SubscriberManagerInner {
     }
 }
 
+#[derive(Debug)]
 #[must_use]
 pub struct SubscribeGuard<'a, V>
 where

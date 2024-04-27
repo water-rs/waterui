@@ -1,8 +1,27 @@
 use crate::{array::waterui_array, ffi_view, waterui_anyview, IntoFFI};
 
 use alloc::vec::Vec;
-use waterui::component::stack::Stack;
-pub use waterui::component::stack::StackMode as waterui_stack_mode;
+use waterui::component::stack::{Stack, StackMode};
+
+#[repr(C)]
+pub enum waterui_stack_mode {
+    AUTO,
+    VERTICAL,
+    HORIZONTAL,
+    LAYERED,
+}
+
+impl IntoFFI for StackMode {
+    type FFI = waterui_stack_mode;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            StackMode::Auto => waterui_stack_mode::AUTO,
+            StackMode::Vertical => waterui_stack_mode::VERTICAL,
+            StackMode::Horizonal => waterui_stack_mode::HORIZONTAL,
+            StackMode::Layered => waterui_stack_mode::LAYERED,
+        }
+    }
+}
 
 #[repr(C)]
 pub struct waterui_stack {
@@ -20,7 +39,7 @@ impl IntoFFI for Stack {
                 .map(waterui_anyview)
                 .collect::<Vec<_>>()
                 .into_ffi(),
-            mode: self._mode,
+            mode: self._mode.into_ffi(),
         }
     }
 }

@@ -17,18 +17,21 @@ use crate::{
     Compute, Reactive,
 };
 
-// `Binding` is container for two-way data binding.
-#[derive(Debug)]
+/// `Binding` is container for two-way data binding.
+///
+/// `Binding` use `Rc` internally, so you can clone it cheaply.
+#[derive(Debug, Default)]
 pub struct Binding<T> {
     inner: Rc<BindingInner<T>>,
 }
 
+// A weak reference of `Binding`.
 #[derive(Debug)]
 pub struct WeakBinding<T> {
     inner: Weak<BindingInner<T>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct BindingInner<T> {
     value: RefCell<T>,
     subscribers: SubscriberManager,
@@ -49,10 +52,12 @@ impl<T> WeakBinding<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct BindingGuard<'a, T> {
     guard: Ref<'a, T>,
 }
 
+#[derive(Debug)]
 pub struct BindingMutGuard<'a, T> {
     guard: Option<RefMut<'a, T>>,
     subscribers: &'a SubscriberManager,
@@ -216,7 +221,8 @@ impl<T> Binding<T> {
     {
         self.to_compute(|v| v.get().to_string())
     }
-
+    /// # Safety
+    ///  The pointer must have been obtained through `Binding::into_raw`, and the inner `Rc` is valid.
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         Self {
             inner: Rc::from_raw(ptr as *const BindingInner<T>),
@@ -228,6 +234,7 @@ impl<T> Binding<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct ToCompute<T, T2, F> {
     source: Binding<T>,
     f: F,

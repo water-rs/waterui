@@ -4,18 +4,18 @@ use waterui::component::progress::{ProgressStyle, RawProgress};
 
 #[repr(C)]
 pub enum waterui_style_progress {
-    Default,
-    Circular,
-    Linear,
+    DEFAULT,
+    CIRCULAR,
+    LINEAR,
 }
 
 impl IntoFFI for ProgressStyle {
     type FFI = waterui_style_progress;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            ProgressStyle::Circular => waterui_style_progress::Circular,
-            ProgressStyle::Linear => waterui_style_progress::Linear,
-            _ => waterui_style_progress::Default,
+            ProgressStyle::Circular => waterui_style_progress::CIRCULAR,
+            ProgressStyle::Linear => waterui_style_progress::LINEAR,
+            _ => waterui_style_progress::DEFAULT,
         }
     }
 }
