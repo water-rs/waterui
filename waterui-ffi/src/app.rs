@@ -1,19 +1,17 @@
-pub use waterui_ffi::*;
+use waterui::{App, View, ViewExt};
 
-use waterui_view::View;
-
-use crate::ViewExt;
+use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 #[repr(C)]
-pub struct App {
+pub struct waterui_app {
     content: *mut waterui_anyview,
     env: *mut waterui_env,
 }
 
-impl IntoFFI for crate::App {
-    type FFI = App;
+impl IntoFFI for App {
+    type FFI = waterui_app;
     fn into_ffi(self) -> Self::FFI {
-        App {
+        waterui_app {
             content: self._content.into_ffi(),
             env: self._env.into_ffi(),
         }
@@ -21,23 +19,23 @@ impl IntoFFI for crate::App {
 }
 
 #[repr(C)]
-pub struct AppClosure {
+pub struct waterui_app_closure {
     data: *mut (),
-    call: unsafe extern "C" fn(*const (), App),
+    call: unsafe extern "C" fn(*const (), waterui_app),
     free: unsafe extern "C" fn(*mut ()),
 }
 
-unsafe impl Send for AppClosure {}
-unsafe impl Sync for AppClosure {}
+unsafe impl Send for waterui_app_closure {}
+unsafe impl Sync for waterui_app_closure {}
 
-impl Drop for AppClosure {
+impl Drop for waterui_app_closure {
     fn drop(&mut self) {
         unsafe { (self.free)(self.data) }
     }
 }
 
-impl AppClosure {
-    pub fn call(&self, app: crate::App) {
+impl waterui_app_closure {
+    pub fn call(&self, app: App) {
         unsafe { (self.call)(self.data, app.into_ffi()) }
     }
 }

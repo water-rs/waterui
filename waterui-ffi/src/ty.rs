@@ -1,11 +1,10 @@
 use core::mem::transmute;
 
-use waterui_reactive::Int;
-use waterui_view::{AnyView, Environment};
+use waterui::{AnyView, Environment};
 
 use crate::{IntoFFI, IntoRust};
 
-ffi_safe!(u8, Int, bool);
+ffi_safe!(u8, i32, bool);
 
 #[repr(C)]
 pub struct waterui_type_id {

@@ -20,7 +20,6 @@ pub struct RawToggle {
 }
 
 #[derive(Debug)]
-#[repr(C)]
 #[non_exhaustive]
 pub enum ToggleStyle {
     Default,
@@ -73,37 +72,4 @@ impl<Label: View + 'static> View for Toggle<Label> {
 
 pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggle<Text> {
     Toggle::new(toggle).label(label)
-}
-
-mod ffi {
-    use waterui_ffi::{binding::waterui_binding_bool, ffi_view, waterui_anyview, IntoFFI};
-
-    use super::{RawToggle, ToggleStyle};
-
-    pub type waterui_style_toggle = ToggleStyle;
-
-    #[repr(C)]
-    pub struct waterui_toggle {
-        label: *mut waterui_anyview,
-        toggle: *const waterui_binding_bool,
-        style: waterui_style_toggle,
-    }
-
-    impl IntoFFI for RawToggle {
-        type FFI = waterui_toggle;
-        fn into_ffi(self) -> Self::FFI {
-            waterui_toggle {
-                label: self._label.into_ffi(),
-                toggle: self._toggle.into_ffi(),
-                style: self._style,
-            }
-        }
-    }
-
-    ffi_view!(
-        RawToggle,
-        waterui_toggle,
-        waterui_view_force_as_toggle,
-        waterui_view_toggle_id
-    );
 }

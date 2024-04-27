@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-waterui-reactive = { path = "../waterui-reactive" }
-waterui-view = { path = "../waterui-view" }
+waterui = { path = "../waterui" }
+
+[build-dependencies]
+cbindgen = "0.26.0"
