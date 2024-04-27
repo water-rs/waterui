@@ -28,7 +28,6 @@ pub struct Stack {
 }
 
 #[derive(Debug)]
-#[repr(u8)]
 pub enum StackMode {
     Auto,
     Vertical,

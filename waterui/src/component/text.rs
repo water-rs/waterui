@@ -9,10 +9,10 @@ pub struct Text {
 }
 
 #[derive(Debug)]
-#[repr(C)]
+#[non_exhaustive]
 pub struct Font {
-    size: f64,
-    bold: bool,
+    pub size: f64,
+    pub bold: bool,
 }
 
 impl Default for Font {

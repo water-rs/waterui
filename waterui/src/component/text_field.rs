@@ -20,7 +20,6 @@ pub struct RawTextField {
 }
 
 #[derive(Debug)]
-#[repr(C)]
 #[non_exhaustive]
 pub enum TextFieldStyle {
     Default,

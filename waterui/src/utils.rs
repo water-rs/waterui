@@ -3,7 +3,6 @@ use core::fmt::Debug;
 use alloc::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
 pub struct Color {
     pub red: u8,
     pub green: u8,
