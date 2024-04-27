@@ -12,6 +12,16 @@ pub struct Button<Label> {
     action: Box<dyn Fn(&Environment)>,
 }
 
+pub trait Action {
+    fn call_action(&self, env: &Environment);
+}
+
+impl<F: Fn(&Environment)> Action for F {
+    fn call_action(&self, env: &Environment) {
+        (self)(env)
+    }
+}
+
 #[non_exhaustive]
 pub struct RawButton {
     pub _label: AnyView,

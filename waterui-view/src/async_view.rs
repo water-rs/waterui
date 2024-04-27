@@ -7,6 +7,8 @@ pub struct DefaultLoadingView {
     builder: ViewBuilder,
 }
 
+impl_debug!(DefaultLoadingView);
+
 impl DefaultLoadingView {
     pub fn new<V: View + 'static>(builder: impl 'static + Fn() -> V) -> Self {
         Self {

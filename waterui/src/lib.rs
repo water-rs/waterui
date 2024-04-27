@@ -16,5 +16,7 @@ pub use waterui_view::*;
 pub mod app;
 pub use app::App;
 
+#[cfg(feature = "bridge")]
+pub mod bridge;
 pub mod layout;
 pub mod utils;
