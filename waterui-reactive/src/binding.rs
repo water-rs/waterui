@@ -17,9 +17,7 @@ use crate::{
     Compute, Reactive,
 };
 
-/// `Binding` is container for two-way data binding.
-///
-/// `Binding` use `Rc` internally, so you can clone it cheaply.
+/// `Binding` is a reactive and shareable mutable containers, always using for two-way data binding.
 #[derive(Debug, Default)]
 pub struct Binding<T> {
     inner: Rc<BindingInner<T>>,

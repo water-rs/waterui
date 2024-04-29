@@ -2,10 +2,10 @@ use crate::{array::waterui_str, IntoFFI};
 use core::{num::NonZeroUsize, ptr::drop_in_place};
 
 use crate::closure::waterui_closure;
-use alloc::boxed::Box;
-use waterui::{Compute, Computed, CowStr, Reactive};
-
-ffi_type!(waterui_computed_str, Computed<CowStr>);
+use alloc::{borrow::Cow, boxed::Box};
+use waterui::{Compute, Computed};
+use waterui_reactive::Reactive;
+ffi_type!(waterui_computed_str, Computed<Cow<'static, str>>);
 ffi_type!(waterui_computed_int, Computed<i32>);
 ffi_type!(waterui_computed_bool, Computed<bool>);
 

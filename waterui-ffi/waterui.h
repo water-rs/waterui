@@ -24,6 +24,8 @@ typedef enum waterui_style_toggle {
 
 typedef struct waterui_anyview waterui_anyview;
 
+typedef struct waterui_anyviews waterui_anyviews;
+
 typedef struct waterui_binding_bool waterui_binding_bool;
 
 typedef struct waterui_binding_int waterui_binding_int;
@@ -52,13 +54,8 @@ typedef struct Progress {
   enum waterui_style_progress style;
 } Progress;
 
-typedef struct waterui_array_waterui_anyview {
-  struct waterui_anyview *head;
-  uintptr_t len;
-} waterui_array_waterui_anyview;
-
 typedef struct waterui_stack {
-  struct waterui_array_waterui_anyview views;
+  struct waterui_anyviews *views;
   enum waterui_stack_mode mode;
 } waterui_stack;
 

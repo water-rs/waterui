@@ -1,10 +1,11 @@
 use crate::{array::waterui_str, closure::waterui_closure, IntoFFI, IntoRust};
-use alloc::boxed::Box;
+use alloc::{borrow::Cow, boxed::Box};
 use core::ptr::drop_in_place;
-use waterui::{Binding, Compute, CowStr, Reactive};
+use waterui::{Binding, Compute};
+use waterui_reactive::Reactive;
 // WARNING: Binding<T> must be called on the Rust thread!!!
 
-ffi_type!(waterui_binding_str, Binding<CowStr>);
+ffi_type!(waterui_binding_str, Binding<Cow<'static, str>>);
 ffi_type!(waterui_binding_int, Binding<i32>);
 ffi_type!(waterui_binding_bool, Binding<bool>);
 
