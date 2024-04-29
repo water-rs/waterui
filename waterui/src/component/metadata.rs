@@ -1,5 +1,5 @@
 use crate::view::ViewExt;
-use waterui_view::{AnyView, Environment, View};
+use crate::{AnyView, Environment, View};
 pub struct Metadata<T> {
     pub _content: AnyView,
     pub _value: T,
