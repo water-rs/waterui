@@ -1,6 +1,6 @@
-use waterui_reactive::{compute::IntoComputed, Binding, Computed, CowStr};
+use waterui_reactive::{compute::IntoComputed, Binding, Computed};
 
-use crate::{AnyView, View, ViewExt};
+use crate::{AnyView, CowStr, Environment, View, ViewExt};
 
 use super::Text;
 
@@ -72,7 +72,7 @@ impl<V: View> TextField<V> {
 }
 
 impl<V: View + 'static> View for TextField<V> {
-    fn body(self, _env: crate::Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         RawTextField {
             _label: self.label.anyview(),
             _value: self.value,

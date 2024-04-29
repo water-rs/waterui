@@ -1,11 +1,12 @@
 use super::Text;
 use crate::view::ViewExt;
+use crate::CowStr;
+use crate::{AnyView, Environment, View};
 use waterui_reactive::ComputeExt;
 use waterui_reactive::{
     compute::{IntoCompute, IntoComputed},
-    Computed, CowStr,
+    Computed,
 };
-use waterui_view::{AnyView, View};
 
 const PROGRESS_INNER_VALUE_MAX: i32 = 10 ^ 5;
 pub struct Progress<Label> {
@@ -77,7 +78,7 @@ impl<Label: View> Progress<Label> {
 }
 
 impl<Label: View + 'static> View for Progress<Label> {
-    fn body(self, _env: waterui_view::Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         RawProgress {
             _label: self.label.anyview(),
             _progress: self.progress,
