@@ -1,5 +1,5 @@
-use waterui_reactive::{compute::IntoComputed, Computed, CowStr};
-
+use crate::CowStr;
+use waterui_reactive::{compute::IntoComputed, Computed};
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Text {

@@ -1,5 +1,5 @@
 [package]
-name = "waterui-view"
+name = "waterui-core"
 version = "0.1.0"
 edition = "2021"
 

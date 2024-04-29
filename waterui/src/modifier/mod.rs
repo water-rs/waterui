@@ -1,7 +1,7 @@
 mod padding;
 pub use padding::Padding;
 
-use waterui_view::{Environment, View};
+use crate::{Environment, View};
 
 pub trait Modifier {
     fn modify(self, env: Environment, view: impl View + 'static) -> impl View + 'static;

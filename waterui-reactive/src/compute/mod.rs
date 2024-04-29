@@ -50,14 +50,14 @@ pub trait Compute: Reactive {
     fn compute(&self) -> Self::Output;
 }
 
-impl<C: Compute + 'static> Compute for &C {
+impl<C: Compute> Compute for &C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
         (*self).compute()
     }
 }
 
-impl<C: Compute + 'static> Compute for Option<C> {
+impl<C: Compute> Compute for Option<C> {
     type Output = Option<C::Output>;
 
     fn compute(&self) -> Self::Output {
