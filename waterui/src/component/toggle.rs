@@ -1,6 +1,6 @@
-use waterui_reactive::{compute::IntoComputed, Binding, CowStr};
+use waterui_reactive::{compute::IntoComputed, Binding};
 
-use crate::{AnyView, View, ViewExt};
+use crate::{AnyView, CowStr, Environment, View, ViewExt};
 
 use super::Text;
 
@@ -61,7 +61,7 @@ impl<Label: View> Toggle<Label> {
 raw_view!(RawToggle);
 
 impl<Label: View + 'static> View for Toggle<Label> {
-    fn body(self, _env: crate::Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         RawToggle {
             _label: self.label.anyview(),
             _toggle: self.toggle,
