@@ -1,11 +1,7 @@
-use crate::{ffi_view, IntoFFI};
+use crate::{array::waterui_array, ffi_view, waterui_anyview, IntoFFI};
 
-use alloc::boxed::Box;
-use waterui::{
-    component::stack::{Stack, StackMode},
-    view::Views,
-    AnyView,
-};
+use alloc::vec::Vec;
+use waterui::component::stack::{Stack, StackMode};
 
 #[repr(C)]
 pub enum waterui_stack_mode {
@@ -27,11 +23,9 @@ impl IntoFFI for StackMode {
     }
 }
 
-ffi_type!(waterui_anyviews, Box<dyn Views<Item = AnyView>>);
-
 #[repr(C)]
 pub struct waterui_stack {
-    views: *mut waterui_anyviews,
+    contents: waterui_array<waterui_anyview>,
     mode: waterui_stack_mode,
 }
 
@@ -39,7 +33,12 @@ impl IntoFFI for Stack {
     type FFI = waterui_stack;
     fn into_ffi(self) -> Self::FFI {
         waterui_stack {
-            views: self._views.into_ffi(),
+            contents: self
+                ._contents
+                .into_iter()
+                .map(waterui_anyview)
+                .collect::<Vec<_>>()
+                .into_ffi(),
             mode: self._mode.into_ffi(),
         }
     }
