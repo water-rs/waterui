@@ -1,4 +1,6 @@
-use core::num::NonZeroUsize;
+use core::{num::NonZeroUsize, ops::Deref};
+
+use alloc::boxed::Box;
 
 use crate::subscriber::BoxSubscriber;
 
@@ -8,7 +10,7 @@ pub trait Reactive {
     fn notify(&self);
 }
 
-impl<T: Reactive> Reactive for &T {
+impl<T: Reactive + ?Sized> Reactive for &T {
     fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         (*self).register_subscriber(subscriber)
     }
@@ -22,7 +24,19 @@ impl<T: Reactive> Reactive for &T {
     }
 }
 
-impl<T: Reactive> Reactive for &mut T {
+impl<T: Reactive + ?Sized> Reactive for Box<T> {
+    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+        self.deref().register_subscriber(subscriber)
+    }
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
+        self.deref().cancel_subscriber(id)
+    }
+    fn notify(&self) {
+        self.deref().notify();
+    }
+}
+
+impl<T: Reactive + ?Sized> Reactive for &mut T {
     fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         (**self).register_subscriber(subscriber)
     }

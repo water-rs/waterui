@@ -1,28 +1,11 @@
-use alloc::{boxed::Box, vec::Vec};
-use waterui_core::view::ConstantViews;
-use waterui_core::view::{BoxViews, Views};
+use alloc::vec::Vec;
+use waterui_core::view::TupleViews;
 
-use crate::{AnyView, Environment, View};
-
-macro_rules! impl_from_iter {
-    ($($ty:ident),*) => {
-        $(
-            impl<V: View + 'static> FromIterator<V> for $ty {
-                fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-                    let content: Vec<_> = iter.into_iter().map(|v| {AnyView::new(v)}).collect();
-                    Self::new(ConstantViews::new(content))
-                }
-            }
-        )*
-
-    };
-}
-
-impl_from_iter!(Stack, VStack, HStack);
+use crate::AnyView;
 
 #[non_exhaustive]
 pub struct Stack {
-    pub _views: BoxViews<AnyView>,
+    pub _contents: Vec<AnyView>,
     pub _mode: StackMode,
 }
 
@@ -35,84 +18,46 @@ pub enum StackMode {
 }
 
 impl Stack {
-    pub fn new(contents: impl Views<Item = AnyView> + 'static) -> Self {
+    pub fn new(contents: impl TupleViews) -> Self {
         Self {
-            _views: Box::new(contents),
+            _contents: contents.into_views(),
             _mode: StackMode::Auto,
         }
     }
 
-    pub fn vertical(self) -> Self {
-        self.mode(StackMode::Vertical)
+    pub fn vertical(contents: impl TupleViews) -> Self {
+        let mut stack = Self::new(contents);
+        stack._mode = StackMode::Vertical;
+        stack
     }
 
-    pub fn horizonal(self) -> Self {
-        self.mode(StackMode::Horizonal)
+    pub fn horizonal(contents: impl TupleViews) -> Self {
+        let mut stack = Self::new(contents);
+        stack._mode = StackMode::Horizonal;
+        stack
     }
 
-    pub fn layered(self) -> Self {
-        self.mode(StackMode::Layered)
-    }
-
-    pub fn mode(mut self, mode: StackMode) -> Self {
-        self._mode = mode;
-        self
+    pub fn layered(contents: impl TupleViews) -> Self {
+        let mut stack = Self::new(contents);
+        stack._mode = StackMode::Layered;
+        stack
     }
 }
 
 raw_view!(Stack);
 
-macro_rules! impl_stacks {
-    ($ty:ident) => {
-        pub struct $ty {
-            contents: BoxViews<AnyView>,
-        }
-
-        impl $ty {
-            pub fn new(contents: impl Views<Item = AnyView> + 'static) -> Self {
-                Self {
-                    contents: Box::new(contents),
-                }
-            }
-        }
-    };
-}
-
-impl_stacks!(VStack);
-
-impl_stacks!(HStack);
-impl_stacks!(ZStack);
-
-impl View for VStack {
-    fn body(self, _env: Environment) -> impl View {
-        Stack::new(self.contents).vertical()
-    }
-}
-
-impl View for HStack {
-    fn body(self, _env: Environment) -> impl View {
-        Stack::new(self.contents).horizonal()
-    }
-}
-
-impl View for ZStack {
-    fn body(self, _env: Environment) -> impl View {
-        Stack::new(self.contents).layered()
-    }
-}
-
-pub fn stack(contents: impl Views<Item = AnyView> + 'static) -> Stack {
+pub fn stack(contents: impl TupleViews) -> Stack {
     Stack::new(contents)
 }
 
-pub fn vstack(contents: impl Views<Item = AnyView> + 'static) -> VStack {
-    VStack::new(contents)
+pub fn vstack(contents: impl TupleViews) -> Stack {
+    Stack::vertical(contents)
 }
 
-pub fn hstack(contents: impl Views<Item = AnyView> + 'static) -> HStack {
-    HStack::new(contents)
+pub fn hstack(contents: impl TupleViews) -> Stack {
+    Stack::horizonal(contents)
 }
 
-pub fn zstack(contents: impl Views<Item = AnyView> + 'static) -> ZStack {
-    ZStack::new(contents)
+pub fn zstack(contents: impl TupleViews) -> Stack {
+    Stack::layered(contents)
 }

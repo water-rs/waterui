@@ -1,12 +1,38 @@
-use crate::view::ViewExt;
-use crate::{AnyView, Environment, View};
+use crate::{Environment, View};
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use waterui_core::AnyView;
 use waterui_reactive::{Binding, Reactive};
 
 pub struct Each<T, Content> {
     data: Binding<Vec<T>>,
     content: Content,
 }
+
+trait EachImpl: Reactive {
+    fn id(&mut self, index: usize) -> usize; // return id
+    fn pull(&mut self, index: usize) -> AnyView;
+    fn len(&self) -> usize;
+}
+
+pub struct RawEach(Box<dyn EachImpl>);
+
+impl RawEach {
+    pub fn id(&mut self, index: usize) -> usize {
+        self.0.id(index)
+    }
+    pub fn pull(&mut self, index: usize) -> AnyView {
+        self.0.pull(index)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
+}
+
+raw_view!(RawEach);
 
 impl<T: Ord + Clone, Content> Each<T, Content> {
     pub fn new(data: &Binding<Vec<T>>, content: Content) -> Self {
@@ -24,29 +50,22 @@ where
     V: View + 'static,
 {
     fn body(self, _env: Environment) -> impl View {
-        let raw: RawEach = Box::new(EachWithCache {
+        let raw: Box<dyn EachImpl> = Box::new(EachInner {
             each: self,
-            cache_counter: 0,
-            cache: BTreeMap::new(),
+            id_counter: 0,
+            id_map: BTreeMap::new(),
         });
-        raw
+        RawEach(raw)
     }
 }
 
-struct EachWithCache<T, Content> {
+struct EachInner<T, Content> {
     each: Each<T, Content>,
-    cache_counter: usize,
-    cache: BTreeMap<T, usize>,
+    id_counter: usize,
+    id_map: BTreeMap<T, usize>,
 }
 
-#[allow(clippy::len_without_is_empty)]
-pub trait PullView: Reactive {
-    fn ready(&mut self, index: usize) -> usize; // return id
-    fn pull(&self, index: usize) -> AnyView;
-    fn len(&self) -> usize;
-}
-
-impl<T, Content> Reactive for EachWithCache<T, Content> {
+impl<T, Content> Reactive for EachInner<T, Content> {
     fn register_subscriber(
         &self,
         subscriber: waterui_reactive::subscriber::BoxSubscriber,
@@ -61,30 +80,27 @@ impl<T, Content> Reactive for EachWithCache<T, Content> {
     }
 }
 
-impl<T, Content, V> PullView for EachWithCache<T, Content>
+impl<T, Content, V> EachImpl for EachInner<T, Content>
 where
     T: Ord + Clone,
     Content: Fn(&T) -> V,
     V: View + 'static,
 {
-    fn ready(&mut self, index: usize) -> usize {
+    fn id(&mut self, index: usize) -> usize {
         let data = &self.each.data.get()[index];
-        self.cache.get(data).cloned().unwrap_or_else(|| {
-            let id = self.cache_counter;
-            self.cache_counter += 1;
+        self.id_map.get(data).cloned().unwrap_or_else(|| {
+            let id = self.id_counter;
+            self.id_counter += 1;
             id
         })
     }
 
-    fn pull(&self, index: usize) -> AnyView {
+    fn pull(&mut self, index: usize) -> AnyView {
         let data = &self.each.data.get()[index];
-        (self.each.content)(data).anyview()
+        AnyView::new((self.each.content)(data))
     }
 
     fn len(&self) -> usize {
         self.each.data.get().len()
     }
 }
-
-pub type RawEach = Box<dyn PullView>;
-raw_view!(RawEach);
