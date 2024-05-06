@@ -14,7 +14,7 @@ pub use button::{button, Button};
 #[doc(inline)]
 pub use progress::{progress, Progress};
 #[doc(inline)]
-pub use stack::{hstack, vstack, HStack, Stack, VStack};
+pub use stack::{hstack, stack, vstack, zstack, Stack};
 #[doc(inline)]
 pub use stepper::{stepper, Stepper};
 #[doc(inline)]
