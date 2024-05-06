@@ -24,8 +24,6 @@ typedef enum waterui_style_toggle {
 
 typedef struct waterui_anyview waterui_anyview;
 
-typedef struct waterui_anyviews waterui_anyviews;
-
 typedef struct waterui_binding_bool waterui_binding_bool;
 
 typedef struct waterui_binding_int waterui_binding_int;
@@ -37,6 +35,8 @@ typedef struct waterui_computed_bool waterui_computed_bool;
 typedef struct waterui_computed_int waterui_computed_int;
 
 typedef struct waterui_computed_str waterui_computed_str;
+
+typedef struct waterui_each waterui_each;
 
 typedef struct waterui_env waterui_env;
 
@@ -54,8 +54,13 @@ typedef struct Progress {
   enum waterui_style_progress style;
 } Progress;
 
+typedef struct waterui_array_waterui_anyview {
+  struct waterui_anyview *head;
+  uintptr_t len;
+} waterui_array_waterui_anyview;
+
 typedef struct waterui_stack {
-  struct waterui_anyviews *views;
+  struct waterui_array_waterui_anyview contents;
   enum waterui_stack_mode mode;
 } waterui_stack;
 
@@ -118,6 +123,16 @@ struct waterui_type_id waterui_view_empty_id(void);
 struct waterui_button waterui_view_force_as_button(struct waterui_anyview *view);
 
 struct waterui_type_id waterui_view_button_id(void);
+
+struct waterui_each *waterui_view_force_as_each(struct waterui_anyview *view);
+
+struct waterui_type_id waterui_view_each_id(void);
+
+uintptr_t waterui_each_id(struct waterui_each *each, uintptr_t index);
+
+struct waterui_anyview *waterui_each_pull(struct waterui_each *each, uintptr_t index);
+
+uintptr_t waterui_each_len(const struct waterui_each *each);
 
 struct Progress waterui_view_force_as_progress(struct waterui_anyview *view);
 
