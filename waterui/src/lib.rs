@@ -7,6 +7,7 @@ extern crate alloc;
 mod macros;
 pub mod component;
 pub mod view;
+pub mod widget;
 
 use alloc::borrow::Cow;
 pub use view::ViewExt;

@@ -1,5 +1,5 @@
 use core::{
-    any::{type_name, TypeId},
+    any::{type_name, Any, TypeId},
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
-    fn body(self: Box<Self>, env: Environment) -> AnyView;
+    fn body(self: Box<Self>, env: &Environment) -> AnyView;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
@@ -18,8 +18,8 @@ trait AnyViewImpl: 'static {
     }
 }
 
-impl<T: View + 'static> AnyViewImpl for T {
-    fn body(self: Box<Self>, env: Environment) -> AnyView {
+impl<T: View> AnyViewImpl for T {
+    fn body(self: Box<Self>, env: &Environment) -> AnyView {
         AnyView::new(View::body(*self, env))
     }
 }
@@ -30,12 +30,21 @@ pub struct AnyView {
 
 impl Debug for AnyView {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("AnyView<{}>", self.name()))
+        f.write_fmt(format_args!("AnyView[{}]", self.name()))
     }
 }
 
 impl AnyView {
-    pub fn new(view: impl View + 'static) -> Self {
+    pub fn new<V: View>(view: V) -> Self {
+        if TypeId::of::<V>() == TypeId::of::<AnyView>() {
+            let any = &mut Some(view) as &mut dyn Any;
+            return any
+                .downcast_mut::<Option<AnyView>>()
+                .unwrap()
+                .take()
+                .unwrap();
+        }
+
         Self {
             inner: Box::new(view),
         }
@@ -85,7 +94,7 @@ impl AnyView {
 }
 
 impl View for AnyView {
-    fn body(self, env: Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         self.inner.body(env)
     }
 }

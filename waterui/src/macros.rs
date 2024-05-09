@@ -1,13 +1,3 @@
-macro_rules! raw_view {
-    ($ty:ty) => {
-        impl crate::View for $ty {
-            fn body(self, _env: crate::Environment) -> impl crate::view::View {
-                panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually",core::any::type_name::<Self>());
-            }
-        }
-    };
-}
-
 macro_rules! impl_from {
     ($enum_ty:ty,$ty:tt) => {
         impl From<$ty> for $enum_ty {
@@ -26,17 +16,11 @@ macro_rules! impl_from {
     };
 }
 
-macro_rules! impl_label {
-    ($ty:ident) => {
-        impl $ty<$crate::component::Text> {
-            pub fn font(mut self, font: crate::component::text::Font) -> Self {
-                self.label = self.label.font(font);
-                self
-            }
-
-            pub fn size(mut self, size: f64) -> Self {
-                self.label = self.label.size(size);
-                self
+macro_rules! impl_debug {
+    ($ty:ty) => {
+        impl core::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(core::any::type_name::<Self>())
             }
         }
     };
@@ -47,9 +31,9 @@ macro_rules! with_modifier {
         impl $crate::modifier::Modifier for $ty {
             fn modify(
                 self,
-                _env: $crate::Environment,
-                view: impl $crate::View + 'static,
-            ) -> impl $crate::View + 'static {
+                _env: &$crate::Environment,
+                view: impl $crate::View,
+            ) -> impl $crate::View {
                 $crate::component::metadata::Metadata::new(view, self)
             }
         }

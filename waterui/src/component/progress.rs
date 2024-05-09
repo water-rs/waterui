@@ -1,100 +1,66 @@
 use super::Text;
-use crate::view::ViewExt;
 use crate::CowStr;
-use crate::{AnyView, Environment, View};
+use crate::{AnyView, View};
+use waterui_core::raw_view;
 use waterui_reactive::ComputeExt;
-use waterui_reactive::{
-    compute::{IntoCompute, IntoComputed},
-    Computed,
-};
+use waterui_reactive::{compute::IntoComputed, Computed};
 
 const PROGRESS_INNER_VALUE_MAX: i32 = 10 ^ 5;
-pub struct Progress<Label> {
-    label: Label,
-    progress: Computed<i32>,
-    style: ProgressStyle,
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct Progress {
+    pub _label: AnyView,
+    pub _progress: Computed<i32>,
+    pub _style: ProgressStyle,
 }
 
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum ProgressStyle {
     Default,
     Circular,
     Linear,
 }
 
-impl_label!(Progress);
-
+raw_view!(Progress);
 impl Default for ProgressStyle {
     fn default() -> Self {
         Self::Default
     }
 }
 
-impl Progress<()> {
-    pub fn infinity() -> Self {
+impl Progress {
+    pub fn new(label: impl IntoComputed<CowStr>, progress: impl IntoComputed<Option<f64>>) -> Self {
+        Self::label(Text::new(label), progress)
+    }
+
+    pub fn infinity(label: impl IntoComputed<CowStr>) -> Self {
+        Self::new(label, -1.0)
+    }
+
+    pub fn label(label: impl View, progress: impl IntoComputed<Option<f64>>) -> Self {
         Self {
-            label: (),
-            progress: Computed::constant(-1),
-            style: ProgressStyle::default(),
+            _label: AnyView::new(label),
+            _progress: progress
+                .into_compute()
+                .map(|n| {
+                    if let Some(n) = n {
+                        PROGRESS_INNER_VALUE_MAX / ((1.0 / n) as i32)
+                    } else {
+                        -1
+                    }
+                })
+                .into_computed(),
+            _style: ProgressStyle::default(),
         }
     }
 
-    pub fn new(progress: impl IntoCompute<Option<f64>> + 'static) -> Self {
-        Self::infinity().progress(progress)
-    }
-}
-
-impl<Label: View> Progress<Label> {
     pub fn style(mut self, style: ProgressStyle) -> Self {
-        self.style = style;
+        self._style = style;
         self
     }
-
-    pub fn progress(mut self, progress: impl IntoCompute<Option<f64>> + 'static) -> Self {
-        self.progress = progress
-            .into_compute()
-            .map(|n| {
-                if let Some(n) = n {
-                    PROGRESS_INNER_VALUE_MAX / ((1.0 / n) as i32)
-                } else {
-                    -1
-                }
-            })
-            .computed();
-        self
-    }
-
-    pub fn label_view<V: View>(self, label: V) -> Progress<V> {
-        Progress {
-            label,
-            progress: self.progress,
-            style: self.style,
-        }
-    }
-
-    pub fn label(self, label: impl IntoComputed<CowStr>) -> Progress<Text> {
-        self.label_view(Text::new(label))
-    }
 }
 
-impl<Label: View + 'static> View for Progress<Label> {
-    fn body(self, _env: Environment) -> impl View {
-        RawProgress {
-            _label: self.label.anyview(),
-            _progress: self.progress,
-            _style: self.style,
-        }
-    }
-}
-
-pub struct RawProgress {
-    pub _label: AnyView,
-    pub _progress: Computed<i32>,
-    pub _style: ProgressStyle,
-}
-
-raw_view!(RawProgress);
-
-pub fn progress() -> Progress<()> {
-    Progress::infinity()
+pub fn progress() -> Progress {
+    Progress::infinity("")
 }

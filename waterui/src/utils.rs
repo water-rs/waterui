@@ -1,6 +1,5 @@
 use core::fmt::Debug;
 
-use alloc::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Color {
@@ -72,41 +71,3 @@ macro_rules! impl_handle_borrowed {
 }
 
 tuples!(impl_handle_borrowed);
-
-pub struct IdentifierMap<T> {
-    counter: usize,
-    to_id: BTreeMap<T, usize>,
-    from_id: BTreeMap<usize, T>,
-}
-
-impl<T: Ord + Clone> Default for IdentifierMap<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Ord + Clone> IdentifierMap<T> {
-    pub fn new() -> Self {
-        Self {
-            counter: 0,
-            to_id: BTreeMap::new(),
-            from_id: BTreeMap::new(),
-        }
-    }
-
-    pub fn insert(&mut self, value: T) -> usize {
-        let id = self.counter;
-        self.to_id.insert(value.clone(), id);
-        self.from_id.insert(id, value);
-        self.counter += 1;
-        id
-    }
-
-    pub fn to_id(&self, value: &T) -> Option<usize> {
-        self.to_id.get(value).cloned()
-    }
-
-    pub fn to_data(&self, id: usize) -> Option<&T> {
-        self.from_id.get(&id)
-    }
-}

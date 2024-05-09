@@ -3,8 +3,8 @@ pub use padding::Padding;
 
 use crate::{Environment, View};
 
-pub trait Modifier {
-    fn modify(self, env: Environment, view: impl View + 'static) -> impl View + 'static;
+pub trait Modifier: 'static {
+    fn modify(self, env: &Environment, view: impl View) -> impl View;
 }
 
 pub trait ModifierExt: Modifier + Sized {
@@ -29,7 +29,7 @@ impl<M1, M2> And<M1, M2> {
 }
 
 impl<M1: Modifier, M2: Modifier> Modifier for And<M1, M2> {
-    fn modify(self, env: Environment, view: impl View + 'static) -> impl View + 'static {
-        self.m2.modify(env.clone(), self.m1.modify(env, view))
+    fn modify(self, env: &Environment, view: impl View) -> impl View {
+        self.m2.modify(env, self.m1.modify(env, view))
     }
 }

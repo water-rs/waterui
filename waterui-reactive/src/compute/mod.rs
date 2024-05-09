@@ -1,7 +1,9 @@
 use core::fmt::Debug;
+use core::ops::Deref;
 use core::{any::type_name, num::NonZeroUsize};
 
 mod grouped;
+use alloc::rc::{Rc, Weak};
 pub use grouped::GroupedCompute;
 
 use alloc::boxed::Box;
@@ -50,6 +52,13 @@ pub trait Compute: Reactive {
     fn compute(&self) -> Self::Output;
 }
 
+impl<C: Compute> Compute for Rc<C> {
+    type Output = C::Output;
+    fn compute(&self) -> Self::Output {
+        self.deref().compute()
+    }
+}
+
 impl<C: Compute> Compute for &C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
@@ -67,9 +76,6 @@ impl<C: Compute> Compute for Option<C> {
 
 pub trait ComputeExt: Compute {
     fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self>;
-    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> SubscribeGuard<'_, Self>
-    where
-        Self: 'static + Clone;
 
     fn map<F, Output>(self, f: F) -> Map<Self, F>
     where
@@ -83,14 +89,6 @@ pub trait ComputeExt: Compute {
 impl<C: Compute> ComputeExt for C {
     fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self> {
         SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
-    }
-
-    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> SubscribeGuard<'_, Self>
-    where
-        Self: 'static + Clone,
-    {
-        let this = self.clone();
-        self.subscribe(move || watcher(this.compute()))
     }
 
     fn map<F, Output>(self, f: F) -> Map<Self, F>
@@ -109,8 +107,12 @@ impl<C: Compute> ComputeExt for C {
     }
 }
 
-pub struct Computed<T> {
-    inner: Box<dyn Compute<Output = T>>,
+pub struct Computed<T>(Rc<dyn Compute<Output = T>>);
+
+impl<T> Clone for Computed<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
 impl<T> Debug for Computed<T> {
@@ -119,11 +121,33 @@ impl<T> Debug for Computed<T> {
     }
 }
 
+pub struct WeakComputed<T>(Weak<dyn Compute<Output = T>>);
+
+impl<T> WeakComputed<T> {
+    pub fn upgrade(&self) -> Option<Computed<T>> {
+        self.0.upgrade().map(Computed)
+    }
+}
+
 impl<T> Computed<T> {
     pub fn new(compute: impl Compute<Output = T> + 'static) -> Self {
-        Self {
-            inner: Box::new(compute),
-        }
+        Self(Rc::new(compute))
+    }
+
+    pub fn downgrade(&self) -> WeakComputed<T> {
+        WeakComputed(Rc::downgrade(&self.0))
+    }
+
+    pub fn watch(&self, watcher: impl Fn(T) + 'static) -> SubscribeGuard<'_, Self>
+    where
+        T: 'static,
+    {
+        let weak = self.downgrade();
+        self.subscribe(move || {
+            if let Some(rc) = weak.upgrade() {
+                watcher(rc.compute())
+            }
+        })
     }
 
     pub fn from_fn<F>(f: F) -> Self
@@ -150,19 +174,19 @@ impl<T: Clone + 'static> Computed<T> {
 impl<T> Compute for Computed<T> {
     type Output = T;
     fn compute(&self) -> Self::Output {
-        self.inner.compute()
+        self.0.compute()
     }
 }
 
 impl<T> Reactive for Computed<T> {
     fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
-        self.inner.register_subscriber(subscriber)
+        self.0.register_subscriber(subscriber)
     }
     fn cancel_subscriber(&self, id: NonZeroUsize) {
-        self.inner.cancel_subscriber(id)
+        self.0.cancel_subscriber(id)
     }
 
     fn notify(&self) {
-        self.inner.notify()
+        self.0.notify()
     }
 }
