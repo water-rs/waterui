@@ -1,9 +1,11 @@
 use alloc::vec::Vec;
+use waterui_core::raw_view;
 use waterui_core::view::TupleViews;
 
 use crate::AnyView;
 
 #[non_exhaustive]
+#[derive(Debug)]
 pub struct Stack {
     pub _contents: Vec<AnyView>,
     pub _mode: StackMode,

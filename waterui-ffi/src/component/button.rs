@@ -1,13 +1,13 @@
 use crate::{ffi_view, waterui_anyview, IntoFFI};
 
-use waterui::component::button::RawButton;
+use waterui::component::Button;
 
 #[repr(C)]
 pub struct waterui_button {
     label: *mut waterui_anyview,
 }
 
-impl IntoFFI for RawButton {
+impl IntoFFI for Button {
     type FFI = waterui_button;
 
     fn into_ffi(self) -> Self::FFI {
@@ -18,7 +18,7 @@ impl IntoFFI for RawButton {
 }
 
 ffi_view!(
-    RawButton,
+    Button,
     waterui_button,
     waterui_view_force_as_button,
     waterui_view_button_id

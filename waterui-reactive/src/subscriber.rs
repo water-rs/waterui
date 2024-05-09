@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
-use core::{cell::RefCell, fmt::Debug, num::NonZeroUsize};
+use core::{cell::RefCell, fmt::Debug, mem::forget, num::NonZeroUsize};
 
 use crate::Reactive;
 
@@ -172,6 +172,10 @@ where
 
     pub fn id(&self) -> Option<NonZeroUsize> {
         self.id
+    }
+
+    pub fn leak(self) {
+        forget(self);
     }
 }
 

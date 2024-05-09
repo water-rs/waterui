@@ -1,6 +1,6 @@
 use core::{num::NonZeroUsize, ops::Deref};
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, rc::Rc};
 
 use crate::subscriber::BoxSubscriber;
 
@@ -25,6 +25,18 @@ impl<T: Reactive + ?Sized> Reactive for &T {
 }
 
 impl<T: Reactive + ?Sized> Reactive for Box<T> {
+    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+        self.deref().register_subscriber(subscriber)
+    }
+    fn cancel_subscriber(&self, id: NonZeroUsize) {
+        self.deref().cancel_subscriber(id)
+    }
+    fn notify(&self) {
+        self.deref().notify();
+    }
+}
+
+impl<T: Reactive + ?Sized> Reactive for Rc<T> {
     fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
         self.deref().register_subscriber(subscriber)
     }

@@ -1,18 +1,9 @@
+#[macro_export]
 macro_rules! raw_view {
     ($ty:ty) => {
-        impl crate::View for $ty {
-            fn body(self, _env: crate::Environment) -> impl crate::view::View {
+        impl $crate::View for $ty {
+            fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually", core::any::type_name::<$ty>());
-            }
-        }
-    };
-}
-
-macro_rules! impl_debug {
-    ($ty:ty) => {
-        impl core::fmt::Debug for $ty {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                f.write_str(core::any::type_name::<Self>())
             }
         }
     };

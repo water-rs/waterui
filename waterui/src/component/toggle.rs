@@ -1,19 +1,14 @@
+use waterui_core::raw_view;
 use waterui_reactive::{compute::IntoComputed, Binding};
 
-use crate::{AnyView, CowStr, Environment, View, ViewExt};
+use crate::{AnyView, CowStr, View};
 
 use super::Text;
 
 #[derive(Debug)]
-pub struct Toggle<Label> {
-    label: Label,
-    toggle: Binding<bool>,
-    style: ToggleStyle,
-}
-
-#[derive(Debug)]
 #[non_exhaustive]
-pub struct RawToggle {
+
+pub struct Toggle {
     pub _label: AnyView,
     pub _toggle: Binding<bool>,
     pub _style: ToggleStyle,
@@ -33,43 +28,27 @@ impl Default for ToggleStyle {
     }
 }
 
-impl_label!(Toggle);
+impl Toggle {
+    pub fn new(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Self {
+        Self::label(Text::new(label), toggle)
+    }
 
-impl Toggle<()> {
-    pub fn new(toggle: &Binding<bool>) -> Self {
+    pub fn label(label: impl View, toggle: &Binding<bool>) -> Self {
         Self {
-            label: (),
-            toggle: toggle.clone(),
-            style: ToggleStyle::Default,
+            _label: AnyView::new(label),
+            _toggle: toggle.clone(),
+            _style: ToggleStyle::default(),
         }
+    }
+
+    pub fn with_label(mut self, label: impl View) -> Self {
+        self._label = AnyView::new(label);
+        self
     }
 }
 
-impl<Label: View> Toggle<Label> {
-    pub fn label(self, label: impl IntoComputed<CowStr>) -> Toggle<Text> {
-        self.label_view(Text::new(label))
-    }
-    pub fn label_view<V: View>(self, label: V) -> Toggle<V> {
-        Toggle {
-            label,
-            toggle: self.toggle,
-            style: self.style,
-        }
-    }
-}
+raw_view!(Toggle);
 
-raw_view!(RawToggle);
-
-impl<Label: View + 'static> View for Toggle<Label> {
-    fn body(self, _env: Environment) -> impl View {
-        RawToggle {
-            _label: self.label.anyview(),
-            _toggle: self.toggle,
-            _style: self.style,
-        }
-    }
-}
-
-pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggle<Text> {
-    Toggle::new(toggle).label(label)
+pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggle {
+    Toggle::new(label, toggle)
 }
