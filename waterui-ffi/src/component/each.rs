@@ -1,19 +1,19 @@
 use core::any::TypeId;
 
-use waterui::component::each::RawEach;
+use waterui::component::each::Each;
 
 use crate::{waterui_anyview, waterui_type_id, IntoFFI, IntoRust};
 
-ffi_type!(waterui_each, RawEach);
+ffi_type!(waterui_each, Each);
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_force_as_each(view: *mut waterui_anyview) -> *mut waterui_each {
-    view.into_rust().downcast_unchecked::<RawEach>().into_ffi()
+    view.into_rust().downcast_unchecked::<Each>().into_ffi()
 }
 
 #[no_mangle]
 extern "C" fn waterui_view_each_id() -> waterui_type_id {
-    TypeId::of::<RawEach>().into_ffi()
+    TypeId::of::<Each>().into_ffi()
 }
 
 #[no_mangle]

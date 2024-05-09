@@ -13,17 +13,21 @@ pub struct Error {
 
 pub type BoxedStdError = Box<dyn StdError>;
 pub type ErrorViewBuilder = Box<dyn Fn(BoxedStdError) -> AnyView>;
-pub type OnceErrorViewBuilder = Box<dyn FnOnce(BoxedStdError) -> AnyView>;
 
 trait ErrorImpl: Debug + Display + 'static {
-    fn body(self: Box<Self>, _env: Environment) -> AnyView;
+    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
+    where
+        Self: 'a;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
 
 impl<E: StdError + 'static> ErrorImpl for E {
-    fn body(self: Box<Self>, env: Environment) -> AnyView {
+    fn body<'a>(self: Box<Self>, env: &'a Environment) -> AnyView
+    where
+        Self: 'a,
+    {
         env.default_error_view(self)
     }
 }
@@ -43,7 +47,7 @@ impl Error {
         }
     }
 
-    pub fn from_view(view: impl View + 'static) -> Self {
+    pub fn from_view(view: impl View) -> Self {
         Self {
             inner: Box::new(ErrorView::new(view)),
         }
@@ -55,7 +59,7 @@ pub struct ErrorView {
 }
 
 impl ErrorView {
-    fn new(view: impl View + 'static) -> Self {
+    fn new(view: impl View) -> Self {
         Self {
             view: AnyView::new(view),
         }
@@ -74,25 +78,28 @@ impl Debug for ErrorView {
     }
 }
 impl ErrorImpl for ErrorView {
-    fn body(self: Box<Self>, _env: Environment) -> AnyView {
+    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
+    where
+        Self: 'a,
+    {
         self.view
     }
 }
 
 impl View for Error {
-    fn body(self, env: crate::Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         self.inner.body(env)
     }
 }
 
 pub trait ResultExt<T, E> {
-    fn error_view<V: View + 'static>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
+    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
     where
         Self: Sized;
 }
 
 impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
-    fn error_view<V: View + 'static>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
+    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
     where
         Self: Sized,
     {
@@ -107,7 +114,7 @@ pub struct DefaultErrorView {
 pub struct UseDefaultErrorView;
 
 impl DefaultErrorView {
-    pub fn new<V: View + 'static>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {
+    pub fn new<V: View>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {
         Self {
             builder: Box::new(move |error| AnyView::new(builder(error))),
         }

@@ -1,77 +1,73 @@
+use core::fmt::Debug;
+use core::future::Future;
+
 use alloc::boxed::Box;
 use waterui_reactive::compute::IntoComputed;
 
-use crate::{AnyView, CowStr};
-use crate::{Environment, View, ViewExt};
-
 use super::Text;
+use crate::{AnyView, CowStr};
+use crate::{Environment, View};
+use waterui_core::raw_view;
 
-pub struct Button<Label> {
-    label: Label,
-    action: Box<dyn Fn(&Environment)>,
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct Button {
+    pub _label: AnyView,
+    pub _action: Box<dyn Action>,
 }
 
-pub trait Action {
-    fn call_action(&self, env: &Environment);
+pub trait Action: 'static {
+    fn call_action(&self, _env: &Environment);
 }
 
-impl<F: Fn(&Environment)> Action for F {
+impl_debug!(dyn Action);
+
+pub trait AsyncAction: 'static {
+    fn call_action(&self, _env: &Environment) -> impl Future<Output = ()> + 'static;
+}
+
+struct AsyncActionWrapper<T>(T);
+
+impl<T: AsyncAction> Action for AsyncActionWrapper<T> {
     fn call_action(&self, env: &Environment) {
-        (self)(env)
+        env.task(AsyncAction::call_action(&self.0, env)).detach();
     }
 }
 
-#[non_exhaustive]
-pub struct RawButton {
-    pub _label: AnyView,
-    pub _action: Box<dyn Fn(&Environment)>,
+impl<F> Action for F
+where
+    F: Fn() + 'static,
+{
+    fn call_action(&self, _env: &Environment) {
+        (self)()
+    }
 }
 
-impl<Label: View + 'static> Button<Label> {
-    pub fn label(label: Label) -> Self {
+impl Button {
+    pub fn new(label: impl IntoComputed<CowStr>) -> Self {
+        Self::label(Text::new(label))
+    }
+
+    pub fn label(label: impl View) -> Self {
         Self {
-            label,
-            action: Box::new(|_| {}),
+            _label: AnyView::new(label),
+            _action: Box::new(|| {}),
         }
     }
 
-    pub fn action(self, action: impl Fn() + 'static) -> Self {
-        self.action_env(move |_| action())
-    }
-
-    pub fn action_env(mut self, action: impl Fn(&Environment) + 'static) -> Self {
-        self.action = Box::new(move |env| action(env));
+    pub fn action(mut self, action: impl Action) -> Self {
+        self._action = Box::new(action);
         self
     }
 
     #[cfg(feature = "async")]
-    pub fn action_async<Fut>(self, action: impl 'static + Fn() -> Fut) -> Self
-    where
-        Fut: core::future::Future<Output = ()> + 'static,
-    {
-        self.action_env(move |env| env.task(action()).detach())
+    pub fn action_async<Fut>(self, action: impl AsyncAction) -> Self {
+        self.action(AsyncActionWrapper(action))
     }
 }
 
-impl Button<Text> {
-    pub fn new(label: impl IntoComputed<CowStr>) -> Self {
-        Self::label(Text::new(label))
-    }
-}
+raw_view!(Button);
 
-impl_label!(Button);
-
-impl<Label: View + 'static> View for Button<Label> {
-    fn body(self, _env: Environment) -> impl View {
-        RawButton {
-            _label: self.label.anyview(),
-            _action: self.action,
-        }
-    }
-}
-
-raw_view!(RawButton);
-
-pub fn button(label: impl IntoComputed<CowStr>) -> Button<Text> {
+pub fn button(label: impl IntoComputed<CowStr>) -> Button {
     Button::new(label)
 }
