@@ -48,11 +48,11 @@ typedef struct waterui_button {
   struct waterui_anyview *label;
 } waterui_button;
 
-typedef struct Progress {
+typedef struct waterui_progress {
   struct waterui_anyview *label;
   struct waterui_computed_int *progress;
   enum waterui_style_progress style;
-} Progress;
+} waterui_progress;
 
 typedef struct waterui_array_waterui_anyview {
   struct waterui_anyview *head;
@@ -116,7 +116,8 @@ typedef struct waterui_app_closure {
 
 struct waterui_type_id waterui_view_id(const struct waterui_anyview *view);
 
-struct waterui_anyview *waterui_call_view(struct waterui_anyview *view, struct waterui_env *env);
+struct waterui_anyview *waterui_call_view(struct waterui_anyview *view,
+                                          const struct waterui_env *env);
 
 struct waterui_type_id waterui_view_empty_id(void);
 
@@ -134,7 +135,7 @@ struct waterui_anyview *waterui_each_pull(struct waterui_each *each, uintptr_t i
 
 uintptr_t waterui_each_len(const struct waterui_each *each);
 
-struct Progress waterui_view_force_as_progress(struct waterui_anyview *view);
+struct waterui_progress waterui_view_force_as_progress(struct waterui_anyview *view);
 
 struct waterui_type_id waterui_view_progress_id(void);
 

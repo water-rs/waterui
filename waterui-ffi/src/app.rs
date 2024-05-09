@@ -48,9 +48,9 @@ pub unsafe extern "C" fn waterui_view_id(view: *const waterui_anyview) -> wateru
 #[no_mangle]
 pub unsafe extern "C" fn waterui_call_view(
     view: *mut waterui_anyview,
-    env: *mut waterui_env,
+    env: *const waterui_env,
 ) -> *mut waterui_anyview {
-    view.into_rust().body(env.into_rust()).anyview().into_ffi()
+    view.into_rust().body(&*env).anyview().into_ffi()
 }
 
 #[no_mangle]

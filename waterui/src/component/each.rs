@@ -1,66 +1,63 @@
-use crate::{Environment, View};
+use core::ops::Deref;
+use core::ops::DerefMut;
+
+use crate::View;
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use waterui_core::raw_view;
 use waterui_core::AnyView;
 use waterui_reactive::{Binding, Reactive};
 
-pub struct Each<T, Content> {
-    data: Binding<Vec<T>>,
-    content: Content,
-}
-
-trait EachImpl: Reactive {
+pub trait EachImpl: Reactive + 'static {
     fn id(&mut self, index: usize) -> usize; // return id
     fn pull(&mut self, index: usize) -> AnyView;
     fn len(&self) -> usize;
-}
-
-pub struct RawEach(Box<dyn EachImpl>);
-
-impl RawEach {
-    pub fn id(&mut self, index: usize) -> usize {
-        self.0.id(index)
-    }
-    pub fn pull(&mut self, index: usize) -> AnyView {
-        self.0.pull(index)
-    }
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.len() == 0
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
-raw_view!(RawEach);
+pub struct Each(Box<dyn EachImpl>);
 
-impl<T: Ord + Clone, Content> Each<T, Content> {
-    pub fn new(data: &Binding<Vec<T>>, content: Content) -> Self {
-        Self {
+impl_debug!(Each);
+
+impl Deref for Each {
+    type Target = dyn EachImpl;
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
+impl DerefMut for Each {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.deref_mut()
+    }
+}
+
+raw_view!(Each);
+
+impl Each {
+    pub fn new<T, Content, V>(data: &Binding<Vec<T>>, content: Content) -> Self
+    where
+        T: Ord + Clone + 'static,
+        Content: 'static + Fn(&T) -> V,
+        V: View,
+    {
+        Self::from_impl(EachInner {
             data: data.clone(),
             content,
-        }
-    }
-}
-
-impl<T, Content, V> View for Each<T, Content>
-where
-    T: Ord + Clone + 'static,
-    Content: 'static + Fn(&T) -> V,
-    V: View + 'static,
-{
-    fn body(self, _env: Environment) -> impl View {
-        let raw: Box<dyn EachImpl> = Box::new(EachInner {
-            each: self,
             id_counter: 0,
             id_map: BTreeMap::new(),
-        });
-        RawEach(raw)
+        })
+    }
+
+    pub fn from_impl(each: impl EachImpl) -> Self {
+        Self(Box::new(each))
     }
 }
 
 struct EachInner<T, Content> {
-    each: Each<T, Content>,
+    data: Binding<Vec<T>>,
+    content: Content,
     id_counter: usize,
     id_map: BTreeMap<T, usize>,
 }
@@ -70,24 +67,24 @@ impl<T, Content> Reactive for EachInner<T, Content> {
         &self,
         subscriber: waterui_reactive::subscriber::BoxSubscriber,
     ) -> Option<core::num::NonZeroUsize> {
-        self.each.data.register_subscriber(subscriber)
+        self.data.register_subscriber(subscriber)
     }
     fn cancel_subscriber(&self, id: core::num::NonZeroUsize) {
-        self.each.data.cancel_subscriber(id);
+        self.data.cancel_subscriber(id);
     }
     fn notify(&self) {
-        self.each.data.notify();
+        self.data.notify();
     }
 }
 
 impl<T, Content, V> EachImpl for EachInner<T, Content>
 where
-    T: Ord + Clone,
-    Content: Fn(&T) -> V,
-    V: View + 'static,
+    T: Ord + Clone + 'static,
+    Content: 'static + Fn(&T) -> V,
+    V: View,
 {
     fn id(&mut self, index: usize) -> usize {
-        let data = &self.each.data.get()[index];
+        let data = &self.data.get()[index];
         self.id_map.get(data).cloned().unwrap_or_else(|| {
             let id = self.id_counter;
             self.id_counter += 1;
@@ -96,11 +93,11 @@ where
     }
 
     fn pull(&mut self, index: usize) -> AnyView {
-        let data = &self.each.data.get()[index];
-        AnyView::new((self.each.content)(data))
+        let data = &self.data.get()[index];
+        AnyView::new((self.content)(data))
     }
 
     fn len(&self) -> usize {
-        self.each.data.get().len()
+        self.data.get().len()
     }
 }

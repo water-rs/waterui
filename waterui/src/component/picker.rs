@@ -1,72 +1,89 @@
-use core::{cell::RefCell, ops::Deref};
+use core::ops::Deref;
 
-use crate::utils::IdentifierMap;
-use crate::{AnyView, Environment, View};
+use crate::AnyView;
+use alloc::collections::BTreeMap;
 use alloc::{rc::Rc, vec::Vec};
-use waterui_reactive::{Binding, ComputeExt, Computed};
-pub struct Picker<T> {
-    items: Computed<Vec<PickerItem<T>>>,
-    selection: Binding<Option<T>>,
-}
+use waterui_core::raw_view;
+use waterui_reactive::{Binding, Compute};
 
-pub struct PickerItem<T> {
-    label: AnyView,
-    value: T,
-}
-
-#[non_exhaustive]
-pub struct RawPickerItem {
-    pub _label: AnyView,
-    pub _value: usize,
+#[derive(Debug)]
+pub struct TaggedView<T> {
+    content: AnyView,
+    tag: T,
 }
 
 #[non_exhaustive]
-pub struct RawPicker {
-    pub _items: Computed<Vec<RawPickerItem>>,
+#[derive(Debug)]
+pub struct Picker {
+    pub _items: Vec<(AnyView, i32)>,
     pub _selection: Binding<i32>,
 }
 
-impl<T> View for Picker<T>
-where
-    T: Ord + Clone + 'static,
-{
-    fn body(self, _env: Environment) -> impl View {
-        let map = Rc::new(RefCell::new(IdentifierMap::new()));
-        let items;
-        {
-            let map = map.clone();
-            items = self
-                .items
-                .map(move |items| {
-                    items
-                        .into_iter()
-                        .map(|item| RawPickerItem {
-                            _label: item.label,
-                            _value: map.borrow_mut().insert(item.value),
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .computed();
-        }
+impl Picker {
+    pub fn new<T: Ord + Clone + 'static>(
+        items: impl Into<Vec<TaggedView<T>>>,
+        selection: &Binding<T>,
+    ) -> Self {
+        let items = items.into();
+        let mut map = IdentifierMap::new();
+        let items = items
+            .into_iter()
+            .map(|v| (v.content, map.insert(v.tag)))
+            .collect();
 
-        let selection = self.selection.bridge(
+        let map = Rc::new(map);
+
+        let selection = selection.bridge(
             {
                 let map = map.clone();
-                move |new| Some(map.borrow().to_data(*new.get() as usize).cloned().unwrap())
+                move |new| map.to_data(new.compute()).unwrap().clone()
             },
-            move |this| {
-                if let Some(this) = this.get().deref() {
-                    map.borrow().to_id(this).map(|v| v as i32).unwrap()
-                } else {
-                    -1
-                }
-            },
+            move |old| map.to_id(old.get().deref()).unwrap(),
         );
-        RawPicker {
+
+        Self {
             _items: items,
             _selection: selection,
         }
     }
 }
 
-raw_view!(RawPicker);
+raw_view!(Picker);
+
+struct IdentifierMap<T> {
+    counter: i32,
+    to_id: BTreeMap<T, i32>,
+    from_id: BTreeMap<i32, T>,
+}
+
+impl<T: Ord + Clone> Default for IdentifierMap<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Ord + Clone> IdentifierMap<T> {
+    pub fn new() -> Self {
+        Self {
+            counter: 0,
+            to_id: BTreeMap::new(),
+            from_id: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, value: T) -> i32 {
+        let id = self.counter;
+        self.to_id.insert(value.clone(), id);
+        self.from_id.insert(id, value);
+        self.counter += 1;
+        id
+    }
+
+    pub fn to_id(&self, value: &T) -> Option<i32> {
+        self.to_id.get(value).cloned()
+    }
+
+    pub fn to_data(&self, id: i32) -> Option<&T> {
+        self.from_id.get(&id)
+    }
+}

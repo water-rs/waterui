@@ -8,6 +8,7 @@ use alloc::{borrow::Cow, string::String};
 pub use binding::Binding;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
+pub mod mpsc;
 mod reactive;
 pub use reactive::Reactive;
 pub mod subscriber;
@@ -29,7 +30,7 @@ macro_rules! impl_constant {
     };
 }
 
-impl_constant!(i32, bool, String, &'static str, Cow<'static, str>);
+impl_constant!(i32, f64, bool, String, &'static str, Cow<'static, str>);
 
 #[macro_export]
 macro_rules! no_reactive {

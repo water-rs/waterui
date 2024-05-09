@@ -1,4 +1,5 @@
 pub mod button;
+pub mod dynamic;
 pub mod each;
 pub mod metadata;
 pub mod picker;
@@ -24,8 +25,12 @@ pub use text_field::{field, TextField};
 #[doc(inline)]
 pub use toggle::{toggle, Toggle};
 
+#[doc(inline)]
+pub use dynamic::Dynamic;
+
 /*
 #[cfg(feature = "remote-image")]
 mod remote_image;
 #[cfg(feature = "remote-image")]
-pub use remote_image::{remoteimg, RemoteImage};*/
+pub use remote_image::{remoteimg, RemoteImage};
+*/
