@@ -1,6 +1,7 @@
 use core::{
     any::{Any, TypeId},
     future::Future,
+    marker::PhantomData,
 };
 
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
@@ -76,7 +77,7 @@ mod executor {
 #[cfg(feature = "async")]
 pub use executor::Executor;
 
-use crate::{error::BoxedStdError, AnyView};
+use crate::{error::BoxedStdError, AnyView, View};
 
 impl Environment {
     pub fn new() -> Self {
@@ -120,5 +121,37 @@ impl Environment {
     #[cfg(feature = "async")]
     pub fn executor(&self) -> &Executor {
         &self.inner.executor
+    }
+}
+
+pub struct UseEnv<V, F> {
+    f: F,
+    _marker: PhantomData<V>,
+}
+
+impl<V, F> UseEnv<V, F> {
+    pub fn new(f: F) -> Self {
+        Self {
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+pub fn use_env<V, F>(f: F) -> UseEnv<V, F>
+where
+    V: View,
+    F: 'static + Fn(&Environment) -> V,
+{
+    UseEnv::new(f)
+}
+
+impl<V, F> View for UseEnv<V, F>
+where
+    V: View,
+    F: 'static + Fn(&Environment) -> V,
+{
+    fn body(self, env: &Environment) -> impl View {
+        (self.f)(env)
     }
 }

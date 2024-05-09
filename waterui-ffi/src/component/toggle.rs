@@ -1,6 +1,6 @@
 use crate::{binding::waterui_binding_bool, ffi_view, waterui_anyview, IntoFFI};
 
-use waterui::component::toggle::{RawToggle, ToggleStyle};
+use waterui::component::toggle::{Toggle, ToggleStyle};
 
 #[repr(C)]
 pub enum waterui_style_toggle {
@@ -27,7 +27,7 @@ pub struct waterui_toggle {
     style: waterui_style_toggle,
 }
 
-impl IntoFFI for RawToggle {
+impl IntoFFI for Toggle {
     type FFI = waterui_toggle;
     fn into_ffi(self) -> Self::FFI {
         waterui_toggle {
@@ -39,7 +39,7 @@ impl IntoFFI for RawToggle {
 }
 
 ffi_view!(
-    RawToggle,
+    Toggle,
     waterui_toggle,
     waterui_view_force_as_toggle,
     waterui_view_toggle_id

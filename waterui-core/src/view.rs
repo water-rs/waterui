@@ -1,24 +1,21 @@
-use core::any::Any;
-
 use crate::{AnyView, Environment};
 
-use alloc::{boxed::Box, rc::Rc, vec::Vec};
-use waterui_reactive::Computed;
+use alloc::vec::Vec;
 
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
-pub trait View {
+pub trait View: 'static {
     /// Build this view and return the content.
     ///
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self, _env: Environment) -> impl View;
+    fn body(self, _env: &Environment) -> impl View;
 }
 
-impl<V: View + 'static, E: View + 'static> View for Result<V, E> {
-    fn body(self, _env: Environment) -> impl View {
+impl<V: View, E: View> View for Result<V, E> {
+    fn body(self, _env: &Environment) -> impl View {
         match self {
             Ok(view) => AnyView::new(view),
             Err(view) => AnyView::new(view),
@@ -26,8 +23,8 @@ impl<V: View + 'static, E: View + 'static> View for Result<V, E> {
     }
 }
 
-impl<V: View + 'static> View for Option<V> {
-    fn body(self, _env: Environment) -> impl View {
+impl<V: View> View for Option<V> {
+    fn body(self, _env: &Environment) -> impl View {
         match self {
             Some(view) => AnyView::new(view),
             None => AnyView::new(()),
@@ -35,8 +32,19 @@ impl<V: View + 'static> View for Option<V> {
     }
 }
 
-pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
-pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
+pub trait ViewBuilder {
+    fn build(&self) -> impl View;
+}
+
+impl<F, V> ViewBuilder for F
+where
+    F: Fn() -> V,
+    V: View,
+{
+    fn build(&self) -> impl View {
+        (self)()
+    }
+}
 
 pub trait TupleViews {
     fn into_views(self) -> Vec<AnyView>;
@@ -47,7 +55,7 @@ macro_rules! impl_tuple_views {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:View+'static,)*>TupleViews for ($($ty),*){
+        impl <$($ty:View,)*>TupleViews for ($($ty),*){
             fn into_views(self) -> Vec<AnyView> {
                 let ($($ty),*)=self;
                 alloc::vec![$(AnyView::new($ty)),*]
@@ -60,10 +68,10 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
-raw_view!(Computed<AnyView>);
+pub struct Unreachable;
 
-pub fn downcast<V: 'static>(view: impl View + 'static) -> Option<V> {
-    let any = &mut Some(view) as &mut dyn Any;
-    let any = any.downcast_mut::<Option<V>>();
-    any.map(|v| v.take().unwrap())
+impl View for Unreachable {
+    fn body(self, _env: &Environment) -> impl View {
+        unreachable!()
+    }
 }

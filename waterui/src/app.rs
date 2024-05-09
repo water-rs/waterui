@@ -8,7 +8,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(content: impl View + 'static) -> Self {
+    pub fn new(content: impl View) -> Self {
         Self {
             _content: content.anyview(),
             _env: Environment::new(),
