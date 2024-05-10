@@ -2,12 +2,22 @@ use core::{num::NonZeroUsize, ops::Deref};
 
 use alloc::{boxed::Box, rc::Rc};
 
-use crate::subscriber::BoxSubscriber;
+use crate::subscriber::{BoxSubscriber, SubscribeGuard};
 
 pub trait Reactive {
     fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize>;
     fn cancel_subscriber(&self, id: NonZeroUsize);
     fn notify(&self);
+}
+
+pub trait ReactiveExt: Reactive {
+    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self>;
+}
+
+impl<T: Reactive> ReactiveExt for T {
+    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self> {
+        SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
+    }
 }
 
 impl<T: Reactive + ?Sized> Reactive for &T {
