@@ -94,7 +94,6 @@ impl<T> Binding<T> {
             inner: Rc::new(BindingInner::new(value)),
         }
     }
-
     // Create a two-way connection between two bindings.
     pub fn bridge<F1, F2, T2>(&self, to_this: F1, to_new: F2) -> Binding<T2>
     where
