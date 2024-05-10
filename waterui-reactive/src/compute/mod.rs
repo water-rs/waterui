@@ -5,57 +5,48 @@ use core::{any::type_name, num::NonZeroUsize};
 mod grouped;
 use alloc::rc::{Rc, Weak};
 pub use grouped::GroupedCompute;
-
-use alloc::boxed::Box;
 mod constant;
-pub use constant::Constant;
-
+pub use constant::{constant, Constant};
 mod f;
 pub use f::ComputeFn;
 mod map;
+
+use crate::reactive::ReactiveExt;
 use crate::subscriber::SubscriberManager;
 use crate::subscriber::{BoxSubscriber, SubscribeGuard};
 use crate::Reactive;
 pub use map::Map;
-
-pub trait IntoCompute<T>: Compute {
-    fn into_compute(self) -> impl Compute<Output = T>;
-}
-
-pub trait IntoComputed<T>: IntoCompute<T> + 'static {
-    fn into_computed(self) -> Computed<T>;
-}
-
-impl<C, T> IntoCompute<T> for C
-where
-    C: Compute,
-    C::Output: Into<T>,
-{
-    fn into_compute(self) -> impl Compute<Output = T> {
-        self.map(Into::into)
-    }
-}
-
-impl<C, T> IntoComputed<T> for C
-where
-    C: Compute + 'static,
-    C::Output: Into<T>,
-    T: 'static,
-{
-    fn into_computed(self) -> Computed<T> {
-        Computed::new(self.into_compute())
-    }
-}
 
 pub trait Compute: Reactive {
     type Output;
     fn compute(&self) -> Self::Output;
 }
 
-impl<C: Compute> Compute for Rc<C> {
-    type Output = C::Output;
-    fn compute(&self) -> Self::Output {
-        self.deref().compute()
+pub trait IntoCompute<T> {
+    fn into_compute(self) -> impl Compute<Output = T>;
+}
+
+impl<C, T> IntoCompute<T> for C
+where
+    C: Compute,
+    T: From<C::Output>,
+{
+    fn into_compute(self) -> impl Compute<Output = T> {
+        self.map(Into::into)
+    }
+}
+
+pub trait IntoComputed<T>: IntoCompute<T> + 'static {
+    fn into_computed(self) -> Computed<T>;
+}
+
+impl<C, T> IntoComputed<T> for C
+where
+    C: IntoCompute<T> + 'static,
+    T: 'static,
+{
+    fn into_computed(self) -> Computed<T> {
+        self.into_compute().computed()
     }
 }
 
@@ -63,6 +54,20 @@ impl<C: Compute> Compute for &C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
         (*self).compute()
+    }
+}
+
+impl<C: Compute> Compute for &mut C {
+    type Output = C::Output;
+    fn compute(&self) -> Self::Output {
+        (**self).compute()
+    }
+}
+
+impl<C: Compute> Compute for Rc<C> {
+    type Output = C::Output;
+    fn compute(&self) -> Self::Output {
+        self.deref().compute()
     }
 }
 
@@ -75,8 +80,6 @@ impl<C: Compute> Compute for Option<C> {
 }
 
 pub trait ComputeExt: Compute {
-    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self>;
-
     fn map<F, Output>(self, f: F) -> Map<Self, F>
     where
         F: Fn(Self::Output) -> Output,
@@ -87,10 +90,6 @@ pub trait ComputeExt: Compute {
 }
 
 impl<C: Compute> ComputeExt for C {
-    fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self> {
-        SubscribeGuard::new(self, self.register_subscriber(Box::new(subscriber)))
-    }
-
     fn map<F, Output>(self, f: F) -> Map<Self, F>
     where
         F: Fn(Self::Output) -> Output,
@@ -108,6 +107,13 @@ impl<C: Compute> ComputeExt for C {
 }
 
 pub struct Computed<T>(Rc<dyn Compute<Output = T>>);
+
+impl<T> Compute for Computed<T> {
+    type Output = T;
+    fn compute(&self) -> Self::Output {
+        self.0.compute()
+    }
+}
 
 impl<T> Clone for Computed<T> {
     fn clone(&self) -> Self {
@@ -162,19 +168,6 @@ impl<T> Computed<T> {
         F: 'static + Fn(&SubscriberManager) -> T,
     {
         Self::new(ComputeFn::new_with_subscribers(f, subscribers))
-    }
-}
-
-impl<T: Clone + 'static> Computed<T> {
-    pub fn constant(value: T) -> Self {
-        Self::new(Constant::new(value))
-    }
-}
-
-impl<T> Compute for Computed<T> {
-    type Output = T;
-    fn compute(&self) -> Self::Output {
-        self.0.compute()
     }
 }
 

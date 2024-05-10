@@ -25,3 +25,7 @@ impl<T> Reactive for Constant<T> {
     fn cancel_subscriber(&self, _id: NonZeroUsize) {}
     fn notify(&self) {}
 }
+
+pub fn constant<T: Clone>(value: T) -> Constant<T> {
+    Constant::new(value)
+}
