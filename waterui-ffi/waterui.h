@@ -38,15 +38,13 @@ typedef struct waterui_computed_str waterui_computed_str;
 
 typedef struct waterui_each waterui_each;
 
-typedef struct waterui_env waterui_env;
+typedef struct waterui_button {
+  struct waterui_anyview *label;
+} waterui_button;
 
 typedef struct waterui_type_id {
   uint64_t inner[2];
 } waterui_type_id;
-
-typedef struct waterui_button {
-  struct waterui_anyview *label;
-} waterui_button;
 
 typedef struct waterui_progress {
   struct waterui_anyview *label;
@@ -102,24 +100,6 @@ typedef struct waterui_closure {
   void (*call)(const void*);
   void (*free)(void*);
 } waterui_closure;
-
-typedef struct waterui_app {
-  struct waterui_anyview *content;
-  struct waterui_env *env;
-} waterui_app;
-
-typedef struct waterui_app_closure {
-  void *data;
-  void (*call)(const void*, struct waterui_app);
-  void (*free)(void*);
-} waterui_app_closure;
-
-struct waterui_type_id waterui_view_id(const struct waterui_anyview *view);
-
-struct waterui_anyview *waterui_call_view(struct waterui_anyview *view,
-                                          const struct waterui_env *env);
-
-struct waterui_type_id waterui_view_empty_id(void);
 
 struct waterui_button waterui_view_force_as_button(struct waterui_anyview *view);
 
