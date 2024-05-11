@@ -30,7 +30,7 @@ struct AsyncActionWrapper<T>(T);
 
 impl<T: AsyncAction> Action for AsyncActionWrapper<T> {
     fn call_action(&self, env: &Environment) {
-        env.task(AsyncAction::call_action(&self.0, env)).detach();
+        env.task(AsyncAction::call_action(&self.0, env));
     }
 }
 
@@ -60,7 +60,6 @@ impl Button {
         self
     }
 
-    #[cfg(feature = "async")]
     pub fn action_async<Fut>(self, action: impl AsyncAction) -> Self {
         self.action(AsyncActionWrapper(action))
     }

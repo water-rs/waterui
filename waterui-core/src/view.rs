@@ -32,20 +32,6 @@ impl<V: View> View for Option<V> {
     }
 }
 
-pub trait ViewBuilder {
-    fn build(&self) -> impl View;
-}
-
-impl<F, V> ViewBuilder for F
-where
-    F: Fn() -> V,
-    V: View,
-{
-    fn build(&self) -> impl View {
-        (self)()
-    }
-}
-
 pub trait TupleViews {
     fn into_views(self) -> Vec<AnyView>;
 }

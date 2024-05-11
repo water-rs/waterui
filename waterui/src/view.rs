@@ -2,11 +2,9 @@ use crate::modifier::{Modifier, Padding};
 pub use waterui_core::view::*;
 use waterui_core::{AnyView, Environment};
 
-use alloc::{boxed::Box, rc::Rc};
+use alloc::boxed::Box;
 
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
-pub type SharedViewBuilder = Rc<dyn Fn() -> AnyView>;
-
 pub trait ViewExt: View {
     fn modifier(self, modifier: impl Modifier) -> impl View;
     fn padding(self) -> impl View;

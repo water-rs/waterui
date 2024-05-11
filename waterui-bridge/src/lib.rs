@@ -23,8 +23,7 @@ impl Bridge {
                     f()
                 }
             }
-        })
-        .detach();
+        });
         bridge
     }
 
