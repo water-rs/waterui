@@ -1,6 +1,6 @@
 #![no_std]
 #![allow(non_camel_case_types)]
-
+#![cfg_attr(not(feature = "std"), feature(error_in_core))]
 extern crate alloc;
 
 #[macro_use]
@@ -16,8 +16,6 @@ pub use waterui_core::*;
 pub mod modifier;
 #[doc(inline)]
 pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed};
-mod app;
-pub use app::App;
 
 pub mod layout;
 pub mod utils;

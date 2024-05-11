@@ -6,7 +6,11 @@ use core::{
     ops::Deref,
 };
 
+#[cfg(not(feature = "std"))]
+pub use core::error::Error as StdError;
+#[cfg(feature = "std")]
 pub use std::error::Error as StdError;
+
 pub struct Error {
     inner: Box<dyn ErrorImpl>,
 }
@@ -24,11 +28,11 @@ trait ErrorImpl: Debug + Display + 'static {
 }
 
 impl<E: StdError + 'static> ErrorImpl for E {
-    fn body<'a>(self: Box<Self>, env: &'a Environment) -> AnyView
+    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
     where
         Self: 'a,
     {
-        env.default_error_view(self)
+        AnyView::new(UseDefaultErrorView::new(self))
     }
 }
 
@@ -54,21 +58,17 @@ impl Error {
     }
 }
 
-pub struct ErrorView {
-    view: AnyView,
-}
+pub struct ErrorView(AnyView);
 
 impl ErrorView {
     fn new(view: impl View) -> Self {
-        Self {
-            view: AnyView::new(view),
-        }
+        Self(AnyView::new(view))
     }
 }
 
 impl Display for ErrorView {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("ErrorView<{}>", self.view.name()))
+        f.write_fmt(format_args!("ErrorView<{}>", self.0.name()))
     }
 }
 
@@ -77,12 +77,13 @@ impl Debug for ErrorView {
         Debug::fmt(&self, f)
     }
 }
+
 impl ErrorImpl for ErrorView {
     fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
     where
         Self: 'a,
     {
-        self.view
+        self.0
     }
 }
 
@@ -107,20 +108,39 @@ impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
     }
 }
 
-pub struct DefaultErrorView {
-    pub builder: ErrorViewBuilder,
+pub struct UseDefaultErrorView(BoxedStdError);
+
+impl From<BoxedStdError> for UseDefaultErrorView {
+    fn from(value: BoxedStdError) -> Self {
+        Self(value)
+    }
 }
 
-pub struct UseDefaultErrorView;
+impl UseDefaultErrorView {
+    pub fn new(error: impl StdError + 'static) -> Self {
+        let boxed: BoxedStdError = Box::new(error);
+        Self::from(boxed)
+    }
+}
+
+impl View for UseDefaultErrorView {
+    fn body(self, env: &Environment) -> impl View {
+        if let Some(builder) = env.get::<DefaultErrorView>() {
+            builder.build(self.0)
+        } else {
+            AnyView::new(())
+        }
+    }
+}
+
+pub struct DefaultErrorView(ErrorViewBuilder);
 
 impl DefaultErrorView {
     pub fn new<V: View>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {
-        Self {
-            builder: Box::new(move |error| AnyView::new(builder(error))),
-        }
+        Self(Box::new(move |error| AnyView::new(builder(error))))
     }
 
-    pub fn spawn(&self, error: BoxedStdError) -> AnyView {
-        (self.builder)(error)
+    pub fn build(&self, error: BoxedStdError) -> AnyView {
+        (self.0)(error)
     }
 }

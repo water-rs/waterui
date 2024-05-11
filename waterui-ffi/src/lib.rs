@@ -6,7 +6,6 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
-pub mod app;
 pub mod component;
 pub mod modifier;
 
