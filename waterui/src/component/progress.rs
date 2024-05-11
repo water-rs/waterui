@@ -50,7 +50,7 @@ impl Progress {
                         -1
                     }
                 })
-                .into_computed(),
+                .computed(),
             _style: ProgressStyle::default(),
         }
     }

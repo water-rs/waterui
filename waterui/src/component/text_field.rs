@@ -40,7 +40,7 @@ impl TextField {
         TextField {
             _label: AnyView::new(label),
             _value: value.clone(),
-            _prompt: Computed::constant("".into()),
+            _prompt: "".into_computed(),
             _style: TextFieldStyle::default(),
         }
     }
