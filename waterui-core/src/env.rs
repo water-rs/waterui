@@ -1,126 +1,105 @@
 use core::{
-    any::{Any, TypeId},
+    any::{type_name, Any, TypeId},
+    fmt::Debug,
     future::Future,
     marker::PhantomData,
+    pin::Pin,
 };
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use async_executor::LocalExecutor;
 
-pub struct EnvironmentInner {
-    #[cfg(feature = "async")]
-    executor: Executor,
-    default_view: DefaultView,
+pub trait Executor {
+    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>);
 }
 
-#[derive(Clone)]
-pub struct Environment {
-    map: BTreeMap<TypeId, Rc<dyn Any>>,
-    inner: Rc<EnvironmentInner>,
-}
-
-pub struct DefaultView {
-    error: Box<dyn Fn(BoxedStdError) -> AnyView>,
-    loading: Box<dyn Fn() -> AnyView>,
-}
-
-impl Default for DefaultView {
-    fn default() -> Self {
-        Self {
-            error: Box::new(|_| AnyView::new(())),
-            loading: Box::new(|| AnyView::new(())),
-        }
+impl Debug for dyn Executor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(type_name::<Self>())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Environment {
+    executor: Rc<dyn Executor>,
+    layers: Vec<Rc<EnvironmentLayer>>,
 }
 
 impl Default for Environment {
     fn default() -> Self {
-        Self::new()
+        Self::new(LocalExecutor::new())
     }
 }
 
-#[cfg(feature = "async")]
-mod executor {
-
-    pub struct Executor {
-        inner: smol::LocalExecutor<'static>,
-    }
-
-    impl Default for Executor {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl Executor {
-        pub fn new() -> Self {
-            Self {
-                inner: smol::LocalExecutor::new(),
-            }
-        }
-
-        pub fn spawn<Fut>(&self, fut: Fut) -> async_task::Task<Fut::Output>
-        where
-            Fut: core::future::Future + 'static,
-            Fut::Output: 'static,
-        {
-            self.inner.spawn(fut)
-        }
-
-        pub async fn run(&self) {
-            loop {
-                self.inner.tick().await;
-            }
-        }
+impl Executor for async_executor::LocalExecutor<'_> {
+    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>) {
+        self.spawn(future).detach();
     }
 }
 
-#[cfg(feature = "async")]
-pub use executor::Executor;
-
-use crate::{error::BoxedStdError, AnyView, View};
-
-impl Environment {
+impl EnvironmentLayer {
     pub fn new() -> Self {
         Self {
             map: BTreeMap::new(),
-
-            inner: Rc::new(EnvironmentInner {
-                #[cfg(feature = "async")]
-                executor: Executor::new(),
-                default_view: DefaultView::default(),
-            }),
         }
-    }
-
-    pub fn insert<T: 'static>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Rc::new(value));
     }
 
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
-            .and_then(|v| v.downcast_ref::<T>())
-    }
-    pub fn default_error_view(&self, error: BoxedStdError) -> AnyView {
-        (self.inner.default_view.error)(error)
+            .map(|v| v.downcast_ref().unwrap())
     }
 
-    pub fn default_loading_view(&self) -> AnyView {
-        (self.inner.default_view.loading)()
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        let mut map = BTreeMap::new();
+        map.insert(TypeId::of::<T>(), value);
+    }
+}
+
+#[derive(Debug)]
+struct EnvironmentLayer {
+    map: BTreeMap<TypeId, Box<dyn Any>>,
+}
+
+use crate::View;
+
+impl Environment {
+    pub fn new(executor: impl Executor + 'static) -> Self {
+        Self {
+            executor: Rc::new(executor),
+            layers: vec![Rc::new(EnvironmentLayer::new())],
+        }
+    }
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        let layer = self.layers.last_mut().unwrap();
+        if let Some(layer) = Rc::get_mut(layer) {
+            layer.map.insert(TypeId::of::<T>(), Box::new(value));
+        } else {
+            let mut layer = EnvironmentLayer::new();
+            layer.insert(value);
+            self.layers.push(Rc::new(layer));
+        }
     }
 
-    #[cfg(feature = "async")]
-    pub fn task<Fut>(&self, fut: Fut) -> async_task::Task<Fut::Output>
+    pub fn with<T: 'static>(mut self, value: T) -> Self {
+        self.insert(value);
+        self
+    }
+
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        for layer in self.layers.iter().rev() {
+            if let Some(value) = layer.get() {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    pub fn task<Fut>(&self, fut: Fut)
     where
-        Fut: Future + 'static,
-        Fut::Output: 'static,
+        Fut: Future<Output = ()> + 'static,
     {
-        self.inner.executor.spawn(fut)
-    }
-
-    #[cfg(feature = "async")]
-    pub fn executor(&self) -> &Executor {
-        &self.inner.executor
+        self.executor.spawn(Box::pin(fut))
     }
 }
 

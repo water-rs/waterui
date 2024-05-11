@@ -4,22 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-task = "4.7.0"
 waterui-reactive = { path = "../waterui-reactive" }
 
-[dependencies.serde]
-version = "1.0.193"
+[dependencies.async-executor]
+version = "1.11.0"
 default-features = false
-features = ["derive"]
 optional = true
-
-[dependencies.smol]
-version = "2.0.0"
-optional = true
-
 
 [features]
-default = ["async","std"]
+default = ["default-executor"]
+default-executor = ["dep:async-executor"]
 std = []
-serde = ["dep:serde"]
-async = ["dep:smol","std"]
