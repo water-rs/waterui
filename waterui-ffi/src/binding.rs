@@ -1,8 +1,8 @@
-use crate::{array::waterui_str, closure::waterui_closure, IntoFFI, IntoRust};
-use alloc::{borrow::Cow, boxed::Box};
-use core::ptr::drop_in_place;
-use waterui::{Binding, Compute};
-use waterui_reactive::Reactive;
+use crate::{array::waterui_str, closure::waterui_fn, IntoFFI, IntoRust};
+use alloc::borrow::Cow;
+use core::{num::NonZeroUsize, ptr::drop_in_place};
+use waterui_reactive::{subscriber::SubscriberId, Binding, Compute, Reactive};
+
 // WARNING: Binding<T> must be called on the Rust thread!!!
 
 ffi_type!(waterui_binding_str, Binding<Cow<'static, str>>);
@@ -24,17 +24,17 @@ macro_rules! impl_binding {
         #[no_mangle]
         pub unsafe extern "C" fn $subscribe(
             binding: *const $binding,
-            subscriber: waterui_closure,
+            subscriber: *mut waterui_fn,
         ) -> isize {
             (*binding)
-                .register_subscriber(Box::new(move || subscriber.call()))
-                .map(|v| v.get() as isize)
+                .register_subscriber(subscriber.into_rust().into())
+                .map(|v| v.into_inner() as isize)
                 .unwrap_or(-1)
         }
 
         #[no_mangle]
         pub unsafe extern "C" fn $unsubscribe(binding: *const $binding, id: usize) {
-            let id = core::num::NonZeroUsize::new(id).unwrap();
+            let id = SubscriberId::new(NonZeroUsize::new(id).unwrap());
             (*binding).cancel_subscriber(id);
         }
 

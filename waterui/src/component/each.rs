@@ -5,6 +5,7 @@ use crate::View;
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use waterui_core::raw_view;
 use waterui_core::AnyView;
+use waterui_reactive::subscriber::SubscriberId;
 use waterui_reactive::{Binding, Reactive};
 
 pub trait EachImpl: Reactive + 'static {
@@ -55,7 +56,7 @@ impl Each {
     }
 }
 
-struct EachInner<T, Content> {
+struct EachInner<T: 'static, Content> {
     data: Binding<Vec<T>>,
     content: Content,
     id_counter: usize,
@@ -65,15 +66,12 @@ struct EachInner<T, Content> {
 impl<T, Content> Reactive for EachInner<T, Content> {
     fn register_subscriber(
         &self,
-        subscriber: waterui_reactive::subscriber::BoxSubscriber,
-    ) -> Option<core::num::NonZeroUsize> {
+        subscriber: waterui_reactive::subscriber::Subscriber,
+    ) -> Option<SubscriberId> {
         self.data.register_subscriber(subscriber)
     }
-    fn cancel_subscriber(&self, id: core::num::NonZeroUsize) {
+    fn cancel_subscriber(&self, id: SubscriberId) {
         self.data.cancel_subscriber(id);
-    }
-    fn notify(&self) {
-        self.data.notify();
     }
 }
 

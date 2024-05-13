@@ -1,21 +1,40 @@
-#[repr(C)]
-pub struct waterui_closure {
+use alloc::boxed::Box;
+
+use crate::IntoFFI;
+
+ffi_type!(waterui_fn, Box<dyn Fn()>, waterui_drop_fn);
+
+struct FFIFn {
     data: *mut (),
     call: unsafe extern "C" fn(*const ()),
-    free: unsafe extern "C" fn(*mut ()),
+    drop: unsafe extern "C" fn(*mut ()),
 }
 
-unsafe impl Send for waterui_closure {}
-unsafe impl Sync for waterui_closure {}
-
-impl Drop for waterui_closure {
-    fn drop(&mut self) {
-        unsafe { (self.free)(self.data) }
+impl FFIFn {
+    pub unsafe fn new(
+        data: *mut (),
+        call: unsafe extern "C" fn(*const ()),
+        drop: unsafe extern "C" fn(*mut ()),
+    ) -> Self {
+        Self { data, call, drop }
     }
-}
-
-impl waterui_closure {
     pub fn call(&self) {
         unsafe { (self.call)(self.data) }
     }
+}
+
+impl Drop for FFIFn {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.data) }
+    }
+}
+
+pub unsafe extern "C" fn waterui_new_fn(
+    data: *mut (),
+    call: unsafe extern "C" fn(*const ()),
+    drop: unsafe extern "C" fn(*mut ()),
+) -> *mut waterui_fn {
+    let f = FFIFn::new(data, call, drop);
+    let boxed: Box<dyn Fn()> = Box::new(move || f.call());
+    boxed.into_ffi()
 }
