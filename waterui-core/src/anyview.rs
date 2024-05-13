@@ -24,9 +24,7 @@ impl<T: View> AnyViewImpl for T {
     }
 }
 
-pub struct AnyView {
-    inner: Box<dyn AnyViewImpl>,
-}
+pub struct AnyView(Box<dyn AnyViewImpl>);
 
 impl Debug for AnyView {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -45,9 +43,7 @@ impl AnyView {
                 .unwrap();
         }
 
-        Self {
-            inner: Box::new(view),
-        }
+        Self(Box::new(view))
     }
 
     pub fn is<T: 'static>(&self) -> bool {
@@ -55,7 +51,29 @@ impl AnyView {
     }
 
     pub fn type_id(&self) -> TypeId {
-        AnyViewImpl::type_id(self.inner.deref())
+        AnyViewImpl::type_id(self.0.deref())
+    }
+
+    pub fn name(&self) -> &'static str {
+        AnyViewImpl::name(self.0.deref())
+    }
+
+    /// # Safety
+    /// Calling this method with the incorrect type is undefined behavior.
+    pub unsafe fn downcast_unchecked<T: 'static>(self) -> Box<T> {
+        unsafe { Box::from_raw(Box::into_raw(self.0) as *mut T) }
+    }
+
+    /// # Safety
+    /// Calling this method with the incorrect type is undefined behavior.
+    pub unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
+        &*(self.0.deref() as *const dyn AnyViewImpl as *const T)
+    }
+
+    /// # Safety
+    /// Calling this method with the incorrect type is undefined behavior.
+    pub unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
+        &mut *(self.0.deref_mut() as *mut dyn AnyViewImpl as *mut T)
     }
 
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, AnyView> {
@@ -66,36 +84,18 @@ impl AnyView {
         }
     }
 
-    pub fn name(&self) -> &'static str {
-        AnyViewImpl::name(self.inner.deref())
-    }
-
-    /// # Safety
-    /// Calling this method with the incorrect type is undefined behavior.
-    pub unsafe fn downcast_unchecked<T: 'static>(self) -> Box<T> {
-        unsafe { Box::from_raw(Box::into_raw(self.inner) as *mut T) }
-    }
-
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        if self.is::<T>() {
-            unsafe { Some(&*(self.inner.deref() as *const dyn AnyViewImpl as *const T)) }
-        } else {
-            None
-        }
+        unsafe { self.is::<T>().then(|| self.downcast_ref_unchecked()) }
     }
 
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        if self.is::<T>() {
-            unsafe { Some(&mut *(self.inner.deref_mut() as *mut dyn AnyViewImpl as *mut T)) }
-        } else {
-            None
-        }
+        unsafe { self.is::<T>().then(|| self.downcast_mut_unchecked()) }
     }
 }
 
 impl View for AnyView {
     fn body(self, env: &Environment) -> impl View {
-        self.inner.body(env)
+        self.0.body(env)
     }
 }
 
