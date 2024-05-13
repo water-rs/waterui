@@ -92,4 +92,13 @@ macro_rules! ffi_type {
             }
         }
     };
+
+    ($name:ident,$ty:ty,$drop:ident) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $drop(value: *mut $name) {
+            let _ = $crate::IntoRust::into_rust(value);
+        }
+
+        $crate::ffi_type!($name, $ty);
+    };
 }

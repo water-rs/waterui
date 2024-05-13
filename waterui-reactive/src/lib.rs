@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(incomplete_features)]
 
 extern crate alloc;
 
@@ -38,12 +37,11 @@ macro_rules! no_reactive {
         impl $crate::Reactive for $ty {
             fn register_subscriber(
                 &self,
-                _subscriber: $crate::subscriber::BoxSubscriber,
-            ) -> Option<core::num::NonZeroUsize> {
+                _subscriber: $crate::subscriber::Subscriber,
+            ) -> Option<$crate::subscriber::SubscriberId> {
                 None
             }
-            fn cancel_subscriber(&self, _id: core::num::NonZeroUsize) {}
-            fn notify(&self) {}
+            fn cancel_subscriber(&self, _id: $crate::subscriber::SubscriberId) {}
         }
     };
 }
