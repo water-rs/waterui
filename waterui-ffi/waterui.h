@@ -22,6 +22,8 @@ typedef enum waterui_style_toggle {
   waterui_style_toggle_Switch,
 } waterui_style_toggle;
 
+typedef struct waterui_action waterui_action;
+
 typedef struct waterui_anyview waterui_anyview;
 
 typedef struct waterui_binding_bool waterui_binding_bool;
@@ -38,13 +40,18 @@ typedef struct waterui_computed_str waterui_computed_str;
 
 typedef struct waterui_each waterui_each;
 
-typedef struct waterui_button {
-  struct waterui_anyview *label;
-} waterui_button;
+typedef struct waterui_env waterui_env;
+
+typedef struct waterui_fn waterui_fn;
 
 typedef struct waterui_type_id {
   uint64_t inner[2];
 } waterui_type_id;
+
+typedef struct waterui_button {
+  struct waterui_anyview *label;
+  struct waterui_action *action;
+} waterui_button;
 
 typedef struct waterui_progress {
   struct waterui_anyview *label;
@@ -52,13 +59,13 @@ typedef struct waterui_progress {
   enum waterui_style_progress style;
 } waterui_progress;
 
-typedef struct waterui_array_waterui_anyview {
-  struct waterui_anyview *head;
+typedef struct waterui_array_____waterui_anyview {
+  struct waterui_anyview **head;
   uintptr_t len;
-} waterui_array_waterui_anyview;
+} waterui_array_____waterui_anyview;
 
 typedef struct waterui_stack {
-  struct waterui_array_waterui_anyview contents;
+  struct waterui_array_____waterui_anyview contents;
   enum waterui_stack_mode mode;
 } waterui_stack;
 
@@ -95,11 +102,10 @@ typedef struct waterui_str {
   uintptr_t len;
 } waterui_str;
 
-typedef struct waterui_closure {
-  void *data;
-  void (*call)(const void*);
-  void (*free)(void*);
-} waterui_closure;
+struct waterui_type_id waterui_view_id(const struct waterui_anyview *view);
+
+struct waterui_anyview *waterui_view_body(struct waterui_anyview *view,
+                                          const struct waterui_env *env);
 
 struct waterui_button waterui_view_force_as_button(struct waterui_anyview *view);
 
@@ -144,7 +150,7 @@ struct waterui_str waterui_read_binding_str(const struct waterui_binding_str *bi
 void waterui_write_binding_str(const struct waterui_binding_str *binding, struct waterui_str value);
 
 intptr_t waterui_subscribe_binding_str(const struct waterui_binding_str *binding,
-                                       struct waterui_closure subscriber);
+                                       struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_binding_str(const struct waterui_binding_str *binding, uintptr_t id);
 
@@ -155,7 +161,7 @@ int32_t waterui_read_binding_int(const struct waterui_binding_int *binding);
 void waterui_write_binding_int(const struct waterui_binding_int *binding, int32_t value);
 
 intptr_t waterui_subscribe_binding_int(const struct waterui_binding_int *binding,
-                                       struct waterui_closure subscriber);
+                                       struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_binding_int(const struct waterui_binding_int *binding, uintptr_t id);
 
@@ -166,16 +172,18 @@ bool waterui_read_binding_bool(const struct waterui_binding_bool *binding);
 void waterui_write_binding_bool(const struct waterui_binding_bool *binding, bool value);
 
 intptr_t waterui_subscribe_binding_bool(const struct waterui_binding_bool *binding,
-                                        struct waterui_closure subscriber);
+                                        struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_binding_bool(const struct waterui_binding_bool *binding, uintptr_t id);
 
 void waterui_drop_binding_bool(struct waterui_binding_bool *binding);
 
+void waterui_drop_fn(struct waterui_fn *value);
+
 struct waterui_str waterui_read_computed_str(const struct waterui_computed_str *computed);
 
 intptr_t waterui_subscribe_computed_str(const struct waterui_computed_str *computed,
-                                        struct waterui_closure subscriber);
+                                        struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_computed_str(const struct waterui_computed_str *computed, uintptr_t id);
 
@@ -184,7 +192,7 @@ void waterui_drop_computed_str(struct waterui_computed_str *computed);
 int32_t waterui_read_computed_int(const struct waterui_computed_int *computed);
 
 intptr_t waterui_subscribe_computed_int(const struct waterui_computed_int *computed,
-                                        struct waterui_closure subscriber);
+                                        struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_computed_int(const struct waterui_computed_int *computed, uintptr_t id);
 
@@ -193,8 +201,12 @@ void waterui_drop_computed_int(struct waterui_computed_int *computed);
 bool waterui_read_computed_bool(const struct waterui_computed_bool *computed);
 
 intptr_t waterui_subscribe_computed_bool(const struct waterui_computed_bool *computed,
-                                         struct waterui_closure subscriber);
+                                         struct waterui_fn *subscriber);
 
 void waterui_unsubscribe_computed_bool(const struct waterui_computed_bool *computed, uintptr_t id);
 
 void waterui_drop_computed_bool(struct waterui_computed_bool *computed);
+
+void waterui_drop_action(struct waterui_action *value);
+
+void waterui_call_action(const struct waterui_action *action, const struct waterui_env *env);
