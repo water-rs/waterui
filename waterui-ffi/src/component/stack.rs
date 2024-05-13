@@ -25,7 +25,7 @@ impl IntoFFI for StackMode {
 
 #[repr(C)]
 pub struct waterui_stack {
-    contents: waterui_array<waterui_anyview>,
+    contents: waterui_array<*mut waterui_anyview>,
     mode: waterui_stack_mode,
 }
 
@@ -36,7 +36,7 @@ impl IntoFFI for Stack {
             contents: self
                 ._contents
                 .into_iter()
-                .map(waterui_anyview)
+                .map(IntoFFI::into_ffi)
                 .collect::<Vec<_>>()
                 .into_ffi(),
             mode: self._mode.into_ffi(),
