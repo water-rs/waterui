@@ -1,25 +1,39 @@
-use core::num::NonZeroUsize;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
-    subscriber::{BoxSubscriber, SubscriberManager},
+    reactive::BoxReactive,
+    subscriber::{
+        SharedSubscriberManager, SubscribeGuard, Subscriber, SubscriberId, SubscriberManager,
+    },
     Compute, Reactive,
 };
 
 pub struct ComputeFn<F> {
     f: F,
-    subscribers: SubscriberManager,
+    subscribers: SharedSubscriberManager,
+    guards: Vec<SubscribeGuard<BoxReactive>>,
 }
 
 impl<F> ComputeFn<F> {
     pub fn new(f: F) -> Self {
         Self {
             f,
-            subscribers: SubscriberManager::new(),
+            subscribers: SharedSubscriberManager::default(),
+            guards: Vec::new(),
         }
     }
 
-    pub fn new_with_subscribers(f: F, subscribers: SubscriberManager) -> Self {
-        Self { f, subscribers }
+    pub fn depend(&mut self, value: impl Reactive + 'static) {
+        let subscribers = self.subscribers.clone();
+        let id = value.register_subscriber(Subscriber::new(move |metadata| {
+            subscribers.notify(metadata)
+        }));
+
+        if id.is_some() {
+            let guard: SubscribeGuard<BoxReactive> = SubscribeGuard::new(Box::new(value), id);
+
+            self.guards.push(guard);
+        }
     }
 }
 
@@ -34,14 +48,10 @@ where
 }
 
 impl<F> Reactive for ComputeFn<F> {
-    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<SubscriberId> {
         Some(self.subscribers.register(subscriber))
     }
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
+    fn cancel_subscriber(&self, id: SubscriberId) {
         self.subscribers.cancel(id)
-    }
-
-    fn notify(&self) {
-        self.subscribers.notify();
     }
 }

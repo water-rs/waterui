@@ -1,10 +1,7 @@
-use crate::{array::waterui_str, IntoFFI};
-use core::{num::NonZeroUsize, ptr::drop_in_place};
-
-use crate::closure::waterui_closure;
+use crate::{array::waterui_str, closure::waterui_fn, IntoFFI, IntoRust};
 use alloc::{borrow::Cow, boxed::Box};
-use waterui::{Compute, Computed};
-use waterui_reactive::Reactive;
+use core::{num::NonZeroUsize, ptr::drop_in_place};
+use waterui_reactive::{subscriber::SubscriberId, Compute, Computed, Reactive};
 ffi_type!(waterui_computed_str, Computed<Cow<'static, str>>);
 ffi_type!(waterui_computed_int, Computed<i32>);
 ffi_type!(waterui_computed_bool, Computed<bool>);
@@ -20,19 +17,18 @@ macro_rules! impl_computed {
         #[no_mangle]
         pub unsafe extern "C" fn $subscribe(
             computed: *const $computed,
-            subscriber: waterui_closure,
+            subscriber: *mut waterui_fn,
         ) -> isize {
+            let subscriber = subscriber.into_rust();
             (*computed)
-                .register_subscriber(Box::new(move || subscriber.call()))
-                .map(|v| v.get() as isize)
+                .register_subscriber(Box::new(move || (subscriber)()).into())
+                .map(|v| v.into_inner() as isize)
                 .unwrap_or(-1)
         }
 
         #[no_mangle]
         pub unsafe extern "C" fn $unsubscribe(computed: *const $computed, id: usize) {
-            if let Some(id) = NonZeroUsize::new(id) {
-                (*computed).cancel_subscriber(id);
-            }
+            (*computed).cancel_subscriber(SubscriberId::new(NonZeroUsize::new(id).unwrap()));
         }
 
         #[no_mangle]
