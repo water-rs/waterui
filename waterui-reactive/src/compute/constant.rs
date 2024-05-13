@@ -1,29 +1,29 @@
-use core::num::NonZeroUsize;
+use crate::{
+    subscriber::{Subscriber, SubscriberId},
+    Compute, Reactive,
+};
 
-use crate::{subscriber::BoxSubscriber, Compute, Reactive};
-pub struct Constant<T> {
-    value: T,
-}
+// DO NOT USE INTERIOR MUTABILITY!!! Reactive will fail!
+pub struct Constant<T>(T);
 
 impl<T> Constant<T> {
     pub fn new(value: T) -> Self {
-        Self { value }
+        Self(value)
     }
 }
 
 impl<T: Clone> Compute for Constant<T> {
     type Output = T;
     fn compute(&self) -> Self::Output {
-        self.value.clone()
+        self.0.clone()
     }
 }
 
 impl<T> Reactive for Constant<T> {
-    fn register_subscriber(&self, _subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, _subscriber: Subscriber) -> Option<SubscriberId> {
         None
     }
-    fn cancel_subscriber(&self, _id: NonZeroUsize) {}
-    fn notify(&self) {}
+    fn cancel_subscriber(&self, _id: SubscriberId) {}
 }
 
 pub fn constant<T: Clone>(value: T) -> Constant<T> {

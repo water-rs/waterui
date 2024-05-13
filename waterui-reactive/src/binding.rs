@@ -1,26 +1,25 @@
 use core::{
-    cell::{Ref, RefCell, RefMut},
-    fmt::{Debug, Display},
-    marker::PhantomData,
-    num::NonZeroUsize,
+    cell::{Cell, Ref, RefCell, RefMut},
+    fmt::Debug,
     ops::{Deref, DerefMut},
 };
 
-use alloc::{
-    boxed::Box,
-    rc::{Rc, Weak},
-    string::{String, ToString},
-};
+use alloc::rc::{Rc, Weak};
 
 use crate::{
-    subscriber::{BoxSubscriber, FnSubscriber, SubscribeGuard, SubscriberManager},
+    reactive::ReactiveExt,
+    subscriber::{Metadata, SubscribeGuard, Subscriber, SubscriberId, SubscriberManager},
     Compute, Reactive,
 };
 
 /// `Binding` is a reactive and shareable mutable containers, always using for two-way data binding.
 #[derive(Debug, Default)]
-pub struct Binding<T> {
+pub struct Binding<T: 'static> {
     inner: Rc<BindingInner<T>>,
+}
+
+pub fn binding<T>(value: T) -> Binding<T> {
+    Binding::new(value)
 }
 
 // A weak reference of `Binding`.
@@ -64,7 +63,7 @@ pub struct BindingMutGuard<'a, T> {
 impl<T> Drop for BindingMutGuard<'_, T> {
     fn drop(&mut self) {
         drop(self.guard.take());
-        self.subscribers.notify();
+        self.subscribers.notify(&Metadata::new());
     }
 }
 
@@ -88,68 +87,73 @@ impl<T> DerefMut for BindingMutGuard<'_, T> {
     }
 }
 
+// Create a two-way connection between two bindings.
+pub fn bridge<T1, T2, F1, F2>(b1: Binding<T1>, b2: Binding<T2>, to_b2: F1, to_b1: F2)
+where
+    F1: 'static + Fn(&T1) -> T2,
+    F2: 'static + Fn(&T2) -> T1,
+{
+    let skip = Rc::new(Cell::new(false));
+    let weak_b1 = b1.downgrade();
+    let weak_b2 = b2.downgrade();
+    let guard1 = {
+        let skip = skip.clone();
+        let weak_b2 = weak_b2.clone();
+        b1.watch({
+            move |t1| {
+                if !skip.get() {
+                    if let Some(b2) = weak_b2.upgrade() {
+                        skip.set(!skip.get());
+
+                        b2.set(to_b2(t1.get().deref()));
+                    }
+                }
+            }
+        })
+        .into_raw()
+    }
+    .unwrap();
+
+    let guard2 = {
+        let weak_b1 = weak_b1.clone();
+        b2.watch(move |t2| {
+            if !skip.get() {
+                if let Some(b1) = weak_b1.upgrade() {
+                    skip.set(!skip.get());
+
+                    b1.set(to_b1(t2.get().deref()));
+                }
+            }
+        })
+        .into_raw()
+    }
+    .unwrap();
+
+    b2.when_drop(move || {
+        if let Some(b1) = weak_b1.upgrade() {
+            b1.cancel_subscriber(guard1);
+        }
+    });
+
+    b1.when_drop(move || {
+        if let Some(b2) = weak_b2.upgrade() {
+            b2.cancel_subscriber(guard2);
+        }
+    });
+}
+
+pub struct WhenDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for WhenDrop<F> {
+    fn drop(&mut self) {
+        (self.0.take().unwrap())();
+    }
+}
 impl<T> Binding<T> {
     pub fn new(value: T) -> Self {
         Self {
             inner: Rc::new(BindingInner::new(value)),
         }
-    }
-    // Create a two-way connection between two bindings.
-    pub fn bridge<F1, F2, T2>(&self, to_this: F1, to_new: F2) -> Binding<T2>
-    where
-        F1: 'static + Fn(&Binding<T2>) -> T,
-        F2: 'static + Fn(&Binding<T>) -> T2,
-        T: 'static,
-        T2: 'static,
-    {
-        let new = Binding::new(to_new(self));
-
-        let weak_this = self.downgrade();
-        let weak_new = new.downgrade();
-
-        let new_guard = new.subscribers().preassign();
-        let this_guard = self.subscribers().preassign();
-
-        {
-            let weak_new = weak_new.clone();
-            let weak_this = weak_this.clone();
-
-            new.subscribers().register_with_id(
-                new_guard,
-                Box::new(FnSubscriber::new(
-                    weak_this,
-                    move |weak_this| {
-                        if let Some(this) = weak_this.upgrade() {
-                            this.set(to_this(&weak_new.upgrade().unwrap()))
-                        }
-                    },
-                    move |weak_this| {
-                        weak_this
-                            .upgrade()
-                            .inspect(|this| this.cancel_subscriber(this_guard));
-                    },
-                )),
-            );
-        }
-
-        self.subscribers().register_with_id(
-            this_guard,
-            Box::new(FnSubscriber::new(
-                weak_new,
-                move |weak_new| {
-                    if let Some(new) = weak_new.upgrade() {
-                        new.set(to_new(&weak_this.upgrade().unwrap()))
-                    }
-                },
-                move |weak_new| {
-                    weak_new
-                        .upgrade()
-                        .inspect(|new| new.cancel_subscriber(new_guard));
-                },
-            )),
-        );
-
-        new
     }
 
     pub fn get(&self) -> BindingGuard<'_, T> {
@@ -163,6 +167,14 @@ impl<T> Binding<T> {
             guard: Some(self.inner.value.borrow_mut()),
             subscribers: &self.inner.subscribers,
         }
+    }
+
+    pub fn when_drop(&self, f: impl FnOnce() + 'static) {
+        let wrapper = WhenDrop(Some(f));
+        self.subscribe(move || {
+            let _ = &wrapper;
+        })
+        .leak();
     }
 
     pub fn inspect(&self, f: impl FnOnce(&T)) {
@@ -183,15 +195,11 @@ impl<T> Binding<T> {
         self.inspect_mut(move |v| *v = value.into());
     }
 
-    pub fn notify(&self) {
-        self.inner.subscribers.notify();
+    pub fn notify(&self, metadata: &Metadata) {
+        self.inner.subscribers.notify(metadata);
     }
 
-    pub fn subscribe(&self, subscriber: impl Fn() + 'static) -> SubscribeGuard<'_, Self> {
-        SubscribeGuard::new(self, self.subscribers().register(Box::new(subscriber)))
-    }
-
-    pub fn watch(&self, watcher: impl Fn(&Self) + 'static) -> SubscribeGuard<'_, Self>
+    pub fn watch(&self, watcher: impl Fn(&Self) + 'static) -> SubscribeGuard<&Self>
     where
         T: 'static,
     {
@@ -205,19 +213,6 @@ impl<T> Binding<T> {
         &self.inner.subscribers
     }
 
-    pub fn to_compute<F, T2>(&self, f: F) -> ToCompute<T, T2, F>
-    where
-        F: Fn(&Binding<T>) -> T2,
-    {
-        ToCompute::new(self.clone(), f)
-    }
-
-    pub fn display(&self) -> impl Compute<Output = String>
-    where
-        T: Display,
-    {
-        self.to_compute(|v| v.get().to_string())
-    }
     /// # Safety
     ///  The pointer must have been obtained through `Binding::into_raw`, and the inner `Rc` is valid.
     pub unsafe fn from_raw(ptr: *const T) -> Self {
@@ -231,47 +226,6 @@ impl<T> Binding<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct ToCompute<T, T2, F> {
-    source: Binding<T>,
-    f: F,
-    _marker: PhantomData<T2>,
-}
-
-impl<T, T2, F> ToCompute<T, T2, F> {
-    pub fn new(source: Binding<T>, f: F) -> Self {
-        Self {
-            source,
-            f,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T, T2, F> Compute for ToCompute<T, T2, F>
-where
-    F: Fn(&Binding<T>) -> T2,
-{
-    type Output = T2;
-
-    fn compute(&self) -> Self::Output {
-        (self.f)(&self.source)
-    }
-}
-
-impl<T, T2, F> Reactive for ToCompute<T, T2, F> {
-    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
-        self.source.register_subscriber(subscriber)
-    }
-
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
-        self.source.cancel_subscriber(id);
-    }
-    fn notify(&self) {
-        self.source.notify();
-    }
-}
-
 impl<T: Clone> Compute for Binding<T> {
     type Output = T;
     fn compute(&self) -> Self::Output {
@@ -280,14 +234,11 @@ impl<T: Clone> Compute for Binding<T> {
 }
 
 impl<T> Reactive for Binding<T> {
-    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<SubscriberId> {
         Some(self.inner.subscribers.register(subscriber))
     }
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
+    fn cancel_subscriber(&self, id: SubscriberId) {
         self.inner.subscribers.cancel(id);
-    }
-    fn notify(&self) {
-        self.inner.subscribers.notify();
     }
 }
 
