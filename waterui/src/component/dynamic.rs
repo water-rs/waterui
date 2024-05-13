@@ -1,9 +1,11 @@
 use core::ops::Deref;
 
-use crate::{AnyView, View};
+use crate::{
+    mpsc::{channel, Receiver, Sender},
+    AnyView, View,
+};
 
 use waterui_core::raw_view;
-use waterui_reactive::mpsc::{channel, Receiver, Sender};
 
 pub struct DynamicHandle(Sender<AnyView>);
 

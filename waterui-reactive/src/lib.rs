@@ -7,7 +7,6 @@ use alloc::{borrow::Cow, string::String};
 pub use binding::Binding;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
-pub mod mpsc;
 mod reactive;
 pub use reactive::Reactive;
 pub mod subscriber;
