@@ -6,6 +6,7 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 pub mod component;
+pub(crate) mod mpsc;
 pub mod view;
 pub mod widget;
 
