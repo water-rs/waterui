@@ -4,7 +4,8 @@ use crate::AnyView;
 use alloc::collections::BTreeMap;
 use alloc::{rc::Rc, vec::Vec};
 use waterui_core::raw_view;
-use waterui_reactive::{Binding, Compute};
+use waterui_reactive::binding::bridge;
+use waterui_reactive::Binding;
 
 #[derive(Debug)]
 pub struct TaggedView<T> {
@@ -32,18 +33,21 @@ impl Picker {
             .collect();
 
         let map = Rc::new(map);
+        let selection_int = Binding::new(map.to_id(selection.get().deref()).unwrap());
 
-        let selection = selection.bridge(
+        bridge(
+            selection_int.clone(),
+            selection.clone(),
             {
                 let map = map.clone();
-                move |new| map.to_data(new.compute()).unwrap().clone()
+                move |new| map.to_data(*new).unwrap().clone()
             },
-            move |old| map.to_id(old.get().deref()).unwrap(),
+            move |old| map.to_id(old).unwrap(),
         );
 
         Self {
             _items: items,
-            _selection: selection,
+            _selection: selection_int,
         }
     }
 }
