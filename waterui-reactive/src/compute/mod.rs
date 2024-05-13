@@ -1,10 +1,8 @@
+use core::any::type_name;
 use core::fmt::Debug;
 use core::ops::Deref;
-use core::{any::type_name, num::NonZeroUsize};
 
-mod grouped;
 use alloc::rc::{Rc, Weak};
-pub use grouped::GroupedCompute;
 mod constant;
 pub use constant::{constant, Constant};
 mod f;
@@ -12,8 +10,8 @@ pub use f::ComputeFn;
 mod map;
 
 use crate::reactive::ReactiveExt;
-use crate::subscriber::SubscriberManager;
-use crate::subscriber::{BoxSubscriber, SubscribeGuard};
+use crate::subscriber::{SubscribeGuard, Subscriber};
+use crate::subscriber::{SubscriberId, SubscriberManager};
 use crate::Reactive;
 pub use map::Map;
 
@@ -144,7 +142,7 @@ impl<T> Computed<T> {
         WeakComputed(Rc::downgrade(&self.0))
     }
 
-    pub fn watch(&self, watcher: impl Fn(T) + 'static) -> SubscribeGuard<'_, Self>
+    pub fn watch(&self, watcher: impl Fn(T) + 'static) -> SubscribeGuard<&Self>
     where
         T: 'static,
     {
@@ -162,24 +160,13 @@ impl<T> Computed<T> {
     {
         Self::new(ComputeFn::new(f))
     }
-
-    pub fn from_fn_with_subscribers<F>(f: F, subscribers: SubscriberManager) -> Self
-    where
-        F: 'static + Fn(&SubscriberManager) -> T,
-    {
-        Self::new(ComputeFn::new_with_subscribers(f, subscribers))
-    }
 }
 
 impl<T> Reactive for Computed<T> {
-    fn register_subscriber(&self, subscriber: BoxSubscriber) -> Option<NonZeroUsize> {
+    fn register_subscriber(&self, subscriber: Subscriber) -> Option<SubscriberId> {
         self.0.register_subscriber(subscriber)
     }
-    fn cancel_subscriber(&self, id: NonZeroUsize) {
+    fn cancel_subscriber(&self, id: SubscriberId) {
         self.0.cancel_subscriber(id)
-    }
-
-    fn notify(&self) {
-        self.0.notify()
     }
 }

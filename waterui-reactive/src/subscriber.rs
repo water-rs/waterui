@@ -1,67 +1,74 @@
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc};
-use core::{cell::RefCell, fmt::Debug, mem::forget, num::NonZeroUsize};
+use core::{
+    any::{Any, TypeId},
+    cell::RefCell,
+    fmt::Debug,
+    mem::forget,
+    num::NonZeroUsize,
+};
 
 use crate::Reactive;
 
-pub type BoxSubscriber = Box<dyn Subscriber>;
-
-pub trait Subscriber {
-    fn call_subscriber(&self);
+#[derive(Debug, Default)]
+pub struct Metadata {
+    map: BTreeMap<TypeId, Box<dyn Any>>,
 }
 
-impl<F> Subscriber for F
-where
-    F: Fn(),
-{
-    fn call_subscriber(&self) {
-        (self)()
+impl Metadata {
+    pub const fn new() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
+    }
+
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        self.map
+            .get(&TypeId::of::<T>())
+            .map(|v| v.downcast_ref().unwrap())
+    }
+
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(value));
     }
 }
 
-#[derive(Debug)]
-pub struct FnSubscriber<State, F, F2>
-where
-    F2: Fn(&State),
-{
-    state: State,
-    f: F,
-    drop: F2,
-}
+pub struct Subscriber(Box<dyn Fn(&Metadata)>);
 
-impl<State, F, F2> FnSubscriber<State, F, F2>
-where
-    F: Fn(&State),
-    F2: Fn(&State),
-{
-    pub fn new(state: State, f: F, drop: F2) -> Self {
-        Self { state, f, drop }
+impl Subscriber {
+    pub fn new(value: impl Fn(&Metadata) + 'static) -> Self {
+        Self(Box::new(value))
+    }
+
+    pub fn notify(&self, metadata: &Metadata) {
+        (self.0)(metadata);
     }
 }
 
-impl<State, F, F2> Drop for FnSubscriber<State, F, F2>
+impl<F> From<F> for Subscriber
 where
-    F2: Fn(&State),
+    F: Fn() + 'static,
 {
-    fn drop(&mut self) {
-        (self.drop)(&self.state)
+    fn from(value: F) -> Self {
+        Subscriber::new(move |_| value())
     }
 }
 
-impl<State, F, F2> Subscriber for FnSubscriber<State, F, F2>
-where
-    F: Fn(&State),
-    F2: Fn(&State),
-{
-    fn call_subscriber(&self) {
-        (self.f)(&self.state);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct SubscriberId(NonZeroUsize);
+
+impl SubscriberId {
+    pub fn new(raw: NonZeroUsize) -> Self {
+        Self(raw)
+    }
+    pub fn into_inner(self) -> usize {
+        self.0.get()
     }
 }
 
 pub type SharedSubscriberManager = Rc<SubscriberManager>;
+
 #[derive(Debug)]
-pub struct SubscriberManager {
-    inner: RefCell<SubscriberManagerInner>,
-}
+pub struct SubscriberManager(RefCell<SubscriberManagerInner>);
 
 impl Default for SubscriberManager {
     fn default() -> Self {
@@ -71,35 +78,25 @@ impl Default for SubscriberManager {
 
 impl SubscriberManager {
     pub const fn new() -> Self {
-        Self {
-            inner: RefCell::new(SubscriberManagerInner::new()),
-        }
+        Self(RefCell::new(SubscriberManagerInner::new()))
     }
 
-    pub fn preassign(&self) -> NonZeroUsize {
-        self.inner.borrow_mut().preassign()
+    pub fn register(&self, subscriber: Subscriber) -> SubscriberId {
+        self.0.borrow_mut().register(subscriber)
     }
 
-    pub fn register(&self, subscriber: BoxSubscriber) -> NonZeroUsize {
-        self.inner.borrow_mut().register(subscriber)
+    pub fn notify(&self, metadata: &Metadata) {
+        self.0.borrow().notify(metadata);
     }
 
-    pub fn register_with_id(&self, id: NonZeroUsize, subscriber: BoxSubscriber) {
-        self.inner.borrow_mut().register_with_id(id, subscriber);
-    }
-
-    pub fn notify(&self) {
-        self.inner.borrow().notify()
-    }
-
-    pub fn cancel(&self, id: NonZeroUsize) {
-        self.inner.borrow_mut().cancel(id)
+    pub fn cancel(&self, id: SubscriberId) {
+        self.0.borrow_mut().cancel(id)
     }
 }
 
 struct SubscriberManagerInner {
-    id: NonZeroUsize,
-    map: BTreeMap<NonZeroUsize, BoxSubscriber>,
+    id: SubscriberId,
+    map: BTreeMap<SubscriberId, Subscriber>,
 }
 
 impl Debug for SubscriberManagerInner {
@@ -112,65 +109,58 @@ impl SubscriberManagerInner {
     pub const fn new() -> Self {
         unsafe {
             Self {
-                id: NonZeroUsize::new_unchecked(1),
+                id: SubscriberId(NonZeroUsize::new_unchecked(1)),
                 map: BTreeMap::new(),
             }
         }
     }
 
-    pub fn preassign(&mut self) -> NonZeroUsize {
+    fn assign(&mut self) -> SubscriberId {
         let id = self.id;
 
         self.id
+            .0
             .checked_add(1)
             .expect("`id` grows beyond `usize::MAX`");
         id
     }
 
-    pub fn register(&mut self, subscriber: BoxSubscriber) -> NonZeroUsize {
-        let id = self.preassign();
-        self.register_with_id(id, subscriber);
+    pub fn register(&mut self, subscriber: Subscriber) -> SubscriberId {
+        let id = self.assign();
+        self.map.insert(id, subscriber);
         id
     }
 
-    pub fn register_with_id(&mut self, id: NonZeroUsize, subscriber: BoxSubscriber) {
-        let result = self.map.insert(id, subscriber);
-        assert!(result.is_none());
-    }
-
-    pub fn notify(&self) {
+    pub fn notify(&self, metadata: &Metadata) {
         for subscriber in self.map.values() {
-            subscriber.call_subscriber();
+            subscriber.notify(metadata);
         }
     }
 
-    pub fn cancel(&mut self, id: NonZeroUsize) {
+    pub fn cancel(&mut self, id: SubscriberId) {
         self.map.remove(&id);
     }
 }
 
 #[derive(Debug)]
 #[must_use]
-pub struct SubscribeGuard<'a, V>
-where
-    V: Reactive + ?Sized,
-{
-    source: &'a V,
-    id: Option<NonZeroUsize>,
-}
-
-impl<'a, V> SubscribeGuard<'a, V>
+pub struct SubscribeGuard<V>
 where
     V: Reactive,
 {
-    pub fn new(source: &'a V, id: impl Into<Option<NonZeroUsize>>) -> Self {
-        Self {
-            source,
-            id: id.into(),
-        }
+    source: V,
+    id: Option<SubscriberId>,
+}
+
+impl<V> SubscribeGuard<V>
+where
+    V: Reactive,
+{
+    pub fn new(source: V, id: Option<SubscriberId>) -> Self {
+        Self { source, id }
     }
 
-    pub fn id(&self) -> Option<NonZeroUsize> {
+    pub fn into_raw(self) -> Option<SubscriberId> {
         self.id
     }
 
@@ -179,9 +169,27 @@ where
     }
 }
 
-impl<'a, V> Drop for SubscribeGuard<'a, V>
+impl<V: Reactive + Clone> SubscribeGuard<&V> {
+    pub fn cloned(self) -> SubscribeGuard<V> {
+        SubscribeGuard {
+            source: self.source.clone(),
+            id: self.id,
+        }
+    }
+}
+
+impl<V: Reactive + Clone> SubscribeGuard<&mut V> {
+    pub fn cloned(self) -> SubscribeGuard<V> {
+        SubscribeGuard {
+            source: self.source.clone(),
+            id: self.id,
+        }
+    }
+}
+
+impl<V> Drop for SubscribeGuard<V>
 where
-    V: Reactive + ?Sized,
+    V: Reactive,
 {
     fn drop(&mut self) {
         self.id.inspect(|id| self.source.cancel_subscriber(*id));
