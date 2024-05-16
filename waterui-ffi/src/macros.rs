@@ -88,7 +88,7 @@ macro_rules! ffi_type {
         impl $crate::IntoRust for *mut $name {
             type Rust = $ty;
             unsafe fn into_rust(self) -> Self::Rust {
-                alloc::boxed::Box::from_raw(self).0
+                unsafe { alloc::boxed::Box::from_raw(self).0 }
             }
         }
     };

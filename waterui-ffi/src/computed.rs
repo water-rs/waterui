@@ -1,4 +1,4 @@
-use crate::{array::waterui_str, closure::waterui_fn, IntoFFI, IntoRust};
+use crate::{array::waterui_str, closure::waterui_fn, IntoFFI};
 use alloc::{borrow::Cow, boxed::Box};
 use core::{num::NonZeroUsize, ptr::drop_in_place};
 use waterui_reactive::{subscriber::SubscriberId, Compute, Computed, Reactive};
@@ -17,11 +17,10 @@ macro_rules! impl_computed {
         #[no_mangle]
         pub unsafe extern "C" fn $subscribe(
             computed: *const $computed,
-            subscriber: *mut waterui_fn,
+            subscriber: waterui_fn,
         ) -> isize {
-            let subscriber = subscriber.into_rust();
             (*computed)
-                .register_subscriber(Box::new(move || (subscriber)()).into())
+                .register_subscriber(Box::new(move || (subscriber).call()).into())
                 .map(|v| v.into_inner() as isize)
                 .unwrap_or(-1)
         }

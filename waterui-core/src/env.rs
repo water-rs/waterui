@@ -25,6 +25,7 @@ pub struct Environment {
     layers: Vec<Rc<EnvironmentLayer>>,
 }
 
+#[cfg(feature = "default-executor")]
 impl Default for Environment {
     fn default() -> Self {
         Self::new(LocalExecutor::new())
