@@ -13,9 +13,10 @@ use waterui_core::raw_view;
 #[derive(Debug)]
 pub struct Button {
     pub _label: AnyView,
-    pub _action: Box<dyn Action>,
+    pub _action: BoxAction,
 }
 
+pub type BoxAction = Box<dyn Action>;
 pub trait Action: 'static {
     fn call_action(&self, _env: &Environment);
 }

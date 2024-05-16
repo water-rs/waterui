@@ -4,7 +4,7 @@ use waterui::component::each::Each;
 
 use crate::{waterui_anyview, waterui_type_id, IntoFFI, IntoRust};
 
-ffi_type!(waterui_each, Each);
+ffi_type!(waterui_each, Each, waterui_drop_each);
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_force_as_each(view: *mut waterui_anyview) -> *mut waterui_each {

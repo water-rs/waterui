@@ -38,7 +38,7 @@ impl<T> IntoFFI for Vec<T> {
 impl<T> IntoRust for waterui_array<T> {
     type Rust = Vec<T>;
     unsafe fn into_rust(self) -> Self::Rust {
-        Box::from_raw(slice_from_raw_parts_mut(self.head, self.len)).into_vec()
+        unsafe { Box::from_raw(slice_from_raw_parts_mut(self.head, self.len)).into_vec() }
     }
 }
 
