@@ -4,9 +4,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use async_channel::{bounded, Sender};
 use waterui_core::Environment;
-
-pub type Closure = Box<dyn Send + Sync + Fn()>;
-
+pub type Closure = Box<dyn Send + Sync + FnOnce()>;
 #[derive(Clone)]
 pub struct Bridge {
     sender: Sender<Closure>,
@@ -29,14 +27,14 @@ impl Bridge {
 
     pub async fn send(
         &self,
-        f: impl Fn() + Send + Sync + 'static,
+        f: impl FnOnce() + Send + Sync + 'static,
     ) -> Result<(), async_channel::SendError<Closure>> {
         self.sender.send(alloc::boxed::Box::new(f)).await
     }
 
     pub fn send_blocking(
         &self,
-        f: impl Fn() + Send + Sync + 'static,
+        f: impl FnOnce() + Send + Sync + 'static,
     ) -> Result<(), async_channel::SendError<Closure>> {
         self.sender.send_blocking(alloc::boxed::Box::new(f))
     }

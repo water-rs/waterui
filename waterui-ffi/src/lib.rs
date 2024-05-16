@@ -11,8 +11,8 @@ pub mod modifier;
 
 pub mod array;
 pub mod binding;
+pub mod bridge;
 pub mod closure;
-
 pub mod computed;
 
 pub mod ty;
