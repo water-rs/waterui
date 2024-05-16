@@ -1,5 +1,5 @@
 use crate::{array::waterui_str, closure::waterui_fn, IntoFFI, IntoRust};
-use alloc::borrow::Cow;
+use alloc::{borrow::Cow, boxed::Box};
 use core::{num::NonZeroUsize, ptr::drop_in_place};
 use waterui_reactive::{subscriber::SubscriberId, Binding, Compute, Reactive};
 
@@ -24,10 +24,10 @@ macro_rules! impl_binding {
         #[no_mangle]
         pub unsafe extern "C" fn $subscribe(
             binding: *const $binding,
-            subscriber: *mut waterui_fn,
+            subscriber: waterui_fn,
         ) -> isize {
             (*binding)
-                .register_subscriber(subscriber.into_rust().into())
+                .register_subscriber(Box::new(move || subscriber.call()).into())
                 .map(|v| v.into_inner() as isize)
                 .unwrap_or(-1)
         }

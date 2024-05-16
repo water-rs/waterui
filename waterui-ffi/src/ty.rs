@@ -29,4 +29,4 @@ impl IntoRust for waterui_type_id {
     }
 }
 ffi_type!(waterui_anyview, AnyView);
-ffi_type!(waterui_env, Environment);
+ffi_type!(waterui_env, Environment, waterui_drop_env);

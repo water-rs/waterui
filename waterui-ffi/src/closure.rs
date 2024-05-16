@@ -1,16 +1,22 @@
 use alloc::boxed::Box;
 
-use crate::IntoFFI;
+use crate::IntoRust;
 
-ffi_type!(waterui_fn, Box<dyn Fn()>, waterui_drop_fn);
-
-struct FFIFn {
+#[repr(C)]
+pub struct waterui_fn {
     data: *mut (),
     call: unsafe extern "C" fn(*const ()),
     drop: unsafe extern "C" fn(*mut ()),
 }
 
-impl FFIFn {
+impl IntoRust for waterui_fn {
+    type Rust = Box<dyn Fn()>;
+    unsafe fn into_rust(self) -> Self::Rust {
+        Box::new(move || self.call())
+    }
+}
+
+impl waterui_fn {
     pub unsafe fn new(
         data: *mut (),
         call: unsafe extern "C" fn(*const ()),
@@ -23,18 +29,30 @@ impl FFIFn {
     }
 }
 
-impl Drop for FFIFn {
+impl Drop for waterui_fn {
     fn drop(&mut self) {
         unsafe { (self.drop)(self.data) }
     }
 }
 
-pub unsafe extern "C" fn waterui_new_fn(
+#[repr(C)]
+pub struct waterui_fnonce {
     data: *mut (),
-    call: unsafe extern "C" fn(*const ()),
-    drop: unsafe extern "C" fn(*mut ()),
-) -> *mut waterui_fn {
-    let f = FFIFn::new(data, call, drop);
-    let boxed: Box<dyn Fn()> = Box::new(move || f.call());
-    boxed.into_ffi()
+    call: unsafe extern "C" fn(*mut ()),
+}
+
+impl IntoRust for waterui_fnonce {
+    type Rust = Box<dyn FnOnce()>;
+    unsafe fn into_rust(self) -> Self::Rust {
+        Box::new(move || self.call())
+    }
+}
+
+impl waterui_fnonce {
+    pub unsafe fn new(data: *mut (), call: unsafe extern "C" fn(*mut ())) -> Self {
+        Self { data, call }
+    }
+    pub fn call(self) {
+        unsafe { (self.call)(self.data) }
+    }
 }
