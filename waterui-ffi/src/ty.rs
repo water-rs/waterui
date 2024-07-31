@@ -4,7 +4,7 @@ use waterui::{AnyView, Environment};
 
 use crate::{IntoFFI, IntoRust};
 
-ffi_safe!(u8, i32, bool);
+ffi_safe!(u8, i32, f64, bool);
 
 #[repr(C)]
 pub struct waterui_type_id {
