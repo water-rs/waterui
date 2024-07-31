@@ -8,6 +8,7 @@ pub mod progress;
 pub mod stack;
 pub mod stepper;
 pub mod text;
+pub mod text_field;
 pub mod toggle;
 
 #[no_mangle]
