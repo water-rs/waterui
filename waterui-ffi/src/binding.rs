@@ -1,6 +1,4 @@
-use crate::{
-    array::waterui_str, closure::waterui_fn, computed::waterui_watcher_guard, IntoFFI, IntoRust,
-};
+use crate::{array::waterui_str, closure::waterui_fn, waterui_watcher_guard, IntoFFI, IntoRust};
 use ::waterui_str::Str;
 use waterui::ComputeExt;
 use waterui_reactive::{Binding, Compute};

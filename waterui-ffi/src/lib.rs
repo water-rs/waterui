@@ -17,6 +17,7 @@ pub mod computed;
 
 pub mod ty;
 pub use ty::*;
+use waterui_reactive::watcher::WatcherGuard;
 pub mod action;
 
 pub trait IntoFFI {
@@ -28,3 +29,9 @@ pub trait IntoRust {
     type Rust;
     unsafe fn into_rust(self) -> Self::Rust;
 }
+
+ffi_type!(
+    waterui_watcher_guard,
+    WatcherGuard,
+    waterui_drop_watcher_guard
+);
