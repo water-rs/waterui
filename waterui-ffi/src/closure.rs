@@ -3,33 +3,34 @@ use alloc::boxed::Box;
 use crate::IntoRust;
 
 #[repr(C)]
-pub struct waterui_fn {
+pub struct waterui_fn<T> {
     data: *mut (),
-    call: unsafe extern "C" fn(*const ()),
+    call: unsafe extern "C" fn(*const (), T),
     drop: unsafe extern "C" fn(*mut ()),
 }
 
-impl IntoRust for waterui_fn {
-    type Rust = Box<dyn Fn()>;
+// TODO : Drop
+impl<T: 'static> IntoRust for waterui_fn<T> {
+    type Rust = Box<dyn Fn(T)>;
     unsafe fn into_rust(self) -> Self::Rust {
-        Box::new(move || self.call())
+        Box::new(move |v| (self.call)(self.data, v))
     }
 }
 
-impl waterui_fn {
+impl<T: 'static> waterui_fn<T> {
     pub unsafe fn new(
         data: *mut (),
-        call: unsafe extern "C" fn(*const ()),
+        call: unsafe extern "C" fn(*const (), T),
         drop: unsafe extern "C" fn(*mut ()),
     ) -> Self {
         Self { data, call, drop }
     }
-    pub fn call(&self) {
-        unsafe { (self.call)(self.data) }
+    pub fn call(&self, value: T) {
+        unsafe { (self.call)(self.data, value) }
     }
 }
 
-impl Drop for waterui_fn {
+impl<T> Drop for waterui_fn<T> {
     fn drop(&mut self) {
         unsafe { (self.drop)(self.data) }
     }
