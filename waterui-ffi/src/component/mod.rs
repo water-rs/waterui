@@ -4,6 +4,7 @@ use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 pub mod button;
 pub mod metadata;
+pub mod picker;
 pub mod progress;
 pub mod stack;
 pub mod stepper;

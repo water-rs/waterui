@@ -112,3 +112,26 @@ macro_rules! ffi_type {
         $crate::ffi_type!($name, $ty);
     };
 }
+
+// WARNING: Computed<T> must be called on the Rust thread!!!
+macro_rules! impl_computed {
+    ($computed:ty,$ffi:ty,$read:ident,$watch:ident) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $read(computed: *const $computed) -> $ffi {
+            use waterui::Compute;
+            use $crate::IntoFFI;
+            (*computed).compute().into_ffi()
+        }
+
+        #[no_mangle]
+        pub unsafe extern "C" fn $watch(
+            computed: *const $computed,
+            watcher: $crate::closure::waterui_fn<$ffi>,
+        ) -> *mut $crate::waterui_watcher_guard {
+            use waterui::ComputeExt;
+            let guard = (*computed)
+                .watch(move |v: <$ffi as $crate::IntoRust>::Rust| watcher.call(v.into_ffi()));
+            guard.into_ffi()
+        }
+    };
+}

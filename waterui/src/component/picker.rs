@@ -10,7 +10,7 @@ use waterui_reactive::{Binding, ComputeExt, Computed};
 
 use super::Text;
 
-type ItemId = NonZeroUsize;
+pub type ItemId = NonZeroUsize;
 
 #[non_exhaustive]
 #[derive(Debug)]
@@ -19,9 +19,10 @@ pub struct Picker {
     pub _selection: Binding<Option<ItemId>>,
 }
 
+#[derive(Debug)]
 pub struct PickerItem<T> {
-    label: Text,
-    tag: T,
+    pub _label: Text,
+    pub _tag: T,
 }
 
 impl Picker {
@@ -40,8 +41,8 @@ impl Picker {
                 items
                     .into_iter()
                     .map(|item| PickerItem {
-                        label: item.label,
-                        tag: map.borrow_mut().register(item.tag),
+                        _label: item._label,
+                        _tag: map.borrow_mut().register(item._tag),
                     })
                     .collect::<Vec<_>>()
             })

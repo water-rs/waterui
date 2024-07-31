@@ -1,6 +1,5 @@
 use crate::{array::waterui_array, ffi_view, waterui_anyview, IntoFFI};
 
-use alloc::vec::Vec;
 use waterui::component::stack::{Stack, StackMode};
 
 #[repr(C)]
@@ -33,12 +32,7 @@ impl IntoFFI for Stack {
     type FFI = waterui_stack;
     fn into_ffi(self) -> Self::FFI {
         waterui_stack {
-            contents: self
-                ._contents
-                .into_iter()
-                .map(IntoFFI::into_ffi)
-                .collect::<Vec<_>>()
-                .into_ffi(),
+            contents: self._contents.into_ffi(),
             mode: self._mode.into_ffi(),
         }
     }
