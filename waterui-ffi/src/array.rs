@@ -1,4 +1,5 @@
 use core::{
+    mem::ManuallyDrop,
     ops::Deref,
     ptr::{slice_from_raw_parts, slice_from_raw_parts_mut},
     str,
@@ -24,22 +25,29 @@ impl<T> Deref for waterui_array<T> {
     }
 }
 
-impl<T> IntoFFI for Vec<T> {
-    type FFI = waterui_array<T>;
+impl<T: IntoFFI> IntoFFI for Vec<T> {
+    type FFI = waterui_array<T::FFI>;
 
-    fn into_ffi(mut self) -> Self::FFI {
-        let len = self.len();
-        let head = self.as_mut_ptr();
-        core::mem::forget(self);
+    fn into_ffi(self) -> Self::FFI {
+        let this = self
+            .into_iter()
+            .map(IntoFFI::into_ffi)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
+        let mut this = ManuallyDrop::new(this);
+        let len = this.len();
+        let head = this.as_mut_ptr();
 
         waterui_array { head, len }
     }
 }
 
-impl<T> IntoRust for waterui_array<T> {
-    type Rust = Vec<T>;
+impl<T: IntoRust> IntoRust for waterui_array<T> {
+    type Rust = Vec<T::Rust>;
     unsafe fn into_rust(self) -> Self::Rust {
-        unsafe { Box::from_raw(slice_from_raw_parts_mut(self.head, self.len)).into_vec() }
+        let vec = Box::from_raw(slice_from_raw_parts_mut(self.head, self.len)).into_vec();
+        vec.into_iter().map(|v| v.into_rust()).collect()
     }
 }
 
