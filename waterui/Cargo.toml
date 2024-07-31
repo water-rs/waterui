@@ -8,10 +8,7 @@ edition = "2021"
 [dependencies]
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-core = { path = "../waterui-core" }
-
-[dependencies.url]
-version = "2.5.0"
-optional = true
+waterui-str = { path = "../waterui-str" }
 
 [dependencies.serde]
 version = "1.0.193"
@@ -20,8 +17,7 @@ features = ["derive"]
 optional = true
 
 [features]
-default = ["remote-image"]
+default = ["all"]
 std = []
-all = ["remote-image","serde"]
-remote-image = ["dep:url","waterui-reactive/url"]
+all = ["serde"]
 serde = ["dep:serde"]
