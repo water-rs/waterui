@@ -3,7 +3,6 @@ use waterui::{View, ViewExt};
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 pub mod button;
-pub mod each;
 pub mod metadata;
 pub mod progress;
 pub mod stack;

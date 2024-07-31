@@ -6,7 +6,7 @@ use waterui_str::Str;
 #[non_exhaustive]
 pub struct Text {
     pub _content: Computed<Str>,
-    pub _selection: Computed<bool>,
+    pub _selectable: Computed<bool>,
     pub _font: Font,
 }
 
@@ -32,7 +32,7 @@ impl Text {
     pub fn new(text: impl ToComputed<Str>) -> Self {
         Self {
             _content: text.to_computed(),
-            _selection: true.to_computed(),
+            _selectable: true.to_computed(),
             _font: Font::default(),
         }
     }
@@ -47,8 +47,8 @@ impl Text {
         self
     }
 
-    pub fn selection(mut self, selection: impl ToComputed<bool>) -> Self {
-        self._selection = selection.to_computed();
+    pub fn selectable(mut self, selectable: impl ToComputed<bool>) -> Self {
+        self._selectable = selectable.to_computed();
         self
     }
 }
