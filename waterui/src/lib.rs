@@ -10,7 +10,6 @@ pub(crate) mod mpsc;
 pub mod view;
 pub mod widget;
 
-use alloc::borrow::Cow;
 pub use view::ViewExt;
 #[doc(inline)]
 pub use waterui_core::*;
@@ -20,5 +19,3 @@ pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed};
 
 pub mod layout;
 pub mod utils;
-
-pub(crate) type CowStr = Cow<'static, str>;
