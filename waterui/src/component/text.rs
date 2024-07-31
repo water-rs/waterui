@@ -1,11 +1,11 @@
-use crate::CowStr;
 use waterui_core::raw_view;
-use waterui_reactive::{compute::IntoComputed, Computed};
+use waterui_reactive::{compute::ToComputed, Computed};
+use waterui_str::Str;
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Text {
-    pub _content: Computed<CowStr>,
+    pub _content: Computed<Str>,
     pub _selection: Computed<bool>,
     pub _font: Font,
 }
@@ -29,10 +29,10 @@ impl Default for Font {
 raw_view!(Text);
 
 impl Text {
-    pub fn new(text: impl IntoComputed<CowStr>) -> Self {
+    pub fn new(text: impl ToComputed<Str>) -> Self {
         Self {
-            _content: text.into_computed(),
-            _selection: true.into_computed(),
+            _content: text.to_computed(),
+            _selection: true.to_computed(),
             _font: Font::default(),
         }
     }
@@ -47,12 +47,12 @@ impl Text {
         self
     }
 
-    pub fn selection(mut self, selection: impl IntoComputed<bool>) -> Self {
-        self._selection = selection.into_computed();
+    pub fn selection(mut self, selection: impl ToComputed<bool>) -> Self {
+        self._selection = selection.to_computed();
         self
     }
 }
 
-pub fn text(text: impl IntoComputed<CowStr>) -> Text {
+pub fn text(text: impl ToComputed<Str>) -> Text {
     Text::new(text)
 }

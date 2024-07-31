@@ -1,7 +1,8 @@
 use waterui_core::raw_view;
-use waterui_reactive::{compute::IntoComputed, Binding};
+use waterui_reactive::{compute::ToComputed, Binding};
+use waterui_str::Str;
 
-use crate::{AnyView, CowStr, View};
+use crate::{AnyView, View};
 
 use super::Text;
 
@@ -29,7 +30,7 @@ impl Default for ToggleStyle {
 }
 
 impl Toggle {
-    pub fn new(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Self {
+    pub fn new(label: impl ToComputed<Str>, toggle: &Binding<bool>) -> Self {
         Self::label(Text::new(label), toggle)
     }
 
@@ -49,6 +50,6 @@ impl Toggle {
 
 raw_view!(Toggle);
 
-pub fn toggle(label: impl IntoComputed<CowStr>, toggle: &Binding<bool>) -> Toggle {
+pub fn toggle(label: impl ToComputed<Str>, toggle: &Binding<bool>) -> Toggle {
     Toggle::new(label, toggle)
 }

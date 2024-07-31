@@ -1,63 +1,73 @@
-use core::ops::Deref;
+use core::cell::RefCell;
+use core::num::NonZeroUsize;
 
-use crate::AnyView;
 use alloc::collections::BTreeMap;
-use alloc::{rc::Rc, vec::Vec};
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 use waterui_core::raw_view;
-use waterui_reactive::binding::bridge;
-use waterui_reactive::Binding;
+use waterui_reactive::compute::{ToCompute, ToComputed};
+use waterui_reactive::{Binding, ComputeExt, Computed};
 
-#[derive(Debug)]
-pub struct TaggedView<T> {
-    content: AnyView,
-    tag: T,
-}
+use super::Text;
+
+type ItemId = NonZeroUsize;
 
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Picker {
-    pub _items: Vec<(AnyView, i32)>,
-    pub _selection: Binding<i32>,
+    pub _items: Computed<Vec<PickerItem<ItemId>>>,
+    pub _selection: Binding<Option<ItemId>>,
+}
+
+pub struct PickerItem<T> {
+    label: Text,
+    tag: T,
 }
 
 impl Picker {
     pub fn new<T: Ord + Clone + 'static>(
-        items: impl Into<Vec<TaggedView<T>>>,
-        selection: &Binding<T>,
+        items: impl ToComputed<Vec<PickerItem<T>>>,
+        selection: &Binding<Option<T>>,
     ) -> Self {
-        let items = items.into();
-        let mut map = IdentifierMap::new();
-        let items = items
-            .into_iter()
-            .map(|v| (v.content, map.insert(v.tag)))
-            .collect();
+        let items = items.to_computed();
+        let map = Rc::new(RefCell::new(IdentifierMap::new()));
+        let map2 = map.clone();
+        let map3 = map.clone();
 
-        let map = Rc::new(map);
-        let selection_int = Binding::new(map.to_id(selection.get().deref()).unwrap());
+        let _items = items
+            .to_compute()
+            .map(move |items: Vec<PickerItem<T>>| {
+                items
+                    .into_iter()
+                    .map(|item| PickerItem {
+                        label: item.label,
+                        tag: map.borrow_mut().register(item.tag),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .computed();
 
-        bridge(
-            selection_int.clone(),
-            selection.clone(),
-            {
-                let map = map.clone();
-                move |new| map.to_data(*new).unwrap().clone()
+        let selection = selection.clone();
+        let selection2 = selection.clone();
+
+        let _selection = Binding::from_fn(
+            move || selection.get().and_then(|v| map2.borrow().to_id(&v)),
+            move |id| {
+                let data = id.and_then(|id| map3.borrow().to_data(id));
+                selection2.set(data);
             },
-            move |old| map.to_id(old).unwrap(),
         );
 
-        Self {
-            _items: items,
-            _selection: selection_int,
-        }
+        Self { _items, _selection }
     }
 }
 
 raw_view!(Picker);
 
 struct IdentifierMap<T> {
-    counter: i32,
-    to_id: BTreeMap<T, i32>,
-    from_id: BTreeMap<i32, T>,
+    counter: ItemId,
+    to_id: BTreeMap<T, ItemId>,
+    from_id: BTreeMap<ItemId, T>,
 }
 
 impl<T: Ord + Clone> Default for IdentifierMap<T> {
@@ -69,25 +79,25 @@ impl<T: Ord + Clone> Default for IdentifierMap<T> {
 impl<T: Ord + Clone> IdentifierMap<T> {
     pub fn new() -> Self {
         Self {
-            counter: 0,
+            counter: ItemId::MIN,
             to_id: BTreeMap::new(),
             from_id: BTreeMap::new(),
         }
     }
 
-    pub fn insert(&mut self, value: T) -> i32 {
+    pub fn register(&mut self, value: T) -> ItemId {
         let id = self.counter;
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
-        self.counter += 1;
+        self.counter = self.counter.checked_add(1).unwrap();
         id
     }
 
-    pub fn to_id(&self, value: &T) -> Option<i32> {
+    pub fn to_id(&self, value: &T) -> Option<ItemId> {
         self.to_id.get(value).cloned()
     }
 
-    pub fn to_data(&self, id: i32) -> Option<&T> {
-        self.from_id.get(&id)
+    pub fn to_data(&self, id: ItemId) -> Option<T> {
+        self.from_id.get(&id).cloned()
     }
 }

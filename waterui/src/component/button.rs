@@ -2,10 +2,11 @@ use core::fmt::Debug;
 use core::future::Future;
 
 use alloc::boxed::Box;
-use waterui_reactive::compute::IntoComputed;
+use waterui_reactive::compute::ToComputed;
+use waterui_str::Str;
 
 use super::Text;
-use crate::{AnyView, CowStr};
+use crate::AnyView;
 use crate::{Environment, View};
 use waterui_core::raw_view;
 
@@ -45,7 +46,7 @@ where
 }
 
 impl Button {
-    pub fn new(label: impl IntoComputed<CowStr>) -> Self {
+    pub fn new(label: impl ToComputed<Str>) -> Self {
         Self::label(Text::new(label))
     }
 
@@ -68,6 +69,6 @@ impl Button {
 
 raw_view!(Button);
 
-pub fn button(label: impl IntoComputed<CowStr>) -> Button {
+pub fn button(label: impl ToComputed<Str>) -> Button {
     Button::new(label)
 }

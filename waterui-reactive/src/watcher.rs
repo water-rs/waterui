@@ -18,7 +18,7 @@ impl MetadataBuilder {
         Self(BTreeMap::new())
     }
 
-    pub fn add<T: 'static>(mut self, value: T) -> Self {
+    pub fn metadata<T: 'static>(mut self, value: T) -> Self {
         self.0.insert(TypeId::of::<T>(), Box::new(value));
         self
     }

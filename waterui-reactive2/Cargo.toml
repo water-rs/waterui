@@ -1,7 +1,0 @@
-[package]
-name = "waterui-reactive2"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-waterui-core = { path = "../waterui-core" }
