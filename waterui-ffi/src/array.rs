@@ -4,7 +4,8 @@ use core::{
     str,
 };
 
-use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
+use ::waterui_str::Str;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use crate::{IntoFFI, IntoRust};
 
@@ -62,24 +63,26 @@ impl IntoFFI for String {
     fn into_ffi(mut self) -> Self::FFI {
         let len = self.len();
         let head = self.as_mut_ptr();
+
         core::mem::forget(self);
 
         waterui_str { head, len }
     }
 }
 
-impl IntoFFI for Cow<'static, str> {
+impl IntoFFI for Str {
     type FFI = waterui_str;
     fn into_ffi(self) -> Self::FFI {
-        self.into_owned().into_ffi()
+        self.into_string().into_ffi()
     }
 }
 
 impl IntoRust for waterui_str {
-    type Rust = String;
+    type Rust = Str;
     unsafe fn into_rust(self) -> Self::Rust {
         String::from_utf8_unchecked(
             Box::from_raw(slice_from_raw_parts_mut(self.head, self.len)).into_vec(),
         )
+        .into()
     }
 }

@@ -8,7 +8,7 @@ use crate::{
 #[repr(C)]
 pub struct waterui_text {
     content: *mut waterui_computed_str,
-    selection: *mut waterui_computed_bool,
+    selectable: *mut waterui_computed_bool,
 }
 
 impl IntoFFI for Text {
@@ -16,7 +16,7 @@ impl IntoFFI for Text {
     fn into_ffi(self) -> Self::FFI {
         waterui_text {
             content: self._content.into_ffi(),
-            selection: self._selection.into_ffi(),
+            selectable: self._selectable.into_ffi(),
         }
     }
 }
