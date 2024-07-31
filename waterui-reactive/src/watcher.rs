@@ -71,8 +71,7 @@ impl Metadata {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
-pub struct WatcherId(NonZeroUsize);
+pub(crate) type WatcherId = NonZeroUsize;
 
 #[derive(Debug)]
 pub struct WatcherManager<T>(RefCell<WatcherManagerInner<T>>);
@@ -148,7 +147,7 @@ impl<T> Debug for WatcherManagerInner<T> {
 impl<T> WatcherManagerInner<T> {
     pub const fn new() -> Self {
         Self {
-            id: WatcherId(NonZeroUsize::MIN),
+            id: WatcherId::MIN,
             map: BTreeMap::new(),
         }
     }
@@ -157,7 +156,6 @@ impl<T> WatcherManagerInner<T> {
         let id = self.id;
 
         self.id
-            .0
             .checked_add(1)
             .expect("`id` grows beyond `usize::MAX`");
         id
