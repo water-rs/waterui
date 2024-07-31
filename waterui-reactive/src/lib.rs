@@ -1,46 +1,35 @@
 #![no_std]
-
+#![forbid(unsafe_code)]
 extern crate alloc;
 
-pub mod binding;
-use alloc::{borrow::Cow, string::String};
+mod binding;
+
 pub use binding::Binding;
+pub mod constant;
+pub use constant::constant;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
-mod reactive;
-pub use reactive::Reactive;
-pub mod subscriber;
-pub use subscriber::Subscriber;
+pub mod cached;
+pub mod flatten;
+pub mod map;
+pub mod watcher;
+pub mod zip;
 
 #[macro_export]
 macro_rules! impl_constant {
     ($($ty:ty),*) => {
         $(
-            impl $crate::Compute for $ty {
-                type Output = $ty;
-                fn compute(&self) -> Self::Output {
+            impl $crate::compute::Compute for $ty {
+                type Output=$ty;
+                fn compute(&self) -> Self::Output{
                     self.clone()
                 }
+                fn add_watcher(&self, _watcher: $crate::watcher::Watcher<Self::Output>) -> $crate::watcher::WatcherGuard{
+                    $crate::watcher::WatcherGuard::new(||{})
+                }
             }
-
-            $crate::no_reactive!($ty);
         )*
     };
 }
 
-impl_constant!(i32, f64, bool, String, &'static str, Cow<'static, str>);
-
-#[macro_export]
-macro_rules! no_reactive {
-    ($ty:ty) => {
-        impl $crate::Reactive for $ty {
-            fn register_subscriber(
-                &self,
-                _subscriber: $crate::subscriber::Subscriber,
-            ) -> Option<$crate::subscriber::SubscriberId> {
-                None
-            }
-            fn cancel_subscriber(&self, _id: $crate::subscriber::SubscriberId) {}
-        }
-    };
-}
+impl_constant!(&'static str, bool, i32, f64);
