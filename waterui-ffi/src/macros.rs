@@ -16,16 +16,6 @@ macro_rules! ffi_view {
 }
 
 #[macro_export]
-macro_rules! impl_drop {
-    ($name:ident,$ty:ty) => {
-        #[no_mangle]
-        pub unsafe extern "C" fn $name(value: *mut $ty) {
-            core::ptr::drop_in_place(value);
-        }
-    };
-}
-
-#[macro_export]
 macro_rules! ffi_metadata {
     ($metadata:ty,$ffi:ty,$force_as:ident,$id:ident) => {
         #[no_mangle]

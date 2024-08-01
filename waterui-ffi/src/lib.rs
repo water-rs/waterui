@@ -9,13 +9,14 @@ mod macros;
 pub mod component;
 pub mod modifier;
 
+pub mod app;
 pub mod array;
 pub mod binding;
-pub mod bridge;
 pub mod closure;
 pub mod computed;
 
 pub mod ty;
+
 pub use ty::*;
 use waterui_reactive::watcher::WatcherGuard;
 pub mod action;
