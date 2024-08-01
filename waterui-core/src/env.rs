@@ -3,14 +3,15 @@ use core::{
     fmt::Debug,
     future::Future,
     marker::PhantomData,
+    ops::Deref,
     pin::Pin,
 };
 
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
-use async_executor::LocalExecutor;
 
 pub trait Executor {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>);
+    fn run(&self);
 }
 
 impl Debug for dyn Executor {
@@ -28,13 +29,21 @@ pub struct Environment {
 #[cfg(feature = "default-executor")]
 impl Default for Environment {
     fn default() -> Self {
-        Self::new(LocalExecutor::new())
+        Self::new(smol::LocalExecutor::new())
     }
 }
 
-impl Executor for async_executor::LocalExecutor<'_> {
+impl Executor for smol::LocalExecutor<'_> {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>) {
         self.spawn(future).detach();
+    }
+
+    fn run(&self) {
+        smol::block_on(async move {
+            loop {
+                self.tick().await;
+            }
+        });
     }
 }
 
@@ -71,6 +80,11 @@ impl Environment {
             layers: vec![Rc::new(EnvironmentLayer::new())],
         }
     }
+
+    pub fn executor(&self) -> &dyn Executor {
+        self.executor.deref()
+    }
+
     pub fn insert<T: 'static>(&mut self, value: T) {
         let layer = self.layers.last_mut().unwrap();
         if let Some(layer) = Rc::get_mut(layer) {

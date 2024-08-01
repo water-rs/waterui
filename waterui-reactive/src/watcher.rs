@@ -154,8 +154,8 @@ impl<T> WatcherManagerInner<T> {
 
     fn assign(&mut self) -> WatcherId {
         let id = self.id;
-
-        self.id
+        self.id = self
+            .id
             .checked_add(1)
             .expect("`id` grows beyond `usize::MAX`");
         id

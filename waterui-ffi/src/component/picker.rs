@@ -34,7 +34,7 @@ impl IntoRust for waterui_picker_item {
     unsafe fn into_rust(self) -> Self::Rust {
         PickerItem {
             _label: self.label.into_rust(),
-            _tag: self.tag,
+            _tag: NonZeroUsize::new_unchecked(self.tag),
         }
     }
 }
@@ -44,7 +44,7 @@ impl IntoFFI for PickerItem<NonZeroUsize> {
     fn into_ffi(self) -> Self::FFI {
         waterui_picker_item {
             label: self._label.into_ffi(),
-            tag: self._tag,
+            tag: self._tag.into(),
         }
     }
 }
@@ -58,7 +58,7 @@ ffi_type!(
 #[repr(C)]
 pub struct waterui_picker_item {
     label: waterui_text,
-    tag: NonZeroUsize,
+    tag: usize,
 }
 
 impl IntoFFI for Picker {

@@ -3,7 +3,7 @@ language = "C"
 prefix_with_name = true
 
 [export]
-include = ["waterui_app","waterui_app_closure","waterui_stack_mode"]
+include = ["waterui_app","waterui_app_closure","waterui_stack_mode","waterui_fnonce","waterui_app_task"]
 
 
 [parse]
