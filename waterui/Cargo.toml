@@ -9,6 +9,7 @@ edition = "2021"
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-core = { path = "../waterui-core" }
 waterui-str = { path = "../waterui-str" }
+async-channel = "2.2.1"
 
 [dependencies.serde]
 version = "1.0.193"

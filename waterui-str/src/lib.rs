@@ -86,8 +86,8 @@ impl Default for Str {
 }
 
 impl Str {
-    pub fn empty() -> Self {
-        Self::from("")
+    pub const fn empty() -> Self {
+        Self::from_static("")
     }
 
     pub const fn from_static(s: &'static str) -> Self {
@@ -100,7 +100,7 @@ impl Str {
     }
 
     fn is_static(&self) -> bool {
-        self.ptr.as_ptr() as usize > usize::MAX / 2
+        (self.ptr.as_ptr() as usize) < usize::MAX / 2
     }
 
     fn handle(&mut self, f: impl FnOnce(&mut String)) {
