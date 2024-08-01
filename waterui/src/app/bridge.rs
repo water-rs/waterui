@@ -1,17 +1,16 @@
-#![no_std]
 extern crate alloc;
 
 use alloc::boxed::Box;
 use async_channel::{bounded, Sender};
 use waterui_core::Environment;
-pub type Closure = Box<dyn Send + Sync + FnOnce()>;
+type Closure = Box<dyn Send + Sync + FnOnce()>;
 #[derive(Clone)]
 pub struct Bridge {
     sender: Sender<Closure>,
 }
 
 impl Bridge {
-    pub fn new(env: &mut Environment) -> Self {
+    pub fn new(env: &Environment) -> Self {
         let (sender, receiver) = bounded(64);
 
         let bridge = Self { sender };

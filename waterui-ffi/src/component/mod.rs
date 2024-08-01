@@ -1,4 +1,6 @@
-use waterui::{View, ViewExt};
+use core::any::TypeId;
+
+use waterui::{AnyView, View, ViewExt};
 
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
@@ -14,7 +16,12 @@ pub mod toggle;
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_id(view: *const waterui_anyview) -> waterui_type_id {
-    (*view).type_id().into_ffi()
+    AnyView::type_id(&*view).into_ffi()
+}
+
+#[no_mangle]
+extern "C" fn waterui_view_empty_id() -> waterui_type_id {
+    TypeId::of::<()>().into_ffi()
 }
 
 #[no_mangle]
