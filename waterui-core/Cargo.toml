@@ -6,12 +6,12 @@ edition = "2021"
 [dependencies]
 waterui-reactive = { path = "../waterui-reactive" }
 
-[dependencies.async-executor]
-version = "1.11.0"
+[dependencies.smol]
+version = "2.0.0"
 default-features = false
 optional = true
 
 [features]
 default = ["default-executor"]
-default-executor = ["dep:async-executor"]
+default-executor = ["dep:smol"]
 std = []

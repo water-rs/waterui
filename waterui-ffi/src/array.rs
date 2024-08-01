@@ -29,13 +29,13 @@ impl<T: IntoFFI> IntoFFI for Vec<T> {
     type FFI = waterui_array<T::FFI>;
 
     fn into_ffi(self) -> Self::FFI {
-        let this = self
+        let boxed = self
             .into_iter()
             .map(IntoFFI::into_ffi)
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        let mut this = ManuallyDrop::new(this);
+        let mut this = ManuallyDrop::new(boxed);
         let len = this.len();
         let head = this.as_mut_ptr();
 
@@ -68,11 +68,10 @@ impl Deref for waterui_str {
 impl IntoFFI for String {
     type FFI = waterui_str;
 
-    fn into_ffi(mut self) -> Self::FFI {
-        let len = self.len();
-        let head = self.as_mut_ptr();
-
-        core::mem::forget(self);
+    fn into_ffi(self) -> Self::FFI {
+        let mut this = ManuallyDrop::new(self.into_boxed_str());
+        let len = this.len();
+        let head = this.as_mut_ptr();
 
         waterui_str { head, len }
     }

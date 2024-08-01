@@ -1,8 +1,0 @@
-[package]
-name = "waterui-bridge"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-async-channel = "2.2.1"
-waterui-core = { path = "../waterui-core" }

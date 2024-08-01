@@ -57,6 +57,12 @@ impl<T> Binding<T> {
     }
 }
 
+impl Binding<i32> {
+    pub fn int(i: i32) -> Self {
+        Self::from(i)
+    }
+}
+
 impl<T> Clone for Binding<T> {
     fn clone(&self) -> Self {
         Self {
