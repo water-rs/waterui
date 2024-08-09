@@ -1,99 +1,34 @@
 use core::{
     any::{type_name, Any, TypeId},
     fmt::Debug,
-    future::Future,
     marker::PhantomData,
-    ops::Deref,
-    pin::Pin,
 };
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{collections::BTreeMap, rc::Rc};
 
-pub trait Executor {
-    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>);
-    fn run(&self);
-}
-
-impl Debug for dyn Executor {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(type_name::<Self>())
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Environment {
-    executor: Rc<dyn Executor>,
-    layers: Vec<Rc<EnvironmentLayer>>,
-}
-
-#[cfg(feature = "default-executor")]
-impl Default for Environment {
-    fn default() -> Self {
-        Self::new(smol::LocalExecutor::new())
-    }
-}
-
-impl Executor for smol::LocalExecutor<'_> {
-    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()>>>) {
-        self.spawn(future).detach();
-    }
-
-    fn run(&self) {
-        smol::block_on(async move {
-            loop {
-                self.tick().await;
-            }
-        });
-    }
-}
-
-impl EnvironmentLayer {
-    pub fn new() -> Self {
-        Self {
-            map: BTreeMap::new(),
-        }
-    }
-
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.map
-            .get(&TypeId::of::<T>())
-            .map(|v| v.downcast_ref().unwrap())
-    }
-
-    pub fn insert<T: 'static>(&mut self, value: T) {
-        let mut map = BTreeMap::new();
-        map.insert(TypeId::of::<T>(), value);
-    }
-}
-
-#[derive(Debug)]
-struct EnvironmentLayer {
-    map: BTreeMap<TypeId, Box<dyn Any>>,
+    map: BTreeMap<TypeId, Rc<dyn Any>>,
 }
 
 use crate::View;
 
 impl Environment {
-    pub fn new(executor: impl Executor + 'static) -> Self {
-        Self {
-            executor: Rc::new(executor),
-            layers: vec![Rc::new(EnvironmentLayer::new())],
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn executor(&self) -> &dyn Executor {
-        self.executor.deref()
+    pub fn plugin(mut self, plugin: impl Plugin) -> Self {
+        plugin.install(&mut self);
+        self
     }
 
     pub fn insert<T: 'static>(&mut self, value: T) {
-        let layer = self.layers.last_mut().unwrap();
-        if let Some(layer) = Rc::get_mut(layer) {
-            layer.map.insert(TypeId::of::<T>(), Box::new(value));
-        } else {
-            let mut layer = EnvironmentLayer::new();
-            layer.insert(value);
-            self.layers.push(Rc::new(layer));
-        }
+        self.map.insert(TypeId::of::<T>(), Rc::new(value));
+    }
+
+    pub fn remove<T: 'static>(&mut self) {
+        self.map.remove(&TypeId::of::<T>());
     }
 
     pub fn with<T: 'static>(mut self, value: T) -> Self {
@@ -101,21 +36,20 @@ impl Environment {
         self
     }
 
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        for layer in self.layers.iter().rev() {
-            if let Some(value) = layer.get() {
-                return Some(value);
-            }
-        }
-        None
+    pub fn get<T: 'static>(&self) -> &T {
+        self.try_get()
+            .unwrap_or_else(|| panic!("Environment value `{}` not found", type_name::<T>()))
     }
 
-    pub fn task<Fut>(&self, fut: Fut)
-    where
-        Fut: Future<Output = ()> + 'static,
-    {
-        self.executor.spawn(Box::pin(fut))
+    pub fn try_get<T: 'static>(&self) -> Option<&T> {
+        self.map
+            .get(&TypeId::of::<T>())
+            .map(|v| v.downcast_ref::<T>().unwrap())
     }
+}
+
+pub trait Plugin {
+    fn install(self, env: &mut Environment);
 }
 
 pub struct UseEnv<V, F> {
@@ -135,7 +69,7 @@ impl<V, F> UseEnv<V, F> {
 pub fn use_env<V, F>(f: F) -> UseEnv<V, F>
 where
     V: View,
-    F: 'static + Fn(&Environment) -> V,
+    F: 'static + FnOnce(Environment) -> V,
 {
     UseEnv::new(f)
 }
@@ -143,9 +77,9 @@ where
 impl<V, F> View for UseEnv<V, F>
 where
     V: View,
-    F: 'static + Fn(&Environment) -> V,
+    F: 'static + FnOnce(Environment) -> V,
 {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, env: Environment) -> impl View {
         (self.f)(env)
     }
 }

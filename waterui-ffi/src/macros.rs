@@ -16,6 +16,13 @@ macro_rules! ffi_view {
 }
 
 #[macro_export]
+macro_rules! native_view {
+    ($config:ty,$ffi:ty,$force_as:ident,$id:ident) => {
+        $crate::ffi_view!(waterui::component::Native<$config>, $ffi, $force_as, $id);
+    };
+}
+
+#[macro_export]
 macro_rules! ffi_metadata {
     ($metadata:ty,$ffi:ty,$force_as:ident,$id:ident) => {
         #[no_mangle]

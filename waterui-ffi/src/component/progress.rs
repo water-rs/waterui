@@ -1,6 +1,6 @@
-use crate::{computed::waterui_computed_int, ffi_view, waterui_anyview, IntoFFI};
+use crate::{computed::waterui_computed_double, waterui_anyview, IntoFFI};
 
-use waterui::component::progress::{Progress, ProgressStyle};
+use waterui::component::progress::{ProgressConfig, ProgressStyle};
 
 #[repr(C)]
 pub enum waterui_style_progress {
@@ -23,23 +23,23 @@ impl IntoFFI for ProgressStyle {
 #[repr(C)]
 pub struct waterui_progress {
     label: *mut waterui_anyview,
-    progress: *mut waterui_computed_int,
+    value: *mut waterui_computed_double,
     style: waterui_style_progress,
 }
 
-impl IntoFFI for Progress {
+impl IntoFFI for ProgressConfig {
     type FFI = waterui_progress;
     fn into_ffi(self) -> Self::FFI {
         waterui_progress {
-            label: self._label.into_ffi(),
-            progress: self._progress.into_ffi(),
-            style: self._style.into_ffi(),
+            label: self.label.into_ffi(),
+            value: self.value.into_ffi(),
+            style: self.style.into_ffi(),
         }
     }
 }
 
-ffi_view!(
-    Progress,
+native_view!(
+    ProgressConfig,
     waterui_progress,
     waterui_view_force_as_progress,
     waterui_view_progress_id

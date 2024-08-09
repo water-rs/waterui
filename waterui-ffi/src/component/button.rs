@@ -1,6 +1,5 @@
-use crate::{action::waterui_action, ffi_view, waterui_anyview, IntoFFI};
-
-use waterui::component::Button;
+use crate::{action::waterui_action, waterui_anyview, IntoFFI};
+use waterui::component::button::ButtonConfig;
 
 #[repr(C)]
 pub struct waterui_button {
@@ -8,19 +7,19 @@ pub struct waterui_button {
     action: *mut waterui_action,
 }
 
-impl IntoFFI for Button {
+impl IntoFFI for ButtonConfig {
     type FFI = waterui_button;
 
     fn into_ffi(self) -> Self::FFI {
         waterui_button {
-            label: self._label.into_ffi(),
-            action: self._action.into_ffi(),
+            label: self.label.into_ffi(),
+            action: self.action.into_ffi(),
         }
     }
 }
 
-ffi_view!(
-    Button,
+native_view!(
+    ButtonConfig,
     waterui_button,
     waterui_view_force_as_button,
     waterui_view_button_id

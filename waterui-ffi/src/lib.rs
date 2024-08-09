@@ -7,9 +7,7 @@ extern crate alloc;
 mod macros;
 
 pub mod component;
-pub mod modifier;
 
-pub mod app;
 pub mod array;
 pub mod binding;
 pub mod closure;
@@ -20,7 +18,7 @@ pub mod ty;
 pub use ty::*;
 use waterui_reactive::watcher::WatcherGuard;
 pub mod action;
-
+pub use waterui_macro::*;
 pub trait IntoFFI {
     type FFI;
     fn into_ffi(self) -> Self::FFI;
@@ -36,3 +34,6 @@ ffi_type!(
     WatcherGuard,
     waterui_drop_watcher_guard
 );
+
+#[doc(hidden)]
+pub use waterui::block_on as __block_on;

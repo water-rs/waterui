@@ -2,73 +2,53 @@ use core::fmt::Debug;
 use core::future::Future;
 
 use alloc::boxed::Box;
-use waterui_reactive::compute::ToComputed;
-use waterui_str::Str;
 
-use super::Text;
-use crate::AnyView;
-use crate::{Environment, View};
-use waterui_core::raw_view;
+use crate::View;
+use crate::{task, AnyView, ViewExt};
 
 #[non_exhaustive]
-#[derive(Debug)]
-pub struct Button {
-    pub _label: AnyView,
-    pub _action: BoxAction,
+pub struct ButtonConfig {
+    pub label: AnyView,
+    pub action: Action,
 }
 
-pub type BoxAction = Box<dyn Action>;
-pub trait Action: 'static {
-    fn call_action(&self, _env: &Environment);
-}
+impl_debug!(ButtonConfig);
 
-impl_debug!(dyn Action);
+configurable!(Button, ButtonConfig);
 
-pub trait AsyncAction: 'static {
-    fn call_action(&self, _env: &Environment) -> impl Future<Output = ()> + 'static;
-}
+pub type Action = Box<dyn Fn()>;
 
-struct AsyncActionWrapper<T>(T);
-
-impl<T: AsyncAction> Action for AsyncActionWrapper<T> {
-    fn call_action(&self, env: &Environment) {
-        env.task(AsyncAction::call_action(&self.0, env));
-    }
-}
-
-impl<F> Action for F
-where
-    F: Fn() + 'static,
-{
-    fn call_action(&self, _env: &Environment) {
-        (self)()
+impl Default for Button {
+    fn default() -> Self {
+        Self(ButtonConfig {
+            label: ().anyview(),
+            action: Box::new(|| {}),
+        })
     }
 }
 
 impl Button {
-    pub fn new(label: impl ToComputed<Str>) -> Self {
-        Self::label(Text::new(label))
+    pub fn new(label: impl View) -> Self {
+        let mut button = Self::default();
+        button.0.label = label.anyview();
+        button
     }
 
-    pub fn label(label: impl View) -> Self {
-        Self {
-            _label: AnyView::new(label),
-            _action: Box::new(|| {}),
-        }
-    }
-
-    pub fn action(mut self, action: impl Action) -> Self {
-        self._action = Box::new(action);
+    pub fn action(mut self, action: impl Fn() + 'static) -> Self {
+        self.0.action = Box::new(action);
         self
     }
 
-    pub fn action_async<Fut>(self, action: impl AsyncAction) -> Self {
-        self.action(AsyncActionWrapper(action))
+    pub fn action_async<Fut>(self, action: impl 'static + Fn() -> Fut) -> Self
+    where
+        Fut: Future + 'static,
+    {
+        self.action(move || {
+            task(action()).detach();
+        })
     }
 }
 
-raw_view!(Button);
-
-pub fn button(label: impl ToComputed<Str>) -> Button {
+pub fn button(label: impl View) -> Button {
     Button::new(label)
 }
