@@ -144,12 +144,9 @@ impl<T: Clone> Computed<T> {
 
 pub trait ComputeExt: Compute {
     fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;
-    fn map<F, Output>(self, f: F) -> Map<Self, F, Output>
+    fn map<F, Output>(&self, f: F) -> Computed<Output>
     where
-        F: 'static + Fn(Self::Output) -> Output;
-
-    fn transform<F, Output>(&self, f: F) -> Map<Self, F, Output>
-    where
+        Self: 'static,
         F: 'static + Fn(Self::Output) -> Output;
 
     fn computed(&self) -> Computed<Self::Output>
@@ -161,18 +158,12 @@ impl<C: Compute> ComputeExt for C {
     fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
         self.add_watcher(watcher.into())
     }
-    fn map<F, Output>(self, f: F) -> Map<Self, F, Output>
+    fn map<F, Output>(&self, f: F) -> Computed<Output>
     where
+        Self: 'static,
         F: 'static + Fn(Self::Output) -> Output,
     {
-        Map::new(self, f)
-    }
-
-    fn transform<F, Output>(&self, f: F) -> Map<Self, F, Output>
-    where
-        F: 'static + Fn(Self::Output) -> Output,
-    {
-        self.clone().map(f)
+        Computed::new(Map::new(self.clone(), f))
     }
 
     fn computed(&self) -> Computed<Self::Output>

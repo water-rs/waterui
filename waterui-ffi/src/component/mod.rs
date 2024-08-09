@@ -1,6 +1,6 @@
 use core::any::TypeId;
 
-use waterui::{AnyView, View, ViewExt};
+use waterui::{component::Native, AnyView, View, ViewExt};
 
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
@@ -13,6 +13,7 @@ pub mod stepper;
 pub mod text;
 pub mod text_field;
 pub mod toggle;
+pub mod with_env;
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_id(view: *const waterui_anyview) -> waterui_type_id {
@@ -27,7 +28,14 @@ extern "C" fn waterui_view_empty_id() -> waterui_type_id {
 #[no_mangle]
 unsafe extern "C" fn waterui_view_body(
     view: *mut waterui_anyview,
-    env: *const waterui_env,
+    env: *mut waterui_env,
 ) -> *mut waterui_anyview {
-    view.into_rust().body(&*env).anyview().into_ffi()
+    view.into_rust().body(env.into_rust()).anyview().into_ffi()
+}
+
+impl<T: IntoFFI> IntoFFI for Native<T> {
+    type FFI = T::FFI;
+    fn into_ffi(self) -> Self::FFI {
+        self.0.into_ffi()
+    }
 }

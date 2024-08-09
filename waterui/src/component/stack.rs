@@ -4,53 +4,46 @@ use waterui_core::view::TupleViews;
 
 use crate::AnyView;
 
-#[non_exhaustive]
 #[derive(Debug)]
 pub struct Stack {
-    pub _contents: Vec<AnyView>,
-    pub _mode: StackMode,
+    contents: Vec<AnyView>,
+    mode: StackMode,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum StackMode {
-    Auto,
+    #[default]
     Vertical,
     Horizonal,
     Layered,
 }
 
 impl Stack {
-    pub fn new(contents: impl TupleViews) -> Self {
+    fn new(contents: impl TupleViews, mode: StackMode) -> Self {
         Self {
-            _contents: contents.into_views(),
-            _mode: StackMode::Auto,
+            contents: contents.into_views(),
+            mode,
         }
     }
 
+    pub fn into_inner(self) -> (Vec<AnyView>, StackMode) {
+        (self.contents, self.mode)
+    }
+
     pub fn vertical(contents: impl TupleViews) -> Self {
-        let mut stack = Self::new(contents);
-        stack._mode = StackMode::Vertical;
-        stack
+        Self::new(contents, StackMode::Vertical)
     }
 
     pub fn horizonal(contents: impl TupleViews) -> Self {
-        let mut stack = Self::new(contents);
-        stack._mode = StackMode::Horizonal;
-        stack
+        Self::new(contents, StackMode::Horizonal)
     }
 
     pub fn layered(contents: impl TupleViews) -> Self {
-        let mut stack = Self::new(contents);
-        stack._mode = StackMode::Layered;
-        stack
+        Self::new(contents, StackMode::Layered)
     }
 }
 
 raw_view!(Stack);
-
-pub fn stack(contents: impl TupleViews) -> Stack {
-    Stack::new(contents)
-}
 
 pub fn vstack(contents: impl TupleViews) -> Stack {
     Stack::vertical(contents)

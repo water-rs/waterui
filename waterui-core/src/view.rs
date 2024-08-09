@@ -1,6 +1,8 @@
-use crate::{AnyView, Environment};
+use crate::{components::text::text, AnyView, Environment};
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
+use waterui_reactive::Computed;
+use waterui_str::Str;
 
 /// View represents a part of the user interface.
 ///
@@ -11,11 +13,11 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self, _env: &Environment) -> impl View;
+    fn body(self, _env: Environment) -> impl View;
 }
 
 impl<V: View, E: View> View for Result<V, E> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         match self {
             Ok(view) => AnyView::new(view),
             Err(view) => AnyView::new(view),
@@ -24,7 +26,7 @@ impl<V: View, E: View> View for Result<V, E> {
 }
 
 impl<V: View> View for Option<V> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         match self {
             Some(view) => AnyView::new(view),
             None => AnyView::new(()),
@@ -34,6 +36,57 @@ impl<V: View> View for Option<V> {
 
 pub trait TupleViews {
     fn into_views(self) -> Vec<AnyView>;
+}
+
+pub trait ConfigurableView: View {
+    type Config: 'static;
+    fn config(self) -> Self::Config;
+}
+
+pub struct Modifier<V: ConfigurableView>(Box<dyn Fn(Environment, V::Config) -> AnyView>);
+
+impl<V, V2, F> From<F> for Modifier<V>
+where
+    V: ConfigurableView,
+    V2: View,
+    F: Fn(Environment, V::Config) -> V2 + 'static,
+{
+    fn from(value: F) -> Self {
+        Self(Box::new(move |mut env, config| {
+            env.remove::<Self>();
+            AnyView::new(WithEnv::new(value(env.clone(), config), env))
+        }))
+    }
+}
+
+pub struct WithEnv {
+    pub view: AnyView,
+    pub env: Environment,
+}
+
+raw_view!(WithEnv);
+
+impl WithEnv {
+    pub fn new(view: impl View, env: Environment) -> Self {
+        Self {
+            view: AnyView::new(view),
+            env,
+        }
+    }
+}
+
+impl<V: ConfigurableView> Modifier<V> {
+    pub fn new<V2, F>(f: F) -> Self
+    where
+        V: ConfigurableView,
+        V2: View,
+        F: Fn(Environment, V::Config) -> V2 + 'static,
+    {
+        Self::from(f)
+    }
+    pub fn modify(&self, env: Environment, config: V::Config) -> AnyView {
+        (self.0)(env, config)
+    }
 }
 
 macro_rules! impl_tuple_views {
@@ -54,10 +107,15 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
-pub struct Unreachable;
+impl View for ! {
+    fn body(self, _env: Environment) -> impl View {}
+}
 
-impl View for Unreachable {
-    fn body(self, _env: &Environment) -> impl View {
-        unreachable!()
+impl<T> View for Computed<T>
+where
+    Str: From<T>,
+{
+    fn body(self, _env: Environment) -> impl View {
+        text(self)
     }
 }

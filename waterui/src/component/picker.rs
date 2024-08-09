@@ -4,9 +4,10 @@ use core::num::NonZeroUsize;
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use waterui_core::raw_view;
 use waterui_reactive::compute::{ToCompute, ToComputed};
 use waterui_reactive::{Binding, ComputeExt, Computed};
+
+use crate::view::TaggedView;
 
 use super::Text;
 
@@ -14,16 +15,14 @@ pub type ItemId = NonZeroUsize;
 
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct Picker {
-    pub _items: Computed<Vec<PickerItem<ItemId>>>,
-    pub _selection: Binding<Option<ItemId>>,
+pub struct PickerConfig {
+    pub items: Computed<Vec<PickerItem<ItemId>>>,
+    pub selection: Binding<Option<ItemId>>,
 }
 
-#[derive(Debug)]
-pub struct PickerItem<T> {
-    pub _label: Text,
-    pub _tag: T,
-}
+configurable!(Picker, PickerConfig);
+
+pub type PickerItem<T> = TaggedView<T, Text>;
 
 impl Picker {
     pub fn new<T: Ord + Clone + 'static>(
@@ -35,15 +34,12 @@ impl Picker {
         let map2 = map.clone();
         let map3 = map.clone();
 
-        let _items = items
+        let items = items
             .to_compute()
             .map(move |items: Vec<PickerItem<T>>| {
                 items
                     .into_iter()
-                    .map(|item| PickerItem {
-                        _label: item._label,
-                        _tag: map.borrow_mut().register(item._tag),
-                    })
+                    .map(|item| item.map(|tag| map.borrow_mut().register(tag)))
                     .collect::<Vec<_>>()
             })
             .computed();
@@ -51,7 +47,7 @@ impl Picker {
         let selection = selection.clone();
         let selection2 = selection.clone();
 
-        let _selection = Binding::from_fn(
+        let selection = Binding::from_fn(
             move || selection.get().and_then(|v| map2.borrow().to_id(&v)),
             move |id| {
                 let data = id.and_then(|id| map3.borrow().to_data(id));
@@ -59,11 +55,9 @@ impl Picker {
             },
         );
 
-        Self { _items, _selection }
+        Self(PickerConfig { items, selection })
     }
 }
-
-raw_view!(Picker);
 
 struct IdentifierMap<T> {
     counter: ItemId,

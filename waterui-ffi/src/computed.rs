@@ -14,6 +14,12 @@ ffi_type!(
 );
 
 ffi_type!(
+    waterui_computed_double,
+    Computed<f64>,
+    waterui_drop_computed_double
+);
+
+ffi_type!(
     waterui_computed_bool,
     Computed<bool>,
     waterui_drop_computed_bool
@@ -38,4 +44,11 @@ impl_computed!(
     bool,
     waterui_read_computed_bool,
     waterui_watch_computed_bool
+);
+
+impl_computed!(
+    waterui_computed_double,
+    f64,
+    waterui_read_computed_double,
+    waterui_watch_computed_double
 );

@@ -1,47 +1,59 @@
-use crate::modifier::{Modifier, Padding};
 pub use waterui_core::view::*;
 use waterui_core::{AnyView, Environment};
 
 use alloc::boxed::Box;
 
 pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
-pub trait ViewExt: View {
-    fn modifier(self, modifier: impl Modifier) -> impl View;
-    fn padding(self) -> impl View;
+pub trait ViewExt: View + Sized {
+    fn env(self, env: Environment) -> WithEnv;
     fn anyview(self) -> AnyView;
 }
 
-struct WithModifier<V, M> {
-    view: V,
-    modifier: M,
+pub trait ConfigViewExt: ConfigurableView + Sized {
+    fn modifier(self, modifier: impl Into<Modifier<Self>>) -> impl View;
 }
 
-impl<V, M> View for WithModifier<V, M>
-where
-    V: View,
-    M: Modifier,
-{
-    fn body(self, env: &Environment) -> impl View {
-        self.modifier.modify(env, self.view)
-    }
-}
-
-impl<V, M> WithModifier<V, M> {
-    pub fn new(view: V, modifier: M) -> Self {
-        Self { view, modifier }
+impl<V: ConfigurableView> ConfigViewExt for V {
+    fn modifier(self, modifier: impl Into<Modifier<Self>>) -> impl View {
+        modifier.into().modify(Environment::new(), self.config())
     }
 }
 
 impl<V: View> ViewExt for V {
-    fn modifier(self, modifier: impl Modifier) -> impl View {
-        WithModifier::new(self, modifier)
-    }
-
-    fn padding(self) -> impl View {
-        self.modifier(Padding::default())
+    fn env(self, env: Environment) -> WithEnv {
+        WithEnv::new(self, env)
     }
 
     fn anyview(self) -> AnyView {
         AnyView::new(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct TaggedView<T, V> {
+    pub tag: T,
+    pub view: V,
+}
+
+impl<T, V: View> TaggedView<T, V> {
+    pub fn new(tag: T, view: V) -> Self {
+        Self { tag, view }
+    }
+
+    pub fn map<F, T2>(self, f: F) -> TaggedView<T2, V>
+    where
+        F: Fn(T) -> T2,
+    {
+        TaggedView {
+            tag: f(self.tag),
+            view: self.view,
+        }
+    }
+
+    pub fn erase(self) -> TaggedView<T, AnyView> {
+        TaggedView {
+            tag: self.tag,
+            view: self.view.anyview(),
+        }
     }
 }
