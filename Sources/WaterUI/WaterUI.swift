@@ -1,8 +1,14 @@
 import CWaterUI
-import Semaphore
 import SwiftUI
 
 extension waterui_str {
+    init(_ string: String) {
+        let len = string.utf8.count
+        let raw = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: len)
+        _ = raw.initialize(fromContentsOf: string.utf8)
+        self.init(head: raw.baseAddress, len: UInt(len))
+    }
+
     func toString() -> String {
         let buf = UnsafeMutableBufferPointer(start: head, count: Int(len))
         let data = Data(buf)
@@ -32,4 +38,12 @@ extension waterui_fnonce {
             f()
         })
     }
+}
+
+
+
+@MainActor
+public func mainWidget() -> WaterUI.AnyView{
+    let env=Environment(waterui_init())
+    return WaterUI.AnyView(view: waterui_widget_main(), env: env)
 }
