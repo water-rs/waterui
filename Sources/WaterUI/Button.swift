@@ -7,15 +7,14 @@
 import CWaterUI
 import SwiftUI
 
+@MainActor
 struct Button: View {
     private var label: AnyView
     private var action: Action
-    private var app: App
 
-    init(button: waterui_button, app: App) {
-        label = AnyView(view: button.label, app: app)
-        action = Action(inner: button.action, app: app)
-        self.app = app
+    init(button: waterui_button, env: WaterUI.Environment) {
+        label = AnyView(view: button.label, env: env)
+        action = Action(inner: button.action)
     }
 
     var body: some View {
@@ -27,23 +26,18 @@ struct Button: View {
     }
 }
 
+@MainActor
 class Action {
     private var inner: OpaquePointer
-    private var app: App
-    init(inner: OpaquePointer, app: App) {
+    init(inner: OpaquePointer) {
         self.inner = inner
-        self.app = app
     }
 
     func call() {
-        app.spawn {
-            waterui_call_action(self.inner, self.app.env)
-        }
+        waterui_call_action(self.inner)
     }
 
     deinit {
-        app.spawn {
-            waterui_drop_action(self.inner)
-        }
+        waterui_drop_action(self.inner)
     }
 }

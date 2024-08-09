@@ -8,23 +8,24 @@
 import CWaterUI
 import SwiftUI
 
-struct Text: View {
-    var computedContent: ComputedStr
-    @State var content: String = ""
 
-    init(text: waterui_text, app: App) {
-        computedContent = ComputedStr(inner: text.content, app: app)
+
+@MainActor
+struct Text: View {
+    @ObservedObject var content: ComputedStr
+    init(text: waterui_text) {
+        self.content = ComputedStr(inner: text.content)
+    }
+    
+    init(view: OpaquePointer, env: WaterUI.Environment) {
+        self.init(text: waterui_view_force_as_text(view))
+    }
+    
+    func toText() -> SwiftUI.Text{
+        return SwiftUI.Text(content.value)
     }
 
     var body: some View {
-        VStack {
-            SwiftUI.Text(content)
-
-        }.task {
-            content = await computedContent.compute()
-            computedContent.watch { value in
-                content = value
-            }
-        }
+        toText()
     }
 }

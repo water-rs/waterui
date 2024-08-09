@@ -13,37 +13,63 @@ private struct WithId<T, Id: Hashable>: Identifiable {
     var id: Id
 }
 
+enum StackMode{
+    case Default
+    case Vertical
+    case Horizontal
+    case Layered
+}
+
+extension StackMode{
+    init(_ mode:waterui_stack_mode){
+        switch mode {
+        case waterui_stack_mode_HORIZONTAL:
+            self = .Horizontal
+        case waterui_stack_mode_LAYERED:
+            self = .Layered
+        default:
+            self = .Default
+        }
+    }
+}
+
+@MainActor
 struct Stack: View {
-    var main: any View
-
-    init(stack: waterui_stack, app: App) {
-        main = EmptyView()
-
+    private var views:[WithId<AnyView,Int>]
+    private var mode:StackMode
+    init(stack: waterui_stack, env: Environment) {
         let array = Array(UnsafeBufferPointer<OpaquePointer?>(start: stack.contents.head, count: Int(stack.contents.len)))
 
         print(array.count)
 
-        let contents = array.enumerated().map { index, view in
-            WithId(data: AnyView(view: view!, app: app), id: index)
+        views = array.enumerated().map { index, view in
+            WithId(data: AnyView(view: view!, env: env), id: index)
         }
-        let mode = stack.mode
-        let stack = SwiftUI.ForEach(contents, content: { value in
-            value.data
-        }).id(UUID())
+        mode = StackMode(stack.mode)
 
-        switch mode {
-        case waterui_stack_mode_HORIZONTAL:
-            main = SwiftUI.HStack { stack }
-        case waterui_stack_mode_LAYERED:
-            main = SwiftUI.ZStack { stack }
-        default:
-            main = stack
-        }
+        
     }
 
     var body: some View {
-        VStack {
-            SwiftUI.AnyView(main)
+        let content=ForEach(views){value in
+            value.data
         }
+        
+        VStack{
+            switch mode{
+            case .Horizontal:
+                    HStack{
+                        content
+                    }
+            case .Layered:
+                ZStack{content}
+                    
+                
+                default:
+                VStack{content}
+                
+                
+            }
+        }.padding()
     }
 }
