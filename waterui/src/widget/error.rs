@@ -19,19 +19,15 @@ pub type BoxedStdError = Box<dyn StdError>;
 pub type ErrorViewBuilder = Box<dyn Fn(BoxedStdError) -> AnyView>;
 
 trait ErrorImpl: Debug + Display + 'static {
-    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
-    where
-        Self: 'a;
+    fn body(self: Box<Self>, _env: Environment) -> AnyView;
+
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
 
 impl<E: StdError + 'static> ErrorImpl for E {
-    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
-    where
-        Self: 'a,
-    {
+    fn body(self: Box<Self>, _env: Environment) -> AnyView {
         AnyView::new(UseDefaultErrorView::new(self))
     }
 }
@@ -79,16 +75,13 @@ impl Debug for ErrorView {
 }
 
 impl ErrorImpl for ErrorView {
-    fn body<'a>(self: Box<Self>, _env: &'a Environment) -> AnyView
-    where
-        Self: 'a,
-    {
+    fn body(self: Box<Self>, _env: Environment) -> AnyView {
         self.0
     }
 }
 
 impl View for Error {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, env: Environment) -> impl View {
         self.inner.body(env)
     }
 }
@@ -124,8 +117,8 @@ impl UseDefaultErrorView {
 }
 
 impl View for UseDefaultErrorView {
-    fn body(self, env: &Environment) -> impl View {
-        if let Some(builder) = env.get::<DefaultErrorView>() {
+    fn body(self, env: Environment) -> impl View {
+        if let Some(builder) = env.try_get::<DefaultErrorView>() {
             builder.build(self.0)
         } else {
             AnyView::new(())

@@ -2,7 +2,8 @@ use core::num::NonZeroUsize;
 
 use alloc::vec::Vec;
 use waterui::{
-    component::picker::{ItemId, Picker, PickerItem},
+    component::picker::{ItemId, PickerConfig, PickerItem},
+    view::{ConfigurableView, TaggedView},
     Binding, Computed,
 };
 
@@ -32,10 +33,10 @@ impl_computed!(
 impl IntoRust for waterui_picker_item {
     type Rust = PickerItem<ItemId>;
     unsafe fn into_rust(self) -> Self::Rust {
-        PickerItem {
-            _label: self.label.into_rust(),
-            _tag: NonZeroUsize::new_unchecked(self.tag),
-        }
+        TaggedView::new(
+            NonZeroUsize::new_unchecked(self.tag),
+            self.label.into_rust(),
+        )
     }
 }
 
@@ -43,8 +44,8 @@ impl IntoFFI for PickerItem<NonZeroUsize> {
     type FFI = waterui_picker_item;
     fn into_ffi(self) -> Self::FFI {
         waterui_picker_item {
-            label: self._label.into_ffi(),
-            tag: self._tag.into(),
+            label: self.view.config().into_ffi(),
+            tag: self.tag.into(),
         }
     }
 }
@@ -61,19 +62,19 @@ pub struct waterui_picker_item {
     tag: usize,
 }
 
-impl IntoFFI for Picker {
+impl IntoFFI for PickerConfig {
     type FFI = waterui_picker;
 
     fn into_ffi(self) -> Self::FFI {
         Self::FFI {
-            items: self._items.into_ffi(),
-            selection: self._selection.into_ffi(),
+            items: self.items.into_ffi(),
+            selection: self.selection.into_ffi(),
         }
     }
 }
 
-ffi_view!(
-    Picker,
+native_view!(
+    PickerConfig,
     waterui_picker,
     waterui_view_force_as_picker,
     waterui_view_picker_id

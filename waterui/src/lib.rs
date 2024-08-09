@@ -1,22 +1,23 @@
 #![no_std]
 #![allow(non_camel_case_types)]
-#![cfg_attr(not(feature = "std"), feature(error_in_core))]
 extern crate alloc;
-
 #[macro_use]
 mod macros;
-pub mod app;
 pub mod component;
 pub(crate) mod mpsc;
 pub mod view;
 pub mod widget;
 
-pub use view::ViewExt;
+pub use view::{View, ViewExt};
 #[doc(inline)]
-pub use waterui_core::*;
-pub mod modifier;
+pub use waterui_core::{
+    env::{self, Environment},
+    AnyView,
+};
+
 #[doc(inline)]
 pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed};
 
 pub mod layout;
 pub mod utils;
+pub use async_gcd::{future::block_on, task, Task};

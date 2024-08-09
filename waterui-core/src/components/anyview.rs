@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
-    fn body(self: Box<Self>, env: &Environment) -> AnyView;
+    fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
@@ -19,7 +19,7 @@ trait AnyViewImpl: 'static {
 }
 
 impl<T: View> AnyViewImpl for T {
-    fn body(self: Box<Self>, env: &Environment) -> AnyView {
+    fn body(self: Box<Self>, env: Environment) -> AnyView {
         AnyView::new(View::body(*self, env))
     }
 }
@@ -28,7 +28,7 @@ pub struct AnyView(Box<dyn AnyViewImpl>);
 
 impl Debug for AnyView {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("AnyView[{}]", self.name()))
+        f.write_fmt(format_args!("AnyView({})", self.name()))
     }
 }
 
@@ -94,7 +94,7 @@ impl AnyView {
 }
 
 impl View for AnyView {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, env: Environment) -> impl View {
         self.0.body(env)
     }
 }
