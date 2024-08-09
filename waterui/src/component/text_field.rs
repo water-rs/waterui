@@ -1,22 +1,24 @@
-use waterui_core::raw_view;
-use waterui_reactive::{compute::ToComputed, Binding, Computed};
-use waterui_str::Str;
-
+use crate::view::ViewExt;
 use crate::{AnyView, View};
+use waterui_reactive::Binding;
+use waterui_str::Str;
 
 use super::Text;
 
+configurable!(TextField, TextFieldConfig);
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct TextField {
-    pub _label: AnyView,
-    pub _value: Binding<Str>,
-    pub _prompt: Computed<Str>,
-    pub _style: TextFieldStyle,
+pub struct TextFieldConfig {
+    pub label: AnyView,
+    pub value: Binding<Str>,
+    pub prompt: Text,
+    pub keyboard: KeyboardType,
 }
 
+#[derive(Debug, Default)]
+#[non_exhaustive]
 pub enum KeyboardType {
-    Default,
+    #[default]
     Text,
     Email,
     URL,
@@ -24,43 +26,22 @@ pub enum KeyboardType {
     PhoneNumber,
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum TextFieldStyle {
-    Default,
-    Plain,
-    Outlined,
-    Underlined,
-}
-
-impl Default for TextFieldStyle {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-raw_view!(TextField);
-
 impl TextField {
-    pub fn new(label: impl ToComputed<Str>, value: &Binding<Str>) -> Self {
-        Self::label(Text::new(label), value)
+    pub fn new(label: impl View, value: &Binding<Str>) -> Self {
+        Self(TextFieldConfig {
+            label: label.anyview(),
+            value: value.clone(),
+            prompt: Text::default(),
+            keyboard: KeyboardType::default(),
+        })
     }
 
-    pub fn label(label: impl View, value: &Binding<Str>) -> Self {
-        TextField {
-            _label: AnyView::new(label),
-            _value: value.clone(),
-            _prompt: "".to_computed(),
-            _style: TextFieldStyle::default(),
-        }
-    }
-
-    pub fn with_prompt(mut self, prompt: impl ToComputed<Str>) -> Self {
-        self._prompt = prompt.to_computed();
+    pub fn prompt(mut self, prompt: impl Into<Text>) -> Self {
+        self.0.prompt = prompt.into();
         self
     }
 }
 
-pub fn field(label: impl ToComputed<Str>, value: &Binding<Str>) -> TextField {
+pub fn field(label: impl View, value: &Binding<Str>) -> TextField {
     TextField::new(label, value)
 }

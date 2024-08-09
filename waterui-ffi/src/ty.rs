@@ -30,3 +30,8 @@ impl IntoRust for waterui_type_id {
 }
 ffi_type!(waterui_anyview, AnyView);
 ffi_type!(waterui_env, Environment, waterui_drop_env);
+
+#[no_mangle]
+unsafe extern "C" fn waterui_clone_env(env: *const waterui_env) -> *mut waterui_env {
+    (*env).clone().into_ffi()
+}

@@ -17,7 +17,7 @@ where
     V1: View,
     V2: View,
 {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, _env: Environment) -> impl View {
         let (view, handle) = Dynamic::new();
         self.condition.to_compute().watch(move |condition| {
             if condition {

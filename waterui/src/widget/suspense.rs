@@ -2,7 +2,7 @@ use core::future::Future;
 
 use waterui_core::{AnyView, Environment, View};
 
-use crate::{component::Dynamic, view::ViewBuilder};
+use crate::{component::Dynamic, task, view::ViewBuilder};
 
 #[derive(Debug)]
 pub struct Suspense<V, Loading> {
@@ -29,8 +29,8 @@ pub struct DefaultLoadingView(ViewBuilder);
 pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
-    fn body(self, env: &Environment) -> impl View {
-        if let Some(builder) = env.get::<DefaultLoadingView>() {
+    fn body(self, env: Environment) -> impl View {
+        if let Some(builder) = env.try_get::<DefaultLoadingView>() {
             builder.0()
         } else {
             AnyView::new(())
@@ -61,15 +61,16 @@ where
     V: SuspendedView,
     Loading: View,
 {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, env: Environment) -> impl View {
         let (view, handler) = Dynamic::new();
         handler.set(self.loading);
 
         let new_env = env.clone();
-        env.task(async move {
+        task(async move {
             let content = SuspendedView::body(self.content, &new_env).await;
             handler.set(content);
-        });
+        })
+        .detach();
 
         view
     }

@@ -1,67 +1,98 @@
-use super::Text;
-use crate::{AnyView, View};
-use waterui_core::raw_view;
+use crate::AnyView;
+use crate::ViewExt;
+use alloc::format;
+use waterui_core::components::text::text;
+use waterui_core::View;
 use waterui_reactive::compute::ToComputed;
-use waterui_reactive::ComputeExt;
-use waterui_reactive::Computed;
-use waterui_str::Str;
+use waterui_reactive::{ComputeExt, Computed};
 
-const PROGRESS_INNER_VALUE_MAX: i32 = 10 ^ 5;
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct Progress {
-    pub _label: AnyView,
-    pub _progress: Computed<i32>,
-    pub _style: ProgressStyle,
+pub struct ProgressConfig {
+    pub label: AnyView,
+    pub value_label: AnyView,
+    pub value: Computed<f64>,
+    pub style: ProgressStyle,
 }
 
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum ProgressStyle {
-    Default,
     Circular,
     Linear,
 }
 
-raw_view!(Progress);
-impl Default for ProgressStyle {
-    fn default() -> Self {
-        Self::Default
+configurable!(Progress, ProgressConfig);
+
+pub struct ProgressWithTotal(Progress);
+
+impl ProgressWithTotal {
+    pub fn label(self, label: impl View) -> Self {
+        Self(self.0.label(label))
+    }
+
+    pub fn circular(self) -> Self {
+        Self(self.0.circular())
+    }
+
+    pub fn linear(self) -> Self {
+        Self(self.0.linear())
+    }
+}
+
+impl View for ProgressWithTotal {
+    fn body(self, _env: waterui_core::Environment) -> impl View {
+        self.0
     }
 }
 
 impl Progress {
-    pub fn new(label: impl ToComputed<Str>, progress: impl ToComputed<Option<f64>>) -> Self {
-        Self::label(Text::new(label), progress)
+    pub fn new(value: impl ToComputed<f64>) -> Self {
+        let value = value.to_computed();
+        Self(ProgressConfig {
+            label: text("Please wait...").anyview(),
+            value_label: text(value.clone().map(|v| format!("{v:.2} %"))).anyview(),
+            value,
+            style: ProgressStyle::Circular,
+        })
     }
 
-    pub fn infinity(label: impl ToComputed<Str>) -> Self {
-        Self::new(label, -1.0)
+    pub fn total(mut self, total: impl ToComputed<f64>) -> ProgressWithTotal {
+        let total = total.to_computed();
+        let value = self.0.value;
+        self.0.value = (total, value)
+            .map(|(total, value)| value / total)
+            .computed();
+        ProgressWithTotal(self)
     }
 
-    pub fn label(label: impl View, progress: impl ToComputed<Option<f64>>) -> Self {
-        Self {
-            _label: AnyView::new(label),
-            _progress: progress
-                .to_computed()
-                .map(|n| {
-                    if let Some(n) = n {
-                        PROGRESS_INNER_VALUE_MAX / ((1.0 / n) as i32)
-                    } else {
-                        -1
-                    }
-                })
-                .computed(),
-            _style: ProgressStyle::default(),
-        }
+    pub fn infinity() -> Self {
+        Self::new(f64::NAN)
     }
 
-    pub fn style(mut self, style: ProgressStyle) -> Self {
-        self._style = style;
+    pub fn label(mut self, label: impl View) -> Self {
+        self.0.label = label.anyview();
         self
+    }
+
+    fn style(mut self, style: ProgressStyle) -> Self {
+        self.0.style = style;
+        self
+    }
+
+    pub fn circular(self) -> Self {
+        self.style(ProgressStyle::Circular)
+    }
+
+    pub fn linear(self) -> Self {
+        self.style(ProgressStyle::Linear)
     }
 }
 
-pub fn progress() -> Progress {
-    Progress::infinity("")
+pub fn progress(value: impl ToComputed<f64>) -> Progress {
+    Progress::new(value)
+}
+
+pub fn loading() -> Progress {
+    Progress::infinity()
 }
