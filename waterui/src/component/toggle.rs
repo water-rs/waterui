@@ -1,55 +1,25 @@
-use waterui_core::raw_view;
-use waterui_reactive::{compute::ToComputed, Binding};
-use waterui_str::Str;
+use waterui_reactive::Binding;
 
 use crate::{AnyView, View};
 
-use super::Text;
-
 #[derive(Debug)]
 #[non_exhaustive]
-
-pub struct Toggle {
-    pub _label: AnyView,
-    pub _toggle: Binding<bool>,
-    pub _style: ToggleStyle,
+pub struct ToggleConfig {
+    pub label: AnyView,
+    pub toggle: Binding<bool>,
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ToggleStyle {
-    Default,
-    CheckBox,
-    Switch,
-}
-
-impl Default for ToggleStyle {
-    fn default() -> Self {
-        Self::Default
-    }
-}
+configurable!(Toggle, ToggleConfig);
 
 impl Toggle {
-    pub fn new(label: impl ToComputed<Str>, toggle: &Binding<bool>) -> Self {
-        Self::label(Text::new(label), toggle)
-    }
-
-    pub fn label(label: impl View, toggle: &Binding<bool>) -> Self {
-        Self {
-            _label: AnyView::new(label),
-            _toggle: toggle.clone(),
-            _style: ToggleStyle::default(),
-        }
-    }
-
-    pub fn with_label(mut self, label: impl View) -> Self {
-        self._label = AnyView::new(label);
-        self
+    pub fn new(label: impl View, toggle: &Binding<bool>) -> Self {
+        Self(ToggleConfig {
+            label: AnyView::new(label),
+            toggle: toggle.clone(),
+        })
     }
 }
 
-raw_view!(Toggle);
-
-pub fn toggle(label: impl ToComputed<Str>, toggle: &Binding<bool>) -> Toggle {
+pub fn toggle(label: impl View, toggle: &Binding<bool>) -> Toggle {
     Toggle::new(label, toggle)
 }

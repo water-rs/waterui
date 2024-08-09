@@ -2,8 +2,43 @@
 macro_rules! raw_view {
     ($ty:ty) => {
         impl $crate::View for $ty {
-            fn body(self, _env: &$crate::Environment) -> impl $crate::View {
+            fn body(self, _env: $crate::Environment) -> impl $crate::View {
                 panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually", core::any::type_name::<$ty>());
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! configurable {
+    ($view:ident,$config:ty) => {
+        #[derive(Debug)]
+        pub struct $view($config);
+
+        impl $crate::view::ConfigurableView for $view {
+            type Config = $config;
+
+            fn config(self) -> Self::Config {
+                self.0
+            }
+        }
+
+        impl From<$config> for $view {
+            fn from(value: $config) -> Self {
+                Self(value)
+            }
+        }
+
+        impl $crate::view::View for $view {
+            fn body(self, env: $crate::Environment) -> impl $crate::View {
+                use $crate::view::ConfigurableView;
+                if let Some(modifier) = env.try_get::<$crate::view::Modifier<Self>>() {
+                    $crate::components::AnyView::new(
+                        modifier.clone().modify(env.clone(), self.config()),
+                    )
+                } else {
+                    $crate::components::AnyView::new($crate::components::native::Native(self.0))
+                }
             }
         }
     };

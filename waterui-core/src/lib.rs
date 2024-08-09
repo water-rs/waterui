@@ -1,11 +1,12 @@
 #![no_std]
+#![feature(never_type)]
 extern crate alloc;
 
 #[macro_use]
 mod macros;
-mod anyview;
 
-pub use anyview::AnyView;
+pub mod components;
+pub use components::anyview::AnyView;
 pub mod env;
 pub mod view;
 pub use env::Environment;

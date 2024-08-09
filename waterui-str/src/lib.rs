@@ -4,6 +4,12 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
 };
+use core::fmt;
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
+
+use waterui_reactive::impl_constant;
+
+impl_constant!(Str);
 
 use core::{
     borrow::Borrow,
@@ -260,5 +266,41 @@ impl From<String> for Shared {
                 count: Cell::new(1),
             }
         }
+    }
+}
+
+struct StrVisitor;
+
+impl Serialize for Str {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.deref().serialize(serializer)
+    }
+}
+
+impl<'de> Visitor<'de> for StrVisitor {
+    type Value = Str;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(v.to_string().into())
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+}
+
+impl<'de> Deserialize<'de> for Str {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(StrVisitor)
     }
 }

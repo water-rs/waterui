@@ -7,7 +7,4 @@ edition = "2021"
 waterui = { path = "../waterui" }
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-str = { path = "../waterui-str" }
-
-
-[build-dependencies]
-cbindgen = "0.26.0"
+waterui-macro = { path = "../waterui-macro" }

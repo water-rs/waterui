@@ -1,22 +1,17 @@
-use waterui::component::Text;
+use waterui::component::{text::TextConfig, Text};
 
-use crate::{
-    computed::{waterui_computed_bool, waterui_computed_str},
-    ffi_view, IntoFFI, IntoRust,
-};
+use crate::{computed::waterui_computed_str, IntoFFI, IntoRust};
 
 #[repr(C)]
 pub struct waterui_text {
     content: *mut waterui_computed_str,
-    selectable: *mut waterui_computed_bool,
 }
 
-impl IntoFFI for Text {
+impl IntoFFI for TextConfig {
     type FFI = waterui_text;
     fn into_ffi(self) -> Self::FFI {
         waterui_text {
-            content: self._content.into_ffi(),
-            selectable: self._selectable.into_ffi(),
+            content: self.content.into_ffi(),
         }
     }
 }
@@ -24,12 +19,12 @@ impl IntoFFI for Text {
 impl IntoRust for waterui_text {
     type Rust = Text;
     unsafe fn into_rust(self) -> Self::Rust {
-        Text::new(self.content.into_rust()).selectable(self.selectable.into_rust())
+        Text::new(self.content.into_rust())
     }
 }
 
-ffi_view!(
-    Text,
+native_view!(
+    TextConfig,
     waterui_text,
     waterui_view_force_as_text,
     waterui_view_text_id
