@@ -62,6 +62,15 @@ macro_rules! impl_debug {
     };
 }
 
+macro_rules! modify_field {
+    ($ident:ident,$ty:ty) => {
+        pub fn $ident(mut self, size: impl Into<$ty>) -> Self {
+            self.$ident = size.into();
+            self
+        }
+    };
+}
+
 macro_rules! tuples {
     ($macro:ident) => {
         $macro!(T0);

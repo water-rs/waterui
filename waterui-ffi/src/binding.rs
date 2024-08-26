@@ -1,4 +1,6 @@
-use crate::{array::waterui_str, closure::waterui_fn, waterui_watcher_guard, IntoFFI, IntoRust};
+use crate::{
+    array::waterui_str, watcher::waterui_watcher, waterui_watcher_guard, IntoFFI, IntoRust,
+};
 use ::waterui_str::Str;
 use waterui::ComputeExt;
 use waterui_reactive::{Binding, Compute};
@@ -27,10 +29,13 @@ macro_rules! impl_binding {
         #[no_mangle]
         pub unsafe extern "C" fn $watch(
             binding: *const $binding,
-            watcher: waterui_fn<$ffi>,
+            watcher: waterui_watcher<$ffi>,
         ) -> *mut waterui_watcher_guard {
-            let guard =
-                (*binding).watch(move |v: <$ffi as IntoRust>::Rust| watcher.call(v.into_ffi()));
+            let guard = (*binding).watch(waterui_reactive::watcher::Watcher::new(
+                move |v: <$ffi as $crate::IntoRust>::Rust, metadata| {
+                    watcher.call(v.into_ffi(), metadata)
+                },
+            ));
             guard.into_ffi()
         }
     };

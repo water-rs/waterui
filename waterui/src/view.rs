@@ -3,7 +3,6 @@ use waterui_core::{AnyView, Environment};
 
 use alloc::boxed::Box;
 
-pub type ViewBuilder = Box<dyn Fn() -> AnyView>;
 pub trait ViewExt: View + Sized {
     fn env(self, env: Environment) -> WithEnv;
     fn anyview(self) -> AnyView;
@@ -16,6 +15,33 @@ pub trait ConfigViewExt: ConfigurableView + Sized {
 impl<V: ConfigurableView> ConfigViewExt for V {
     fn modifier(self, modifier: impl Into<Modifier<Self>>) -> impl View {
         modifier.into().modify(Environment::new(), self.config())
+    }
+}
+
+pub trait ViewBuilder: 'static {
+    fn view(&self, env: Environment) -> impl View;
+}
+
+impl<F, V> ViewBuilder for F
+where
+    F: Fn() -> V + 'static,
+    V: View,
+{
+    fn view(&self, _env: Environment) -> impl View {
+        (self)()
+    }
+}
+pub struct AnyViewBuilder(Box<dyn Fn(Environment) -> AnyView>);
+
+impl AnyViewBuilder {
+    pub fn new(builder: impl ViewBuilder + 'static) -> Self {
+        Self(Box::new(move |env| builder.view(env).anyview()))
+    }
+}
+
+impl ViewBuilder for AnyViewBuilder {
+    fn view(&self, env: Environment) -> impl View {
+        (self.0)(env)
     }
 }
 
