@@ -106,6 +106,7 @@ impl<T> WatcherManager<T> {
     }
 }
 
+#[must_use]
 pub struct WatcherGuard(Option<Box<dyn FnOnce()>>);
 
 impl WatcherGuard {

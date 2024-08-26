@@ -2,19 +2,14 @@ use waterui_reactive::impl_constant;
 
 impl_constant!(Frame, Edge);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Alignment {
+    #[default]
     Default,
     Leading,
     Center,
     Trailing,
-}
-
-impl Default for Alignment {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -80,24 +75,13 @@ impl Edge {
     pub fn round(size: impl Into<f64>) -> Self {
         let size = size.into();
 
-        Self::zero().top(size).left(size).right(size).bottom(size)
+        Self::vertical(size).left(size).right(size)
     }
+}
 
-    pub fn top(mut self, size: impl Into<f64>) -> Self {
-        self.top = size.into();
-        self
-    }
-
-    pub fn left(mut self, size: impl Into<f64>) -> Self {
-        self.left = size.into();
-        self
-    }
-    pub fn right(mut self, size: impl Into<f64>) -> Self {
-        self.right = size.into();
-        self
-    }
-    pub fn bottom(mut self, size: impl Into<f64>) -> Self {
-        self.bottom = size.into();
-        self
-    }
+impl Edge {
+    modify_field!(top, f64);
+    modify_field!(left, f64);
+    modify_field!(right, f64);
+    modify_field!(bottom, f64);
 }

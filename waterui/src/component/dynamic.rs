@@ -1,38 +1,44 @@
-use core::ops::Deref;
+use core::cell::RefCell;
 
-use crate::{
-    mpsc::{channel, Receiver, Sender},
-    AnyView, View,
-};
+use alloc::{boxed::Box, rc::Rc};
+use waterui_core::{raw_view, AnyView, View};
 
-use waterui_core::raw_view;
+#[derive(Default)]
+pub struct Dynamic(Rc<RefCell<DyanmicInner>>);
 
-pub struct DynamicHandle(Sender<AnyView>);
+raw_view!(Dynamic);
 
-impl DynamicHandle {
-    pub fn set(&self, content: impl View) {
-        self.0.send(AnyView::new(content));
-    }
+pub struct DynamicHandler(Rc<RefCell<DyanmicInner>>);
+
+#[derive(Default)]
+struct DyanmicInner {
+    receiver: Option<Box<dyn Fn(AnyView)>>,
+    tmp: Option<AnyView>,
 }
 
-pub struct Dynamic(Receiver<AnyView>);
-
-impl Deref for Dynamic {
-    type Target = Receiver<AnyView>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl DynamicHandler {
+    pub fn set(&self, view: impl View) {
+        let view = AnyView::new(view);
+        let mut this = self.0.borrow_mut();
+        if let Some(ref receiver) = this.receiver {
+            receiver(view)
+        } else {
+            this.tmp = Some(view);
+        }
     }
 }
 
 impl Dynamic {
-    pub fn from_receiver(receiver: Receiver<AnyView>) -> Self {
-        Self(receiver)
+    pub fn new() -> (DynamicHandler, Self) {
+        let inner = Rc::new(RefCell::new(DyanmicInner::default()));
+        (DynamicHandler(inner.clone()), Self(inner))
     }
 
-    pub fn new() -> (Self, DynamicHandle) {
-        let (sender, receiver) = channel();
-        (Self(receiver), DynamicHandle(sender))
+    pub fn connect(self, receiver: impl Fn(AnyView) + 'static) {
+        let mut this = self.0.borrow_mut();
+        if let Some(view) = this.tmp.take() {
+            receiver(view);
+        }
+        this.receiver = Some(Box::new(receiver));
     }
 }
-
-raw_view!(Dynamic);

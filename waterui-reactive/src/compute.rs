@@ -107,6 +107,12 @@ where
 
 pub struct Computed<T: 'static>(Box<dyn ComputedImpl<Output = T>>);
 
+impl<T: Default + Clone> Default for Computed<T> {
+    fn default() -> Self {
+        Self::constant(T::default())
+    }
+}
+
 impl<T> Debug for Computed<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(type_name::<Self>())

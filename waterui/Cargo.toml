@@ -11,6 +11,9 @@ waterui-core = { path = "../waterui-core" }
 waterui-str = { path = "../waterui-str" }
 async-gcd = { path = "../../async-gcd"}
 async-channel = "2.2.1"
+time = "0.3.36"
+url = "2.5.2"
+bitflags = "2.6.0"
 
 [dependencies.serde]
 version = "1.0.193"
