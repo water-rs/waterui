@@ -119,3 +119,5 @@ where
         text(self)
     }
 }
+
+raw_view!(Computed<AnyView>);

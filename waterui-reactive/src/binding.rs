@@ -1,4 +1,4 @@
-use core::{any::type_name, cell::RefCell, fmt::Debug};
+use core::{any::type_name, cell::RefCell, fmt::Debug, ops::RangeBounds};
 
 use alloc::rc::Rc;
 
@@ -57,9 +57,32 @@ impl<T> Binding<T> {
     }
 }
 
+impl<T: PartialOrd> Binding<T> {
+    pub fn range(self, range: impl RangeBounds<T> + 'static) -> Self {
+        let binding = self.clone();
+        Self::from_fn(
+            move || self.get(),
+            move |new| {
+                if range.contains(&new) {
+                    binding.set(new);
+                }
+            },
+        )
+    }
+}
 impl Binding<i32> {
     pub fn int(i: i32) -> Self {
         Self::from(i)
+    }
+}
+
+impl Binding<bool> {
+    pub fn bool(value: bool) -> Self {
+        Self::from(value)
+    }
+
+    pub fn toggle(&self) {
+        self.set(!self.get())
     }
 }
 

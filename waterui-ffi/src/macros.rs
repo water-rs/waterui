@@ -110,7 +110,6 @@ macro_rules! ffi_type {
     };
 }
 
-// WARNING: Computed<T> must be called on the Rust thread!!!
 macro_rules! impl_computed {
     ($computed:ty,$ffi:ty,$read:ident,$watch:ident) => {
         #[no_mangle]
@@ -123,11 +122,14 @@ macro_rules! impl_computed {
         #[no_mangle]
         pub unsafe extern "C" fn $watch(
             computed: *const $computed,
-            watcher: $crate::closure::waterui_fn<$ffi>,
+            watcher: $crate::watcher::waterui_watcher<$ffi>,
         ) -> *mut $crate::waterui_watcher_guard {
             use waterui::ComputeExt;
-            let guard = (*computed)
-                .watch(move |v: <$ffi as $crate::IntoRust>::Rust| watcher.call(v.into_ffi()));
+            let guard = (*computed).watch(waterui_reactive::watcher::Watcher::new(
+                move |v: <$ffi as $crate::IntoRust>::Rust, metadata| {
+                    watcher.call(v.into_ffi(), metadata)
+                },
+            ));
             guard.into_ffi()
         }
     };
