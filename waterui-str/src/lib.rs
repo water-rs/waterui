@@ -91,6 +91,21 @@ impl Default for Str {
     }
 }
 
+mod std_on {
+    use crate::Str;
+
+    extern crate std;
+
+    use core::ops::Deref;
+    use std::ffi::OsStr;
+
+    impl AsRef<OsStr> for Str {
+        fn as_ref(&self) -> &OsStr {
+            self.deref().as_ref()
+        }
+    }
+}
+
 impl Str {
     pub const fn empty() -> Self {
         Self::from_static("")

@@ -5,6 +5,7 @@ use waterui::{component::Native, AnyView, View, ViewExt};
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 pub mod button;
+pub mod dynamic;
 pub mod metadata;
 pub mod picker;
 pub mod progress;

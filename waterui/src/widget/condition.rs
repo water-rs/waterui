@@ -1,31 +1,65 @@
+use crate::{component::Dynamic, view::ViewBuilder};
 use waterui_core::{Environment, View};
-use waterui_reactive::{compute::ToComputed, ComputeExt};
-
-use crate::component::Dynamic;
-
-pub struct When<Condition, F, F2> {
+use waterui_reactive::{compute::ToComputed, Compute, ComputeExt};
+pub struct When<Condition, Then> {
     condition: Condition,
-    when: F,
-    or: F2,
+    then: Then,
 }
 
-impl<Condition, F1, F2, V1, V2> View for When<Condition, F1, F2>
+impl<Condition, Then> View for When<Condition, Then>
 where
     Condition: ToComputed<bool>,
-    F1: 'static + Fn() -> V1,
-    F2: 'static + Fn() -> V2,
-    V1: View,
-    V2: View,
+    Then: ViewBuilder,
 {
     fn body(self, _env: Environment) -> impl View {
-        let (view, handle) = Dynamic::new();
-        self.condition.to_compute().watch(move |condition| {
-            if condition {
-                handle.set((self.when)());
-            } else {
-                handle.set((self.or)());
-            }
-        });
-        view
+        self.or(|| {})
     }
+}
+
+impl<Condition, Then> When<Condition, Then> {
+    pub fn or<Or>(self, or: Or) -> WhenOr<Condition, Then, Or> {
+        WhenOr {
+            condition: self.condition,
+            then: self.then,
+            or,
+        }
+    }
+}
+
+pub struct WhenOr<Condition, Then, Or> {
+    condition: Condition,
+    then: Then,
+    or: Or,
+}
+
+impl<Condition, Then, Or> View for WhenOr<Condition, Then, Or>
+where
+    Condition: ToComputed<bool>,
+    Then: ViewBuilder,
+    Or: ViewBuilder,
+{
+    fn body(self, env: Environment) -> impl View {
+        let (handler, dynamic) = Dynamic::new();
+        let condition = self.condition.to_compute();
+        if condition.compute() {
+            handler.set((self.then).view(env.clone()));
+        } else {
+            handler.set((self.or).view(env.clone()));
+        }
+        condition
+            .watch(move |c| {
+                if c {
+                    handler.set((self.then).view(env.clone()));
+                } else {
+                    handler.set((self.or).view(env.clone()));
+                }
+            })
+            .leak();
+
+        dynamic
+    }
+}
+
+pub fn when<Condition, Then>(condition: Condition, then: Then) -> When<Condition, Then> {
+    When { condition, then }
 }

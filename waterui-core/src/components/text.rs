@@ -1,3 +1,4 @@
+use alloc::string::String;
 use waterui_reactive::{compute::ToComputed, Computed};
 use waterui_str::Str;
 
@@ -5,14 +6,20 @@ use crate::View;
 
 configurable!(Text, TextConfig);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TextConfig {
     pub content: Computed<Str>,
     pub font: Font,
 }
 
-#[derive(Debug)]
+impl Clone for Text {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Font {
     pub size: f64,
@@ -69,4 +76,4 @@ macro_rules! impl_text {
     };
 }
 
-impl_text!(&'static str);
+impl_text!(&'static str, Str, String);

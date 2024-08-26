@@ -4,6 +4,7 @@ extern crate alloc;
 
 mod binding;
 
+use alloc::string::String;
 pub use binding::Binding;
 pub mod constant;
 pub use constant::constant;
@@ -32,4 +33,4 @@ macro_rules! impl_constant {
     };
 }
 
-impl_constant!(&'static str, bool, i32, f64);
+impl_constant!(&'static str, bool, i32, f64, String);

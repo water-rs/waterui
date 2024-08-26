@@ -3,11 +3,10 @@
 extern crate alloc;
 #[macro_use]
 mod macros;
+pub mod animation;
 pub mod component;
-pub(crate) mod mpsc;
 pub mod view;
 pub mod widget;
-
 pub use view::{View, ViewExt};
 #[doc(inline)]
 pub use waterui_core::{

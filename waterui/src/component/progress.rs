@@ -53,7 +53,7 @@ impl Progress {
             label: text("Please wait...").anyview(),
             value_label: text(value.clone().map(|v| format!("{v:.2} %"))).anyview(),
             value,
-            style: ProgressStyle::Circular,
+            style: ProgressStyle::Linear,
         })
     }
 
@@ -94,5 +94,5 @@ pub fn progress(value: impl ToComputed<f64>) -> Progress {
 }
 
 pub fn loading() -> Progress {
-    Progress::infinity()
+    Progress::infinity().circular()
 }
