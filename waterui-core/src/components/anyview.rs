@@ -32,6 +32,12 @@ impl Debug for AnyView {
     }
 }
 
+impl Default for AnyView {
+    fn default() -> Self {
+        AnyView::new(())
+    }
+}
+
 impl AnyView {
     pub fn new<V: View>(view: V) -> Self {
         if TypeId::of::<V>() == TypeId::of::<AnyView>() {

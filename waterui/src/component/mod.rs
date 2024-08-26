@@ -1,8 +1,11 @@
 pub mod button;
+pub mod color_picker;
+pub mod date_picker;
 pub mod dynamic;
 pub mod metadata;
 pub mod picker;
 pub mod progress;
+pub mod slider;
 pub mod stack;
 pub mod stepper;
 pub mod text_field;
@@ -10,6 +13,7 @@ pub mod toggle;
 
 #[doc(inline)]
 pub use button::{button, Button};
+pub use dynamic::Dynamic;
 #[doc(inline)]
 pub use progress::{loading, progress, Progress};
 #[doc(inline)]
@@ -22,9 +26,6 @@ pub use text_field::{field, TextField};
 pub use toggle::{toggle, Toggle};
 #[doc(inline)]
 pub use waterui_core::components::*;
-
-#[doc(inline)]
-pub use dynamic::Dynamic;
 
 /*
 #[cfg(feature = "remote-image")]
