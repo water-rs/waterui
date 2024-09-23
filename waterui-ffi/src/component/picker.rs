@@ -52,7 +52,7 @@ impl IntoFFI for PickerItem<NonZeroUsize> {
 
 ffi_type!(
     waterui_binding_picker_item_id,
-    Binding<Option<ItemId>>,
+    Binding<ItemId>,
     waterui_drop_binding_picker_item_id
 );
 

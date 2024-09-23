@@ -2,6 +2,7 @@ use core::cell::RefCell;
 
 use alloc::{boxed::Box, rc::Rc};
 use waterui_core::{raw_view, AnyView, View};
+use waterui_reactive::{Compute, ComputeExt};
 
 #[derive(Default)]
 pub struct Dynamic(Rc<RefCell<DyanmicInner>>);
@@ -32,6 +33,15 @@ impl Dynamic {
     pub fn new() -> (DynamicHandler, Self) {
         let inner = Rc::new(RefCell::new(DyanmicInner::default()));
         (DynamicHandler(inner.clone()), Self(inner))
+    }
+
+    pub fn watch<T, V: View>(
+        value: impl Compute<Output = T>,
+        f: impl Fn(T) -> V + 'static,
+    ) -> Self {
+        let (handle, dyanmic) = Self::new();
+        value.watch(move |value| handle.set(f(value))).leak();
+        dyanmic
     }
 
     pub fn connect(self, receiver: impl Fn(AnyView) + 'static) {
