@@ -49,6 +49,10 @@ impl Text {
         })
     }
 
+    pub fn content(&self) -> Computed<Str> {
+        self.0.content.clone()
+    }
+
     pub fn font(mut self, font: Font) -> Self {
         self.0.font = font;
         self
@@ -77,3 +81,12 @@ macro_rules! impl_text {
 }
 
 impl_text!(&'static str, Str, String);
+
+impl<T> From<T> for Text
+where
+    T: ToComputed<Str>,
+{
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}

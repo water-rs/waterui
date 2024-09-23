@@ -9,10 +9,9 @@ edition = "2021"
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-core = { path = "../waterui-core" }
 waterui-str = { path = "../waterui-str" }
-async-gcd = { path = "../../async-gcd"}
+main-executor = { path = "../../main-executor"}
 async-channel = "2.2.1"
 time = "0.3.36"
-url = "2.5.2"
 bitflags = "2.6.0"
 
 [dependencies.serde]
@@ -21,8 +20,12 @@ default-features = false
 features = ["derive"]
 optional = true
 
+[dependencies.async-fs]
+version = "2.1.2"
+optional = true
+
 [features]
 default = ["all"]
-std = []
-all = ["serde"]
+std = ["dep:async-fs"]
+all = ["serde","std"]
 serde = ["dep:serde"]

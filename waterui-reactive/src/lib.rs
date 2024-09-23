@@ -2,10 +2,10 @@
 #![forbid(unsafe_code)]
 extern crate alloc;
 
-mod binding;
+pub mod binding;
 
-use alloc::string::String;
-pub use binding::Binding;
+use alloc::{boxed::Box, string::String, vec::Vec};
+pub use binding::{binding, Binding};
 pub mod constant;
 pub use constant::constant;
 pub mod compute;
@@ -33,4 +33,13 @@ macro_rules! impl_constant {
     };
 }
 
-impl_constant!(&'static str, bool, i32, f64, String);
+impl_constant!(
+    &'static str,
+    bool,
+    i32,
+    f64,
+    String,
+    Vec<u8>,
+    Box<str>,
+    Box<[u8]>
+);

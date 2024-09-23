@@ -1,11 +1,8 @@
 pub mod button;
-pub mod color_picker;
-pub mod date_picker;
 pub mod dynamic;
 pub mod metadata;
 pub mod picker;
 pub mod progress;
-pub mod slider;
 pub mod stack;
 pub mod stepper;
 pub mod text_field;

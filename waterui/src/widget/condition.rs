@@ -1,6 +1,6 @@
-use crate::{component::Dynamic, view::ViewBuilder};
+use crate::{component::Dynamic, view::ViewBuilder, ViewExt};
 use waterui_core::{Environment, View};
-use waterui_reactive::{compute::ToComputed, Compute, ComputeExt};
+use waterui_reactive::compute::ToComputed;
 pub struct When<Condition, Then> {
     condition: Condition,
     then: Then,
@@ -39,24 +39,13 @@ where
     Or: ViewBuilder,
 {
     fn body(self, env: Environment) -> impl View {
-        let (handler, dynamic) = Dynamic::new();
-        let condition = self.condition.to_compute();
-        if condition.compute() {
-            handler.set((self.then).view(env.clone()));
-        } else {
-            handler.set((self.or).view(env.clone()));
-        }
-        condition
-            .watch(move |c| {
-                if c {
-                    handler.set((self.then).view(env.clone()));
-                } else {
-                    handler.set((self.or).view(env.clone()));
-                }
-            })
-            .leak();
-
-        dynamic
+        Dynamic::watch(self.condition.to_compute(), move |condition| {
+            if condition {
+                (self.then).view(env.clone()).anyview()
+            } else {
+                (self.or).view(env.clone()).anyview()
+            }
+        })
     }
 }
 

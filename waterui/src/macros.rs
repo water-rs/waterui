@@ -16,6 +16,7 @@ macro_rules! impl_from {
     };
 }
 
+#[macro_export]
 macro_rules! configurable {
     ($view:ident,$config:ty) => {
         #[derive(Debug)]
@@ -37,8 +38,8 @@ macro_rules! configurable {
 
         impl $crate::view::View for $view {
             fn body(self, env: $crate::Environment) -> impl waterui_core::View {
-                use crate::view::ViewExt;
                 use waterui_core::view::ConfigurableView;
+                use $crate::view::ViewExt;
                 if let Some(modifier) = env.try_get::<$crate::view::Modifier<Self>>() {
                     modifier
                         .clone()
@@ -88,5 +89,19 @@ macro_rules! tuples {
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+    };
+}
+
+#[macro_export]
+macro_rules! text {
+    ($fmt:tt,$($arg:tt),*) => {
+        {
+            let args=($($arg),*);
+            use $crate::ComputeExt;
+            #[allow(unused_parens)]
+            ComputeExt::map(args,|($($arg),*)|{
+                format!($fmt,$($arg),*)
+            }).computed()
+        }
     };
 }
