@@ -1,20 +1,27 @@
 use core::any::TypeId;
 
-use waterui::{component::Native, AnyView, View, ViewExt};
+use waterui::{component::Native, AnyView, Binding, View, ViewExt};
 
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 pub mod button;
 pub mod dynamic;
 pub mod metadata;
+pub mod navigation;
 pub mod picker;
 pub mod progress;
 pub mod stack;
 pub mod stepper;
+pub mod tabs;
 pub mod text;
 pub mod text_field;
 pub mod toggle;
 pub mod with_env;
+ffi_type!(
+    waterui_binding_id,
+    Binding<waterui::utils::Id>,
+    waterui_drop_binding_id
+);
 
 #[no_mangle]
 unsafe extern "C" fn waterui_view_id(view: *const waterui_anyview) -> waterui_type_id {
