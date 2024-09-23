@@ -6,6 +6,8 @@ use waterui_str::Str;
 use super::Text;
 
 configurable!(TextField, TextFieldConfig);
+configurable!(SecureField, TextFieldConfig);
+
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct TextFieldConfig {

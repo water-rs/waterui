@@ -4,17 +4,17 @@ use alloc::vec::Vec;
 use waterui::{
     component::picker::{ItemId, PickerConfig, PickerItem},
     view::{ConfigurableView, TaggedView},
-    Binding, Computed,
+    Computed,
 };
 
 use crate::{array::waterui_array, IntoFFI, IntoRust};
 
-use super::text::waterui_text;
+use super::{text::waterui_text, waterui_binding_id};
 
 #[repr(C)]
 pub struct waterui_picker {
     items: *mut waterui_computed_picker_items,
-    selection: *mut waterui_binding_picker_item_id,
+    selection: *mut waterui_binding_id,
 }
 
 ffi_type!(
@@ -49,12 +49,6 @@ impl IntoFFI for PickerItem<NonZeroUsize> {
         }
     }
 }
-
-ffi_type!(
-    waterui_binding_picker_item_id,
-    Binding<ItemId>,
-    waterui_drop_binding_picker_item_id
-);
 
 #[repr(C)]
 pub struct waterui_picker_item {
