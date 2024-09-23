@@ -1,10 +1,13 @@
 pub use waterui_core::view::*;
-use waterui_core::{AnyView, Environment};
+use waterui_core::{components::Text, AnyView, Environment};
 
 use alloc::boxed::Box;
 
+use crate::navigation::NavigationView;
+
 pub trait ViewExt: View + Sized {
     fn env(self, env: Environment) -> WithEnv;
+    fn title(self, title: impl Into<Text>) -> NavigationView;
     fn anyview(self) -> AnyView;
 }
 
@@ -48,6 +51,10 @@ impl ViewBuilder for AnyViewBuilder {
 impl<V: View> ViewExt for V {
     fn env(self, env: Environment) -> WithEnv {
         WithEnv::new(self, env)
+    }
+
+    fn title(self, title: impl Into<Text>) -> NavigationView {
+        NavigationView::new(title, self)
     }
 
     fn anyview(self) -> AnyView {
