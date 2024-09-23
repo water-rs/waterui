@@ -6,10 +6,7 @@ use core::{
     ops::Deref,
 };
 
-#[cfg(not(feature = "std"))]
 pub use core::error::Error as StdError;
-#[cfg(feature = "std")]
-pub use std::error::Error as StdError;
 
 pub struct Error {
     inner: Box<dyn ErrorImpl>,

@@ -1,6 +1,9 @@
 #![no_std]
 #![allow(non_camel_case_types)]
+
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 #[macro_use]
 mod macros;
 pub mod animation;
@@ -15,8 +18,9 @@ pub use waterui_core::{
 };
 
 #[doc(inline)]
-pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed};
+pub use waterui_reactive::{compute, Binding, Compute, ComputeExt, Computed};
 
 pub mod layout;
 pub mod utils;
-pub use async_gcd::{future::block_on, task, Task};
+pub use main_executor::{future::block_on, task, Task};
+pub use waterui_str::Str;
