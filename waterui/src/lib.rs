@@ -8,6 +8,8 @@ extern crate std;
 mod macros;
 pub mod animation;
 pub mod component;
+pub mod navigation;
+pub mod tab;
 pub mod view;
 pub mod widget;
 pub use view::{View, ViewExt};
