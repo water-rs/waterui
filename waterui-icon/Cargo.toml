@@ -1,0 +1,30 @@
+[package]
+name = "waterui-icon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+waterui = { path = "../waterui" }
+
+[dependencies.thiserror]
+version = "1.0.63"
+optional = true
+[dependencies.futures-lite]
+version = "2.3.0"
+optional = true
+
+[dependencies.serde]
+version = "1.0.209"
+optional = true
+
+[dependencies.async-fs]
+version = "2.1.2"
+optional = true
+
+[dependencies.toml]
+version = "0.8.19"
+optional = true
+
+[features]
+default = ["std"]
+std = ["dep:thiserror","dep:futures-lite","dep:serde","dep:async-fs","dep:toml"]
