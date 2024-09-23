@@ -1,6 +1,6 @@
-use core::{any::type_name, fmt::Debug, marker::PhantomData};
+use core::{any::type_name, fmt::Debug, marker::PhantomData, ops::Deref};
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, rc::Rc};
 
 use crate::{
     constant,
@@ -12,6 +12,30 @@ pub trait Compute: Clone {
     type Output;
     fn compute(&self) -> Self::Output;
     fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+}
+
+impl<C: Compute> Compute for &C {
+    type Output = C::Output;
+
+    fn compute(&self) -> Self::Output {
+        Compute::compute(*self)
+    }
+
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        Compute::add_watcher(*self, watcher)
+    }
+}
+
+impl<C: Compute> Compute for Rc<C> {
+    type Output = C::Output;
+
+    fn compute(&self) -> Self::Output {
+        Compute::compute(self.deref())
+    }
+
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        Compute::add_watcher(self.deref(), watcher)
+    }
 }
 
 pub trait ToCompute<Output> {
@@ -81,7 +105,7 @@ where
     }
 }
 
-trait ComputedImpl {
+pub(crate) trait ComputedImpl {
     type Output;
     fn compute(&self) -> Self::Output;
     fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
@@ -150,7 +174,7 @@ impl<T: Clone> Computed<T> {
 
 pub trait ComputeExt: Compute {
     fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;
-    fn map<F, Output>(&self, f: F) -> Computed<Output>
+    fn map<F, Output>(&self, f: F) -> Map<Self, F, Output>
     where
         Self: 'static,
         F: 'static + Fn(Self::Output) -> Output;
@@ -164,12 +188,12 @@ impl<C: Compute> ComputeExt for C {
     fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
         self.add_watcher(watcher.into())
     }
-    fn map<F, Output>(&self, f: F) -> Computed<Output>
+    fn map<F, Output>(&self, f: F) -> Map<Self, F, Output>
     where
         Self: 'static,
         F: 'static + Fn(Self::Output) -> Output,
     {
-        Computed::new(Map::new(self.clone(), f))
+        Map::new(self.clone(), f)
     }
 
     fn computed(&self) -> Computed<Self::Output>

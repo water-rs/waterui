@@ -48,8 +48,13 @@ impl Environment {
     }
 }
 
-pub trait Plugin {
-    fn install(self, env: &mut Environment);
+pub trait Plugin: Sized + 'static {
+    fn install(self, env: &mut Environment) {
+        env.insert(self);
+    }
+    fn uninstall(self, env: &mut Environment) {
+        env.remove::<Self>()
+    }
 }
 
 pub struct UseEnv<V, F> {

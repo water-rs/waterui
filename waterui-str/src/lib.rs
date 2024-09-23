@@ -1,11 +1,14 @@
 #![no_std]
 extern crate alloc;
+
+mod impls;
+mod shared;
 use alloc::{
     boxed::Box,
-    string::{String, ToString},
+    string::{FromUtf8Error, String, ToString},
+    vec::Vec,
 };
-use core::fmt;
-use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
+use shared::Shared;
 
 use waterui_reactive::impl_constant;
 
@@ -13,12 +16,9 @@ impl_constant!(Str);
 
 use core::{
     borrow::Borrow,
-    cell::Cell,
-    fmt::Display,
-    hash::Hash,
     mem::{take, ManuallyDrop},
-    ops::{Add, AddAssign, Deref},
-    ptr::NonNull,
+    ops::Deref,
+    ptr::{read, NonNull},
     slice,
 };
 
@@ -28,30 +28,18 @@ pub struct Str {
     len: usize,
 }
 
-struct Shared {
-    ptr: NonNull<u8>,
-    capacity: usize,
-    count: Cell<usize>,
-}
-
 impl Drop for Str {
     fn drop(&mut self) {
-        if let Ok(shared) = self.try_as_shared() {
-            if shared.count.get() == 1 {
-                unsafe {
-                    let _ = String::from_raw_parts(shared.ptr.as_ptr(), self.len, shared.capacity);
-                }
-            } else {
-                shared.count.set(shared.count.get() - 1);
-            }
+        if let Err(shared) = self.try_as_static() {
+            unsafe { shared.decrement_count() }
         }
     }
 }
 
 impl Clone for Str {
     fn clone(&self) -> Self {
-        if let Ok(shared) = self.try_as_shared() {
-            shared.count.set(shared.count.get() + 1);
+        if let Err(shared) = self.try_as_static() {
+            unsafe { shared.increment_count() }
         }
 
         Self {
@@ -64,18 +52,19 @@ impl Clone for Str {
 impl Deref for Str {
     type Target = str;
     fn deref(&self) -> &Self::Target {
-        match self.try_as_shared() {
-            Ok(shared) => unsafe {
-                core::str::from_utf8_unchecked(slice::from_raw_parts(shared.ptr.as_ptr(), self.len))
-            },
-            Err(s) => s,
-        }
+        self.as_str()
     }
 }
 
 impl Borrow<str> for Str {
     fn borrow(&self) -> &str {
-        self.deref()
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for Str {
+    fn as_ref(&self) -> &str {
+        self.as_str()
     }
 }
 
@@ -87,28 +76,59 @@ impl AsRef<[u8]> for Str {
 
 impl Default for Str {
     fn default() -> Self {
-        Self::empty()
+        Self::new()
     }
 }
 
 mod std_on {
+    use alloc::{string::FromUtf8Error, vec::IntoIter};
+
     use crate::Str;
 
     extern crate std;
 
-    use core::ops::Deref;
-    use std::ffi::OsStr;
+    use core::{net::SocketAddr, ops::Deref};
+    use std::{
+        ffi::{OsStr, OsString},
+        io,
+        net::ToSocketAddrs,
+        path::Path,
+    };
 
     impl AsRef<OsStr> for Str {
         fn as_ref(&self) -> &OsStr {
             self.deref().as_ref()
         }
     }
+
+    impl AsRef<Path> for Str {
+        fn as_ref(&self) -> &Path {
+            self.deref().as_ref()
+        }
+    }
+
+    impl TryFrom<OsString> for Str {
+        type Error = FromUtf8Error;
+        fn try_from(value: OsString) -> Result<Self, Self::Error> {
+            Str::from_utf8(value.into_encoded_bytes())
+        }
+    }
+
+    impl ToSocketAddrs for Str {
+        type Iter = IntoIter<SocketAddr>;
+        fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
+            self.deref().to_socket_addrs()
+        }
+    }
 }
 
 impl Str {
-    pub const fn empty() -> Self {
+    pub const fn new() -> Self {
         Self::from_static("")
+    }
+
+    pub fn from_utf8(bytes: Vec<u8>) -> Result<Self, FromUtf8Error> {
+        String::from_utf8(bytes).map(Self::from)
     }
 
     pub const fn from_static(s: &'static str) -> Self {
@@ -118,6 +138,15 @@ impl Str {
                 len: s.len(),
             }
         }
+    }
+
+    /// # Safety
+    ///
+    /// This function is unsafe because it does not check that the bytes passed
+    /// to it are valid UTF-8. If this constraint is violated, it may cause
+    /// memory unsafety issues with future users of the `Str`.
+    pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> Self {
+        Self::from(String::from_utf8_unchecked(bytes))
     }
 
     fn is_static(&self) -> bool {
@@ -140,127 +169,44 @@ impl Str {
         &*(ptr as *const Shared)
     }
 
-    fn try_as_shared(&self) -> Result<&Shared, &'static str> {
+    fn try_as_static(&self) -> Result<&'static str, &Shared> {
         unsafe {
             if self.is_static() {
-                Err(self.as_static_unchecked())
+                Ok(self.as_static_unchecked())
             } else {
-                Ok(self.as_shared_unchecked())
+                Err(self.as_shared_unchecked())
             }
         }
     }
 
     pub fn into_string(self) -> String {
         let this = ManuallyDrop::new(self);
-        if let Ok(shared) = this.try_as_shared() {
-            if shared.count.get() == 1 {
-                unsafe {
-                    return String::from_raw_parts(shared.ptr.as_ptr(), this.len, shared.capacity);
-                }
+        unsafe {
+            if this.is_static() {
+                this.as_static_unchecked().to_string()
+            } else {
+                let ptr = this.ptr.as_ptr().byte_sub(usize::MAX / 2) as *mut Shared;
+                let shared = read(ptr);
+                shared.take(this.len())
             }
         }
+    }
 
-        this.deref().to_string()
+    pub fn as_str(&self) -> &str {
+        self.try_as_static()
+            .unwrap_or_else(|shared| shared.as_str(self.len))
     }
 }
-
-impl AsRef<str> for Str {
-    fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Hash for Str {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.deref().hash(state)
-    }
-}
-
-impl PartialEq for Str {
-    fn eq(&self, other: &Self) -> bool {
-        self.deref().eq(other.deref())
-    }
-}
-
-impl Eq for Str {}
-
-impl PartialOrd for Str {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Str {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.deref().cmp(other.deref())
-    }
-}
-
-impl Display for Str {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.deref().fmt(f)
-    }
-}
-
-impl<'a> Extend<&'a str> for Str {
-    fn extend<T: IntoIterator<Item = &'a str>>(&mut self, iter: T) {
-        self.handle(move |string| {
-            string.extend(iter);
-        });
-    }
-}
-
-impl Extend<String> for Str {
-    fn extend<T: IntoIterator<Item = String>>(&mut self, iter: T) {
-        self.handle(move |string| {
-            string.extend(iter);
-        });
-    }
-}
-
-impl Extend<Str> for Str {
-    fn extend<T: IntoIterator<Item = Str>>(&mut self, iter: T) {
-        self.handle(move |string| {
-            for s in iter.into_iter() {
-                string.push_str(&s);
-            }
-        });
-    }
-}
-
 impl From<&'static str> for Str {
     fn from(value: &'static str) -> Self {
         Self::from_static(value)
     }
 }
 
-impl<T> Add<T> for Str
-where
-    T: AsRef<str>,
-{
-    type Output = Self;
-    fn add(self, rhs: T) -> Self::Output {
-        let rhs = rhs.as_ref();
-        (self.into_string() + rhs).into()
-    }
-}
-
-impl<T> AddAssign<T> for Str
-where
-    T: AsRef<str>,
-{
-    fn add_assign(&mut self, rhs: T) {
-        let rhs = rhs.as_ref();
-
-        let string = take(self).into_string();
-        *self = (string + rhs).into();
-    }
-}
-
 impl From<String> for Str {
     fn from(value: String) -> Self {
         let len = value.len();
-        let ptr = Box::into_raw(Box::new(Shared::from(value))) as *mut ();
+        let ptr = Box::into_raw(Box::new(Shared::new(value))) as *mut ();
         let ptr = ptr.wrapping_byte_add(usize::MAX / 2);
         unsafe {
             Self {
@@ -268,54 +214,5 @@ impl From<String> for Str {
                 len,
             }
         }
-    }
-}
-
-impl From<String> for Shared {
-    fn from(value: String) -> Self {
-        let mut value = ManuallyDrop::new(value);
-        unsafe {
-            Self {
-                ptr: NonNull::new_unchecked(value.as_mut_ptr()),
-                capacity: value.capacity(),
-                count: Cell::new(1),
-            }
-        }
-    }
-}
-
-struct StrVisitor;
-
-impl Serialize for Str {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.deref().serialize(serializer)
-    }
-}
-
-impl<'de> Visitor<'de> for StrVisitor {
-    type Value = Str;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a string")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-        Ok(v.to_string().into())
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
-        Ok(v.into())
-    }
-}
-
-impl<'de> Deserialize<'de> for Str {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_string(StrVisitor)
     }
 }
