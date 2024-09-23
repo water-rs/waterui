@@ -7,7 +7,28 @@ edition = "2021"
 waterui-core = { path = "../waterui-core" }
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-str = { path = "../waterui-str" }
-toml = "0.8.19"
-thiserror = "1.0.63"
-sys-locale = "0.3.1"
-smol = "2.0.0"
+
+[dependencies.async-fs]
+version = "2.1.2"
+optional = true
+
+[dependencies.futures-lite]
+version = "2.3.0"
+optional = true
+
+[dependencies.thiserror]
+version = "1.0.63"
+optional = true
+
+
+[dependencies.toml]
+version = "0.8.19"
+optional = true
+
+[dependencies.sys-locale]
+version = "0.3.1"
+optional = true
+
+[features]
+default = ["std"]
+std = ["async-fs","futures-lite","thiserror","toml","sys-locale"]
