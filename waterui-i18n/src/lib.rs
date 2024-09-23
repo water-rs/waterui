@@ -1,7 +1,9 @@
 #![no_std]
+#![forbid(unsafe_code)]
 extern crate alloc;
-
-use alloc::collections::btree_map::BTreeMap;
+#[cfg(feature = "std")]
+extern crate std;
+use alloc::collections::BTreeMap;
 use waterui_core::{components::Text, env::Plugin, view::Modifier, Environment};
 use waterui_reactive::compute::ComputeExt;
 use waterui_str::Str;
@@ -11,16 +13,12 @@ pub struct I18n {
     locale: Str,
 }
 
+#[cfg(feature = "std")]
 mod std_on {
-    use alloc::{
-        collections::btree_map::BTreeMap,
-        string::{String, ToString},
-    };
-    use smol::{
-        fs::{read_dir, File},
-        io::{self, AsyncReadExt, AsyncWriteExt, BufReader},
-        stream::StreamExt,
-    };
+    use alloc::{collections::btree_map::BTreeMap, string::ToString};
+    use async_fs::{read_dir, read_to_string, write};
+    use futures_lite::stream::StreamExt;
+    use std::io;
     use sys_locale::get_locale;
     use toml::{from_str, to_string_pretty};
     use waterui_str::Str;
@@ -50,9 +48,7 @@ mod std_on {
                 let path = file.path();
                 if let Some(extension) = path.extension() {
                     if extension == "toml" {
-                        let mut file = BufReader::new(File::open(&path).await?);
-                        let mut buf = String::new();
-                        file.read_to_string(&mut buf).await?;
+                        let buf = read_to_string(&path).await?;
                         let map: BTreeMap<Str, Str> = from_str(&buf)?;
                         if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
                             i18n.insert(Str::from(name.to_string()), map);
@@ -70,9 +66,7 @@ mod std_on {
             let path = path.as_ref();
             for (locale, map) in self.map.iter() {
                 let path = path.join(locale.deref()).with_extension("toml");
-                let mut file = File::create(path).await?;
-                let buf = to_string_pretty(&map)?;
-                file.write_all(buf.as_bytes()).await?;
+                write(path, to_string_pretty(&map)?).await?;
             }
             Ok(())
         }
