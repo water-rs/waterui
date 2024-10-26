@@ -24,6 +24,7 @@ impl<T: View> AnyViewImpl for T {
     }
 }
 
+#[must_use]
 pub struct AnyView(Box<dyn AnyViewImpl>);
 
 impl Debug for AnyView {

@@ -4,3 +4,7 @@ pub mod native;
 pub use native::Native;
 pub mod text;
 pub use text::{text, Text};
+pub mod dynamic;
+pub use dynamic::Dynamic;
+pub mod metadata;
+pub use metadata::{IgnorableMetadata, Metadata};
