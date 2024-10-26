@@ -1,6 +1,11 @@
 language = "C"
+
+trailer="""
+waterui_env *waterui_init();
+waterui_anyview *waterui_widget_main();
+"""
 [enum]
-prefix_with_name = true
+rename_variants = "QualifiedScreamingSnakeCase"
 
 [export]
 include = ["waterui_app","waterui_app_closure","waterui_stack_mode","waterui_fnonce","waterui_app_task"]

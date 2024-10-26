@@ -4,8 +4,6 @@ use waterui::{AnyView, Environment};
 
 use crate::{IntoFFI, IntoRust};
 
-ffi_safe!(u8, i32, f64, bool);
-
 #[repr(C)]
 pub struct waterui_type_id {
     inner: [u64; 2],
@@ -28,7 +26,7 @@ impl IntoRust for waterui_type_id {
         unsafe { transmute(self.inner) }
     }
 }
-ffi_type!(waterui_anyview, AnyView);
+ffi_type!(waterui_anyview, AnyView, waterui_drop_anyview);
 ffi_type!(waterui_env, Environment, waterui_drop_env);
 
 #[no_mangle]

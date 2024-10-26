@@ -6,11 +6,17 @@ use crate::View;
 
 configurable!(Text, TextConfig);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct TextConfig {
     pub content: Computed<Str>,
     pub font: Font,
+}
+
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
 }
 
 impl Clone for Text {
@@ -19,7 +25,7 @@ impl Clone for Text {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Font {
     pub size: f64,
@@ -72,6 +78,12 @@ macro_rules! impl_text {
     ($($ty:ty),*) => {
         $(
             impl View for $ty {
+                fn body(self, _env: crate::Environment) -> impl View {
+                    text(self)
+                }
+            }
+
+            impl View for Computed<$ty> {
                 fn body(self, _env: crate::Environment) -> impl View {
                     text(self)
                 }

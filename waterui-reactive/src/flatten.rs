@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use crate::{zip::zip, Compute};
 
 macro_rules! nested {
@@ -26,9 +28,10 @@ macro_rules! impl_tuples {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:Compute+'static,)*>Compute for ($($ty),*){
+        impl <$($ty:Compute+'static,)*>Compute for ($($ty),*)
+        where ($($ty::Output),*):$crate::ComputeResult,
+        {
             type Output = ($($ty::Output),*);
-
             fn compute(&self) -> Self::Output {
                 let ($($ty),*)=self;
                 let zip=nested_call!($($ty),*);
@@ -37,11 +40,17 @@ macro_rules! impl_tuples {
                 ($($ty),*)
 
             }
-            fn add_watcher(&self, watcher: crate::watcher::Watcher<Self::Output>) -> crate::watcher::WatcherGuard {
-                let ($($ty),*)=self;
 
+            fn watch(&self, watcher: impl Into<crate::watcher::Watcher<Self::Output>>) -> crate::watcher::WatcherGuard {
+                let ($($ty),*)=self;
+                let watcher=watcher.into();
                 let zip=nested_call!($($ty),*);
-                zip.add_watcher(crate::watcher::Watcher::new(move |nested!($($ty),*),metadata|{watcher.notify_with_metadata(($($ty),*),metadata)}))
+                zip.watch(crate::watcher::Watcher::new(move |nested!($($ty),*),metadata|{
+                    $(
+                        let $ty:$ty::Output=Clone::clone(&$ty);
+                    )*
+                    watcher.notify_with_metadata(($($ty),*),metadata)
+                }))
             }
         }
     };
@@ -65,5 +74,4 @@ macro_rules! tuples {
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
     };
 }
-
 tuples!(impl_tuples);

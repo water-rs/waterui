@@ -27,16 +27,7 @@ pub struct waterui_progress {
     style: waterui_style_progress,
 }
 
-impl IntoFFI for ProgressConfig {
-    type FFI = waterui_progress;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_progress {
-            label: self.label.into_ffi(),
-            value: self.value.into_ffi(),
-            style: self.style.into_ffi(),
-        }
-    }
-}
+into_ffi!(ProgressConfig, waterui_progress, label, value, style);
 
 native_view!(
     ProgressConfig,

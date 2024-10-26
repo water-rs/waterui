@@ -3,6 +3,7 @@ use waterui_reactive::impl_constant;
 impl_constant!(Frame, Edge);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[repr(C)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Alignment {
     #[default]
@@ -12,8 +13,9 @@ pub enum Alignment {
     Trailing,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[repr(C)]
 pub struct Frame {
     pub width: f64,
     pub min_width: f64,
@@ -25,6 +27,21 @@ pub struct Frame {
     pub alignment: Alignment,
 }
 
+impl Default for Frame {
+    fn default() -> Self {
+        Self {
+            width: f64::NAN,
+            min_width: f64::NAN,
+            max_width: f64::NAN,
+            height: f64::NAN,
+            min_height: f64::NAN,
+            max_height: f64::NAN,
+            margin: Edge::default(),
+            alignment: Alignment::default(),
+        }
+    }
+}
+
 impl Frame {
     pub fn new() -> Self {
         Self::default()
@@ -33,6 +50,7 @@ impl Frame {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[repr(C)]
 pub struct Edge {
     pub top: f64,
     pub right: f64,
@@ -84,4 +102,15 @@ impl Edge {
     modify_field!(left, f64);
     modify_field!(right, f64);
     modify_field!(bottom, f64);
+}
+
+impl Frame {
+    modify_field!(width, f64);
+    modify_field!(min_width, f64);
+    modify_field!(max_width, f64);
+    modify_field!(height, f64);
+    modify_field!(min_height, f64);
+    modify_field!(max_height, f64);
+    modify_field!(margin, Edge);
+    modify_field!(alignment, Alignment);
 }

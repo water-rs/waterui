@@ -20,8 +20,7 @@ unsafe extern "C" fn waterui_get_animation(
     metadata: *const waterui_watcher_metadata,
 ) -> waterui_animation {
     (*metadata)
-        .get::<Animation>()
-        .cloned()
+        .try_get::<Animation>()
         .map(IntoFFI::into_ffi)
         .unwrap_or(waterui_animation::NONE)
 }

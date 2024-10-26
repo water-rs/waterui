@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use waterui::{
-    navigation::{Bar, NavigationLink, NavigationView},
-    view::ConfigurableView,
+    component::navigation::{Bar, NavigationLink, NavigationView},
     Environment,
 };
 
@@ -23,7 +22,8 @@ pub struct waterui_navigation_link {
 
 ffi_type!(
     waterui_navigation_view_builder,
-    Box<dyn Fn(Environment) -> NavigationView>
+    Box<dyn Fn(Environment) -> NavigationView>,
+    waterui_drop_navigation_view_builder
 );
 
 #[no_mangle]
@@ -34,15 +34,7 @@ unsafe extern "C" fn waterui_navigation_view_builder_call(
     ((*content).0)(env.into_rust()).into_ffi()
 }
 
-impl IntoFFI for NavigationLink {
-    type FFI = waterui_navigation_link;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_navigation_link {
-            label: self.label.into_ffi(),
-            content: self.view.into_ffi(),
-        }
-    }
-}
+into_ffi!(NavigationLink, waterui_navigation_link, label, content);
 
 #[repr(C)]
 pub struct waterui_bar {
@@ -50,25 +42,9 @@ pub struct waterui_bar {
     hidden: *mut waterui_computed_bool,
 }
 
-impl IntoFFI for NavigationView {
-    type FFI = waterui_navigation_view;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_navigation_view {
-            bar: self.bar.into_ffi(),
-            content: self.content.into_ffi(),
-        }
-    }
-}
+into_ffi!(NavigationView, waterui_navigation_view, bar, content);
 
-impl IntoFFI for Bar {
-    type FFI = waterui_bar;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_bar {
-            title: self.title.config().into_ffi(),
-            hidden: self.hidden.into_ffi(),
-        }
-    }
-}
+into_ffi!(Bar, waterui_bar, title, hidden);
 
 ffi_view!(
     NavigationView,

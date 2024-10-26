@@ -13,11 +13,13 @@ use waterui::{Str, ViewExt};
 mod std_on;
 #[derive(Debug, Clone)]
 pub struct IconConfig {
-    pub id: Computed<Str>,
+    pub name: Computed<Str>,
+    pub size: Computed<f64>,
     pub animation: IconAnimation,
 }
 
 #[derive(Debug)]
+#[must_use]
 pub struct Icon(IconConfig);
 
 impl ConfigurableView for Icon {
@@ -28,9 +30,10 @@ impl ConfigurableView for Icon {
 }
 
 impl Icon {
-    pub fn new(id: impl ToComputed<Str>) -> Self {
+    pub fn new(name: impl ToComputed<Str>) -> Self {
         Self(IconConfig {
-            id: id.to_computed(),
+            name: name.to_computed(),
+            size: f64::NAN.to_computed(),
             animation: IconAnimation::default(),
         })
     }
@@ -39,6 +42,10 @@ impl Icon {
         self.0.animation = value;
         self
     }
+}
+
+pub fn icon(id: impl ToComputed<Str>) -> Icon {
+    Icon::new(id)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -81,19 +88,21 @@ type Data = Box<[u8]>;
 impl View for Icon {
     fn body(self, env: Environment) -> impl View {
         let config = self.config();
-        Dynamic::watch(config.id.clone(), move |id| {
-            let manager = env.get::<IconManager>();
-            let icon = manager
-                .icons
-                .get(&id)
-                .or_else(|| manager.alias.get(&id).and_then(|v| manager.icons.get(v)))
-                .cloned();
+        Dynamic::watch(config.name.clone(), move |id| {
+            let manager = env.try_get::<IconManager>();
 
-            if let Some(icon) = icon {
-                Image::new(icon).anyview()
-            } else {
-                Native(config.clone()).anyview()
+            if let Some(manager) = manager {
+                let icon = manager
+                    .icons
+                    .get(&id)
+                    .or_else(|| manager.alias.get(&id).and_then(|v| manager.icons.get(v)))
+                    .cloned();
+                if let Some(icon) = icon {
+                    return Image::new(icon).anyview();
+                }
             }
+
+            Native(config.clone()).anyview()
         })
     }
 }
