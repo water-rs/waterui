@@ -1,4 +1,7 @@
-use waterui::component::{text::TextConfig, Text};
+use waterui::{
+    component::{text::TextConfig, Text},
+    view::ConfigurableView,
+};
 
 use crate::{computed::waterui_computed_str, IntoFFI, IntoRust};
 
@@ -7,12 +10,12 @@ pub struct waterui_text {
     content: *mut waterui_computed_str,
 }
 
-impl IntoFFI for TextConfig {
+into_ffi!(TextConfig, waterui_text, content);
+
+impl IntoFFI for Text {
     type FFI = waterui_text;
     fn into_ffi(self) -> Self::FFI {
-        waterui_text {
-            content: self.content.into_ffi(),
-        }
+        self.config().into_ffi()
     }
 }
 

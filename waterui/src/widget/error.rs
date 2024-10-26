@@ -12,6 +12,8 @@ pub struct Error {
     inner: Box<dyn ErrorImpl>,
 }
 
+impl_debug!(Error);
+
 pub type BoxedStdError = Box<dyn StdError>;
 pub type ErrorViewBuilder = Box<dyn Fn(BoxedStdError) -> AnyView>;
 
@@ -98,6 +100,7 @@ impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
     }
 }
 
+#[derive(Debug)]
 pub struct UseDefaultErrorView(BoxedStdError);
 
 impl From<BoxedStdError> for UseDefaultErrorView {
@@ -124,6 +127,7 @@ impl View for UseDefaultErrorView {
 }
 
 pub struct DefaultErrorView(ErrorViewBuilder);
+impl_debug!(DefaultErrorView);
 
 impl DefaultErrorView {
     pub fn new<V: View>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {

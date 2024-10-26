@@ -1,3 +1,5 @@
+use core::mem::ManuallyDrop;
+
 use alloc::boxed::Box;
 
 use crate::IntoRust;
@@ -9,11 +11,11 @@ pub struct waterui_fn<T> {
     drop: unsafe extern "C" fn(*mut ()),
 }
 
-// TODO : Drop
 impl<T: 'static> IntoRust for waterui_fn<T> {
     type Rust = Box<dyn Fn(T)>;
     unsafe fn into_rust(self) -> Self::Rust {
-        Box::new(move |v| (self.call)(self.data, v))
+        let this = ManuallyDrop::new(self);
+        Box::new(move |v| (this.call)(this.data, v))
     }
 }
 
@@ -37,23 +39,23 @@ impl<T> Drop for waterui_fn<T> {
 }
 
 #[repr(C)]
-pub struct waterui_fnonce {
+pub struct waterui_fnonce<T> {
     data: *mut (),
-    call: unsafe extern "C" fn(*mut ()),
+    call: unsafe extern "C" fn(*mut (), T),
 }
 
-impl IntoRust for waterui_fnonce {
-    type Rust = Box<dyn FnOnce()>;
+impl<T: 'static> IntoRust for waterui_fnonce<T> {
+    type Rust = Box<dyn FnOnce(T)>;
     unsafe fn into_rust(self) -> Self::Rust {
-        Box::new(move || self.call())
+        Box::new(move |v| self.call(v))
     }
 }
 
-impl waterui_fnonce {
-    pub unsafe fn new(data: *mut (), call: unsafe extern "C" fn(*mut ())) -> Self {
+impl<T> waterui_fnonce<T> {
+    pub unsafe fn new(data: *mut (), call: unsafe extern "C" fn(*mut (), T)) -> Self {
         Self { data, call }
     }
-    pub fn call(self) {
-        unsafe { (self.call)(self.data) }
+    pub fn call(self, value: T) {
+        unsafe { (self.call)(self.data, value) }
     }
 }

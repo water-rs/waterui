@@ -1,20 +1,12 @@
-use crate::{binding::waterui_binding_int, computed::waterui_computed_int, IntoFFI};
-use waterui::component::stepper::StepperConfig;
+use crate::{binding::waterui_binding_int, computed::waterui_computed_int};
+use waterui::component::form::stepper::StepperConfig;
 #[repr(C)]
 pub struct waterui_stepper {
     value: *const waterui_binding_int,
     step: *mut waterui_computed_int,
 }
 
-impl IntoFFI for StepperConfig {
-    type FFI = waterui_stepper;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_stepper {
-            value: self.value.into_ffi(),
-            step: self.step.into_ffi(),
-        }
-    }
-}
+into_ffi!(StepperConfig, waterui_stepper, value, step);
 
 native_view!(
     StepperConfig,

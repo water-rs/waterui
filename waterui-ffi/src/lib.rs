@@ -29,6 +29,7 @@ pub trait IntoRust {
     type Rust;
     unsafe fn into_rust(self) -> Self::Rust;
 }
+ffi_safe!(u8, i32, f64, bool);
 
 ffi_type!(
     waterui_watcher_guard,

@@ -1,6 +1,10 @@
 use waterui_reactive::watcher::{self};
 
-ffi_type!(waterui_watcher_metadata, watcher::Metadata);
+ffi_type!(
+    waterui_watcher_metadata,
+    watcher::Metadata,
+    waterui_drop_watcher_metadata
+);
 
 #[repr(C)]
 pub struct waterui_watcher<T> {
@@ -17,12 +21,12 @@ impl<T: 'static> waterui_watcher<T> {
     ) -> Self {
         Self { data, call, drop }
     }
-    pub fn call(&self, value: T, metadata: &watcher::Metadata) {
+    pub fn call(&self, value: T, metadata: watcher::Metadata) {
         unsafe {
             (self.call)(
                 self.data,
                 value,
-                metadata as *const watcher::Metadata as *const waterui_watcher_metadata,
+                (&metadata) as *const watcher::Metadata as *const waterui_watcher_metadata,
             )
         }
     }

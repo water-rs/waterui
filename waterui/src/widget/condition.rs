@@ -1,6 +1,7 @@
 use crate::{component::Dynamic, view::ViewBuilder, ViewExt};
 use waterui_core::{Environment, View};
 use waterui_reactive::compute::ToComputed;
+#[derive(Debug)]
 pub struct When<Condition, Then> {
     condition: Condition,
     then: Then,
@@ -12,12 +13,17 @@ where
     Then: ViewBuilder,
 {
     fn body(self, _env: Environment) -> impl View {
-        self.or(|| {})
+        self.or(|_env| {})
     }
 }
 
 impl<Condition, Then> When<Condition, Then> {
-    pub fn or<Or>(self, or: Or) -> WhenOr<Condition, Then, Or> {
+    pub fn or<Or>(self, or: Or) -> WhenOr<Condition, Then, Or>
+    where
+        Condition: ToComputed<bool>,
+        Then: ViewBuilder,
+        Or: ViewBuilder,
+    {
         WhenOr {
             condition: self.condition,
             then: self.then,
@@ -25,7 +31,7 @@ impl<Condition, Then> When<Condition, Then> {
         }
     }
 }
-
+#[derive(Debug)]
 pub struct WhenOr<Condition, Then, Or> {
     condition: Condition,
     then: Then,

@@ -7,10 +7,12 @@ pub mod binding;
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use binding::{binding, Binding};
 pub mod constant;
+use compute::ComputeResult;
 pub use constant::constant;
 pub mod compute;
 pub use compute::{Compute, ComputeExt, Computed};
-pub mod cached;
+use watcher::WatcherGuard;
+use waterui_str::Str;
 pub mod flatten;
 pub mod map;
 pub mod watcher;
@@ -25,7 +27,7 @@ macro_rules! impl_constant {
                 fn compute(&self) -> Self::Output{
                     self.clone()
                 }
-                fn add_watcher(&self, _watcher: $crate::watcher::Watcher<Self::Output>) -> $crate::watcher::WatcherGuard{
+                fn watch(&self, _watcher: impl Into<$crate::watcher::Watcher<Self::Output>>) -> $crate::watcher::WatcherGuard{
                     $crate::watcher::WatcherGuard::new(||{})
                 }
             }
@@ -36,10 +38,29 @@ macro_rules! impl_constant {
 impl_constant!(
     &'static str,
     bool,
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    i8,
+    i16,
     i32,
+    i64,
+    f32,
     f64,
     String,
-    Vec<u8>,
     Box<str>,
-    Box<[u8]>
+    Box<[u8]>,
+    Str
 );
+
+impl<T: ComputeResult> Compute for Vec<T> {
+    type Output = Self;
+    fn compute(&self) -> Self::Output {
+        self.clone()
+    }
+    fn watch(&self, _watcher: impl Into<watcher::Watcher<Self::Output>>) -> watcher::WatcherGuard {
+        WatcherGuard::new(|| {})
+    }
+}

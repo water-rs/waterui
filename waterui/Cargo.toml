@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-core = { path = "../waterui-core" }
+waterui-lazy = { path = "../waterui-lazy" }
 waterui-str = { path = "../waterui-str" }
 main-executor = { path = "../../main-executor"}
 async-channel = "2.2.1"

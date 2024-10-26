@@ -16,7 +16,7 @@ pub struct Suspense<V, Loading> {
 }
 
 pub trait SuspendedView: 'static {
-    fn body(self, _env: &Environment) -> impl Future<Output = impl View>;
+    fn body(self, _env: Environment) -> impl Future<Output = impl View>;
 }
 
 impl<Fut, V> SuspendedView for Fut
@@ -24,13 +24,14 @@ where
     Fut: Future<Output = V> + 'static,
     V: View,
 {
-    fn body(self, _env: &Environment) -> impl Future<Output = impl View> {
+    fn body(self, _env: Environment) -> impl Future<Output = impl View> {
         self
     }
 }
 
+#[derive(Debug)]
 pub struct DefaultLoadingView(AnyViewBuilder);
-
+#[derive(Debug)]
 pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
@@ -72,7 +73,7 @@ where
 
         let new_env = env.clone();
         task(async move {
-            let content = SuspendedView::body(self.content, &new_env).await;
+            let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
         })
         .detach();

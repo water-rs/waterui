@@ -2,6 +2,7 @@ use core::fmt::Debug;
 use core::future::Future;
 
 use alloc::boxed::Box;
+use waterui_core::Environment;
 
 use crate::View;
 use crate::{task, AnyView, ViewExt};
@@ -16,13 +17,13 @@ impl_debug!(ButtonConfig);
 
 configurable!(Button, ButtonConfig);
 
-pub type Action = Box<dyn Fn()>;
+pub type Action = Box<dyn FnMut(Environment)>;
 
 impl Default for Button {
     fn default() -> Self {
         Self(ButtonConfig {
             label: ().anyview(),
-            action: Box::new(|| {}),
+            action: Box::new(|_env| {}),
         })
     }
 }
@@ -34,17 +35,17 @@ impl Button {
         button
     }
 
-    pub fn action(mut self, action: impl Fn() + 'static) -> Self {
+    pub fn action(mut self, action: impl FnMut(Environment) + 'static) -> Self {
         self.0.action = Box::new(action);
         self
     }
 
-    pub fn action_async<Fut>(self, action: impl 'static + Fn() -> Fut) -> Self
+    pub fn action_async<Fut>(self, action: impl 'static + Fn(Environment) -> Fut) -> Self
     where
         Fut: Future + 'static,
     {
-        self.action(move || {
-            task(action()).detach();
+        self.action(move |env| {
+            task(action(env)).detach();
         })
     }
 }

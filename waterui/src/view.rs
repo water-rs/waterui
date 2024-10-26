@@ -1,14 +1,35 @@
 pub use waterui_core::view::*;
-use waterui_core::{components::Text, AnyView, Environment};
+use waterui_core::{components::Text, env::use_env, AnyView, Environment};
 
 use alloc::boxed::Box;
+use waterui_reactive::{
+    compute::{ComputeResult, ToComputed},
+    watcher::WatcherGuard,
+    Binding, Compute, Computed,
+};
 
-use crate::navigation::NavigationView;
+use crate::{
+    color::{BackgroundColor, Color, ForegroundColor},
+    component::{focu::Focused, navigation::NavigationView, Metadata},
+    layout::{Edge, Frame},
+    utils::{Id, Mapping},
+};
 
 pub trait ViewExt: View + Sized {
-    fn env(self, env: Environment) -> WithEnv;
+    fn metadata<T>(self, metadata: T) -> Metadata<T>;
+    fn with<T: 'static>(self, value: T) -> impl View;
     fn title(self, title: impl Into<Text>) -> NavigationView;
     fn anyview(self) -> AnyView;
+    fn padding(self) -> Metadata<Edge>;
+    fn focused<T: 'static + Eq + Clone>(
+        self,
+        value: Binding<Option<T>>,
+        equals: T,
+    ) -> Metadata<Focused>;
+    fn background(self, color: impl ToComputed<Color>) -> Metadata<BackgroundColor>;
+    fn foreground(self, color: impl ToComputed<Color>) -> Metadata<ForegroundColor>;
+    fn frame(self, frame: impl ToComputed<Frame>) -> Metadata<Computed<Frame>>;
+    fn tag<T>(self, tag: T) -> TaggedView<T, Self>;
 }
 
 pub trait ConfigViewExt: ConfigurableView + Sized {
@@ -27,14 +48,16 @@ pub trait ViewBuilder: 'static {
 
 impl<F, V> ViewBuilder for F
 where
-    F: Fn() -> V + 'static,
+    F: Fn(Environment) -> V + 'static,
     V: View,
 {
-    fn view(&self, _env: Environment) -> impl View {
-        (self)()
+    fn view(&self, env: Environment) -> impl View {
+        (self)(env)
     }
 }
 pub struct AnyViewBuilder(Box<dyn Fn(Environment) -> AnyView>);
+
+impl_debug!(AnyViewBuilder);
 
 impl AnyViewBuilder {
     pub fn new(builder: impl ViewBuilder + 'static) -> Self {
@@ -49,28 +72,73 @@ impl ViewBuilder for AnyViewBuilder {
 }
 
 impl<V: View> ViewExt for V {
-    fn env(self, env: Environment) -> WithEnv {
-        WithEnv::new(self, env)
+    fn metadata<T>(self, metadata: T) -> Metadata<T> {
+        Metadata::new(self, metadata)
+    }
+
+    fn with<T: 'static>(self, value: T) -> impl View {
+        use_env(move |env| self.metadata(env.with(value)))
     }
 
     fn title(self, title: impl Into<Text>) -> NavigationView {
         NavigationView::new(title, self)
     }
 
+    fn focused<T: 'static + Eq + Clone>(
+        self,
+        value: Binding<Option<T>>,
+        equals: T,
+    ) -> Metadata<Focused> {
+        Metadata::new(self, Focused::new(value, equals))
+    }
+
     fn anyview(self) -> AnyView {
         AnyView::new(self)
     }
+
+    fn padding(self) -> Metadata<Edge> {
+        Metadata::new(self, Edge::default())
+    }
+    fn frame(self, frame: impl ToComputed<Frame>) -> Metadata<Computed<Frame>> {
+        Metadata::new(self, frame.to_computed())
+    }
+
+    fn background(self, color: impl ToComputed<Color>) -> Metadata<BackgroundColor> {
+        Metadata::new(self, BackgroundColor::new(color))
+    }
+    fn foreground(self, color: impl ToComputed<Color>) -> Metadata<ForegroundColor> {
+        Metadata::new(self, ForegroundColor::new(color))
+    }
+    fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
+        TaggedView::new(tag, self)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaggedView<T, V> {
     pub tag: T,
-    pub view: V,
+    pub content: V,
+}
+
+impl<T, V> Compute for TaggedView<T, V>
+where
+    Self: ComputeResult,
+{
+    type Output = Self;
+    fn compute(&self) -> Self::Output {
+        self.clone()
+    }
+    fn watch(
+        &self,
+        _watcher: impl Into<waterui_reactive::watcher::Watcher<Self::Output>>,
+    ) -> waterui_reactive::watcher::WatcherGuard {
+        WatcherGuard::new(|| {})
+    }
 }
 
 impl<T, V: View> TaggedView<T, V> {
-    pub fn new(tag: T, view: V) -> Self {
-        Self { tag, view }
+    pub fn new(tag: T, content: V) -> Self {
+        Self { tag, content }
     }
 
     pub fn map<F, T2>(self, f: F) -> TaggedView<T2, V>
@@ -79,14 +147,21 @@ impl<T, V: View> TaggedView<T, V> {
     {
         TaggedView {
             tag: f(self.tag),
-            view: self.view,
+            content: self.content,
         }
+    }
+
+    pub fn mapping(self, mapping: &Mapping<T>) -> TaggedView<Id, V>
+    where
+        T: Ord + Clone,
+    {
+        self.map(move |v| mapping.register(v))
     }
 
     pub fn erase(self) -> TaggedView<T, AnyView> {
         TaggedView {
             tag: self.tag,
-            view: self.view.anyview(),
+            content: self.content.anyview(),
         }
     }
 }
