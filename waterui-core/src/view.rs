@@ -1,12 +1,11 @@
-use crate::{components::text::text, AnyView, Environment};
+use crate::{components::Metadata, AnyView, Environment};
 
 use alloc::{boxed::Box, vec::Vec};
-use waterui_reactive::Computed;
-use waterui_str::Str;
 
 /// View represents a part of the user interface.
 ///
 /// You can create your custom view by implement this trait. You just need to implement fit.
+#[must_use]
 pub trait View: 'static {
     /// Build this view and return the content.
     ///
@@ -14,6 +13,12 @@ pub trait View: 'static {
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
     fn body(self, _env: Environment) -> impl View;
+}
+
+impl<F: 'static + FnOnce(Environment) -> V, V: View> View for F {
+    fn body(self, env: Environment) -> impl View {
+        self(env)
+    }
 }
 
 impl<V: View, E: View> View for Result<V, E> {
@@ -38,6 +43,22 @@ pub trait TupleViews {
     fn into_views(self) -> Vec<AnyView>;
 }
 
+impl<V: View> TupleViews for Vec<V> {
+    fn into_views(self) -> Vec<AnyView> {
+        self.into_iter()
+            .map(|content| AnyView::new(content))
+            .collect()
+    }
+}
+
+impl<V: View, const N: usize> TupleViews for [V; N] {
+    fn into_views(self) -> Vec<AnyView> {
+        self.into_iter()
+            .map(|content| AnyView::new(content))
+            .collect()
+    }
+}
+
 pub trait ConfigurableView: View {
     type Config: 'static;
     fn config(self) -> Self::Config;
@@ -54,24 +75,8 @@ where
     fn from(value: F) -> Self {
         Self(Box::new(move |mut env, config| {
             env.remove::<Self>();
-            AnyView::new(WithEnv::new(value(env.clone(), config), env))
+            AnyView::new(Metadata::new(value(env.clone(), config), env))
         }))
-    }
-}
-
-pub struct WithEnv {
-    pub view: AnyView,
-    pub env: Environment,
-}
-
-raw_view!(WithEnv);
-
-impl WithEnv {
-    pub fn new(view: impl View, env: Environment) -> Self {
-        Self {
-            view: AnyView::new(view),
-            env,
-        }
     }
 }
 
@@ -110,14 +115,3 @@ raw_view!(());
 impl View for ! {
     fn body(self, _env: Environment) -> impl View {}
 }
-
-impl<T> View for Computed<T>
-where
-    Str: From<T>,
-{
-    fn body(self, _env: Environment) -> impl View {
-        text(self)
-    }
-}
-
-raw_view!(Computed<AnyView>);

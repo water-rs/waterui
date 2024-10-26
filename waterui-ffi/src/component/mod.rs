@@ -5,18 +5,25 @@ use waterui::{component::Native, AnyView, Binding, View, ViewExt};
 use crate::{waterui_anyview, waterui_env, waterui_type_id, IntoFFI, IntoRust};
 
 pub mod button;
+pub mod color;
+pub mod divider;
 pub mod dynamic;
+pub mod icon;
+pub mod image;
+pub mod layout;
+pub mod lazy;
+pub mod list;
 pub mod metadata;
 pub mod navigation;
 pub mod picker;
 pub mod progress;
-pub mod stack;
+pub mod shape;
+pub mod slider;
 pub mod stepper;
 pub mod tabs;
 pub mod text;
 pub mod text_field;
 pub mod toggle;
-pub mod with_env;
 ffi_type!(
     waterui_binding_id,
     Binding<waterui::utils::Id>,
@@ -46,4 +53,10 @@ impl<T: IntoFFI> IntoFFI for Native<T> {
     fn into_ffi(self) -> Self::FFI {
         self.0.into_ffi()
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct waterui_nothing {
+    _nothing: u8,
 }

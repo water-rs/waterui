@@ -1,6 +1,6 @@
-use waterui::{component::text_field::TextFieldConfig, view::ConfigurableView};
+use waterui::component::form::text_field::TextFieldConfig;
 
-use crate::{binding::waterui_binding_str, waterui_anyview, IntoFFI};
+use crate::{binding::waterui_binding_str, waterui_anyview};
 
 use super::text::waterui_text;
 
@@ -11,16 +11,7 @@ pub struct waterui_text_field {
     prompt: waterui_text,
 }
 
-impl IntoFFI for TextFieldConfig {
-    type FFI = waterui_text_field;
-    fn into_ffi(self) -> Self::FFI {
-        Self::FFI {
-            label: self.label.into_ffi(),
-            value: self.value.into_ffi(),
-            prompt: self.prompt.config().into_ffi(),
-        }
-    }
-}
+into_ffi!(TextFieldConfig, waterui_text_field, label, value, prompt);
 
 native_view!(
     TextFieldConfig,

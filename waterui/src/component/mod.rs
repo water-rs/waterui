@@ -1,37 +1,22 @@
 pub mod button;
-pub mod color_picker;
-pub mod date_picker;
-pub mod dynamic;
-pub mod image;
-pub use image::Image;
-
-pub mod metadata;
-pub mod picker;
-pub mod progress;
-pub mod slider;
-pub mod stack;
-pub mod stepper;
-pub mod text_field;
-pub mod toggle;
 #[doc(inline)]
 pub use button::{button, Button};
-pub use dynamic::Dynamic;
+pub mod image;
+pub use image::Image;
+pub mod navigation;
+
+pub mod divder;
+pub mod focu;
+pub mod form;
+pub mod layout;
+pub mod list;
+pub mod picker;
+pub mod progress;
 #[doc(inline)]
 pub use progress::{loading, progress, Progress};
-#[doc(inline)]
-pub use stack::{hstack, vstack, zstack, Stack};
-#[doc(inline)]
-pub use stepper::{stepper, Stepper};
-#[doc(inline)]
-pub use text_field::{field, TextField};
-#[doc(inline)]
-pub use toggle::{toggle, Toggle};
+pub mod shape;
+pub mod style;
+pub mod table;
+
 #[doc(inline)]
 pub use waterui_core::components::*;
-
-/*
-#[cfg(feature = "remote-image")]
-mod remote_image;
-#[cfg(feature = "remote-image")]
-pub use remote_image::{remoteimg, RemoteImage};
-*/

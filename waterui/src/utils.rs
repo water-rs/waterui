@@ -1,90 +1,12 @@
-use core::{cell::RefCell, fmt::Debug, num::NonZeroUsize};
+use core::{cell::RefCell, num::NonZeroI32};
 
 use alloc::{collections::btree_map::BTreeMap, rc::Rc};
 use waterui_reactive::Binding;
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct Color {
-    pub red: u8,
-    pub green: u8,
-    pub blue: u8,
-    pub opacity: f64,
-}
-
-impl Default for Color {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl Color {
-    pub const BLACK: Self = Self::rgb(0, 0, 0);
-    pub const WHITE: Self = Self::rgb(255, 255, 255);
-    pub const TRANSPARENCY: Self = Self::rgba(0, 0, 0, 0.0);
-    pub const fn rgb(red: u8, green: u8, blue: u8) -> Self {
-        Self::rgba(red, green, blue, 1.0)
-    }
-
-    pub const DEFAULT: Self = Self::rgba(0, 0, 0, f64::NAN);
-
-    pub const fn rgba(red: u8, green: u8, blue: u8, opacity: f64) -> Self {
-        Self {
-            red,
-            green,
-            blue,
-            opacity,
-        }
-    }
-
-    pub fn opacity(mut self, opacity: f64) -> Self {
-        self.opacity = opacity;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub enum Background {
-    Default,
-    Color(Color),
-}
-
-impl_from!(Background, Color);
-
-impl Default for Background {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-pub trait HandleBorrowed<F> {
-    fn handle(self, f: F) -> impl Fn() + 'static;
-}
-
-macro_rules! impl_handle_borrowed {
-    ($($ty:ident),*) => {
-        #[allow(non_snake_case)]
-        #[allow(unused_variables)]
-        #[allow(unused_parens)]
-        impl <F,$($ty:Clone+'static,)*>HandleBorrowed<F> for ($(&$ty),*)
-        where
-            F: Fn($(&$ty),*) + 'static{
-
-            fn handle(self, f: F) -> impl Fn() + 'static {
-                let ($($ty),*) = self;
-                let ($($ty),*) = ($($ty.clone()),*);
-
-                move || f($(&$ty),*)
-            }
-        }
-    };
-}
-
-tuples!(impl_handle_borrowed);
-pub type Id = NonZeroUsize;
+pub type Id = NonZeroI32;
+#[derive(Debug)]
 struct MappingInner<T> {
-    counter: Id,
+    counter: i32,
     to_id: BTreeMap<T, Id>,
     from_id: BTreeMap<Id, T>,
 }
@@ -92,14 +14,14 @@ struct MappingInner<T> {
 impl<T: Ord + Clone> MappingInner<T> {
     pub const fn new() -> Self {
         Self {
-            counter: Id::MIN,
+            counter: 1,
             to_id: BTreeMap::new(),
             from_id: BTreeMap::new(),
         }
     }
 
     pub fn register(&mut self, value: T) -> Id {
-        let id = self.counter;
+        let id = NonZeroI32::new(self.counter).unwrap();
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
         self.counter = self.counter.checked_add(1).unwrap();
@@ -120,7 +42,7 @@ impl<T: Ord + Clone> MappingInner<T> {
             .unwrap_or_else(|| self.register(value))
     }
 }
-
+#[derive(Debug)]
 pub struct Mapping<T>(Rc<RefCell<MappingInner<T>>>);
 
 impl<T> Clone for Mapping<T> {
@@ -161,8 +83,9 @@ impl<T: Ord + Clone> Mapping<T> {
     {
         let mapping = self.clone();
         let mapping2 = self.clone();
-        source.map(
-            move |value| mapping.to_id(value),
+        Binding::map(
+            &source,
+            move |value| mapping.to_id(value.clone()),
             move |binding, value| {
                 binding.set(
                     mapping2

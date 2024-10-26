@@ -24,6 +24,7 @@ pub enum ProgressStyle {
 
 configurable!(Progress, ProgressConfig);
 
+#[derive(Debug)]
 pub struct ProgressWithTotal(Progress);
 
 impl ProgressWithTotal {
