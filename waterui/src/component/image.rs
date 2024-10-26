@@ -1,16 +1,17 @@
-use std::boxed::Box;
-
+use alloc::vec::Vec;
 use waterui_reactive::{compute::ToComputed, Computed};
+
+pub type Data = Vec<u8>;
 
 #[derive(Debug)]
 pub struct ImageConfig {
-    pub data: Computed<Box<[u8]>>,
+    pub data: Computed<Data>,
 }
 
 configurable!(Image, ImageConfig);
 
 impl Image {
-    pub fn new(data: impl ToComputed<Box<[u8]>>) -> Self {
+    pub fn new(data: impl ToComputed<Data>) -> Self {
         Self(ImageConfig {
             data: data.to_computed(),
         })

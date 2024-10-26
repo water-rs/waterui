@@ -24,11 +24,11 @@ impl Shared {
     pub fn as_str(&self, len: usize) -> &str {
         unsafe { core::str::from_utf8_unchecked(&*slice_from_raw_parts(self.head, len)) }
     }
-    pub unsafe fn take(self, len: usize) -> String {
+    pub unsafe fn try_take(&self, len: usize) -> Option<String> {
         if self.count.get() == 1 {
-            String::from_raw_parts(self.head, len, self.capacity)
+            Some(String::from_raw_parts(self.head, len, self.capacity))
         } else {
-            self.as_str(len).into()
+            None
         }
     }
 

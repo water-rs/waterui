@@ -1,6 +1,6 @@
-use crate::{binding::waterui_binding_bool, waterui_anyview, IntoFFI};
+use crate::{binding::waterui_binding_bool, waterui_anyview};
 
-use waterui::component::toggle::ToggleConfig;
+use waterui::component::form::toggle::ToggleConfig;
 
 #[repr(C)]
 pub struct waterui_toggle {
@@ -8,15 +8,7 @@ pub struct waterui_toggle {
     toggle: *const waterui_binding_bool,
 }
 
-impl IntoFFI for ToggleConfig {
-    type FFI = waterui_toggle;
-    fn into_ffi(self) -> Self::FFI {
-        waterui_toggle {
-            label: self.label.into_ffi(),
-            toggle: self.toggle.into_ffi(),
-        }
-    }
-}
+into_ffi!(ToggleConfig, waterui_toggle, label, toggle);
 
 native_view!(
     ToggleConfig,

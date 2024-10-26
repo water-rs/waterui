@@ -4,7 +4,7 @@ use waterui::component::Dynamic;
 
 use crate::{closure::waterui_fn, waterui_anyview, IntoFFI};
 
-ffi_type!(waterui_dynamic_view, Dynamic);
+ffi_type!(waterui_dynamic_view, Dynamic, waterui_drop_dynamic_view);
 
 ffi_view!(
     Dynamic,

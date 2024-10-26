@@ -98,8 +98,7 @@ where
 {
     type Output = Str;
     fn add(self, rhs: T) -> Self::Output {
-        let rhs = rhs.as_ref();
-        (self.clone().into_string() + rhs).into()
+        self.clone().add(rhs)
     }
 }
 

@@ -26,22 +26,26 @@ impl<A: Compute + 'static, B: Compute + 'static> Compute for Zip<A, B> {
     fn compute(&self) -> Self::Output {
         (self.a.compute(), self.b.compute())
     }
-    fn add_watcher(&self, watcher: crate::watcher::Watcher<Self::Output>) -> WatcherGuard {
-        let watcher = Rc::new(watcher);
-        let a = self.a.clone();
 
-        let b = self.b.clone();
+    fn watch(&self, watcher: impl Into<crate::watcher::Watcher<Self::Output>>) -> WatcherGuard {
+        let watcher = Rc::new(watcher.into());
+        let Self { a, b } = self.clone();
 
         let guard_a = {
             let watcher = watcher.clone();
-            self.a.add_watcher(Watcher::new(move |value, metadata| {
-                watcher.notify_with_metadata((value, b.compute()), metadata)
-            }))
+            self.a
+                .watch(Watcher::new(move |value: A::Output, metadata| {
+                    let result = (value.clone(), b.compute());
+                    watcher.notify_with_metadata(result, metadata)
+                }))
         };
 
-        let guard_b = self.b.add_watcher(Watcher::new(move |value, metadata| {
-            watcher.notify_with_metadata((a.compute(), value), metadata)
-        }));
+        let guard_b = self
+            .b
+            .watch(Watcher::new(move |value: B::Output, metadata| {
+                let result = (a.compute(), value.clone());
+                watcher.notify_with_metadata(result, metadata)
+            }));
 
         WatcherGuard::new(move || {
             let _ = (guard_a, guard_b);

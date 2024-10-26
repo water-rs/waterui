@@ -10,15 +10,11 @@ use alloc::{
 };
 use shared::Shared;
 
-use waterui_reactive::impl_constant;
-
-impl_constant!(Str);
-
 use core::{
     borrow::Borrow,
-    mem::{take, ManuallyDrop},
+    mem::{forget, take, ManuallyDrop},
     ops::Deref,
-    ptr::{read, NonNull},
+    ptr::NonNull,
     slice,
 };
 
@@ -127,6 +123,18 @@ impl Str {
         Self::from_static("")
     }
 
+    pub fn into_raw_parts(self) -> (*const (), usize) {
+        let this = ManuallyDrop::new(self);
+        (this.ptr.as_ptr(), this.len)
+    }
+
+    pub unsafe fn from_raw_parts(ptr: *const (), len: usize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr as *mut ()),
+            len,
+        }
+    }
+
     pub fn from_utf8(bytes: Vec<u8>) -> Result<Self, FromUtf8Error> {
         String::from_utf8(bytes).map(Self::from)
     }
@@ -180,14 +188,19 @@ impl Str {
     }
 
     pub fn into_string(self) -> String {
-        let this = ManuallyDrop::new(self);
+        // Fix mem leak
+        let len = self.len;
         unsafe {
-            if this.is_static() {
-                this.as_static_unchecked().to_string()
-            } else {
-                let ptr = this.ptr.as_ptr().byte_sub(usize::MAX / 2) as *mut Shared;
-                let shared = read(ptr);
-                shared.take(this.len())
+            match self.try_as_static() {
+                Ok(s) => s.to_string(),
+                Err(s) => {
+                    if let Some(value) = s.try_take(len) {
+                        forget(self);
+                        value
+                    } else {
+                        s.as_str(len).to_string()
+                    }
+                }
             }
         }
     }

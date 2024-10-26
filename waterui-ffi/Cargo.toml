@@ -6,5 +6,8 @@ edition = "2021"
 [dependencies]
 waterui = { path = "../waterui" }
 waterui-reactive = { path = "../waterui-reactive" }
+waterui-icon = { path = "../waterui-icon" }
+waterui-lazy = { path = "../waterui-lazy" }
 waterui-str = { path = "../waterui-str" }
 waterui-macro = { path = "../waterui-macro" }
+futures-lite = "2.3"
