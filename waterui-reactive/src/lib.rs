@@ -1,5 +1,4 @@
 #![no_std]
-#![forbid(unsafe_code)]
 extern crate alloc;
 
 pub mod binding;
@@ -14,6 +13,7 @@ pub use compute::{Compute, ComputeExt, Computed};
 use watcher::WatcherGuard;
 use waterui_str::Str;
 pub mod flatten;
+pub mod mailbox;
 pub mod map;
 pub mod watcher;
 pub mod zip;
@@ -23,6 +23,7 @@ macro_rules! impl_constant {
     ($($ty:ty),*) => {
         $(
             impl $crate::compute::Compute for $ty {
+                const CONSTANT: bool = true;
                 type Output=$ty;
                 fn compute(&self) -> Self::Output{
                     self.clone()

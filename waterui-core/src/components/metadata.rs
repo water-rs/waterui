@@ -17,7 +17,7 @@ impl<T> Metadata<T> {
 }
 
 impl<T: 'static> View for Metadata<T> {
-    fn body(self, _env: Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         panic!(
             "The metadata `{}`is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
             core::any::type_name::<Self>()
@@ -31,5 +31,5 @@ pub struct IgnorableMetadata<T> {
 }
 
 impl<T: 'static> View for IgnorableMetadata<T> {
-    fn body(self, _env: Environment) -> impl View {}
+    fn body(self, _env: &Environment) -> impl View {}
 }

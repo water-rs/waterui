@@ -4,7 +4,7 @@ use core::ops::Deref;
 
 use alloc::{boxed::Box, collections::btree_map::BTreeMap};
 use waterui::component::{Dynamic, Image, Native};
-use waterui::env::Plugin;
+use waterui::env::{use_env, Plugin};
 use waterui::view::ConfigurableView;
 use waterui::{compute::ToComputed, Computed};
 use waterui::{Environment, View};
@@ -86,23 +86,24 @@ impl IconManager {
 type Data = Box<[u8]>;
 
 impl View for Icon {
-    fn body(self, env: Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         let config = self.config();
         Dynamic::watch(config.name.clone(), move |id| {
-            let manager = env.try_get::<IconManager>();
-
-            if let Some(manager) = manager {
-                let icon = manager
-                    .icons
-                    .get(&id)
-                    .or_else(|| manager.alias.get(&id).and_then(|v| manager.icons.get(v)))
-                    .cloned();
-                if let Some(icon) = icon {
-                    return Image::new(icon).anyview();
+            let config = config.clone();
+            use_env(move |env: Environment| {
+                if let Some(manager) = env.get::<IconManager>() {
+                    let icon = manager
+                        .icons
+                        .get(&id)
+                        .or_else(|| manager.alias.get(&id).and_then(|v| manager.icons.get(v)))
+                        .cloned();
+                    if let Some(icon) = icon {
+                        return Image::new(icon).anyview();
+                    }
                 }
-            }
 
-            Native(config.clone()).anyview()
+                Native(config).anyview()
+            });
         })
     }
 }

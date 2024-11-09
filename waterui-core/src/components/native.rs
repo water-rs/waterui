@@ -6,7 +6,7 @@ use crate::{Environment, View};
 pub struct Native<T>(pub T);
 
 impl<T: 'static> View for Native<T> {
-    fn body(self, _env: Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         panic!("Native view ({})", type_name::<T>())
     }
 }

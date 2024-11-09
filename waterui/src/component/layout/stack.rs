@@ -77,7 +77,7 @@ macro_rules! impl_stack {
         }
 
         impl View for $name {
-            fn body(self, _env: waterui_core::Environment) -> impl View {
+            fn body(self, _env: &waterui_core::Environment) -> impl View {
                 Stack::$mode(self.0)
             }
         }

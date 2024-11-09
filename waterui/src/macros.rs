@@ -20,10 +20,10 @@ macro_rules! configurable {
         }
 
         impl $crate::view::View for $view {
-            fn body(self, env: $crate::Environment) -> impl waterui_core::View {
+            fn body(self, env: &$crate::Environment) -> impl waterui_core::View {
                 use waterui_core::view::ConfigurableView;
                 use $crate::view::ViewExt;
-                if let Some(modifier) = env.try_get::<$crate::view::Modifier<Self>>() {
+                if let Some(modifier) = env.get::<$crate::view::Modifier<Self>>() {
                     modifier
                         .clone()
                         .modify(env.clone(), self.config())

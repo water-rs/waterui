@@ -1,5 +1,5 @@
 use core::{
-    any::{type_name, Any, TypeId},
+    any::{Any, TypeId},
     fmt::Debug,
     marker::PhantomData,
 };
@@ -11,7 +11,11 @@ pub struct Environment {
     map: BTreeMap<TypeId, Rc<dyn Any>>,
 }
 
-use crate::View;
+use crate::{
+    components::Metadata,
+    handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
+    View,
+};
 
 impl Environment {
     pub fn new() -> Self {
@@ -36,12 +40,7 @@ impl Environment {
         self
     }
 
-    pub fn get<T: 'static>(&self) -> &T {
-        self.try_get()
-            .unwrap_or_else(|| panic!("Environment value `{}` not found", type_name::<T>()))
-    }
-
-    pub fn try_get<T: 'static>(&self) -> Option<&T> {
+    pub fn get<T: 'static>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
             .map(|v| v.downcast_ref::<T>().unwrap())
@@ -57,34 +56,56 @@ pub trait Plugin: Sized + 'static {
     }
 }
 
-pub struct UseEnv<V, F> {
-    f: F,
+pub struct UseEnv<V, H> {
+    handler: H,
     _marker: PhantomData<V>,
 }
 
-impl<V, F> UseEnv<V, F> {
-    pub fn new(f: F) -> Self {
+impl<V, H> UseEnv<V, H> {
+    pub fn new(handler: H) -> Self {
         Self {
-            f,
+            handler,
             _marker: PhantomData,
         }
     }
 }
 
-pub fn use_env<V, F>(f: F) -> UseEnv<V, F>
+pub fn use_env<P, V, F>(f: F) -> UseEnv<V, IntoHandlerOnce<F, P, V>>
 where
     V: View,
-    F: 'static + FnOnce(Environment) -> V,
+    F: HandlerFnOnce<P, V>,
 {
-    UseEnv::new(f)
+    UseEnv::new(IntoHandlerOnce::new(f))
 }
 
-impl<V, F> View for UseEnv<V, F>
+impl<V, H> View for UseEnv<V, H>
 where
     V: View,
-    F: 'static + FnOnce(Environment) -> V,
+    H: HandlerOnce<V>,
 {
-    fn body(self, env: Environment) -> impl View {
-        (self.f)(env)
+    fn body(self, env: &Environment) -> impl View {
+        self.handler.handle(env)
+    }
+}
+
+pub struct With<V, T> {
+    content: V,
+    value: T,
+}
+
+impl<V, T> With<V, T> {
+    pub fn new(content: V, value: T) -> Self {
+        Self { content, value }
+    }
+}
+
+impl<V, T> View for With<V, T>
+where
+    V: View,
+    T: 'static,
+{
+    fn body(self, env: &Environment) -> impl View {
+        let env = env.clone().with(self.value);
+        Metadata::new(self.content, env)
     }
 }
