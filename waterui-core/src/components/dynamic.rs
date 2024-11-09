@@ -56,3 +56,10 @@ impl Dynamic {
         this.receiver = Some(Box::new(receiver));
     }
 }
+
+pub fn watch<T, V: View>(
+    value: impl Compute<Output = T>,
+    f: impl Fn(T) -> V + 'static,
+) -> impl View {
+    Dynamic::watch(value, f)
+}

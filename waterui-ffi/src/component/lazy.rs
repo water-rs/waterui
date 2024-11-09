@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 use futures_lite::{stream::BoxedLocal as BoxStream, StreamExt};
-use waterui::{task, AnyView};
+use waterui::{AnyView, LocalTask};
 use waterui_lazy::{AnyLazyList, LazyList};
 
 use crate::{closure::waterui_fnonce, waterui_anyview, IntoFFI};
@@ -17,11 +17,10 @@ unsafe extern "C" fn waterui_lazy_view_list_get(
     index: usize,
     callback: waterui_fnonce<*mut waterui_anyview>,
 ) {
-    task(async move {
+    LocalTask::on_main(async move {
         let value = (*list).get(index).await.into_ffi();
         callback.call(value);
-    })
-    .detach();
+    });
 }
 
 #[no_mangle]
@@ -40,11 +39,10 @@ unsafe extern "C" fn waterui_anyview_iter_next(
     iter: *mut waterui_anyview_iter,
     callback: waterui_fnonce<*mut waterui_anyview>,
 ) {
-    task(async move {
+    LocalTask::on_main(async move {
         let value = (*iter).next().await;
         callback.call(value.into_ffi())
-    })
-    .detach();
+    });
 }
 
 #[no_mangle]
