@@ -36,6 +36,3 @@ ffi_type!(
     WatcherGuard,
     waterui_drop_watcher_guard
 );
-
-#[doc(hidden)]
-pub use waterui::block_on as __block_on;

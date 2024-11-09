@@ -42,7 +42,7 @@ impl ProgressWithTotal {
 }
 
 impl View for ProgressWithTotal {
-    fn body(self, _env: waterui_core::Environment) -> impl View {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.0
     }
 }

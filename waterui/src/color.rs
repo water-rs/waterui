@@ -1,6 +1,6 @@
 use core::ops::Add;
 
-use waterui_core::View;
+use waterui_core::{Environment, View};
 use waterui_reactive::{compute::ToComputed, impl_constant, Compute, ComputeExt, Computed};
 
 use crate::{component::shape::Rectangle, ViewExt};
@@ -101,7 +101,7 @@ impl ForegroundColor {
 }
 
 impl View for Color {
-    fn body(self, _env: waterui_core::Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         Rectangle.foreground(self)
     }
 }

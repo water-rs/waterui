@@ -12,7 +12,7 @@ use shared::Shared;
 
 use core::{
     borrow::Borrow,
-    mem::{forget, take, ManuallyDrop},
+    mem::{take, ManuallyDrop},
     ops::Deref,
     ptr::NonNull,
     slice,
@@ -26,8 +26,14 @@ pub struct Str {
 
 impl Drop for Str {
     fn drop(&mut self) {
-        if let Err(shared) = self.try_as_static() {
-            unsafe { shared.decrement_count() }
+        if let Ok(shared) = self.try_as_mut_shared() {
+            unsafe {
+                shared.decrement_count();
+            }
+
+            if shared.count() == 0 {
+                take(shared);
+            }
         }
     }
 }
@@ -35,7 +41,9 @@ impl Drop for Str {
 impl Clone for Str {
     fn clone(&self) -> Self {
         if let Err(shared) = self.try_as_static() {
-            unsafe { shared.increment_count() }
+            unsafe {
+                shared.increment_count();
+            }
         }
 
         Self {
@@ -177,6 +185,15 @@ impl Str {
         &*(ptr as *const Shared)
     }
 
+    unsafe fn as_shared_mut_ptr_unchecked(&mut self) -> *mut Shared {
+        let ptr = self.ptr.as_ptr().byte_sub(usize::MAX / 2);
+        ptr as *mut Shared
+    }
+
+    unsafe fn as_shared_mut_unchecked(&mut self) -> &mut Shared {
+        &mut *self.as_shared_mut_ptr_unchecked()
+    }
+
     fn try_as_static(&self) -> Result<&'static str, &Shared> {
         unsafe {
             if self.is_static() {
@@ -187,20 +204,32 @@ impl Str {
         }
     }
 
-    pub fn into_string(self) -> String {
-        // Fix mem leak
+    fn try_as_mut_shared(&mut self) -> Result<&mut Shared, &'static str> {
+        unsafe {
+            if !self.is_static() {
+                Ok(self.as_shared_mut_unchecked())
+            } else {
+                Err(self.as_static_unchecked())
+            }
+        }
+    }
+
+    pub fn reference_count(&self) -> Option<usize> {
+        if let Err(shared) = self.try_as_static() {
+            Some(shared.count())
+        } else {
+            None
+        }
+    }
+
+    pub fn into_string(mut self) -> String {
         let len = self.len;
         unsafe {
-            match self.try_as_static() {
-                Ok(s) => s.to_string(),
-                Err(s) => {
-                    if let Some(value) = s.try_take(len) {
-                        forget(self);
-                        value
-                    } else {
-                        s.as_str(len).to_string()
-                    }
-                }
+            match self.try_as_mut_shared() {
+                Ok(shared) => shared
+                    .take(len)
+                    .unwrap_or_else(|| shared.as_str(len).to_string()),
+                Err(s) => s.to_string(),
             }
         }
     }
@@ -208,6 +237,12 @@ impl Str {
     pub fn as_str(&self) -> &str {
         self.try_as_static()
             .unwrap_or_else(|shared| shared.as_str(self.len))
+    }
+
+    pub fn append(&mut self, s: impl AsRef<str>) {
+        let mut string = take(self).into_string();
+        string.push_str(s.as_ref());
+        *self = Str::from(string);
     }
 }
 impl From<&'static str> for Str {

@@ -80,8 +80,8 @@ impl ErrorImpl for ErrorView {
 }
 
 impl View for Error {
-    fn body(self, env: Environment) -> impl View {
-        self.inner.body(env)
+    fn body(self, env: &Environment) -> impl View {
+        self.inner.body(env.clone())
     }
 }
 
@@ -117,8 +117,8 @@ impl UseDefaultErrorView {
 }
 
 impl View for UseDefaultErrorView {
-    fn body(self, env: Environment) -> impl View {
-        if let Some(builder) = env.try_get::<DefaultErrorView>() {
+    fn body(self, env: &Environment) -> impl View {
+        if let Some(builder) = env.get::<DefaultErrorView>() {
             builder.build(self.0)
         } else {
             AnyView::new(())

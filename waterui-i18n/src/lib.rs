@@ -114,7 +114,7 @@ impl Plugin for I18n {
             config.content = config
                 .content
                 .map(move |content| {
-                    if let Some(i18n) = env.try_get::<I18n>() {
+                    if let Some(i18n) = env.get::<I18n>() {
                         i18n.get(content)
                     } else {
                         content

@@ -12,17 +12,17 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     /// # Panic
     /// - If this view is a [native implement view](crate::component)  but you call it, it must panic.
-    fn body(self, _env: Environment) -> impl View;
+    fn body(self, _env: &Environment) -> impl View;
 }
 
-impl<F: 'static + FnOnce(Environment) -> V, V: View> View for F {
-    fn body(self, env: Environment) -> impl View {
-        self(env)
+impl<F: 'static + FnOnce() -> V, V: View> View for F {
+    fn body(self, _env: &Environment) -> impl View {
+        self()
     }
 }
 
 impl<V: View, E: View> View for Result<V, E> {
-    fn body(self, _env: Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         match self {
             Ok(view) => AnyView::new(view),
             Err(view) => AnyView::new(view),
@@ -31,7 +31,7 @@ impl<V: View, E: View> View for Result<V, E> {
 }
 
 impl<V: View> View for Option<V> {
-    fn body(self, _env: Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         match self {
             Some(view) => AnyView::new(view),
             None => AnyView::new(()),
@@ -99,7 +99,7 @@ macro_rules! impl_tuple_views {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:View,)*>TupleViews for ($($ty),*){
+        impl <$($ty:View,)*>TupleViews for ($($ty,)*){
             fn into_views(self) -> Vec<AnyView> {
                 let ($($ty),*)=self;
                 alloc::vec![$(AnyView::new($ty)),*]
@@ -112,6 +112,12 @@ tuples!(impl_tuple_views);
 
 raw_view!(());
 
+impl<V: View> View for (V,) {
+    fn body(self, _env: &Environment) -> impl View {
+        self.0
+    }
+}
+
 impl View for ! {
-    fn body(self, _env: Environment) -> impl View {}
+    fn body(self, _env: &Environment) -> impl View {}
 }
