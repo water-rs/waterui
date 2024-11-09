@@ -20,7 +20,7 @@ trait AnyViewImpl: 'static {
 
 impl<T: View> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
-        AnyView::new(View::body(*self, env))
+        AnyView::new(View::body(*self, &env))
     }
 }
 
@@ -101,8 +101,8 @@ impl AnyView {
 }
 
 impl View for AnyView {
-    fn body(self, env: Environment) -> impl View {
-        self.0.body(env)
+    fn body(self, env: &Environment) -> impl View {
+        self.0.body(env.clone())
     }
 }
 

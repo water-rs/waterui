@@ -14,11 +14,10 @@ pub mod view;
 pub mod widget;
 use animation::Animation;
 pub use view::{View, ViewExt};
-use waterui_core::env::use_env;
 #[doc(inline)]
 pub use waterui_core::{
     env::{self, Environment},
-    AnyView,
+    impl_extractor, AnyView,
 };
 
 #[doc(inline)]
@@ -26,12 +25,8 @@ pub use waterui_reactive::{compute, Binding, Compute, ComputeExt, Computed};
 
 pub mod layout;
 pub mod utils;
-pub use main_executor::{future::block_on, task, Task};
 pub use waterui_str::Str;
-
-pub fn use_state<T: 'static, V: View>(f: impl 'static + Fn(&T) -> V) -> impl View {
-    use_env(move |env| f(env.get::<T>()))
-}
+pub use waterui_task::*;
 
 pub trait AnimatedCompute: Compute {
     fn animated(self) -> impl Compute<Output = Self::Output>;

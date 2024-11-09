@@ -1,5 +1,10 @@
 pub use waterui_core::view::*;
-use waterui_core::{components::Text, env::use_env, AnyView, Environment};
+use waterui_core::{
+    components::Text,
+    env::With,
+    handler::{Handler, HandlerFn, IntoHandler},
+    AnyView, Environment,
+};
 
 use alloc::boxed::Box;
 use waterui_reactive::{
@@ -17,7 +22,7 @@ use crate::{
 
 pub trait ViewExt: View + Sized {
     fn metadata<T>(self, metadata: T) -> Metadata<T>;
-    fn with<T: 'static>(self, value: T) -> impl View;
+    fn with<T: 'static>(self, value: T) -> With<Self, T>;
     fn title(self, title: impl Into<Text>) -> NavigationView;
     fn anyview(self) -> AnyView;
     fn padding(self) -> Metadata<Edge>;
@@ -43,7 +48,7 @@ impl<V: ConfigurableView> ConfigViewExt for V {
 }
 
 pub trait ViewBuilder: 'static {
-    fn view(&self, env: Environment) -> impl View;
+    fn view(&self, env: &Environment) -> impl View;
 }
 
 impl<F, V> ViewBuilder for F
@@ -51,8 +56,19 @@ where
     F: Fn(Environment) -> V + 'static,
     V: View,
 {
-    fn view(&self, env: Environment) -> impl View {
-        (self)(env)
+    fn view(&self, env: &Environment) -> impl View {
+        (self)(env.clone())
+    }
+}
+
+impl<H, P, V> ViewBuilder for IntoHandler<H, P, V>
+where
+    H: HandlerFn<P, V>,
+    P: 'static,
+    V: View,
+{
+    fn view(&self, env: &Environment) -> impl View {
+        self.handle(env)
     }
 }
 pub struct AnyViewBuilder(Box<dyn Fn(Environment) -> AnyView>);
@@ -61,13 +77,13 @@ impl_debug!(AnyViewBuilder);
 
 impl AnyViewBuilder {
     pub fn new(builder: impl ViewBuilder + 'static) -> Self {
-        Self(Box::new(move |env| builder.view(env).anyview()))
+        Self(Box::new(move |env| builder.view(&env).anyview()))
     }
 }
 
 impl ViewBuilder for AnyViewBuilder {
-    fn view(&self, env: Environment) -> impl View {
-        (self.0)(env)
+    fn view(&self, env: &Environment) -> impl View {
+        (self.0)(env.clone())
     }
 }
 
@@ -76,8 +92,8 @@ impl<V: View> ViewExt for V {
         Metadata::new(self, metadata)
     }
 
-    fn with<T: 'static>(self, value: T) -> impl View {
-        use_env(move |env| self.metadata(env.with(value)))
+    fn with<T: 'static>(self, value: T) -> With<Self, T> {
+        With::new(self, value)
     }
 
     fn title(self, title: impl Into<Text>) -> NavigationView {

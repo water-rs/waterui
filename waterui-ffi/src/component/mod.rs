@@ -43,9 +43,10 @@ extern "C" fn waterui_view_empty_id() -> waterui_type_id {
 #[no_mangle]
 unsafe extern "C" fn waterui_view_body(
     view: *mut waterui_anyview,
-    env: *mut waterui_env,
+    env: *const waterui_env,
 ) -> *mut waterui_anyview {
-    view.into_rust().body(env.into_rust()).anyview().into_ffi()
+    // TODO: Fix here in Swift, do not copy env to prevent mem leak
+    view.into_rust().body(&*env).anyview().into_ffi()
 }
 
 impl<T: IntoFFI> IntoFFI for Native<T> {
