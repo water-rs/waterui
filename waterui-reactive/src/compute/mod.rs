@@ -12,6 +12,7 @@ pub trait ComputeResult: 'static + Clone + PartialEq {}
 impl<T: 'static + Clone + PartialEq> ComputeResult for T {}
 
 pub trait Compute: Clone {
+    const CONSTANT: bool = false;
     type Output: ComputeResult;
     fn compute(&self) -> Self::Output;
     fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;

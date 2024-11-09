@@ -1,10 +1,10 @@
-use waterui::component::button::Action;
+use waterui_core::handler::BoxHandler;
 
-use crate::{waterui_env, IntoRust};
+use crate::waterui_env;
 
-ffi_type!(waterui_action, Action, waterui_drop_action);
+ffi_type!(waterui_action, BoxHandler<()>, waterui_drop_action);
 
 #[no_mangle]
-pub unsafe extern "C" fn waterui_call_action(action: *mut waterui_action, env: *mut waterui_env) {
-    (*action)(env.into_rust());
+pub unsafe extern "C" fn waterui_call_action(action: *mut waterui_action, env: *const waterui_env) {
+    (*action).handle(&*env);
 }

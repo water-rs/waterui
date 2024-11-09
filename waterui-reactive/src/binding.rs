@@ -1,6 +1,6 @@
 use core::{
     any::{type_name, Any},
-    cell::{RefCell, RefMut},
+    cell::RefCell,
     fmt::Debug,
     marker::PhantomData,
     ops::{Add, AddAssign, Deref, DerefMut, RangeBounds},
@@ -78,6 +78,16 @@ impl Binding<Str> {
     pub fn str(s: impl Into<Str>) -> Self {
         Self::container(s.into())
     }
+
+    pub fn append(&self, value: impl AsRef<str>) {
+        self.handle(|v| {
+            *v += value;
+        });
+    }
+
+    pub fn clear(&self) {
+        self.set(Str::new());
+    }
 }
 
 impl<T: 'static + Add + ComputeResult> Add for Binding<T>
@@ -100,29 +110,16 @@ where
     }
 }
 
-pub enum BindingMutGuard<'a, T: ComputeResult> {
-    Container {
-        container: &'a Container<T>,
-        ref_mut: Option<RefMut<'a, T>>,
-    },
-    Other {
-        binding: &'a Binding<T>,
-        value: Option<T>,
-    },
+pub struct BindingMutGuard<'a, T: ComputeResult> {
+    binding: &'a Binding<T>,
+    value: Option<T>,
 }
 
 impl<'a, T: ComputeResult> BindingMutGuard<'a, T> {
     pub fn new(binding: &'a Binding<T>) -> Self {
-        if let Some(container) = binding.as_container() {
-            Self::Container {
-                ref_mut: Some(container.value.borrow_mut()),
-                container,
-            }
-        } else {
-            Self::Other {
-                value: Some(binding.get()),
-                binding,
-            }
+        Self {
+            value: Some(binding.get()),
+            binding,
         }
     }
 }
@@ -130,33 +127,19 @@ impl<'a, T: ComputeResult> BindingMutGuard<'a, T> {
 impl<'a, T: ComputeResult> Deref for BindingMutGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        match self {
-            BindingMutGuard::Container { ref_mut, .. } => ref_mut.as_deref().unwrap(),
-            BindingMutGuard::Other { value, .. } => value.as_ref().unwrap(),
-        }
+        self.value.as_ref().unwrap()
     }
 }
 
 impl<'a, T: ComputeResult> DerefMut for BindingMutGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            BindingMutGuard::Container { ref_mut, .. } => ref_mut.as_deref_mut().unwrap(),
-            BindingMutGuard::Other { value, .. } => value.as_mut().unwrap(),
-        }
+        self.value.as_mut().unwrap()
     }
 }
 
 impl<'a, T: ComputeResult> Drop for BindingMutGuard<'a, T> {
     fn drop(&mut self) {
-        match self {
-            BindingMutGuard::Container { container, ref_mut } => {
-                ref_mut.take().unwrap();
-                container.notify();
-            }
-            BindingMutGuard::Other { binding, value } => {
-                binding.set(value.take().unwrap());
-            }
-        }
+        self.binding.set(self.value.take().unwrap());
     }
 }
 
@@ -186,10 +169,18 @@ impl<T: ComputeResult> Binding<T> {
     }
 
     pub fn handle(&self, handler: impl FnOnce(&mut T)) {
-        let mut temp = self.get();
+        if let Some(container) = self.as_container() {
+            {
+                let mut value = container.value.borrow_mut();
+                handler(&mut value);
+            }
+            container.watchers.notify(self.get());
+        } else {
+            let mut temp = self.get();
 
-        handler(&mut temp);
-        self.set(temp);
+            handler(&mut temp);
+            self.set(temp);
+        }
     }
 
     pub fn set(&self, value: T) {
@@ -244,11 +235,11 @@ impl Binding<i32> {
     }
 
     pub fn increment(&self, n: i32) {
-        *self.get_mut() += n;
+        self.handle(|v| *v += n);
     }
 
     pub fn decrement(&self, n: i32) {
-        *self.get_mut() -= n;
+        self.handle(|v| *v -= n);
     }
 }
 

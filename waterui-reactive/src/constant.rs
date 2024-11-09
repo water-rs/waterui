@@ -14,6 +14,7 @@ impl<T: ComputeResult> From<T> for Constant<T> {
 }
 
 impl<T: ComputeResult> Compute for Constant<T> {
+    const CONSTANT: bool = true;
     type Output = T;
     fn compute(&self) -> Self::Output {
         self.0.clone()

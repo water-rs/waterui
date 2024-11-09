@@ -1,10 +1,10 @@
 use core::future::Future;
 
 use waterui_core::{AnyView, Environment, View};
+use waterui_task::LocalTask;
 
 use crate::{
     component::Dynamic,
-    task,
     view::{AnyViewBuilder, ViewBuilder},
     ViewExt,
 };
@@ -35,9 +35,9 @@ pub struct DefaultLoadingView(AnyViewBuilder);
 pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
-    fn body(self, env: Environment) -> impl View {
-        if let Some(builder) = env.try_get::<DefaultLoadingView>() {
-            builder.0.view(env.clone()).anyview()
+    fn body(self, env: &Environment) -> impl View {
+        if let Some(builder) = env.get::<DefaultLoadingView>() {
+            builder.0.view(env).anyview()
         } else {
             AnyView::new(())
         }
@@ -67,16 +67,15 @@ where
     V: SuspendedView,
     Loading: View,
 {
-    fn body(self, env: Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let (handler, view) = Dynamic::new();
         handler.set(self.loading);
 
         let new_env = env.clone();
-        task(async move {
+        LocalTask::new(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
-        })
-        .detach();
+        });
 
         view
     }

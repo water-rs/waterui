@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 waterui-str = { path = "../waterui-str" }
 waterui-task = { path = "../waterui-task" }
+async-channel = "2.2.1"
+pin-project-lite = "0.2.15"

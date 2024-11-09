@@ -6,7 +6,6 @@ use core::{
     mem::forget,
     num::NonZeroUsize,
 };
-use waterui_task::Throttle;
 
 use crate::compute::ComputeResult;
 
@@ -79,14 +78,12 @@ pub(crate) type WatcherId = NonZeroUsize;
 #[derive(Debug)]
 pub struct WatcherManager<T> {
     inner: Rc<RefCell<WatcherManagerInner<T>>>,
-    throttle: Throttle,
 }
 
 impl<T> Clone for WatcherManager<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            throttle: self.throttle.clone(),
         }
     }
 }
@@ -95,7 +92,6 @@ impl<T: ComputeResult> Default for WatcherManager<T> {
     fn default() -> Self {
         Self {
             inner: Rc::default(),
-            throttle: Throttle::default(),
         }
     }
 }
@@ -119,11 +115,9 @@ impl<T: ComputeResult> WatcherManager<T> {
 
     pub fn notify_with_metadata(&self, value: T, metadata: Metadata) {
         let this = Rc::downgrade(&self.inner);
-        self.throttle.spawn(async move {
-            if let Some(this) = this.upgrade() {
-                this.borrow().notify_with_metadata(value, metadata);
-            }
-        });
+        if let Some(this) = this.upgrade() {
+            this.borrow().notify_with_metadata(value, metadata);
+        }
     }
 
     pub fn cancel(&self, id: WatcherId) {

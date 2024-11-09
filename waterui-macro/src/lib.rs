@@ -14,7 +14,7 @@ pub fn init(_attr: TokenStream, items: TokenStream) -> TokenStream {
             #[no_mangle]
             extern "C" fn waterui_init() -> *mut ::waterui_ffi::waterui_env {
                 use ::waterui_ffi::IntoFFI;
-                ::waterui_ffi::__block_on(#f_name()).into_ffi()
+                ::waterui::future::block_on(#f_name()).into_ffi()
             }
         }
     } else {

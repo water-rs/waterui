@@ -20,12 +20,12 @@ impl<T> ViewDispatcher<T> {
 
         map
     }
-    pub fn call(&mut self, view: AnyView, env: Environment) {
+    pub fn call(&mut self, view: AnyView, env: &Environment) {
         let id = view.type_id();
         if let Some(handler) = self.map.get_mut(&id) {
             handler(&mut self.state, view);
         } else {
-            self.call(AnyView::new(view.body(env.clone())), env)
+            self.call(AnyView::new(view.body(env)), env)
         }
     }
 

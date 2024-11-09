@@ -1,29 +1,26 @@
 use core::fmt::Debug;
-use core::future::Future;
 
 use alloc::boxed::Box;
-use waterui_core::Environment;
+use waterui_core::handler::{into_handler, BoxHandler, HandlerFn};
 
 use crate::View;
-use crate::{task, AnyView, ViewExt};
+use crate::{AnyView, ViewExt};
 
 #[non_exhaustive]
 pub struct ButtonConfig {
     pub label: AnyView,
-    pub action: Action,
+    pub action: BoxHandler<()>,
 }
 
 impl_debug!(ButtonConfig);
 
 configurable!(Button, ButtonConfig);
 
-pub type Action = Box<dyn FnMut(Environment)>;
-
 impl Default for Button {
     fn default() -> Self {
         Self(ButtonConfig {
             label: ().anyview(),
-            action: Box::new(|_env| {}),
+            action: Box::new(into_handler(|| {})),
         })
     }
 }
@@ -35,18 +32,9 @@ impl Button {
         button
     }
 
-    pub fn action(mut self, action: impl FnMut(Environment) + 'static) -> Self {
-        self.0.action = Box::new(action);
+    pub fn action<P: 'static>(mut self, action: impl HandlerFn<P, ()>) -> Self {
+        self.0.action = Box::new(into_handler(action));
         self
-    }
-
-    pub fn action_async<Fut>(self, action: impl 'static + Fn(Environment) -> Fut) -> Self
-    where
-        Fut: Future + 'static,
-    {
-        self.action(move |env| {
-            task(action(env)).detach();
-        })
     }
 }
 

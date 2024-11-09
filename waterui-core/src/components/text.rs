@@ -78,13 +78,13 @@ macro_rules! impl_text {
     ($($ty:ty),*) => {
         $(
             impl View for $ty {
-                fn body(self, _env: crate::Environment) -> impl View {
+                fn body(self, _env: &crate::Environment) -> impl View {
                     text(self)
                 }
             }
 
             impl View for Computed<$ty> {
-                fn body(self, _env: crate::Environment) -> impl View {
+                fn body(self, _env: &crate::Environment) -> impl View {
                     text(self)
                 }
             }
