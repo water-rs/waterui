@@ -12,47 +12,41 @@ use waterui_str::Str;
 use crate::{
     compute::ComputeResult,
     watcher::{Watcher, WatcherGuard, WatcherManager},
+    zip::FlattenMap,
     Compute, ComputeExt, Computed,
 };
 
-pub trait CustomBinding<T>: Compute<Output = T> {
-    fn set(&self, value: T);
+pub trait CustomBinding: Compute {
+    fn set(&self, value: Self::Output);
 }
 
-trait BindingImpl<T: ComputeResult>: 'static {
-    fn get(&self) -> T;
-    fn set(&self, value: T);
-    fn watch(&self, watcher: Watcher<T>) -> WatcherGuard;
-    fn as_any(&self) -> &dyn Any;
-    fn cloned(&self) -> Binding<T>;
+pub struct Binding<T: ComputeResult>(Box<dyn BindingImpl<Output = T>>);
+
+trait BindingImpl {
+    type Output: ComputeResult;
+    fn get(&self) -> Self::Output;
+    fn set(&self, value: Self::Output);
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn cloned(&self) -> Binding<Self::Output>;
 }
 
-impl<B, T> BindingImpl<T> for B
-where
-    B: CustomBinding<T> + 'static,
-    T: ComputeResult,
-{
-    fn get(&self) -> T {
+impl<T: CustomBinding + Clone + 'static> BindingImpl for T {
+    type Output = T::Output;
+    fn get(&self) -> Self::Output {
         self.compute()
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn set(&self, value: Self::Output) {
+        <T as CustomBinding>::set(self, value)
     }
-
-    fn set(&self, value: T) {
-        CustomBinding::set(self, value);
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        <T as Compute>::add_watcher(self, watcher)
     }
-    fn watch(&self, watcher: Watcher<T>) -> WatcherGuard {
-        Compute::watch(self, watcher)
-    }
-    fn cloned(&self) -> Binding<T> {
-        Binding(Box::new(self.clone()))
+    fn cloned(&self) -> Binding<Self::Output> {
+        Binding::custom(self.clone())
     }
 }
-pub struct Binding<T>(Box<dyn BindingImpl<T>>);
 
-impl<T> Debug for Binding<T> {
+impl<T: ComputeResult> Debug for Binding<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(type_name::<Self>())
     }
@@ -96,7 +90,9 @@ where
 {
     type Output = Computed<T::Output>;
     fn add(self, rhs: Self) -> Self::Output {
-        (self, rhs).map(|(left, right)| left + right).computed()
+        self.zip(rhs)
+            .flatten_map(|left, right| left + right)
+            .computed()
     }
 }
 
@@ -106,7 +102,7 @@ where
 {
     type Output = Computed<T::Output>;
     fn add(self, rhs: T) -> Self::Output {
-        ComputeExt::map(&self, move |this| this + rhs.clone()).computed()
+        ComputeExt::map(self, move |this| this + rhs.clone()).computed()
     }
 }
 
@@ -147,12 +143,12 @@ impl Add<&'static str> for Binding<Str> {
     type Output = Computed<Str>;
 
     fn add(self, rhs: &'static str) -> Self::Output {
-        ComputeExt::map(&self, move |this| this + rhs).computed()
+        ComputeExt::map(self, move |this| this + rhs).computed()
     }
 }
 
 impl<T: ComputeResult> Binding<T> {
-    pub fn custom(custom: impl CustomBinding<T> + 'static) -> Self {
+    pub fn custom(custom: impl CustomBinding<Output = T> + Clone + 'static) -> Self {
         Self(Box::new(custom))
     }
 
@@ -161,7 +157,8 @@ impl<T: ComputeResult> Binding<T> {
     }
 
     pub(crate) fn as_container(&self) -> Option<&Container<T>> {
-        self.0.as_any().downcast_ref()
+        let any = &self.0 as &dyn Any;
+        any.downcast_ref()
     }
 
     pub fn get_mut(&self) -> BindingMutGuard<T> {
@@ -184,12 +181,12 @@ impl<T: ComputeResult> Binding<T> {
     }
 
     pub fn set(&self, value: T) {
-        if self.0.get() != value {
+        if self.get() != value {
             self.0.set(value);
         }
     }
 
-    pub fn map<Output, Getter, Setter>(
+    pub fn mapping<Output, Getter, Setter>(
         source: &Self,
         getter: Getter,
         setter: Setter,
@@ -199,7 +196,7 @@ impl<T: ComputeResult> Binding<T> {
         Getter: 'static + Fn(T) -> Output,
         Setter: 'static + Fn(&Binding<T>, Output),
     {
-        Binding::custom(Map {
+        Binding::custom(Mapping {
             binding: source.clone(),
             getter: Rc::new(getter),
             setter: Rc::new(setter),
@@ -211,7 +208,7 @@ impl<T: ComputeResult> Binding<T> {
     where
         T: 'static,
     {
-        Binding::map(
+        Binding::mapping(
             self,
             |value| value.clone(),
             move |binding, value| {
@@ -295,12 +292,12 @@ impl<T: ComputeResult> Compute for Container<T> {
         self.value.borrow().deref().clone()
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher.into()))
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
 }
 
-impl<T: ComputeResult> CustomBinding<T> for Container<T> {
+impl<T: ComputeResult> CustomBinding for Container<T> {
     fn set(&self, value: T) {
         self.value.replace(value.clone());
         self.watchers.notify(value);
@@ -313,19 +310,19 @@ impl<T: ComputeResult> Compute for Binding<T> {
         self.get()
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        self.0.watch(watcher.into())
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        self.0.add_watcher(watcher)
     }
 }
 
-struct Map<Input, Output, Getter, Setter> {
+struct Mapping<Input: ComputeResult, Output, Getter, Setter> {
     binding: Binding<Input>,
     getter: Rc<Getter>,
     setter: Rc<Setter>,
     _marker: PhantomData<Output>,
 }
 
-impl<Input, Output, Getter, Setter> Clone for Map<Input, Output, Getter, Setter>
+impl<Input, Output, Getter, Setter> Clone for Mapping<Input, Output, Getter, Setter>
 where
     Input: ComputeResult,
 {
@@ -339,32 +336,32 @@ where
     }
 }
 
-impl<Input, Output, Getter, Setter> Compute for Map<Input, Output, Getter, Setter>
+impl<Input, Output, Getter, Setter> Compute for Mapping<Input, Output, Getter, Setter>
 where
     Input: ComputeResult,
     Output: ComputeResult,
     Getter: 'static + Fn(Input) -> Output,
+    Setter: 'static,
 {
     type Output = Output;
     fn compute(&self) -> Self::Output {
         (self.getter)(self.binding.compute())
     }
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
         let getter = self.getter.clone();
-        let watcher = watcher.into();
         self.binding.watch(Watcher::new(move |value, metadata| {
             watcher.notify_with_metadata(getter(value), metadata)
         }))
     }
 }
 
-impl<Input, Output, Getter, Setter> CustomBinding<Output> for Map<Input, Output, Getter, Setter>
+impl<Input, Output, Getter, Setter> CustomBinding for Mapping<Input, Output, Getter, Setter>
 where
     Input: ComputeResult,
     Output: ComputeResult,
 
     Getter: 'static + Fn(Input) -> Output,
-    Setter: Fn(&Binding<Input>, Output),
+    Setter: 'static + Fn(&Binding<Input>, Output),
 {
     fn set(&self, value: Output) {
         (self.setter)(&self.binding, value)

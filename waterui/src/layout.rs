@@ -1,7 +1,3 @@
-use waterui_reactive::impl_constant;
-
-impl_constant!(Frame, Edge);
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[repr(C)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]

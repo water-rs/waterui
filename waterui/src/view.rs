@@ -1,21 +1,16 @@
 pub use waterui_core::view::*;
 use waterui_core::{
-    components::Text,
     env::With,
     handler::{Handler, HandlerFn, IntoHandler},
     AnyView, Environment,
 };
 
 use alloc::boxed::Box;
-use waterui_reactive::{
-    compute::{ComputeResult, ToComputed},
-    watcher::WatcherGuard,
-    Binding, Compute, Computed,
-};
+use waterui_reactive::{compute::IntoComputed, Binding, Computed};
 
 use crate::{
     color::{BackgroundColor, Color, ForegroundColor},
-    component::{focu::Focused, navigation::NavigationView, Metadata},
+    component::{focu::Focused, navigation::NavigationView, text::Text, Metadata},
     layout::{Edge, Frame},
     utils::{Id, Mapping},
 };
@@ -31,9 +26,9 @@ pub trait ViewExt: View + Sized {
         value: Binding<Option<T>>,
         equals: T,
     ) -> Metadata<Focused>;
-    fn background(self, color: impl ToComputed<Color>) -> Metadata<BackgroundColor>;
-    fn foreground(self, color: impl ToComputed<Color>) -> Metadata<ForegroundColor>;
-    fn frame(self, frame: impl ToComputed<Frame>) -> Metadata<Computed<Frame>>;
+    fn background(self, color: impl IntoComputed<Color>) -> Metadata<BackgroundColor>;
+    fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor>;
+    fn frame(self, frame: impl IntoComputed<Frame>) -> Metadata<Computed<Frame>>;
     fn tag<T>(self, tag: T) -> TaggedView<T, Self>;
 }
 
@@ -115,14 +110,14 @@ impl<V: View> ViewExt for V {
     fn padding(self) -> Metadata<Edge> {
         Metadata::new(self, Edge::default())
     }
-    fn frame(self, frame: impl ToComputed<Frame>) -> Metadata<Computed<Frame>> {
-        Metadata::new(self, frame.to_computed())
+    fn frame(self, frame: impl IntoComputed<Frame>) -> Metadata<Computed<Frame>> {
+        Metadata::new(self, frame.into_computed())
     }
 
-    fn background(self, color: impl ToComputed<Color>) -> Metadata<BackgroundColor> {
+    fn background(self, color: impl IntoComputed<Color>) -> Metadata<BackgroundColor> {
         Metadata::new(self, BackgroundColor::new(color))
     }
-    fn foreground(self, color: impl ToComputed<Color>) -> Metadata<ForegroundColor> {
+    fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor> {
         Metadata::new(self, ForegroundColor::new(color))
     }
     fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
@@ -134,22 +129,6 @@ impl<V: View> ViewExt for V {
 pub struct TaggedView<T, V> {
     pub tag: T,
     pub content: V,
-}
-
-impl<T, V> Compute for TaggedView<T, V>
-where
-    Self: ComputeResult,
-{
-    type Output = Self;
-    fn compute(&self) -> Self::Output {
-        self.clone()
-    }
-    fn watch(
-        &self,
-        _watcher: impl Into<waterui_reactive::watcher::Watcher<Self::Output>>,
-    ) -> waterui_reactive::watcher::WatcherGuard {
-        WatcherGuard::new(|| {})
-    }
 }
 
 impl<T, V: View> TaggedView<T, V> {

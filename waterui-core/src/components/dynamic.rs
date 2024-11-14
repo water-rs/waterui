@@ -3,7 +3,7 @@ use core::cell::RefCell;
 use crate::{raw_view, AnyView, View};
 use alloc::{boxed::Box, rc::Rc};
 use waterui_reactive::Compute;
-
+use waterui_reactive::ComputeExt;
 #[derive(Default)]
 pub struct Dynamic(Rc<RefCell<DyanmicInner>>);
 
