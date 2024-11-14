@@ -6,7 +6,7 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap};
 use waterui::component::{Dynamic, Image, Native};
 use waterui::env::{use_env, Plugin};
 use waterui::view::ConfigurableView;
-use waterui::{compute::ToComputed, Computed};
+use waterui::{compute::IntoComputed, Computed};
 use waterui::{Environment, View};
 use waterui::{Str, ViewExt};
 #[cfg(feature = "std")]
@@ -30,10 +30,10 @@ impl ConfigurableView for Icon {
 }
 
 impl Icon {
-    pub fn new(name: impl ToComputed<Str>) -> Self {
+    pub fn new(name: impl IntoComputed<Str>) -> Self {
         Self(IconConfig {
-            name: name.to_computed(),
-            size: f64::NAN.to_computed(),
+            name: name.into_computed(),
+            size: f64::NAN.into_computed(),
             animation: IconAnimation::default(),
         })
     }
@@ -44,7 +44,7 @@ impl Icon {
     }
 }
 
-pub fn icon(id: impl ToComputed<Str>) -> Icon {
+pub fn icon(id: impl IntoComputed<Str>) -> Icon {
     Icon::new(id)
 }
 

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+waterui = { path = "../waterui" }
+
 waterui-core = { path = "../waterui-core" }
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-str = { path = "../waterui-str" }
@@ -25,10 +27,8 @@ optional = true
 version = "0.8.19"
 optional = true
 
-[dependencies.sys-locale]
-version = "0.3.1"
-optional = true
+
 
 [features]
 default = ["std"]
-std = ["async-fs","futures-lite","thiserror","toml","sys-locale"]
+std = ["async-fs","futures-lite","thiserror","toml"]
