@@ -28,9 +28,11 @@ impl<C: Compute + 'static, F: 'static, Output: ComputeResult> Map<C, F, Output> 
 
         {
             let rc = inner.clone();
-            let guard = inner.source.watch(Watcher::new(move |_value, _metadata| {
-                rc.cache.replace(None);
-            }));
+            let guard = inner
+                .source
+                .add_watcher(Watcher::new(move |_value, _metadata| {
+                    rc.cache.replace(None);
+                }));
             inner._guard.replace(Some(guard));
         }
 
@@ -38,7 +40,7 @@ impl<C: Compute + 'static, F: 'static, Output: ComputeResult> Map<C, F, Output> 
     }
 }
 
-impl<C: Clone, F, Output: Clone> Clone for Map<C, F, Output> {
+impl<C, F, Output> Clone for Map<C, F, Output> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
@@ -63,11 +65,12 @@ where
         }
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        let watcher: Watcher<_> = watcher.into();
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
         let this = self.clone();
-        self.0.source.watch(Watcher::new(move |_value, metadata| {
-            watcher.notify_with_metadata(this.compute(), metadata)
-        }))
+        self.0
+            .source
+            .add_watcher(Watcher::new(move |_value, metadata| {
+                watcher.notify_with_metadata(this.compute(), metadata)
+            }))
     }
 }

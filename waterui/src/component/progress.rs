@@ -1,9 +1,10 @@
+use crate::component::text;
 use crate::AnyView;
 use crate::ViewExt;
 use alloc::format;
-use waterui_core::components::text::text;
 use waterui_core::View;
-use waterui_reactive::compute::ToComputed;
+use waterui_reactive::compute::IntoComputed;
+use waterui_reactive::zip::FlattenMap;
 use waterui_reactive::{ComputeExt, Computed};
 
 #[non_exhaustive]
@@ -48,8 +49,8 @@ impl View for ProgressWithTotal {
 }
 
 impl Progress {
-    pub fn new(value: impl ToComputed<f64>) -> Self {
-        let value = value.to_computed();
+    pub fn new(value: impl IntoComputed<f64>) -> Self {
+        let value = value.into_computed();
         Self(ProgressConfig {
             label: text("Please wait...").anyview(),
             value_label: text(value.clone().map(|v| format!("{v:.2} %"))).anyview(),
@@ -58,12 +59,13 @@ impl Progress {
         })
     }
 
-    pub fn total(mut self, total: impl ToComputed<f64>) -> ProgressWithTotal {
-        let total = total.to_computed();
-        let value = self.0.value;
-        self.0.value = (total, value)
-            .map(|(total, value)| value / total)
+    pub fn total(mut self, total: impl IntoComputed<f64>) -> ProgressWithTotal {
+        self.0.value = total
+            .into_compute()
+            .zip(self.0.value)
+            .flatten_map(|total, value| value / total)
             .computed();
+
         ProgressWithTotal(self)
     }
 
@@ -90,7 +92,7 @@ impl Progress {
     }
 }
 
-pub fn progress(value: impl ToComputed<f64>) -> Progress {
+pub fn progress(value: impl IntoComputed<f64>) -> Progress {
     Progress::new(value)
 }
 

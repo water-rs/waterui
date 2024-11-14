@@ -1,7 +1,7 @@
 use core::ops::Add;
 
 use waterui_core::{Environment, View};
-use waterui_reactive::{compute::ToComputed, impl_constant, Compute, ComputeExt, Computed};
+use waterui_reactive::{compute::IntoComputed, zip::FlattenMap, Compute, ComputeExt, Computed};
 
 use crate::{component::shape::Rectangle, ViewExt};
 
@@ -80,9 +80,9 @@ pub struct BackgroundColor {
 }
 
 impl BackgroundColor {
-    pub fn new(color: impl ToComputed<Color>) -> Self {
+    pub fn new(color: impl IntoComputed<Color>) -> Self {
         Self {
-            color: color.to_computed(),
+            color: color.into_computed(),
         }
     }
 }
@@ -93,9 +93,9 @@ pub struct ForegroundColor {
 }
 
 impl ForegroundColor {
-    pub fn new(color: impl ToComputed<Color>) -> Self {
+    pub fn new(color: impl IntoComputed<Color>) -> Self {
         Self {
-            color: color.to_computed(),
+            color: color.into_computed(),
         }
     }
 }
@@ -105,8 +105,6 @@ impl View for Color {
         Rectangle.foreground(self)
     }
 }
-
-impl_constant!(Color);
 
 impl Add for Color {
     type Output = Self;
@@ -119,7 +117,7 @@ pub fn mix(
     left: impl Compute<Output = Color> + 'static,
     right: impl Compute<Output = Color> + 'static,
 ) -> impl Compute<Output = Color> {
-    (left, right).map(|(left, right)| left + right)
+    left.zip(right).flatten_map(|left, right| left + right)
 }
 
 fn hsb_to_rgb(h: f64, s: f64, b: f64) -> (f64, f64, f64) {

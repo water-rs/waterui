@@ -3,56 +3,39 @@ use core::ops::Add;
 use alloc::boxed::Box;
 
 use crate::{
+    compute::ext::ComputeExt,
     constant,
     watcher::{Watcher, WatcherGuard},
+    zip::FlattenMap,
 };
 
-use super::{Compute, ComputeExt, ComputeResult};
+use super::{Compute, ComputeResult};
+
+pub struct Computed<T: ComputeResult>(Box<dyn ComputedImpl<Output = T>>);
 
 trait ComputedImpl {
     type Output: ComputeResult;
     fn compute(&self) -> Self::Output;
-    fn watch(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
     fn cloned(&self) -> Computed<Self::Output>;
 }
 
-impl<C: Compute + 'static> ComputedImpl for C
-where
-    C: 'static,
-    C::Output: 'static,
-{
+impl<C: Compute> ComputedImpl for C {
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
-        Compute::compute(self)
+        <Self as Compute>::compute(self)
     }
-
-    fn watch(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
-        Compute::watch(self, watcher)
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        <Self as Compute>::add_watcher(self, watcher)
     }
     fn cloned(&self) -> Computed<Self::Output> {
-        Computed::new(self.clone())
+        self.clone().computed()
     }
 }
 
-pub struct Computed<T: 'static + Clone + PartialEq>(Box<dyn ComputedImpl<Output = T>>);
-
-impl<T: ComputeResult> PartialEq for Computed<T> {
-    fn eq(&self, other: &Self) -> bool {
-        Compute::compute(&self).eq(&Compute::compute(&other))
-    }
-}
-
-impl<T: ComputeResult + Eq> Eq for Computed<T> {}
-
-impl<T: ComputeResult + PartialOrd> PartialOrd for Computed<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Compute::compute(&self).partial_cmp(&Compute::compute(&other))
-    }
-}
-
-impl<T: ComputeResult + Ord> Ord for Computed<T> {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        Compute::compute(&self).cmp(&Compute::compute(&other))
+impl<T: ComputeResult> Clone for Computed<T> {
+    fn clone(&self) -> Self {
+        self.0.cloned()
     }
 }
 
@@ -62,7 +45,9 @@ where
 {
     type Output = Computed<T::Output>;
     fn add(self, rhs: Self) -> Self::Output {
-        (self, rhs).map(|(left, right)| left + right).computed()
+        self.zip(rhs)
+            .flatten_map(|left, right| left + right)
+            .computed()
     }
 }
 
@@ -72,7 +57,7 @@ where
 {
     type Output = Computed<T::Output>;
     fn add(self, rhs: T) -> Self::Output {
-        ComputeExt::map(&self, move |this| this + rhs.clone()).computed()
+        ComputeExt::map(self, move |this| this + rhs.clone()).computed()
     }
 }
 
@@ -94,19 +79,16 @@ impl<T: ComputeResult> Compute for Computed<T> {
         self.0.compute()
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        self.0.watch(watcher.into())
-    }
-}
-
-impl<T: ComputeResult> Clone for Computed<T> {
-    fn clone(&self) -> Self {
-        self.0.cloned()
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+        self.0.add_watcher(watcher)
     }
 }
 
 impl<T: ComputeResult> Computed<T> {
-    pub fn new(value: impl Compute<Output = T> + 'static) -> Self {
+    pub fn new<C>(value: C) -> Self
+    where
+        C: Compute<Output = T> + Clone + 'static,
+    {
         Self(Box::new(value))
     }
 }

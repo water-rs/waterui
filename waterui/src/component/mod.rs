@@ -12,8 +12,13 @@ pub mod layout;
 pub mod list;
 pub mod picker;
 pub mod progress;
+pub mod text;
+pub mod views;
 #[doc(inline)]
 pub use progress::{loading, progress, Progress};
+pub use text::{text, Text};
+pub mod locale;
+pub mod rich_text;
 pub mod shape;
 pub mod style;
 pub mod table;

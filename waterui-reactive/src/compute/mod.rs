@@ -1,6 +1,7 @@
 mod computed;
-mod impls;
+mod ext;
 pub use computed::*;
+pub use ext::ComputeExt;
 
 use crate::{
     map::Map,
@@ -11,50 +12,53 @@ pub trait ComputeResult: 'static + Clone + PartialEq {}
 
 impl<T: 'static + Clone + PartialEq> ComputeResult for T {}
 
-pub trait Compute: Clone {
-    const CONSTANT: bool = false;
+impl<T: ComputeResult> Compute for T {
+    type Output = T;
+    fn compute(&self) -> Self::Output {
+        self.clone()
+    }
+    fn add_watcher(&self, _watcher: Watcher<Self::Output>) -> WatcherGuard {
+        WatcherGuard::new(|| {})
+    }
+}
+
+pub trait Compute: Clone + 'static {
     type Output: ComputeResult;
     fn compute(&self) -> Self::Output;
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
 }
 
-pub trait ToCompute<Output: ComputeResult> {
-    fn to_compute(self) -> impl Compute<Output = Output>;
+pub trait IntoCompute<Output: ComputeResult> {
+    type Compute: Compute<Output = Output>;
+    fn into_compute(self) -> Self::Compute;
 }
 
-pub trait ToComputed<Output: ComputeResult>: ToCompute<Output> + 'static {
-    fn to_computed(self) -> Computed<Output>;
+pub trait IntoComputed<Output: ComputeResult>: IntoCompute<Output> + 'static {
+    fn into_computed(self) -> Computed<Output>;
 }
 
-impl<C, Output> ToCompute<Output> for C
+impl<C, Output> IntoCompute<Output> for C
 where
     C: Compute + 'static,
+
     C::Output: 'static,
     Output: From<C::Output> + ComputeResult,
 {
-    fn to_compute(self) -> impl Compute<Output = Output> {
+    type Compute = Map<C, fn(C::Output) -> Output, Output>;
+    fn into_compute(self) -> Self::Compute {
         self.map(Into::into)
     }
 }
 
-impl<C, Output> ToComputed<Output> for C
+impl<C, Output> IntoComputed<Output> for C
 where
-    C: ToCompute<Output> + 'static,
+    C: IntoCompute<Output> + 'static,
+    C::Compute: Clone,
     Output: ComputeResult,
 {
-    fn to_computed(self) -> Computed<Output> {
-        self.to_compute().computed()
+    fn into_computed(self) -> Computed<Output> {
+        self.into_compute().computed()
     }
-}
-
-pub trait ComputeExt: Compute + 'static {
-    fn map<F, Output>(&self, f: F) -> Map<Self, F, Output>
-    where
-        F: 'static + Fn(Self::Output) -> Output,
-        Output: ComputeResult;
-
-    fn computed(&self) -> Computed<Self::Output>;
-    fn with<T>(&self, metadata: T) -> WithMetadata<Self, T>;
 }
 
 #[derive(Debug, Clone)]
@@ -75,29 +79,11 @@ impl<C: Compute, T: Clone + 'static> Compute for WithMetadata<C, T> {
         self.compute.compute()
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        let watcher: Watcher<_> = watcher.into();
+    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
         let with = self.metadata.clone();
-        self.compute.watch(Watcher::new(move |value, metadata| {
-            watcher.notify_with_metadata(value, metadata.with(with.clone()));
-        }))
-    }
-}
-
-impl<C: Compute + 'static> ComputeExt for C {
-    fn map<F, Output>(&self, f: F) -> Map<Self, F, Output>
-    where
-        F: 'static + Fn(Self::Output) -> Output,
-        Output: ComputeResult,
-    {
-        Map::new(self.clone(), f)
-    }
-
-    fn computed(&self) -> Computed<Self::Output> {
-        Computed::new(self.clone())
-    }
-
-    fn with<T>(&self, metadata: T) -> WithMetadata<Self, T> {
-        WithMetadata::new(metadata, self.clone())
+        self.compute
+            .add_watcher(Watcher::new(move |value, metadata| {
+                watcher.notify_with_metadata(value, metadata.with(with.clone()));
+            }))
     }
 }
