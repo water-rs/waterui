@@ -1,33 +1,39 @@
-use std::{rc::Rc, vec::Vec};
+use alloc::vec::Vec;
 
-use waterui_core::{components::Text, raw_view};
-use waterui_lazy::{AnyLazyList, LazyList, LazyListExt};
-use waterui_reactive::{compute::ToComputed, Computed};
-
-#[derive(Debug, PartialEq)]
-pub struct Table {
+use crate::component::{
+    views::{AnyViews, Views},
+    Text,
+};
+use waterui_reactive::{compute::IntoComputed, Computed};
+#[derive(Debug)]
+pub struct TableConfig {
     pub columns: Computed<Vec<TableColumn>>,
 }
 
+configurable!(Table, TableConfig);
+
 impl Table {
-    pub fn new(columns: impl ToComputed<Vec<TableColumn>>) -> Self {
-        Self {
-            columns: columns.to_computed(),
-        }
+    pub fn new(columns: impl IntoComputed<Vec<TableColumn>>) -> Self {
+        Self(TableConfig {
+            columns: columns.into_computed(),
+        })
     }
 }
 
-raw_view!(Table);
+impl_compute_result!(TableColumn);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Clone)]
 pub struct TableColumn {
-    pub rows: Rc<AnyLazyList<Text>>,
+    pub rows: AnyViews<Text>,
 }
 
+impl_compute_result!(AnyViews<Text>);
+impl_debug!(TableColumn);
+
 impl TableColumn {
-    pub fn new<T: Into<Text>>(data: impl LazyList<Item = T> + 'static) -> Self {
+    pub fn new(contents: impl Views<Item = Text> + 'static) -> Self {
         Self {
-            rows: Rc::new(AnyLazyList::new(data.map(|data| data.into()))),
+            rows: AnyViews::new(contents),
         }
     }
 }

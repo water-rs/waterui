@@ -83,7 +83,7 @@ impl<T: Ord + Clone> Mapping<T> {
     {
         let mapping = self.clone();
         let mapping2 = self.clone();
-        Binding::map(
+        Binding::mapping(
             &source,
             move |value| mapping.to_id(value.clone()),
             move |binding, value| {

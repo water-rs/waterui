@@ -4,6 +4,7 @@ extern crate alloc;
 mod impls;
 mod shared;
 use alloc::{
+    borrow::Cow,
     boxed::Box,
     string::{FromUtf8Error, String, ToString},
     vec::Vec,
@@ -81,6 +82,15 @@ impl AsRef<[u8]> for Str {
 impl Default for Str {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<Cow<'static, str>> for Str {
+    fn from(value: Cow<'static, str>) -> Self {
+        match value {
+            Cow::Borrowed(s) => s.into(),
+            Cow::Owned(s) => s.into(),
+        }
     }
 }
 

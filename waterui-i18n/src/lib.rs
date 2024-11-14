@@ -4,13 +4,13 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 use alloc::collections::BTreeMap;
-use waterui_core::{components::Text, env::Plugin, view::Modifier, Environment};
+use waterui::component::{locale::Locale, Text};
+use waterui_core::{env::Plugin, extract::Extractor, view::Modifier, Environment};
 use waterui_reactive::compute::ComputeExt;
 use waterui_str::Str;
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct I18n {
     map: BTreeMap<Str, BTreeMap<Str, Str>>,
-    locale: Str,
 }
 
 #[cfg(feature = "std")]
@@ -19,7 +19,6 @@ mod std_on {
     use async_fs::{read_dir, read_to_string, write};
     use futures_lite::stream::StreamExt;
     use std::io;
-    use sys_locale::get_locale;
     use toml::{from_str, to_string_pretty};
     use waterui_str::Str;
 
@@ -56,10 +55,7 @@ mod std_on {
                     }
                 }
             }
-            Ok(I18n {
-                map: i18n,
-                locale: get_locale().unwrap_or("en-US".into()).into(),
-            })
+            Ok(I18n { map: i18n })
         }
 
         pub async fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), Error> {
@@ -74,19 +70,10 @@ mod std_on {
 }
 
 impl I18n {
-    pub fn new(locale: impl Into<Str>) -> Self {
+    pub const fn new() -> Self {
         Self {
             map: BTreeMap::new(),
-            locale: locale.into(),
         }
-    }
-
-    pub fn set_locale(&mut self, locale: impl Into<Str>) {
-        self.locale = locale.into();
-    }
-
-    pub fn locale(&self) -> &str {
-        &self.locale
     }
 
     pub fn insert(&mut self, locale: impl Into<Str>, key: impl Into<Str>, value: impl Into<Str>) {
@@ -96,13 +83,13 @@ impl I18n {
             .insert(key.into(), value.into());
     }
 
-    pub fn get(&self, key: impl Into<Str>) -> Str {
+    pub fn get(&self, locale: &str, key: impl Into<Str>) -> Str {
         let key = key.into();
-        self.try_get(&key).cloned().unwrap_or(key)
+        self.try_get(locale, &key).cloned().unwrap_or(key)
     }
 
-    pub fn try_get(&self, key: &str) -> Option<&Str> {
-        self.map.get(&self.locale).and_then(|map| map.get(key))
+    pub fn try_get(&self, locale: &str, key: &str) -> Option<&Str> {
+        self.map.get(locale).and_then(|map| map.get(key))
     }
 }
 
@@ -111,11 +98,12 @@ impl Plugin for I18n {
         env.insert(self);
 
         env.insert(Modifier::<Text>::new(|env, mut config| {
+            let Locale(locale) = Locale::extract(&env).unwrap();
             config.content = config
                 .content
                 .map(move |content| {
                     if let Some(i18n) = env.get::<I18n>() {
-                        i18n.get(content)
+                        i18n.get(&locale, content)
                     } else {
                         content
                     }

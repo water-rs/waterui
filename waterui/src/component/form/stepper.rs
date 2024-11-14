@@ -1,5 +1,5 @@
 use waterui_core::AnyView;
-use waterui_reactive::{compute::ToComputed, Binding, Computed};
+use waterui_reactive::{compute::IntoComputed, Binding, Computed};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -15,13 +15,13 @@ impl Stepper {
     pub fn new(value: &Binding<i32>) -> Self {
         Self(StepperConfig {
             value: value.clone(),
-            step: 1i32.to_computed(),
+            step: 1i32.into_computed(),
             label: AnyView::default(),
         })
     }
 
-    pub fn step(mut self, step: impl ToComputed<i32>) -> Self {
-        self.0.step = step.to_computed();
+    pub fn step(mut self, step: impl IntoComputed<i32>) -> Self {
+        self.0.step = step.into_computed();
         self
     }
 }
