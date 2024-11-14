@@ -1,10 +1,10 @@
 pub mod tab;
 
+use crate::component::Text;
 use crate::Computed;
 use crate::{color::Color, ViewExt};
 use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{components::Text, raw_view, AnyView, Environment, View};
-
+use waterui_core::{raw_view, AnyView, Environment, View};
 #[derive(Debug)]
 #[must_use]
 pub struct NavigationView {

@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 
 use alloc::boxed::Box;
-use waterui_core::handler::{into_handler, BoxHandler, HandlerFn};
+use waterui_core::handler::{into_handler_mut, BoxHandlerMut, HandlerFnMut};
 
 use crate::View;
 use crate::{AnyView, ViewExt};
@@ -9,7 +9,7 @@ use crate::{AnyView, ViewExt};
 #[non_exhaustive]
 pub struct ButtonConfig {
     pub label: AnyView,
-    pub action: BoxHandler<()>,
+    pub action: BoxHandlerMut<()>,
 }
 
 impl_debug!(ButtonConfig);
@@ -20,7 +20,7 @@ impl Default for Button {
     fn default() -> Self {
         Self(ButtonConfig {
             label: ().anyview(),
-            action: Box::new(into_handler(|| {})),
+            action: Box::new(into_handler_mut(|| {})),
         })
     }
 }
@@ -32,8 +32,8 @@ impl Button {
         button
     }
 
-    pub fn action<P: 'static>(mut self, action: impl HandlerFn<P, ()>) -> Self {
-        self.0.action = Box::new(into_handler(action));
+    pub fn action<P: 'static>(mut self, action: impl HandlerFnMut<P, ()>) -> Self {
+        self.0.action = Box::new(into_handler_mut(action));
         self
     }
 }

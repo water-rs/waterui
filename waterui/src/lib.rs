@@ -2,14 +2,17 @@
 #![allow(non_camel_case_types)]
 #![warn(missing_debug_implementations)]
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
+
 #[macro_use]
 mod macros;
 pub mod animation;
 pub mod color;
 pub mod component;
 pub mod filter;
+pub mod id;
+pub mod link;
+pub mod task;
+pub mod transfer;
 pub mod view;
 pub mod widget;
 use animation::Animation;

@@ -3,7 +3,7 @@ use waterui_core::{
     handler::{HandlerFn, IntoHandler},
     Environment, View,
 };
-use waterui_reactive::compute::ToComputed;
+use waterui_reactive::compute::IntoComputed;
 #[derive(Debug)]
 pub struct When<Condition, Then> {
     condition: Condition,
@@ -12,7 +12,7 @@ pub struct When<Condition, Then> {
 
 impl<Condition, Then> When<Condition, Then>
 where
-    Condition: ToComputed<bool>,
+    Condition: IntoComputed<bool>,
     Then: ViewBuilder,
 {
     pub fn new(condition: Condition, then: Then) -> Self {
@@ -25,7 +25,7 @@ pub fn when<Condition, P, Then, V>(
     then: Then,
 ) -> When<Condition, IntoHandler<Then, P, V>>
 where
-    Condition: ToComputed<bool>,
+    Condition: IntoComputed<bool>,
     Then: HandlerFn<P, V>,
     V: View,
     P: 'static,
@@ -35,7 +35,7 @@ where
 
 impl<Condition, Then> View for When<Condition, Then>
 where
-    Condition: ToComputed<bool>,
+    Condition: IntoComputed<bool>,
     Then: ViewBuilder,
 {
     fn body(self, _env: &Environment) -> impl View {
@@ -46,7 +46,7 @@ where
 impl<Condition, Then> When<Condition, Then> {
     pub fn or<P, Or, V>(self, or: Or) -> WhenOr<Condition, Then, IntoHandler<Or, P, V>>
     where
-        Condition: ToComputed<bool>,
+        Condition: IntoComputed<bool>,
         Or: HandlerFn<P, V>,
         V: View,
     {
@@ -67,13 +67,13 @@ pub struct WhenOr<Condition, Then, Or> {
 
 impl<Condition, Then, Or> View for WhenOr<Condition, Then, Or>
 where
-    Condition: ToComputed<bool>,
+    Condition: IntoComputed<bool>,
     Then: ViewBuilder,
     Or: ViewBuilder,
 {
     fn body(self, env: &Environment) -> impl View {
         let env = env.clone();
-        Dynamic::watch(self.condition.to_compute(), move |condition| {
+        Dynamic::watch(self.condition.into_compute(), move |condition| {
             if condition {
                 (self.then).view(&env).anyview()
             } else {

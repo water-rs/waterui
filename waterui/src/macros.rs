@@ -63,10 +63,26 @@ macro_rules! text {
             use $crate::ComputeExt;
             #[allow(unused_parens)]
             ComputeExt::map(
-                &args,|($($arg),*)|{
+                args.clone(),|($($arg),*)|{
                     format!($fmt,$($arg),*)
                 }
             ).computed()
+        }
+    };
+}
+
+macro_rules! impl_compute_result {
+    ($ty:ty) => {
+        impl core::cmp::PartialEq for $ty {
+            fn eq(&self, _other: &Self) -> bool {
+                false
+            }
+        }
+
+        impl core::cmp::PartialOrd for $ty {
+            fn partial_cmp(&self, _other: &Self) -> Option<core::cmp::Ordering> {
+                None
+            }
         }
     };
 }

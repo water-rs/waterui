@@ -9,7 +9,6 @@ async-channel = "2.3"
 waterui-reactive = { path = "../waterui-reactive" }
 waterui-str = { path = "../waterui-str" }
 
-
 [dependencies.smol]
 version = "2.0"
 default-features = false

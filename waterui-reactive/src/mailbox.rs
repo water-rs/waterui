@@ -1,10 +1,10 @@
+use crate::compute::ComputeExt;
+use crate::{compute::ComputeResult, watcher::WatcherGuard, Binding};
 use async_channel::unbounded;
 use pin_project_lite::pin_project;
 use waterui_task::{MainValue, Stream};
 
-use crate::{compute::ComputeResult, watcher::WatcherGuard, Binding, Compute};
-
-pub struct Mailbox<T> {
+pub struct Mailbox<T: ComputeResult> {
     binding: MainValue<Binding<T>>,
 }
 
