@@ -10,7 +10,7 @@ use waterui_reactive::{compute::IntoComputed, Binding, Computed};
 
 use crate::{
     color::{BackgroundColor, Color, ForegroundColor},
-    component::{focu::Focused, navigation::NavigationView, text::Text, Metadata},
+    component::{badge::Badge, focu::Focused, navigation::NavigationView, text::Text, Metadata},
     layout::{Edge, Frame},
     utils::{Id, Mapping},
 };
@@ -29,6 +29,7 @@ pub trait ViewExt: View + Sized {
     fn background(self, color: impl IntoComputed<Color>) -> Metadata<BackgroundColor>;
     fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor>;
     fn frame(self, frame: impl IntoComputed<Frame>) -> Metadata<Computed<Frame>>;
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge;
     fn tag<T>(self, tag: T) -> TaggedView<T, Self>;
 }
 
@@ -119,6 +120,9 @@ impl<V: View> ViewExt for V {
     }
     fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor> {
         Metadata::new(self, ForegroundColor::new(color))
+    }
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge {
+        Badge::new(value, self)
     }
     fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
         TaggedView::new(tag, self)
