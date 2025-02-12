@@ -1,9 +1,24 @@
+use core::future::Future;
+
 use alloc::{boxed::Box, vec::Vec};
 
 use waterui_reactive::Compute;
 use waterui_str::Str;
 
 use crate::component::Image;
+
+enum Data {
+    Url(u8),
+}
+
+pub trait Import {
+    fn import(data: Vec<u8>) -> impl Future<Output = Self>;
+    fn import_from(url: u8) -> impl Future<Output = Self>;
+}
+
+pub trait Export {
+    type Output;
+}
 
 pub trait Transfer {
     fn transfer(&self) -> TransferData;

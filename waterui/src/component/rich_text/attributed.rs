@@ -5,7 +5,7 @@ use waterui_str::Str;
 
 use crate::component::text::Font;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AttributedString {
     nodes: Vec<AttributedStringNode>,
 }
@@ -52,7 +52,7 @@ impl From<AttributedStringNode> for AttributedString {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AttributedStringNode {
     Text { content: Str, font: Font },
     Link { content: Str, url: Str },
