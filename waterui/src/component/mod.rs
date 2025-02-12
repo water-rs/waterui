@@ -5,6 +5,7 @@ pub mod image;
 pub use image::Image;
 pub mod navigation;
 
+pub mod badge;
 pub mod divder;
 pub mod focu;
 pub mod form;

@@ -1,5 +1,5 @@
+pub mod search;
 pub mod tab;
-
 use crate::component::Text;
 use crate::Computed;
 use crate::{color::Color, ViewExt};
@@ -39,8 +39,6 @@ impl NavigationLink {
 }
 
 raw_view!(NavigationLink);
-
-raw_view!(NavigationView);
 
 impl NavigationView {
     pub fn new(title: impl Into<Text>, content: impl View) -> Self {

@@ -1,6 +1,6 @@
 use crate::color::Color;
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq)]
 pub struct Shadow {
     pub color: Color,
     pub offset: Vector<f32>,

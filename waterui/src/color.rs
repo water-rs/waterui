@@ -1,60 +1,32 @@
 use core::ops::Add;
 
+use color::{AlphaColor, DynamicColor, Flags, Srgb};
 use waterui_core::{Environment, View};
 use waterui_reactive::{compute::IntoComputed, zip::FlattenMap, Compute, ComputeExt, Computed};
 
 use crate::{component::shape::Rectangle, ViewExt};
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-#[repr(C)]
-pub struct Color {
-    pub space: ColorSpace,
-    pub red: f64,
-    pub green: f64,
-    pub blue: f64,
-    pub opacity: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(C)]
-pub enum ColorSpace {
-    sRGB,
-    P3,
-}
+#[derive(Debug, Clone, PartialEq)]
+pub struct Color(DynamicColor);
 
 impl Default for Color {
     fn default() -> Self {
-        Self::BLACK
+        todo!()
     }
 }
-
-pub mod md2 {
-    use super::Color;
-
-    pub const RED: Color = Color::rgb(244.0, 67.0, 54.0);
-    pub const PURPLE: Color = Color::rgb(156.0, 39.0, 176.0);
-    pub const BLUE: Color = Color::rgb(33.0, 150.0, 243.0);
-}
-
 impl Color {
-    pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
-    pub const WHITE: Self = Self::rgb(255.0, 255.0, 255.0);
-    pub const fn rgb(red: f64, green: f64, blue: f64) -> Self {
-        Self {
-            space: ColorSpace::sRGB,
-            red,
-            green,
-            blue,
-            opacity: 1.0,
-        }
+    pub fn srgb(red: f32, green: f32, blue: f32) -> Self {
+        Self(DynamicColor::from_alpha_color(AlphaColor::<Srgb>::new([
+            red, green, blue, 1.0,
+        ])))
     }
 
-    pub fn hsb(hue: f64, saturation: f64, brightness: f64) -> Self {
-        let (red, green, blue) = hsb_to_rgb(hue, saturation, brightness);
-        Self::rgb(red, green, blue)
+    pub fn p3(red: f32, green: f32, blue: f32) -> Self {
+        // DynamicColor::from_alpha_color(AlphaColor::new([red, green, blue]))
+        todo!()
     }
 
-    pub const fn with_space(mut self, space: ColorSpace) -> Self {
+    /*  pub const fn with_space(mut self, space: ColorSpace) -> Self {
         self.space = space;
         self
     }
@@ -71,7 +43,7 @@ impl Color {
             (self.green + other.green) * weight,
             (self.blue + other.blue) * weight,
         )
-    }
+    }*/
 }
 
 #[derive(Debug)]
@@ -109,7 +81,8 @@ impl View for Color {
 impl Add for Color {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
-        self.mix(rhs, 0.5)
+        //self.mix(rhs, 0.5)
+        todo!()
     }
 }
 

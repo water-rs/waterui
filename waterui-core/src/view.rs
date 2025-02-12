@@ -39,6 +39,18 @@ impl<V: View> View for Option<V> {
     }
 }
 
+pub trait IntoView {
+    type Output: View;
+    fn into_view(self, env: &Environment) -> Self::Output;
+}
+
+impl<V: View> IntoView for V {
+    type Output = V;
+    fn into_view(self, _env: &Environment) -> Self::Output {
+        self
+    }
+}
+
 pub trait TupleViews {
     fn into_views(self) -> Vec<AnyView>;
 }
