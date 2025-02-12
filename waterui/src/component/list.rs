@@ -1,7 +1,8 @@
 use alloc::boxed::Box;
+use waterui_reactive::collection::Collection;
 
 use crate::{
-    component::views::{AnyViews, Views},
+    component::views::{AnyViews, ForEach, Views},
     view::ViewExt,
 };
 use waterui_core::{AnyView, Environment, View};
@@ -12,14 +13,20 @@ pub struct ListConfig {
     pub contents: AnyViews<ListItem>,
 }
 
-configurable!(List, ListConfig);
+#[derive(Debug)]
+pub struct List<C, F, V>(ForEach<C, F, V, V>);
 
-impl List {
-    pub fn new(contents: impl Views<Item = ListItem> + 'static) -> Self {
-        Self(ListConfig {
-            contents: AnyViews::new(contents),
-        })
+impl<C, F, V> List<C, F, V>
+where
+    C: Collection,
+    F: Fn(C::Item) -> V,
+    V: View,
+{
+    pub fn new(data: C, generator: F) -> Self {
+        Self(ForEach::new(data, generator))
     }
+
+    pub fn searchable() {}
 }
 
 pub struct ListItem {

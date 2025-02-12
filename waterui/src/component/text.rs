@@ -26,7 +26,7 @@ impl Clone for Text {
 
 impl_compute_result!(Text);
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Font {
     pub size: f64,
