@@ -1,4 +1,64 @@
 [workspace]
-members = ["waterdata","waterui", "waterui-*"]
+members = [
+    "core",
+    "reactive",
+    "plugins/*",
+    "kit",
+    "components/*",
+    "utils/*",
+    "ffi",
+]
 resolver = "2"
-exclude = ["examples/tour/src-water"]
+
+[package]
+name = "waterui"
+edition = "2024"
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+waterui-core = { path = "core" }
+waterui-task = { path = "utils/task" }
+waterui-str = { path = "utils/str" }
+waterui-text = { path = "components/text" }
+waterui-media = { path = "components/media" }
+waterui-layout = { path = "components/layout" }
+waterui-reactive = { path = "reactive" }
+waterui-navigation = { path = "components/navigation" }
+waterui-ffi = { path = "ffi" }
+
+waterui = { path = "." }
+
+[dependencies]
+waterui-reactive.workspace = true
+waterui-core.workspace = true
+waterui-str.workspace = true
+waterui-layout.workspace = true
+waterui-text.workspace = true
+waterui-media.workspace = true
+waterui-navigation.workspace = true
+waterui-ffi.workspace = true
+waterui-task.workspace = true
+async-channel = "2.3.1"
+time = "0.3.41"
+bitflags = "2.9.0"
+
+[dependencies.sys-locale]
+version = "0.3.2"
+
+[dependencies.serde]
+version = "1.0"
+default-features = false
+features = ["derive"]
+optional = true
+
+[dependencies.async-fs]
+version = "2.1.2"
+optional = true
+
+[features]
+default = []
+std = ["dep:async-fs"]
+all = ["serde", "std"]
+serde = ["dep:serde", "waterui-core/serde"]
