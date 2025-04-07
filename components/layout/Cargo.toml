@@ -1,0 +1,17 @@
+[package]
+name = "waterui-layout"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+waterui-core.workspace = true
+waterui-reactive.workspace = true
+
+[dependencies.serde]
+version = "1.0"
+default-features = false
+features = ["derive"]
+optional = true
+
+[features]
+serde = ["dep:serde"]
