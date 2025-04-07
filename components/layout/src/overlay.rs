@@ -1,0 +1,12 @@
+use waterui_core::{AnyView, View};
+#[derive(Debug)]
+#[must_use]
+pub struct Overlay {
+    pub content: AnyView,
+}
+
+pub fn overlay(content: impl View) -> Overlay {
+    Overlay {
+        content: AnyView::new(content),
+    }
+}
