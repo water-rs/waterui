@@ -125,6 +125,7 @@ use core::time::Duration;
 /// how long the animation should take to complete.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum Animation {
+    /// Default animation behavior (uses system defaults)
     #[default]
     Default,
     /// Linear animation with constant velocity

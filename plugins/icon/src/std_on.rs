@@ -4,7 +4,7 @@ extern crate std;
 use alloc::format;
 use async_fs::{read_dir, read_to_string};
 use futures_lite::StreamExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{io, path::Path};
 use thiserror::Error;
 use toml::from_str;

@@ -130,7 +130,7 @@ mod serde {
 
     use super::Str;
     use alloc::string::{String, ToString};
-    use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
+    use serde::{Deserialize, Deserializer, Serialize, de::Visitor};
     struct StrVisitor;
 
     impl Serialize for Str {

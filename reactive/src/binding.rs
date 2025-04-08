@@ -1,16 +1,94 @@
-//! Binding module provides reactive data binding functionality.
+//! # Binding Module: Two-Way Reactive Data Binding
 //!
-//! This module implements a reactive programming paradigm where values can be
-//! wrapped in containers that track changes and notify listeners. Key components:
+//! This module implements bidirectional (two-way) data binding - a core concept in reactive UI systems
+//! that establishes a synchronized connection between data models and UI elements, allowing changes
+//! to flow in both directions.
 //!
-//! - `Binding<T>`: The primary type representing a reactive, mutable value
-//! - `Container<T>`: The standard implementation that holds a value and tracks changes
-//! - `CustomBinding`: Trait for implementing custom bindings
-//! - `BindingMutGuard`: Safe interface for mutating binding values
+//! ## Core Concept
 //!
-//! Bindings can be observed, transformed, and combined in various ways to create
-//! reactive data flows. They support operations like mapping, filtering, and
-//! arithmetic on the contained values.
+//! ```text
+//! ┌───────────────┐         ┌───────────────┐
+//! │               │ ◄─────► │               │
+//! │  Data Model   │         │  UI Element   │
+//! │  (Binding<T>) │ ◄─────► │  (e.g. Input) │
+//! │               │         │               │
+//! └───────────────┘         └───────────────┘
+//!        ▲                         ▲
+//!        │                         │
+//!        ▼                         ▼
+//!  Programmatic                 User Input
+//!    Changes                    Interaction
+//! ```
+//!
+//! The `Binding<T>` type creates a reactive container that:
+//! - Stores a value of type `T`
+//! - Notifies observers whenever the value changes
+//! - Can be modified both programmatically and through UI input
+//! - Ensures consistency between program state and UI representation
+//!
+//! ## When to Use Each Reactive Type
+//!
+//! | Type | Use Case | Direction | Example |
+//! |------|----------|-----------|---------|
+//! | `Binding<T>` | Interactive UI elements | **Two-way** | Text fields, toggles, sliders |
+//! | `Computed<T>` | Derived values | **One-way** (read-only) | Total calculation, formatted text |
+//! | Constants | Static values | **No reactivity** | Fixed labels, titles |
+//!
+//! ## Key Components
+//!
+//! - **`Binding<T>`**: Type-erased container for any two-way bindable value
+//! - **`Container<T>`**: Standard implementation with interior mutability and change tracking
+//! - **`CustomBinding`**: Trait for implementing specialized bindings with custom behavior
+//! - **`BindingMutGuard`**: Safe interface for mutating binding values with proper change notification
+//! - **`Mapping<...>`**: Transforms bindings between compatible types while preserving reactivity
+//!
+//! ## Usage Examples
+//!
+//! ```rust
+//! // Create bindings with initial values
+//! let name = binding(Str::from("Jane"));
+//! let age = binding(30);
+//! let is_active = binding(true);
+//!
+//! // Read values
+//! println!("Name: {}", name.get());
+//!
+//! // Modify values with automatic notification
+//! name.set(Str::from("Jane Doe"));
+//! age.increment(1);
+//! is_active.toggle();
+//!
+//! // Create filtered/constrained bindings
+//! let positive_age = age.filter(|value| *value >= 0);
+//! let bounded_value = binding(50).range(0..=100);
+//!
+//! // Create bidirectional mappings between types
+//! let age_string = Binding::mapping(
+//!     &age,
+//!     |num| Str::from(num.to_string()),   // num -> string
+//!     |binding, str| {                     // string -> num
+//!         if let Ok(num) = str.parse::<i32>() {
+//!             binding.set(num);
+//!         }
+//!     }
+//! );
+//!
+//! // Use with UI elements
+//! let name_field = TextInput::new().bind(name);
+//! let age_slider = Slider::new().bind(age);
+//! let active_toggle = Toggle::new().bind(is_active);
+//! ```
+//!
+//! ## Implementation Details
+//!
+//! The `Binding<T>` type is a thin wrapper around a boxed trait object that implements
+//! the `BindingImpl` trait. This type erasure allows bindings of different concrete types
+//! to be used uniformly throughout the system. The most common implementation is `Container<T>`,
+//! which uses interior mutability via `Rc<RefCell<T>>` to allow shared mutable access to the value.
+//!
+//! Under the hood, bindings maintain a registry of watchers that are notified whenever the value
+//! changes. This notification system forms the foundation of the reactive update mechanism,
+//! ensuring that UI elements stay in sync with their underlying data.
 
 use core::{
     any::{Any, type_name},
