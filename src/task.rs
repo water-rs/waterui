@@ -1,11 +1,12 @@
+use crate::ComputeExt;
 use waterui_core::View;
 use waterui_reactive::{
     compute::{ComputeResult, IntoCompute},
     watcher::WatcherGuard,
 };
+pub use waterui_task::*;
 
-use crate::ComputeExt;
-
+/// A view that executes a callback when a computed value changes.
 #[derive(Debug)]
 pub struct OnChange<V> {
     content: V,
@@ -13,6 +14,14 @@ pub struct OnChange<V> {
 }
 
 impl<V> OnChange<V> {
+    /// Creates a new OnChange view that will execute the provided handler
+    /// whenever the source value changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The view to render
+    /// * `source` - The computed value to watch for changes
+    /// * `handler` - The callback to execute when the value changes
     pub fn new<T: ComputeResult>(
         content: V,
         source: impl IntoCompute<T>,

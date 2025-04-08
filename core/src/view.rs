@@ -61,8 +61,23 @@ impl<V: View> View for Option<V> {
     }
 }
 
+/// A trait for converting values into views.
+///
+/// This trait allows different types to be converted into View implementations,
+/// enabling more flexible composition of UI elements.
 pub trait IntoView {
+    /// The resulting View type after conversion.
     type Output: View;
+
+    /// Converts the implementing type into a View.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The environment containing context for the view conversion.
+    ///
+    /// # Returns
+    ///
+    /// A View implementation that can be used in the UI.
     fn into_view(self, env: &Environment) -> Self::Output;
 }
 
@@ -73,7 +88,16 @@ impl<V: View> IntoView for V {
     }
 }
 
+/// A trait for converting collections and tuples of views into a vector of `AnyView`s.
+///
+/// This trait provides a uniform way to handle multiple views, allowing them
+/// to be converted into a homogeneous collection that can be processed consistently.
 pub trait TupleViews {
+    /// Converts the implementing type into a vector of `AnyView` objects.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<AnyView>` containing each view from the original collection.
     fn into_views(self) -> Vec<AnyView>;
 }
 
@@ -93,11 +117,34 @@ impl<V: View, const N: usize> TupleViews for [V; N] {
     }
 }
 
+/// A trait for views that can be configured with additional parameters.
+///
+/// This trait extends the basic `View` trait to support views that can be
+/// customized with a configuration object, allowing for more flexible and
+/// reusable UI components.
 pub trait ConfigurableView: View {
+    /// The configuration type associated with this view.
+    ///
+    /// This type defines the structure of configuration data that can be
+    /// applied to the view.
     type Config: 'static;
+
+    /// Returns the configuration for this view.
+    ///
+    /// This method extracts the configuration data from the view, which can
+    /// then be modified and applied to create customized versions of the view.
+    ///
+    /// # Returns
+    ///
+    /// The configuration object for this view.
     fn config(self) -> Self::Config;
 }
 
+/// A wrapper for functions that modify configurable views.
+///
+/// `Modifier` provides a way to transform views with specific configurations,
+/// enabling a consistent approach to view customization. Modifiers can be
+/// reused across different instances of the same view type.
 pub struct Modifier<V: ConfigurableView>(Box<dyn Fn(Environment, V::Config) -> AnyView>);
 
 impl<V, V2, F> From<F> for Modifier<V>
@@ -115,6 +162,15 @@ where
 }
 
 impl<V: ConfigurableView> Modifier<V> {
+    /// Creates a new modifier that transforms a configurable view.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A function that takes an environment and a configuration, and returns a view.
+    ///
+    /// # Returns
+    ///
+    /// A new `Modifier` instance that can be applied to views of type `V`.
     pub fn new<V2, F>(f: F) -> Self
     where
         V: ConfigurableView,
@@ -123,6 +179,17 @@ impl<V: ConfigurableView> Modifier<V> {
     {
         Self::from(f)
     }
+
+    /// Applies this modifier to a view configuration with the given environment.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The environment context to use when applying the modification.
+    /// * `config` - The configuration of the view to modify.
+    ///
+    /// # Returns
+    ///
+    /// An `AnyView` containing the modified view.
     pub fn modify(&self, env: Environment, config: V::Config) -> AnyView {
         (self.0)(env, config)
     }

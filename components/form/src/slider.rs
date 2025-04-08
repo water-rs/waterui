@@ -1,7 +1,7 @@
 use core::ops::RangeInclusive;
 
 use alloc::format;
-use waterui_core::{configurable, AnyView, View};
+use waterui_core::{AnyView, View, configurable};
 use waterui_reactive::Binding;
 use waterui_text::text;
 
