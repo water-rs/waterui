@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
-use waterui_core::view::TupleViews;
 use waterui_core::AnyView;
-use waterui_core::{raw_view, View};
+use waterui_core::view::TupleViews;
+use waterui_core::{View, raw_view};
 
 #[derive(Debug)]
 #[must_use]
