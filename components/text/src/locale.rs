@@ -1,7 +1,7 @@
 use alloc::string::ToString;
 use time::Date;
 use waterui_core::Str;
-use waterui_core::{extract::Extractor, Error};
+use waterui_core::{Error, extract::Extractor};
 
 pub trait Formatter<T> {
     fn format(&self, value: &T) -> Str;

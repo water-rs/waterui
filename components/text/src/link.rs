@@ -1,5 +1,5 @@
 use waterui_core::Str;
-use waterui_core::{configurable, AnyView};
+use waterui_core::{AnyView, configurable};
 use waterui_reactive::Computed;
 
 #[derive(Debug)]
