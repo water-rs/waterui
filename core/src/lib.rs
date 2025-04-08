@@ -1,16 +1,16 @@
 //! # WaterUI Core
 //!
-//! `waterui_core` is the foundational framework for building portable and reactive user interfaces
-//! across multiple platforms. It provides the architecture, abstractions, and utilities to create
-//! composable UI components with a declarative API.
+//! `waterui_core` provides the essential building blocks for developing cross-platform reactive UIs.
+//! This foundation layer establishes a unified architecture that works consistently across desktop,
+//! mobile, web, and embedded environments.
 //!
-//! ## Core Architecture
+//! ## Architecture Overview
 //!
-//! The framework is built around a few key abstractions:
+//! The system is structured around these key concepts:
 //!
-//! ### View System
+//! ### Declarative View System
 //!
-//! The [`View`] trait is the cornerstone of WaterUI's component model:
+//! The [`View`] trait forms the foundation of the UI component model:
 //!
 //! ```rust
 //! pub trait View: 'static {
@@ -18,61 +18,69 @@
 //! }
 //! ```
 //!
-//! Views are composable UI components that can be combined, nested, and transformed.
-//! They receive an environment context and return new views, forming a tree structure.
+//! This recursive definition enables composition of complex interfaces from simple
+//! building blocks. Each view receives contextual information and transforms into
+//! its visual representation.
 //!
-//! ### Environment
+//! ### Context Propagation
 //!
-//! The [`Environment`] type provides a type-based storage mechanism for passing contextual
-//! data through the view hierarchy:
+//! The [`Environment`] provides a type-based dependency injection system:
 //!
 //! ```rust
 //! let env = Environment::new()
 //!     .with(Theme::Dark)
-//!     .with(Locale::English);
+//!     .install(LocalizationPlugin::new("en_US"));
 //! ```
 //!
-//! Values in the environment can be retrieved by their type, allowing for dependency
-//! injection and context propagation without explicit parameters.
+//! This propagates configuration and resources through the view hierarchy without
+//! explicit parameter passing.
 //!
-//! ### Type-Erased Views
+//! ### Type Erasure
 //!
-//! The [`AnyView`] type erases the concrete type of a view while preserving its behavior,
-//! enabling heterogeneous collections of views and dynamic dispatch where needed.
+//! [`AnyView`] enables heterogeneous collections by preserving behavior while
+//! erasing concrete types, facilitating dynamic composition patterns.
 //!
-//! ## Component System
+//! ## Component Architecture
 //!
-//! WaterUI offers various component types to build UIs:
+//! The framework provides several component categories:
 //!
-//! - **Native components**: Platform-specific UI elements
-//! - **Dynamic components**: Views that can change at runtime
-//! - **Metadata components**: Views with attached metadata for renderers
+//! - **Platform Components**: Native UI elements with platform-optimized rendering
+//! - **Reactive Components**: Views that automatically update when data changes
+//! - **Metadata Components**: Elements that carry additional rendering instructions
+//! - **Composite Components**: Higher-order components built from primitive elements
 //!
-//! ## Reactive Programming
+//! ## Reactive Data Flow
 //!
-//! The framework integrates with `waterui_reactive` for state management:
+//! State management integrates seamlessly with the view system:
 //!
 //! ```rust
 //! use waterui_reactive::{Binding, binding};
-//! use waterui::dynamic::watch;
+//! use waterui::components::Dynamic;
 //!
+//! // Create a reactive state container
 //! let counter = binding(0);
-//! let view = watch(counter, |count| text(format!("Count: {}", count)));
+//!
+//! // Create a view that responds to state changes
+//! let view = Dynamic::watch(counter, |count| {
+//!     text(format!("Current value: {}", count))
+//! });
 //! ```
 //!
-//! Changes to state automatically propagate to the UI.
+//! The UI automatically updates when state changes, with efficient rendering that only
+//! updates affected components.
 //!
-//! ## Foreign Function Interface
+//! ## FFI System
 //!
-//! A comprehensive FFI layer enables binding to native platforms:
+//! The framework includes a comprehensive interoperability layer:
 //!
-//! - C-compatible types and conversions
-//! - Memory-safe wrappers for Rust values
-//! - Callback system for cross-language communication
+//! - **Memory Safety**: Safe Rust wrappers around C-compatible types
+//! - **Zero-Copy Design**: Efficient data sharing between language boundaries
+//! - **Callback Architecture**: Cross-language event handling
+//! - **Resource Management**: Automatic cleanup of cross-language resources
 //!
-//! ## Extension Points
+//! ## Extensibility
 //!
-//! The plugin system allows extending the framework's functionality:
+//! The plugin interface enables framework extensions without modifying core code:
 //!
 //! ```rust
 //! pub trait Plugin: Sized + 'static {
@@ -81,10 +89,10 @@
 //! }
 //! ```
 //!
-//! Plugins can be installed into the environment to provide additional capabilities.
+//! This enables modular functionality like theming, localization, and platform-specific features.
 
 #![no_std]
-#![allow(non_snake_case)]
+#![warn(missing_docs)]
 #![feature(never_type)]
 extern crate alloc;
 

@@ -1,3 +1,9 @@
+//! Collection of view-related utilities for managing and transforming UI components.
+//!
+//! This module provides types and traits for working with collections of views in a type-safe
+//! and efficient manner. It includes utilities for type erasure, transformation, and identity
+//! tracking of view collections.
+
 use alloc::fmt::Debug;
 use alloc::{collections::BTreeMap, rc::Rc};
 use core::any::type_name;
@@ -11,11 +17,31 @@ use waterui_reactive::collection::Collection;
 
 use waterui_core::id::{Identifable, IdentifableExt, SelfId};
 
+/// A trait for collections that can provide unique identifiers for their elements.
+///
+/// `Views` extends the `Collection` trait by adding identity tracking capabilities.
+/// This allows for efficient diffing and reconciliation of UI elements during updates.
 pub trait Views: Collection {
+    /// The type of identifier used for elements in the collection.
+    /// Must implement `Hash` and `Ord` to enable efficient lookups.
     type Id: Hash + Ord;
+
+    /// Returns the unique identifier for the element at the specified index.
+    ///
+    /// # Parameters
+    /// * `index` - The position in the collection to retrieve the ID for
+    ///
+    /// # Returns
+    /// * `Some(Id)` if the element exists at the specified index
+    /// * `None` if the index is out of bounds
     fn get_id(&self, index: usize) -> Option<Self::Id>;
 }
 
+/// A type-erased container for `Views` collections.
+///
+/// `AnyViews` provides a uniform interface to different views collections
+/// by wrapping them in a type-erased container. This enables working with
+/// heterogeneous view collections through a common interface.
 pub struct AnyViews<V>(Rc<dyn Views<Item = V, Id = SelfId<NonZeroUsize>>>);
 
 impl<V> Debug for AnyViews<V> {
@@ -92,6 +118,16 @@ where
 }
 
 impl<V> AnyViews<V> {
+    /// Creates a new type-erased view collection from any type implementing the `Views` trait.
+    ///
+    /// This function wraps the provided collection in a type-erased container, allowing
+    /// different view collection implementations to be used through a common interface.
+    ///
+    /// # Parameters
+    /// * `contents` - Any collection implementing the `Views` trait with the appropriate item type
+    ///
+    /// # Returns
+    /// A new `AnyViews` instance containing the provided collection
     pub fn new(contents: impl Views<Item = V> + 'static) -> Self {
         Self(Rc::new(IntoAnyViews {
             id: IdGenerator::new(),
@@ -132,6 +168,11 @@ impl<V> Views for AnyViews<V> {
     }
 }
 
+/// A utility for transforming elements of a collection with a mapping function.
+///
+/// `ForEach` applies a transformation function to each element of a source collection,
+/// producing a new collection with the transformed elements. This is useful for
+/// transforming data models into view representations.
 #[derive(Debug)]
 pub struct ForEach<C, F, V, Output> {
     data: C,
@@ -140,6 +181,14 @@ pub struct ForEach<C, F, V, Output> {
 }
 
 impl<C, F, V, Output> ForEach<C, F, V, Output> {
+    /// Creates a new `ForEach` transformation with the provided data collection and generator function.
+    ///
+    /// # Parameters
+    /// * `data` - The source collection containing elements to be transformed
+    /// * `generator` - A function that transforms elements from the source collection
+    ///
+    /// # Returns
+    /// A new `ForEach` instance that will apply the transformation when accessed
     pub fn new(data: C, generator: F) -> Self {
         Self {
             data,

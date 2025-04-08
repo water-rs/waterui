@@ -1,6 +1,10 @@
+//! UI components for WaterUI
+//!
+//! This module contains various UI components that can be used to build user interfaces.
+
 pub mod button;
 #[doc(inline)]
-pub use button::{button, Button};
+pub use button::{Button, button};
 
 pub mod badge;
 pub mod divder;
@@ -11,7 +15,7 @@ pub mod list;
 pub mod progress;
 pub mod views;
 #[doc(inline)]
-pub use progress::{loading, progress, Progress};
+pub use progress::{Progress, loading, progress};
 
 pub mod style;
 pub mod table;
@@ -19,7 +23,7 @@ pub mod table;
 #[doc(inline)]
 pub use waterui_core::components::*;
 
-pub use text::{text, Text};
+pub use text::{Text, text};
 pub use waterui_text as text;
 
 pub use media::*;
