@@ -20,6 +20,8 @@ mod macros;
 pub mod array;
 pub mod closure;
 mod ty;
+use core::ptr::null_mut;
+
 use alloc::boxed::Box;
 pub use ty::*;
 /// Defines a trait for converting Rust types to FFI-compatible representations.
@@ -46,6 +48,35 @@ pub trait IntoFFI {
     fn into_ffi(self) -> Self::FFI;
 }
 
+pub trait IntoNullableFFI {
+    type FFI;
+    fn into_ffi(self) -> Self::FFI;
+    fn null() -> Self::FFI;
+}
+
+impl<T: IntoNullableFFI> IntoFFI for Option<T> {
+    type FFI = T::FFI;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Some(value) => value.into_ffi(),
+            None => T::null(),
+        }
+    }
+}
+
+impl<T: IntoNullableFFI> IntoFFI for T {
+    type FFI = T::FFI;
+
+    fn into_ffi(self) -> Self::FFI {
+        <T as IntoNullableFFI>::into_ffi(self)
+    }
+}
+
+pub trait InvalidValue {
+    fn invalid() -> Self;
+}
+
 /// Defines a marker trait for types that should be treated as opaque when crossing FFI boundaries.
 ///
 /// Opaque types are typically used when the internal structure of a type is not relevant
@@ -66,21 +97,13 @@ pub trait IntoFFI {
 /// ```
 pub trait OpaqueType {}
 
-impl<T: OpaqueType> IntoFFI for T {
+impl<T: OpaqueType> IntoNullableFFI for T {
     type FFI = *mut T;
     fn into_ffi(self) -> Self::FFI {
         Box::into_raw(Box::new(self))
     }
-}
-
-impl<T: OpaqueType> IntoFFI for Option<T> {
-    type FFI = *mut T;
-    fn into_ffi(self) -> Self::FFI {
-        if let Some(value) = self {
-            Box::into_raw(Box::new(value))
-        } else {
-            core::ptr::null_mut()
-        }
+    fn null() -> Self::FFI {
+        null_mut()
     }
 }
 

@@ -28,3 +28,7 @@ impl_label!(&'static str, String, Cow<'static, str>);
 
 // Define Str as a raw view
 raw_view!(Str);
+pub(crate) mod ffi {
+    use waterui_str::Str;
+    ffi_view!(Str, Str, waterui_force_as_label, waterui_label_id);
+}

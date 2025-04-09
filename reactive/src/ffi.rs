@@ -32,6 +32,7 @@ macro_rules! impl_computed {
             computed: *const $crate::Computed<$ty>,
             watcher: WuiWatcher<$ffi_ty>,
         ) -> *mut WatcherGuard {
+            use $crate::ffi::IntoFFI;
             unsafe {
                 let guard = (*computed).watch(Watcher::new(move |v: $ty, metadata| {
                     watcher.call(v.into_ffi(), metadata)
