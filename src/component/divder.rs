@@ -12,3 +12,10 @@ use waterui_core::raw_view;
 pub struct Divider;
 
 raw_view!(Divider);
+
+pub(crate) mod ffi {
+    use super::Divider;
+    use waterui_core::ffi_view;
+
+    ffi_view!(Divider, waterui_divider_id);
+}

@@ -89,9 +89,12 @@ pub fn button(label: impl View) -> Button {
 }
 
 /// FFI bindings for button component integration with native platforms.
-pub mod ffi {
-    use waterui_core::AnyView;
+pub(crate) mod ffi {
+    use super::{Button, ButtonConfig};
+    use waterui_core::components::Native;
     use waterui_core::handler::BoxHandler;
+    use waterui_core::{AnyView, ffi_view};
+    use waterui_ffi::ffi_struct;
 
     /// C representation of a WaterUI button for FFI purposes.
     #[derive(Debug)]
@@ -103,25 +106,11 @@ pub mod ffi {
         pub action: *mut BoxHandler<()>,
     }
 
-    /// Creates a new button instance for FFI usage.
-    ///
-    /// # Safety
-    ///
-    /// Pointers must be valid and properly aligned.
-    ///
-    /// # Arguments
-    ///
-    /// * `label` - Pointer to the button's label view
-    /// * `action` - Pointer to the button's action handler
-    ///
-    /// # Returns
-    ///
-    /// A new WuiButton instance
-    #[unsafe(no_mangle)]
-    extern "C" fn waterui_button_new(
-        _label: *mut AnyView,
-        _action: *mut BoxHandler<()>,
-    ) -> WuiButton {
-        todo!()
-    }
+    ffi_struct!(ButtonConfig, WuiButton, label, action);
+    ffi_view!(
+        Native<ButtonConfig>,
+        WuiButton,
+        waterui_button_id,
+        waterui_force_as_button
+    );
 }
