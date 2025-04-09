@@ -21,3 +21,16 @@ impl<T: 'static> View for Native<T> {
         panic!("Native view ({})", type_name::<T>())
     }
 }
+
+mod ffi {
+    use waterui_ffi::IntoFFI;
+
+    use super::Native;
+
+    impl<T: IntoFFI> IntoFFI for Native<T> {
+        type FFI = T::FFI;
+        fn into_ffi(self) -> Self::FFI {
+            waterui_ffi::IntoFFI::into_ffi(self.0)
+        }
+    }
+}

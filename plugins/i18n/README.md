@@ -72,6 +72,5 @@ welcome = "Welcome to our application!"
 ## Features
 
 - `std` (default): Enables file I/O operations and error handling
-  - Includes: `async-fs`, `futures-lite`, `thiserror`, `toml`
 
 For `no_std` environments, simply disable default features.

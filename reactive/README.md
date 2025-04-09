@@ -1,22 +1,6 @@
 # WaterUI Reactive Framework
 
-A powerful, lightweight reactive state management system.
-
-## Overview
-
-The WaterUI reactive framework provides a comprehensive set of primitives for managing application state in a reactive way. It enables automatic propagation of changes through your application, with minimal boilerplate and maximum flexibility.
-
-```
-+----------------+      +----------------+      +---------------+
-|    Binding     |----->|    Computed    |----->|    Watcher    |
-|   (Mutable)    |      |   (Derived)    |      |  (Callbacks)  |
-+----------------+      +----------------+      +---------------+
-        ^                       |                       |
-        |                       |                       |
-        +------------------+----+-----------------------+
-                           |
-                        Updates
-```
+A powerful, lightweight reactive framework for WaterUI.
 
 ## Core of our architecture: `Compute` trait
 
@@ -32,13 +16,18 @@ pub trait Compute: Clone + 'static {
 }
 ```
 
+`Compute` describes a reactive value that can be computed and observed. It can generate a new value by `compute()` method.
+This value implements `ComputeResult` trait, so it can be cloned cheaply and compare easily.
+It will notify watchers only when its value actually changes.
+
+
 This trait is implemented by `Binding`, `Computed`, and all other reactive types, providing a consistent interface for working with reactive values regardless of their specific implementation.
 
-## Core Components
+`Computed<T>` is a type-erased container that can hold any implementation of the `Compute` trait, providing a uniform way to work with different kinds of computations.
 
 ### Binding
 
-`Binding<T>` is the foundation of the reactive system - a mutable, observable value:
+`Binding<T>` is a two-way binding container.
 
 ```rust
 use waterui_reactive::binding;
@@ -61,28 +50,6 @@ Bindings serve as the source of truth for application state and notify observers
 - `Binding<Str>` - `append()`, `clear()` for strings
 - `Binding<Vec<T>>` - `push()`, `clear()` for vectors
 
-### Computed
-
-`Computed<T>` represents a value derived from other reactive values:
-
-```rust
-use waterui_reactive::{ComputeExt, binding};
-
-let price = binding(10.0);
-let quantity = binding(2);
-
-// Create a computed value that updates when dependencies change
-let total = price.clone().zip(quantity.clone()).map(|(p, q)| p * q as f64);
-
-assert_eq!(total.compute(), 20.0);
-
-// When price changes, total is automatically updated
-price.set(15.0);
-assert_eq!(total.compute(), 30.0);
-```
-
-`Computed<T>` is a type-erased container that can hold any implementation of the `Compute` trait, providing a uniform way to work with different kinds of computations.
-
 ### Watchers
 
 Watchers let you react to changes in reactive values:
@@ -101,17 +68,10 @@ let _guard = name.watch(|value| {
 name.set("Universe".to_string());
 ```
 
+What's more, watchers can receive a metadata by using `Watcher::new` to construct a standard watcher.It is essential for our reactive animation system.
+
 When working with watchers, it's important to store the returned `WatcherGuard`. This guard ensures the watcher is properly unregistered when dropped, preventing memory leaks.
 
-## Thread Safety Model
+## Mailbox
 
 The reactive framework is designed to be **single-threaded** by default. For cross-thread operations, use the [`Mailbox`](mailbox/index.html) type which provides a safe bridge.
-
-## Additional Features
-
-The framework provides many more capabilities:
-
-- [**Composition and Transformation**](map/index.html): Combine and transform reactive values
-- [**Collections**](collection/index.html): Efficiently manage collections of reactive data
-- [**Constants**](constant/index.html): Create optimized immutable reactive values
-- [**Extension Methods**](trait.ComputeExt.html): Convenient methods for all reactive types

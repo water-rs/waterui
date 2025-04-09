@@ -12,8 +12,17 @@ pub use scroll::scroll;
 pub mod spacer;
 pub use spacer::spacer;
 
+pub mod ffi {
+    use super::Alignment;
+    use waterui_ffi::ffi_enum;
+    ffi_enum!(Alignment, WuiAlignment, Default, Leading, Center, Trailing);
+    pub use crate::grid::ffi::*;
+    pub use crate::overlay::ffi::*;
+    pub use crate::scroll::ffi::*;
+    pub use crate::spacer::ffi::*;
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[repr(C)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Alignment {
     #[default]
@@ -25,7 +34,6 @@ pub enum Alignment {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
 pub struct Frame {
     pub width: f64,
     pub min_width: f64,

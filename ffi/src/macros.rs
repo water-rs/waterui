@@ -162,3 +162,59 @@ macro_rules! impl_opaque_clone {
         }
     };
 }
+
+#[macro_export]
+/// Implements the `IntoFFI` trait for a type by converting each field to its FFI representation.
+///
+/// This macro generates an implementation of `IntoFFI` where the FFI type is a struct
+/// with the same field names as the original type. Each field is converted using its own
+/// `IntoFFI` implementation.
+///
+/// # Arguments
+///
+/// * `$ty` - The Rust type to implement `IntoFFI` for
+/// * `$ffi` - The corresponding FFI type
+/// * `$param` - One or more field names to convert
+///
+/// # Example
+///
+/// ```
+/// ffi_struct!(MyStruct, MyStructFFI, field1, field2);
+/// ```
+macro_rules! ffi_struct {
+    ($ty:ty,$ffi:ty,$($param:ident),*) => {
+        impl $crate::IntoFFI for $ty {
+            type FFI = $ffi;
+            fn into_ffi(self) -> Self::FFI {
+                Self::FFI {
+                    $(
+                        $param: $crate::IntoFFI::into_ffi(self.$param),
+                    )*
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_enum {
+    ($ty:ident,$ffi:ident,$($param:ident),*) => {
+        #[repr(C)]
+        pub enum $ffi{
+            $(
+                $param,
+            )*
+        }
+
+        impl $crate::IntoFFI for $ty {
+            type FFI = $ffi;
+            fn into_ffi(self) -> Self::FFI {
+                match self{
+                    $(
+                        $ty::$param => $ffi::$param,
+                    )*
+                }
+            }
+        }
+    };
+}

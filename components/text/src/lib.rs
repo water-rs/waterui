@@ -1,5 +1,8 @@
 #![no_std]
 
+pub mod font;
+use font::Font;
+mod attributed;
 pub mod link;
 pub mod locale;
 mod macros;
@@ -42,28 +45,6 @@ impl core::cmp::PartialEq for Text {
 impl core::cmp::PartialOrd for Text {
     fn partial_cmp(&self, _other: &Self) -> Option<core::cmp::Ordering> {
         None
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct Font {
-    pub size: f64,
-    pub italic: bool,
-    pub strikethrough: Option<Color>,
-    pub underlined: Option<Color>,
-    pub bold: bool,
-}
-
-impl Default for Font {
-    fn default() -> Self {
-        Self {
-            size: f64::NAN,
-            italic: false,
-            bold: false,
-            strikethrough: None,
-            underlined: None,
-        }
     }
 }
 

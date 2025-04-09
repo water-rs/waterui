@@ -38,13 +38,6 @@
 //!     }).await;
 //! }
 //! ```
-//!
-//! ## Key Benefits
-//!
-//! - **Thread Safety**: Safely interact with reactive values from any thread
-//! - **Async Support**: Seamlessly integrate with async/await code
-//! - **Type Conversion**: Convert between compatible types during get/set operations
-//! - **Consistent Model**: Maintain the same reactive programming model across your application
 
 use crate::{Binding, Compute, compute::ComputeResult, watcher::WatcherGuard};
 use waterui_task::MainValue;

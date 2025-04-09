@@ -44,3 +44,26 @@ impl ScrollView {
 pub fn scroll(content: impl TupleViews) -> ScrollView {
     ScrollView::new(vstack(content))
 }
+
+pub(crate) mod ffi {
+    use waterui_core::{AnyView, ffi_view};
+    use waterui_ffi::{ffi_enum, ffi_struct};
+
+    use super::{Axis, ScrollView};
+
+    #[repr(C)]
+    pub struct WuiScrollView {
+        pub content: *mut AnyView,
+        pub axis: WuiAxis,
+    }
+
+    ffi_enum!(Axis, WuiAxis, Horizontal, Vertical, All);
+
+    ffi_struct!(ScrollView, WuiScrollView, content, axis);
+    ffi_view!(
+        ScrollView,
+        WuiScrollView,
+        waterui_scroll_id,
+        waterui_force_as_scroll
+    );
+}

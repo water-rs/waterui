@@ -32,3 +32,31 @@ pub fn row(columns: impl TupleViews) -> GridRow {
         columns: columns.into_views(),
     }
 }
+
+pub(crate) mod ffi {
+    use waterui_core::{AnyView, ffi_view};
+    use waterui_ffi::{array::WuiArray, ffi_struct};
+
+    use crate::ffi::WuiAlignment;
+
+    use super::{Grid, GridRow};
+
+    #[repr(C)]
+    pub struct WuiGridRow {
+        pub columns: WuiArray<*mut AnyView>,
+    }
+
+    ffi_struct!(GridRow, WuiGridRow, columns);
+
+    #[repr(C)]
+    pub struct WuiGrid {
+        pub alignment: WuiAlignment,
+        pub h_space: f64,
+        pub v_space: f64,
+        pub rows: WuiArray<WuiGridRow>,
+    }
+
+    ffi_struct!(Grid, WuiGrid, alignment, h_space, v_space, rows);
+
+    ffi_view!(Grid, WuiGrid, waterui_grid_id, waterui_force_as_grid);
+}

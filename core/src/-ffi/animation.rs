@@ -20,7 +20,7 @@ unsafe extern "C" fn waterui_get_animation(metadata: *const WuiWatcherMetadata) 
     unsafe {
         (*metadata)
             .try_get::<Animation>()
-            .map(IntoFFI::into_ffi)
+            .map(IntoFFI::ffi_struct)
             .unwrap_or(WuiAnimation::None)
     }
 }
