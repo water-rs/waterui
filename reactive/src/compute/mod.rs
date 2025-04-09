@@ -55,7 +55,7 @@ impl<T: ComputeResult> Compute for T {
     }
 }
 
-/// The core trait for computations.
+/// The core trait for reactive system.
 ///
 /// Types implementing `Compute` represent a computation that can produce a value
 /// and notify observers when that value changes.
