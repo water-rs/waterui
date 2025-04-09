@@ -88,3 +88,109 @@ macro_rules! impl_extractor {
         }
     };
 }
+
+#[macro_export]
+macro_rules! ffi_view {
+    ($view_ty:ty,$ffi_ty:ty,$id:ident,$force_as:ident) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $force_as(view: *mut $crate::AnyView) -> $ffi_ty {
+            unsafe {
+                let any: $crate::AnyView = $crate::ffi::IntoRust::into_rust(view).unwrap();
+                let view = (*any.downcast_unchecked::<$view_ty>());
+                $crate::ffi::IntoFFI::into_ffi(view)
+            }
+        }
+        $crate::ffi_view!($view_ty, $id);
+    };
+
+    ($view_ty:ty,$id:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $id() -> $crate::ffi::WuiTypeId {
+            $crate::ffi::IntoFFI::into_ffi(core::any::TypeId::of::<$view_ty>())
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_metadata {
+    ($metadata:ty,$ffi:ty,$force_as:ident,$id:ident) => {
+        $crate::ffi_view!(
+            waterui::component::Metadata<$metadata>,
+            $crate::component::metadata::waterui_metadata<$ffi>,
+            $force_as,
+            $id
+        );
+    };
+}
+
+#[macro_export]
+macro_rules! native_view {
+    ($config:ty,$ffi:ty,$force_as:ident,$id:ident) => {
+        $crate::ffi_view!(waterui::component::Native<$config>, $ffi, $force_as, $id);
+    };
+}
+
+#[macro_export]
+macro_rules! impl_deref {
+    ($ty:ty,$target:ty) => {
+        impl core::ops::Deref for $ty {
+            type Target = $target;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl core::ops::DerefMut for $ty {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_type {
+    ($name:ident,$ty:ty,$drop:ident) => {
+        pub struct $name(pub(crate) $ty);
+
+        $crate::impl_deref!($name, $ty);
+
+        impl $crate::ffi::IntoFFI for $ty {
+            type FFI = *mut $name;
+            fn into_ffi(self) -> Self::FFI {
+                alloc::boxed::Box::into_raw(alloc::boxed::Box::new($name(self)))
+            }
+        }
+
+        impl $crate::ffi::IntoFFI for Option<$ty> {
+            type FFI = *mut $name;
+            fn into_ffi(self) -> Self::FFI {
+                if let Some(value) = self {
+                    value.into_ffi()
+                } else {
+                    core::ptr::null::<$name>() as *mut $name
+                }
+            }
+        }
+
+        impl $crate::ffi::IntoRust for *mut $name {
+            type Rust = $ty;
+            unsafe fn into_rust(self) -> Self::Rust {
+                unsafe { alloc::boxed::Box::from_raw(self).0 }
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        /// Drops the FFI value.
+        ///
+        /// # Safety
+        ///
+        /// The pointer must be a valid pointer to a properly initialized value
+        /// of the expected type, and must not be used after this function is called.
+        pub unsafe extern "C" fn $drop(value: *mut $name) {
+            unsafe {
+                let _ = $crate::ffi::IntoRust::into_rust(value);
+            }
+        }
+    };
+}
