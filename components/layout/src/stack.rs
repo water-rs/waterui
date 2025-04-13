@@ -86,21 +86,3 @@ macro_rules! impl_stack {
 impl_stack!(VStack, vertical);
 impl_stack!(HStack, horizonal);
 impl_stack!(ZStack, layered);
-
-pub mod ffi {
-    use waterui_core::{AnyView, ffi_view};
-    use waterui_ffi::{array::WuiArray, ffi_enum, ffi_struct};
-
-    use super::{Stack, StackMode};
-
-    ffi_enum!(StackMode, WuiStackMode, Vertical, Horizonal, Layered);
-
-    #[repr(C)]
-    pub struct WuiStack {
-        pub contents: WuiArray<*mut AnyView>,
-        pub mode: WuiStackMode,
-    }
-
-    ffi_struct!(Stack, WuiStack, contents, mode);
-    ffi_view!(Stack, WuiStack, waterui_stack_id, waterui_force_as_stack);
-}

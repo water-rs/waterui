@@ -6,8 +6,14 @@
 use core::num::NonZeroI32;
 
 use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{AnyView, Environment, configurable, id::Mapping, impl_debug};
-use waterui_reactive::Binding;
+use uniffi::custom_type;
+use waterui_core::{
+    AnyView, Environment, configurable,
+    handler::{BoxHandler, HandlerFn, into_handler},
+    id::Mapping,
+    impl_debug,
+};
+use waterui_reactive::{Binding, ffi_binding};
 
 use super::NavigationView;
 use waterui_core::id::TaggedView;
@@ -15,13 +21,44 @@ use waterui_core::id::TaggedView;
 /// Represents a single tab with a label and content.
 ///
 /// The generic parameter `T` is used for tag identification.
+///
 pub struct Tab<T> {
     /// The visual label for the tab, wrapped in a tagged view.
     pub label: TaggedView<T, AnyView>,
 
     /// The content to display when this tab is selected.
     /// Returns a NavigationView when given an Environment.
-    pub content: Box<dyn Fn(Environment) -> NavigationView>,
+    pub content: BoxHandler<NavigationView>,
+}
+
+mod ffi {
+    use uniffi::custom_type;
+    use waterui_core::{AnyView, ffi_handler, handler::BoxHandler, id::TaggedView};
+
+    use crate::NavigationView;
+
+    use super::{Id, Tab};
+    #[derive(uniffi::Record)]
+    pub struct FFIRawTab {
+        label: TaggedView<Id, AnyView>,
+        content: BoxHandler<NavigationView>,
+    }
+    ffi_handler!(NavigationView);
+    type RawTab = Tab<Id>;
+    custom_type!(RawTab,FFIRawTab,{
+        lower:|value|{
+            FFIRawTab {
+                label: value.label,
+                content: value.content,
+            }
+        },
+        try_lift:|value|{
+            Ok(Tab {
+                label: value.label,
+                content: value.content,
+            })
+        }
+    });
 }
 
 impl_debug!(Tab<Id>);
@@ -33,13 +70,13 @@ impl<T> Tab<T> {
     ///
     /// * `label` - The visual representation of the tab
     /// * `content` - A function that returns the tab's content as a NavigationView
-    pub fn new(
+    pub fn new<H: 'static>(
         label: TaggedView<T, AnyView>,
-        content: impl 'static + Fn(Environment) -> NavigationView,
+        content: impl HandlerFn<H, NavigationView>,
     ) -> Self {
         Self {
             label,
-            content: Box::new(content),
+            content: Box::new(into_handler(content)),
         }
     }
 }
@@ -47,10 +84,20 @@ impl<T> Tab<T> {
 /// Type alias for the identifier used in tab selection.
 type Id = NonZeroI32;
 
+custom_type!(Id, i32,{
+    remote,
+    lower:|value|{
+        value.get()
+    },
+    try_lift:|value|{
+        Ok(NonZeroI32::try_from(value)?)
+    }
+});
+
 /// Configuration for the Tabs component.
 ///
 /// This struct holds the current tab selection and the collection of tabs.
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[non_exhaustive]
 pub struct TabsConfig {
     /// The currently selected tab identifier.
@@ -61,6 +108,7 @@ pub struct TabsConfig {
 }
 
 configurable!(Tabs, TabsConfig);
+ffi_binding!(Id);
 
 impl TabsConfig {
     /// Creates a new tabs configuration with the given selection and tabs.

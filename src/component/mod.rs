@@ -18,7 +18,7 @@ pub mod views;
 pub use progress::{Progress, loading, progress};
 
 pub mod style;
-pub mod table;
+//pub mod table;
 
 #[doc(inline)]
 pub use waterui_core::components::*;

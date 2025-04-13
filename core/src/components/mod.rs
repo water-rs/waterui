@@ -14,8 +14,6 @@
 //! The module also provides facilities for attaching metadata to views.
 pub mod anyview;
 pub use anyview::AnyView;
-pub mod native;
-pub use native::Native;
 pub mod dynamic;
 mod label;
 pub use dynamic::Dynamic;

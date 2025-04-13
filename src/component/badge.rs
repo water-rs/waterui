@@ -15,12 +15,12 @@
 //! ```
 
 use crate::ViewExt;
-use waterui_core::Color;
 use waterui_core::{AnyView, View};
+use waterui_core::{Color, configurable};
 use waterui_reactive::{Compute, Computed, compute::IntoComputed};
 
 /// Configuration for the Badge component
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 pub struct BadgeConfig {
     /// The numeric value to display on the badge
     pub value: Computed<i32>,
@@ -29,6 +29,8 @@ pub struct BadgeConfig {
     /// The color of the badge
     pub color: Computed<Color>,
 }
+
+uniffi::use_remote_type!(waterui_core::Computed<Color>);
 
 configurable!(Badge, BadgeConfig);
 

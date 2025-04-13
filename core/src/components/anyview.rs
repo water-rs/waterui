@@ -5,10 +5,11 @@
 //! any type implementing the [`View`] trait and erases its concrete type
 //! while preserving its behavior.
 use core::{
-    any::{Any, TypeId, type_name},
+    any::{type_name, Any, TypeId},
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
+use std::sync::Arc;
 
 use alloc::boxed::Box;
 
@@ -128,7 +129,7 @@ impl AnyView {
     ///
     /// Returns `Some` if the types match, or `None` if they don't.
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        unsafe { self.is::<T>().then(|| self.downcast_mut_unchecked()) }
+        unsafe { self.is::<T>().then(move || self.downcast_mut_unchecked()) }
     }
 }
 
@@ -149,3 +150,40 @@ mod test {
         assert_eq!(AnyView::new(()).type_id(), TypeId::of::<()>())
     }
 }
+
+mod ffi {
+    use std::sync::Arc;
+
+    use waterui_task::OnceValue;
+
+    use crate::{Environment, View};
+
+    #[derive(uniffi::Object)]
+    pub struct FFIAnyView(OnceValue<super::AnyView>);
+
+    impl From<super::AnyView> for Arc<FFIAnyView> {
+        fn from(value: super::AnyView) -> Self {
+            Self::new(FFIAnyView(value.into()))
+        }
+    }
+
+    impl From<Arc<FFIAnyView>> for super::AnyView {
+        fn from(view: Arc<FFIAnyView>) -> Self {
+            view.0.take()
+        }
+    }
+
+    #[uniffi::export]
+    impl FFIAnyView {
+        pub fn id(&self) -> String {
+            format!("{:?}", self.0.get().type_id())
+        }
+
+        pub fn body(&self, env: Environment) -> super::AnyView {
+            let view = self.0.take().body(&env);
+            super::AnyView::new(view)
+        }
+    }
+}
+
+uniffi::custom_type!(AnyView, Arc<ffi::FFIAnyView>);

@@ -3,15 +3,12 @@ name = "waterui-str"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies.serde]
-version = "1.0"
-default-features = false
-features = ["derive"]
-optional = true
-
 [dependencies]
-waterui-ffi.workspace = true
+uniffi = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
-
+default = ["ffi"]
+std = []
+ffi = ["dep:uniffi", "std"]
 serde = ["dep:serde"]

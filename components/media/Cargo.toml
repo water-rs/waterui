@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 waterui-core.workspace = true
-
+uniffi.workspace = true
 [features]
 default = ["media-picker"]
 media-picker = []

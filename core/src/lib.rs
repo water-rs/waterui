@@ -91,20 +91,18 @@
 //!
 //! This enables modular functionality like theming, localization, and platform-specific features.
 
-#![no_std]
-#![warn(missing_docs)]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![feature(never_type)]
 extern crate alloc;
 
 #[macro_use]
 mod macros;
-
 pub mod components;
 pub use components::anyview::AnyView;
 pub mod env;
 pub mod view;
-
 pub use env::Environment;
+pub use paste::paste as __paste;
 pub use view::View;
 pub mod extract;
 pub mod handler;
@@ -115,7 +113,9 @@ pub mod color;
 pub use color::Color;
 pub mod shape;
 pub use waterui_reactive as reactive;
-pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed, binding, constant};
+pub use waterui_reactive::{binding, constant, Binding, Compute, ComputeExt, Computed};
 pub use waterui_str::Str;
-pub mod ffi;
 pub mod id;
+pub use waterui_task as task;
+
+uniffi::setup_scaffolding!();

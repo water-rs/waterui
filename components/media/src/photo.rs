@@ -14,7 +14,7 @@ use waterui_core::{AnyView, configurable};
 
 use crate::Url;
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 pub struct PhotoConfig {
     pub source: Url,
     pub placeholder: AnyView,
