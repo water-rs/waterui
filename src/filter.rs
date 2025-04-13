@@ -8,7 +8,7 @@
 //! a view to achieve the desired visual effect.
 
 /// A structure representing a blur filter operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Blur {
     /// The radius of the blur effect in pixels.
@@ -27,7 +27,7 @@ impl Blur {
 }
 
 /// A structure representing a brightness adjustment filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Brightness {
     /// The amount of brightness adjustment.
@@ -48,7 +48,7 @@ impl Brightness {
 }
 
 /// A structure representing a contrast adjustment filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Contrast {
     /// The amount of contrast adjustment.
@@ -69,7 +69,7 @@ impl Contrast {
 }
 
 /// A structure representing a saturation adjustment filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Saturation {
     /// The amount of saturation adjustment.
@@ -90,7 +90,7 @@ impl Saturation {
 }
 
 /// A structure representing a grayscale filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Grayscale {
     /// The intensity of the grayscale effect.
@@ -111,7 +111,7 @@ impl Grayscale {
 }
 
 /// A structure representing a hue rotation filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct HueRotation {
     /// The angle of rotation in degrees.
@@ -130,7 +130,7 @@ impl HueRotation {
 }
 
 /// A structure representing an inversion filter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[repr(C)]
 pub struct Invert {
     /// The intensity of the inversion effect.

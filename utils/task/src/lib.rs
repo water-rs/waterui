@@ -3,6 +3,8 @@
 extern crate alloc;
 
 mod apple;
+mod local_value;
+pub use local_value::{LocalValue, OnceValue};
 mod main_value;
 pub use main_value::MainValue;
 pub mod timer;

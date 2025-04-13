@@ -1,15 +1,20 @@
-use waterui_core::{Computed, configurable, reactive::compute::IntoComputed};
+use waterui_core::{
+    Computed, configurable,
+    reactive::{compute::IntoComputed, ffi_computed},
+};
 
 use crate::Url;
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 pub struct LivePhotoConfig {
     pub source: Computed<LivePhotoSource>,
 }
 
+ffi_computed!(LivePhotoSource);
+
 configurable!(LivePhoto, LivePhotoConfig);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, uniffi::Record)]
 pub struct LivePhotoSource {
     image: Url,
     video: Url,

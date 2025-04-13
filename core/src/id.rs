@@ -109,6 +109,42 @@ pub struct TaggedView<T, V> {
     pub content: V,
 }
 
+mod ffi {
+    use core::num::NonZeroUsize;
+
+    use crate::AnyView;
+
+    use super::{Id, TaggedView};
+
+    uniffi::custom_type!(Id, i32,{
+        remote,
+        lower:|value|{
+            value.get()
+        },
+        try_lift:|value|{
+            Ok(Id::try_from(value)?)
+        }
+    });
+
+    #[derive(uniffi::Record)]
+    pub struct FFIRawTaggedView {
+        tag: Id,
+        content: AnyView,
+    }
+    type RawTaggedView = TaggedView<Id, AnyView>;
+    uniffi::custom_type!(RawTaggedView,FFIRawTaggedView,{
+        lower:|value|{
+            FFIRawTaggedView {
+                tag: value.tag,
+                content: value.content,
+            }
+        },
+        try_lift:|value|{
+            Ok(RawTaggedView::new(value.tag, value.content))
+        }
+    });
+}
+
 impl<T, V: View> TaggedView<T, V> {
     /// Creates a new tagged view with the specified tag and content.
     pub fn new(tag: T, content: V) -> Self {

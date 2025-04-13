@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use waterui_core::configurable;
 
 use crate::component::{
     Text,

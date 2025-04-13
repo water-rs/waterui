@@ -21,11 +21,11 @@
 //! let counter_view = watch(count, |value| text(format!("Count: {}", value)));
 use core::cell::RefCell;
 
-use crate::{AnyView, View, raw_view};
+use crate::{raw_view, AnyView, View};
 use alloc::{boxed::Box, rc::Rc};
+use waterui_reactive::compute::ComputeResult;
 use waterui_reactive::Compute;
 use waterui_reactive::Computed;
-use waterui_reactive::compute::ComputeResult;
 /// A dynamic view that can be updated.
 ///
 /// Represents a view whose content can be changed dynamically at runtime.

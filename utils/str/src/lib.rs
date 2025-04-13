@@ -1,8 +1,7 @@
 #![doc = include_str!("../README.md")]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
-pub mod ffi;
 mod impls;
 mod shared;
 use alloc::{
@@ -551,3 +550,18 @@ impl From<String> for Str {
         }
     }
 }
+
+impl From<Str> for String {
+    fn from(value: Str) -> Self {
+        value.into_string()
+    }
+}
+
+#[cfg(feature = "ffi")]
+mod ffi {
+    use super::Str;
+    uniffi::custom_type!(Str, String);
+}
+
+#[cfg(feature = "ffi")]
+uniffi::setup_scaffolding!();

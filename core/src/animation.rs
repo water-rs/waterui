@@ -123,7 +123,8 @@ use core::time::Duration;
 ///
 /// Each animation type (except Spring) takes a Duration parameter that specifies
 /// how long the animation should take to complete.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, uniffi::Enum)]
+
 pub enum Animation {
     /// Default animation behavior (uses system defaults)
     #[default]
