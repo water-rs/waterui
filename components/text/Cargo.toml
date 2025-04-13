@@ -7,3 +7,4 @@ edition = "2024"
 waterui-core.workspace = true
 waterui-reactive.workspace = true
 time = "0.3"
+uniffi.workspace = true

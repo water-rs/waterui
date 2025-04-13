@@ -1,3 +1,5 @@
+extern crate alloc;
+
 pub mod live;
 pub mod photo;
 
@@ -12,7 +14,7 @@ use crate::live::LivePhotoSource;
 
 type Url = Str;
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Enum)]
 pub enum Media {
     Image(Url),
     LivePhoto(LivePhotoSource),
@@ -28,3 +30,4 @@ impl View for Media {
         }
     }
 }
+uniffi::setup_scaffolding!();

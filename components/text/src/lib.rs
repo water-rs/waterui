@@ -1,8 +1,6 @@
-#![no_std]
-
 pub mod font;
 use font::Font;
-mod attributed;
+pub mod attributed;
 pub mod link;
 pub mod locale;
 mod macros;
@@ -11,24 +9,28 @@ extern crate alloc;
 use alloc::string::ToString;
 use core::fmt::Display;
 use locale::Formatter;
+use uniffi::custom_type;
 use waterui_core::configurable;
-use waterui_reactive::ComputeExt;
+use waterui_core::view::ConfigurableView;
 use waterui_reactive::zip::FlattenMap;
 use waterui_reactive::{
     Compute, Computed,
     compute::{ComputeResult, IntoComputed},
 };
+use waterui_reactive::{ComputeExt, ffi_computed};
 
-use waterui_core::{Color, Str};
+use waterui_core::Str;
 
 configurable!(Text, TextConfig);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 #[non_exhaustive]
 pub struct TextConfig {
     pub content: Computed<Str>,
     pub font: Computed<Font>,
 }
+
+ffi_computed!(Font);
 
 impl Clone for Text {
     fn clone(&self) -> Self {
@@ -112,3 +114,5 @@ where
         Self::new(value)
     }
 }
+
+uniffi::setup_scaffolding!();

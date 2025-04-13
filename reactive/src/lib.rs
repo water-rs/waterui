@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![no_std]
 extern crate alloc;
 
 pub mod binding;
@@ -14,7 +13,6 @@ pub use compute::{Compute, Computed};
 
 pub mod collection;
 mod ext;
-pub mod ffi;
 pub mod mailbox;
 pub mod map;
 pub mod utils;
@@ -22,3 +20,7 @@ pub mod watcher;
 pub mod zip;
 #[doc(inline)]
 pub use ext::ComputeExt;
+#[macro_use]
+pub mod ffi;
+
+uniffi::setup_scaffolding!();
