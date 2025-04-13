@@ -57,11 +57,11 @@ pub struct Environment {
 }
 
 use crate::{
-    View,
     components::Metadata,
     handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
     plugin::Plugin,
     view::{ConfigurableView, Modifier},
+    View,
 };
 
 impl Environment {
@@ -183,3 +183,24 @@ where
         Metadata::new(self.content, env)
     }
 }
+
+mod ffi {
+    use std::sync::Arc;
+
+    use waterui_task::LocalValue;
+    #[derive(uniffi::Object)]
+    pub struct FFIEnvironment(LocalValue<super::Environment>);
+    impl From<super::Environment> for Arc<FFIEnvironment> {
+        fn from(value: super::Environment) -> Self {
+            Arc::new(FFIEnvironment(value.into()))
+        }
+    }
+
+    impl From<Arc<FFIEnvironment>> for super::Environment {
+        fn from(value: Arc<FFIEnvironment>) -> Self {
+            value.0.clone()
+        }
+    }
+}
+
+uniffi::custom_type!(Environment, alloc::sync::Arc<ffi::FFIEnvironment>);

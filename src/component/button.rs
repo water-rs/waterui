@@ -19,7 +19,8 @@
 use core::fmt::Debug;
 
 use alloc::boxed::Box;
-use waterui_core::handler::{BoxHandler, HandlerFn, into_handler};
+use waterui_core::configurable;
+use waterui_core::handler::{ActionObject, HandlerFn, into_handler};
 
 use crate::View;
 use crate::{AnyView, ViewExt};
@@ -28,11 +29,12 @@ use crate::{AnyView, ViewExt};
 ///
 /// Use the `Button` struct's methods to customize these properties.
 #[non_exhaustive]
+#[derive(uniffi::Record)]
 pub struct ButtonConfig {
     /// The label displayed on the button
     pub label: AnyView,
     /// The action to execute when the button is clicked
-    pub action: BoxHandler<()>,
+    pub action: ActionObject,
 }
 
 impl_debug!(ButtonConfig);
@@ -88,29 +90,15 @@ pub fn button(label: impl View) -> Button {
     Button::new(label)
 }
 
-/// FFI bindings for button component integration with native platforms.
-pub(crate) mod ffi {
-    use super::{Button, ButtonConfig};
-    use waterui_core::components::Native;
-    use waterui_core::handler::BoxHandler;
-    use waterui_core::{AnyView, ffi_view};
-    use waterui_ffi::ffi_struct;
-
-    /// C representation of a WaterUI button for FFI purposes.
-    #[derive(Debug)]
-    #[repr(C)]
-    pub struct WuiButton {
-        /// Pointer to the button's label view
-        pub label: *mut AnyView,
-        /// Pointer to the button's action handler
-        pub action: *mut BoxHandler<()>,
-    }
-
-    ffi_struct!(ButtonConfig, WuiButton, label, action);
-    ffi_view!(
-        Native<ButtonConfig>,
-        WuiButton,
-        waterui_button_id,
-        waterui_force_as_button
-    );
+macro_rules! bindgen {
+    ($ffi_ty:ty,$($name:ident,$ty:ty),*) => {
+        #[uniffi:export]
+        impl $ffi_ty {
+            $(
+                pub fn $name(&self) -> $ty {
+                    self.$name.take()
+                }
+            )*
+        }
+    };
 }

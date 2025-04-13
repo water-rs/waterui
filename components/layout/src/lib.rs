@@ -1,4 +1,3 @@
-#![no_std]
 extern crate alloc;
 
 pub mod stack;
@@ -12,17 +11,7 @@ pub use scroll::scroll;
 pub mod spacer;
 pub use spacer::spacer;
 
-pub mod ffi {
-    use super::Alignment;
-    use waterui_ffi::ffi_enum;
-    ffi_enum!(Alignment, WuiAlignment, Default, Leading, Center, Trailing);
-    pub use crate::grid::ffi::*;
-    pub use crate::overlay::ffi::*;
-    pub use crate::scroll::ffi::*;
-    pub use crate::spacer::ffi::*;
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, uniffi::Enum)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Alignment {
     #[default]
@@ -32,7 +21,7 @@ pub enum Alignment {
     Trailing,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Frame {
     pub width: f64,
@@ -66,7 +55,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 pub struct Edge {
@@ -141,3 +130,5 @@ impl Frame {
     modify_field!(margin, Edge);
     modify_field!(alignment, Alignment);
 }
+
+uniffi::setup_scaffolding!();

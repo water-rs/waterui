@@ -1,14 +1,10 @@
+
 [workspace]
-members = [
-    "core",
-    "reactive",
-    "plugins/*",
-    "kit",
-    "components/*",
-    "utils/*",
-    "ffi",
-]
+members = ["core", "reactive", "kit", "components/*", "utils/*", "bindgen"]
 resolver = "2"
+
+[lib]
+crate-type = ["cdylib"]
 
 [package]
 name = "waterui"
@@ -26,9 +22,9 @@ waterui-media = { path = "components/media" }
 waterui-layout = { path = "components/layout" }
 waterui-reactive = { path = "reactive" }
 waterui-navigation = { path = "components/navigation" }
-waterui-ffi = { path = "ffi" }
-
 waterui = { path = "." }
+serde = { version = "1.0", default-features = false }
+uniffi = "0.29"
 
 [dependencies]
 waterui-reactive.workspace = true
@@ -38,27 +34,12 @@ waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media.workspace = true
 waterui-navigation.workspace = true
-waterui-ffi.workspace = true
 waterui-task.workspace = true
-async-channel = "2.3.1"
-time = "0.3.41"
-bitflags = "2.9.0"
-
-[dependencies.sys-locale]
-version = "0.3.2"
-
-[dependencies.serde]
-version = "1.0"
-default-features = false
-features = ["derive"]
-optional = true
-
-[dependencies.async-fs]
-version = "2.1.2"
-optional = true
+uniffi.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
 default = []
-std = ["dep:async-fs"]
+std = []
 all = ["serde", "std"]
 serde = ["dep:serde", "waterui-core/serde"]
