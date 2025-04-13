@@ -2,14 +2,17 @@
 //!
 //! This module provides navigation components and utilities for building
 //! hierarchical user interfaces with navigation bars and links.
-#![no_std]
 extern crate alloc;
 
 pub mod search;
 pub mod tab;
 
 use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{AnyView, Color, Environment, View, impl_debug, raw_view};
+use waterui_core::{
+    AnyView, Color, View,
+    handler::{BoxHandler, HandlerFn, into_handler},
+    impl_debug, raw_view,
+};
 use waterui_reactive::Computed;
 use waterui_text::Text;
 
@@ -17,7 +20,7 @@ use waterui_text::Text;
 ///
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[must_use]
 pub struct NavigationView {
     /// The navigation bar for this view
@@ -30,7 +33,7 @@ pub struct NavigationView {
 ///
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, uniffi::Record)]
 pub struct Bar {
     /// The title text displayed in the navigation bar
     pub title: Text,
@@ -39,6 +42,8 @@ pub struct Bar {
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
 }
+
+uniffi::use_remote_type!(waterui_core::Computed<Color>);
 
 /// A path of navigation views forming a navigation hierarchy.
 ///
@@ -54,7 +59,7 @@ pub struct NavigationLink {
     /// The label view displayed for this link
     pub label: AnyView,
     /// A function that creates the destination view when the link is activated
-    pub content: Box<dyn Fn(Environment) -> NavigationView>,
+    pub content: BoxHandler<NavigationView>,
 }
 
 impl_debug!(NavigationLink);
@@ -66,10 +71,13 @@ impl NavigationLink {
     ///
     /// * `label` - The view to display as the link
     /// * `destination` - A function that creates the destination view
-    pub fn new(label: impl View, destination: impl 'static + Fn() -> NavigationView) -> Self {
+    pub fn new<P: 'static>(
+        label: impl View,
+        destination: impl HandlerFn<P, NavigationView>,
+    ) -> Self {
         Self {
             label: AnyView::new(label),
-            content: Box::new(move |_| destination()),
+            content: Box::new(into_handler(destination)),
         }
     }
 }
@@ -118,3 +126,5 @@ pub fn navigate(
 ) -> NavigationLink {
     NavigationLink::new(label, destination)
 }
+
+uniffi::setup_scaffolding!();

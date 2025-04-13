@@ -26,6 +26,7 @@ use crate::ComputeExt;
 use crate::ViewExt;
 use alloc::format;
 use waterui_core::View;
+use waterui_core::configurable;
 use waterui_reactive::Computed;
 use waterui_reactive::compute::IntoComputed;
 use waterui_reactive::zip::FlattenMap;
@@ -35,7 +36,7 @@ use waterui_text::text;
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 pub struct ProgressConfig {
     /// The label displayed alongside the progress indicator.
     pub label: AnyView,
@@ -49,7 +50,7 @@ pub struct ProgressConfig {
 
 /// Visual style options for progress indicators.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum ProgressStyle {
     /// A circular spinner-style progress indicator.
     Circular,

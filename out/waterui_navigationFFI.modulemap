@@ -1,0 +1,4 @@
+module waterui_navigationFFI {
+    header "waterui_navigationFFI.h"
+    export *
+}

@@ -16,14 +16,12 @@ use core::{
 };
 use std::{ops::Deref, rc::Rc, str::from_utf8_unchecked};
 
-use waterui_core::{
-    Computed, configurable,
-    ffi::{array::WuiData, closure::WuiFn},
-};
+use uniffi::custom_newtype;
+use waterui_core::{Computed, configurable, reactive::ffi_computed};
 
 use crate::Media;
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 pub struct MediaPickerConfig {
     pub selection: Computed<Selected>,
     pub filter: Computed<MediaFilter>,
@@ -32,9 +30,9 @@ pub struct MediaPickerConfig {
 configurable!(MediaPicker, MediaPickerConfig);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Selected(usize);
+pub struct Selected(u32);
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, uniffi::Enum)]
 pub enum MediaFilter {
     LivePhoto,
     Video,
@@ -44,25 +42,14 @@ pub enum MediaFilter {
     Any(Vec<MediaFilter>),
 }
 
+custom_newtype!(Selected, u32);
+ffi_computed!(Selected);
+ffi_computed!(MediaFilter);
+
 impl Selected {
     pub async fn load(self) -> Media {
-        with_continuation(|continuation| unsafe {
-            waterui_load_media(
-                self.0,
-                WuiFn::from(|url: WuiData| {
-                    let url = from_utf8_unchecked(url.deref());
-                    //continuation.finish(Media::new(url));
-                    todo!()
-                }),
-            );
-            // Media::new(url)
-        })
-        .await
+        todo!()
     }
-}
-
-unsafe extern "C" {
-    unsafe fn waterui_load_media(id: usize, callback: WuiFn<WuiData>); // return url
 }
 
 struct WithContinuationFuture<F, T> {

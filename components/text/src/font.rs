@@ -1,6 +1,6 @@
 use waterui_core::Color;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 #[non_exhaustive]
 pub struct Font {
     pub size: f64,
@@ -20,21 +20,4 @@ impl Default for Font {
             underlined: None,
         }
     }
-}
-
-pub(crate) mod ffi {
-    use waterui_core::ffi::{WuiColor, ffi_struct};
-
-    use super::Font;
-
-    #[repr(C)]
-    pub struct WuiFont {
-        pub size: f64,
-        pub italic: bool,
-        pub strikethrough: WuiColor,
-        pub underlined: WuiColor,
-        pub bold: bool,
-    }
-
-    ffi_struct!(Font, WuiFont, size, italic, strikethrough, underlined, bold);
 }

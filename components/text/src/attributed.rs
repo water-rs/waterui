@@ -5,6 +5,7 @@ use waterui_core::{Color, Str};
 
 use crate::font::Font;
 
+#[derive(Debug, uniffi::Enum)]
 pub enum Attribute {
     Bold,
     Italic,
@@ -13,7 +14,6 @@ pub enum Attribute {
     Color(Color),
     BackgroundColor(Color),
     Font(Font),
-    Other(Box<dyn Any>),
 }
 
 pub struct AttributedStr(Vec<(Str, Attribute)>);

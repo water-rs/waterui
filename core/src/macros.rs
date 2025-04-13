@@ -8,6 +8,7 @@ macro_rules! impl_debug {
         }
     };
 }
+
 #[macro_export]
 macro_rules! raw_view {
     ($ty:ty) => {
@@ -24,6 +25,14 @@ macro_rules! configurable {
     ($view:ident,$config:ty) => {
         #[derive(Debug)]
         pub struct $view($config);
+        uniffi::custom_type!($view,$config,{
+            lower:|value|{
+                $crate::view::ConfigurableView::config(value)
+            },
+            try_lift:|value|{
+                Ok(value.into())
+            }
+        });
 
         impl $crate::view::ConfigurableView for $view {
             type Config = $config;
@@ -47,7 +56,7 @@ macro_rules! configurable {
                         modifier.clone().modify(env.clone(), self.config()),
                     )
                 } else {
-                    $crate::components::AnyView::new($crate::components::native::Native(self.0))
+                    panic!("This view ({}) depends on a platform view, but the renderer is not handling it. Check the implementation of the renderer", core::any::type_name::<$view>())
                 }
             }
         }
@@ -71,9 +80,7 @@ macro_rules! tuples {
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-        $macro!(
-            T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
-        );
+        $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
     };
 }
 
@@ -86,47 +93,6 @@ macro_rules! impl_extractor {
                     .map(|value: $crate::extract::Use<$ty>| value.0)
             }
         }
-    };
-}
-
-#[macro_export]
-macro_rules! ffi_view {
-    ($view_ty:ty,$ffi_ty:ty,$id:ident,$force_as:ident) => {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $force_as(view: *mut $crate::AnyView) -> $ffi_ty {
-            unsafe {
-                let any: $crate::AnyView = $crate::ffi::IntoRust::into_rust(view).unwrap();
-                let view = (*any.downcast_unchecked::<$view_ty>());
-                $crate::ffi::IntoFFI::into_ffi(view)
-            }
-        }
-        $crate::ffi_view!($view_ty, $id);
-    };
-
-    ($view_ty:ty,$id:ident) => {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $id() -> $crate::ffi::WuiTypeId {
-            $crate::ffi::IntoFFI::into_ffi(core::any::TypeId::of::<$view_ty>())
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! ffi_metadata {
-    ($metadata:ty,$ffi:ty,$force_as:ident,$id:ident) => {
-        $crate::ffi_view!(
-            waterui::component::Metadata<$metadata>,
-            $crate::component::metadata::waterui_metadata<$ffi>,
-            $force_as,
-            $id
-        );
-    };
-}
-
-#[macro_export]
-macro_rules! native_view {
-    ($config:ty,$ffi:ty,$force_as:ident,$id:ident) => {
-        $crate::ffi_view!(waterui::component::Native<$config>, $ffi, $force_as, $id);
     };
 }
 
@@ -149,48 +115,27 @@ macro_rules! impl_deref {
 }
 
 #[macro_export]
-macro_rules! ffi_type {
-    ($name:ident,$ty:ty,$drop:ident) => {
-        pub struct $name(pub(crate) $ty);
-
-        $crate::impl_deref!($name, $ty);
-
-        impl $crate::ffi::IntoFFI for $ty {
-            type FFI = *mut $name;
-            fn into_ffi(self) -> Self::FFI {
-                alloc::boxed::Box::into_raw(alloc::boxed::Box::new($name(self)))
-            }
-        }
-
-        impl $crate::ffi::IntoFFI for Option<$ty> {
-            type FFI = *mut $name;
-            fn into_ffi(self) -> Self::FFI {
-                if let Some(value) = self {
-                    value.into_ffi()
-                } else {
-                    core::ptr::null::<$name>() as *mut $name
+macro_rules! ffi_handler {
+    ($ty:ty) => {
+        $crate::__paste! {
+            #[derive(uniffi::Object)]
+            pub struct [<FFIBoxHandler$ty>]($crate::task::OnceValue<$crate::handler::BoxHandler<$ty>>);
+            #[uniffi::export]
+            impl [<FFIBoxHandler$ty>] {
+                pub fn handle(&self,env:$crate::Environment) -> $ty {
+                    let value = self.0.get();
+                    $crate::handler::Handler::handle(&**value,&env)
                 }
             }
-        }
 
-        impl $crate::ffi::IntoRust for *mut $name {
-            type Rust = $ty;
-            unsafe fn into_rust(self) -> Self::Rust {
-                unsafe { alloc::boxed::Box::from_raw(self).0 }
-            }
-        }
+            type [<BoxHandler$ty>] = $crate::handler::BoxHandler<$ty>;
+            uniffi::custom_type!([<BoxHandler$ty>], alloc::sync::Arc<[<FFIBoxHandler$ty>]>,{
+                remote,
+                lower: |value| {alloc::sync::Arc::new([<FFIBoxHandler$ty>](value.into()))},
+                try_lift: |value| {Ok(value.0.take())}
+            });
 
-        #[unsafe(no_mangle)]
-        /// Drops the FFI value.
-        ///
-        /// # Safety
-        ///
-        /// The pointer must be a valid pointer to a properly initialized value
-        /// of the expected type, and must not be used after this function is called.
-        pub unsafe extern "C" fn $drop(value: *mut $name) {
-            unsafe {
-                let _ = $crate::ffi::IntoRust::into_rust(value);
-            }
+
         }
     };
 }
