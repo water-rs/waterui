@@ -23,7 +23,12 @@ macro_rules! raw_view {
 #[macro_export]
 macro_rules! configurable {
     ($view:ident,$config:ty) => {
+            $crate::configurable!($view,$config,"");
+    };
+
+    ($view:ident,$config:ty,$doc:expr) => {
         #[derive(Debug)]
+        #[doc=$doc]
         pub struct $view($config);
         uniffi::custom_type!($view,$config,{
             lower:|value|{
@@ -48,6 +53,16 @@ macro_rules! configurable {
             }
         }
 
+        $crate::__paste!{
+            #[uniffi::export]
+
+            fn [<$view:lower _id>]() -> alloc::string::String{
+                format!("{:?}", core::any::TypeId::of::<$view>())
+            }
+        }
+
+
+
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
                 use $crate::view::ConfigurableView;
@@ -61,6 +76,8 @@ macro_rules! configurable {
             }
         }
     };
+
+
 }
 
 macro_rules! tuples {
