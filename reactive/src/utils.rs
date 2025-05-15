@@ -47,6 +47,8 @@ use crate::{
 /// let sum_computation = add(computation_a, computation_b);
 /// // When executed, sum_computation will produce the sum of the results
 /// ```
+
+#[allow(clippy::type_complexity)]
 pub fn add<A, B>(
     a: A,
     b: B,

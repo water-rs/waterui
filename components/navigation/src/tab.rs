@@ -10,7 +10,7 @@ use uniffi::custom_type;
 use waterui_core::{
     AnyView, Environment, configurable,
     handler::{BoxHandler, HandlerFn, into_handler},
-    id::Mapping,
+    id::{Id, Mapping},
     impl_debug,
 };
 use waterui_reactive::{Binding, ffi_binding};
@@ -80,19 +80,7 @@ impl<T> Tab<T> {
         }
     }
 }
-
-/// Type alias for the identifier used in tab selection.
-type Id = NonZeroI32;
-
-custom_type!(Id, i32,{
-    remote,
-    lower:|value|{
-        value.get()
-    },
-    try_lift:|value|{
-        Ok(NonZeroI32::try_from(value)?)
-    }
-});
+uniffi::use_remote_type!(waterui_core::Binding<Id>);
 
 /// Configuration for the Tabs component.
 ///
@@ -108,7 +96,6 @@ pub struct TabsConfig {
 }
 
 configurable!(Tabs, TabsConfig);
-ffi_binding!(Id);
 
 impl TabsConfig {
     /// Creates a new tabs configuration with the given selection and tabs.
