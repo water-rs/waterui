@@ -6,3 +6,4 @@
 /examples/*/src-water/target
 /examples/*/src-water/Cargo.lock
 /examples/*/native/apple/build/
+/bindgen/swift/

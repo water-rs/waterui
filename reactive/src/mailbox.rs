@@ -149,12 +149,9 @@ impl<T: 'static> Mailbox<T> {
     ///     println!("Value changed to: {}", value);
     /// }).await;
     /// ```
-    pub async fn add_watcher(
-        &self,
-        watcher: impl Fn(T) + Send + 'static,
-    ) -> MainValue<WatcherGuard> {
+    pub async fn watch(&self, watcher: impl Fn(T) + Send + 'static) -> MainValue<WatcherGuard> {
         self.binding
-            .handle(move |v| MainValue::new(v.watch(move |value| watcher(value))))
+            .handle(move |v| MainValue::new(v.watch(watcher)))
             .await
     }
 }

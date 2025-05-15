@@ -1,3 +1,5 @@
+use core::num::NonZeroI32;
+
 use crate::{Binding, Computed, watcher::BoxWatcher};
 use waterui_str::Str;
 use waterui_task::OnceValue;
@@ -92,6 +94,7 @@ macro_rules! ffi_binding {
         }
     };
 }
+
 macro_rules! ffi_binding_local {
     ($ty:ty) => {
         $crate::ffi::__paste! {
