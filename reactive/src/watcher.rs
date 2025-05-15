@@ -22,6 +22,23 @@ pub struct Metadata(Box<MetadataInner>);
 #[derive(Debug, Default, Clone)]
 struct MetadataInner(BTreeMap<TypeId, Rc<dyn Any>>);
 
+mod ffi {
+    use alloc::sync::Arc;
+
+    use waterui_task::OnceValue;
+
+    use crate::watcher::Metadata;
+    #[derive(uniffi::Object)]
+    pub struct FFIMetadata(OnceValue<Metadata>);
+
+    uniffi::custom_type!(Metadata,Arc<FFIMetadata>,{
+        lower:|value|{
+            Arc::new(FFIMetadata(value.into()))
+        },
+        try_lift:|value| Ok(value.0.take()),
+    });
+}
+
 impl MetadataInner {
     /// Attempts to retrieve a value of type `T` from the metadata store.
     ///
@@ -41,38 +58,24 @@ impl MetadataInner {
     }
 }
 
-/// A callback that can be registered to observe computation results.
-///
-/// Watchers receive both the value of a computation and any associated metadata.
-#[allow(clippy::type_complexity)]
-pub struct Watcher<T>(Box<dyn Fn(T, Metadata)>);
+pub trait Watcher<T>: 'static {
+    fn notify(&self, value: T, metadata: Metadata);
+}
 
-impl<T> Watcher<T> {
-    /// Creates a new watcher with the given callback function.
-    ///
-    /// The callback will receive both the computation result and associated metadata.
-    pub fn new(f: impl Fn(T, Metadata) + 'static) -> Self {
-        Self(Box::new(f))
-    }
-
-    /// Notifies the watcher with a value and empty metadata.
-    pub fn notify(&self, value: T) {
-        self.notify_with_metadata(value, Metadata::new())
-    }
-
-    /// Notifies the watcher with a value and specific metadata.
-    pub fn notify_with_metadata(&self, value: T, metadata: Metadata) {
-        (self.0)(value, metadata);
+impl<F, T> Watcher<T> for F
+where
+    F: Fn(T, Metadata) + 'static,
+{
+    fn notify(&self, value: T, metadata: Metadata) {
+        (self)(value, metadata);
     }
 }
 
-/// Allows creating a watcher from a simple callback that only cares about the value.
-impl<F, T> From<F> for Watcher<T>
-where
-    F: Fn(T) + 'static,
-{
-    fn from(f: F) -> Self {
-        Self::new(move |value, _| f(value))
+pub type BoxWatcher<T> = Box<dyn Watcher<T>>;
+
+impl<T: ComputeResult> Watcher<T> for Box<dyn Watcher<T>> {
+    fn notify(&self, value: T, metadata: Metadata) {
+        (**self).notify(value, metadata);
     }
 }
 
@@ -105,6 +108,10 @@ impl Metadata {
         self.0.insert(value);
         self
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.0.is_empty()
+    }
 }
 
 /// A unique identifier for registered watchers.
@@ -113,17 +120,9 @@ pub(crate) type WatcherId = NonZeroUsize;
 /// Manages a collection of watchers for a specific computation type.
 ///
 /// Provides functionality to register, notify, and cancel watchers.
-#[derive(Debug)]
-pub struct WatcherManager<T> {
+#[derive(Debug, Clone)]
+pub struct WatcherManager<T: ComputeResult> {
     inner: Rc<RefCell<WatcherManagerInner<T>>>,
-}
-
-impl<T> Clone for WatcherManager<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<T: ComputeResult> Default for WatcherManager<T> {
@@ -146,22 +145,15 @@ impl<T: ComputeResult> WatcherManager<T> {
     }
 
     /// Registers a new watcher and returns its unique identifier.
-    pub fn register(&self, watcher: Watcher<T>) -> WatcherId {
+    pub fn register(&self, watcher: impl Watcher<T>) -> WatcherId {
         self.inner.borrow_mut().register(watcher)
     }
 
-    /// Notifies all registered watchers with a value and empty metadata.
-    pub fn notify(&self, value: T) {
-        self.notify_with_metadata(value, Metadata::new())
-    }
-
     /// Notifies all registered watchers with a value and specific metadata.
-    ///
-    /// Uses weak references to avoid memory leaks if notification happens during drop.
-    pub fn notify_with_metadata(&self, value: T, metadata: Metadata) {
+    pub fn notify(&self, value: T, metadata: Metadata) {
         let this = Rc::downgrade(&self.inner);
         if let Some(this) = this.upgrade() {
-            this.borrow().notify_with_metadata(value, metadata);
+            this.borrow().notify(value, metadata);
         }
     }
 
@@ -206,6 +198,13 @@ impl WatcherGuard {
     pub fn leak(self) {
         forget(self);
     }
+
+    pub fn on_drop(self, f: impl FnOnce() + 'static) -> Self {
+        Self::new(move || {
+            f();
+            let _ = self;
+        })
+    }
 }
 
 impl Drop for WatcherGuard {
@@ -219,7 +218,7 @@ impl Drop for WatcherGuard {
 /// Maintains the collection of watchers and handles identifier assignment.
 struct WatcherManagerInner<T> {
     id: WatcherId,
-    map: BTreeMap<WatcherId, Watcher<T>>,
+    map: BTreeMap<WatcherId, BoxWatcher<T>>,
 }
 
 impl<T> Debug for WatcherManagerInner<T> {
@@ -254,16 +253,16 @@ impl<T: ComputeResult> WatcherManagerInner<T> {
     }
 
     /// Registers a watcher and returns its unique identifier.
-    pub fn register(&mut self, watcher: Watcher<T>) -> WatcherId {
+    pub fn register(&mut self, watcher: impl Watcher<T>) -> WatcherId {
         let id = self.assign();
-        self.map.insert(id, watcher);
+        self.map.insert(id, Box::new(watcher));
         id
     }
 
     /// Notifies all registered watchers with a value and metadata.
-    pub fn notify_with_metadata(&self, value: T, metadata: Metadata) {
+    pub fn notify(&self, value: T, metadata: Metadata) {
         for watcher in self.map.values() {
-            watcher.notify_with_metadata(value.clone(), metadata.clone());
+            watcher.notify(value.clone(), metadata.clone());
         }
     }
 
@@ -276,6 +275,6 @@ impl<T: ComputeResult> WatcherManagerInner<T> {
 /// Convenience function to watch a computable value with automatic cleanup.
 ///
 /// Returns a guard that will automatically deregister the watcher when dropped.
-pub fn watch<C: Compute>(source: &C, watcher: impl Into<Watcher<C::Output>>) -> WatcherGuard {
-    source.add_watcher(watcher.into())
+pub fn watch<C: Compute>(source: &C, watcher: impl Watcher<C::Output>) -> WatcherGuard {
+    source.watch(watcher)
 }

@@ -97,7 +97,7 @@ impl<T: ComputeResult> Compute for Constant<T> {
     /// # Returns
     ///
     /// A `WatcherGuard` with an empty cleanup function.
-    fn add_watcher(&self, _watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, _watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         WatcherGuard::new(|| {})
     }
 }

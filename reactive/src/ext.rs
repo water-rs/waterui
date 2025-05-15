@@ -1,6 +1,6 @@
 use crate::{
     Compute, Computed,
-    compute::{ComputeResult, WithMetadata},
+    compute::{ComputeResult, Unique, WithMetadata},
     map::Map,
     watcher::{Watcher, WatcherGuard},
     zip::Zip,
@@ -30,6 +30,11 @@ pub trait ComputeExt: Compute + Sized {
         F: 'static + Fn(Self::Output) -> Output,
         Output: ComputeResult,
         Self: 'static;
+    fn unique_map<F, Output>(self, f: F) -> impl Compute<Output = Unique<Output>>
+    where
+        Output: Clone + 'static,
+        F: 'static + Fn(Self::Output) -> Output,
+        Self: 'static;
 
     /// Combines this compute node with another one into a single node that produces both outputs.
     ///
@@ -51,7 +56,7 @@ pub trait ComputeExt: Compute + Sized {
     /// # Returns
     ///
     /// A guard that will automatically unregister the watcher when dropped.
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 
     /// Creates a memoized version of this compute node that caches its result.
     ///
@@ -75,6 +80,14 @@ pub trait ComputeExt: Compute + Sized {
 }
 
 impl<C: Compute> ComputeExt for C {
+    fn unique_map<F, Output>(self, f: F) -> impl Compute<Output = Unique<Output>>
+    where
+        F: 'static + Fn(Self::Output) -> Output,
+        Output: Clone + 'static,
+        Self: 'static,
+    {
+        self.map(move |value| Unique(f(value)))
+    }
     fn map<F, Output>(self, f: F) -> Map<Self, F, Output>
     where
         F: 'static + Fn(Self::Output) -> Output,
@@ -88,8 +101,8 @@ impl<C: Compute> ComputeExt for C {
         Zip::new(self, b)
     }
 
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        self.add_watcher(watcher.into())
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+        self.watch(watcher)
     }
 
     fn computed(self) -> Computed<Self::Output>

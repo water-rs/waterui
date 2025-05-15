@@ -12,7 +12,7 @@ pub trait Compute: Clone + 'static {
     fn compute(&self) -> Self::Output;
 
     // Register a watcher to be notified of changes
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 }
 ```
 
