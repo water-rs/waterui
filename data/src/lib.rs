@@ -4,7 +4,7 @@ pub mod database;
 use alloc::{rc::Rc, vec::Vec};
 use core::{any::type_name, cell::RefCell, future::Future, marker::PhantomData};
 use serde::{Serialize, de::DeserializeOwned};
-use waterui::{compute::ComputeResult, id::Identifable};
+use waterui::id::Identifable;
 use waterui_reactive::{
     Compute,
     binding::CustomBinding,
@@ -45,7 +45,7 @@ impl<T: Schema> Collection for Data<T> {
         self.buf.borrow().len()
     }
 
-    fn watch(&self, watcher: waterui_reactive::watcher::Watcher<()>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: waterui_reactive::watcher::Watcher<()>) -> WatcherGuard {
         self.database.on_change(move || {
             watcher.notify(());
         })
@@ -146,7 +146,10 @@ impl<T: Schema> Compute for DataElement<T> {
         self.value.borrow().clone()
     }
 
-    fn watch(&self, watcher: waterui_reactive::watcher::Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(
+        &self,
+        watcher: waterui_reactive::watcher::Watcher<Self::Output>,
+    ) -> WatcherGuard {
         WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
 }

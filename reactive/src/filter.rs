@@ -2,7 +2,6 @@ use alloc::rc::Rc;
 
 use crate::{
     Compute,
-    compute::ComputeResult,
     watcher::{Watcher, WatcherGuard},
 };
 
@@ -36,7 +35,7 @@ where
             Default::default()
         }
     }
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         self.source.watch(move |value, metadata| {
             if (self.filter)(value.clone()) {
                 watcher.notify(value, metadata);

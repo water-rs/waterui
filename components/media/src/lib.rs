@@ -8,18 +8,20 @@ pub mod picker;
 pub mod video;
 pub use {live::LivePhoto, photo::Photo, video::Video};
 
-use waterui_core::{AnyView, Environment, Str, View};
+use waterui_core::{AnyView, Environment, Str, View, reactive::impl_constant};
 
 use crate::live::LivePhotoSource;
 
 type Url = Str;
 
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug, Clone, uniffi::Enum)]
 pub enum Media {
     Image(Url),
     LivePhoto(LivePhotoSource),
     Video(Url),
 }
+
+impl_constant!(LivePhotoSource, Media);
 
 impl View for Media {
     fn body(self, _env: &Environment) -> impl View {
