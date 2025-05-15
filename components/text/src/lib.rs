@@ -12,11 +12,9 @@ use locale::Formatter;
 use uniffi::custom_type;
 use waterui_core::configurable;
 use waterui_core::view::ConfigurableView;
+use waterui_reactive::compute::IntoCompute;
 use waterui_reactive::zip::FlattenMap;
-use waterui_reactive::{
-    Compute, Computed,
-    compute::{ComputeResult, IntoComputed},
-};
+use waterui_reactive::{Compute, Computed, compute::IntoComputed};
 use waterui_reactive::{ComputeExt, ffi_computed};
 
 use waterui_core::Str;
@@ -64,14 +62,11 @@ impl Text {
         })
     }
 
-    pub fn display<T: Display + ComputeResult>(source: impl IntoComputed<T>) -> Self {
+    pub fn display<T: Display>(source: impl IntoComputed<T>) -> Self {
         Self::new(source.into_compute().map(|value| value.to_string()))
     }
 
-    pub fn format<T: ComputeResult>(
-        value: impl IntoComputed<T>,
-        formatter: impl Formatter<T> + 'static,
-    ) -> Self {
+    pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T> + 'static) -> Self {
         Self::new(
             value
                 .into_compute()

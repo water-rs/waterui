@@ -7,8 +7,6 @@ use core::{
     num::NonZeroUsize,
 };
 
-use crate::{Compute, compute::ComputeResult};
-
 /// A type-erased container for metadata that can be associated with computation results.
 ///
 /// `Metadata` allows attaching arbitrary typed information to computation results
@@ -73,7 +71,7 @@ where
 
 pub type BoxWatcher<T> = Box<dyn Watcher<T>>;
 
-impl<T: ComputeResult> Watcher<T> for Box<dyn Watcher<T>> {
+impl<T: 'static> Watcher<T> for Box<dyn Watcher<T>> {
     fn notify(&self, value: T, metadata: Metadata) {
         (**self).notify(value, metadata);
     }
@@ -121,11 +119,11 @@ pub(crate) type WatcherId = NonZeroUsize;
 ///
 /// Provides functionality to register, notify, and cancel watchers.
 #[derive(Debug, Clone)]
-pub struct WatcherManager<T: ComputeResult> {
+pub struct WatcherManager<T> {
     inner: Rc<RefCell<WatcherManagerInner<T>>>,
 }
 
-impl<T: ComputeResult> Default for WatcherManager<T> {
+impl<T> Default for WatcherManager<T> {
     fn default() -> Self {
         Self {
             inner: Rc::default(),
@@ -133,7 +131,7 @@ impl<T: ComputeResult> Default for WatcherManager<T> {
     }
 }
 
-impl<T: ComputeResult> WatcherManager<T> {
+impl<T: 'static> WatcherManager<T> {
     /// Creates a new, empty watcher manager.
     pub fn new() -> Self {
         Self::default()
@@ -150,7 +148,7 @@ impl<T: ComputeResult> WatcherManager<T> {
     }
 
     /// Notifies all registered watchers with a value and specific metadata.
-    pub fn notify(&self, value: T, metadata: Metadata) {
+    pub fn notify(&self, value: impl Fn() -> T, metadata: Metadata) {
         let this = Rc::downgrade(&self.inner);
         if let Some(this) = this.upgrade() {
             this.borrow().notify(value, metadata);
@@ -182,7 +180,7 @@ impl WatcherGuard {
     }
 
     /// Creates a guard that will cancel a watcher registration when dropped.
-    pub fn from_id<T: ComputeResult>(watchers: &WatcherManager<T>, id: WatcherId) -> Self {
+    pub fn from_id<T: 'static>(watchers: &WatcherManager<T>, id: WatcherId) -> Self {
         let weak = Rc::downgrade(&watchers.inner);
         Self::new(move || {
             if let Some(rc) = weak.upgrade() {
@@ -236,7 +234,7 @@ impl<T> Default for WatcherManagerInner<T> {
     }
 }
 
-impl<T: ComputeResult> WatcherManagerInner<T> {
+impl<T: 'static> WatcherManagerInner<T> {
     /// Checks if there are any registered watchers.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
@@ -260,9 +258,9 @@ impl<T: ComputeResult> WatcherManagerInner<T> {
     }
 
     /// Notifies all registered watchers with a value and metadata.
-    pub fn notify(&self, value: T, metadata: Metadata) {
+    pub fn notify(&self, value: impl Fn() -> T, metadata: Metadata) {
         for watcher in self.map.values() {
-            watcher.notify(value.clone(), metadata.clone());
+            watcher.notify(value(), metadata.clone());
         }
     }
 
@@ -270,11 +268,4 @@ impl<T: ComputeResult> WatcherManagerInner<T> {
     pub fn cancel(&mut self, id: WatcherId) {
         self.map.remove(&id);
     }
-}
-
-/// Convenience function to watch a computable value with automatic cleanup.
-///
-/// Returns a guard that will automatically deregister the watcher when dropped.
-pub fn watch<C: Compute>(source: &C, watcher: impl Watcher<C::Output>) -> WatcherGuard {
-    source.watch(watcher)
 }

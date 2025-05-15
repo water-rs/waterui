@@ -17,7 +17,7 @@ pub trait Database: Clone + Default {
     fn insert(&self, key: &[u8], value: Vec<u8>);
     fn remove(&self, id: Id);
 
-    fn watch(&self, key: &[u8], watcher: impl Fn(&[u8]));
+    fn add_watcher(&self, key: &[u8], watcher: impl Fn(&[u8]));
     fn on_change(&self, watcher: impl Fn()) -> WatcherGuard;
 }
 
@@ -53,7 +53,7 @@ impl Database for DefaultDatabase {
         todo!()
     }
 
-    fn watch(&self, key: &[u8], watcher: impl Fn(&[u8])) {
+    fn add_watcher(&self, key: &[u8], watcher: impl Fn(&[u8])) {
         todo!()
     }
 

@@ -19,13 +19,13 @@
 //! // Create a view that watches a reactive value
 //! let count = Mutable::new(0);
 //! let counter_view = watch(count, |value| text(format!("Count: {}", value)));
-use core::cell::RefCell;
-
+use crate::components::With;
 use crate::{raw_view, AnyView, View};
 use alloc::rc::Rc;
-use waterui_reactive::compute::ComputeResult;
-use waterui_reactive::watcher::Metadata;
+use core::cell::RefCell;
+use waterui_reactive::watcher::{Metadata, WatcherGuard};
 use waterui_reactive::Compute;
+use waterui_reactive::ComputeExt;
 use waterui_reactive::Computed;
 
 /// A dynamic view that can be updated.
@@ -109,11 +109,13 @@ impl Dynamic {
     pub fn watch<T, V: View>(
         value: impl Compute<Output = T>,
         f: impl Fn(T) -> V + 'static,
-    ) -> Self {
+    ) -> With<Self, WatcherGuard> {
         let (handle, dyanmic) = Self::new();
         handle.set(f(value.compute()));
-        waterui_reactive::watcher::watch(&value, move |value, _| handle.set(f(value))).leak();
-        dyanmic
+
+        let guard = value.watch(move |value| handle.set(f(value)));
+
+        With::new(dyanmic, guard)
     }
 
     /// Connects the Dynamic view to a receiver function.
@@ -149,7 +151,7 @@ pub fn watch<T, V: View>(
     Dynamic::watch(value, f)
 }
 
-impl<V: ComputeResult + View> View for Computed<V> {
+impl<V: View> View for Computed<V> {
     fn body(self, _env: &crate::Environment) -> impl View {
         Dynamic::watch(self, |view| view)
     }

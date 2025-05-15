@@ -6,13 +6,13 @@ A powerful, lightweight reactive framework for WaterUI.
 
 ```rust
 pub trait Compute: Clone + 'static {
-    type Output: ComputeResult;
+    type OutpuT;
 
     // Get the current value
     fn compute(&self) -> Self::Output;
 
     // Register a watcher to be notified of changes
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 }
 ```
 

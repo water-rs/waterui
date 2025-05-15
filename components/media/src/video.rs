@@ -1,6 +1,6 @@
 use waterui_core::{
     Binding, Computed, View, binding, configurable,
-    reactive::{compute::IntoComputed, ffi_computed},
+    reactive::{compute::IntoComputed, ffi_computed, impl_constant},
 };
 
 use crate::Url;
@@ -32,6 +32,8 @@ configurable!(VideoPlayer, VideoPlayerConfig);
 pub struct Video {
     url: Url,
 }
+
+impl_constant!(Video);
 
 impl Video {
     pub fn new(url: impl Into<Url>) -> Self {
