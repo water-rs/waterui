@@ -19,3 +19,26 @@ mod label;
 pub use dynamic::Dynamic;
 pub mod metadata;
 pub use metadata::{IgnorableMetadata, Metadata};
+
+use crate::View;
+
+// The lifetime of T will be same as V
+
+#[derive(Debug, Clone)]
+pub struct With<V, T> {
+    view: V,
+    #[allow(unused)]
+    value: T,
+}
+
+impl<V: View, T: 'static> View for With<V, T> {
+    fn body(self, _env: &crate::Environment) -> impl View {
+        self.view
+    }
+}
+
+impl<V, T> With<V, T> {
+    pub fn new(view: V, value: T) -> Self {
+        Self { view, value }
+    }
+}

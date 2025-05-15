@@ -35,7 +35,6 @@ use waterui_task::LocalTask;
 
 use crate::{
     Compute,
-    compute::ComputeResult,
     watcher::{Watcher, WatcherGuard},
 };
 
@@ -46,19 +45,11 @@ use crate::{
 /// is automatically cached and only recomputed when the source value changes.
 pub struct Map<C, F, Output> {
     source: C,
-    cache: Rc<RefCell<Option<Output>>>,
-
-    inner: Rc<MapInner<C, F>>,
+    f: Rc<F>,
+    _marker: PhantomData<Output>,
 }
 
-struct MapInner<C, F> {
-    f: F,
-    #[allow(unused)]
-    guard: WatcherGuard,
-    _marker: PhantomData<C>,
-}
-
-impl<C: Compute + 'static, F: 'static, Output: ComputeResult> Map<C, F, Output> {
+impl<C: Compute + 'static, F: 'static, Output> Map<C, F, Output> {
     /// Creates a new `Map` that transforms values from `source` using function `f`.
     ///
     /// # Parameters
@@ -70,39 +61,11 @@ impl<C: Compute + 'static, F: 'static, Output: ComputeResult> Map<C, F, Output> 
     ///
     /// A new `Map` instance that will transform values from the source.
     pub fn new(source: C, f: F) -> Self {
-        let cache: Rc<RefCell<Option<Output>>> = Rc::default();
-
-        let guard = {
-            let cache = cache.clone();
-            source.watch(move |_, _| {
-                cache.replace(None);
-            })
-        };
-
-        let inner = Rc::new(MapInner {
-            f,
-            guard,
-            _marker: PhantomData,
-        });
-
         Self {
             source,
-            cache,
-            inner,
+            f: Rc::new(f),
+            _marker: PhantomData,
         }
-    }
-
-    fn compute_from_source(&self, source: &C) -> Output
-    where
-        C: Compute,
-        Output: ComputeResult,
-        F: 'static + Fn(C::Output) -> Output,
-    {
-        let mut cache = self.cache.borrow_mut();
-
-        let cache = cache.get_or_insert_with(|| (self.inner.f)(source.compute()));
-
-        cache.clone()
     }
 }
 
@@ -131,8 +94,7 @@ impl<C: Compute + 'static, F: 'static, Output: ComputeResult> Map<C, F, Output> 
 /// ```
 pub fn map<C, F, Output>(source: C, f: F) -> Map<C, F, Output>
 where
-    C: Compute,
-    Output: ComputeResult,
+    C: Compute + 'static,
     F: 'static + Fn(C::Output) -> Output,
 {
     Map::new(source, f)
@@ -142,8 +104,8 @@ impl<C: Clone, F, Output> Clone for Map<C, F, Output> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
-            cache: self.cache.clone(),
-            inner: self.inner.clone(),
+            f: self.f.clone(),
+            _marker: PhantomData,
         }
     }
 }
@@ -151,32 +113,22 @@ impl<C: Clone, F, Output> Clone for Map<C, F, Output> {
 impl<C, F, Output> Compute for Map<C, F, Output>
 where
     C: Compute,
-    Output: ComputeResult,
     F: 'static + Fn(C::Output) -> Output,
+    Output: 'static,
 {
     type Output = Output;
 
     /// Computes the transformed value, using the cache when available.
-    ///
-    /// This method will:
-    /// 1. Check if a cached result exists
-    /// 2. If cached, return the cached value
-    /// 3. If not cached, compute the source value, apply the transformation,
-    ///    cache the result, and return it
-    fn compute(&self) -> Self::Output {
-        self.compute_from_source(&self.source)
+    fn compute(&self) -> Output {
+        (self.f)(self.source.compute())
     }
 
     /// Registers a watcher to be notified when the transformed value changes.
-    ///
-    /// This sets up a watcher on the source value that will:
-    /// 1. Recompute the transformed value when the source changes
-    /// 2. Notify the provided watcher with the new transformed value
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let this = self.clone();
 
         self.source
-            .watch(move |_value, metadata| watcher.notify(this.compute(), metadata))
+            .add_watcher(move |_value, metadata| watcher.notify(this.compute(), metadata))
     }
 }
 
@@ -197,7 +149,7 @@ impl<C, F, Output> AsyncMap<C, F, Output>
 where
     C: Compute,
     F: 'static + AsyncFn(C::Output) -> Output,
-    Output: ComputeResult,
+    Output: 'static,
 {
     pub fn compute_from_source(&self, source: C) {
         // Cancel previous task
@@ -214,7 +166,7 @@ where
     }
 }
 
-impl<C: Compute, F, Output> Clone for AsyncMap<C, F, Output> {
+impl<C: Compute + Clone, F, Output> Clone for AsyncMap<C, F, Output> {
     fn clone(&self) -> Self {
         AsyncMap {
             source: self.source.clone(),
@@ -230,7 +182,7 @@ impl<C: Compute, F, Output: 'static> AsyncMap<C, F, Output> {
 
         let guard = {
             let cache = cache.clone();
-            source.watch(move |_, _| {
+            source.add_watcher(move |_, _| {
                 cache.replace(None);
             })
         };

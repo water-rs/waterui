@@ -4,18 +4,18 @@ use waterui_task::{LocalTask, StreamExt, Task};
 
 use crate::{
     Compute,
-    compute::ComputeResult,
+    
     watcher::{WatcherGuard, WatcherManager},
 };
 
-struct StreamInner<S, T: ComputeResult, B> {
+struct StreamInner<S, T, B> {
     stream: Option<S>,
     buffer: T,
     behavior: B,
     watchers: WatcherManager<T>,
 }
 
-impl<S, T: ComputeResult, B> StreamInner<S, T, B> {
+impl<S, T, B> StreamInner<S, T, B> {
     pub fn try_lanuch(&mut self) {
         if let Some(mut stream) = { self.stream.take() } {
             let this = self.inner.clone();
@@ -50,9 +50,9 @@ impl<T: AddAssign> StreamBehavior<T> for Append {
     }
 }
 
-pub struct Stream<S, T: ComputeResult>(Rc<RefCell<StreamInner<S, T, Replace>>>);
+pub struct Stream<S, T>(Rc<RefCell<StreamInner<S, T, Replace>>>);
 
-impl<S, T: ComputeResult> Clone for Stream<S, T> {
+impl<S, T> Clone for Stream<S, T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
@@ -61,7 +61,7 @@ impl<S, T: ComputeResult> Clone for Stream<S, T> {
 impl<S, T> Compute for Stream<S, T>
 where
     S: waterui_task::Stream<Item = T> + 'static,
-    T: ComputeResult + Default,
+    T + Default,
 {
     type Output = S::Item;
     fn compute(&self) -> Self::Output {

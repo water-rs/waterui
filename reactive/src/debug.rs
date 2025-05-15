@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::{
     Compute,
-    watcher::{Watcher, WatcherGuard},
+    watcher::{Metadata, Watcher, WatcherGuard},
 };
 
 #[derive(Debug, Clone)]
@@ -27,7 +27,7 @@ where
     pub fn with_config(source: C, config: Config) -> Self {
         let name = type_name::<C>();
         let guard = if config.change {
-            source.watch(move |value, metadata: crate::watcher::Metadata| {
+            source.add_watcher(move |value, metadata: Metadata| {
                 if metadata.is_empty() {
                     log::info!("`{name}` changed to {value:?}")
                 } else {
@@ -67,8 +67,8 @@ where
         }
         value
     }
-    fn watch(&self, watcher: impl Watcher<C::Output>) -> crate::watcher::WatcherGuard {
-        let mut guard = self.source.watch(watcher);
+    fn add_watcher(&self, watcher: impl Watcher<C::Output>) -> crate::watcher::WatcherGuard {
+        let mut guard = self.source.add_watcher(watcher);
         if self.inner.config.watch {
             log::debug!("Added watcher");
         }

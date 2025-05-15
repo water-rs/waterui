@@ -1,9 +1,8 @@
+use core::cell::RefCell;
+
 use crate::ComputeExt;
-use waterui_core::View;
-use waterui_reactive::{
-    compute::{ComputeResult, IntoCompute},
-    watcher::WatcherGuard,
-};
+use waterui_core::{Compute, View};
+use waterui_reactive::watcher::WatcherGuard;
 pub use waterui_task::*;
 
 /// A view that executes a callback when a computed value changes.
@@ -22,12 +21,22 @@ impl<V> OnChange<V> {
     /// * `content` - The view to render
     /// * `source` - The computed value to watch for changes
     /// * `handler` - The callback to execute when the value changes
-    pub fn new<T: ComputeResult>(
-        content: V,
-        source: impl IntoCompute<T>,
-        handler: impl Fn(T) + 'static,
-    ) -> Self {
-        let guard = source.into_compute().watch(move |value, _| handler(value));
+    pub fn new<C, F>(content: V, source: C, handler: F) -> Self
+    where
+        C: Compute,
+        V: View,
+        C::Output: PartialEq + Clone,
+        F: Fn(C::Output) + 'static,
+    {
+        let cache: RefCell<Option<C::Output>> = RefCell::new(None);
+        let guard = source.watch(move |value| {
+            if let Some(cache) = &mut *cache.borrow_mut() {
+                if *cache != value {
+                    *cache = value.clone();
+                    handler(value)
+                }
+            }
+        });
         Self {
             content,
             _guard: guard,
