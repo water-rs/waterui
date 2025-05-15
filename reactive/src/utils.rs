@@ -9,7 +9,11 @@
 
 use core::ops::Add;
 
-use crate::{Compute, compute::ComputeResult, map::map, zip::zip};
+use crate::{
+    Compute,
+    map::{Map, map},
+    zip::{Zip, zip},
+};
 
 /// Adds two `Compute` values together.
 ///
@@ -43,12 +47,18 @@ use crate::{Compute, compute::ComputeResult, map::map, zip::zip};
 /// let sum_computation = add(computation_a, computation_b);
 /// // When executed, sum_computation will produce the sum of the results
 /// ```
-pub fn add<A, B>(a: A, b: B) -> impl Compute<Output = <A::Output as Add<B::Output>>::Output>
+pub fn add<A, B>(
+    a: A,
+    b: B,
+) -> Map<
+    Zip<A, B>,
+    fn((A::Output, B::Output)) -> <A::Output as Add<B::Output>>::Output,
+    <A::Output as Add<B::Output>>::Output,
+>
 where
-    A: Compute,
-    B: Compute,
+    A: Compute + 'static,
+    B: Compute + 'static,
     A::Output: Add<B::Output>,
-    <A::Output as Add<B::Output>>::Output: ComputeResult,
 {
     let zip = zip(a, b);
     map(zip, |(a, b)| a.add(b))

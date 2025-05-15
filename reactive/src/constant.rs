@@ -30,7 +30,6 @@
 
 use crate::{
     Compute,
-    compute::ComputeResult,
     watcher::{Watcher, WatcherGuard},
 };
 
@@ -53,9 +52,9 @@ use crate::{
 /// assert_eq!(c.compute(), 42);
 /// ```
 #[derive(Debug, Clone)]
-pub struct Constant<T: ComputeResult>(T);
+pub struct Constant<T>(T);
 
-impl<T: ComputeResult> From<T> for Constant<T> {
+impl<T> From<T> for Constant<T> {
     /// Creates a new `Constant` from a value.
     ///
     /// # Parameters
@@ -70,7 +69,7 @@ impl<T: ComputeResult> From<T> for Constant<T> {
     }
 }
 
-impl<T: ComputeResult> Compute for Constant<T> {
+impl<T: Clone + 'static> Compute for Constant<T> {
     type Output = T;
 
     /// Computes the constant value.
@@ -97,7 +96,7 @@ impl<T: ComputeResult> Compute for Constant<T> {
     /// # Returns
     ///
     /// A `WatcherGuard` with an empty cleanup function.
-    fn watch(&self, _watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, _watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         WatcherGuard::new(|| {})
     }
 }
@@ -122,6 +121,6 @@ impl<T: ComputeResult> Compute for Constant<T> {
 /// let c = constant("Hello, world!");
 /// assert_eq!(c.compute(), "Hello, world!");
 /// ```
-pub fn constant<T: ComputeResult>(value: T) -> Constant<T> {
+pub fn constant<T>(value: T) -> Constant<T> {
     Constant::from(value)
 }

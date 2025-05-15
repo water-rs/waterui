@@ -18,59 +18,13 @@ use crate::{
     watcher::{Watcher, WatcherGuard},
 };
 
-/// Represents a result type that can be computed.
-///
-/// This trait is automatically implemented for types that are:
-/// - 'static: Has full ownership of its data, ensuring values can be safely stored and shared throughout the reactive system
-/// - Clone: Can be duplicated for sharing across the reactive graph
-/// - PartialEq: Enables efficient change detection
-///
-/// For optimal performance, types used with this trait should be cheap to clone and compare.
-/// For example, prefer [Str](waterui_str::Str) over `String` as it offers low-cost copying
-/// similar to `Rc<str>` without the allocation overhead of `String`. This significantly
-/// improves performance as values flow through the reactive system.
-///
-/// The reactive engine uses `PartialEq` to detect changes, only triggering updates when
-/// values actually differ - keeping your application responsive with minimal overhead.
-pub trait ComputeResult: 'static + Clone + PartialEq {}
-
-#[derive(Debug, Clone)]
-pub struct Unique<T>(pub T);
-
-impl<T> PartialEq for Unique<T> {
-    fn eq(&self, _other: &Self) -> bool {
-        false
-    }
-}
-
-/// Blanket implementation for any type that meets the requirements.
-impl<T: 'static + Clone + PartialEq> ComputeResult for T {}
-
-/// Implementation of `Compute` for any type that implements `ComputeResult`.
-///
-/// For non-computed values, this simply returns the value itself and provides
-/// a no-op watcher since the value doesn't change.
-impl<T: ComputeResult> Compute for T {
-    type Output = T;
-
-    /// Returns a clone of the value.
-    fn compute(&self) -> Self::Output {
-        self.clone()
-    }
-
-    /// Creates a watcher guard that does nothing, since plain values don't change.
-    fn watch(&self, _watcher: impl Watcher<Self::Output>) -> WatcherGuard {
-        WatcherGuard::new(|| {})
-    }
-}
-
 /// The core trait for reactive system.
 ///
 /// Types implementing `Compute` represent a computation that can produce a value
 /// and notify observers when that value changes.
 pub trait Compute: Clone + 'static {
     /// The type of value produced by this computation.
-    type Output: ComputeResult;
+    type Output: 'static;
 
     /// Execute the computation and return the current value.
     fn compute(&self) -> Self::Output;
@@ -78,11 +32,11 @@ pub trait Compute: Clone + 'static {
     /// Register a watcher to be notified when the computed value changes.
     ///
     /// Returns a guard that, when dropped, will unregister the watcher.
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 }
 
 /// A trait for converting a value into a computation.
-pub trait IntoCompute<Output: ComputeResult> {
+pub trait IntoCompute<Output> {
     /// The specific computation type that will be produced.
     type Compute: Compute<Output = Output>;
 
@@ -93,7 +47,7 @@ pub trait IntoCompute<Output: ComputeResult> {
 /// A trait for converting a value directly into a `Computed<Output>`.
 ///
 /// This is a convenience trait that builds on `IntoCompute`.
-pub trait IntoComputed<Output: ComputeResult>: IntoCompute<Output> + 'static {
+pub trait IntoComputed<Output>: IntoCompute<Output> + 'static {
     /// Convert this value into a `Computed<Output>`.
     fn into_computed(self) -> Computed<Output>;
 }
@@ -103,9 +57,9 @@ pub trait IntoComputed<Output: ComputeResult>: IntoCompute<Output> + 'static {
 /// This allows for automatic conversion between compatible computation types.
 impl<C, Output> IntoCompute<Output> for C
 where
-    C: Compute + 'static,
+    C: Compute,
     C::Output: 'static,
-    Output: From<C::Output> + ComputeResult,
+    Output: From<C::Output> + 'static,
 {
     type Compute = Map<C, fn(C::Output) -> Output, Output>;
 
@@ -119,8 +73,7 @@ where
 impl<C, Output> IntoComputed<Output> for C
 where
     C: IntoCompute<Output> + 'static,
-    C::Compute: Clone,
-    Output: ComputeResult,
+    C::Compute: Clone + 'static,
 {
     /// Convert this value into a `Computed<Output>`.
     fn into_computed(self) -> Computed<Output> {
@@ -160,10 +113,10 @@ impl<C: Compute, T: Clone + 'static> Compute for WithMetadata<C, T> {
     }
 
     /// Register a watcher, enriching notifications with the metadata.
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let with = self.metadata.clone();
         self.compute
-            .watch(move |value, metadata: crate::watcher::Metadata| {
+            .add_watcher(move |value, metadata: crate::watcher::Metadata| {
                 watcher.notify(value, metadata.with(with.clone()));
             })
     }
