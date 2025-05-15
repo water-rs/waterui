@@ -122,26 +122,24 @@ impl<A: Compute, B: Compute> Compute for Zip<A, B> {
     ///
     /// # Returns
     /// A `WatcherGuard` that, when dropped, will remove the watchers from both computations.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let watcher = Rc::new(watcher);
         let Self { a, b } = self;
         let guard_a = {
             let watcher = watcher.clone();
             let b = b.clone();
-            self.a
-                .add_watcher(Watcher::new(move |value: A::Output, metadata| {
-                    let result = (value, b.compute());
-                    watcher.notify_with_metadata(result, metadata)
-                }))
+            self.a.watch(move |value: A::Output, metadata| {
+                let result = (value, b.compute());
+                watcher.notify(result, metadata)
+            })
         };
 
         let guard_b = {
             let a = a.clone();
-            self.b
-                .add_watcher(Watcher::new(move |value: B::Output, metadata| {
-                    let result = (a.compute(), value);
-                    watcher.notify_with_metadata(result, metadata)
-                }))
+            self.b.watch(move |value: B::Output, metadata| {
+                let result = (a.compute(), value);
+                watcher.notify(result, metadata)
+            })
         };
 
         WatcherGuard::new(move || {

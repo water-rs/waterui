@@ -34,6 +34,15 @@ use crate::{
 /// values actually differ - keeping your application responsive with minimal overhead.
 pub trait ComputeResult: 'static + Clone + PartialEq {}
 
+#[derive(Debug, Clone)]
+pub struct Unique<T>(pub T);
+
+impl<T> PartialEq for Unique<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
 /// Blanket implementation for any type that meets the requirements.
 impl<T: 'static + Clone + PartialEq> ComputeResult for T {}
 
@@ -50,7 +59,7 @@ impl<T: ComputeResult> Compute for T {
     }
 
     /// Creates a watcher guard that does nothing, since plain values don't change.
-    fn add_watcher(&self, _watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, _watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         WatcherGuard::new(|| {})
     }
 }
@@ -69,7 +78,7 @@ pub trait Compute: Clone + 'static {
     /// Register a watcher to be notified when the computed value changes.
     ///
     /// Returns a guard that, when dropped, will unregister the watcher.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 }
 
 /// A trait for converting a value into a computation.
@@ -151,11 +160,11 @@ impl<C: Compute, T: Clone + 'static> Compute for WithMetadata<C, T> {
     }
 
     /// Register a watcher, enriching notifications with the metadata.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let with = self.metadata.clone();
         self.compute
-            .add_watcher(Watcher::new(move |value, metadata| {
-                watcher.notify_with_metadata(value, metadata.with(with.clone()));
-            }))
+            .watch(move |value, metadata: crate::watcher::Metadata| {
+                watcher.notify(value, metadata.with(with.clone()));
+            })
     }
 }

@@ -1,5 +1,5 @@
 use waterui_core::raw_view;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, uniffi::Record)]
 #[must_use]
 pub struct Spacer;
 

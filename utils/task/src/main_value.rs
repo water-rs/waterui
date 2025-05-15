@@ -55,6 +55,8 @@ impl<T: Clone + 'static> MainValue<T> {
 unsafe impl<T> Send for MainValue<T> {}
 unsafe impl<T> Sync for MainValue<T> {}
 
+static MAIN_THREAD_ID: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
 impl<T: 'static> MainValue<T> {
     /// Creates a new `MainValue` containing the provided value.
     ///
@@ -77,17 +79,27 @@ impl<T: 'static> MainValue<T> {
     /// # Returns
     ///
     /// The result of executing the function on the inner value.
-    pub async fn handle<F, R>(&self, f: F) -> R
+    pub fn handle<F, R>(&self, f: F) -> Task<R>
     where
         F: FnOnce(&T) -> R + Send + 'static,
         R: Send + 'static,
     {
         let ptr = Wrapper(from_ref(&self.0));
+        if let Some(id) = MAIN_THREAD_ID.get() {
+            if *id == std::thread::current().id() {
+                // on main thread, execute it directly
+                let ptr = unsafe { &*(ptr.0) };
+
+                let result = f(ptr);
+                return Task::new(async move { result });
+            }
+        }
+
         Task::on_main(async move {
+            let _ = MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
             let ptr = ptr;
             let ptr = unsafe { &*(ptr.0) };
             f(ptr)
         })
-        .await
     }
 }
