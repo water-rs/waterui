@@ -96,7 +96,7 @@ where
     fn len(&self) -> usize {
         self.contents.len()
     }
-    fn watch(&self, watcher: BoxWatcher<()>) -> waterui_reactive::watcher::WatcherGuard {
+    fn add_watcher(&self, watcher: BoxWatcher<()>) -> waterui_reactive::watcher::WatcherGuard {
         self.contents.watch(watcher)
     }
 }

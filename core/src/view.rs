@@ -14,7 +14,6 @@
 
 use crate::{components::Metadata, AnyView, Environment};
 use alloc::{boxed::Box, vec::Vec};
-use waterui_reactive::compute::Unique;
 
 /// View represents a part of the user interface.
 ///
@@ -41,12 +40,6 @@ pub trait View: 'static {
 impl<F: 'static + FnOnce() -> V, V: View> View for F {
     fn body(self, _env: &Environment) -> impl View {
         self()
-    }
-}
-
-impl<T: View> View for Unique<T> {
-    fn body(self, _env: &Environment) -> impl View {
-        self.0
     }
 }
 

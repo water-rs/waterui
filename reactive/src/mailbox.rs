@@ -39,19 +39,19 @@
 //! }
 //! ```
 
-use crate::{Binding, Compute, compute::ComputeResult, watcher::WatcherGuard};
+use crate::{Binding, ComputeExt, watcher::WatcherGuard};
 use waterui_task::MainValue;
 
 /// A thread-safe interface for interacting with reactive bindings across thread boundaries.
 ///
 /// `Mailbox` provides methods to safely get, set, and watch reactive values from any thread
 /// by ensuring all operations are performed on the main thread where the reactive system runs.
-pub struct Mailbox<T: ComputeResult> {
+pub struct Mailbox<T: 'static> {
     /// The wrapped binding, accessed through `MainValue` to ensure thread-safety
     binding: MainValue<Binding<T>>,
 }
 
-impl<T: ComputeResult> Mailbox<T> {
+impl<T: 'static> Mailbox<T> {
     /// Creates a new `Mailbox` that provides thread-safe access to the given binding.
     ///
     /// # Parameters
@@ -149,9 +149,12 @@ impl<T: ComputeResult> Mailbox<T> {
     ///     println!("Value changed to: {}", value);
     /// }).await;
     /// ```
-    pub async fn watch(&self, watcher: impl Fn(T) + Send + 'static) -> MainValue<WatcherGuard> {
+    pub async fn add_watcher(
+        &self,
+        watcher: impl Fn(T) + Send + 'static,
+    ) -> MainValue<WatcherGuard> {
         self.binding
-            .handle(move |v| MainValue::new(v.watch(move |value, _| watcher(value))))
+            .handle(move |v| MainValue::new(v.watch(move |value| watcher(value))))
             .await
     }
 }

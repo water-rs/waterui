@@ -7,7 +7,7 @@
 //! The primary type is `Color`, which can represent colors in either sRGB or P3
 //! color spaces, with conversion methods from various tuple formats.
 
-use waterui_reactive::ffi_computed;
+use waterui_reactive::{ffi_computed, impl_constant};
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Default, uniffi::Record)]
 
@@ -45,6 +45,8 @@ pub struct Color {
     color: ColorInner,
     opacity: f32,
 }
+
+impl_constant!(Color);
 
 ffi_computed!(Color);
 

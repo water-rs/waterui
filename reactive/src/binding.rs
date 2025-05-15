@@ -103,8 +103,8 @@ use waterui_str::Str;
 
 use crate::{
     Compute, Computed,
-    compute::ComputeResult,
     map::map,
+    utils::add,
     watcher::{BoxWatcher, Metadata, Watcher, WatcherGuard, WatcherManager},
     zip::{FlattenMap, zip},
 };
@@ -124,56 +124,36 @@ pub trait CustomBinding: Compute {
 ///
 /// Bindings provide a reactive way to work with values. When a binding's value
 /// changes, it can notify watchers that have registered interest in the value.
-pub struct Binding<T: ComputeResult>(Box<dyn BindingImpl<Output = T>>);
+pub struct Binding<T: 'static>(Box<dyn BindingImpl<Output = T>>);
 
 /// Internal trait that defines the operations required to implement a binding.
 ///
 /// This trait is used to erase the specific type of binding while still preserving
 /// the operations that can be performed on it.
-trait BindingImpl {
-    /// The type of value stored in this binding
-    type Output: ComputeResult;
-
-    /// Retrieves the current value
-    fn get(&self) -> Self::Output;
-
+trait BindingImpl: crate::compute::ComputedImpl {
     /// Sets a new value
     fn set(&self, value: Self::Output);
 
-    /// Registers a watcher to be notified when the value changes
-    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard;
-
-    /// Creates a clone of this binding
-    fn cloned(&self) -> Binding<Self::Output>;
+    fn cloned_binding(&self) -> Binding<Self::Output>;
 }
 
 impl<T: CustomBinding + Clone + 'static> BindingImpl for T {
-    type Output = T::Output;
-
-    fn get(&self) -> Self::Output {
-        self.compute()
-    }
-
     fn set(&self, value: Self::Output) {
         <T as CustomBinding>::set(self, value)
     }
 
-    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard {
-        <T as Compute>::watch(self, watcher)
-    }
-
-    fn cloned(&self) -> Binding<Self::Output> {
+    fn cloned_binding(&self) -> Binding<Self::Output> {
         Binding::custom(self.clone())
     }
 }
 
-impl<T: ComputeResult> Debug for Binding<T> {
+impl<T> Debug for Binding<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(type_name::<Self>())
     }
 }
 
-impl<T: ComputeResult> Binding<T> {
+impl<T: 'static + Clone> Binding<T> {
     /// Creates a new binding from a value by wrapping it in a container.
     ///
     /// The container provides the reactive capabilities for the value.
@@ -182,7 +162,7 @@ impl<T: ComputeResult> Binding<T> {
     }
 }
 
-impl<T: Default + ComputeResult> Default for Binding<T> {
+impl<T: Default + Clone + 'static> Default for Binding<T> {
     /// Creates a binding with the default value for type T.
     fn default() -> Self {
         Self::container(T::default())
@@ -192,11 +172,11 @@ impl<T: Default + ComputeResult> Default for Binding<T> {
 /// A convenience function to create a new binding from a value.
 ///
 /// This is equivalent to `Binding::container(value)`.
-pub fn binding<T: ComputeResult>(value: T) -> Binding<T> {
+pub fn binding<T: 'static + Clone>(value: T) -> Binding<T> {
     Binding::container(value)
 }
 
-impl<T: ComputeResult> Binding<Vec<T>> {
+impl<T> Binding<Vec<T>> {
     /// Adds a value to the end of the vector.
     pub fn push(&self, value: T) {
         self.get_mut().push(value);
@@ -227,40 +207,33 @@ impl Binding<Str> {
     }
 }
 
-impl<T: 'static + Add + ComputeResult> Add for Binding<T>
+impl<T, C2> Add<C2> for Binding<T>
 where
-    T::Output: ComputeResult,
+    C2: Compute,
+    T: Add<C2::Output> + 'static,
 {
-    type Output = Computed<T::Output>;
+    type Output = crate::map::Map<
+        crate::zip::Zip<Self, C2>,
+        fn(
+            (T, <C2 as crate::compute::Compute>::Output),
+        ) -> <T as std::ops::Add<<C2 as crate::compute::Compute>::Output>>::Output,
+        <T as std::ops::Add<<C2 as crate::Compute>::Output>>::Output,
+    >;
 
-    /// Adds two bindings together, resulting in a computed value that updates
-    /// whenever either of the source bindings changes.
-    fn add(self, rhs: Self) -> Self::Output {
-        Computed::new(zip(self, rhs).flatten_map(|left, right| left + right))
-    }
-}
-
-impl<T: 'static + Add + ComputeResult> Add<T> for Binding<T>
-where
-    T::Output: ComputeResult,
-{
-    type Output = Computed<T::Output>;
-
-    /// Adds a binding and a value together, resulting in a computed value.
-    fn add(self, rhs: T) -> Self::Output {
-        Computed::new(map(self, move |this| this + rhs.clone()))
+    fn add(self, rhs: C2) -> Self::Output {
+        add(self, rhs)
     }
 }
 
 /// A guard that provides mutable access to a binding's value.
 ///
 /// When dropped, it will update the binding with the modified value.
-pub struct BindingMutGuard<'a, T: ComputeResult> {
+pub struct BindingMutGuard<'a, T: 'static> {
     binding: &'a Binding<T>,
     value: Option<T>,
 }
 
-impl<'a, T: ComputeResult> BindingMutGuard<'a, T> {
+impl<'a, T> BindingMutGuard<'a, T> {
     /// Creates a new guard for the given binding.
     pub fn new(binding: &'a Binding<T>) -> Self {
         Self {
@@ -270,7 +243,7 @@ impl<'a, T: ComputeResult> BindingMutGuard<'a, T> {
     }
 }
 
-impl<T: ComputeResult> Deref for BindingMutGuard<'_, T> {
+impl<T> Deref for BindingMutGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -278,29 +251,20 @@ impl<T: ComputeResult> Deref for BindingMutGuard<'_, T> {
     }
 }
 
-impl<T: ComputeResult> DerefMut for BindingMutGuard<'_, T> {
+impl<T> DerefMut for BindingMutGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.value.as_mut().unwrap()
     }
 }
 
-impl<T: ComputeResult> Drop for BindingMutGuard<'_, T> {
+impl<T: 'static> Drop for BindingMutGuard<'_, T> {
     /// When the guard is dropped, updates the binding with the modified value.
     fn drop(&mut self) {
         self.binding.set(self.value.take().unwrap());
     }
 }
 
-impl Add<&'static str> for Binding<Str> {
-    type Output = Computed<Str>;
-
-    /// Adds a static string to a string binding.
-    fn add(self, rhs: &'static str) -> Self::Output {
-        Computed::new(map(self, move |this| this + rhs))
-    }
-}
-
-impl<T: ComputeResult> Binding<T> {
+impl<T: 'static> Binding<T> {
     /// Creates a binding that uses a custom implementation of the `CustomBinding` trait.
     pub fn custom(custom: impl CustomBinding<Output = T> + Clone + 'static) -> Self {
         Self(Box::new(custom))
@@ -308,11 +272,14 @@ impl<T: ComputeResult> Binding<T> {
 
     /// Gets the current value of the binding.
     pub fn get(&self) -> T {
-        self.0.get()
+        self.0.compute()
     }
 
     /// Attempts to get a reference to the container if this binding is a container binding.
-    pub(crate) fn as_container(&self) -> Option<&Container<T>> {
+    pub(crate) fn as_container(&self) -> Option<&Container<T>>
+    where
+        T: Clone,
+    {
         let any = &self.0 as &dyn Any;
         any.downcast_ref()
     }
@@ -328,13 +295,16 @@ impl<T: ComputeResult> Binding<T> {
     ///
     /// This is a convenience method that handles getting the value, modifying it,
     /// and then setting it back, all while properly handling notifications.
-    pub fn handle(&self, handler: impl FnOnce(&mut T)) {
+    pub fn handle(&self, handler: impl FnOnce(&mut T))
+    where
+        T: Clone,
+    {
         if let Some(container) = self.as_container() {
             {
                 let mut value = container.value.borrow_mut();
                 handler(&mut value);
             }
-            container.watchers.notify(self.get(), Metadata::new());
+            container.watchers.notify(|| self.get(), Metadata::new());
         } else {
             let mut temp = self.get();
 
@@ -343,13 +313,8 @@ impl<T: ComputeResult> Binding<T> {
         }
     }
 
-    /// Sets a new value for the binding, if it's different from the current value.
-    ///
-    /// This will notify watchers if the value actually changes.
     pub fn set(&self, value: T) {
-        if self.get() != value {
-            self.0.set(value);
-        }
+        self.0.set(value);
     }
 
     /// Creates a bidirectional mapping between this binding and another type.
@@ -362,7 +327,6 @@ impl<T: ComputeResult> Binding<T> {
         setter: Setter,
     ) -> Binding<Output>
     where
-        Output: ComputeResult,
         Getter: 'static + Fn(T) -> Output,
         Setter: 'static + Fn(&Binding<T>, Output),
     {
@@ -383,7 +347,7 @@ impl<T: ComputeResult> Binding<T> {
     {
         Binding::mapping(
             self,
-            |value| value.clone(),
+            |value| value,
             move |binding, value| {
                 if filter(&value) {
                     binding.set(value);
@@ -393,7 +357,7 @@ impl<T: ComputeResult> Binding<T> {
     }
 }
 
-impl<T: ComputeResult + Ord> Binding<Vec<T>> {
+impl<T: Ord + Clone> Binding<Vec<T>> {
     pub fn sort(&self) {
         self.handle(|value| {
             value.sort();
@@ -401,7 +365,7 @@ impl<T: ComputeResult + Ord> Binding<Vec<T>> {
     }
 }
 
-impl<T: PartialOrd + ComputeResult> Binding<T> {
+impl<T: PartialOrd + 'static> Binding<T> {
     /// Creates a binding that only allows values within a specified range.
     pub fn range(self, range: impl RangeBounds<T> + 'static) -> Self {
         self.filter(move |value| range.contains(value))
@@ -439,7 +403,7 @@ impl Binding<bool> {
 
 impl<T, R> AddAssign<R> for Binding<T>
 where
-    T: AddAssign<R> + ComputeResult,
+    T: AddAssign<R> + Clone,
 {
     /// Implements the += operator for bindings.
     fn add_assign(&mut self, rhs: R) {
@@ -449,10 +413,10 @@ where
     }
 }
 
-impl<T: ComputeResult> Clone for Binding<T> {
+impl<T> Clone for Binding<T> {
     /// Creates a clone of this binding.
     fn clone(&self) -> Self {
-        self.0.cloned()
+        self.0.cloned_binding()
     }
 }
 
@@ -461,14 +425,14 @@ impl<T: ComputeResult> Clone for Binding<T> {
 /// The container is the basic implementation of a binding that holds a value
 /// and notifies watchers when the value changes.
 #[derive(Debug, Clone)]
-pub struct Container<T: ComputeResult> {
+pub struct Container<T: 'static + Clone> {
     /// The contained value, wrapped in Reference-counted RefCell for interior mutability
     value: Rc<RefCell<T>>,
     /// Manager for watchers that are interested in changes to the value
     watchers: WatcherManager<T>,
 }
 
-impl<T: ComputeResult> Container<T> {
+impl<T: 'static + Clone> Container<T> {
     /// Creates a new container with the given value.
     pub fn new(value: T) -> Self {
         Self {
@@ -478,7 +442,7 @@ impl<T: ComputeResult> Container<T> {
     }
 }
 
-impl<T: ComputeResult> Compute for Container<T> {
+impl<T: 'static + Clone> Compute for Container<T> {
     type Output = T;
 
     /// Retrieves the current value.
@@ -487,20 +451,20 @@ impl<T: ComputeResult> Compute for Container<T> {
     }
 
     /// Registers a watcher to be notified when the value changes.
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
 }
 
-impl<T: ComputeResult> CustomBinding for Container<T> {
+impl<T: 'static + Clone> CustomBinding for Container<T> {
     /// Sets a new value and notifies watchers.
     fn set(&self, value: T) {
         self.value.replace(value.clone());
-        self.watchers.notify(value, Metadata::new());
+        self.watchers.notify(move || value.clone(), Metadata::new());
     }
 }
 
-impl<T: ComputeResult> Compute for Binding<T> {
+impl<T: 'static> Compute for Binding<T> {
     type Output = T;
 
     /// Computes the current value of the binding.
@@ -509,8 +473,8 @@ impl<T: ComputeResult> Compute for Binding<T> {
     }
 
     /// Registers a watcher to be notified when the binding's value changes.
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
-        self.0.watch(Box::new(watcher))
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+        self.0.add_watcher(Box::new(watcher))
     }
 }
 
@@ -518,7 +482,7 @@ impl<T: ComputeResult> Compute for Binding<T> {
 ///
 /// This allows creating derived bindings that transform values from one type to another,
 /// with bidirectional capabilities.
-struct Mapping<Input: ComputeResult, Output, Getter, Setter> {
+struct Mapping<Input: 'static, Output, Getter, Setter> {
     /// The source binding that is being mapped
     binding: Binding<Input>,
     /// Function to convert from input type to output type
@@ -529,10 +493,7 @@ struct Mapping<Input: ComputeResult, Output, Getter, Setter> {
     _marker: PhantomData<Output>,
 }
 
-impl<Input, Output, Getter, Setter> Clone for Mapping<Input, Output, Getter, Setter>
-where
-    Input: ComputeResult,
-{
+impl<Input, Output, Getter, Setter> Clone for Mapping<Input, Output, Getter, Setter> {
     fn clone(&self) -> Self {
         Self {
             binding: self.binding.clone(),
@@ -545,8 +506,8 @@ where
 
 impl<Input, Output, Getter, Setter> Compute for Mapping<Input, Output, Getter, Setter>
 where
-    Input: ComputeResult,
-    Output: ComputeResult,
+    Input: 'static,
+    Output: 'static,
     Getter: 'static + Fn(Input) -> Output,
     Setter: 'static,
 {
@@ -560,22 +521,30 @@ where
     /// Registers a watcher that will be notified when the input binding changes.
     ///
     /// The watcher receives the transformed value.
-    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let getter = self.getter.clone();
         self.binding
-            .watch(move |value, metadata| watcher.notify(getter(value), metadata))
+            .add_watcher(move |value, metadata| watcher.notify(getter(value), metadata))
     }
 }
 
 impl<Input, Output, Getter, Setter> CustomBinding for Mapping<Input, Output, Getter, Setter>
 where
-    Input: ComputeResult,
-    Output: ComputeResult,
+    Input: 'static,
+    Output: 'static,
     Getter: 'static + Fn(Input) -> Output,
     Setter: 'static + Fn(&Binding<Input>, Output),
 {
     /// Sets a new value by applying the setter to convert from output to input.
     fn set(&self, value: Output) {
         (self.setter)(&self.binding, value)
+    }
+}
+
+// Reduce once heap allocate
+impl<T> From<Binding<T>> for Computed<T> {
+    fn from(val: Binding<T>) -> Self {
+        let boxed = val.0 as Box<dyn crate::compute::ComputedImpl<Output = T>>;
+        Self(boxed)
     }
 }
