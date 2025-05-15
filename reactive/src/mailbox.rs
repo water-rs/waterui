@@ -151,7 +151,7 @@ impl<T: ComputeResult> Mailbox<T> {
     /// ```
     pub async fn watch(&self, watcher: impl Fn(T) + Send + 'static) -> MainValue<WatcherGuard> {
         self.binding
-            .handle(move |v| MainValue::new(v.add_watcher(watcher.into())))
+            .handle(move |v| MainValue::new(v.watch(move |value, _| watcher(value))))
             .await
     }
 }

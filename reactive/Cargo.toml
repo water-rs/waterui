@@ -7,6 +7,7 @@ edition = "2024"
 waterui-task.workspace = true
 waterui-str.workspace = true
 paste = "1.0"
+log = "0.4.27"
 
 [dependencies.uniffi]
 version = "0.29"

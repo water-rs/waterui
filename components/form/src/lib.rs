@@ -1,4 +1,3 @@
-#![no_std]
 extern crate alloc;
 
 pub mod text_field;
@@ -12,3 +11,5 @@ pub mod stepper;
 
 #[doc(inline)]
 pub use stepper::{Stepper, stepper};
+
+uniffi::setup_scaffolding!();

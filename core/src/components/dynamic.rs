@@ -22,50 +22,60 @@
 use core::cell::RefCell;
 
 use crate::{raw_view, AnyView, View};
-use alloc::{boxed::Box, rc::Rc};
+use alloc::rc::Rc;
 use waterui_reactive::compute::ComputeResult;
+use waterui_reactive::watcher::Metadata;
 use waterui_reactive::Compute;
 use waterui_reactive::Computed;
+
 /// A dynamic view that can be updated.
 ///
 /// Represents a view whose content can be changed dynamically at runtime.
-#[derive(Default)]
-pub struct Dynamic(Rc<RefCell<DyanmicInner>>);
+pub struct Dynamic(DynamicHandler);
+
+mod ffi {
+    use std::sync::Arc;
+
+    use waterui_task::OnceValue;
+
+    use super::Dynamic;
+    #[derive(uniffi::Object)]
+    pub struct FFIDynamic(OnceValue<Dynamic>);
+    #[uniffi::export]
+    impl FFIDynamic {
+        pub fn connect(&self) {}
+    }
+
+    uniffi::custom_type!(Dynamic, Arc<FFIDynamic>,{
+        lower:|value| {
+            Arc::new(FFIDynamic(value.into()))
+        },
+        try_lift:|value| {
+           Ok(value.0.take())
+        }
+    });
+}
 
 raw_view!(Dynamic);
 
 /// A handler for updating a Dynamic view.
 ///
 /// Provides methods to set new content for the associated Dynamic view.
-pub struct DynamicHandler(Rc<RefCell<DyanmicInner>>);
+#[derive(Clone)]
+pub struct DynamicHandler(Rc<RefCell<Receiver>>);
 
-#[derive(Default)]
-struct DyanmicInner {
-    receiver: Option<Box<dyn Fn(AnyView)>>,
-    tmp: Option<AnyView>,
-}
+type Receiver = Box<dyn Fn(AnyView, Metadata)>;
 
 impl_debug!(Dynamic);
 impl_debug!(DynamicHandler);
 
 impl DynamicHandler {
-    /// Sets a new view for the associated Dynamic view.
-    ///
-    /// If the Dynamic view is already connected to a receiver, the new view
-    /// is immediately passed to the receiver. Otherwise, it's stored temporarily
-    /// until a receiver is connected.
-    ///
-    /// # Arguments
-    ///
-    /// * `view` - The new view to set
+    pub fn set_with_metadata(&self, view: impl View, metadata: Metadata) {
+        (self.0.borrow())(AnyView::new(view), metadata)
+    }
+
     pub fn set(&self, view: impl View) {
-        let view = AnyView::new(view);
-        let mut this = self.0.borrow_mut();
-        if let Some(ref receiver) = this.receiver {
-            receiver(view)
-        } else {
-            this.tmp = Some(view);
-        }
+        self.set_with_metadata(view, Metadata::new());
     }
 }
 
@@ -79,8 +89,8 @@ impl Dynamic {
     ///
     /// A tuple containing the DynamicHandler and Dynamic view
     pub fn new() -> (DynamicHandler, Self) {
-        let inner = Rc::new(RefCell::new(DyanmicInner::default()));
-        (DynamicHandler(inner.clone()), Self(inner))
+        let handler = DynamicHandler(Rc::new(RefCell::new(Box::new(|_, _| {}))));
+        (handler.clone(), Self(handler))
     }
 
     /// Creates a Dynamic view that watches a reactive value.
@@ -102,7 +112,7 @@ impl Dynamic {
     ) -> Self {
         let (handle, dyanmic) = Self::new();
         handle.set(f(value.compute()));
-        waterui_reactive::watcher::watch(&value, move |value| handle.set(f(value))).leak();
+        waterui_reactive::watcher::watch(&value, move |value, _| handle.set(f(value))).leak();
         dyanmic
     }
 
@@ -115,12 +125,8 @@ impl Dynamic {
     /// # Arguments
     ///
     /// * `receiver` - A function that receives view updates
-    pub fn connect(self, receiver: impl Fn(AnyView) + 'static) {
-        let mut this = self.0.borrow_mut();
-        if let Some(view) = this.tmp.take() {
-            receiver(view);
-        }
-        this.receiver = Some(Box::new(receiver));
+    pub fn connect(self, receiver: impl Fn(AnyView, Metadata) + 'static) {
+        self.0 .0.replace(Box::new(receiver));
     }
 }
 

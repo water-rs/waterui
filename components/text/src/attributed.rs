@@ -1,6 +1,4 @@
-use core::any::Any;
-
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use waterui_core::{Color, Str};
 
 use crate::font::Font;
@@ -16,4 +14,13 @@ pub enum Attribute {
     Font(Font),
 }
 
-pub struct AttributedStr(Vec<(Str, Attribute)>);
+#[derive(Debug, uniffi::Record)]
+pub struct AttributedStr {
+    string: Vec<AttributedStrChunk>,
+}
+
+#[derive(Debug, uniffi::Record)]
+struct AttributedStrChunk {
+    text: Str,
+    attributes: Vec<Attribute>,
+}

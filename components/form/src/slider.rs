@@ -5,7 +5,7 @@ use waterui_core::{AnyView, View, configurable};
 use waterui_reactive::Binding;
 use waterui_text::text;
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[non_exhaustive]
 pub struct SliderConfig {
     pub label: AnyView,
@@ -14,6 +14,27 @@ pub struct SliderConfig {
     pub range: RangeInclusive<f64>,
     pub value: Binding<f64>,
 }
+
+#[derive(uniffi::Record)]
+pub struct SliderRange {
+    start: f64,
+    end: f64,
+}
+
+type RangeInclusiveF64 = RangeInclusive<f64>;
+
+uniffi::custom_type!(RangeInclusiveF64, SliderRange,{
+    remote,
+    lower:|value|{
+        SliderRange{
+            start:*value.start(),
+            end:*value.end()
+        }
+    },
+    try_lift:|value|{
+       Ok(RangeInclusive::new(value.start,value.end))
+    }
+});
 
 configurable!(Slider, SliderConfig);
 
