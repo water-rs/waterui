@@ -105,7 +105,7 @@ use crate::{
     Compute, Computed,
     compute::ComputeResult,
     map::map,
-    watcher::{Watcher, WatcherGuard, WatcherManager},
+    watcher::{BoxWatcher, Metadata, Watcher, WatcherGuard, WatcherManager},
     zip::{FlattenMap, zip},
 };
 
@@ -141,7 +141,7 @@ trait BindingImpl {
     fn set(&self, value: Self::Output);
 
     /// Registers a watcher to be notified when the value changes
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard;
 
     /// Creates a clone of this binding
     fn cloned(&self) -> Binding<Self::Output>;
@@ -158,8 +158,8 @@ impl<T: CustomBinding + Clone + 'static> BindingImpl for T {
         <T as CustomBinding>::set(self, value)
     }
 
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
-        <T as Compute>::add_watcher(self, watcher)
+    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard {
+        <T as Compute>::watch(self, watcher)
     }
 
     fn cloned(&self) -> Binding<Self::Output> {
@@ -334,7 +334,7 @@ impl<T: ComputeResult> Binding<T> {
                 let mut value = container.value.borrow_mut();
                 handler(&mut value);
             }
-            container.watchers.notify(self.get());
+            container.watchers.notify(self.get(), Metadata::new());
         } else {
             let mut temp = self.get();
 
@@ -390,6 +390,14 @@ impl<T: ComputeResult> Binding<T> {
                 }
             },
         )
+    }
+}
+
+impl<T: ComputeResult + Ord> Binding<Vec<T>> {
+    pub fn sort(&self) {
+        self.handle(|value| {
+            value.sort();
+        });
     }
 }
 
@@ -453,7 +461,7 @@ impl<T: ComputeResult> Clone for Binding<T> {
 /// The container is the basic implementation of a binding that holds a value
 /// and notifies watchers when the value changes.
 #[derive(Debug, Clone)]
-pub struct Container<T> {
+pub struct Container<T: ComputeResult> {
     /// The contained value, wrapped in Reference-counted RefCell for interior mutability
     value: Rc<RefCell<T>>,
     /// Manager for watchers that are interested in changes to the value
@@ -468,11 +476,6 @@ impl<T: ComputeResult> Container<T> {
             watchers: WatcherManager::default(),
         }
     }
-
-    /// Manually triggers notification of watchers with the current value.
-    pub fn notify(&self) {
-        self.watchers.notify(self.value.borrow().clone());
-    }
 }
 
 impl<T: ComputeResult> Compute for Container<T> {
@@ -484,7 +487,7 @@ impl<T: ComputeResult> Compute for Container<T> {
     }
 
     /// Registers a watcher to be notified when the value changes.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
 }
@@ -493,7 +496,7 @@ impl<T: ComputeResult> CustomBinding for Container<T> {
     /// Sets a new value and notifies watchers.
     fn set(&self, value: T) {
         self.value.replace(value.clone());
-        self.watchers.notify(value);
+        self.watchers.notify(value, Metadata::new());
     }
 }
 
@@ -506,8 +509,8 @@ impl<T: ComputeResult> Compute for Binding<T> {
     }
 
     /// Registers a watcher to be notified when the binding's value changes.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
-        self.0.add_watcher(watcher)
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+        self.0.watch(Box::new(watcher))
     }
 }
 
@@ -557,12 +560,10 @@ where
     /// Registers a watcher that will be notified when the input binding changes.
     ///
     /// The watcher receives the transformed value.
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
         let getter = self.getter.clone();
         self.binding
-            .add_watcher(Watcher::new(move |value, metadata| {
-                watcher.notify_with_metadata(getter(value), metadata)
-            }))
+            .watch(move |value, metadata| watcher.notify(getter(value), metadata))
     }
 }
 

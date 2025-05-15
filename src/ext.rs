@@ -27,7 +27,7 @@ pub trait ComputeExt: Compute + Sized {
     /// Registers a watcher for this computation
     ///
     /// The watcher will be notified whenever the computation's result changes
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard;
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard;
 
     /// Creates a memoized version of this computation
     ///
@@ -60,8 +60,8 @@ impl<C: Compute> ComputeExt for C {
     fn zip<B: Compute>(self, b: B) -> Zip<Self, B> {
         Zip::new(self, b)
     }
-    fn watch(&self, watcher: impl Into<Watcher<Self::Output>>) -> WatcherGuard {
-        self.add_watcher(watcher.into())
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+        self.watch(watcher)
     }
 
     fn computed(self) -> Computed<Self::Output>

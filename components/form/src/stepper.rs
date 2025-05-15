@@ -1,7 +1,7 @@
 use waterui_core::{AnyView, configurable};
 use waterui_reactive::{Binding, Computed, compute::IntoComputed};
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[non_exhaustive]
 pub struct StepperConfig {
     pub value: Binding<i32>,

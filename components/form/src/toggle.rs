@@ -3,7 +3,7 @@ use waterui_reactive::Binding;
 
 use waterui_core::{AnyView, View};
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[non_exhaustive]
 pub struct ToggleConfig {
     pub label: AnyView,

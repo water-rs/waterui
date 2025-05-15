@@ -114,7 +114,7 @@ where
         handler.set(self.loading);
 
         let new_env = env.clone();
-        LocalTask::new(async move {
+        LocalTask::on_main(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
         });

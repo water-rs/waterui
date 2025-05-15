@@ -1,5 +1,3 @@
-extern crate std;
-
 use core::{
     cell::{Ref, RefCell, RefMut},
     mem::ManuallyDrop,

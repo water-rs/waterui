@@ -3,14 +3,14 @@ use waterui_core::AnyView;
 use waterui_core::view::TupleViews;
 use waterui_core::{View, raw_view};
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Record)]
 #[must_use]
 pub struct Stack {
     pub contents: Vec<AnyView>,
     pub mode: StackMode,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, uniffi::Enum)]
 #[repr(C)]
 pub enum StackMode {
     #[default]
