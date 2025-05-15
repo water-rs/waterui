@@ -27,7 +27,7 @@ impl<V> OnChange<V> {
         source: impl IntoCompute<T>,
         handler: impl Fn(T) + 'static,
     ) -> Self {
-        let guard = source.into_compute().watch(handler);
+        let guard = source.into_compute().watch(move |value, _| handler(value));
         Self {
             content,
             _guard: guard,

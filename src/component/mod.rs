@@ -10,10 +10,10 @@ pub mod badge;
 pub mod divder;
 pub mod focu;
 
-pub mod list;
+//pub mod list;
 
 pub mod progress;
-pub mod views;
+//pub mod views;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};
 

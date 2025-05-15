@@ -14,7 +14,7 @@ use core::{
     ops::DerefMut,
     task::{Poll, Waker},
 };
-use std::{ops::Deref, rc::Rc, str::from_utf8_unchecked};
+use std::rc::Rc;
 
 use uniffi::custom_newtype;
 use waterui_core::{Computed, configurable, reactive::ffi_computed};

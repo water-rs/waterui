@@ -11,10 +11,14 @@ pub mod compute;
 #[doc(inline)]
 pub use compute::{Compute, Computed};
 
-pub mod collection;
+pub mod channel;
+pub mod debug;
+//pub mod error;
 mod ext;
+//pub mod filter;
 pub mod mailbox;
 pub mod map;
+//pub mod stream;
 pub mod utils;
 pub mod watcher;
 pub mod zip;

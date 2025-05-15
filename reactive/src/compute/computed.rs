@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use crate::{
     constant,
     map::map,
-    watcher::{Watcher, WatcherGuard},
+    watcher::{BoxWatcher, Watcher, WatcherGuard},
     zip::{FlattenMap, zip},
 };
 
@@ -29,7 +29,7 @@ trait ComputedImpl {
     fn compute(&self) -> Self::Output;
 
     /// Registers a watcher that will be notified when the computed value changes
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard;
+    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard;
 
     /// Creates a clone of this computation wrapped in a `Computed` container
     fn cloned(&self) -> Computed<Self::Output>;
@@ -46,8 +46,8 @@ impl<C: Compute> ComputedImpl for C {
         <Self as Compute>::compute(self)
     }
 
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
-        <Self as Compute>::add_watcher(self, watcher)
+    fn watch(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard {
+        <Self as Compute>::watch(self, watcher)
     }
 
     fn cloned(&self) -> Computed<Self::Output> {
@@ -120,8 +120,8 @@ impl<T: ComputeResult> Compute for Computed<T> {
         self.0.compute()
     }
 
-    fn add_watcher(&self, watcher: Watcher<Self::Output>) -> WatcherGuard {
-        self.0.add_watcher(watcher)
+    fn watch(&self, watcher: impl Watcher<Self::Output>) -> WatcherGuard {
+        self.0.watch(Box::new(watcher))
     }
 }
 

@@ -3,13 +3,13 @@ extern crate alloc;
 pub mod database;
 use alloc::{rc::Rc, vec::Vec};
 use core::{any::type_name, cell::RefCell, future::Future, marker::PhantomData};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use waterui::{compute::ComputeResult, id::Identifable};
 use waterui_reactive::{
+    Compute,
     binding::CustomBinding,
     collection::Collection,
     watcher::{WatcherGuard, WatcherManager},
-    Compute,
 };
 
 use crate::database::{Database, DefaultDatabase};
@@ -45,7 +45,7 @@ impl<T: Schema> Collection for Data<T> {
         self.buf.borrow().len()
     }
 
-    fn add_watcher(&self, watcher: waterui_reactive::watcher::Watcher<()>) -> WatcherGuard {
+    fn watch(&self, watcher: waterui_reactive::watcher::Watcher<()>) -> WatcherGuard {
         self.database.on_change(move || {
             watcher.notify(());
         })
@@ -146,11 +146,8 @@ impl<T: Schema> Compute for DataElement<T> {
         self.value.borrow().clone()
     }
 
-    fn add_watcher(
-        &self,
-        watcher: waterui_reactive::watcher::Watcher<Self::Output>,
-    ) -> WatcherGuard {
-        WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher.into()))
+    fn watch(&self, watcher: waterui_reactive::watcher::Watcher<Self::Output>) -> WatcherGuard {
+        WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
 }
 

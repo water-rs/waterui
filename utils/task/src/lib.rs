@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
 extern crate alloc;
+extern crate std;
 
 mod apple;
 mod local_value;
@@ -8,7 +9,6 @@ pub use local_value::{LocalValue, OnceValue};
 mod main_value;
 pub use main_value::MainValue;
 pub mod timer;
-
 use core::mem::ManuallyDrop;
 use core::time::Duration;
 pub use futures_lite::*;
@@ -41,11 +41,11 @@ pub enum Priority {
 ///
 /// Represents a future that will complete with the output of the spawned task.
 /// The task is automatically scheduled for execution when created.
-pub struct Task<T> {
+pub struct Task<T: 'static + Send> {
     inner: ManuallyDrop<async_task::Task<T>>,
 }
 
-impl<T: Send + 'static> Task<T> {
+impl<T: 'static + Send> Task<T> {
     /// Creates a new task with default priority.
     ///
     /// # Parameters
@@ -126,7 +126,7 @@ impl<T: Send + 'static> Task<T> {
     }
 }
 
-impl<T> Future for Task<T> {
+impl<T: Send> Future for Task<T> {
     type Output = T;
     fn poll(
         mut self: core::pin::Pin<&mut Self>,
@@ -145,52 +145,6 @@ pub struct LocalTask<T> {
 }
 
 impl<T: 'static> LocalTask<T> {
-    /// Creates a new thread-local task with default priority.
-    ///
-    /// # Parameters
-    /// * `future` - The future to execute in the local task
-    ///
-    /// # Returns
-    /// A new `LocalTask` handle that can be used to await the result
-    pub fn new<Fut>(future: Fut) -> Self
-    where
-        Fut: Future<Output = T> + 'static,
-    {
-        Self::with_priority(future, Priority::default())
-    }
-
-    /// Creates a new thread-local task with the specified priority.
-    ///
-    /// # Parameters
-    /// * `future` - The future to execute in the local task
-    /// * `priority` - The execution priority for the task
-    ///
-    /// # Returns
-    /// A new `LocalTask` handle that can be used to await the result
-    pub fn with_priority<Fut>(future: Fut, priority: Priority) -> Self
-    where
-        Fut: Future<Output = T> + 'static,
-    {
-        let (runnable, task) = async_task::spawn_local(future, move |runnable: Runnable| {
-            exec(
-                move || {
-                    runnable.run();
-                },
-                priority,
-            );
-        });
-
-        exec(
-            move || {
-                runnable.run();
-            },
-            priority,
-        );
-        Self {
-            inner: ManuallyDrop::new(task),
-        }
-    }
-
     /// Schedules a thread-local task to run on the main thread.
     ///
     /// # Parameters

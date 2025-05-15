@@ -1,13 +1,12 @@
-use alloc::sync::Arc;
-use uniffi::custom_type;
-
-use crate::{Binding, Computed};
+use crate::{Binding, Computed, watcher::BoxWatcher};
 use waterui_str::Str;
 use waterui_task::OnceValue;
 #[doc(hidden)]
 pub type __FFIComputed<T> = OnceValue<Computed<T>>;
 #[doc(hidden)]
 pub type __FFIBinding<T> = OnceValue<Binding<T>>;
+#[doc(hidden)]
+pub type __FFIWatcher<T> = OnceValue<BoxWatcher<T>>;
 #[doc(hidden)]
 pub use paste::paste as __paste;
 
@@ -122,3 +121,32 @@ ffi_binding_local!(Str);
 ffi_binding_local!(bool);
 ffi_binding_local!(f32);
 ffi_binding_local!(f64);
+
+macro_rules! ffi_watcher {
+    ($ty:ty) => {
+        $crate::ffi::__paste! {
+            #[uniffi::export]
+            pub trait [<FFIWatcherImpl$ty>] :Send+Sync{
+                fn notify(&self,value:$ty,metadata:$crate::watcher::Metadata);
+            }
+
+
+            impl [<FFIWatcherImpl$ty>] for $crate::ffi::__FFIWatcher<$ty>{
+                fn notify(&self,value:$ty,metadata:$crate::watcher::Metadata){
+                    self.get().notify(value,metadata);
+                }
+            }
+
+
+            type [<Watcher$ty>] = $crate::watcher::BoxWatcher<$ty>;
+            uniffi::custom_type!([<Watcher$ty>], alloc::sync::Arc<dyn [<FFIWatcherImpl$ty>]>,{
+                lower: |watcher| {alloc::sync::Arc::new(OnceValue::new(watcher))},
+                try_lift: |watcher| {Ok(alloc::boxed::Box::new(move |value,metadata|{watcher.notify(value,metadata)}))}
+            });
+
+
+        }
+    };
+}
+
+ffi_watcher!(i32);
