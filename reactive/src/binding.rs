@@ -103,10 +103,8 @@ use waterui_str::Str;
 
 use crate::{
     Compute, Computed,
-    map::map,
     utils::add,
-    watcher::{BoxWatcher, Metadata, Watcher, WatcherGuard, WatcherManager},
-    zip::{FlattenMap, zip},
+    watcher::{Metadata, Watcher, WatcherGuard, WatcherManager},
 };
 
 /// The `CustomBinding` trait represents a computable value that can also be set.

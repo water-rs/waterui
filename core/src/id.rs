@@ -18,7 +18,8 @@ use core::num::NonZeroI32;
 use crate::{AnyView, View};
 
 /// A non-zero i32 value used for identification purposes throughout the crate.
-pub type Id = NonZeroI32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Id(pub(crate) NonZeroI32);
 
 /// Defines an interface for types that can be uniquely identified.
 ///
@@ -110,7 +111,9 @@ pub struct TaggedView<T, V> {
 }
 
 mod ffi {
-    use core::num::NonZeroUsize;
+    use core::num::{NonZeroI32, NonZeroUsize};
+
+    use waterui_reactive::ffi_binding;
 
     use crate::AnyView;
 
@@ -119,12 +122,14 @@ mod ffi {
     uniffi::custom_type!(Id, i32,{
         remote,
         lower:|value|{
-            value.get()
+            value.0.get()
         },
         try_lift:|value|{
-            Ok(Id::try_from(value)?)
+            Ok(Id(NonZeroI32::try_from(value)?))
         }
     });
+
+    ffi_binding!(Id);
 
     #[derive(uniffi::Record)]
     pub struct FFIRawTaggedView {
@@ -211,7 +216,7 @@ impl<T: Ord + Clone> MappingInner<T> {
 
     /// Registers a new value in the mapping and returns its assigned ID.
     pub fn register(&mut self, value: T) -> Id {
-        let id = NonZeroI32::new(self.counter).unwrap();
+        let id = Id(NonZeroI32::new(self.counter).unwrap());
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
         self.counter = self.counter.checked_add(1).unwrap();

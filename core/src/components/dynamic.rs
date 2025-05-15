@@ -36,14 +36,26 @@ pub struct Dynamic(DynamicHandler);
 mod ffi {
     use std::sync::Arc;
 
+    use waterui_reactive::watcher::Metadata;
     use waterui_task::OnceValue;
+
+    use crate::AnyView;
 
     use super::Dynamic;
     #[derive(uniffi::Object)]
     pub struct FFIDynamic(OnceValue<Dynamic>);
     #[uniffi::export]
+    pub trait Receiver: Send + Sync {
+        fn receive(&self, view: AnyView, metadata: Metadata);
+    }
+
+    #[uniffi::export]
     impl FFIDynamic {
-        pub fn connect(&self) {}
+        pub fn connect(&self, receiver: Arc<dyn Receiver>) {
+            self.0.take().connect(move |value, metadata| {
+                receiver.receive(value, metadata);
+            });
+        }
     }
 
     uniffi::custom_type!(Dynamic, Arc<FFIDynamic>,{
@@ -128,6 +140,8 @@ impl Dynamic {
     ///
     /// * `receiver` - A function that receives view updates
     pub fn connect(self, receiver: impl Fn(AnyView, Metadata) + 'static) {
+        #[allow(unused_must_use)]
+        // It would be used on swift side
         self.0 .0.replace(Box::new(receiver));
     }
 }
