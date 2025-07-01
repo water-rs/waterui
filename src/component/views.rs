@@ -186,7 +186,7 @@ impl<C, F, V, Output> ForEach<C, F, V, Output> {
     ///
     /// # Returns
     /// A new `ForEach` instance that will apply the transformation when accessed
-    pub fn new(data: C, generator: F) -> Self {
+    pub const fn new(data: C, generator: F) -> Self {
         Self {
             data,
             generator,

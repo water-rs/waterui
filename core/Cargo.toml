@@ -22,12 +22,12 @@ version = "1.0"
 optional = true
 default-features = false
 
-[dependencies.uniffi]
+[dependencies.typeshare]
 workspace = true
 optional = true
 
 [features]
 default = ["ffi"]
 std = []
-ffi = ["std", "dep:uniffi"]
+ffi = ["std", "dep:typeshare"]
 serde = ["dep:serde", "waterui-str/serde"]

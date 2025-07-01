@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+time = "0.3.41"
 waterui-core.workspace = true
 waterui-reactive.workspace = true
 waterui-text.workspace = true
-uniffi.workspace = true
+waterui-color.workspace = true

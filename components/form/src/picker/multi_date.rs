@@ -1,8 +1,7 @@
 use alloc::collections::BTreeSet;
 
-use crate::view::ViewExt;
 use time::Date;
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, View, configurable};
 use waterui_reactive::Binding;
 #[derive(Debug)]
 #[non_exhaustive]
@@ -22,7 +21,7 @@ impl MultiDatePicker {
     }
 
     pub fn label(mut self, label: impl View) -> Self {
-        self.0.label = label.anyview();
+        self.0.label = AnyView::new(label);
         self
     }
 }

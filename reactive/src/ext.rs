@@ -1,4 +1,7 @@
-use crate::{Compute, Computed, compute::WithMetadata, map::Map, watcher::WatcherGuard, zip::Zip};
+use crate::{
+    Compute, Computed, cache::Cached, compute::WithMetadata, map::Map, watcher::WatcherGuard,
+    zip::Zip,
+};
 
 pub trait ComputeExt: Compute + Sized {
     fn map<F, Output>(self, f: F) -> Map<Self, F, Output>
@@ -15,6 +18,13 @@ pub trait ComputeExt: Compute + Sized {
 
     fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> WatcherGuard {
         self.add_watcher(move |value, _| watcher(value))
+    }
+
+    fn cached(self) -> Cached<Self>
+    where
+        Self::Output: Clone,
+    {
+        Cached::new(self)
     }
 
     fn computed(self) -> Computed<Self::Output>

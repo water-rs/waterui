@@ -118,4 +118,4 @@ pub use waterui_str::Str;
 pub mod id;
 pub use waterui_task as task;
 
-uniffi::setup_scaffolding!();
+

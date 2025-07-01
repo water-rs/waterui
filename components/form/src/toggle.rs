@@ -3,7 +3,7 @@ use waterui_reactive::Binding;
 
 use waterui_core::{AnyView, View};
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct ToggleConfig {
     pub label: AnyView,
@@ -13,14 +13,19 @@ pub struct ToggleConfig {
 configurable!(Toggle, ToggleConfig);
 
 impl Toggle {
-    pub fn new(label: impl View, toggle: &Binding<bool>) -> Self {
+    pub fn new(toggle: &Binding<bool>) -> Self {
         Self(ToggleConfig {
-            label: AnyView::new(label),
+            label: AnyView::default(),
             toggle: toggle.clone(),
         })
+    }
+
+    pub fn label(mut self, view: impl View) -> Self {
+        self.0.label = AnyView::new(view);
+        self
     }
 }
 
 pub fn toggle(label: impl View, toggle: &Binding<bool>) -> Toggle {
-    Toggle::new(label, toggle)
+    Toggle::new(toggle).label(label)
 }

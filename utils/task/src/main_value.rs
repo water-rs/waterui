@@ -85,14 +85,14 @@ impl<T: 'static> MainValue<T> {
         R: Send + 'static,
     {
         let ptr = Wrapper(from_ref(&self.0));
-        if let Some(id) = MAIN_THREAD_ID.get() {
-            if *id == std::thread::current().id() {
-                // on main thread, execute it directly
-                let ptr = unsafe { &*(ptr.0) };
+        if let Some(id) = MAIN_THREAD_ID.get()
+            && *id == std::thread::current().id()
+        {
+            // on main thread, execute it directly
+            let ptr = unsafe { &*(ptr.0) };
 
-                let result = f(ptr);
-                return Task::new(async move { result });
-            }
+            let result = f(ptr);
+            return Task::new(async move { result });
         }
 
         Task::on_main(async move {
