@@ -38,7 +38,7 @@ impl<V: View, T: 'static> View for With<V, T> {
 }
 
 impl<V, T> With<V, T> {
-    pub fn new(view: V, value: T) -> Self {
+    pub const fn new(view: V, value: T) -> Self {
         Self { view, value }
     }
 }

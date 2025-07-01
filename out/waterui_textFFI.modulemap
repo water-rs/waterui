@@ -1,4 +1,0 @@
-module waterui_textFFI {
-    header "waterui_textFFI.h"
-    export *
-}

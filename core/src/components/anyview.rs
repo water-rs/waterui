@@ -94,16 +94,16 @@ impl AnyView {
     ///
     /// # Safety
     /// Calling this method with the incorrect type is undefined behavior.
-    pub unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
-        unsafe { &*(self.0.deref() as *const dyn AnyViewImpl as *const T) }
+    pub const unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
+        unsafe { &*(&*self.0 as *const dyn AnyViewImpl as *const T) }
     }
 
     /// Returns a mutable reference to the contained view without any runtime checks.
     ///
     /// # Safety
     /// Calling this method with the incorrect type is undefined behavior.
-    pub unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
-        unsafe { &mut *(self.0.deref_mut() as *mut dyn AnyViewImpl as *mut T) }
+    pub const unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
+        unsafe { &mut *(&mut *self.0 as *mut dyn AnyViewImpl as *mut T) }
     }
 
     /// Attempts to downcast `AnyView` to a concrete view type.
@@ -150,40 +150,3 @@ mod test {
         assert_eq!(AnyView::new(()).type_id(), TypeId::of::<()>())
     }
 }
-
-mod ffi {
-    use std::sync::Arc;
-
-    use waterui_task::OnceValue;
-
-    use crate::{Environment, View};
-
-    #[derive(uniffi::Object)]
-    pub struct FFIAnyView(OnceValue<super::AnyView>);
-
-    impl From<super::AnyView> for Arc<FFIAnyView> {
-        fn from(value: super::AnyView) -> Self {
-            Self::new(FFIAnyView(value.into()))
-        }
-    }
-
-    impl From<Arc<FFIAnyView>> for super::AnyView {
-        fn from(view: Arc<FFIAnyView>) -> Self {
-            view.0.take()
-        }
-    }
-
-    #[uniffi::export]
-    impl FFIAnyView {
-        pub fn id(&self) -> String {
-            format!("{:?}", self.0.get().type_id())
-        }
-
-        pub fn body(&self, env: Environment) -> super::AnyView {
-            let view = self.0.take().body(&env);
-            super::AnyView::new(view)
-        }
-    }
-}
-
-uniffi::custom_type!(AnyView, Arc<ffi::FFIAnyView>);

@@ -5,7 +5,7 @@ use waterui_reactive::compute::IntoComputed;
 use waterui_str::Str;
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug)]
 pub enum Background {
     /// A solid color background.
     Color(Computed<Color>),
@@ -13,7 +13,7 @@ pub enum Background {
     Material(Material),
 }
 
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug)]
 pub enum Material {
     Regular,
 }
@@ -34,7 +34,7 @@ impl Background {
 }
 
 /// Represents the color of text or other foreground elements in a UI.
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct ForegroundColor {
     /// The computed color value.
     pub color: Computed<Color>,

@@ -66,7 +66,7 @@ pub struct SelfId<T>(T);
 
 impl<T> SelfId<T> {
     /// Creates a new SelfId instance wrapping the given value.
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self(value)
     }
 }
@@ -110,49 +110,9 @@ pub struct TaggedView<T, V> {
     pub content: V,
 }
 
-mod ffi {
-    use core::num::{NonZeroI32, NonZeroUsize};
-
-    use waterui_reactive::ffi_binding;
-
-    use crate::AnyView;
-
-    use super::{Id, TaggedView};
-
-    uniffi::custom_type!(Id, i32,{
-        remote,
-        lower:|value|{
-            value.0.get()
-        },
-        try_lift:|value|{
-            Ok(Id(NonZeroI32::try_from(value)?))
-        }
-    });
-
-    ffi_binding!(Id);
-
-    #[derive(uniffi::Record)]
-    pub struct FFIRawTaggedView {
-        tag: Id,
-        content: AnyView,
-    }
-    type RawTaggedView = TaggedView<Id, AnyView>;
-    uniffi::custom_type!(RawTaggedView,FFIRawTaggedView,{
-        lower:|value|{
-            FFIRawTaggedView {
-                tag: value.tag,
-                content: value.content,
-            }
-        },
-        try_lift:|value|{
-            Ok(RawTaggedView::new(value.tag, value.content))
-        }
-    });
-}
-
 impl<T, V: View> TaggedView<T, V> {
     /// Creates a new tagged view with the specified tag and content.
-    pub fn new(tag: T, content: V) -> Self {
+    pub const fn new(tag: T, content: V) -> Self {
         Self { tag, content }
     }
 

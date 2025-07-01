@@ -556,12 +556,3 @@ impl From<Str> for String {
         value.into_string()
     }
 }
-
-#[cfg(feature = "ffi")]
-mod ffi {
-    use super::Str;
-    uniffi::custom_type!(Str, String);
-}
-
-#[cfg(feature = "ffi")]
-uniffi::setup_scaffolding!();

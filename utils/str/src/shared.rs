@@ -23,6 +23,7 @@ impl Default for Shared {
 impl Shared {
     pub fn new(s: String) -> Self {
         let mut s = ManuallyDrop::new(s);
+
         let head = s.as_mut_ptr();
         let capacity = s.capacity();
         Self {
