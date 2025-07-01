@@ -1,7 +1,15 @@
 [package]
 name = "waterui-layout"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Layout components for WaterUI"
+keywords = ["layout", "ui", "components", "flexbox"]
+categories = ["gui"]
+
 
 [dependencies]
 waterui-core.workspace = true

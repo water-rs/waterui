@@ -3,14 +3,12 @@
 //! This module includes the components needed to create and manage tabs,
 //! with support for selection binding and navigation views.
 
-use core::num::NonZeroI32;
-
 use alloc::{boxed::Box, vec::Vec};
 
 use waterui_core::{
-    AnyView, Environment, configurable,
+    AnyView, configurable,
     handler::{BoxHandler, HandlerFn, into_handler},
-    id::{Id, Mapping},
+    id::Id,
     impl_debug,
 };
 use waterui_reactive::Binding;

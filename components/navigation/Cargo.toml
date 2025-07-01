@@ -1,7 +1,15 @@
 [package]
 name = "waterui-navigation"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Navigation components for WaterUI"
+keywords = ["navigation", "ui", "components", "menu"]
+categories = ["gui"]
+
 
 [dependencies]
 waterui-core.workspace = true

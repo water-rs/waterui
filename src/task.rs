@@ -13,7 +13,7 @@ pub struct OnChange<V> {
 }
 
 impl<V> OnChange<V> {
-    /// Creates a new OnChange view that will execute the provided handler
+    /// Creates a new `OnChange` view that will execute the provided handler
     /// whenever the source value changes.
     ///
     /// # Arguments
@@ -21,7 +21,7 @@ impl<V> OnChange<V> {
     /// * `content` - The view to render
     /// * `source` - The computed value to watch for changes
     /// * `handler` - The callback to execute when the value changes
-    pub fn new<C, F>(content: V, source: C, handler: F) -> Self
+    pub fn new<C, F>(content: V, source: &C, handler: F) -> Self
     where
         C: Compute,
         V: View,
@@ -34,7 +34,7 @@ impl<V> OnChange<V> {
                 && *cache != value
             {
                 *cache = value.clone();
-                handler(value)
+                handler(value);
             }
         });
         Self {

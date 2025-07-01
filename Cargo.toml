@@ -14,10 +14,40 @@ crate-type = ["cdylib"]
 
 [package]
 name = "waterui"
-edition = "2024"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "A modern UI framework for Rust"
+keywords = ["ui", "framework", "rust", "gui", "water"]
+categories = ["gui"]
 
 [workspace.package]
-version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+rust-version = "1.85"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/waterui-rs/waterui"
+description = "A modern UI framework for Rust"
+keywords = ["ui", "framework", "rust", "gui", "water"]
+categories = ["gui"]
+
+[workspace.package.lints]
+rust.missing_docs = "warn"
+rust.missing_debug_implementations = "warn"
+clippy.all = "warn"
+clippy.style = "warn"
+clippy.correctness = "warn"
+clippy.complexity = "warn"
+clippy.suspicious = "warn"
+clippy.perf = "warn"
+clippy.pedantic = "warn"
+clippy.nursery = "warn"
+clippy.cargo = "warn"
+
 
 [workspace.dependencies]
 waterui-core = { path = "core" }

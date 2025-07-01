@@ -15,8 +15,6 @@ pub struct SliderConfig {
     pub value: Binding<f64>,
 }
 
-type RangeInclusiveF64 = RangeInclusive<f64>;
-
 configurable!(Slider, SliderConfig);
 
 impl Slider {

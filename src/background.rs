@@ -9,13 +9,8 @@ use waterui_str::Str;
 pub enum Background {
     /// A solid color background.
     Color(Computed<Color>),
+    /// An image background.
     Image(Computed<Str>),
-    Material(Material),
-}
-
-#[derive(Debug)]
-pub enum Material {
-    Regular,
 }
 
 impl Background {

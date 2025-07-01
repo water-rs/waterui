@@ -285,7 +285,7 @@ impl<T: 'static> Binding<T> {
     /// Gets mutable access to the binding's value through a guard.
     ///
     /// When the guard is dropped, the binding is updated with the modified value.
-    pub fn get_mut(&self) -> BindingMutGuard<T> {
+    pub fn get_mut(&self) -> BindingMutGuard<'_, T> {
         BindingMutGuard::new(self)
     }
 

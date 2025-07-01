@@ -64,11 +64,8 @@ pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
     fn body(self, env: &Environment) -> impl View {
-        if let Some(builder) = env.get::<DefaultLoadingView>() {
-            builder.0.view(env).anyview()
-        } else {
-            AnyView::new(())
-        }
+        env.get::<DefaultLoadingView>()
+            .map_or_else(|| AnyView::new(()), |builder| builder.0.view(env).anyview())
     }
 }
 
@@ -78,7 +75,7 @@ impl<V: SuspendedView> Suspense<V, UseDefaultLoadingView> {
     /// # Arguments
     ///
     /// * `content` - The suspended view to be displayed when loaded
-    pub fn new(content: V) -> Self {
+    pub const fn new(content: V) -> Self {
         Self {
             content,
             loading: UseDefaultLoadingView,

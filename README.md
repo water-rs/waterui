@@ -1,8 +1,8 @@
-# WaterUI Framework
+# `WaterUI` Framework
 
 ## Bring Your App to Every Platform, Once for All
 
-WaterUI is an experimental UI framework written in Rust that enables you to build applications using a single codebase that can run on any platform, even embedded devices.
+`WaterUI` is an experimental UI framework written in Rust that enables you to build applications using a single codebase that can run on any platform, even embedded devices.
 
 ## Key Features
 
@@ -37,7 +37,7 @@ impl View for Counter {
 
 ## Architecture
 
-WaterUI is built around a few key concepts:
+`WaterUI` is built around a few key concepts:
 
 1. **Views**: Composable UI elements that describe what should be displayed
 2. **Reactive State**: Values that automatically propagate changes
@@ -52,12 +52,12 @@ The framework uses a platform-agnostic core with platform-specific plugins to re
 
 ## Component System
 
-WaterUI provides a rich set of built-in components:
+`WaterUI` provides a rich set of built-in components:
 
-- **Layout**: HStack, VStack, ZStack, Grid, Overlay
-- **Controls**: Button, Toggle, TextField, Slider
+- **Layout**: `HStack`, `VStack`, `ZStack`, Grid, Overlay
+- **Controls**: Button, Toggle, `TextField`, Slider
 - **Navigation**: Navigation views, tabs, links
-- **Media**: Image, Video, LivePhoto
+- **Media**: Image, Video, `LivePhoto`
 
 All components are designed to be composable, allowing you to build complex interfaces from simple building blocks.
 
@@ -78,7 +78,7 @@ name.set("Universe");  // Text now shows "Hello, Universe!"
 
 ## Comparison with Other Frameworks
 
-| Feature | WaterUI | React Native | Flutter | SwiftUI |
+| Feature | `WaterUI` | React Native | Flutter | `SwiftUI` |
 |---------|---------|--------------|---------|---------|
 | Language | Rust | JavaScript | Dart | Swift |
 | Runtime | Native | JS VM | Dart VM | Native |
@@ -88,7 +88,7 @@ name.set("Universe");  // Text now shows "Hello, Universe!"
 
 ## Current Status
 
-WaterUI is under active development and is currently in an experimental state. While it's ready for experimentation, we recommend waiting for a stable release before using it in production applications.
+`WaterUI` is under active development and is currently in an experimental state. While it's ready for experimentation, we recommend waiting for a stable release before using it in production applications.
 
 ### TODO
 
@@ -101,7 +101,7 @@ WaterUI is under active development and is currently in an experimental state. W
 
 ## Getting Started
 
-1. Add WaterUI to your Cargo.toml:
+1. Add `WaterUI` to your Cargo.toml:
 ```toml
 [dependencies]
 waterui = "0.1.0"
@@ -122,4 +122,4 @@ impl View for HelloWorld {
 
 ## Contributing
 
-We welcome contributions to WaterUI! Whether you're fixing bugs, improving documentation, or proposing new features, your help is appreciated.
+We welcome contributions to `WaterUI`! Whether you're fixing bugs, improving documentation, or proposing new features, your help is appreciated.
