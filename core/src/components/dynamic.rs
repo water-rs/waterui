@@ -21,6 +21,7 @@
 //! let counter_view = watch(count, |value| text(format!("Count: {}", value)));
 use crate::components::With;
 use crate::{raw_view, AnyView, View};
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
 use waterui_reactive::watcher::{Metadata, WatcherGuard};
