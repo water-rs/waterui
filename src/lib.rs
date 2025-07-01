@@ -34,5 +34,4 @@ pub use waterui_core as core;
 #[doc(inline)]
 pub use waterui_layout as layout;
 pub use waterui_str::Str;
-
-uniffi::setup_scaffolding!();
+pub mod ffi;

@@ -1,7 +1,7 @@
 use crate::Alignment;
 use alloc::vec::Vec;
 use waterui_core::{AnyView, raw_view, view::TupleViews};
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[must_use]
 pub struct Grid {
     pub alignment: Alignment,
@@ -22,7 +22,7 @@ impl Grid {
         }
     }
 }
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct GridRow {
     pub columns: Vec<AnyView>,
 }

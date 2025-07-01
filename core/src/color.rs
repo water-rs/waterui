@@ -7,9 +7,9 @@
 //! The primary type is `Color`, which can represent colors in either sRGB or P3
 //! color spaces, with conversion methods from various tuple formats.
 
-use waterui_reactive::{ffi_computed, impl_constant};
+use waterui_reactive::impl_constant;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 
 /// Represents an sRGB color with red, yellow, and blue components.
 pub struct Srgb {
@@ -18,7 +18,7 @@ pub struct Srgb {
     blue: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 
 /// Represents a P3 color with red, yellow, and blue components.
 pub struct P3 {
@@ -27,7 +27,7 @@ pub struct P3 {
     blue: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 enum ColorInner {
     Srgb(Srgb),
     P3(P3),
@@ -39,7 +39,7 @@ impl Default for ColorInner {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 /// Represents a color, either in sRGB or P3 color space.
 pub struct Color {
     color: ColorInner,
@@ -47,8 +47,6 @@ pub struct Color {
 }
 
 impl_constant!(Color);
-
-ffi_computed!(Color);
 
 impl From<(u8, u8, u8)> for Color {
     fn from((red, yellow, blue): (u8, u8, u8)) -> Self {

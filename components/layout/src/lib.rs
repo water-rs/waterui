@@ -11,7 +11,7 @@ pub use scroll::scroll;
 pub mod spacer;
 pub use spacer::spacer;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Alignment {
     #[default]
@@ -21,7 +21,7 @@ pub enum Alignment {
     Trailing,
 }
 
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Frame {
     pub width: f64,
@@ -55,7 +55,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[repr(C)]
 pub struct Edge {
@@ -130,5 +130,3 @@ impl Frame {
     modify_field!(margin, Edge);
     modify_field!(alignment, Alignment);
 }
-
-uniffi::setup_scaffolding!();

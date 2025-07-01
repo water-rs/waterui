@@ -1,7 +1,6 @@
 [package]
-name = "bindgen"
+name = "waterui-color"
 edition = "2024"
 version.workspace = true
 
 [dependencies]
-uniffi = { version = "0.29", features = ["cli"] }

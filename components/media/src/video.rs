@@ -1,6 +1,6 @@
 use waterui_core::{
     Binding, Computed, View, binding, configurable,
-    reactive::{compute::IntoComputed, ffi_computed, impl_constant},
+    reactive::{compute::IntoComputed, impl_constant},
 };
 
 use crate::Url;
@@ -18,16 +18,16 @@ use crate::Url;
 /// - When unmuted, -0.7 becomes 0.7 again
 type Volume = f64;
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct VideoPlayerConfig {
     pub video: Computed<Video>,
     pub volume: Binding<Volume>,
 }
 
-ffi_computed!(Video);
+
 configurable!(VideoPlayer, VideoPlayerConfig);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Video {
     url: Url,

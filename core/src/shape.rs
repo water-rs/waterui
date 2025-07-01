@@ -19,7 +19,6 @@ use waterui_reactive::Computed;
 /// This shape can be used to create rectangular UI elements.
 #[derive(Debug)]
 #[must_use]
-#[derive(uniffi::Record)]
 pub struct Rectangle;
 
 /// Rectangle shape with rounded corners

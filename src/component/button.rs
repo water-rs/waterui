@@ -29,7 +29,7 @@ use crate::{AnyView, ViewExt};
 ///
 /// Use the `Button` struct's methods to customize these properties.
 #[non_exhaustive]
-#[derive(uniffi::Record)]
+
 pub struct ButtonConfig {
     /// The label displayed on the button
     pub label: AnyView,

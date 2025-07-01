@@ -14,21 +14,20 @@ pub mod channel;
 pub mod debug;
 #[macro_use]
 pub mod macros;
+pub mod project;
+//pub mod ffi;
 //pub mod error;
 mod ext;
 //pub mod filter;
+pub mod cache;
 pub mod mailbox;
 pub mod map;
-//pub mod stream;
+pub mod stream;
 pub mod utils;
 pub mod watcher;
 pub mod zip;
 #[doc(inline)]
 pub use ext::ComputeExt;
-#[macro_use]
-pub mod ffi;
-
-uniffi::setup_scaffolding!();
 
 #[macro_export]
 macro_rules! impl_constant {
@@ -111,7 +110,7 @@ mod impl_constant {
         Cow<'static, str>
     );
 
-    impl_genetic_constant!(Vec<T>,BTreeMap<K,V>);
+    impl_genetic_constant!(Vec<T>,BTreeMap<K,V>,Option<T>,Result<T,E>);
 
     impl<T> Compute for &'static [T] {
         type Output = &'static [T];

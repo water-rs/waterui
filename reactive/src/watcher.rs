@@ -20,23 +20,6 @@ pub struct Metadata(Box<MetadataInner>);
 #[derive(Debug, Default, Clone)]
 struct MetadataInner(BTreeMap<TypeId, Rc<dyn Any>>);
 
-mod ffi {
-    use alloc::sync::Arc;
-
-    use waterui_task::OnceValue;
-
-    use crate::watcher::Metadata;
-    #[derive(uniffi::Object)]
-    pub struct FFIMetadata(OnceValue<Metadata>);
-
-    uniffi::custom_type!(Metadata,Arc<FFIMetadata>,{
-        lower:|value|{
-            Arc::new(FFIMetadata(value.into()))
-        },
-        try_lift:|value| Ok(value.0.take()),
-    });
-}
-
 impl MetadataInner {
     /// Attempts to retrieve a value of type `T` from the metadata store.
     ///

@@ -13,7 +13,6 @@
 use crate::extract::Extractor;
 use alloc::boxed::Box;
 use core::marker::PhantomData;
-use std::sync::Arc;
 
 use crate::Environment;
 
@@ -280,34 +279,3 @@ where
 {
     IntoHandlerOnce::new(h)
 }
-
-mod ffi {
-    use std::sync::Arc;
-
-    use waterui_task::OnceValue;
-
-    use crate::Environment;
-
-    #[derive(uniffi::Object)]
-    pub struct FFIActionObject(OnceValue<super::ActionObject>);
-
-    impl From<super::ActionObject> for Arc<FFIActionObject> {
-        fn from(value: super::ActionObject) -> Self {
-            Self::new(FFIActionObject(value.into()))
-        }
-    }
-
-    impl From<Arc<FFIActionObject>> for super::ActionObject {
-        fn from(view: Arc<FFIActionObject>) -> Self {
-            view.0.take()
-        }
-    }
-    #[uniffi::export]
-    impl FFIActionObject {
-        pub fn handle(&self, env: Environment) {
-            self.0.get().handle(&env)
-        }
-    }
-}
-
-uniffi::custom_type!(ActionObject, Arc<ffi::FFIActionObject>);

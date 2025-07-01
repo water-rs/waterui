@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-uniffi = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+typeshare.workspace = true
 
 [features]
 default = ["ffi"]
 std = []
-ffi = ["dep:uniffi", "std"]
+ffi = ["std"]
 serde = ["dep:serde"]

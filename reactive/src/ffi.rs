@@ -1,155 +1,73 @@
-use core::num::NonZeroI32;
+use std::ptr::NonNull;
 
-use crate::{Binding, Computed, watcher::BoxWatcher};
-use waterui_str::Str;
-use waterui_task::OnceValue;
-#[doc(hidden)]
-pub type __FFIComputed<T> = OnceValue<Computed<T>>;
-#[doc(hidden)]
-pub type __FFIBinding<T> = OnceValue<Binding<T>>;
-#[doc(hidden)]
-pub type __FFIWatcher<T> = OnceValue<BoxWatcher<T>>;
-#[doc(hidden)]
-pub use paste::paste as __paste;
+use crate::{Compute, watcher::Metadata};
+use waterui_ffi::{Record, buffer::Buffer};
 
-#[macro_export]
-macro_rules! ffi_computed {
-    ($ty:ty) => {
-        $crate::ffi::__paste! {
-            #[derive(uniffi::Object)]
-            pub struct [<FFIComputed$ty>]($crate::ffi::__FFIComputed<$ty>);
-            #[uniffi::export]
-            impl [<FFIComputed$ty>] {
-                pub fn compute(&self) -> $ty {
-                    let value = self.0.get();
-                    $crate::Compute::compute(&*value)
-                }
-            }
-
-            type [<Computed$ty>] = $crate::Computed<$ty>;
-            uniffi::custom_type!([<Computed$ty>], alloc::sync::Arc<[<FFIComputed$ty>]>,{
-                remote,
-                lower: |value| {alloc::sync::Arc::new([<FFIComputed$ty>](value.into()))},
-                try_lift: |value| {Ok(value.0.get().clone())}
-            });
-
-
-        }
+macro_rules! opaque_type {
+    ($name:ident,$ty:ty) => {
+        #[repr(C)]
+        pub struct $name(Box<$ty>);
     };
 }
 
-macro_rules! ffi_computed_local {
-    ($ty:ty) => {
-        $crate::ffi::__paste! {
-            #[derive(uniffi::Object)]
-            pub struct [<FFIComputed$ty>]($crate::ffi::__FFIComputed<$ty>);
-            #[uniffi::export]
-            impl [<FFIComputed$ty>] {
-                pub fn compute(&self) -> $ty {
-                    let value = self.0.get();
-                    $crate::Compute::compute(&*value)
-                }
-            }
+opaque_type!(WuiComputed, Box<dyn WuiComputedImpl>);
+opaque_type!(WuiMetadata, Metadata);
 
-            type [<Computed$ty>] = $crate::Computed<$ty>;
-            uniffi::custom_type!([<Computed$ty>], alloc::sync::Arc<[<FFIComputed$ty>]>,{
-                lower: |value| {alloc::sync::Arc::new([<FFIComputed$ty>](value.into()))},
-                try_lift: |value| {Ok(value.0.get().clone())}
-            });
-
-
-        }
-    };
+#[repr(C)]
+pub struct WuiWatcher {
+    data: NonNull<()>,
+    f: fn(*mut (), Buffer, WuiMetadata),
 }
 
-ffi_computed_local!(Str);
-ffi_computed_local!(i32);
-ffi_computed_local!(f32);
-ffi_computed_local!(f64);
-
-ffi_computed_local!(bool);
-
-#[macro_export]
-macro_rules! ffi_binding {
-    ($ty:ty) => {
-        $crate::ffi::__paste! {
-            #[derive(uniffi::Object)]
-            pub struct [<FFIBinding$ty>]($crate::ffi::__FFIBinding<$ty>);
-            #[uniffi::export]
-            impl [<FFIBinding$ty>] {
-                pub fn compute(&self) -> $ty {
-                    let value = self.0.get();
-                    $crate::Compute::compute(&*value)
-                }
-            }
-
-            type [<Binding$ty>] = $crate::Binding<$ty>;
-            uniffi::custom_type!([<Binding$ty>], alloc::sync::Arc<[<FFIBinding$ty>]>,{
-                remote,
-                lower: |value| {alloc::sync::Arc::new([<FFIBinding$ty>](value.into()))},
-                try_lift: |value| {Ok(value.0.get().clone())}
-            });
-
-
-        }
-    };
+trait WuiComputedImpl {
+    fn compute(&self) -> Buffer;
+    fn watch(&self, f: WuiWatcher) -> WuiWatcherGuard;
 }
 
-macro_rules! ffi_binding_local {
-    ($ty:ty) => {
-        $crate::ffi::__paste! {
-            #[derive(uniffi::Object)]
-            pub struct [<FFIBinding$ty>]($crate::ffi::__FFIBinding<$ty>);
-            #[uniffi::export]
-            impl [<FFIBinding$ty>] {
-                pub fn compute(&self) -> $ty {
-                    let value = self.0.get();
-                    $crate::Compute::compute(&*value)
-                }
-            }
+impl<C> WuiComputedImpl for C
+where
+    C: Compute,
+    C::Output: Record,
+{
+    fn compute(&self) -> Buffer {
+        todo!()
+    }
 
-            type [<Binding$ty>] = $crate::Binding<$ty>;
-            uniffi::custom_type!([<Binding$ty>], alloc::sync::Arc<[<FFIBinding$ty>]>,{
-                lower: |value| {alloc::sync::Arc::new([<FFIBinding$ty>](value.into()))},
-                try_lift: |value| {Ok(value.0.get().clone())}
-            });
-
-
-        }
-    };
+    fn watch(&self, f: WuiWatcher) {}
 }
 
-ffi_binding_local!(i32);
-ffi_binding_local!(Str);
-ffi_binding_local!(bool);
-ffi_binding_local!(f32);
-ffi_binding_local!(f64);
-
-macro_rules! ffi_watcher {
-    ($ty:ty) => {
-        $crate::ffi::__paste! {
-            #[uniffi::export]
-            pub trait [<FFIWatcherImpl$ty>] :Send+Sync{
-                fn notify(&self,value:$ty,metadata:$crate::watcher::Metadata);
-            }
-
-
-            impl [<FFIWatcherImpl$ty>] for $crate::ffi::__FFIWatcher<$ty>{
-                fn notify(&self,value:$ty,metadata:$crate::watcher::Metadata){
-                    self.get().notify(value,metadata);
-                }
-            }
-
-
-            type [<Watcher$ty>] = $crate::watcher::BoxWatcher<$ty>;
-            uniffi::custom_type!([<Watcher$ty>], alloc::sync::Arc<dyn [<FFIWatcherImpl$ty>]>,{
-                lower: |watcher| {alloc::sync::Arc::new(OnceValue::new(watcher))},
-                try_lift: |watcher| {Ok(alloc::boxed::Box::new(move |value,metadata|{watcher.notify(value,metadata)}))}
-            });
-
-
-        }
-    };
+impl WuiComputed {
+    pub fn new<T>(computed: crate::Computed<T>) -> Self {
+        todo!()
+    }
 }
 
-ffi_watcher!(i32);
+mod test {
+    #[waterui_ffi::Opaque]
+    struct Metadata {
+        // TODO
+    }
+
+    #[waterui_ffi::export]
+    impl Metadata {
+        pub fn get(&self) -> MetadataResult {
+            todo!()
+        }
+    }
+
+    #[waterui_ffi::Record]
+    struct MetadataResult {
+        // use buffer to encode/decode then transfer it
+        value: String,
+    }
+
+    // Generate:
+    //
+    // pub unsafe extern "C" fn wui_metadata_free(metadata: *mut ()) {
+    //     drop(Box::from_raw(metadata as *mut Metadata));
+    // }
+    //
+    // pub unsafe extern "C" fn wui_metadata_get(metadata: *const ()) -> MetadataResult{
+    //     (&*metadata).get()
+    // }
+}

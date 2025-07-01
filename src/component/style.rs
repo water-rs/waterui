@@ -14,14 +14,13 @@
 //! };
 //! ```
 
-use uniffi::custom_type;
 use waterui_core::Color;
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
 /// A shadow is defined by its color, offset from the original element,
 /// and blur radius.
-#[derive(Debug, PartialEq, uniffi::Record)]
+#[derive(Debug, PartialEq)]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
     pub color: Color,
@@ -41,37 +40,4 @@ pub struct Vector<T> {
     pub x: T,
     /// The y component of the vector.
     pub y: T,
-}
-
-mod ffi {
-    use uniffi::custom_type;
-
-    use super::Vector;
-    type VectorFloat = Vector<f32>;
-
-    #[derive(Debug, uniffi::Record)]
-    pub struct FFIVectorFloat {
-        x: f32,
-        y: f32,
-    }
-
-    impl From<FFIVectorFloat> for VectorFloat {
-        fn from(value: FFIVectorFloat) -> Self {
-            VectorFloat {
-                x: value.x,
-                y: value.y,
-            }
-        }
-    }
-
-    impl From<VectorFloat> for FFIVectorFloat {
-        fn from(value: VectorFloat) -> Self {
-            FFIVectorFloat {
-                x: value.x,
-                y: value.y,
-            }
-        }
-    }
-
-    custom_type!(VectorFloat, FFIVectorFloat);
 }

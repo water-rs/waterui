@@ -16,12 +16,11 @@ use core::{
 };
 use std::rc::Rc;
 
-use uniffi::custom_newtype;
-use waterui_core::{Computed, configurable, reactive::ffi_computed};
+use waterui_core::{Computed, configurable};
 
 use crate::Media;
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct MediaPickerConfig {
     pub selection: Computed<Selected>,
     pub filter: Computed<MediaFilter>,
@@ -32,7 +31,7 @@ configurable!(MediaPicker, MediaPickerConfig);
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Selected(u32);
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, uniffi::Enum)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MediaFilter {
     LivePhoto,
     Video,
@@ -41,10 +40,6 @@ pub enum MediaFilter {
     Not(Vec<MediaFilter>),
     Any(Vec<MediaFilter>),
 }
-
-custom_newtype!(Selected, u32);
-ffi_computed!(Selected);
-ffi_computed!(MediaFilter);
 
 impl Selected {
     pub async fn load(self) -> Media {

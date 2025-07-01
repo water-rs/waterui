@@ -20,7 +20,7 @@ use waterui_text::Text;
 ///
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[must_use]
 pub struct NavigationView {
     /// The navigation bar for this view
@@ -33,7 +33,7 @@ pub struct NavigationView {
 ///
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
-#[derive(Debug, Default, uniffi::Record)]
+#[derive(Debug, Default)]
 pub struct Bar {
     /// The title text displayed in the navigation bar
     pub title: Text,
@@ -42,8 +42,6 @@ pub struct Bar {
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
 }
-
-uniffi::use_remote_type!(waterui_core::Computed<Color>);
 
 /// A path of navigation views forming a navigation hierarchy.
 ///
@@ -126,5 +124,3 @@ pub fn navigate(
 ) -> NavigationLink {
     NavigationLink::new(label, destination)
 }
-
-uniffi::setup_scaffolding!();

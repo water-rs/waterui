@@ -1,4 +1,0 @@
-module waterui_coreFFI {
-    header "waterui_coreFFI.h"
-    export *
-}

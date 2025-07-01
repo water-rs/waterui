@@ -95,7 +95,7 @@ pub struct WithMetadata<C, T> {
 
 impl<C, T> WithMetadata<C, T> {
     /// Create a new computation with associated metadata.
-    pub fn new(metadata: T, compute: C) -> Self {
+    pub const fn new(metadata: T, compute: C) -> Self {
         Self { metadata, compute }
     }
 }
