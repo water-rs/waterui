@@ -35,7 +35,7 @@ description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
-[workspace.package.lints]
+[workspace.lints]
 rust.missing_docs = "warn"
 rust.missing_debug_implementations = "warn"
 clippy.all = "warn"

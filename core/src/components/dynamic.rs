@@ -20,14 +20,14 @@
 //! let count = Mutable::new(0);
 //! let counter_view = watch(count, |value| text(format!("Count: {}", value)));
 use crate::components::With;
-use crate::{raw_view, AnyView, View};
+use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
-use waterui_reactive::watcher::{Metadata, WatcherGuard};
 use waterui_reactive::Compute;
 use waterui_reactive::ComputeExt;
 use waterui_reactive::Computed;
+use waterui_reactive::watcher::{Metadata, WatcherGuard};
 
 /// A dynamic view that can be updated.
 ///
@@ -48,10 +48,21 @@ impl_debug!(Dynamic);
 impl_debug!(DynamicHandler);
 
 impl DynamicHandler {
+    /// Sets the content of the Dynamic view with the provided view and metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The new view to display
+    /// * `metadata` - Additional metadata associated with the update
     pub fn set_with_metadata(&self, view: impl View, metadata: Metadata) {
-        (self.0.borrow())(AnyView::new(view), metadata)
+        (self.0.borrow())(AnyView::new(view), metadata);
     }
 
+    /// Sets the content of the Dynamic view with the provided view.
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The new view to display
     pub fn set(&self, view: impl View) {
         self.set_with_metadata(view, Metadata::new());
     }
@@ -65,7 +76,8 @@ impl Dynamic {
     ///
     /// # Returns
     ///
-    /// A tuple containing the DynamicHandler and Dynamic view
+    /// A tuple containing the [`DynamicHandler`] and Dynamic view
+    #[must_use]
     pub fn new() -> (DynamicHandler, Self) {
         let handler = DynamicHandler(Rc::new(RefCell::new(Box::new(|_, _| {}))));
         (handler.clone(), Self(handler))
@@ -85,7 +97,7 @@ impl Dynamic {
     ///
     /// A Dynamic view that updates when the value changes
     pub fn watch<T, V: View>(
-        value: impl Compute<Output = T>,
+        value: &impl Compute<Output = T>,
         f: impl Fn(T) -> V + 'static,
     ) -> With<Self, WatcherGuard> {
         let (handle, dyanmic) = Self::new();
@@ -108,13 +120,13 @@ impl Dynamic {
     pub fn connect(self, receiver: impl Fn(AnyView, Metadata) + 'static) {
         #[allow(unused_must_use)]
         // It would be used on swift side
-        self.0 .0.replace(Box::new(receiver));
+        self.0.0.replace(Box::new(receiver));
     }
 }
 
 /// Creates a view that watches a reactive value.
 ///
-/// A convenience function that calls Dynamic::watch.
+/// A convenience function that calls [`Dynamic::watch`].
 ///
 /// # Arguments
 ///
@@ -125,7 +137,7 @@ impl Dynamic {
 ///
 /// A view that updates when the value changes
 pub fn watch<T, V: View>(
-    value: impl Compute<Output = T>,
+    value: &impl Compute<Output = T>,
     f: impl Fn(T) -> V + 'static,
 ) -> impl View {
     Dynamic::watch(value, f)
@@ -133,6 +145,6 @@ pub fn watch<T, V: View>(
 
 impl<V: View> View for Computed<V> {
     fn body(self, _env: &crate::Environment) -> impl View {
-        Dynamic::watch(self, |view| view)
+        Dynamic::watch(&self, |view| view)
     }
 }

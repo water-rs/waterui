@@ -1,6 +1,6 @@
-# WaterUI Reactive Framework
+# `WaterUI` Reactive Framework
 
-A powerful, lightweight reactive framework for WaterUI.
+A powerful, lightweight reactive framework for `WaterUI`.
 
 ## Core of our architecture: `Compute` trait
 

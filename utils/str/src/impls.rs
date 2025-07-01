@@ -14,13 +14,13 @@ use crate::Str;
 
 impl Hash for Str {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.deref().hash(state)
+        self.deref().hash(state);
     }
 }
 
 impl PartialEq for Str {
     fn eq(&self, other: &Self) -> bool {
-        self.deref().eq(other.deref())
+        self.deref().eq(&**other)
     }
 }
 
@@ -41,7 +41,7 @@ impl FromStr for Str {
 impl<S: AsRef<str>> FromIterator<S> for Str {
     fn from_iter<T: IntoIterator<Item = S>>(iter: T) -> Self {
         iter.into_iter()
-            .fold(Str::new(), |state, s| state + s.as_ref())
+            .fold(Self::new(), |state, s| state + s.as_ref())
     }
 }
 
@@ -55,7 +55,7 @@ impl PartialOrd for Str {
 
 impl Ord for Str {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.deref().cmp(other.deref())
+        self.deref().cmp(&**other)
     }
 }
 
@@ -81,10 +81,10 @@ impl Extend<String> for Str {
     }
 }
 
-impl Extend<Str> for Str {
-    fn extend<T: IntoIterator<Item = Str>>(&mut self, iter: T) {
+impl Extend<Self> for Str {
+    fn extend<T: IntoIterator<Item = Self>>(&mut self, iter: T) {
         self.handle(move |string| {
-            for s in iter.into_iter() {
+            for s in iter {
                 string.push_str(&s);
             }
         });

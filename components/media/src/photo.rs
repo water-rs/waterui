@@ -14,15 +14,23 @@ use waterui_core::{AnyView, configurable};
 
 use crate::Url;
 
+/// Configuration for the Photo component, including the image source and placeholder view.
 #[derive(Debug)]
 pub struct PhotoConfig {
+    /// The URL of the image to display.
     pub source: Url,
+    /// The view to display while the image is loading or unavailable.
     pub placeholder: AnyView,
 }
 
 configurable!(Photo, PhotoConfig);
 
 impl Photo {
+    /// Creates a new `Photo` component with the specified image source URL.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The URL of the image to display.
     pub fn new(source: impl Into<Url>) -> Self {
         Self(PhotoConfig {
             source: source.into(),
@@ -30,10 +38,14 @@ impl Photo {
         })
     }
 
+    /// Sets the placeholder view to display while the image is loading or unavailable.
+    ///
+    /// # Arguments
+    ///
+    /// * `placeholder` - The view to display as a placeholder.
+    #[must_use]
     pub fn placeholder(mut self, placeholder: impl Into<AnyView>) -> Self {
         self.0.placeholder = placeholder.into();
         self
     }
-
-    pub fn disable_live() {}
 }

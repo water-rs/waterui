@@ -1,3 +1,7 @@
+/// Implements a basic `Debug` trait for types using their type name.
+///
+/// This macro generates a `Debug` implementation that simply prints the type name,
+/// useful for types where the internal structure doesn't need to be exposed.
 #[macro_export]
 macro_rules! impl_debug {
     ($ty:ty) => {
@@ -9,6 +13,10 @@ macro_rules! impl_debug {
     };
 }
 
+/// Implements a raw view that panics when `body()` is called.
+///
+/// This macro is used for views that should be handled specially by the renderer
+/// and should not have their `body()` method called in normal view composition.
 #[macro_export]
 macro_rules! raw_view {
     ($ty:ty) => {
@@ -20,12 +28,12 @@ macro_rules! raw_view {
     };
 }
 
+/// Creates a configurable view with builder pattern methods.
+///
+/// This macro generates a wrapper struct and builder methods for configuring views,
+/// following the builder pattern commonly used in UI frameworks.
 #[macro_export]
 macro_rules! configurable {
-    ($view:ident,$config:ty) => {
-            $crate::configurable!($view,$config,"");
-    };
-
     ($view:ident,$config:ty,$doc:expr) => {
         #[derive(Debug)]
         #[doc=$doc]
@@ -62,6 +70,10 @@ macro_rules! configurable {
         }
     };
 
+    ($view:ident,$config:ty) => {
+        $crate::configurable!($view,$config,"");
+    };
+
 
 }
 
@@ -82,10 +94,16 @@ macro_rules! tuples {
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
         $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-        $macro!(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+        $macro!(
+            T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
+        );
     };
 }
 
+/// Implements the `Extractor` trait for a type.
+///
+/// This macro generates an implementation that extracts values from the environment
+/// using the `Use<T>` wrapper, commonly used for dependency injection.
 #[macro_export]
 macro_rules! impl_extractor {
     ($ty:ty) => {
@@ -98,6 +116,10 @@ macro_rules! impl_extractor {
     };
 }
 
+/// Implements the `Deref` trait for transparent access to an inner type.
+///
+/// This macro generates a `Deref` implementation that allows transparent
+/// access to the inner value of wrapper types.
 #[macro_export]
 macro_rules! impl_deref {
     ($ty:ty,$target:ty) => {

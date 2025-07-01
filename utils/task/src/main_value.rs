@@ -2,7 +2,7 @@
 //!
 //! This module allows you to store values that must be accessed or dropped on the main thread,
 //! providing safe cross-thread access patterns through asynchronous APIs.
-
+#![allow(clippy::non_send_fields_in_send_ty)]
 use core::{mem::ManuallyDrop, ptr::from_ref};
 
 use crate::{Task, exec_main};
@@ -16,6 +16,7 @@ use crate::{Task, exec_main};
 ///
 /// This type implements `Send` and `Sync` unconditionally to allow it to be moved between threads,
 /// but it ensures all actual operations on the inner value happen on the main thread.
+#[derive(Debug)]
 pub struct MainValue<T>(ManuallyDrop<T>);
 
 /// Private wrapper to allow safe cross-thread references.

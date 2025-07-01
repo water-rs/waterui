@@ -6,7 +6,7 @@
 //!
 //! ## Overview
 //!
-//! The core reactive system in WaterUI is designed to be used from a single thread (typically the main thread).
+//! The core reactive system in `WaterUI` is designed to be used from a single thread (typically the main thread).
 //! However, modern applications often need to perform operations across thread boundaries, especially
 //! when dealing with asynchronous operations, background tasks, or external APIs.
 //!
@@ -46,6 +46,7 @@ use waterui_task::MainValue;
 ///
 /// `Mailbox` provides methods to safely get, set, and watch reactive values from any thread
 /// by ensuring all operations are performed on the main thread where the reactive system runs.
+#[derive(Debug)]
 pub struct Mailbox<T: 'static> {
     /// The wrapped binding, accessed through `MainValue` to ensure thread-safety
     binding: MainValue<Binding<T>>,
@@ -61,6 +62,7 @@ impl<T: 'static> Mailbox<T> {
     /// # Returns
     ///
     /// A new `Mailbox` instance that can be safely passed between threads
+    #[must_use]
     pub fn new(binding: &Binding<T>) -> Self {
         Self {
             binding: MainValue::new(binding.clone()),

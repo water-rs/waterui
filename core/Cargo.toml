@@ -33,3 +33,6 @@ default-features = false
 default = []
 std = []
 serde = ["dep:serde", "waterui-str/serde"]
+
+[lints]
+workspace = true

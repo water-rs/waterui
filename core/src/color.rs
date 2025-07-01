@@ -9,7 +9,7 @@
 
 use waterui_reactive::impl_constant;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 
 /// Represents an sRGB color with red, yellow, and blue components.
 pub struct Srgb {

@@ -43,6 +43,7 @@ use crate::{
 /// `Map<C, F, Output>` applies a transformation function `F` to the results
 /// of a source computation `C`, producing a value of type `Output`. The result
 /// is automatically cached and only recomputed when the source value changes.
+#[derive(Debug)]
 pub struct Map<C, F, Output> {
     source: C,
     f: Rc<F>,
@@ -132,12 +133,15 @@ where
     }
 }
 
+/// A reactive computation that transforms values from a source computation asynchronously.
+#[derive(Debug)]
 pub struct AsyncMap<C, F, Output> {
     source: C,
     cache: Rc<RefCell<Option<Output>>>,
     inner: Rc<AsyncMapInner<F>>,
 }
 
+#[derive(Debug)]
 struct AsyncMapInner<F> {
     f: F,
     task: RefCell<Option<LocalTask<()>>>,
@@ -151,6 +155,7 @@ where
     F: 'static + AsyncFn(C::Output) -> Output,
     Output: 'static,
 {
+    /// Computes the transformed value, using the cache when available.
     pub fn compute_from_source(&self, source: C) {
         // Cancel previous task
         if let Some(task) = self.inner.task.take() {
@@ -168,7 +173,7 @@ where
 
 impl<C: Compute + Clone, F, Output> Clone for AsyncMap<C, F, Output> {
     fn clone(&self) -> Self {
-        AsyncMap {
+        Self {
             source: self.source.clone(),
             inner: self.inner.clone(),
             cache: self.cache.clone(),
@@ -177,11 +182,12 @@ impl<C: Compute + Clone, F, Output> Clone for AsyncMap<C, F, Output> {
 }
 
 impl<C: Compute, F, Output: 'static> AsyncMap<C, F, Output> {
+    /// Creates a new `AsyncMap` that transforms values from `source` using function `f`.
     pub fn new(source: C, f: F) -> Self {
         let cache: Rc<RefCell<Option<Output>>> = Rc::default();
 
         let guard = {
-            let cache = cache.clone();
+            let cache = cache;
             source.add_watcher(move |_, _| {
                 cache.replace(None);
             })

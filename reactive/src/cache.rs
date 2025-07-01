@@ -4,6 +4,10 @@ use alloc::rc::Rc;
 
 use crate::{Compute, watcher::WatcherGuard};
 
+/// A cached computation that stores the last computed value.
+///
+/// This wrapper around a computation caches the result and only recomputes
+/// when the underlying source changes, improving performance for expensive operations.
 #[derive(Debug, Clone)]
 pub struct Cached<C>
 where
@@ -20,6 +24,9 @@ where
     C: Compute,
     C::Output: Clone,
 {
+    /// Creates a new cached computation from the given source.
+    ///
+    /// The cache starts empty and will be populated on the first access.
     pub fn new(source: C) -> Self {
         let cache: Rc<RefCell<Option<C::Output>>> = Rc::default();
         let guard = {
@@ -45,6 +52,7 @@ where
     type Output = C::Output;
     fn compute(&self) -> Self::Output {
         let mut cache = self.cache.borrow_mut();
+        #[allow(clippy::option_if_let_else)]
         if let Some(cache) = &*cache {
             cache.clone()
         } else {
@@ -59,6 +67,9 @@ where
     }
 }
 
+/// Creates a cached computation from the given source.
+///
+/// This is a convenience function equivalent to `Cached::new(source)`.
 pub fn cached<C>(source: C) -> Cached<C>
 where
     C: Compute,

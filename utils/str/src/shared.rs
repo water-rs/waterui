@@ -33,15 +33,15 @@ impl Shared {
         }
     }
 
-    pub fn count(&self) -> usize {
+    pub const fn count(&self) -> usize {
         self.count.get()
     }
 
-    pub fn as_str(&self, len: usize) -> &str {
+    pub const fn as_str(&self, len: usize) -> &str {
         unsafe { core::str::from_utf8_unchecked(&*slice_from_raw_parts(self.head, len)) }
     }
 
-    pub fn is_unique(&self) -> bool {
+    pub const fn is_unique(&self) -> bool {
         self.count() == 1
     }
 

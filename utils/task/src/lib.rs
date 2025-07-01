@@ -41,6 +41,7 @@ pub enum Priority {
 ///
 /// Represents a future that will complete with the output of the spawned task.
 /// The task is automatically scheduled for execution when created.
+#[derive(Debug)]
 pub struct Task<T: 'static + Send> {
     inner: ManuallyDrop<async_task::Task<T>>,
 }
@@ -140,6 +141,7 @@ impl<T: Send> Future for Task<T> {
 ///
 /// Similar to `Task` but for tasks that are not thread-safe and must run
 /// on the same thread where they were created.
+#[derive(Debug)]
 pub struct LocalTask<T> {
     inner: ManuallyDrop<async_task::Task<T>>,
 }

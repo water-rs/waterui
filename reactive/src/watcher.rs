@@ -24,6 +24,7 @@ impl MetadataInner {
     /// Attempts to retrieve a value of type `T` from the metadata store.
     ///
     /// Returns `None` if no value of the requested type is present.
+    #[allow(clippy::coerce_container_to_any)]
     pub fn try_get<T: 'static + Clone>(&self) -> Option<T> {
         self.0
             .get(&TypeId::of::<T>())
@@ -39,7 +40,9 @@ impl MetadataInner {
     }
 }
 
+/// A trait for watchers that can be notified with new values and metadata.
 pub trait Watcher<T>: 'static {
+    /// Notifies the watcher with a new value and associated metadata.
     fn notify(&self, value: T, metadata: Metadata);
 }
 
@@ -52,6 +55,7 @@ where
     }
 }
 
+/// A boxed version of the `Watcher` trait for dynamic dispatch.
 pub type BoxWatcher<T> = Box<dyn Watcher<T>>;
 
 impl<T: 'static> Watcher<T> for Box<dyn Watcher<T>> {
@@ -62,6 +66,7 @@ impl<T: 'static> Watcher<T> for Box<dyn Watcher<T>> {
 
 impl Metadata {
     /// Creates a new, empty metadata container.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -71,6 +76,7 @@ impl Metadata {
     /// # Panics
     ///
     /// Panics if no value of type `T` is present in the metadata.
+    #[must_use]
     pub fn get<T: 'static + Clone>(&self) -> T {
         self.try_get().unwrap()
     }
@@ -78,6 +84,7 @@ impl Metadata {
     /// Attempts to get a value of type `T` from the metadata.
     ///
     /// Returns `None` if no value of the requested type is present.
+    #[must_use]
     pub fn try_get<T: 'static + Clone>(&self) -> Option<T> {
         self.0.try_get()
     }
@@ -85,11 +92,13 @@ impl Metadata {
     /// Adds a value to the metadata and returns the updated metadata.
     ///
     /// This method is chainable for fluent API usage.
+    #[must_use]
     pub fn with<T: 'static + Clone>(mut self, value: T) -> Self {
         self.0.insert(value);
         self
     }
-
+    /// Checks if the metadata container is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.0.is_empty()
     }
@@ -116,11 +125,13 @@ impl<T> Default for WatcherManager<T> {
 
 impl<T: 'static> WatcherManager<T> {
     /// Creates a new, empty watcher manager.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Checks if the manager has any registered watchers.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.borrow().is_empty()
     }
@@ -131,7 +142,7 @@ impl<T: 'static> WatcherManager<T> {
     }
 
     /// Notifies all registered watchers with a value and specific metadata.
-    pub fn notify(&self, value: impl Fn() -> T, metadata: Metadata) {
+    pub fn notify(&self, value: impl Fn() -> T, metadata: &Metadata) {
         let this = Rc::downgrade(&self.inner);
         if let Some(this) = this.upgrade() {
             this.borrow().notify(value, metadata);
@@ -140,7 +151,7 @@ impl<T: 'static> WatcherManager<T> {
 
     /// Cancels a previously registered watcher by its identifier.
     pub fn cancel(&self, id: WatcherId) {
-        self.inner.borrow_mut().cancel(id)
+        self.inner.borrow_mut().cancel(id);
     }
 }
 
@@ -167,7 +178,7 @@ impl WatcherGuard {
         let weak = Rc::downgrade(&watchers.inner);
         Self::new(move || {
             if let Some(rc) = weak.upgrade() {
-                rc.borrow_mut().cancel(id)
+                rc.borrow_mut().cancel(id);
             }
         })
     }
@@ -176,10 +187,11 @@ impl WatcherGuard {
     ///
     /// This method is useful when you want to transfer responsibility for cleanup
     /// to another entity.
-    pub fn leak(self) {
+    pub const fn leak(self) {
         forget(self);
     }
 
+    /// Sets a function to be executed when the guard is dropped.
     pub fn on_drop(self, f: impl FnOnce() + 'static) -> Self {
         Self::new(move || {
             f();
@@ -224,7 +236,7 @@ impl<T: 'static> WatcherManagerInner<T> {
     }
 
     /// Assigns a new unique identifier for a watcher.
-    fn assign(&mut self) -> WatcherId {
+    const fn assign(&mut self) -> WatcherId {
         let id = self.id;
         self.id = self
             .id
@@ -241,7 +253,7 @@ impl<T: 'static> WatcherManagerInner<T> {
     }
 
     /// Notifies all registered watchers with a value and metadata.
-    pub fn notify(&self, value: impl Fn() -> T, metadata: Metadata) {
+    pub fn notify(&self, value: impl Fn() -> T, metadata: &Metadata) {
         for watcher in self.map.values() {
             watcher.notify(value(), metadata.clone());
         }

@@ -30,9 +30,9 @@ use core::{
 pub struct Str {
     /// Pointer to the string data.
     ///
-    /// If the pointer value is less than usize::MAX / 2, it points to a static string.
+    /// If the pointer value is less than [`usize::MAX`] / 2, it points to a static string.
     /// Otherwise, it points to a Shared structure containing a reference-counted String,
-    /// offset by usize::MAX / 2.
+    /// offset by [`usize::MAX`] / 2.
     ptr: NonNull<()>,
 
     /// Length of the string in bytes.
@@ -162,7 +162,7 @@ mod std_on {
         ///
         /// This will fail if the `OsString` contains invalid UTF-8 data.
         fn try_from(value: OsString) -> Result<Self, Self::Error> {
-            Str::from_utf8(value.into_encoded_bytes())
+            Self::from_utf8(value.into_encoded_bytes())
         }
     }
 
@@ -190,6 +190,7 @@ impl Str {
     /// assert_eq!(s, "");
     /// assert_eq!(s.reference_count(), None); // Static reference
     /// ```
+    #[must_use]
     pub const fn new() -> Self {
         Self::from_static("")
     }
@@ -212,6 +213,7 @@ impl Str {
     /// let s = unsafe { Str::from_raw_parts(ptr, len) };
     /// assert_eq!(s, "hello");
     /// ```
+    #[must_use]
     pub fn into_raw_parts(self) -> (*const (), usize) {
         let this = ManuallyDrop::new(self);
         (this.ptr.as_ptr(), this.len)
@@ -236,10 +238,11 @@ impl Str {
     /// let s2 = unsafe { Str::from_raw_parts(ptr, len) };
     /// assert_eq!(s2, "hello");
     /// ```
-    pub unsafe fn from_raw_parts(ptr: *const (), len: usize) -> Self {
+    #[must_use]
+    pub const unsafe fn from_raw_parts(ptr: *const (), len: usize) -> Self {
         unsafe {
             Self {
-                ptr: NonNull::new_unchecked(ptr as *mut ()),
+                ptr: NonNull::new_unchecked(ptr.cast_mut()),
                 len,
             }
         }
@@ -250,6 +253,10 @@ impl Str {
     /// This function will attempt to convert the vector to a UTF-8 string and
     /// wrap it in a `Str`. If the vector does not contain valid UTF-8, an error
     /// is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided byte vector does not contain valid UTF-8 data.
     ///
     /// # Examples
     ///
@@ -283,10 +290,11 @@ impl Str {
     /// assert_eq!(s, "hello");
     /// assert_eq!(s.reference_count(), None); // Static reference
     /// ```
+    #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
         unsafe {
             Self {
-                ptr: NonNull::new_unchecked(s.as_ptr() as *mut ()),
+                ptr: NonNull::new_unchecked(s.as_ptr().cast_mut().cast::<()>()),
                 len: s.len(),
             }
         }
@@ -308,6 +316,7 @@ impl Str {
     /// let s = unsafe { Str::from_utf8_unchecked(bytes) };
     /// assert_eq!(s, "hello");
     /// ```
+    #[must_use]
     pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> Self {
         unsafe { Self::from(String::from_utf8_unchecked(bytes)) }
     }
@@ -336,14 +345,15 @@ impl Str {
     fn handle(&mut self, f: impl FnOnce(&mut String)) {
         let mut string = take(self).into_string();
         f(&mut string);
-        *self = Str::from(string);
+        *self = Self::from(string);
     }
 
     /// # Safety
     ///
     /// This function assumes that `self` is a static string reference, and will
     /// cause undefined behavior if called on a `Str` containing an owned string.
-    unsafe fn as_static_unchecked(&self) -> &'static str {
+    #[must_use]
+    const unsafe fn as_static_unchecked(&self) -> &'static str {
         unsafe {
             let slice = slice::from_raw_parts(self.ptr.as_ptr() as *const u8, self.len);
             core::str::from_utf8_unchecked(slice)
@@ -354,7 +364,7 @@ impl Str {
     ///
     /// This function assumes that `self` is an owned string, and will cause
     /// undefined behavior if called on a `Str` containing a static string reference.
-    unsafe fn as_shared_unchecked(&self) -> &Shared {
+    const unsafe fn as_shared_unchecked(&self) -> &Shared {
         unsafe {
             let ptr = self.ptr.as_ptr().byte_sub(usize::MAX / 2);
             &*(ptr as *const Shared)
@@ -365,10 +375,10 @@ impl Str {
     ///
     /// This function assumes that `self` is an owned string, and will cause
     /// undefined behavior if called on a `Str` containing a static string reference.
-    unsafe fn as_shared_mut_ptr_unchecked(&mut self) -> *mut Shared {
+    const unsafe fn as_shared_mut_ptr_unchecked(&mut self) -> *mut Shared {
         unsafe {
             let ptr = self.ptr.as_ptr().byte_sub(usize::MAX / 2);
-            ptr as *mut Shared
+            ptr.cast::<Shared>()
         }
     }
 
@@ -400,10 +410,10 @@ impl Str {
     /// an owned string, or `Err` with a static string reference if it contains a static string.
     fn try_as_mut_shared(&mut self) -> Result<&mut Shared, &'static str> {
         unsafe {
-            if !self.is_static() {
-                Ok(self.as_shared_mut_unchecked())
-            } else {
+            if self.is_static() {
                 Err(self.as_static_unchecked())
+            } else {
+                Ok(self.as_shared_mut_unchecked())
             }
         }
     }
@@ -427,6 +437,7 @@ impl Str {
     /// assert_eq!(owned_str.reference_count(), Some(2));
     /// assert_eq!(clone.reference_count(), Some(2));
     /// ```
+    #[must_use]
     pub fn reference_count(&self) -> Option<usize> {
         if let Err(shared) = self.try_as_static() {
             Some(shared.count())
@@ -454,6 +465,7 @@ impl Str {
     /// let s2_string = s2.into_string();
     /// assert_eq!(s2_string, "owned");
     /// ```
+    #[must_use]
     pub fn into_string(mut self) -> String {
         let len = self.len;
         unsafe {
@@ -481,6 +493,7 @@ impl Str {
     /// let s2 = Str::from(String::from("world"));
     /// assert_eq!(s2.as_str(), "world");
     /// ```
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.try_as_static()
             .unwrap_or_else(|shared| shared.as_str(self.len))
@@ -502,7 +515,7 @@ impl Str {
     pub fn append(&mut self, s: impl AsRef<str>) {
         let mut string = take(self).into_string();
         string.push_str(s.as_ref());
-        *self = Str::from(string);
+        *self = Self::from(string);
     }
 }
 impl From<&'static str> for Str {
@@ -540,7 +553,7 @@ impl From<String> for Str {
     /// ```
     fn from(value: String) -> Self {
         let len = value.len();
-        let ptr = Box::into_raw(Box::new(Shared::new(value))) as *mut ();
+        let ptr = Box::into_raw(Box::new(Shared::new(value))).cast::<()>();
         let ptr = ptr.wrapping_byte_add(usize::MAX / 2);
         unsafe {
             Self {
