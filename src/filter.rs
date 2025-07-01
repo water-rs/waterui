@@ -21,6 +21,7 @@ impl Blur {
     /// # Arguments
     ///
     /// * `radius` - The radius of the blur in pixels.
+    #[must_use]
     pub const fn new(radius: f64) -> Self {
         Self { radius }
     }
@@ -42,6 +43,7 @@ impl Brightness {
     ///
     /// * `amount` - The brightness adjustment amount. 1.0 is normal brightness,
     ///   values above 1.0 increase brightness, values below 1.0 decrease brightness.
+    #[must_use]
     pub const fn new(amount: f64) -> Self {
         Self { amount }
     }
@@ -63,6 +65,7 @@ impl Contrast {
     ///
     /// * `amount` - The contrast adjustment amount. 1.0 is normal contrast,
     ///   values above 1.0 increase contrast, values below 1.0 decrease contrast.
+    #[must_use]
     pub const fn new(amount: f64) -> Self {
         Self { amount }
     }
@@ -84,6 +87,7 @@ impl Saturation {
     ///
     /// * `amount` - The saturation adjustment amount. 1.0 is normal saturation,
     ///   values above 1.0 increase saturation, values below 1.0 decrease saturation.
+    #[must_use]
     pub const fn new(amount: f64) -> Self {
         Self { amount }
     }
@@ -105,6 +109,7 @@ impl Grayscale {
     ///
     /// * `intensity` - The intensity of the grayscale effect.
     ///   0.0 means no effect, 1.0 means full grayscale.
+    #[must_use]
     pub const fn new(intensity: f64) -> Self {
         Self { intensity }
     }
@@ -124,6 +129,7 @@ impl HueRotation {
     /// # Arguments
     ///
     /// * `angle` - The angle of hue rotation in degrees.
+    #[must_use]
     pub const fn new(angle: f64) -> Self {
         Self { angle }
     }
@@ -145,6 +151,7 @@ impl Invert {
     ///
     /// * `intensity` - The intensity of the inversion effect.
     ///   0.0 means no effect, 1.0 means full inversion.
+    #[must_use]
     pub const fn new(intensity: f64) -> Self {
         Self { intensity }
     }

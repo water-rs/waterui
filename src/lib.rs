@@ -10,8 +10,10 @@ mod macros;
 pub mod background;
 pub mod component;
 pub mod filter;
+/// Task management utilities and async support.
 pub mod task;
 pub mod view;
+/// Widget components for building complex UI elements.
 pub mod widget;
 #[doc(inline)]
 pub use view::View;

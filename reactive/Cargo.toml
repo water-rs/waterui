@@ -1,7 +1,14 @@
 [package]
 name = "waterui-reactive"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Reactive programming utilities for WaterUI"
+keywords = ["reactive", "programming", "waterui", "signals"]
+categories = ["gui", "data-structures"]
 
 [dependencies]
 waterui-task.workspace = true

@@ -1,6 +1,6 @@
 //! # Focus Management System
 //!
-//! This module provides a reactive focus management system for WaterUI applications.
+//! This module provides a reactive focus management system for `WaterUI` applications.
 //! It allows tracking which UI element currently has focus, enabling keyboard navigation
 //! and accessibility features.
 //!
@@ -68,9 +68,9 @@ impl Focused {
     ///
     /// # Returns
     /// A new `Focused` instance.
-    pub fn new<T: 'static + Eq + Clone>(value: Binding<Option<T>>, equals: T) -> Self {
+    pub fn new<T: 'static + Eq + Clone>(value: &Binding<Option<T>>, equals: T) -> Self {
         Self(Binding::mapping(
-            &value,
+            value,
             {
                 let equals = equals.clone();
                 move |value| value.as_ref().filter(|value| **value == equals).is_some()
