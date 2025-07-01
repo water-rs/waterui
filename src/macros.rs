@@ -23,24 +23,3 @@ macro_rules! impl_compute_result {
         }
     };
 }
-
-macro_rules! bindgen_view {
-    ($ffi_view:ty,$view:ty,$($name:ident,$ty:ty),*) => {
-        #[uniffi::export]
-        impl $ffi_view {
-            #[allow(clippy::new_ret_no_self)]
-            #[uniffi::constructor]
-            pub fn new(view: $crate::AnyView) -> $ffi_view {
-                let view:$view=*view.downcast::<$view>().unwrap();
-                view.into()
-            }
-
-            $(
-                pub fn $name(&self) -> $ty {
-                    self.$name.take()
-                }
-            )*
-
-        }
-    };
-}

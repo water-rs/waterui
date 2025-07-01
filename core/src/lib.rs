@@ -69,15 +69,6 @@
 //! The UI automatically updates when state changes, with efficient rendering that only
 //! updates affected components.
 //!
-//! ## FFI System
-//!
-//! The framework includes a comprehensive interoperability layer:
-//!
-//! - **Memory Safety**: Safe Rust wrappers around C-compatible types
-//! - **Zero-Copy Design**: Efficient data sharing between language boundaries
-//! - **Callback Architecture**: Cross-language event handling
-//! - **Resource Management**: Automatic cleanup of cross-language resources
-//!
 //! ## Extensibility
 //!
 //! The plugin interface enables framework extensions without modifying core code:
@@ -117,5 +108,3 @@ pub use waterui_reactive::{binding, constant, Binding, Compute, ComputeExt, Comp
 pub use waterui_str::Str;
 pub mod id;
 pub use waterui_task as task;
-
-
