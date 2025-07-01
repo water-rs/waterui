@@ -4,12 +4,12 @@
 //! The main type provided by this module is [`AnyView`], which wraps
 //! any type implementing the [`View`] trait and erases its concrete type
 //! while preserving its behavior.
+use alloc::sync::Arc;
 use core::{
     any::{type_name, Any, TypeId},
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use std::sync::Arc;
 
 use alloc::boxed::Box;
 

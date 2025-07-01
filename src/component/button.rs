@@ -89,16 +89,3 @@ impl Button {
 pub fn button(label: impl View) -> Button {
     Button::new(label)
 }
-
-macro_rules! bindgen {
-    ($ffi_ty:ty,$($name:ident,$ty:ty),*) => {
-        #[uniffi:export]
-        impl $ffi_ty {
-            $(
-                pub fn $name(&self) -> $ty {
-                    self.$name.take()
-                }
-            )*
-        }
-    };
-}
