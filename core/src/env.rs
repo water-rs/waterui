@@ -57,15 +57,16 @@ pub struct Environment {
 }
 
 use crate::{
+    View,
     components::Metadata,
     handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
     plugin::Plugin,
     view::{ConfigurableView, Modifier},
-    View,
 };
 
 impl Environment {
     /// Creates a new empty environment.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             map: BTreeMap::new(),
@@ -75,6 +76,7 @@ impl Environment {
     /// Installs a plugin into the environment.
     ///
     /// Plugins can register values or modifiers that will be available to all views.
+    #[must_use]
     pub fn install(mut self, plugin: impl Plugin) -> Self {
         plugin.install(&mut self);
         self
@@ -102,6 +104,7 @@ impl Environment {
     /// Adds a value to the environment and returns the modified environment.
     ///
     /// This is a fluent interface for chaining multiple additions.
+    #[must_use]
     pub fn with<T: 'static>(mut self, value: T) -> Self {
         self.insert(value);
         self
@@ -110,6 +113,14 @@ impl Environment {
     /// Retrieves a reference to a value from the environment by its type.
     ///
     /// Returns `None` if no value of the requested type exists.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if a value of the requested type exists in the environment,
+    /// but the stored value cannot be downcast to the requested type. This should never happen
+    /// if only `insert` and `with` are used to add values.
+    #[must_use]
+    #[allow(clippy::coerce_container_to_any)]
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
@@ -121,6 +132,7 @@ impl Environment {
 ///
 /// `UseEnv` allows child views to access values stored in the environment
 /// through a handler function.
+#[derive(Debug, Clone)]
 pub struct UseEnv<V, H> {
     handler: H,
     _marker: PhantomData<V>,
@@ -128,7 +140,8 @@ pub struct UseEnv<V, H> {
 
 impl<V, H> UseEnv<V, H> {
     /// Creates a new `UseEnv` with the provided handler.
-    pub fn new(handler: H) -> Self {
+    #[must_use]
+    pub const fn new(handler: H) -> Self {
         Self {
             handler,
             _marker: PhantomData,
@@ -140,7 +153,8 @@ impl<V, H> UseEnv<V, H> {
 ///
 /// This function takes a closure that receives a reference to the environment
 /// and returns a view. It's a convenience wrapper around `UseEnv`.
-pub fn use_env<P, V, F>(f: F) -> UseEnv<V, IntoHandlerOnce<F, P, V>>
+#[must_use]
+pub const fn use_env<P, V, F>(f: F) -> UseEnv<V, IntoHandlerOnce<F, P, V>>
 where
     V: View,
     F: HandlerFnOnce<P, V>,
@@ -162,6 +176,7 @@ where
 ///
 /// `With` wraps a child view and provides an extended environment that
 /// includes a new value of type `T`.
+#[derive(Debug, Clone)]
 pub struct With<V, T> {
     content: V,
     value: T,

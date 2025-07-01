@@ -17,3 +17,6 @@ waterui-core.workspace = true
 waterui-reactive.workspace = true
 waterui-text.workspace = true
 waterui-color.workspace = true
+
+[lints]
+workspace = true

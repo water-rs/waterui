@@ -17,17 +17,15 @@ use anyhow::Error;
 pub trait Extractor: 'static + Sized {
     /// Attempts to extract an instance of `Self` from the given environment.
     ///
-    /// # Parameters
-    /// * `env` - The environment to extract from
-    ///
-    /// # Returns
-    /// * `Result<Self, Error>` - The extracted value or an error if extraction failed
+    /// # Errors
+    /// Returns an error if extraction fails, for example if the required value is not present in the environment.
     fn extract(env: &Environment) -> Result<Self, Error>;
 }
 
 /// Wrapper struct for values that need to be used from the Environment.
 ///
 /// This wrapper enables extracting values by type from an Environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Use<T: 'static>(pub T);
 
 impl Extractor for Environment {
@@ -53,13 +51,14 @@ impl<T: 'static + Clone> Extractor for Use<T> {
     /// # Errors
     /// Returns an error if the requested type is not present in the Environment.
     fn extract(env: &Environment) -> Result<Self, Error> {
-        if let Some(value) = env.get::<T>() {
-            Ok(Self(value.clone()))
-        } else {
-            Err(Error::msg(format!(
-                "Environment value `{}` not found",
-                type_name::<T>()
-            )))
-        }
+        env.get::<T>().map_or_else(
+            || {
+                Err(Error::msg(format!(
+                    "Environment value `{}` not found",
+                    type_name::<T>()
+                )))
+            },
+            |value| Ok(Self(value.clone())),
+        )
     }
 }

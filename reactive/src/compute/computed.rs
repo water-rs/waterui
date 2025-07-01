@@ -20,7 +20,7 @@ pub struct Computed<T>(pub(crate) Box<dyn ComputedImpl<Output = T>>);
 ///
 /// This trait is implemented by types that can compute a value, register watchers,
 /// and provide a cloned version of themselves.
-pub(crate) trait ComputedImpl {
+pub trait ComputedImpl {
     /// The result type of the computation
     type Output;
 
@@ -30,6 +30,7 @@ pub(crate) trait ComputedImpl {
     /// Registers a watcher that will be notified when the computed value changes
     fn add_watcher(&self, watcher: BoxWatcher<Self::Output>) -> WatcherGuard;
 
+    /// Returns a cloned version of this computed value as a `Computed<Self::Output>`.
     fn cloned(&self) -> Computed<Self::Output>;
 }
 
@@ -58,7 +59,7 @@ where
     T: Add<C2::Output> + 'static,
 {
     type Output = crate::map::Map<
-        crate::zip::Zip<crate::compute::Computed<T>, C2>,
+        crate::zip::Zip<Self, C2>,
         fn(
             (T, <C2 as crate::compute::Compute>::Output),
         ) -> <T as std::ops::Add<<C2 as crate::compute::Compute>::Output>>::Output,

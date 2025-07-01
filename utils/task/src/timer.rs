@@ -17,8 +17,11 @@ use crate::exec_after;
 
 /// A future that completes after a specified duration has elapsed.
 ///
+/// A timer that can be awaited as a `Future` to introduce delays in async code.
+///
 /// This struct implements the `Future` trait and can be awaited in async contexts
 /// to pause execution for the given duration.
+#[derive(Debug)]
 pub struct Timer {
     /// The duration to wait. This is taken (set to None) after the timer is started.
     duration: Option<Duration>,
@@ -49,6 +52,7 @@ impl Timer {
     ///     println!("One second has passed!");
     /// }
     /// ```
+    #[must_use]
     pub fn after(duration: Duration) -> Self {
         Self {
             duration: Some(duration),
@@ -77,6 +81,7 @@ impl Timer {
     ///     println!("Five seconds have passed!");
     /// }
     /// ```
+    #[must_use]
     pub fn after_secs(secs: u64) -> Self {
         Self::after(Duration::from_secs(secs))
     }

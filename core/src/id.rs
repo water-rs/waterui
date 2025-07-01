@@ -65,7 +65,7 @@ where
 pub struct SelfId<T>(T);
 
 impl<T> SelfId<T> {
-    /// Creates a new SelfId instance wrapping the given value.
+    /// Creates a new [`SelfId`] instance wrapping the given value.
     pub const fn new(value: T) -> Self {
         Self(value)
     }
@@ -82,10 +82,10 @@ impl<T: Hash + Ord + Clone> Identifable for SelfId<T> {
 
 /// Extension trait that provides convenient methods for making types identifiable.
 pub trait IdentifableExt: Sized {
-    /// Wraps the value in a UseId with the provided identification function.
+    /// Wraps the value in a [`UseId`] with the provided identification function.
     fn use_id<F>(self, f: F) -> UseId<Self, F>;
 
-    /// Wraps the value in a SelfId, making the value serve as its own identifier.
+    /// Wraps the value in a `SelfId`, making the value serve as its own identifier.
     fn self_id(self) -> SelfId<Self>;
 }
 
@@ -102,7 +102,7 @@ impl<T> IdentifableExt for T {
 /// A view that includes an identifying tag of type T.
 ///
 /// This allows tracking and identification of views within a UI hierarchy.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaggedView<T, V> {
     /// The tag used to identify this view
     pub tag: T,
@@ -135,7 +135,7 @@ impl<T, V: View> TaggedView<T, V> {
         self.map(move |v| mapping.register(v))
     }
 
-    /// Erases the specific view type, converting it to AnyView.
+    /// Erases the specific view type, converting it to [`AnyView`].
     ///
     /// This is useful for storing heterogeneous views in a collection.
     pub fn erase(self) -> TaggedView<T, AnyView> {
@@ -185,7 +185,7 @@ impl<T: Ord + Clone> MappingInner<T> {
 
     /// Attempts to find the ID for a given value.
     pub fn try_to_id(&self, value: &T) -> Option<Id> {
-        self.to_id.get(value).cloned()
+        self.to_id.get(value).copied()
     }
 
     /// Retrieves the data associated with an ID.
@@ -224,6 +224,7 @@ impl<T: Ord + Clone> Default for Mapping<T> {
 
 impl<T: Ord + Clone> Mapping<T> {
     /// Creates a new empty mapping.
+    #[must_use]
     pub fn new() -> Self {
         Self(Rc::new(RefCell::new(MappingInner::new())))
     }
@@ -244,6 +245,7 @@ impl<T: Ord + Clone> Mapping<T> {
     }
 
     /// Retrieves the data associated with an ID.
+    #[must_use]
     pub fn to_data(&self, id: Id) -> Option<T> {
         self.0.borrow().to_data(id)
     }
@@ -252,21 +254,26 @@ impl<T: Ord + Clone> Mapping<T> {
     ///
     /// This is useful for reactive UI systems where you need to work with IDs rather
     /// than the actual values but still maintain synchronization.
-    pub fn binding(&self, source: Binding<T>) -> Binding<Id>
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    #[must_use]
+    pub fn binding(&self, source: &Binding<T>) -> Binding<Id>
     where
         T: 'static,
     {
         let mapping = self.clone();
         let mapping2 = self.clone();
         Binding::mapping(
-            &source,
-            move |value| mapping.to_id(value.clone()),
+            source,
+            move |value| mapping.to_id(value),
             move |binding, value| {
                 binding.set(
                     mapping2
                         .to_data(value)
                         .expect("Invalid binding mapping : Data not found"),
-                )
+                );
             },
         )
     }

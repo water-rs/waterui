@@ -12,3 +12,6 @@ categories = ["gui", "development-tools"]
 
 [dependencies]
 core-foundation = "0.10"
+
+[lints]
+workspace = true

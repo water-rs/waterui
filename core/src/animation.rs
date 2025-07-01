@@ -1,10 +1,10 @@
-//! # WaterUI Animation System
+//! # `WaterUI` Animation System
 //!
-//! A reactive animation system that seamlessly integrates with WaterUI's reactive state management.
+//! A reactive animation system that seamlessly integrates with `WaterUI`'s reactive state management.
 //!
 //! ## Overview
 //!
-//! The WaterUI animation system leverages the reactive framework to create smooth, declarative
+//! The `WaterUI` animation system leverages the reactive framework to create smooth, declarative
 //! animations that automatically run when reactive values change. By attaching animation metadata
 //! to reactive values through convenient extension methods, the system can intelligently
 //! determine how to animate between different states without requiring explicit animation code.
@@ -20,7 +20,7 @@
 //!
 //! ### Animation Extension Methods
 //!
-//! WaterUI provides convenient extension methods on all `Compute` types to easily attach
+//! `WaterUI` provides convenient extension methods on all `Compute` types to easily attach
 //! animation configurations:
 //!
 //! ```rust
@@ -37,11 +37,11 @@
 //!
 //! The system supports various animation types:
 //!
-//! - **Linear**: Constant velocity from start to finish
-//! - **EaseIn**: Starts slow and accelerates
-//! - **EaseOut**: Starts fast and decelerates
-//! - **EaseInOut**: Combines ease-in and ease-out for natural movement
-//! - **Spring**: Physics-based animation with configurable stiffness and damping
+//! - **`Linear`**: Constant velocity from start to finish
+//! - **`EaseIn`**: Starts slow and accelerates
+//! - **`EaseOut`**: Starts fast and decelerates
+//! - **`EaseInOut`**: Combines ease-in and ease-out for natural movement
+//! - **`Spring`**: Physics-based animation with configurable stiffness and damping
 //!
 //! ### Integration with UI Components
 //!
@@ -115,11 +115,11 @@ use core::time::Duration;
 /// An enumeration representing different types of animations
 ///
 /// This enum provides various animation types for UI elements or graphics:
-/// - Linear: Constant speed from start to finish
-/// - EaseIn: Starts slow and accelerates
-/// - EaseOut: Starts fast and decelerates
-/// - EaseInOut: Starts and ends slowly with acceleration in the middle
-/// - Spring: Physics-based movement with configurable stiffness and damping
+/// - `Linear`: Constant speed from start to finish
+/// - `EaseIn`: Starts slow and accelerates
+/// - `EaseOut`: Starts fast and decelerates
+/// - `EaseInOut`: Starts and ends slowly with acceleration in the middle
+/// - `Spring`: Physics-based movement with configurable stiffness and damping
 ///
 /// Each animation type (except Spring) takes a Duration parameter that specifies
 /// how long the animation should take to complete.
@@ -159,10 +159,10 @@ impl Animation {
     /// let animation = Animation::linear(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn linear(duration: impl Into<Duration>) -> Self {
-        Animation::Linear(duration.into())
+        Self::Linear(duration.into())
     }
 
-    /// Creates a new EaseIn animation with the specified duration
+    /// Creates a new ease-in animation with the specified duration
     ///
     /// This is an ergonomic constructor that accepts any type that can be converted
     /// into a Duration (such as u64 milliseconds, etc.)
@@ -174,10 +174,10 @@ impl Animation {
     /// let animation = Animation::ease_in(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_in(duration: impl Into<Duration>) -> Self {
-        Animation::EaseIn(duration.into())
+        Self::EaseIn(duration.into())
     }
 
-    /// Creates a new EaseOut animation with the specified duration
+    /// Creates a new ease-out animation with the specified duration
     ///
     /// This is an ergonomic constructor that accepts any type that can be converted
     /// into a Duration (such as u64 milliseconds, etc.)
@@ -189,10 +189,10 @@ impl Animation {
     /// let animation = Animation::ease_out(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_out(duration: impl Into<Duration>) -> Self {
-        Animation::EaseOut(duration.into())
+        Self::EaseOut(duration.into())
     }
 
-    /// Creates a new EaseInOut animation with the specified duration
+    /// Creates a new ease-in-out animation with the specified duration
     ///
     /// This is an ergonomic constructor that accepts any type that can be converted
     /// into a Duration (such as u64 milliseconds, etc.)
@@ -204,7 +204,7 @@ impl Animation {
     /// let animation = Animation::ease_in_out(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_in_out(duration: impl Into<Duration>) -> Self {
-        Animation::EaseInOut(duration.into())
+        Self::EaseInOut(duration.into())
     }
 
     /// Creates a new Spring animation with the specified stiffness and damping
@@ -214,7 +214,8 @@ impl Animation {
     /// ```
     /// let animation = Animation::spring(100.0, 10.0);
     /// ```
-    pub fn spring(stiffness: f32, damping: f32) -> Self {
-        Animation::Spring { stiffness, damping }
+    #[must_use]
+    pub const fn spring(stiffness: f32, damping: f32) -> Self {
+        Self::Spring { stiffness, damping }
     }
 }

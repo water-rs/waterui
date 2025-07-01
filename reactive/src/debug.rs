@@ -6,6 +6,10 @@ use crate::{
     watcher::{Metadata, Watcher, WatcherGuard},
 };
 
+/// A wrapper for debugging reactive computations.
+///
+/// This struct wraps a computation and provides debugging capabilities
+/// to help trace reactive value changes and behavior.
 #[derive(Debug, Clone)]
 pub struct Debug<C> {
     source: C,
@@ -24,14 +28,17 @@ where
     C: Compute,
     C::Output: core::fmt::Debug,
 {
+    /// Creates a debug wrapper with the specified configuration.
+    ///
+    /// This allows customizing which debug events are logged and how.
     pub fn with_config(source: C, config: Config) -> Self {
         let name = type_name::<C>();
         let guard = if config.change {
             source.add_watcher(move |value, metadata: Metadata| {
                 if metadata.is_empty() {
-                    log::info!("`{name}` changed to {value:?}")
+                    log::info!("`{name}` changed to {value:?}");
                 } else {
-                    log::info!("`{name}` changed to {value:?} with metadata {metadata:?}")
+                    log::info!("`{name}` changed to {value:?} with metadata {metadata:?}");
                 }
             })
         } else {
@@ -45,7 +52,12 @@ where
     }
 }
 
+/// Configuration for debug tracing behavior.
+///
+/// This struct controls which debug events should be logged when
+/// tracing reactive computations.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     compute: bool,
     watch: bool,
@@ -75,7 +87,7 @@ where
         if self.inner.config.remove_watcher {
             guard = guard.on_drop(|| {
                 log::debug!("Removed watcher");
-            })
+            });
         }
         guard
     }
