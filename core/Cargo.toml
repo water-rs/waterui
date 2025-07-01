@@ -21,13 +21,7 @@ default-features = false
 version = "1.0"
 optional = true
 default-features = false
-
-[dependencies.typeshare]
-workspace = true
-optional = true
-
 [features]
-default = ["ffi"]
+default = []
 std = []
-ffi = ["std", "dep:typeshare"]
 serde = ["dep:serde", "waterui-str/serde"]

@@ -34,4 +34,3 @@ pub use waterui_core as core;
 #[doc(inline)]
 pub use waterui_layout as layout;
 pub use waterui_str::Str;
-pub mod ffi;

@@ -8,7 +8,6 @@ serde = { workspace = true, features = ["derive"], optional = true }
 typeshare.workspace = true
 
 [features]
-default = ["ffi"]
+default = []
 std = []
-ffi = ["std"]
 serde = ["dep:serde"]
