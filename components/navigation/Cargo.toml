@@ -16,3 +16,6 @@ waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-reactive.workspace = true
 typeshare.workspace = true
+
+[lints]
+workspace = true

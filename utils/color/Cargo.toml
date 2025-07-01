@@ -11,3 +11,6 @@ keywords = ["color", "graphics", "ui", "waterui"]
 categories = ["graphics", "gui"]
 
 [dependencies]
+
+[lints]
+workspace = true

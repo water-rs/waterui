@@ -34,3 +34,6 @@ optional = true
 default = ["std"]
 std = ["dep:thiserror","dep:futures-lite","serde","dep:async-fs","dep:toml"]
 serde = ["dep:serde","waterui/serde"]
+
+[lints]
+workspace = true

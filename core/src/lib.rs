@@ -1,4 +1,4 @@
-//! # WaterUI Core
+//! # `WaterUI` Core
 //!
 //! `waterui_core` provides the essential building blocks for developing cross-platform reactive UIs.
 //! This foundation layer establishes a unified architecture that works consistently across desktop,
@@ -104,7 +104,7 @@ pub mod color;
 pub use color::Color;
 pub mod shape;
 pub use waterui_reactive as reactive;
-pub use waterui_reactive::{binding, constant, Binding, Compute, ComputeExt, Computed};
+pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed, binding, constant};
 pub use waterui_str::Str;
 pub mod id;
 pub use waterui_task as task;

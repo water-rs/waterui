@@ -1,4 +1,4 @@
-# WaterUI Task
+# `WaterUI` Task
 
 A lightweight, no-std compatible framework for spawning and managing asynchronous tasks.
 This crate provides a simple yet powerful API for task execution with platform-specific
@@ -104,5 +104,5 @@ async fn example() {
 }
 ```
 
-This crate is part of the WaterUI framework but can be used independently in any async Rust
+This crate is part of the `WaterUI` framework but can be used independently in any async Rust
 application that needs lightweight task management capabilities.

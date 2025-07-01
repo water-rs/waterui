@@ -106,7 +106,7 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let env = env.clone();
-        Dynamic::watch(self.condition.into_compute(), move |condition| {
+        Dynamic::watch(&self.condition.into_compute(), move |condition| {
             if condition {
                 (self.then).view(&env).anyview()
             } else {

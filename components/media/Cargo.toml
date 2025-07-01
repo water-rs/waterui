@@ -17,3 +17,7 @@ typeshare.workspace = true
 [features]
 default = ["media-picker"]
 media-picker = []
+
+
+[lints]
+workspace = true

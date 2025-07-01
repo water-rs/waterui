@@ -18,3 +18,6 @@ typeshare.workspace = true
 default = []
 std = []
 serde = ["dep:serde"]
+
+[lints]
+workspace = true

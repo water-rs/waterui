@@ -61,6 +61,6 @@ pub trait Plugin: Sized + 'static {
     ///
     /// * `env` - A mutable reference to the environment
     fn uninstall(self, env: &mut Environment) {
-        env.remove::<Self>()
+        env.remove::<Self>();
     }
 }

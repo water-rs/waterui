@@ -35,3 +35,6 @@ optional = true
 [features]
 default = ["std"]
 std = ["async-fs","futures-lite","thiserror","toml"]
+
+[lints]
+workspace = true

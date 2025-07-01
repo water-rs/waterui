@@ -16,16 +16,21 @@ use waterui_text::Text;
 
 #[non_exhaustive]
 #[derive(Debug)]
+/// Configuration for the `Picker` component.
 pub struct PickerConfig {
+    /// The items to display in the picker.
     pub items: Computed<Vec<PickerItem<Id>>>,
+    /// The binding to the currently selected item.
     pub selection: Binding<Id>,
 }
 
 configurable!(Picker, PickerConfig);
 
+/// A picker item that associates a value of type `T` with a text display.
 pub type PickerItem<T> = TaggedView<T, Text>;
 
 impl Picker {
+    /// Creates a new `Picker` with the given items and selection binding.
     pub fn new<T: Ord + Clone + 'static>(
         items: impl IntoComputed<Vec<PickerItem<T>>>,
         selection: &Binding<T>,
@@ -46,11 +51,13 @@ impl Picker {
 
         Self(PickerConfig {
             items,
-            selection: mapping.binding(selection.clone()),
+            selection: mapping.binding(selection),
         })
     }
 }
 
+/// Creates a new `Picker` with the given items and selection binding.
+/// See [`Picker`] for more details.
 pub fn picker<T: Ord + Clone + 'static>(
     items: impl IntoComputed<Vec<PickerItem<T>>>,
     selection: &Binding<T>,

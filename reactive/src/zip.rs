@@ -19,7 +19,7 @@ use crate::{
 
 /// A structure that combines two `Compute` instances into a single computation
 /// that produces a tuple of their results.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Zip<A, B> {
     /// The first computation to be zipped.
     a: A,
@@ -36,7 +36,7 @@ impl<A, B> Zip<A, B> {
     ///
     /// # Returns
     /// A new `Zip` instance containing both computations.
-    pub fn new(a: A, b: B) -> Self {
+    pub const fn new(a: A, b: B) -> Self {
         Self { a, b }
     }
 }
@@ -90,7 +90,7 @@ where
 ///
 /// # Returns
 /// A new `Zip` instance that computes both values and returns them as a tuple.
-pub fn zip<A, B>(a: A, b: B) -> Zip<A, B>
+pub const fn zip<A, B>(a: A, b: B) -> Zip<A, B>
 where
     A: Compute,
     B: Compute,
@@ -130,7 +130,7 @@ impl<A: Compute, B: Compute> Compute for Zip<A, B> {
             let b = b.clone();
             self.a.add_watcher(move |value: A::Output, metadata| {
                 let result = (value, b.compute());
-                watcher.notify(result, metadata)
+                watcher.notify(result, metadata);
             })
         };
 
@@ -138,7 +138,7 @@ impl<A: Compute, B: Compute> Compute for Zip<A, B> {
             let a = a.clone();
             self.b.add_watcher(move |value: B::Output, metadata| {
                 let result = (a.compute(), value);
-                watcher.notify(result, metadata)
+                watcher.notify(result, metadata);
             })
         };
 

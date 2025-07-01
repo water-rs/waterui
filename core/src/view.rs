@@ -12,7 +12,7 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
-use crate::{components::Metadata, AnyView, Environment};
+use crate::{AnyView, Environment, components::Metadata};
 use alloc::{boxed::Box, vec::Vec};
 
 /// View represents a part of the user interface.
@@ -54,10 +54,7 @@ impl<V: View, E: View> View for Result<V, E> {
 
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
-        match self {
-            Some(view) => AnyView::new(view),
-            None => AnyView::new(()),
-        }
+        self.map_or_else(|| AnyView::new(()), |view| AnyView::new(view))
     }
 }
 
@@ -146,6 +143,12 @@ pub trait ConfigurableView: View {
 /// enabling a consistent approach to view customization. Modifiers can be
 /// reused across different instances of the same view type.
 pub struct Modifier<V: ConfigurableView>(Box<dyn Fn(Environment, V::Config) -> AnyView>);
+
+impl<V: ConfigurableView> core::fmt::Debug for Modifier<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Modifier<{}>(..)", core::any::type_name::<V>())
+    }
+}
 
 impl<V, V2, F> From<F> for Modifier<V>
 where

@@ -44,7 +44,7 @@ pub struct Circle;
 /// This trait is implemented by all shape types in this module.
 pub trait Shape {}
 
-/// Implements the Shape trait and raw_view for multiple types
+/// Implements the Shape trait and `raw_view` for multiple types
 ///
 /// This macro helps reduce boilerplate by implementing common functionality
 /// across multiple shape types.

@@ -6,8 +6,8 @@ use crate::{PlatformExecutor, Priority};
 impl From<Priority> for QueuePriority {
     fn from(val: Priority) -> Self {
         match val {
-            Priority::Default => QueuePriority::Default,
-            Priority::Background => QueuePriority::Background,
+            Priority::Default => Self::Default,
+            Priority::Background => Self::Background,
         }
     }
 }
