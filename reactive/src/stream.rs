@@ -1,76 +1,93 @@
 use alloc::rc::Rc;
-use core::{cell::RefCell, ops::AddAssign};
-use waterui_task::{LocalTask, StreamExt, Task};
+use core::cell::RefCell;
+use waterui_task::{LocalTask, StreamExt};
 
 use crate::{
     Compute,
-    
-    watcher::{WatcherGuard, WatcherManager},
+    watcher::{Metadata, Watcher, WatcherGuard, WatcherManager},
 };
 
-struct StreamInner<S, T, B> {
-    stream: Option<S>,
-    buffer: T,
-    behavior: B,
-    watchers: WatcherManager<T>,
-}
-
-impl<S, T, B> StreamInner<S, T, B> {
-    pub fn try_lanuch(&mut self) {
+impl<S> Stream<S>
+where
+    S: waterui_task::Stream + Unpin + 'static,
+    S::Item: Clone,
+{
+    pub fn new(stream: S) -> Self
+    where
+        S::Item: Default,
+    {
+        Self::with_inital_value(stream, S::Item::default())
+    }
+    pub fn with_inital_value(stream: S, inital: S::Item) -> Self {
+        Self {
+            stream: Rc::new(RefCell::new(Some(stream))),
+            buffer: Rc::new(RefCell::new(inital)),
+            watchers: WatcherManager::default(),
+        }
+    }
+    pub fn try_lanuch(&self) {
         if let Some(mut stream) = { self.stream.take() } {
-            let this = self.inner.clone();
+            let buffer = self.buffer.clone();
             let watchers = self.watchers.clone();
             LocalTask::on_main(async move {
                 while let Some(item) = stream.next().await {
-                    this.borrow_mut().buffer = item.clone();
-                    watchers.notify(item);
+                    *buffer.borrow_mut() = item.clone();
+                    watchers.notify(move || item.clone(), Metadata::new());
                 }
             });
         }
     }
-    pub fn push(&self) {}
-}
-
-trait StreamBehavior<T> {
-    fn buffer(old: &mut T, new: T);
-}
-
-struct Replace;
-struct Append;
-
-impl<T> StreamBehavior<T> for Replace {
-    fn buffer(old: &mut T, new: T) {
-        *old = new;
+    pub fn is_lanuched(&self) -> bool {
+        self.stream.borrow().is_some()
     }
 }
 
-impl<T: AddAssign> StreamBehavior<T> for Append {
-    fn buffer(old: &mut T, new: T) {
-        old.add_assign(new);
-    }
-}
+type Buffer<T> = Rc<RefCell<T>>;
 
-pub struct Stream<S, T>(Rc<RefCell<StreamInner<S, T, Replace>>>);
-
-impl<S, T> Clone for Stream<S, T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<S, T> Compute for Stream<S, T>
+#[derive(Debug)]
+pub struct Stream<S>
 where
-    S: waterui_task::Stream<Item = T> + 'static,
-    T + Default,
+    S: waterui_task::Stream + Unpin + 'static,
+    S::Item: Clone,
+{
+    stream: Buffer<Option<S>>,
+    buffer: Buffer<S::Item>,
+    watchers: WatcherManager<S::Item>,
+}
+
+impl<S> Clone for Stream<S>
+where
+    S: waterui_task::Stream + Unpin + 'static,
+    S::Item: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            stream: self.stream.clone(),
+            buffer: self.buffer.clone(),
+            watchers: self.watchers.clone(),
+        }
+    }
+}
+
+impl<S> Compute for Stream<S>
+where
+    S: waterui_task::Stream + Unpin + 'static,
+    S::Item: Clone,
 {
     type Output = S::Item;
     fn compute(&self) -> Self::Output {
-        self.inner.borrow().buffer.clone()
+        self.try_lanuch();
+        self.buffer.borrow().clone()
     }
-    fn watch(
-        &self,
-        watcher: crate::watcher::Watcher<Self::Output>,
-    ) -> crate::watcher::WatcherGuard {
+    fn add_watcher(&self, watcher: impl Watcher<S::Item>) -> crate::watcher::WatcherGuard {
         WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }
+}
+
+pub fn stream<S>(s: S) -> Stream<S>
+where
+    S: waterui_task::Stream + Unpin + 'static,
+    S::Item: Clone + Default,
+{
+    Stream::new(s)
 }

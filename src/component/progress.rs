@@ -36,7 +36,7 @@ use waterui_text::text;
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
 #[non_exhaustive]
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct ProgressConfig {
     /// The label displayed alongside the progress indicator.
     pub label: AnyView,
@@ -50,7 +50,7 @@ pub struct ProgressConfig {
 
 /// Visual style options for progress indicators.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
+#[derive(Debug, Clone, Copy)]
 pub enum ProgressStyle {
     /// A circular spinner-style progress indicator.
     Circular,
@@ -144,18 +144,18 @@ impl Progress {
     /// # Arguments
     ///
     /// * `style` - The style to apply to the progress indicator.
-    fn style(mut self, style: ProgressStyle) -> Self {
+    const fn style(mut self, style: ProgressStyle) -> Self {
         self.0.style = style;
         self
     }
 
     /// Changes the progress indicator to a circular style.
-    pub fn circular(self) -> Self {
+    pub const fn circular(self) -> Self {
         self.style(ProgressStyle::Circular)
     }
 
     /// Changes the progress indicator to a linear style.
-    pub fn linear(self) -> Self {
+    pub const fn linear(self) -> Self {
         self.style(ProgressStyle::Linear)
     }
 }

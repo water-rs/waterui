@@ -1,4 +1,0 @@
-module waterui_strFFI {
-    header "waterui_strFFI.h"
-    export *
-}

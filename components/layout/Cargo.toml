@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 waterui-core.workspace = true
 waterui-reactive.workspace = true
-uniffi.workspace = true
+typeshare.workspace = true
 
 [dependencies.serde]
 version = "1.0"

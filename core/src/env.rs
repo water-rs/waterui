@@ -66,8 +66,10 @@ use crate::{
 
 impl Environment {
     /// Creates a new empty environment.
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
     }
 
     /// Installs a plugin into the environment.
@@ -168,7 +170,7 @@ pub struct With<V, T> {
 impl<V, T> With<V, T> {
     /// Creates a new `With` view that wraps the provided content and adds
     /// the given value to the environment for all child views.
-    pub fn new(content: V, value: T) -> Self {
+    pub const fn new(content: V, value: T) -> Self {
         Self { content, value }
     }
 }
@@ -183,24 +185,3 @@ where
         Metadata::new(self.content, env)
     }
 }
-
-mod ffi {
-    use std::sync::Arc;
-
-    use waterui_task::LocalValue;
-    #[derive(uniffi::Object)]
-    pub struct FFIEnvironment(LocalValue<super::Environment>);
-    impl From<super::Environment> for Arc<FFIEnvironment> {
-        fn from(value: super::Environment) -> Self {
-            Arc::new(FFIEnvironment(value.into()))
-        }
-    }
-
-    impl From<Arc<FFIEnvironment>> for super::Environment {
-        fn from(value: Arc<FFIEnvironment>) -> Self {
-            value.0.clone()
-        }
-    }
-}
-
-uniffi::custom_type!(Environment, alloc::sync::Arc<ffi::FFIEnvironment>);

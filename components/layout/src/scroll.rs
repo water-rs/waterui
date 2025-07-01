@@ -1,14 +1,14 @@
 use waterui_core::{AnyView, View, raw_view, view::TupleViews};
 
 use super::stack::vstack;
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[must_use]
 pub struct ScrollView {
     pub content: AnyView,
     pub axis: Axis,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, uniffi::Enum)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Axis {
     Horizontal,
     #[default]

@@ -1,4 +1,0 @@
-module waterui_mediaFFI {
-    header "waterui_mediaFFI.h"
-    export *
-}

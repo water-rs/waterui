@@ -6,7 +6,7 @@ A powerful, lightweight reactive framework for WaterUI.
 
 ```rust
 pub trait Compute: Clone + 'static {
-    type OutpuT;
+    type Output;
 
     // Get the current value
     fn compute(&self) -> Self::Output;

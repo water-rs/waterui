@@ -9,7 +9,7 @@ configurable!(TextField, TextFieldConfig);
 configurable!(SecureField, TextFieldConfig);
 
 #[non_exhaustive]
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct TextFieldConfig {
     pub label: AnyView,
     pub value: Binding<Str>,
@@ -17,7 +17,7 @@ pub struct TextFieldConfig {
     pub keyboard: KeyboardType,
 }
 
-#[derive(Debug, Default, uniffi::Enum)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
 pub enum KeyboardType {
     #[default]
@@ -49,6 +49,6 @@ impl TextField {
     }
 }
 
-pub fn field(value: &Binding<Str>) -> TextField {
-    TextField::new(value)
+pub fn field(label: impl View, value: &Binding<Str>) -> TextField {
+    TextField::new(value).label(label)
 }

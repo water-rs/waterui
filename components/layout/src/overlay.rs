@@ -1,5 +1,5 @@
 use waterui_core::{AnyView, View};
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[must_use]
 pub struct Overlay {
     pub content: AnyView,

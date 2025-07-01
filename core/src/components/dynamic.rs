@@ -33,41 +33,6 @@ use waterui_reactive::Computed;
 /// Represents a view whose content can be changed dynamically at runtime.
 pub struct Dynamic(DynamicHandler);
 
-mod ffi {
-    use std::sync::Arc;
-
-    use waterui_reactive::watcher::Metadata;
-    use waterui_task::OnceValue;
-
-    use crate::AnyView;
-
-    use super::Dynamic;
-    #[derive(uniffi::Object)]
-    pub struct FFIDynamic(OnceValue<Dynamic>);
-    #[uniffi::export]
-    pub trait Receiver: Send + Sync {
-        fn receive(&self, view: AnyView, metadata: Metadata);
-    }
-
-    #[uniffi::export]
-    impl FFIDynamic {
-        pub fn connect(&self, receiver: Arc<dyn Receiver>) {
-            self.0.take().connect(move |value, metadata| {
-                receiver.receive(value, metadata);
-            });
-        }
-    }
-
-    uniffi::custom_type!(Dynamic, Arc<FFIDynamic>,{
-        lower:|value| {
-            Arc::new(FFIDynamic(value.into()))
-        },
-        try_lift:|value| {
-           Ok(value.0.take())
-        }
-    });
-}
-
 raw_view!(Dynamic);
 
 /// A handler for updating a Dynamic view.

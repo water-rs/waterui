@@ -11,22 +11,20 @@ use core::fmt::Display;
 use locale::Formatter;
 use waterui_core::configurable;
 
+use waterui_reactive::ComputeExt;
 use waterui_reactive::zip::FlattenMap;
 use waterui_reactive::{Compute, Computed, compute::IntoComputed};
-use waterui_reactive::{ComputeExt, ffi_computed};
 
 use waterui_core::Str;
 
 configurable!(Text, TextConfig);
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TextConfig {
     pub content: Computed<Str>,
     pub font: Computed<Font>,
 }
-
-ffi_computed!(Font);
 
 impl Clone for Text {
     fn clone(&self) -> Self {
@@ -107,5 +105,3 @@ where
         Self::new(value)
     }
 }
-
-uniffi::setup_scaffolding!();

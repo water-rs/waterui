@@ -1,7 +1,6 @@
-use waterui_core::AnyView;
+use waterui_color::Color;
+use waterui_core::{AnyView, View, configurable};
 use waterui_reactive::Binding;
-
-use crate::color::Color;
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -18,5 +17,10 @@ impl ColorPicker {
             label: AnyView::default(),
             value: value.clone(),
         })
+    }
+
+    pub fn label(mut self, label: impl View) -> Self {
+        self.0.label = AnyView::new(label);
+        self
     }
 }

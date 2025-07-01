@@ -1,4 +1,0 @@
-module wateruiFFI {
-    header "wateruiFFI.h"
-    export *
-}

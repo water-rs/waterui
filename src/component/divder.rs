@@ -7,7 +7,7 @@
 use waterui_core::raw_view;
 
 /// A divider component that can be used to separate content.
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 #[must_use]
 pub struct Divider;
 

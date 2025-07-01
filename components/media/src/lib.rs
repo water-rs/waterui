@@ -14,7 +14,7 @@ use crate::live::LivePhotoSource;
 
 type Url = Str;
 
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone)]
 pub enum Media {
     Image(Url),
     LivePhoto(LivePhotoSource),
@@ -32,4 +32,3 @@ impl View for Media {
         }
     }
 }
-uniffi::setup_scaffolding!();

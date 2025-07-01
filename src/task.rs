@@ -30,11 +30,11 @@ impl<V> OnChange<V> {
     {
         let cache: RefCell<Option<C::Output>> = RefCell::new(None);
         let guard = source.watch(move |value| {
-            if let Some(cache) = &mut *cache.borrow_mut() {
-                if *cache != value {
-                    *cache = value.clone();
-                    handler(value)
-                }
+            if let Some(cache) = &mut *cache.borrow_mut()
+                && *cache != value
+            {
+                *cache = value.clone();
+                handler(value)
             }
         });
         Self {

@@ -30,14 +30,6 @@ macro_rules! configurable {
         #[derive(Debug)]
         #[doc=$doc]
         pub struct $view($config);
-        uniffi::custom_type!($view,$config,{
-            lower:|value|{
-                $crate::view::ConfigurableView::config(value)
-            },
-            try_lift:|value|{
-                Ok(value.into())
-            }
-        });
 
         impl $crate::view::ConfigurableView for $view {
             type Config = $config;
@@ -53,13 +45,6 @@ macro_rules! configurable {
             }
         }
 
-        $crate::__paste!{
-            #[uniffi::export]
-
-            fn [<$view:lower _id>]() -> alloc::string::String{
-                format!("{:?}", core::any::TypeId::of::<$view>())
-            }
-        }
 
 
 
@@ -127,32 +112,6 @@ macro_rules! impl_deref {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
             }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! ffi_handler {
-    ($ty:ty) => {
-        $crate::__paste! {
-            #[derive(uniffi::Object)]
-            pub struct [<FFIBoxHandler$ty>]($crate::task::OnceValue<$crate::handler::BoxHandler<$ty>>);
-            #[uniffi::export]
-            impl [<FFIBoxHandler$ty>] {
-                pub fn handle(&self,env:$crate::Environment) -> $ty {
-                    let value = self.0.get();
-                    $crate::handler::Handler::handle(&**value,&env)
-                }
-            }
-
-            type [<BoxHandler$ty>] = $crate::handler::BoxHandler<$ty>;
-            uniffi::custom_type!([<BoxHandler$ty>], alloc::sync::Arc<[<FFIBoxHandler$ty>]>,{
-                remote,
-                lower: |value| {alloc::sync::Arc::new([<FFIBoxHandler$ty>](value.into()))},
-                try_lift: |value| {Ok(value.0.take())}
-            });
-
-
         }
     };
 }

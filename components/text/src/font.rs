@@ -1,6 +1,6 @@
 use waterui_core::Color;
 
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Font {
     pub size: f64,

@@ -28,31 +28,3 @@ impl_label!(&'static str, String, Cow<'static, str>);
 
 // Define Str as a raw view
 raw_view!(Str);
-
-mod ffi {
-    use waterui_str::Str;
-
-    use crate::AnyView;
-
-    pub struct Label(String);
-    impl From<String> for Label {
-        fn from(str: String) -> Self {
-            Label(str)
-        }
-    }
-
-    impl From<Label> for String {
-        fn from(value: Label) -> Self {
-            value.0
-        }
-    }
-
-    impl Label {
-        #[uniffi::constructor]
-        pub fn new(text: AnyView) -> Self {
-            Self(text.downcast::<Str>().unwrap().into_string())
-        }
-    }
-
-    uniffi::custom_newtype!(Label, String);
-}

@@ -3,7 +3,7 @@ use waterui_core::{Color, Str};
 
 use crate::font::Font;
 
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug)]
 pub enum Attribute {
     Bold,
     Italic,
@@ -14,12 +14,12 @@ pub enum Attribute {
     Font(Font),
 }
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 pub struct AttributedStr {
     string: Vec<AttributedStrChunk>,
 }
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug)]
 struct AttributedStrChunk {
     text: Str,
     attributes: Vec<Attribute>,
