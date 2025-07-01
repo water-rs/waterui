@@ -127,7 +127,7 @@ pub trait ViewExt: View + Sized {
     /// * `equals` - The value to compare against for focus
     fn focused<T: 'static + Eq + Clone>(
         self,
-        value: Binding<Option<T>>,
+        value: &Binding<Option<T>>,
         equals: T,
     ) -> Metadata<Focused> {
         Metadata::new(self, Focused::new(value, equals))

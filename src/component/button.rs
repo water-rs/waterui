@@ -1,4 +1,4 @@
-//! Button component for WaterUI
+//! Button component for `WaterUI`
 //!
 //! This module provides a Button component that allows users to trigger actions
 //! when clicked.
@@ -14,7 +14,7 @@
 //! ```
 //!
 //! Tip: `action` receives a `HandlerFn`, it can extract value from environment and pass it to the action.
-//! To learn more about `HandlerFn`, see the [HandlerFn] documentation.
+//! To learn more about `HandlerFn`, see the [`HandlerFn`] documentation.
 
 use core::fmt::Debug;
 
@@ -29,7 +29,6 @@ use crate::{AnyView, ViewExt};
 ///
 /// Use the `Button` struct's methods to customize these properties.
 #[non_exhaustive]
-
 pub struct ButtonConfig {
     /// The label displayed on the button
     pub label: AnyView,
@@ -71,6 +70,7 @@ impl Button {
     /// # Returns
     ///
     /// The modified button with the action set
+    #[must_use]
     pub fn action<P: 'static>(mut self, action: impl HandlerFn<P, ()>) -> Self {
         self.0.action = Box::new(into_handler(action));
         self

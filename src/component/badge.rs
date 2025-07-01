@@ -50,6 +50,7 @@ impl Badge {
     ///
     /// # Arguments
     /// * `color` - The color to use for the badge
+    #[must_use]
     pub fn color(mut self, color: impl Compute<Output = Color>) -> Self {
         self.0.color = color.into_computed();
         self

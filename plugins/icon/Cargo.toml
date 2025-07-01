@@ -1,7 +1,10 @@
 [package]
 name = "waterui-icon"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+author.workspace = true
+license.workspace = true
+readme = "README.md"
 
 [dependencies]
 waterui.workspace = true

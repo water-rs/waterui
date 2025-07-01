@@ -1,7 +1,15 @@
 [package]
 name = "waterui-form"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Form components for WaterUI (inputs, buttons, validation)"
+keywords = ["form", "input", "validation", "ui", "components"]
+categories = ["gui"]
+
 
 [dependencies]
 time = "0.3.41"

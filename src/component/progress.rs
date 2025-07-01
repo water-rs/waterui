@@ -1,4 +1,4 @@
-//! Progress indicators for the WaterUI framework.
+//! Progress indicators for the `WaterUI` framework.
 //!
 //! This module provides components for showing progress indicators to users,
 //! both as linear (bar) and circular progress indicators.
@@ -72,16 +72,19 @@ impl ProgressWithTotal {
     /// # Arguments
     ///
     /// * `label` - The view to use as the progress label.
+    #[must_use]
     pub fn label(self, label: impl View) -> Self {
         Self(self.0.label(label))
     }
 
     /// Changes the progress indicator to a circular style.
+    #[must_use]
     pub fn circular(self) -> Self {
         Self(self.0.circular())
     }
 
     /// Changes the progress indicator to a linear style.
+    #[must_use]
     pub fn linear(self) -> Self {
         Self(self.0.linear())
     }
@@ -125,6 +128,7 @@ impl Progress {
     }
 
     /// Creates an infinite progress indicator, typically shown as an indeterminate spinner.
+    #[must_use]
     pub fn infinity() -> Self {
         Self::new(f64::NAN)
     }
@@ -134,6 +138,7 @@ impl Progress {
     /// # Arguments
     ///
     /// * `label` - The view to use as the progress label.
+    #[must_use]
     pub fn label(mut self, label: impl View) -> Self {
         self.0.label = label.anyview();
         self
@@ -150,11 +155,13 @@ impl Progress {
     }
 
     /// Changes the progress indicator to a circular style.
+    #[must_use]
     pub const fn circular(self) -> Self {
         self.style(ProgressStyle::Circular)
     }
 
     /// Changes the progress indicator to a linear style.
+    #[must_use]
     pub const fn linear(self) -> Self {
         self.style(ProgressStyle::Linear)
     }
@@ -170,6 +177,7 @@ pub fn progress(value: impl IntoComputed<f64>) -> Progress {
 }
 
 /// Creates an indeterminate loading indicator displayed as a circular spinner.
+#[must_use]
 pub fn loading() -> Progress {
     Progress::infinity().circular()
 }
