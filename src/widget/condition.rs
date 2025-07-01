@@ -27,7 +27,7 @@ where
     /// # Arguments
     /// * `condition` - A value that can be computed into a boolean
     /// * `then` - The view to render when the condition is true
-    pub fn new(condition: Condition, then: Then) -> Self {
+    pub const fn new(condition: Condition, then: Then) -> Self {
         Self { condition, then }
     }
 }

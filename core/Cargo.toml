@@ -1,7 +1,15 @@
 [package]
 name = "waterui-core"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core functionality for the WaterUI framework"
+keywords = ["ui", "core", "framework", "waterui"]
+categories = ["gui"]
 
 [dependencies]
 waterui-str.workspace = true

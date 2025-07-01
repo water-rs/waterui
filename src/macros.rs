@@ -7,19 +7,3 @@ macro_rules! impl_debug {
         }
     };
 }
-
-macro_rules! impl_compute_result {
-    ($ty:ty) => {
-        impl core::cmp::PartialEq for $ty {
-            fn eq(&self, _other: &Self) -> bool {
-                false
-            }
-        }
-
-        impl core::cmp::PartialOrd for $ty {
-            fn partial_cmp(&self, _other: &Self) -> Option<core::cmp::Ordering> {
-                None
-            }
-        }
-    };
-}

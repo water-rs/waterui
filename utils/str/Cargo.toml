@@ -1,7 +1,14 @@
 [package]
 name = "waterui-str"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "String utilities for WaterUI"
+keywords = ["string", "text", "utilities", "waterui"]
+categories = ["text-processing", "data-structures"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"], optional = true }

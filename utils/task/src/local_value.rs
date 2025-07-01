@@ -80,10 +80,10 @@ impl<T> OnceValue<T> {
     pub fn new(value: T) -> Self {
         OnceValue(LocalValue::new(RefCell::new(Some(value))))
     }
-    pub fn get(&self) -> Ref<T> {
+    pub fn get(&self) -> Ref<'_, T> {
         Ref::map(self.0.borrow(), |v| v.as_ref().unwrap())
     }
-    pub fn get_mut(&self) -> RefMut<T> {
+    pub fn get_mut(&self) -> RefMut<'_, T> {
         RefMut::map(self.0.borrow_mut(), |v| v.as_mut().unwrap())
     }
 

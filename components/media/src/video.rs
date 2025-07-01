@@ -24,7 +24,6 @@ pub struct VideoPlayerConfig {
     pub volume: Binding<Volume>,
 }
 
-
 configurable!(VideoPlayer, VideoPlayerConfig);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,7 +67,7 @@ impl VideoPlayer {
                     // Convert the volume based on mute state
                     if value {
                         // If muted, return negative volume (if positive) to preserve the value
-                        volume_binding.get().abs() * -1.0
+                        -volume_binding.get().abs()
                     } else {
                         // If unmuted, return positive volume (if negative)
                         volume_binding.get().abs()

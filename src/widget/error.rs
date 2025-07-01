@@ -9,7 +9,6 @@ use alloc::boxed::Box;
 use core::{
     any::TypeId,
     fmt::{Debug, Display},
-    ops::Deref,
 };
 
 /// Re-export of the standard error trait for convenience.
@@ -65,9 +64,13 @@ impl Error {
     /// # Returns
     ///
     /// A `Result` containing either the boxed downcast type or the original error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` if the error cannot be downcast to the specified type `T`.
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, Self> {
-        if ErrorImpl::type_id(self.inner.deref()) == TypeId::of::<T>() {
-            unsafe { Ok(Box::from_raw(Box::into_raw(self.inner) as *mut T)) }
+        if ErrorImpl::type_id(&*self.inner) == TypeId::of::<T>() {
+            unsafe { Ok(Box::from_raw(Box::into_raw(self.inner).cast::<T>())) }
         } else {
             Err(self)
         }
@@ -119,6 +122,7 @@ impl View for Error {
 }
 
 /// Extension trait for `Result` types to easily convert errors to views.
+#[allow(clippy::missing_errors_doc)]
 pub trait ResultExt<T, E> {
     /// Converts an error to a custom view.
     ///

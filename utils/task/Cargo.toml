@@ -1,7 +1,13 @@
 [package]
 name = "waterui-task"
+description = "Task utilities for the WaterUI."
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["task", "async", "concurrency", "waterui"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
 async-task = "4.7.1"

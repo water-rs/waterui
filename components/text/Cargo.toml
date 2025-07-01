@@ -1,7 +1,14 @@
 [package]
 name = "waterui-text"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Text and typography components for WaterUI"
+keywords = ["text", "typography", "ui", "components"]
+categories = ["gui", "text-processing"]
 
 [dependencies]
 waterui-core.workspace = true

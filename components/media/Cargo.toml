@@ -1,7 +1,15 @@
 [package]
 name = "waterui-media"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Media components for WaterUI (images, videos, audio)"
+keywords = ["media", "image", "video", "ui", "components"]
+categories = ["gui", "multimedia"]
+
 
 [dependencies]
 waterui-core.workspace = true

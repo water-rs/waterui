@@ -1,4 +1,4 @@
-//! UI components for WaterUI
+//! UI components for `WaterUI`
 //!
 //! This module contains various UI components that can be used to build user interfaces.
 
