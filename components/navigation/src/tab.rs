@@ -25,7 +25,7 @@ pub struct Tab<T> {
     pub label: TaggedView<T, AnyView>,
 
     /// The content to display when this tab is selected.
-    /// Returns a NavigationView when given an Environment.
+    /// Returns a [`NavigationView`] when given an Environment.
     pub content: BoxHandler<NavigationView>,
 }
 
@@ -37,7 +37,7 @@ impl<T> Tab<T> {
     /// # Arguments
     ///
     /// * `label` - The visual representation of the tab
-    /// * `content` - A function that returns the tab's content as a NavigationView
+    /// * `content` - A function that returns the tab's content as a [`NavigationView`]
     pub fn new<H: 'static>(
         label: TaggedView<T, AnyView>,
         content: impl HandlerFn<H, NavigationView>,
@@ -71,6 +71,7 @@ impl TabsConfig {
     ///
     /// * `selection` - A binding to the currently selected tab ID
     /// * `tabs` - The collection of tabs to display
+    #[must_use]
     pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
         Self { selection, tabs }
     }

@@ -1,7 +1,17 @@
 use crate::Binding;
 
+/// Trait for projecting bindings into their component parts.
+///
+/// This trait allows decomposing complex bindings (like tuples or structs)
+/// into separate bindings for each field, enabling granular reactive updates.
 pub trait Project: Sized {
+    /// The type resulting from projection (usually a tuple of bindings).
     type Projected;
+
+    /// Creates projected bindings from a source binding.
+    ///
+    /// This method decomposes the source binding into separate bindings
+    /// for each component, maintaining bidirectional reactivity.
     fn project(source: &Binding<Self>) -> Self::Projected;
 }
 
@@ -27,6 +37,11 @@ impl<T0: 'static, T1: 'static> Project for (T0, T1) {
 }
 
 impl<T: Project> Binding<T> {
+    /// Projects this binding into its component parts.
+    ///
+    /// This method uses the `Project` trait implementation to decompose
+    /// the binding into separate reactive bindings for each component.
+    #[must_use]
     pub fn project(&self) -> T::Projected {
         T::project(self)
     }

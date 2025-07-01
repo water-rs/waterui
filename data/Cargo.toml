@@ -13,3 +13,6 @@ serde = "1.0"
 futures-lite = "2.6.0"
 waterui-reactive.workspace = true
 waterui.workspace = true
+
+[lints]
+workspace = true

@@ -22,8 +22,7 @@ pub use metadata::{IgnorableMetadata, Metadata};
 
 use crate::View;
 
-// The lifetime of T will be same as V
-
+/// A wrapper allows a view to carry an additional value without affecting its rendering.
 #[derive(Debug, Clone)]
 pub struct With<V, T> {
     view: V,
@@ -38,6 +37,7 @@ impl<V: View, T: 'static> View for With<V, T> {
 }
 
 impl<V, T> With<V, T> {
+    /// Creates a new `With` instance that wraps a view and an additional value.
     pub const fn new(view: V, value: T) -> Self {
         Self { view, value }
     }

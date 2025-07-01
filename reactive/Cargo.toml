@@ -15,3 +15,6 @@ waterui-task.workspace = true
 waterui-str.workspace = true
 paste = "1.0"
 log = "0.4.27"
+
+[lints]
+workspace = true

@@ -69,6 +69,7 @@ pub trait HandlerOnce<T>: 'static {
 /// A boxed immutable handler with dynamic dispatch.
 pub type BoxHandler<T> = Box<dyn Handler<T>>;
 
+/// A boxed mutable handler with dynamic dispatch that does not return a value.
 pub type ActionObject = BoxHandler<()>;
 
 /// A boxed mutable handler with dynamic dispatch.
@@ -170,6 +171,7 @@ tuples!(impl_handle_fn_once);
 macro_rules! into_handlers {
     ($name:ident,$handler:ident,$handler_fn:ident) => {
         /// Wrapper that converts a function into a handler.
+        #[derive(Debug, Clone)]
         pub struct $name<H, P, T> {
             h: H,
             _marker: PhantomData<(P, T)>,
@@ -180,7 +182,8 @@ macro_rules! into_handlers {
             H: $handler_fn<P, T>,
         {
             /// Creates a new handler wrapper around the given function.
-            pub fn new(h: H) -> Self {
+            #[must_use]
+            pub const fn new(h: H) -> Self {
                 Self {
                     h,
                     _marker: PhantomData,
@@ -254,7 +257,7 @@ where
 ///
 /// # Returns
 ///
-/// A handler that implements the HandlerMut trait
+/// A handler that implements the [`HandlerMut`] trait
 pub fn into_handler_mut<P, T>(h: impl HandlerFnMut<P, T>) -> impl HandlerMut<T>
 where
     P: 'static,
@@ -271,7 +274,7 @@ where
 ///
 /// # Returns
 ///
-/// A handler that implements the HandlerOnce trait
+/// A handler that implements the [`HandlerOnce`] trait
 pub fn into_handler_once<P, T>(h: impl HandlerFnOnce<P, T>) -> impl HandlerOnce<T>
 where
     P: 'static,

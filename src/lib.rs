@@ -1,7 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![allow(non_camel_case_types)]
-#![warn(missing_debug_implementations)]
-#![warn(missing_docs)]
 
 extern crate alloc;
 

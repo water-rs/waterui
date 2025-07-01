@@ -10,25 +10,47 @@ pub use constant::constant;
 pub mod compute;
 #[doc(inline)]
 pub use compute::{Compute, Computed};
+/// Channel utilities for reactive communication.
 pub mod channel;
+/// Debug utilities for reactive computations.
 pub mod debug;
 #[macro_use]
+/// Macros for reactive programming patterns.
 pub mod macros;
+/// Projection utilities for transforming reactive values.
 pub mod project;
 //pub mod ffi;
 //pub mod error;
 mod ext;
 //pub mod filter;
+/// Caching utilities for reactive computations.
 pub mod cache;
+/// Mailbox utilities for thread-safe reactive communication.
 pub mod mailbox;
+/// Mapping utilities for transforming reactive values.
 pub mod map;
+/// Stream utilities for reactive data flows.
 pub mod stream;
+/// Utility functions for reactive programming.
 pub mod utils;
+/// Watcher utilities for observing reactive changes.
 pub mod watcher;
+/// Zip utilities for combining reactive values.
 pub mod zip;
 #[doc(inline)]
 pub use ext::ComputeExt;
 
+/// Implements the `Compute` trait for constant types.
+///
+/// This macro generates `Compute` implementations for types that should be
+/// treated as constant values in reactive computations. The implementation
+/// simply returns a clone of the value and provides a no-op watcher.
+///
+/// # Usage
+///
+/// ```ignore
+/// impl_constant!(String, i32, f64);
+/// ```
 #[macro_export]
 macro_rules! impl_constant {
 
@@ -55,6 +77,17 @@ macro_rules! impl_constant {
 
 }
 
+/// Implements the `Compute` trait for generic constant types.
+///
+/// This macro generates `Compute` implementations for generic types that should be
+/// treated as constant values in reactive computations. Similar to `impl_constant!`
+/// but works with generic type parameters.
+///
+/// # Usage
+///
+/// ```ignore
+/// impl_genetic_constant!(Vec<T>, Option<T>);
+/// ```
 #[macro_export]
 macro_rules! impl_genetic_constant {
 

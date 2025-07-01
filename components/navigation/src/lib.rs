@@ -1,9 +1,10 @@
-//! Navigation module for WaterUI framework.
+//! Navigation module for `WaterUI` framework.
 //!
 //! This module provides navigation components and utilities for building
 //! hierarchical user interfaces with navigation bars and links.
 extern crate alloc;
 
+/// Provides search functionality for navigation.
 pub mod search;
 pub mod tab;
 
