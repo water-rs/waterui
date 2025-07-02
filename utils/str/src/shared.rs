@@ -1,16 +1,10 @@
-use core::{
-    cell::Cell,
-    mem::{ManuallyDrop, take},
-    ptr::slice_from_raw_parts,
-};
+use core::cell::Cell;
 
 use alloc::string::String;
 
-#[repr(C)]
 #[derive(Debug)]
 pub struct Shared {
-    head: *mut u8,
-    capacity: usize,
+    data: String,
     count: Cell<usize>,
 }
 
@@ -21,52 +15,35 @@ impl Default for Shared {
 }
 
 impl Shared {
-    pub fn new(s: String) -> Self {
-        let mut s = ManuallyDrop::new(s);
-
-        let head = s.as_mut_ptr();
-        let capacity = s.capacity();
+    pub const fn new(data: String) -> Self {
         Self {
-            head,
-            capacity,
+            data,
             count: Cell::new(1),
         }
     }
 
-    pub const fn count(&self) -> usize {
+    pub const fn reference_count(&self) -> usize {
         self.count.get()
     }
 
-    pub const fn as_str(&self, len: usize) -> &str {
-        unsafe { core::str::from_utf8_unchecked(&*slice_from_raw_parts(self.head, len)) }
+    pub const unsafe fn as_str(&self) -> &str {
+        self.data.as_str()
     }
 
     pub const fn is_unique(&self) -> bool {
-        self.count() == 1
+        self.reference_count() == 1
     }
 
-    pub unsafe fn take(&mut self, len: usize) -> Option<String> {
-        if self.is_unique() {
-            let this = ManuallyDrop::new(take(self));
-            unsafe { Some(String::from_raw_parts(this.head, len, this.capacity)) }
-        } else {
-            None
-        }
+    pub unsafe fn take(self) -> String {
+        self.data
     }
 
     pub unsafe fn increment_count(&self) {
-        self.count.set(self.count().checked_add(1).unwrap());
+        self.count.set(self.count.get() + 1);
     }
 
     pub unsafe fn decrement_count(&self) {
-        self.count.set(self.count().checked_add_signed(-1).unwrap());
-    }
-}
-
-impl Drop for Shared {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = String::from_raw_parts(self.head, 0, self.capacity);
-        }
+        let new_count = self.count.get().saturating_sub(1);
+        self.count.set(new_count);
     }
 }
