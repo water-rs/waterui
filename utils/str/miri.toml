@@ -1,0 +1,9 @@
+# Miri configuration for memory safety testing
+# This file is used by Miri to configure memory safety checks
+
+# Enable all memory safety checks
+[env]
+MIRIFLAGS = "-Zmiri-check-number-validity -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation"
+
+# Run tests with stack traces for better debugging
+RUST_BACKTRACE = "1"
