@@ -24,6 +24,42 @@ impl PartialEq for Str {
     }
 }
 
+impl PartialEq<&str> for Str {
+    fn eq(&self, other: &&str) -> bool {
+        self.deref().eq(*other)
+    }
+}
+
+impl PartialEq<str> for Str {
+    fn eq(&self, other: &str) -> bool {
+        self.deref().eq(other)
+    }
+}
+
+impl PartialEq<String> for Str {
+    fn eq(&self, other: &String) -> bool {
+        self.deref().eq(other)
+    }
+}
+
+impl PartialEq<Str> for &str {
+    fn eq(&self, other: &Str) -> bool {
+        (*self).eq(&**other)
+    }
+}
+
+impl PartialEq<Str> for str {
+    fn eq(&self, other: &Str) -> bool {
+        self.eq(&**other)
+    }
+}
+
+impl PartialEq<Str> for String {
+    fn eq(&self, other: &Str) -> bool {
+        self.eq(&**other)
+    }
+}
+
 impl<I: SliceIndex<str>> Index<I> for Str {
     type Output = <I as SliceIndex<str>>::Output;
     fn index(&self, index: I) -> &Self::Output {
