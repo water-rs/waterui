@@ -140,6 +140,9 @@ impl Text {
 /// Creates a new text component with the given content.
 ///
 /// This is a convenience function equivalent to `Text::new(text)`.
+///
+/// # Tip
+/// If you need formatted text, please use the `text!` macro instead.
 #[must_use]
 pub fn text(text: impl IntoComputed<Str>) -> Text {
     Text::new(text)
@@ -153,3 +156,5 @@ where
         Self::new(value)
     }
 }
+
+pub use nami as __nami;

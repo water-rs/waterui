@@ -24,10 +24,7 @@ use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
-use nami::{
-    Computed, Signal, SignalExt,
-    watcher::{Metadata, WatcherGuard},
-};
+use nami::{Computed, Signal, watcher::Metadata};
 
 /// A dynamic view that can be updated.
 ///
