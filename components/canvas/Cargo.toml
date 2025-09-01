@@ -1,0 +1,19 @@
+[package]
+name = "waterui-canvas"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Canvas components for WaterUI using Vello for 2D graphics"
+keywords = ["canvas", "graphics", "vello", "ui", "components"]
+categories = ["gui"]
+
+[dependencies]
+vello = "0.3"
+waterui-core.workspace = true
+nami.workspace = true
+
+[lints]
+workspace = true

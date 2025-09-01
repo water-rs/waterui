@@ -30,3 +30,4 @@ pub use media::*;
 pub use waterui_form as form;
 pub use waterui_layout as layout;
 pub use waterui_media as media;
+pub use waterui_canvas as canvas;
