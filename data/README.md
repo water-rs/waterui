@@ -136,11 +136,11 @@ let database = DefaultDatabase::new()
 Interface for reactive data collections:
 
 ```rust
-use waterui_reactive::collection::Collection;
+use nami::collection::Collection;
 
 impl<T: Schema> Collection for Data<T> {
     type Item = DataElement<T>;
-    
+
     fn get(&self, index: usize) -> Option<Self::Item>;
     fn len(&self) -> usize;
     fn add_watcher(&self, watcher: Watcher<()>) -> WatcherGuard;
@@ -199,7 +199,7 @@ Efficient bulk operations:
 // Batch insert
 let new_todos = vec![
     Todo::new("Task 1"),
-    Todo::new("Task 2"), 
+    Todo::new("Task 2"),
     Todo::new("Task 3"),
 ];
 todos.insert_batch(new_todos).await?;
@@ -273,7 +273,6 @@ let cached_data = Data::<Post>::new()
 
 ## Dependencies
 
-- `waterui-reactive`: Reactive programming primitives
 - `serde`: Serialization framework
 - `futures`: Async utilities
 
@@ -306,11 +305,11 @@ impl View for BlogView {
                 post.content.contains(&self.search_query.get())
             })
             .filter(|post| post.published);
-            
+
         VStack::new([
             SearchBar::new(self.search_query.clone())
                 .placeholder("Search posts..."),
-                
+
             ForEach::new(filtered_posts, |post| {
                 PostView::new(post)
             }),
@@ -327,10 +326,10 @@ impl View for PostView {
         VStack::new([
             Text::new(self.post.data().title)
                 .typography(Typography::HEADING_2),
-                
+
             Text::new(self.post.data().content)
                 .typography(Typography::BODY),
-                
+
             Button::new("Toggle Published")
                 .on_click(move || {
                     self.post.update(|post| {

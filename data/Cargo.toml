@@ -11,7 +11,7 @@ readme = "README.md"
 rmp-serde = "1.3.0"
 serde = "1.0"
 futures-lite = "2.6.0"
-waterui-reactive.workspace = true
+nami.workspace = true
 waterui.workspace = true
 
 [lints]

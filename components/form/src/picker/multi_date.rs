@@ -9,7 +9,7 @@ use alloc::collections::BTreeSet;
 
 use time::Date;
 use waterui_core::{AnyView, View, configurable};
-use waterui_reactive::Binding;
+use nami::Binding;
 #[derive(Debug)]
 #[non_exhaustive]
 /// Configuration for the `MultiDatePicker` component.

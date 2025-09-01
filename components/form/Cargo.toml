@@ -14,7 +14,7 @@ categories = ["gui"]
 [dependencies]
 time = "0.3.41"
 waterui-core.workspace = true
-waterui-reactive.workspace = true
+nami.workspace = true
 waterui-text.workspace = true
 waterui-color.workspace = true
 

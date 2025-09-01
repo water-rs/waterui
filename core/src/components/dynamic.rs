@@ -10,7 +10,7 @@
 //!
 //! ```
 //! use waterui::dynamic::{Dynamic, watch};
-//! use waterui_reactive::Mutable;
+//! use nami::Mutable;
 //!
 //! // Create a dynamic view with a handler
 //! let (handler, view) = Dynamic::new();
@@ -24,10 +24,10 @@ use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
-use waterui_reactive::Compute;
-use waterui_reactive::ComputeExt;
-use waterui_reactive::Computed;
-use waterui_reactive::watcher::{Metadata, WatcherGuard};
+use nami::{
+    Computed, Signal, SignalExt,
+    watcher::{Metadata, WatcherGuard},
+};
 
 /// A dynamic view that can be updated.
 ///
@@ -96,16 +96,16 @@ impl Dynamic {
     /// # Returns
     ///
     /// A Dynamic view that updates when the value changes
-    pub fn watch<T, V: View>(
-        value: &impl Compute<Output = T>,
-        f: impl Fn(T) -> V + 'static,
-    ) -> With<Self, WatcherGuard> {
-        let (handle, dyanmic) = Self::new();
-        handle.set(f(value.compute()));
+    pub fn watch<T, S, V: View>(value: S, f: impl 'static + Fn(T) -> V) -> impl View
+    where
+        S: Signal<Output = T>,
+    {
+        let (handle, dynamic) = Self::new();
+        handle.set(f(value.get()));
 
-        let guard = value.watch(move |value| handle.set(f(value)));
+        let guard = value.watch(move |value| handle.set(f(value.value)));
 
-        With::new(dyanmic, guard)
+        With::new(dynamic, (guard, value))
     }
 
     /// Connects the Dynamic view to a receiver function.
@@ -136,15 +136,18 @@ impl Dynamic {
 /// # Returns
 ///
 /// A view that updates when the value changes
-pub fn watch<T, V: View>(
-    value: &impl Compute<Output = T>,
-    f: impl Fn(T) -> V + 'static,
-) -> impl View {
+pub fn watch<T, S, V: View>(value: S, f: impl Fn(T) -> V + 'static) -> impl View
+where
+    S: Signal<Output = T>,
+{
     Dynamic::watch(value, f)
 }
 
-impl<V: View> View for Computed<V> {
+impl<V: View> View for Computed<V>
+where
+    Self: 'static,
+{
     fn body(self, _env: &crate::Environment) -> impl View {
-        Dynamic::watch(&self, |view| view)
+        Dynamic::watch(self, |view| view)
     }
 }

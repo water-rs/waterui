@@ -3,16 +3,14 @@
 //! This module provides additional convenience methods for working with reactive values
 //! and computations in the `WaterUI` framework.
 
+use nami::{Computed, Signal, map::Map, signal::WithMetadata, zip::Zip};
 use waterui_core::animation::Animation;
-use waterui_reactive::{
-    Compute, Computed, compute::WithMetadata, map::Map, watcher::WatcherGuard, zip::Zip,
-};
 
-/// Extension trait providing additional methods for `Compute` types.
+/// Extension trait providing additional methods for `Signal` types.
 ///
 /// This trait adds convenient methods for transforming, combining, and working with
 /// reactive computations in a fluent interface style.
-pub trait ComputeExt: Compute + Sized {
+pub trait SignalExt: Signal + Sized {
     /// Transforms the output of this computation using the provided function.
     ///
     /// # Arguments
@@ -40,7 +38,7 @@ pub trait ComputeExt: Compute + Sized {
     /// # Returns
     ///
     /// A new computation that produces a tuple of both values.
-    fn zip<B: Compute>(self, b: B) -> Zip<Self, B> {
+    fn zip<B: Signal>(self, b: B) -> Zip<Self, B> {
         Zip::new(self, b)
     }
 
@@ -53,8 +51,8 @@ pub trait ComputeExt: Compute + Sized {
     /// # Returns
     ///
     /// A guard that removes the watcher when dropped.
-    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> WatcherGuard {
-        self.add_watcher(move |value, _| watcher(value))
+    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> Self::Guard {
+        Signal::watch(self, move |context| watcher(context.value))
     }
 
     /// Converts this computation into a `Computed` wrapper.
@@ -89,9 +87,9 @@ pub trait ComputeExt: Compute + Sized {
     /// # Returns
     ///
     /// A new computation that will be animated when the value changes.
-    fn animated(self) -> impl Compute<Output = Self::Output> {
+    fn animated(self) -> impl Signal<Output = Self::Output> {
         self.with(Animation::Default)
     }
 }
 
-impl<C: Compute + Sized> ComputeExt for C {}
+impl<C: Signal + Sized> SignalExt for C {}

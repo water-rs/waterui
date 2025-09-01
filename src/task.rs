@@ -1,18 +1,17 @@
 use core::cell::RefCell;
 
-use crate::ComputeExt;
-use waterui_core::{Compute, View};
-use waterui_reactive::watcher::WatcherGuard;
-pub use waterui_task::*;
+use nami::watcher::WatcherGuard;
+pub use native_executor::*;
+use waterui_core::{Signal, View};
 
 /// A view that executes a callback when a computed value changes.
 #[derive(Debug)]
-pub struct OnChange<V> {
+pub struct OnChange<V, G> {
     content: V,
-    _guard: WatcherGuard,
+    _guard: G,
 }
 
-impl<V> OnChange<V> {
+impl<V, G> OnChange<V, G> {
     /// Creates a new `OnChange` view that will execute the provided handler
     /// whenever the source value changes.
     ///
@@ -21,15 +20,16 @@ impl<V> OnChange<V> {
     /// * `content` - The view to render
     /// * `source` - The computed value to watch for changes
     /// * `handler` - The callback to execute when the value changes
-    pub fn new<C, F>(content: V, source: &C, handler: F) -> Self
+    pub fn new<C, F>(content: V, source: &C, handler: F) -> OnChange<V, C::Guard>
     where
-        C: Compute,
+        C: Signal,
         V: View,
         C::Output: PartialEq + Clone,
         F: Fn(C::Output) + 'static,
     {
         let cache: RefCell<Option<C::Output>> = RefCell::new(None);
-        let guard = source.watch(move |value| {
+        let guard = source.watch(move |context| {
+            let value = context.value;
             if let Some(cache) = &mut *cache.borrow_mut()
                 && *cache != value
             {
@@ -37,14 +37,14 @@ impl<V> OnChange<V> {
                 handler(value);
             }
         });
-        Self {
+        OnChange {
             content,
             _guard: guard,
         }
     }
 }
 
-impl<V: View> View for OnChange<V> {
+impl<V: View, G: WatcherGuard> View for OnChange<V, G> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.content
     }

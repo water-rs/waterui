@@ -1,11 +1,11 @@
 //! Provides conditional view rendering functionality through the `When` and `WhenOr` components.
 
 use crate::{ViewExt, component::Dynamic, view::ViewBuilder};
+use nami::signal::IntoComputed;
 use waterui_core::{
     Environment, View,
     handler::{HandlerFn, IntoHandler},
 };
-use waterui_reactive::compute::IntoComputed;
 
 /// A component that conditionally renders a view based on a boolean condition.
 ///
@@ -106,7 +106,7 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let env = env.clone();
-        Dynamic::watch(&self.condition.into_compute(), move |condition| {
+        Dynamic::watch(self.condition.into_signal(), move |condition| {
             if condition {
                 (self.then).view(&env).anyview()
             } else {
