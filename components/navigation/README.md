@@ -270,7 +270,6 @@ let accessible_nav = NavigationView::new(content)
 ## Dependencies
 
 - `waterui-core`: Core framework functionality
-- `waterui-reactive`: Reactive data binding
 - `waterui-text`: Text display components
 
 ## Example
@@ -293,7 +292,7 @@ impl View for AppView {
                     .path(self.navigation_path.clone())
             ),
             Tab::new(
-                "Search", 
+                "Search",
                 icon("magnifyingglass"),
                 SearchView::new()
                     .searchable(search_binding, "Search everything...")

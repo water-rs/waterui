@@ -5,7 +5,7 @@ use alloc::{rc::Rc, vec::Vec};
 use core::{any::type_name, cell::RefCell, future::Future, marker::PhantomData};
 use serde::{Serialize, de::DeserializeOwned};
 use waterui::id::Identifable;
-use waterui_reactive::{
+use nami::{
     Compute,
     binding::CustomBinding,
     collection::Collection,
@@ -45,7 +45,7 @@ impl<T: Schema> Collection for Data<T> {
         self.buf.borrow().len()
     }
 
-    fn add_watcher(&self, watcher: waterui_reactive::watcher::Watcher<()>) -> WatcherGuard {
+    fn add_watcher(&self, watcher: nami::watcher::Watcher<()>) -> WatcherGuard {
         self.database.on_change(move || {
             watcher.notify(());
         })
@@ -148,7 +148,7 @@ impl<T: Schema> Compute for DataElement<T> {
 
     fn add_watcher(
         &self,
-        watcher: waterui_reactive::watcher::Watcher<Self::Output>,
+        watcher: nami::watcher::Watcher<Self::Output>,
     ) -> WatcherGuard {
         WatcherGuard::from_id(&self.watchers, self.watchers.register(watcher))
     }

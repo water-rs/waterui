@@ -1,7 +1,7 @@
 use core::future::Future;
 
 use alloc::vec::Vec;
-use waterui_reactive::watcher::WatcherGuard;
+use nami::watcher::WatcherGuard;
 
 use crate::Id;
 

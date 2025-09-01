@@ -7,7 +7,7 @@
 //! The primary type is `Color`, which can represent colors in either sRGB or P3
 //! color spaces, with conversion methods from various tuple formats.
 
-use waterui_reactive::impl_constant;
+use nami::{impl_constant, watcher::WatcherGuard};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 

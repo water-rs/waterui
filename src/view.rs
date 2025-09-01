@@ -17,8 +17,8 @@ use waterui_core::{
 };
 
 use alloc::boxed::Box;
+use nami::{Binding, Computed, signal::IntoComputed};
 use waterui_navigation::NavigationView;
-use waterui_reactive::{Binding, Computed, compute::IntoComputed};
 
 use crate::background::{Background, ForegroundColor};
 use crate::component::{Metadata, Text, badge::Badge, focu::Focused};

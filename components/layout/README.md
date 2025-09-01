@@ -24,7 +24,7 @@ let vstack = VStack::new([
 .spacing(10.0)
 .alignment(Alignment::Leading);
 
-// Horizontal stack  
+// Horizontal stack
 let hstack = HStack::new([
     button("Cancel"),
     spacer(),
@@ -143,7 +143,7 @@ use waterui_layout::Alignment;
 
 // Basic alignments
 let leading = content().alignment(Alignment::Leading);      // Left/Right
-let center = content().alignment(Alignment::Center);        // Center  
+let center = content().alignment(Alignment::Center);        // Center
 let trailing = content().alignment(Alignment::Trailing);    // Right/Left
 
 // Two-dimensional alignments
@@ -226,7 +226,7 @@ Different layouts for different screen sizes:
 ```rust
 let responsive = ResponsiveView::new()
     .phone(mobile_layout())
-    .tablet(tablet_layout())  
+    .tablet(tablet_layout())
     .desktop(desktop_layout());
 ```
 
@@ -257,7 +257,6 @@ let virtual_list = VirtualList::new(large_dataset)
 ## Dependencies
 
 - `waterui-core`: Core framework functionality
-- `waterui-reactive`: Reactive data binding
 
 ## Example
 
@@ -278,7 +277,7 @@ impl View for MainView {
                 button("Settings"),
             ])
             .padding(16.0),
-            
+
             // Content
             scroll(
                 VStack::new(
@@ -289,7 +288,7 @@ impl View for MainView {
                 .spacing(4.0)
             )
             .direction(ScrollDirection::Vertical),
-            
+
             // Footer
             HStack::new([
                 button("Cancel"),
