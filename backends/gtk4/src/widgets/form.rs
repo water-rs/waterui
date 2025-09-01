@@ -314,7 +314,7 @@ pub fn render_picker(picker: PickerConfig, _env: &Environment) -> Widget {
         let display_text = text_content.content().get().to_string();
 
         combo_box.append_text(&display_text);
-        id_mapping.push(item.tag.clone());
+        id_mapping.push(item.tag);
 
         // Set initial selection if this item matches the current binding value
         if item.tag == picker.selection.get() {
@@ -350,12 +350,11 @@ pub fn render_picker(picker: PickerConfig, _env: &Environment) -> Widget {
         combo_box.connect_changed(move |combo_box| {
             if !updating_for_changed.get() {
                 updating_for_changed.set(true);
-                if let Some(index) = combo_box.active() {
-                    if (index as usize) < id_mapping_for_changed.len() {
+                if let Some(index) = combo_box.active()
+                    && (index as usize) < id_mapping_for_changed.len() {
                         let selected_id = &id_mapping_for_changed[index as usize];
-                        binding_for_changed.set(selected_id.clone());
+                        binding_for_changed.set(*selected_id);
                     }
-                }
                 updating_for_changed.set(false);
             }
         });

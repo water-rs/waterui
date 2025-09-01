@@ -1,38 +1,26 @@
 //! GTK4 general widget implementations.
 
-use gtk4::{Box, Orientation, ProgressBar, Separator, Widget, prelude::*};
+use gtk4::{Orientation, ProgressBar, Separator, Widget, prelude::*};
 use waterui::{
-    Environment,
-    component::{Metadata, layout::Edge},
+    Environment, Signal,
+    component::{Metadata, layout::Edge, progress::ProgressConfig},
 };
 
 use crate::renderer::render;
 
 /// Render a Progress component as a GTK4 ProgressBar - takes ownership.
-pub fn render_progress(progress_value: f64, _env: &Environment) -> Widget {
-    let progress_bar = ProgressBar::new();
+pub fn render_progress(progress: ProgressConfig, _env: &Environment) -> Widget {
+    let widget = ProgressBar::new();
 
-    // Clamp progress value between 0.0 and 1.0
-    let clamped_value = progress_value.clamp(0.0, 1.0);
-    progress_bar.set_fraction(clamped_value);
+    let value = progress.value.get();
 
-    // Show percentage text
-    progress_bar.set_show_text(true);
-    progress_bar.set_text(Some(&format!("{:.0}%", clamped_value * 100.0)));
+    if value.is_nan() {
+        widget.pulse();
+    } else {
+        widget.set_fraction(progress.value.get());
+    }
 
-    progress_bar.upcast()
-}
-
-/// Render a loading Progress component (indeterminate) as a GTK4 ProgressBar.
-pub fn render_loading_progress(_env: &Environment) -> Widget {
-    let progress_bar = ProgressBar::new();
-
-    // Enable pulse mode for indeterminate progress
-    progress_bar.pulse();
-    progress_bar.set_show_text(true);
-    progress_bar.set_text(Some("Loading..."));
-
-    progress_bar.upcast()
+    widget.upcast()
 }
 
 /// Render a Divider as a GTK4 Separator - takes ownership.
