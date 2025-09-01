@@ -29,7 +29,7 @@
 
 use waterui_core::{
     Binding, Computed, View, binding, configurable,
-    reactive::{compute::IntoComputed, impl_constant},
+    reactive::{impl_constant, signal::IntoComputed},
 };
 
 use crate::Url;

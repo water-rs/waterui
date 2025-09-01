@@ -149,7 +149,7 @@ impl<T, V: View> TaggedView<T, V> {
 use core::cell::RefCell;
 
 use alloc::{collections::btree_map::BTreeMap, rc::Rc};
-use waterui_reactive::Binding;
+use nami::Binding;
 
 /// Internal implementation of the mapping functionality.
 ///

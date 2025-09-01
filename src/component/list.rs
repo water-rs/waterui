@@ -8,7 +8,7 @@
 //!
 //! ```
 //! use waterui::list::List;
-//! use waterui_reactive::collection::Vec;
+//! use nami::collection::Vec;
 //!
 //! // Create a simple list from a vector of strings
 //! let data = Vec::from(["Item 1", "Item 2", "Item 3"]);
@@ -16,7 +16,7 @@
 //! ```
 
 use alloc::boxed::Box;
-use waterui_reactive::collection::Collection;
+use nami::collection::Collection;
 
 use crate::{
     component::views::{AnyViews, ForEach},

@@ -22,9 +22,9 @@ use core::fmt::Display;
 use locale::Formatter;
 use waterui_core::configurable;
 
-use waterui_reactive::ComputeExt;
-use waterui_reactive::zip::FlattenMap;
-use waterui_reactive::{Compute, Computed, compute::IntoComputed};
+use nami::SignalExt;
+use nami::zip::FlattenMap;
+use nami::{Computed, Signal, signal::IntoComputed};
 
 use waterui_core::Str;
 
@@ -84,7 +84,7 @@ impl Text {
     /// This is a convenience method for creating text from values like
     /// numbers, booleans, or other displayable types.
     pub fn display<T: Display>(source: impl IntoComputed<T>) -> Self {
-        Self::new(source.into_compute().map(|value| value.to_string()))
+        Self::new(source.into_signal().map(|value| value.to_string()))
     }
 
     /// Creates a text component using a custom formatter.
@@ -94,7 +94,7 @@ impl Text {
     pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T> + 'static) -> Self {
         Self::new(
             value
-                .into_compute()
+                .into_signal()
                 .map(move |value| formatter.format(&value)),
         )
     }
@@ -113,7 +113,7 @@ impl Text {
     /// This allows customizing the typography, including size, weight,
     /// style, and other font properties.
     #[must_use]
-    pub fn font(mut self, font: impl Compute<Output = Font>) -> Self {
+    pub fn font(mut self, font: impl Signal<Output = Font>) -> Self {
         self.0.font = font.computed();
         self
     }
@@ -127,7 +127,7 @@ impl Text {
         self.0.font = self
             .0
             .font
-            .zip(size.into_compute())
+            .zip(size.into_signal())
             .flatten_map(|mut old, size| {
                 old.size = size;
                 old

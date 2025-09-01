@@ -1,5 +1,5 @@
+use nami::{Binding, Computed, signal::IntoComputed};
 use waterui_core::{AnyView, View, configurable};
-use waterui_reactive::{Binding, Computed, compute::IntoComputed};
 
 #[derive(Debug)]
 #[non_exhaustive]

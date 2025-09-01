@@ -54,7 +54,7 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use waterui_reactive::{Binding, binding};
+//! use nami::{Binding, binding};
 //! use waterui::components::Dynamic;
 //!
 //! // Create a reactive state container
@@ -103,8 +103,8 @@ pub mod animation;
 pub mod color;
 pub use color::Color;
 pub mod shape;
-pub use waterui_reactive as reactive;
-pub use waterui_reactive::{Binding, Compute, ComputeExt, Computed, binding, constant};
+pub use nami as reactive;
+pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 pub use waterui_str::Str;
 pub mod id;
-pub use waterui_task as task;
+pub use native_executor as task;

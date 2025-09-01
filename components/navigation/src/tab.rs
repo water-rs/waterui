@@ -11,7 +11,7 @@ use waterui_core::{
     id::Id,
     impl_debug,
 };
-use waterui_reactive::Binding;
+use nami::Binding;
 
 use super::NavigationView;
 use waterui_core::id::TaggedView;

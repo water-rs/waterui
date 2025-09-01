@@ -14,7 +14,7 @@ use waterui_core::{
     handler::{BoxHandler, HandlerFn, into_handler},
     impl_debug, raw_view,
 };
-use waterui_reactive::Computed;
+use nami::Computed;
 use waterui_text::Text;
 
 /// A view that combines a navigation bar with content.

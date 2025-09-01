@@ -34,7 +34,7 @@ use waterui_form::{Toggle, toggle};
 let toggle = Toggle::new(&enabled_binding)
     .label("Enable notifications");
 
-// Convenience function  
+// Convenience function
 let switch = toggle("Dark mode", &dark_mode_binding);
 ```
 
@@ -90,7 +90,7 @@ use waterui_color::Color;
 
 // Automatically creates appropriate form controls
 let name_form = Str::build("Name");          // Creates TextField
-let age_form = i32::build("Age");            // Creates Stepper  
+let age_form = i32::build("Age");            // Creates Stepper
 let enabled_form = bool::build("Enabled");   // Creates Toggle
 let color_form = Color::build("Color");      // Creates ColorPicker
 
@@ -136,7 +136,7 @@ let email_field = TextField::new(&email_binding)
 All form components work with reactive `Binding<T>` values:
 
 ```rust
-use waterui_reactive::binding;
+use nami::binding;
 
 let username = binding(String::new());
 let age = binding(25);
@@ -167,14 +167,13 @@ let styled_field = TextField::new(&binding)
 ## Dependencies
 
 - `waterui-core`: Core framework functionality
-- `waterui-reactive`: Reactive data binding
 - `waterui-color`: Color handling
 
 ## Example
 
 ```rust
 use waterui_form::*;
-use waterui_reactive::binding;
+use nami::binding;
 
 struct UserForm {
     name: Binding<String>,
@@ -192,7 +191,7 @@ impl UserForm {
                 .on_click(|| self.submit()),
         ]
     }
-    
+
     fn submit(&self) {
         println!("Name: {}", self.name.get());
         println!("Age: {}", self.age.get());

@@ -14,9 +14,9 @@ macro_rules! text {
     ($fmt:tt,$($arg:ident),*) => {
         {
             let args=($($arg.clone()),*);
-            use waterui_reactive::ComputeExt;
+            use nami::SignalExt;
             #[allow(unused_parens)]
-            $crate::Text::new(ComputeExt::map(
+            $crate::Text::new(SignalExt::map(
                 args.clone(),|($($arg),*)|{
                     format!($fmt,$($arg),*)
                 }

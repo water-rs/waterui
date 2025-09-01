@@ -5,7 +5,7 @@ use crate::component::{
     Text,
     views::{AnyViews, Views},
 };
-use waterui_reactive::{Computed, compute::IntoComputed};
+use nami::{Computed, compute::IntoComputed};
 
 /// Configuration for a table component.
 #[derive(Debug)]

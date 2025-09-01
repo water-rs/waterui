@@ -67,9 +67,7 @@ impl View for MyView {
 
 ## Dependencies
 
-- `waterui-reactive`: Reactive programming primitives
 - `waterui-str`: Efficient string handling
-- `waterui-task`: Async task management
 - `anyhow`: Error handling
 
 This crate is typically used through the main `waterui` crate, which re-exports the most commonly used types and traits.

@@ -22,14 +22,14 @@
 //! ```
 
 use crate::AnyView;
-use crate::ComputeExt;
+use crate::SignalExt;
 use crate::ViewExt;
 use alloc::format;
+use nami::Computed;
+use nami::signal::IntoComputed;
+use nami::zip::FlattenMap;
 use waterui_core::View;
 use waterui_core::configurable;
-use waterui_reactive::Computed;
-use waterui_reactive::compute::IntoComputed;
-use waterui_reactive::zip::FlattenMap;
 use waterui_text::text;
 
 /// Configuration for progress indicators.
@@ -119,7 +119,7 @@ impl Progress {
     /// * `total` - The total value against which progress is measured.
     pub fn total(mut self, total: impl IntoComputed<f64>) -> ProgressWithTotal {
         self.0.value = total
-            .into_compute()
+            .into_signal()
             .zip(self.0.value)
             .flatten_map(|total, value| value / total)
             .computed();

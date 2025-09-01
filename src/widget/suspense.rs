@@ -5,8 +5,8 @@
 
 use core::future::Future;
 
+use native_executor::LocalTask;
 use waterui_core::{AnyView, Environment, View};
-use waterui_task::LocalTask;
 
 use crate::{
     ViewExt,

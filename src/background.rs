@@ -1,7 +1,7 @@
 //! This module provides types for defining background and foreground colors in a UI.
 
+use nami::signal::IntoComputed;
 use waterui_core::{Color, Computed};
-use waterui_reactive::compute::IntoComputed;
 use waterui_str::Str;
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.

@@ -54,7 +54,7 @@ fn create_counter_view() -> impl View {
 WaterUI consists of several integrated layers:
 
 - **Core**: Fundamental view protocol and environment handling ([`waterui_core`])
-- **Reactive**: State management and change propagation ([`waterui_reactive`])
+- **Reactive**: State management and change propagation ([`nami`])
 - **Components**: Ready-to-use UI elements ([`component`] module)
 - **Layout**: Flexible positioning and arrangement system ([`layout`] module)
 - **Animation**: Fluid transitions and motion effects

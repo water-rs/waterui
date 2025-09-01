@@ -4,7 +4,7 @@ use core::ops::{RangeBounds, RangeInclusive};
 
 use time::Date;
 use waterui_core::{AnyView, View, configurable};
-use waterui_reactive::Binding;
+use nami::Binding;
 /// Configuration for the `DatePicker` component.
 #[derive(Debug)]
 #[non_exhaustive]

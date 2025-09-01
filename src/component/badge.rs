@@ -15,9 +15,9 @@
 //! ```
 
 use crate::ViewExt;
+use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::{AnyView, View};
 use waterui_core::{Color, configurable};
-use waterui_reactive::{Compute, Computed, compute::IntoComputed};
 
 /// Configuration for the Badge component
 #[derive(Debug)]
@@ -51,7 +51,7 @@ impl Badge {
     /// # Arguments
     /// * `color` - The color to use for the badge
     #[must_use]
-    pub fn color(mut self, color: impl Compute<Output = Color>) -> Self {
+    pub fn color(mut self, color: impl Signal<Output = Color>) -> Self {
         self.0.color = color.into_computed();
         self
     }
