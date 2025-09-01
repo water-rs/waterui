@@ -7,23 +7,23 @@
 //! The primary type is `Color`, which can represent colors in either sRGB or P3
 //! color spaces, with conversion methods from various tuple formats.
 
-use nami::{impl_constant, watcher::WatcherGuard};
+use nami::impl_constant;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 
-/// Represents an sRGB color with red, yellow, and blue components.
+/// Represents an sRGB color with red, green, and blue components.
 pub struct Srgb {
     red: u8,
-    yellow: u8,
+    green: u8,
     blue: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 
-/// Represents a P3 color with red, yellow, and blue components.
+/// Represents a P3 color with red, green, and blue components.
 pub struct P3 {
     red: f32,
-    yellow: f32,
+    green: f32,
     blue: f32,
 }
 
@@ -49,27 +49,27 @@ pub struct Color {
 impl_constant!(Color);
 
 impl From<(u8, u8, u8)> for Color {
-    fn from((red, yellow, blue): (u8, u8, u8)) -> Self {
+    fn from((red, green, blue): (u8, u8, u8)) -> Self {
         Self {
-            color: ColorInner::Srgb(Srgb { red, yellow, blue }),
+            color: ColorInner::Srgb(Srgb { red, green, blue }),
             opacity: 1.0,
         }
     }
 }
 
 impl From<(f32, f32, f32)> for Color {
-    fn from((red, yellow, blue): (f32, f32, f32)) -> Self {
+    fn from((red, green, blue): (f32, f32, f32)) -> Self {
         Self {
-            color: ColorInner::P3(P3 { red, yellow, blue }),
+            color: ColorInner::P3(P3 { red, green, blue }),
             opacity: 1.0,
         }
     }
 }
 
 impl From<(f32, f32, f32, f32)> for Color {
-    fn from((red, yellow, blue, opacity): (f32, f32, f32, f32)) -> Self {
+    fn from((red, green, blue, opacity): (f32, f32, f32, f32)) -> Self {
         Self {
-            color: ColorInner::P3(P3 { red, yellow, blue }),
+            color: ColorInner::P3(P3 { red, green, blue }),
             opacity,
         }
     }
