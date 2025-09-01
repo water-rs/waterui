@@ -2,6 +2,7 @@
 //!
 //! This crate provides reusable form elements and builder traits for `WaterUI` applications.
 
+#![no_std]
 extern crate alloc;
 
 /// Text field form component module.
@@ -21,8 +22,7 @@ pub mod picker;
 pub mod stepper;
 #[doc(inline)]
 pub use stepper::{Stepper, stepper};
-use waterui_color::Color;
-use waterui_core::{Binding, Str, View};
+use waterui_core::{Binding, Color, Str, View};
 
 /// The result of building a form field, containing the view and its bound value.
 #[derive(Debug, Clone)]

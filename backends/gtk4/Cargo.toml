@@ -1,0 +1,22 @@
+[package]
+name = "waterui-gtk4"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "GTK4 backend for WaterUI framework"
+keywords = ["ui", "framework", "rust", "gui", "gtk4"]
+categories = ["gui"]
+
+[dependencies]
+waterui.workspace = true
+waterui-render-utils.workspace = true
+gtk4 = "0.9"
+glib = "0.20"
+gdk4 = "0.9"
+pango = "0.20"
+
+[features]
+default = []
