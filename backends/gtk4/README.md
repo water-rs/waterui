@@ -29,8 +29,7 @@ waterui-layout = "0.1.0"
 ```rust
 use waterui_gtk4::{init, Gtk4App};
 use waterui_text::text;
-use waterui_layout::stack::vstack;
-use waterui_core::binding;
+use waterui_layout::vstack;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize GTK4
@@ -40,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Gtk4App::new("com.example.my-app");
 
     // Run with your UI
-    let exit_code = app.run(|| {
+    let _exit_code = app.run(|| {
         vstack([
             text("Hello, GTK4!"),
             text("Built with WaterUI"),

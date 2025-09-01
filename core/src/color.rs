@@ -77,12 +77,13 @@ impl From<(f32, f32, f32, f32)> for Color {
 
 impl Color {
     /// Get the RGBA values as f32 (0.0 to 1.0 range)
+    #[must_use]
     pub fn rgba(&self) -> (f32, f32, f32, f32) {
         match &self.color {
             ColorInner::Srgb(srgb) => (
-                srgb.red as f32 / 255.0,
-                srgb.green as f32 / 255.0,
-                srgb.blue as f32 / 255.0,
+                f32::from(srgb.red) / 255.0,
+                f32::from(srgb.green) / 255.0,
+                f32::from(srgb.blue) / 255.0,
                 self.opacity,
             ),
             ColorInner::P3(p3) => (p3.red, p3.green, p3.blue, self.opacity),
@@ -90,6 +91,8 @@ impl Color {
     }
 
     /// Get the sRGB values as u8 (0 to 255 range)
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn srgb_u8(&self) -> (u8, u8, u8, u8) {
         let (r, g, b, a) = self.rgba();
         (
@@ -101,7 +104,8 @@ impl Color {
     }
 
     /// Create a Color from RGBA f32 values (0.0 to 1.0)
-    pub fn from_rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
+    #[must_use]
+    pub const fn from_rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
         Self {
             color: ColorInner::P3(P3 { red, green, blue }),
             opacity: alpha,

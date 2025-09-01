@@ -239,7 +239,9 @@ The media components are built using WaterUI's configuration pattern:
 
 ```rust
 use waterui_media::{Photo, Media};
-use waterui_core::{VStack, HStack, Text, binding};
+use waterui_layout::vstack;
+use waterui_text::text;
+use waterui_core::{binding, View, Environment};
 
 struct PhotoGallery {
     photos: Vec<String>,
@@ -247,17 +249,17 @@ struct PhotoGallery {
 }
 
 impl View for PhotoGallery {
-    fn body(self, env: &Environment) -> impl View {
-        VStack::new([
+    fn body(self, _env: &Environment) -> impl View {
+        vstack([
             // Main photo display
             Photo::new(&self.photos[self.current_index.get()])
-                .placeholder(Text::new("Loading...")),
+                .placeholder(text("Loading...")),
                 
-            // Photo counter
-            Text::new(format!("{} of {}", 
+            // Photo counter - using text! macro for reactivity
+            text!("{} of {}", 
                 self.current_index.get() + 1, 
                 self.photos.len()
-            )),
+            ),
         ])
     }
 }
@@ -267,18 +269,20 @@ impl View for PhotoGallery {
 
 ```rust
 use waterui_media::{Video, VideoPlayer};
-use waterui_core::{VStack, Button, binding};
+use waterui_layout::vstack;
+use waterui_core::{Button, binding, View, Environment};
 
 fn video_with_controls(video_url: &str) -> impl View {
     let muted = binding(false);
     let player = VideoPlayer::new(Video::new(video_url))
         .muted(&muted);
     
-    VStack::new([
+    vstack([
         player,
         Button::new("Toggle Mute")
-            .on_press(move || {
-                muted.set(!muted.get());
+            .on_press({
+                let muted = muted.clone();
+                move |_| muted.set(!muted.get())
             }),
     ])
 }

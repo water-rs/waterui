@@ -53,13 +53,14 @@ let views: Vec<AnyView> = vec![
 
 ```rust
 use waterui_core::{View, Environment, AnyView};
+use waterui_text::text;
 
 struct MyView {
     title: String,
 }
 
 impl View for MyView {
-    fn body(self, env: &Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         text(self.title)
     }
 }
@@ -68,6 +69,6 @@ impl View for MyView {
 ## Dependencies
 
 - `waterui-str`: Efficient string handling
-- `anyhow`: Error handling
+- `nami`: Reactive state management
 
 This crate is typically used through the main `waterui` crate, which re-exports the most commonly used types and traits.
