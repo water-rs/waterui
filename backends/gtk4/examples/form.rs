@@ -1,15 +1,15 @@
 //! Form example demonstrating various input widgets.
 
 use waterui::{
-    Binding,
+    Binding, ViewExt,
     component::{
         form::{TextField, field, slider::slider, stepper, toggle},
-        layout::stack::vstack,
+        layout::{scroll, stack::vstack},
         text,
     },
     core::binding,
 };
-use waterui_gtk4::{Gtk4App, init};
+use waterui_gtk4::{Gtk4App, init, layout};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize GTK4
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let volume = binding(50.0);
 
         // Build the form UI - using AnyView for mixed types
-        vstack((
+        scroll((
             "User Registration Form",
             "=== Form Components Demo ===",
             // Simple form fields that should render via GTK4 backend
@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             text!("Newsletter: {}", newsletter),
             text!("Volume: {:.0}%", volume),
         ))
+        .padding()
     });
 
     if exit_code != 0 {
