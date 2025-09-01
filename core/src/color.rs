@@ -75,4 +75,38 @@ impl From<(f32, f32, f32, f32)> for Color {
     }
 }
 
+impl Color {
+    /// Get the RGBA values as f32 (0.0 to 1.0 range)
+    pub fn rgba(&self) -> (f32, f32, f32, f32) {
+        match &self.color {
+            ColorInner::Srgb(srgb) => (
+                srgb.red as f32 / 255.0,
+                srgb.green as f32 / 255.0,
+                srgb.blue as f32 / 255.0,
+                self.opacity,
+            ),
+            ColorInner::P3(p3) => (p3.red, p3.green, p3.blue, self.opacity),
+        }
+    }
+
+    /// Get the sRGB values as u8 (0 to 255 range)
+    pub fn srgb_u8(&self) -> (u8, u8, u8, u8) {
+        let (r, g, b, a) = self.rgba();
+        (
+            (r * 255.0) as u8,
+            (g * 255.0) as u8,
+            (b * 255.0) as u8,
+            (a * 255.0) as u8,
+        )
+    }
+
+    /// Create a Color from RGBA f32 values (0.0 to 1.0)
+    pub fn from_rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
+        Self {
+            color: ColorInner::P3(P3 { red, green, blue }),
+            opacity: alpha,
+        }
+    }
+}
+
 raw_view!(Color);
