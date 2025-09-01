@@ -126,13 +126,17 @@ let arabic_text = Text::new("مرحبا بالعالم")  // Arabic text
 
 ## Macros
 
-Convenient text creation:
+Convenient text creation with reactive support:
 
 ```rust
 use waterui_text::macros::*;
 
 // Simple text
 let simple = text!("Hello, World!");
+
+// Reactive text - IMPORTANT: Use text! macro for reactive bindings
+let name = binding("World");
+let reactive_text = text!("Hello, {}!", name); // Updates when name changes
 
 // Text with formatting
 let formatted = text! {
@@ -145,6 +149,9 @@ let formatted = text! {
 let rich = attributed_text! {
     "Normal " + bold("bold") + " and " + italic("italic")
 };
+
+// AVOID: text(format!("Hello, {}!", name.get())) - This loses reactivity!
+// USE: text!("Hello, {}!", name) - This maintains reactivity
 ```
 
 ## Advanced Features
@@ -213,6 +220,8 @@ let localized = Text::new(i18n_key("hello"));
 
 ```rust
 use waterui_text::*;
+use waterui_layout::vstack;
+use waterui_core::{View, Environment, Color};
 
 struct ArticleView {
     title: String,
@@ -220,8 +229,8 @@ struct ArticleView {
 }
 
 impl View for ArticleView {
-    fn body(self, env: &Environment) -> impl View {
-        vstack![
+    fn body(self, _env: &Environment) -> impl View {
+        vstack([
             Text::new(self.title)
                 .typography(Typography::HEADING_1)
                 .color(Color::PRIMARY),
@@ -230,7 +239,7 @@ impl View for ArticleView {
                 .typography(Typography::BODY)
                 .max_lines(None)
                 .line_break_mode(LineBreakMode::WordWrap),
-        ]
+        ])
     }
 }
 ```

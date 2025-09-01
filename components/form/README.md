@@ -85,8 +85,9 @@ Type-safe form creation with automatic UI generation:
 
 ```rust
 use waterui_form::{FormBuilder, FormBuilderResult};
-use waterui_core::{Str, View};
-use waterui_color::Color;
+use waterui_core::{View};
+use waterui_str::Str;
+use waterui_core::Color;
 
 // Automatically creates appropriate form controls
 let name_form = Str::build("Name");          // Creates TextField
@@ -167,31 +168,36 @@ let styled_field = TextField::new(&binding)
 ## Dependencies
 
 - `waterui-core`: Core framework functionality
-- `waterui-color`: Color handling
 
 ## Example
 
 ```rust
 use waterui_form::*;
-use nami::binding;
+use waterui_layout::vstack;
+use waterui_core::{binding, View, Environment, Button};
 
 struct UserForm {
-    name: Binding<String>,
-    age: Binding<i32>,
-    notifications: Binding<bool>,
+    name: binding<String>,
+    age: binding<i32>,
+    notifications: binding<bool>,
 }
 
-impl UserForm {
-    fn view(&self) -> impl View {
-        vstack![
+impl View for UserForm {
+    fn body(self, _env: &Environment) -> impl View {
+        vstack([
             field("Name", &self.name),
             stepper("Age", &self.age),
             toggle("Enable Notifications", &self.notifications),
             Button::new("Submit")
-                .on_click(|| self.submit()),
-        ]
+                .on_click({
+                    let form = self.clone();
+                    move |_| form.submit()
+                }),
+        ])
     }
+}
 
+impl UserForm {
     fn submit(&self) {
         println!("Name: {}", self.name.get());
         println!("Age: {}", self.age.get());

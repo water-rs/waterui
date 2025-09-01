@@ -1,7 +1,6 @@
 //! Media widget implementations for the web backend.
 
 use crate::element::WebElement;
-use std::collections::HashMap;
 
 /// Configuration for image rendering.
 #[derive(Debug, Clone)]
