@@ -23,11 +23,11 @@ impl Size {
     pub fn new(width: f32, height: f32) -> Self {
         Self { width, height }
     }
-    
+
     pub fn zero() -> Self {
         Self::default()
     }
-    
+
     pub fn infinite() -> Self {
         Self {
             width: f32::INFINITY,
@@ -47,7 +47,7 @@ impl Position {
     pub fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
-    
+
     pub fn zero() -> Self {
         Self::default()
     }
@@ -67,7 +67,7 @@ impl Rect {
             size: Size::new(width, height),
         }
     }
-    
+
     pub fn zero() -> Self {
         Self::default()
     }
@@ -84,25 +84,25 @@ impl LayoutConstraints {
     pub fn new(min_size: Size, max_size: Size) -> Self {
         Self { min_size, max_size }
     }
-    
+
     pub fn fixed(size: Size) -> Self {
         Self {
             min_size: size,
             max_size: size,
         }
     }
-    
+
     pub fn loose(max_size: Size) -> Self {
         Self {
             min_size: Size::zero(),
             max_size,
         }
     }
-    
+
     pub fn tight(size: Size) -> Self {
         Self::fixed(size)
     }
-    
+
     /// Check if a size satisfies these constraints
     pub fn satisfies(&self, size: Size) -> bool {
         size.width >= self.min_size.width
@@ -110,12 +110,14 @@ impl LayoutConstraints {
             && size.height >= self.min_size.height
             && size.height <= self.max_size.height
     }
-    
+
     /// Constrain a size to fit within these constraints
     pub fn constrain(&self, size: Size) -> Size {
         Size {
             width: size.width.clamp(self.min_size.width, self.max_size.width),
-            height: size.height.clamp(self.min_size.height, self.max_size.height),
+            height: size
+                .height
+                .clamp(self.min_size.height, self.max_size.height),
         }
     }
 }
@@ -134,9 +136,7 @@ pub enum LayoutBehavior {
         spacing: f32,
     },
     /// A layered stack (ZStack) - overlays children
-    ZStack {
-        alignment: Alignment,
-    },
+    ZStack { alignment: Alignment },
     /// A single leaf node (text, image, etc.)
     Leaf,
     /// A scroll view container
@@ -147,7 +147,7 @@ pub enum LayoutBehavior {
 #[derive(Debug, Clone, Copy)]
 pub enum HorizontalAlignment {
     Leading,
-    Center, 
+    Center,
     Trailing,
 }
 
@@ -171,7 +171,7 @@ impl Alignment {
         horizontal: HorizontalAlignment::Center,
         vertical: VerticalAlignment::Center,
     };
-    
+
     pub const TOP_LEADING: Self = Self {
         horizontal: HorizontalAlignment::Leading,
         vertical: VerticalAlignment::Top,
@@ -185,7 +185,7 @@ pub struct LayoutNode {
     pub behavior: LayoutBehavior,
     pub children: Vec<LayoutId>,
     pub parent: Option<LayoutId>,
-    
+
     // Layout results
     pub constraints: Option<LayoutConstraints>,
     pub computed_size: Option<Size>,
@@ -221,33 +221,33 @@ impl LayoutEngine {
             root: None,
         }
     }
-    
+
     /// Create a new layout node and return its ID
     pub fn create_node(&mut self, behavior: LayoutBehavior) -> LayoutId {
         let id = LayoutId::new(self.next_id);
         self.next_id += 1;
-        
+
         let node = LayoutNode::new(id, behavior);
         self.nodes.insert(id, node);
         id
     }
-    
+
     /// Add a child to a parent node
     pub fn add_child(&mut self, parent_id: LayoutId, child_id: LayoutId) {
         if let Some(parent) = self.nodes.get_mut(&parent_id) {
             parent.children.push(child_id);
         }
-        
+
         if let Some(child) = self.nodes.get_mut(&child_id) {
             child.parent = Some(parent_id);
         }
     }
-    
+
     /// Set the root node
     pub fn set_root(&mut self, root_id: LayoutId) {
         self.root = Some(root_id);
     }
-    
+
     /// Perform layout calculation starting from the root
     pub fn layout(&mut self, available_size: Size) -> Option<Size> {
         if let Some(root_id) = self.root {
@@ -257,17 +257,17 @@ impl LayoutEngine {
             None
         }
     }
-    
+
     /// Layout a specific node with given constraints
     fn layout_node(&mut self, node_id: LayoutId, constraints: LayoutConstraints) -> Option<Size> {
         let behavior = self.nodes.get(&node_id)?.behavior.clone();
         let children = self.nodes.get(&node_id)?.children.clone();
-        
+
         // Store constraints on the node
         if let Some(node) = self.nodes.get_mut(&node_id) {
             node.constraints = Some(constraints);
         }
-        
+
         let size = match behavior {
             LayoutBehavior::VStack { alignment, spacing } => {
                 self.layout_vstack(node_id, &children, alignment, spacing, constraints)
@@ -288,15 +288,15 @@ impl LayoutEngine {
                 constraints.max_size
             }
         };
-        
+
         // Store computed size
         if let Some(node) = self.nodes.get_mut(&node_id) {
             node.computed_size = Some(size);
         }
-        
+
         Some(size)
     }
-    
+
     /// Layout a vertical stack
     fn layout_vstack(
         &mut self,
@@ -309,32 +309,32 @@ impl LayoutEngine {
         if children.is_empty() {
             return Size::zero();
         }
-        
+
         let mut total_height = 0.0_f32;
         let mut max_width = 0.0_f32;
         let spacing_total = (children.len().saturating_sub(1) as f32) * spacing;
-        
+
         // First pass: layout children with unconstrained height
         let available_height = (constraints.max_size.height - spacing_total).max(0.0);
         let child_height = available_height / children.len() as f32;
-        
+
         for &child_id in children {
             let child_constraints = LayoutConstraints {
                 min_size: Size::new(0.0, 0.0),
                 max_size: Size::new(constraints.max_size.width, child_height),
             };
-            
+
             if let Some(child_size) = self.layout_node(child_id, child_constraints) {
                 total_height += child_size.height;
                 max_width = max_width.max(child_size.width);
             }
         }
-        
+
         total_height += spacing_total;
-        
+
         constraints.constrain(Size::new(max_width, total_height))
     }
-    
+
     /// Layout a horizontal stack
     fn layout_hstack(
         &mut self,
@@ -347,32 +347,32 @@ impl LayoutEngine {
         if children.is_empty() {
             return Size::zero();
         }
-        
+
         let mut total_width = 0.0_f32;
         let mut max_height = 0.0_f32;
         let spacing_total = (children.len().saturating_sub(1) as f32) * spacing;
-        
+
         // First pass: layout children with unconstrained width
         let available_width = (constraints.max_size.width - spacing_total).max(0.0);
         let child_width = available_width / children.len() as f32;
-        
+
         for &child_id in children {
             let child_constraints = LayoutConstraints {
                 min_size: Size::new(0.0, 0.0),
                 max_size: Size::new(child_width, constraints.max_size.height),
             };
-            
+
             if let Some(child_size) = self.layout_node(child_id, child_constraints) {
                 total_width += child_size.width;
                 max_height = max_height.max(child_size.height);
             }
         }
-        
+
         total_width += spacing_total;
-        
+
         constraints.constrain(Size::new(total_width, max_height))
     }
-    
+
     /// Layout a layered stack  
     fn layout_zstack(
         &mut self,
@@ -384,10 +384,10 @@ impl LayoutEngine {
         if children.is_empty() {
             return Size::zero();
         }
-        
+
         let mut max_width = 0.0_f32;
         let mut max_height = 0.0_f32;
-        
+
         // All children get the same constraints
         for &child_id in children {
             if let Some(child_size) = self.layout_node(child_id, constraints) {
@@ -395,17 +395,17 @@ impl LayoutEngine {
                 max_height = max_height.max(child_size.height);
             }
         }
-        
+
         constraints.constrain(Size::new(max_width, max_height))
     }
-    
+
     /// Position all nodes after layout is complete
     pub fn position(&mut self, container_rect: Rect) {
         if let Some(root_id) = self.root {
             self.position_node(root_id, container_rect);
         }
     }
-    
+
     /// Position a specific node and its children
     fn position_node(&mut self, node_id: LayoutId, container: Rect) {
         let (behavior, children, size) = {
@@ -419,7 +419,7 @@ impl LayoutEngine {
                 node.computed_size.unwrap_or(Size::zero()),
             )
         };
-        
+
         // Set this node's frame
         if let Some(node) = self.nodes.get_mut(&node_id) {
             node.frame = Some(Rect {
@@ -427,7 +427,7 @@ impl LayoutEngine {
                 size,
             });
         }
-        
+
         // Position children based on layout behavior
         match behavior {
             LayoutBehavior::VStack { alignment, spacing } => {
@@ -442,7 +442,7 @@ impl LayoutEngine {
             _ => {} // Leaf nodes don't have children to position
         }
     }
-    
+
     fn position_vstack_children(
         &mut self,
         _parent_id: LayoutId,
@@ -452,12 +452,14 @@ impl LayoutEngine {
         container: Rect,
     ) {
         let mut y = container.origin.y;
-        
+
         for &child_id in children {
-            let child_size = self.nodes.get(&child_id)
+            let child_size = self
+                .nodes
+                .get(&child_id)
                 .and_then(|n| n.computed_size)
                 .unwrap_or(Size::zero());
-            
+
             let x = match alignment {
                 HorizontalAlignment::Leading => container.origin.x,
                 HorizontalAlignment::Center => {
@@ -467,14 +469,14 @@ impl LayoutEngine {
                     container.origin.x + container.size.width - child_size.width
                 }
             };
-            
+
             let child_container = Rect::new(x, y, child_size.width, child_size.height);
             self.position_node(child_id, child_container);
-            
+
             y += child_size.height + spacing;
         }
     }
-    
+
     fn position_hstack_children(
         &mut self,
         _parent_id: LayoutId,
@@ -484,12 +486,14 @@ impl LayoutEngine {
         container: Rect,
     ) {
         let mut x = container.origin.x;
-        
+
         for &child_id in children {
-            let child_size = self.nodes.get(&child_id)
+            let child_size = self
+                .nodes
+                .get(&child_id)
                 .and_then(|n| n.computed_size)
                 .unwrap_or(Size::zero());
-            
+
             let y = match alignment {
                 VerticalAlignment::Top => container.origin.y,
                 VerticalAlignment::Center => {
@@ -499,14 +503,14 @@ impl LayoutEngine {
                     container.origin.y + container.size.height - child_size.height
                 }
             };
-            
+
             let child_container = Rect::new(x, y, child_size.width, child_size.height);
             self.position_node(child_id, child_container);
-            
+
             x += child_size.width + spacing;
         }
     }
-    
+
     fn position_zstack_children(
         &mut self,
         _parent_id: LayoutId,
@@ -515,10 +519,12 @@ impl LayoutEngine {
         container: Rect,
     ) {
         for &child_id in children {
-            let child_size = self.nodes.get(&child_id)
+            let child_size = self
+                .nodes
+                .get(&child_id)
                 .and_then(|n| n.computed_size)
                 .unwrap_or(Size::zero());
-            
+
             let x = match alignment.horizontal {
                 HorizontalAlignment::Leading => container.origin.x,
                 HorizontalAlignment::Center => {
@@ -528,7 +534,7 @@ impl LayoutEngine {
                     container.origin.x + container.size.width - child_size.width
                 }
             };
-            
+
             let y = match alignment.vertical {
                 VerticalAlignment::Top => container.origin.y,
                 VerticalAlignment::Center => {
@@ -538,17 +544,17 @@ impl LayoutEngine {
                     container.origin.y + container.size.height - child_size.height
                 }
             };
-            
+
             let child_container = Rect::new(x, y, child_size.width, child_size.height);
             self.position_node(child_id, child_container);
         }
     }
-    
+
     /// Get the computed frame for a node
     pub fn get_frame(&self, node_id: LayoutId) -> Option<Rect> {
         self.nodes.get(&node_id)?.frame
     }
-    
+
     /// Get a reference to a node
     pub fn get_node(&self, node_id: LayoutId) -> Option<&LayoutNode> {
         self.nodes.get(&node_id)
