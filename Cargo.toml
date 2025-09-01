@@ -4,7 +4,7 @@ members = [
     "core",
     "kit", 
     "components/*",
-    "utils/*",
+    "utils/str",
     "backends/*", "render_utils"
 ]
 resolver = "2"
@@ -52,12 +52,12 @@ waterui-str = { path = "utils/str" }
 waterui-text = { path = "components/text" }
 waterui-media = { path = "components/media" }
 waterui-form = { path = "components/form" }
-waterui-color = { path = "utils/color" }
 native-executor = "0.1.0"
 nami = { path = "../nami"}
 waterui-layout = { path = "components/layout" }
 waterui-navigation = { path = "components/navigation" }
 waterui-gtk4 = { path = "backends/gtk4" }
+waterui-web = { path = "backends/web" }
 waterui-render-utils = { path = "render_utils" }
 waterui = { path = "." }
 
