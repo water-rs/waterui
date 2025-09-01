@@ -3,37 +3,32 @@
 use crate::{
     layout::{render_scroll_view, render_stack},
     widgets::{
+        canvas::render_canvas,
         dynamic::render_dynamic,
         form::{
-            render_color_picker, render_date_picker, render_multi_date_picker, render_picker,
-            render_secure_field, render_slider, render_stepper, render_text_field, render_toggle,
+            render_color_picker, render_date_picker, render_picker, render_slider, render_stepper,
+            render_text_field, render_toggle,
         },
-        general::{
-            render_divider, render_horizontal_divider, render_loading_progress, render_progress,
-            render_vertical_divider, render_with_padding,
-        },
+        general::{render_horizontal_divider, render_progress, render_with_padding},
         render_label, render_text,
     },
 };
 use gtk4::{Box as GtkBox, Orientation, Widget, prelude::*};
 
 use waterui::{
-    Environment, View,
+    Environment, Signal, View,
     component::{
-        Dynamic, Metadata, Native, Text,
+        Dynamic, Metadata, Progress, Text,
+        divder::Divider,
         form::{
             Slider, Stepper, TextField, Toggle,
             picker::{ColorPicker, DatePicker, Picker},
-            slider::SliderConfig,
-            stepper::StepperConfig,
-            text_field::TextFieldConfig,
-            toggle::ToggleConfig,
         },
         layout::{Edge, stack::Stack},
-        text::TextConfig,
     },
 };
 use waterui::{component::layout::scroll::ScrollView, view::ConfigurableView};
+use waterui_canvas::{Canvas, DynamicCanvas};
 use waterui_render_utils::ViewDispatcher;
 
 pub fn dispatcher() -> ViewDispatcher<(), (), Widget> {
@@ -67,6 +62,18 @@ pub fn dispatcher() -> ViewDispatcher<(), (), Widget> {
         .register(|_, _, scroll: ScrollView, env: &Environment| render_scroll_view(scroll, env));
     // Layout components
     dispatcher.register(|_, _, stack: Stack, env: &Environment| render_stack(stack, env));
+
+    // Canvas components
+    dispatcher.register(|_, _, canvas: Canvas, _| render_canvas(canvas));
+    dispatcher.register(|_, _, dynamic_canvas: DynamicCanvas, _| render_canvas(dynamic_canvas));
+
+    // Progress components
+    dispatcher.register(|_, _, progress: Progress, env: &Environment| {
+        render_progress(progress.config(), env)
+    });
+
+    // General components
+    dispatcher.register(|_, _, _: Divider, env: &Environment| render_horizontal_divider(env));
 
     // Dynamic components
     dispatcher.register(|_, _, dynamic: Dynamic, env| render_dynamic(dynamic, env));
