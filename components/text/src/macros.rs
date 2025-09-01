@@ -14,7 +14,7 @@ macro_rules! text {
     ($fmt:tt,$($arg:ident),*) => {
         {
             let args=($($arg.clone()),*);
-            use nami::SignalExt;
+            use $crate::__nami::SignalExt;
             #[allow(unused_parens)]
             $crate::Text::new(SignalExt::map(
                 args.clone(),|($($arg),*)|{

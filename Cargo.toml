@@ -5,11 +5,9 @@ members = [
     "kit", 
     "components/*",
     "utils/*",
+    "backends/*", "render_utils"
 ]
 resolver = "2"
-
-[lib]
-crate-type = ["cdylib"]
 
 [package]
 name = "waterui"
@@ -59,6 +57,8 @@ native-executor = "0.1.0"
 nami = { path = "../nami"}
 waterui-layout = { path = "components/layout" }
 waterui-navigation = { path = "components/navigation" }
+waterui-gtk4 = { path = "backends/gtk4" }
+waterui-render-utils = { path = "render_utils" }
 waterui = { path = "." }
 
 serde = { version = "1.0", default-features = false }
@@ -72,6 +72,7 @@ waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media.workspace = true
 waterui-navigation.workspace = true
+waterui-form.workspace = true
 native-executor.workspace = true
 typeshare.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
