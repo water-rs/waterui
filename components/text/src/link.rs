@@ -1,6 +1,6 @@
 use waterui_core::Str;
 use waterui_core::{AnyView, configurable};
-use waterui_reactive::Computed;
+use nami::Computed;
 
 #[derive(Debug)]
 /// Configuration for the `Link` component.

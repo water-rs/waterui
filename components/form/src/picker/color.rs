@@ -2,7 +2,7 @@
 
 use waterui_color::Color;
 use waterui_core::{AnyView, View, configurable};
-use waterui_reactive::Binding;
+use nami::Binding;
 
 #[derive(Debug)]
 #[non_exhaustive]

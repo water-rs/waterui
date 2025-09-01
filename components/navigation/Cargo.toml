@@ -14,7 +14,7 @@ categories = ["gui"]
 [dependencies]
 waterui-core.workspace = true
 waterui-text.workspace = true
-waterui-reactive.workspace = true
+nami.workspace = true
 typeshare.workspace = true
 
 [lints]

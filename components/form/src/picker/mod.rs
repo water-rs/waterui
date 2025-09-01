@@ -5,10 +5,10 @@ pub use date::DatePicker;
 pub mod multi_date;
 
 use alloc::vec::Vec;
+use nami::SignalExt;
+use nami::signal::IntoComputed;
+use nami::{Binding, Computed};
 use waterui_core::configurable;
-use waterui_reactive::ComputeExt;
-use waterui_reactive::compute::IntoComputed;
-use waterui_reactive::{Binding, Computed};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
 
@@ -36,7 +36,7 @@ impl Picker {
         selection: &Binding<T>,
     ) -> Self {
         let mapping: Mapping<T> = Mapping::new();
-        let items = items.into_compute();
+        let items = items.into_signal();
         let items = {
             let mapping = mapping.clone();
             items

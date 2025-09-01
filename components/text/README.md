@@ -36,7 +36,7 @@ let rich_text = AttributedText::new()
     )
     .append(" and ")
     .append_with_attributes(
-        "italic text", 
+        "italic text",
         &[TextAttribute::Style(FontStyle::Italic)]
     );
 ```
@@ -80,7 +80,7 @@ let font_family = Font::family(&["SF Pro", "Helvetica", "Arial"])
 ### Font Properties
 
 - **Size**: Point size for text rendering
-- **Weight**: Thin, Light, Regular, Medium, Bold, Heavy  
+- **Weight**: Thin, Light, Regular, Medium, Bold, Heavy
 - **Style**: Normal, Italic, Oblique
 - **Family**: Font family names with fallback support
 
@@ -110,7 +110,7 @@ let number = formatter.format_number(1234.56);  // "1,234.56"
 // Date formatting
 let date = formatter.format_date(date, DateStyle::Medium);  // "Jan 15, 2025"
 
-// Currency formatting  
+// Currency formatting
 let currency = formatter.format_currency(99.99, "USD");  // "$99.99"
 ```
 
@@ -180,7 +180,7 @@ Predefined text styles:
 use waterui_text::typography::*;
 
 let heading = Text::new("Title").typography(Typography::HEADING_1);
-let body = Text::new("Content").typography(Typography::BODY);  
+let body = Text::new("Content").typography(Typography::BODY);
 let caption = Text::new("Note").typography(Typography::CAPTION);
 ```
 
@@ -207,7 +207,6 @@ let localized = Text::new(i18n_key("hello"));
 ## Dependencies
 
 - `waterui-core`: Core framework functionality
-- `waterui-reactive`: Reactive data binding
 - `waterui-str`: Efficient string handling
 
 ## Example
@@ -226,7 +225,7 @@ impl View for ArticleView {
             Text::new(self.title)
                 .typography(Typography::HEADING_1)
                 .color(Color::PRIMARY),
-                
+
             Text::new(self.content)
                 .typography(Typography::BODY)
                 .max_lines(None)

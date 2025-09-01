@@ -1,5 +1,5 @@
 use waterui_core::configurable;
-use waterui_reactive::Binding;
+use nami::Binding;
 
 use waterui_core::{AnyView, View};
 

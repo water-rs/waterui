@@ -12,7 +12,7 @@
 //! All shapes can be used directly with the rendering system.
 
 use crate::raw_view;
-use waterui_reactive::Computed;
+use nami::Computed;
 
 /// Rectangle shape with no rounded corners
 ///

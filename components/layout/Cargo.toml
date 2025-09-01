@@ -13,7 +13,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-reactive.workspace = true
+nami.workspace = true
 typeshare.workspace = true
 
 [dependencies.serde]

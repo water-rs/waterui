@@ -13,8 +13,8 @@ categories = ["gui"]
 
 [dependencies]
 waterui-str.workspace = true
-waterui-reactive.workspace = true
-waterui-task.workspace = true
+nami.workspace = true
+native-executor.workspace = true
 paste = "1.0"
 
 [dependencies.anyhow]

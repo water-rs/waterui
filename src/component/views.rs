@@ -13,7 +13,7 @@ use core::{
     marker::PhantomData,
     num::NonZeroUsize,
 };
-use waterui_reactive::watcher::BoxWatcher;
+use nami::watcher::BoxWatcher;
 
 use waterui_core::id::{Identifable, IdentifableExt, SelfId};
 
@@ -96,7 +96,7 @@ where
     fn len(&self) -> usize {
         self.contents.len()
     }
-    fn add_watcher(&self, watcher: BoxWatcher<()>) -> waterui_reactive::watcher::WatcherGuard {
+    fn add_watcher(&self, watcher: BoxWatcher<()>) -> nami::watcher::WatcherGuard {
         self.contents.watch(watcher)
     }
 }
@@ -152,8 +152,8 @@ impl<V> Collection for AnyViews<V> {
     }
     fn watch(
         &self,
-        watcher: waterui_reactive::watcher::Watcher<()>,
-    ) -> waterui_reactive::watcher::WatcherGuard {
+        watcher: nami::watcher::Watcher<()>,
+    ) -> nami::watcher::WatcherGuard {
         self.0.watch(watcher)
     }
 }
@@ -217,8 +217,8 @@ where
     }
     fn watch(
         &self,
-        watcher: waterui_reactive::watcher::Watcher<()>,
-    ) -> waterui_reactive::watcher::WatcherGuard {
+        watcher: nami::watcher::Watcher<()>,
+    ) -> nami::watcher::WatcherGuard {
         self.data.watch(watcher)
     }
 }

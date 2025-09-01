@@ -1,8 +1,8 @@
 use core::ops::RangeInclusive;
 
 use alloc::format;
+use nami::Binding;
 use waterui_core::{AnyView, View, configurable};
-use waterui_reactive::Binding;
 use waterui_text::text;
 
 /// Configuration for the [`Slider`] widget.
