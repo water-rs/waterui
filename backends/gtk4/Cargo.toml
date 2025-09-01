@@ -17,6 +17,7 @@ gtk4 = "0.9"
 glib = "0.20"
 gdk4 = "0.9"
 pango = "0.20"
+time = "0.3"
 
 [features]
 default = []

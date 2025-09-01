@@ -1,6 +1,5 @@
 //! GTK4 application wrapper for WaterUI.
 
-use glib::clone;
 use gtk4::{Application, ApplicationWindow, prelude::*};
 use std::rc::Rc;
 use waterui::{Environment, View};

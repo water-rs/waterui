@@ -1,13 +1,15 @@
 //! Layout implementation for GTK4 backend.
 
+pub mod engine;
 pub mod scroll;
 pub mod stack;
 
+pub use engine::*;
 pub use scroll::*;
 pub use stack::*;
 
 use gtk4::{Align, Widget, prelude::*};
-use waterui::component::layout::{Alignment, Edge, Frame};
+use waterui::component::layout::{Alignment as WaterUIAlignment, Edge, Frame};
 
 /// Apply WaterUI frame configuration to a GTK4 widget.
 pub fn apply_frame(widget: &Widget, frame: &Frame) {
@@ -29,12 +31,12 @@ pub fn apply_frame(widget: &Widget, frame: &Frame) {
 }
 
 /// Convert WaterUI alignment to GTK4 alignment.
-fn alignment_to_gtk(alignment: &Alignment) -> (Align, Align) {
+fn alignment_to_gtk(alignment: &WaterUIAlignment) -> (Align, Align) {
     match alignment {
-        Alignment::Default => (Align::Fill, Align::Fill),
-        Alignment::Leading => (Align::Start, Align::Start),
-        Alignment::Center => (Align::Center, Align::Center),
-        Alignment::Trailing => (Align::End, Align::End),
+        WaterUIAlignment::Default => (Align::Fill, Align::Fill),
+        WaterUIAlignment::Leading => (Align::Start, Align::Start),
+        WaterUIAlignment::Center => (Align::Center, Align::Center),
+        WaterUIAlignment::Trailing => (Align::End, Align::End),
     }
 }
 

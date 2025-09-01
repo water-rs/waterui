@@ -1,10 +1,7 @@
 //! GTK4 text widget implementation.
 
 use gtk4::{Label, Widget, prelude::*};
-use waterui::{
-    Environment, Signal,
-    component::{Text, text::TextConfig},
-};
+use waterui::{Environment, Signal, component::text::TextConfig};
 
 /// Render a WaterUI Text component as a GTK4 Label.
 pub fn render_text(text: TextConfig, _env: &Environment) -> Widget {
