@@ -14,8 +14,12 @@ categories = ["gui"]
 [dependencies]
 time = "0.3.41"
 waterui-core.workspace = true
+waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
+waterui-form-derive = { path = "derive" }
+zeroize = { version = "1.8.1", default-features = false }
+bcrypt = "0.17.1"
 
 [lints]
 workspace = true

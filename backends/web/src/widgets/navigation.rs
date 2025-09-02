@@ -156,10 +156,8 @@ pub fn render_sheet() -> WebElement {
 
 /// Render an alert dialog.
 pub fn render_alert(_title: &str, _message: &str, _button_text: &str) -> WebElement {
-    let sheet = render_sheet();
-    
     // For a complete implementation, we'd need to access the modal child
     // and add proper HTML content. This is a simplified placeholder.
     
-    sheet
+    render_sheet()
 }

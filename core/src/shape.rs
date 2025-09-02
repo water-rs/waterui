@@ -32,6 +32,18 @@ pub struct RoundedRectangle {
     pub radius: Computed<f64>,
 }
 
+impl RoundedRectangle {
+    /// Create a new rounded rectangle with the specified corner radius
+    pub const fn new(radius: Computed<f64>) -> Self {
+        Self { radius }
+    }
+
+    /// Create a rounded rectangle with corner radius of 8.0
+    pub fn default_radius() -> Self {
+        Self::new(Computed::new(8.0))
+    }
+}
+
 /// Circle shape
 ///
 /// This shape can be used to create circular UI elements.
