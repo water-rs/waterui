@@ -14,8 +14,8 @@ configurable!(LivePhoto, LivePhotoConfig);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Represents the source URLs for a live photo, including the image and video components.
 pub struct LivePhotoSource {
-    image: Url,
-    video: Url,
+    pub image: Url,
+    pub video: Url,
 }
 
 impl LivePhotoSource {
