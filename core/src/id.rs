@@ -21,6 +21,26 @@ use crate::{AnyView, View};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(pub(crate) NonZeroI32);
 
+impl From<Id> for i32 {
+    fn from(val: Id) -> Self {
+        val.0.get()
+    }
+}
+
+impl From<NonZeroI32> for Id {
+    fn from(value: NonZeroI32) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<i32> for Id {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        NonZeroI32::try_from(value).map(Id)
+    }
+}
+
 /// Defines an interface for types that can be uniquely identified.
 ///
 /// Implementors of this trait can provide a specific ID type and a way to retrieve

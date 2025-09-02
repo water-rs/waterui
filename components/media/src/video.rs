@@ -82,6 +82,18 @@ pub struct Video {
     url: Url,
 }
 
+impl From<Url> for Video {
+    fn from(value: Url) -> Self {
+        Self { url: value }
+    }
+}
+
+impl From<Video> for Url {
+    fn from(value: Video) -> Self {
+        value.url
+    }
+}
+
 impl_constant!(Video);
 
 impl Video {
