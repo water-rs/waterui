@@ -33,7 +33,7 @@ WaterUI provides many built-in Views for common UI elements:
 text("Hello, World!")
 
 // Reactive text
-text(name.signal().map(|n| format!("Hello, {}!", n)))
+text(name.get().map(|n| format!("Hello, {}!", n)))
 
 // Styled text
 text("Important!")
@@ -199,7 +199,7 @@ impl View for ExpandableSection {
                 text(self.title)
                     .weight(.bold),
                 spacer(),
-                button(is_expanded.signal().map(|&expanded| {
+                button(is_expanded.get().map(|&expanded| {
                     if expanded { "▲" } else { "▼" }
                 }))
                 .action({
@@ -210,7 +210,7 @@ impl View for ExpandableSection {
             .padding(10.0),
             
             // Expandable content
-            is_expanded.signal().map(|&expanded| {
+            is_expanded.get().map(|&expanded| {
                 if expanded {
                     Some(text(self.content.clone())
                         .padding(10.0)
@@ -335,7 +335,7 @@ where
 
 // Usage
 ListView {
-    items: todos.signal(),
+    items: todos.get(),
     item_builder: |todo| TodoItem { todo },
 }
 ```
@@ -396,7 +396,7 @@ impl<T: Clone + 'static> View for AsyncView<T> {
             }
         });
         
-        state.signal().map(|state| {
+        state.get().map(|state| {
             match state {
                 AsyncState::Loading => loading_spinner().into(),
                 AsyncState::Loaded(data) => content_view(data).into(),
@@ -456,10 +456,10 @@ text(data.map(|data| {
 
 ```rust,ignore
 // Good: Only depends on name
-text(user.signal().map(|user| user.name.clone()))
+text(user.get().map(|user| user.name.clone()))
 
 // Avoid: Depends on entire user object
-text(user.signal().map(|user| user.name.clone()))  // Same effect, but...
+text(user.get().map(|user| user.name.clone()))  // Same effect, but...
 // If you access user.email elsewhere, both will update when user changes
 ```
 
