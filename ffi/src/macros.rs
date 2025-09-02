@@ -220,6 +220,31 @@ macro_rules! ffi_enum {
 }
 
 #[macro_export]
+macro_rules! ffi_enum_with_default {
+    ($ty:ty,$ffi:ident,$default:ident,$($param:ident),*) => {
+        #[repr(C)]
+        pub enum $ffi{
+            $default,
+            $(
+                $param,
+            )*
+        }
+
+        impl $crate::IntoFFI for $ty {
+            type FFI = $ffi;
+            fn into_ffi(self) -> Self::FFI {
+                match self{
+                    $(
+                        <$ty>::$param => $ffi::$param,
+                    )*
+                    _ => $ffi::$default,
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! ffi_view {
     ($view_ty:ty,$ffi_ty:ty,$id:ident,$force_as:ident) => {
         #[unsafe(no_mangle)]

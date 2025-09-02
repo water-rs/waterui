@@ -7,6 +7,14 @@ readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
+description = "FFI bindings for the WaterUI cross-platform UI framework"
+keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
+categories = ["gui", "api-bindings"]
 
 [dependencies]
 waterui.workspace = true
+waterui-core.workspace = true
+waterui-text.workspace = true
+waterui-form.workspace = true
+waterui-navigation.workspace = true
+waterui-media.workspace = true

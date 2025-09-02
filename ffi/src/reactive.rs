@@ -1,8 +1,19 @@
-use crate::{IntoFFI, IntoRust, OpaqueType, impl_opaque_drop};
-use waterui::Str;
+use crate::color::WuiColor;
+use crate::components::media::{WuiLivePhotoSource, WuiVideo};
+use crate::components::text::WuiFont;
+use crate::{IntoFFI, IntoRust, OpaqueType, WuiId, impl_opaque_drop, ty};
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::{Binding, Computed, Signal, reactive::watcher::Metadata};
-impl OpaqueType for BoxWatcherGuard {}
+use waterui::{Color, Str};
+use waterui_media::Video;
+use waterui_media::live::LivePhotoSource;
+use waterui_text::font::Font;
+
+ffi_type!(
+    WuiWatcherGuard,
+    BoxWatcherGuard,
+    waterui_drop_box_watcher_guard
+);
 
 macro_rules! impl_computed {
     ($ty:ty,$ffi_ty:ty,$read:ident,$watch:ident,$drop:ident) => {
@@ -29,7 +40,7 @@ macro_rules! impl_computed {
         pub unsafe extern "C" fn $watch(
             computed: *const Computed<$ty>,
             watcher: WuiWatcher<$ffi_ty>,
-        ) -> *mut BoxWatcherGuard {
+        ) -> *mut WuiWatcherGuard {
             use $crate::IntoFFI;
             unsafe {
                 let guard =
@@ -78,7 +89,7 @@ macro_rules! impl_binding {
         pub unsafe extern "C" fn $watch(
             binding: *const Binding<$ty>,
             watcher: WuiWatcher<$ffi_ty>,
-        ) -> *mut BoxWatcherGuard {
+        ) -> *mut WuiWatcherGuard {
             unsafe {
                 let guard =
                     (*binding).watch(move |ctx| watcher.call(ctx.value.into_ffi(), ctx.metadata));
@@ -118,6 +129,38 @@ impl_computed!(
     waterui_read_computed_double,
     waterui_watch_computed_double,
     waterui_drop_computed_double
+);
+
+impl_computed!(
+    Font,
+    WuiFont,
+    waterui_read_computed_font,
+    waterui_watch_computed_font,
+    waterui_drop_computed_font
+);
+
+impl_computed!(
+    Color,
+    WuiColor,
+    waterui_read_computed_color,
+    waterui_watch_computed_color,
+    waterui_drop_computed_color
+);
+
+impl_computed!(
+    Video,
+    WuiVideo,
+    waterui_read_computed_video,
+    waterui_watch_computed_video,
+    waterui_drop_computed_video
+);
+
+impl_computed!(
+    LivePhotoSource,
+    WuiLivePhotoSource,
+    waterui_read_computed_live_photo_source,
+    waterui_watch_computed_live_photo_source,
+    waterui_drop_computed_live_photo_sources
 );
 
 #[repr(C)]
@@ -188,6 +231,16 @@ impl_binding!(
     waterui_set_binding_bool,
     waterui_watch_binding_bool,
     waterui_drop_binding_bool
+);
+
+// Add Id binding support
+impl_binding!(
+    waterui_core::id::Id,
+    WuiId,
+    waterui_read_binding_id,
+    waterui_set_binding_id,
+    waterui_watch_binding_id,
+    waterui_drop_binding_id
 );
 
 ffi_type!(WuiWatcherMetadata, Metadata, waterui_drop_watcher_metadata);
