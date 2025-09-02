@@ -27,6 +27,7 @@ pub use waterui_core::{
 pub use nami::{Binding, Computed, Signal, signal};
 mod ext;
 pub use ext::SignalExt;
+pub use nami as reactive;
 pub use task::task;
 #[doc(inline)]
 pub use waterui_core as core;
