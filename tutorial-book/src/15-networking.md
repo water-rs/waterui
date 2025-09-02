@@ -71,7 +71,7 @@ fn basic_http_demo() -> impl View {
         
         scroll(
             vstack(
-                users.signal().map(|users| {
+                users.get().map(|users| {
                     users.into_iter().map(|user| {
                         user_card(user)
                     })
@@ -358,7 +358,7 @@ async fn fetch_github_repos(
 fn repo_list(repos: Binding<Vec<GitHubRepo>>) -> impl View {
     scroll(
         vstack(
-            repos.signal().map(|repos| {
+            repos.get().map(|repos| {
                 repos.into_iter().map(|repo| {
                     repo_card(repo)
                 })
@@ -855,7 +855,7 @@ fn send_message(
 fn messages_display(messages: Binding<Vec<ChatMessage>>) -> impl View {
     scroll(
         vstack(
-            messages.signal().map(|msgs| {
+            messages.get().map(|msgs| {
                 msgs.into_iter().map(|msg| {
                     message_bubble(msg)
                 })
