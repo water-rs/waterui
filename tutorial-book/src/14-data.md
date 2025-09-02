@@ -493,7 +493,7 @@ fn event_log(events: Binding<Vec<AppEvent>>) -> impl View {
         
         scroll(
             vstack(
-                events.signal().map(|events| {
+                events.get().map(|events| {
                     events.into_iter().enumerate().map(|(index, event)| {
                         text!("{}: {:?}", index, event)
                             .font_size(12.0)
@@ -781,7 +781,7 @@ fn performance_demo() -> impl View {
               
         // Virtualized list for performance
         virtual_scroll(
-            processed_data.signal().map(|items| {
+            processed_data.get().map(|items| {
                 items.into_iter().map(|item| {
                     optimized_item_view(item)
                 })

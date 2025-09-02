@@ -182,7 +182,7 @@ fn search_tab_content() -> impl View {
         
         scroll(
             vstack(
-                search_results.signal().map(|results| {
+                search_results.get().map(|results| {
                     results.into_iter().map(|result| {
                         search_result_item(result)
                     })
@@ -207,7 +207,7 @@ fn favorites_tab_content() -> impl View {
         
         scroll(
             vstack(
-                favorites.signal().map(|items| {
+                favorites.get().map(|items| {
                     items.into_iter().map(|item| {
                         favorite_item(item)
                     })
@@ -484,7 +484,7 @@ struct BreadcrumbItem {
 fn breadcrumb_navigation(breadcrumbs: Binding<Vec<BreadcrumbItem>>) -> impl View {
     scroll_horizontal(
         hstack(
-            breadcrumbs.signal().map(|items| {
+            breadcrumbs.get().map(|items| {
                 items.into_iter().enumerate().map(|(index, item)| {
                     let is_last = index == items.len() - 1;
                     
@@ -657,7 +657,7 @@ fn navigation_history_demo() -> impl View {
         
         scroll(
             vstack(
-                nav_history.history().signal().map(|history| {
+                nav_history.history().get().map(|history| {
                     history.into_iter().enumerate().map(|(index, route)| {
                         history_item(route, index == history.len() - 1)
                     })

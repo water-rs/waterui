@@ -56,7 +56,7 @@ While `s!` is preferred, you can also use the signal API directly:
 let counter = binding(10);
 
 // Manual approach (more verbose)
-let doubled = counter.signal().map(|&n| n * 2);
+let doubled = counter.get().map(|&n| n * 2);
 let formatted = doubled.map(|&n| format!("Value: {}", n));
 
 // Better: Use s! and text! macros

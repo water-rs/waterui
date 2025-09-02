@@ -178,10 +178,10 @@ This creates a reactive binding with an initial value of 0. When this value chan
 ### Signal Mapping
 
 ```rust,ignore
-text(count.signal().map(|&n| format!("Count: {}", n)))
+text(count.get().map(|&n| format!("Count: {}", n)))
 ```
 
-- `count.signal()` creates a read-only signal from the binding
+- `count.get()` creates a read-only signal from the binding
 - `.map()` transforms the signal value (similar to `Iterator::map`)
 - The text will automatically update whenever `count` changes
 
@@ -226,9 +226,9 @@ impl View for CounterApp {
         let count = binding(0);
         
         // Computed values based on count
-        let is_positive = count.signal().map(|&n| n > 0);
-        let is_even = count.signal().map(|&n| n % 2 == 0);
-        let abs_value = count.signal().map(|&n| n.abs());
+        let is_positive = count.get().map(|&n| n > 0);
+        let is_even = count.get().map(|&n| n % 2 == 0);
+        let abs_value = count.get().map(|&n| n.abs());
         
         vstack((
             text("Interactive Counter")
@@ -237,7 +237,7 @@ impl View for CounterApp {
                 .color(Color::primary()),
                 
             // Main counter display
-            text(count.signal().map(|&n| format!("Count: {}", n)))
+            text(count.get().map(|&n| format!("Count: {}", n)))
                 .size(32.0)
                 .weight(.bold)
                 .color(is_positive.map(|&pos| {
@@ -299,7 +299,7 @@ impl View for CounterApp {
                         let count = count.clone();
                         move |_| count.update(|n| n / 2)
                     })
-                    .disabled(count.signal().map(|&n| n == 0)),
+                    .disabled(count.get().map(|&n| n == 0)),
                     
                 button("²")
                     .action({
@@ -327,8 +327,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Computed Values
 ```rust,ignore
-let is_positive = count.signal().map(|&n| n > 0);
-let is_even = count.signal().map(|&n| n % 2 == 0);
+let is_positive = count.get().map(|&n| n > 0);
+let is_even = count.get().map(|&n| n % 2 == 0);
 ```
 
 These create new reactive values derived from `count`. They automatically update when `count` changes.
@@ -344,7 +344,7 @@ UI properties can be reactive too! The text color changes based on whether the c
 
 ### Conditional Disabling
 ```rust,ignore
-.disabled(count.signal().map(|&n| n == 0))
+.disabled(count.get().map(|&n| n == 0))
 ```
 
 The divide button is disabled when count is zero to prevent division by zero.
@@ -379,7 +379,7 @@ impl View for CounterApp {
                 .size(28.0)
                 .weight(.bold),
                 
-            text(count.signal().map(|&n| format!("Count: {}", n)))
+            text(count.get().map(|&n| format!("Count: {}", n)))
                 .size(32.0)
                 .weight(.bold),
                 
@@ -469,8 +469,8 @@ Rust's ownership rules require cloning bindings before moving them into closures
 
 ### 2. Use Descriptive Variable Names
 ```rust,ignore
-let is_positive = count.signal().map(|&n| n > 0);
-let formatted_count = count.signal().map(|&n| format!("Count: {}", n));
+let is_positive = count.get().map(|&n| n > 0);
+let formatted_count = count.get().map(|&n| format!("Count: {}", n));
 ```
 
 Clear names make your reactive logic easier to understand and maintain.
@@ -478,11 +478,11 @@ Clear names make your reactive logic easier to understand and maintain.
 ### 3. Separate Concerns
 ```rust,ignore
 // Good: Separate data and presentation
-let is_even = count.signal().map(|&n| n % 2 == 0);
+let is_even = count.get().map(|&n| n % 2 == 0);
 text(is_even.map(|&even| if even { "Even" } else { "Odd" }))
 
 // Avoid: Mixed logic
-text(count.signal().map(|&n| {
+text(count.get().map(|&n| {
     if n % 2 == 0 { "Even" } else { "Odd" }
 }))
 ```
@@ -490,7 +490,7 @@ text(count.signal().map(|&n| {
 ### 4. Handle Edge Cases
 ```rust,ignore
 button("Divide by 2")
-    .disabled(count.signal().map(|&n| n == 0))  // Prevent division by zero
+    .disabled(count.get().map(|&n| n == 0))  // Prevent division by zero
 ```
 
 Think about edge cases and handle them gracefully in your UI.
@@ -531,14 +531,14 @@ button("Click2").action({
 
 ### UI Not Updating
 **Problem**: UI doesn't update when data changes.
-**Solution**: Make sure you're using `.signal().map()` for reactive updates.
+**Solution**: Make sure you're using `.get().map()` for reactive updates.
 
 ```rust,ignore
 // Wrong: Static text
 text(format!("Count: {}", count.get()))
 
 // Right: Reactive text
-text(count.signal().map(|&n| format!("Count: {}", n)))
+text(count.get().map(|&n| format!("Count: {}", n)))
 ```
 
 ### Performance Issues
@@ -555,7 +555,7 @@ let result = count.computed(|&n| expensive_calculation(n));
 In this chapter, you learned:
 
 - ✅ How to create reactive state with `binding()`
-- ✅ How to make UI update automatically with `.signal().map()`
+- ✅ How to make UI update automatically with `.get().map()`
 - ✅ How to handle user events with `.action()`
 - ✅ How to compose views with stacks
 - ✅ How to create dynamic styling and conditional behavior
