@@ -25,19 +25,19 @@ enum Commands {
     New {
         /// Name of the project
         name: String,
-        
+
         /// Path where to create the project (defaults to current directory)
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
-    
+
     /// Initialize a `WaterUI` project in the current directory
     Init,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     match cli.command {
         Commands::New { name, path } => {
             commands::new::execute(&name, path)?;
@@ -46,6 +46,6 @@ fn main() -> Result<()> {
             commands::init::execute()?;
         }
     }
-    
+
     Ok(())
 }
