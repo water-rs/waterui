@@ -67,3 +67,4 @@ The framework supports `no-std` environments for embedded deployment. Use the `s
 - Use tuples to wrap mutiple views, for example, vstack((view1,view2))
 - Use text! macro to create Text view, do not use format! macro when you work with reactive, it would loss reactive
 - Use `pub fn view() -> impl View` unless you need to storage value in a struct. For example, if you are writing a clock, may you need to storage style in Clock struct, only create a new struct and use View trait to implement for struct in this case.
+- The project is belonging to `water-rs`, leaded by Lexo Liu

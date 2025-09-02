@@ -42,19 +42,6 @@ pub trait SignalExt: Signal + Sized {
         Zip::new(self, b)
     }
 
-    /// Adds a watcher function that gets called when the value changes.
-    ///
-    /// # Arguments
-    ///
-    /// * `watcher` - A function that gets called with the new value.
-    ///
-    /// # Returns
-    ///
-    /// A guard that removes the watcher when dropped.
-    fn watch(&self, watcher: impl Fn(Self::Output) + 'static) -> Self::Guard {
-        Signal::watch(self, move |context| watcher(context.value))
-    }
-
     /// Converts this computation into a `Computed` wrapper.
     ///
     /// This allows the computation to be cloned efficiently.
