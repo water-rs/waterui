@@ -10,6 +10,7 @@ use waterui_web::widgets::{
 };
 
 #[wasm_bindgen(start)]
+#[allow(clippy::main_recursion)]
 pub fn main() {
     init();
     
@@ -24,19 +25,20 @@ pub fn main() {
 }
 
 #[wasm_bindgen]
+#[allow(unused_variables)]
 pub fn demo_buttons() {
     web_sys::console::log_1(&"Demonstrating button components".into());
     
     // Create primary button with click handler
-    let primary_btn = render_primary_button("Click me!", Some(Box::new(|| {
+    let _primary_btn = render_primary_button("Click me!", Some(Box::new(|| {
         web_sys::console::log_1(&"Primary button clicked!".into());
     })));
     
     // Create text button
-    let text_btn = render_text_button("Cancel", None);
+    let _text_btn = render_text_button("Cancel", None);
     
     // Create custom button
-    let custom_btn = waterui_web::widgets::button::render_button(
+    let _custom_btn = waterui_web::widgets::button::render_button(
         ButtonConfig {
             text: "Custom".to_string(),
             disabled: false,
@@ -51,27 +53,29 @@ pub fn demo_buttons() {
 }
 
 #[wasm_bindgen]
+#[allow(unused_variables)]
 pub fn demo_layout() {
     web_sys::console::log_1(&"Demonstrating layout components".into());
     
     // Create horizontal stack
-    let hstack = render_hstack();
+    let _hstack = render_hstack();
     
     // Create vertical stack
-    let vstack = render_vstack();
+    let _vstack = render_vstack();
     
     // Create spacer
-    let spacer = render_spacer();
+    let _spacer = render_spacer();
     
     web_sys::console::log_1(&"Layout demo complete".into());
 }
 
 #[wasm_bindgen]
+#[allow(unused_variables)]
 pub fn demo_media() {
     web_sys::console::log_1(&"Demonstrating media components".into());
     
     // Create image
-    let image = render_image(ImageConfig {
+    let _image = render_image(ImageConfig {
         src: "https://example.com/image.jpg".to_string(),
         alt: Some("Demo image".to_string()),
         width: Some(300.0),
@@ -80,7 +84,7 @@ pub fn demo_media() {
     });
     
     // Create video
-    let video = waterui_web::widgets::media::render_video(
+    let _video = waterui_web::widgets::media::render_video(
         "https://example.com/video.mp4",
         true,  // controls
         false, // autoplay
@@ -88,39 +92,41 @@ pub fn demo_media() {
     );
     
     // Create canvas
-    let canvas = waterui_web::widgets::media::render_canvas(400.0, 300.0);
+    let _canvas = waterui_web::widgets::media::render_canvas(400.0, 300.0);
     
     web_sys::console::log_1(&"Media demo complete".into());
 }
 
 #[wasm_bindgen]
+#[allow(unused_variables)]
 pub fn demo_navigation() {
     web_sys::console::log_1(&"Demonstrating navigation components".into());
     
     // Create navigation view
-    let nav_view = waterui_web::widgets::navigation::render_navigation_view();
+    let _nav_view = waterui_web::widgets::navigation::render_navigation_view();
     
     // Create navigation link
-    let nav_link = render_navigation_link("Home", Some("/home"));
+    let _nav_link = render_navigation_link("Home", Some("/home"));
     
     // Create tab view
-    let tab_view = render_tab_view();
+    let _tab_view = render_tab_view();
     
     // Create tab items
-    let active_tab = render_tab_item("Tab 1", true);
-    let inactive_tab = render_tab_item("Tab 2", false);
+    let _active_tab = render_tab_item("Tab 1", true);
+    let _inactive_tab = render_tab_item("Tab 2", false);
     
     web_sys::console::log_1(&"Navigation demo complete".into());
 }
 
 #[wasm_bindgen]
+#[allow(unused_variables)]
 pub fn demo_complete_ui() {
     web_sys::console::log_1(&"Demonstrating complete UI composition".into());
     
     // This would show how to compose multiple components together
     // In a real implementation, we'd need proper view composition
     
-    let divider = render_divider();
+    let _divider = render_divider();
     
     web_sys::console::log_1(&"Complete UI demo ready".into());
 }

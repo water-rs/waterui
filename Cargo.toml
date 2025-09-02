@@ -6,7 +6,7 @@ members = [
     "components/*",
     "utils/str",
     "backends/*", "render_utils"
-]
+, "window"]
 resolver = "2"
 
 [package]
@@ -44,6 +44,26 @@ clippy.perf = "warn"
 clippy.pedantic = "warn"
 clippy.nursery = "warn"
 clippy.cargo = "warn"
+
+# Optimization profiles
+[profile.dev]
+# Faster debug builds
+opt-level = 1
+debug = 1
+incremental = true
+
+[profile.release]
+# Optimize for size and speed
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# Fast development profile
+[profile.dev-fast] 
+inherits = "dev"
+opt-level = 1
+debug = 0
 
 
 [workspace.dependencies]

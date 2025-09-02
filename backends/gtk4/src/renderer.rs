@@ -10,13 +10,14 @@ use crate::{
             render_text_field, render_toggle,
         },
         general::{render_horizontal_divider, render_progress, render_with_padding},
+        shape::{render_circle, render_rectangle, render_rounded_rectangle},
         render_label, render_text,
     },
 };
 use gtk4::{Box as GtkBox, Orientation, Widget, prelude::*};
 
 use waterui::{
-    Environment, Signal, View,
+    Environment, View,
     component::{
         Dynamic, Metadata, Progress, Text,
         divder::Divider,
@@ -26,6 +27,7 @@ use waterui::{
         },
         layout::{Edge, stack::Stack},
     },
+    shape::{Circle, Rectangle, RoundedRectangle},
 };
 use waterui::{component::layout::scroll::ScrollView, view::ConfigurableView};
 use waterui_canvas::{Canvas, DynamicCanvas};
@@ -77,6 +79,17 @@ pub fn dispatcher() -> ViewDispatcher<(), (), Widget> {
 
     // Dynamic components
     dispatcher.register(|_, _, dynamic: Dynamic, env| render_dynamic(dynamic, env));
+
+    // Shape components
+    dispatcher.register(|_, _, rectangle: Rectangle, env: &Environment| {
+        render_rectangle(rectangle, env)
+    });
+    dispatcher.register(|_, _, rounded_rect: RoundedRectangle, env: &Environment| {
+        render_rounded_rectangle(rounded_rect, env)
+    });
+    dispatcher.register(|_, _, circle: Circle, env: &Environment| {
+        render_circle(circle, env)
+    });
 
     // Empty/unit type
     dispatcher.register(|_, _, _: (), _| render_empty());

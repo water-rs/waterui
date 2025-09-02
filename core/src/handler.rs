@@ -12,7 +12,7 @@
 
 use crate::extract::Extractor;
 use alloc::boxed::Box;
-use core::marker::PhantomData;
+use core::{fmt::Debug, marker::PhantomData};
 
 use crate::Environment;
 
@@ -26,6 +26,12 @@ pub trait Handler<T>: 'static {
     ///
     /// * `env` - The environment containing request data and context
     fn handle(&self, env: &Environment) -> T;
+}
+
+impl Debug for dyn Handler<()> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Handler<()>")
+    }
 }
 
 impl Handler<()> for () {

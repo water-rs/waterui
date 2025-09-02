@@ -1,0 +1,39 @@
+[book]
+title = "WaterUI Tutorial Book"
+description = "The Complete Guide to Cross-Platform UI Development with Rust"
+authors = ["WaterUI Team"]
+language = "en"
+multilingual = false
+src = "src"
+
+[rust]
+edition = "2021"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[preprocessor.links]
+
+[output.html]
+no-section-label = false
+git-repository-url = "https://github.com/waterui-rs/waterui"
+edit-url-template = "https://github.com/waterui-rs/waterui/edit/main/tutorial-book/{path}"
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.print]
+enable = true
+
+[output.html.fold]
+enable = false
+level = 0

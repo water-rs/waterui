@@ -1,3 +1,9 @@
+//! Task management utilities and async support.
+//!
+//! This module provides utilities for handling asynchronous operations and managing
+//! reactive state changes in the WaterUI framework. It includes components for
+//! watching computed values and executing callbacks when they change.
+
 use core::cell::RefCell;
 
 use nami::watcher::WatcherGuard;
@@ -48,4 +54,40 @@ impl<V: View, G: WatcherGuard> View for OnChange<V, G> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.content
     }
+}
+
+/// Creates an `OnChange` view that watches a computed value and executes a callback when it changes.
+///
+/// This is a convenience function for creating `OnChange` views without having to specify
+/// the full type parameters.
+///
+/// # Arguments
+///
+/// * `content` - The view to render
+/// * `source` - The computed value to watch for changes  
+/// * `handler` - The callback to execute when the value changes
+///
+/// # Returns
+///
+/// An `OnChange` view that will execute the handler when the source value changes.
+///
+/// # Example
+///
+/// ```rust
+/// # use waterui::{task, Signal, signal};
+/// let counter = signal(0);
+/// let view = task(
+///     "Hello World",
+///     &counter,
+///     |value| println!("Counter changed to: {}", value)
+/// );
+/// ```
+pub fn task<V, C, F>(content: V, source: &C, handler: F) -> OnChange<V, C::Guard>
+where
+    C: Signal,
+    V: View,
+    C::Output: PartialEq + Clone,
+    F: Fn(C::Output) + 'static,
+{
+    OnChange::<V, C::Guard>::new(content, source, handler)
 }
