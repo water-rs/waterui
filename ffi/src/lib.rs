@@ -17,8 +17,11 @@
 extern crate alloc;
 #[macro_use]
 mod macros;
+pub mod action;
+pub mod animation;
 pub mod array;
 pub mod closure;
+pub mod color;
 pub mod components;
 pub mod reactive;
 pub mod str;
@@ -159,3 +162,5 @@ pub trait IntoRust {
 }
 
 ffi_safe!(u8, i32, f64, bool);
+
+ffi_type!(waterui_env, waterui::Environment, waterui_env_drop);

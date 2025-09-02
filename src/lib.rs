@@ -18,7 +18,7 @@ pub use view::View;
 pub use view::ViewExt;
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Color,
+    AnyView, Color, animation,
     env::{self, Environment},
     impl_extractor, raw_view, shape,
 };
