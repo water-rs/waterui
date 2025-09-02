@@ -46,6 +46,13 @@ pub struct Color {
     opacity: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
+#[non_exhaustive]
+pub enum Colorspace {
+    Srgb,
+    P3,
+}
+
 impl_constant!(Color);
 
 impl From<(u8, u8, u8)> for Color {
@@ -103,12 +110,31 @@ impl Color {
         )
     }
 
+    pub fn p3(&self) -> (f32, f32, f32, f32) {
+        match &self.color {
+            ColorInner::P3(p3) => (p3.red, p3.green, p3.blue, self.opacity),
+            ColorInner::Srgb(srgb) => (
+                f32::from(srgb.red) / 255.0,
+                f32::from(srgb.green) / 255.0,
+                f32::from(srgb.blue) / 255.0,
+                self.opacity,
+            ),
+        }
+    }
+
     /// Create a Color from RGBA f32 values (0.0 to 1.0)
     #[must_use]
     pub const fn from_rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
         Self {
             color: ColorInner::P3(P3 { red, green, blue }),
             opacity: alpha,
+        }
+    }
+
+    pub const fn color_space(&self) -> Colorspace {
+        match &self.color {
+            ColorInner::Srgb(_) => Colorspace::Srgb,
+            ColorInner::P3(_) => Colorspace::P3,
         }
     }
 }
