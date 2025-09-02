@@ -22,7 +22,7 @@ use nami::{binding, s};
 // Stateless components use functions
 fn counter_app() -> impl View {
     let count = binding(0);
-    
+
     vstack((
         text!("Count: {}", count),
         button("Increment", {
@@ -43,6 +43,7 @@ fn main() {
 WaterUI is built on three core concepts:
 
 ### 1. Views
+
 Declarative UI components that describe what should be displayed:
 
 ```rust
@@ -59,7 +60,8 @@ fn user_card(name: &str, role: &str) -> impl View {
 ```
 
 ### 2. Reactive State
-Powered by the [Nami](https://github.com/your-org/nami) reactive system:
+
+Powered by the [Nami](https://github.com/water-rs/nami) reactive system:
 
 ```rust
 let username = binding("Alice".to_string());
@@ -73,6 +75,7 @@ username.set("Bob".to_string());
 ```
 
 ### 3. Environment System
+
 Type-safe dependency injection through the view hierarchy:
 
 ```rust
@@ -86,12 +89,14 @@ fn themed_button(label: &str) -> impl View {
 ## 🧱 Component Ecosystem
 
 ### Layout Components
+
 - `vstack()`, `hstack()`, `zstack()` - Stack layouts
 - `grid()` - Flexible grid layout
 - `scroll()` - Scrollable containers
 - `padding()`, `margin()` - Spacing modifiers
 
 ### Form Controls
+
 - `button()` - Interactive buttons
 - `text_field()` - Text input
 - `toggle()` - Boolean switches
@@ -99,6 +104,7 @@ fn themed_button(label: &str) -> impl View {
 - `picker()` - Selection controls
 
 ### Media & Graphics
+
 - `image()` - Static and dynamic images
 - `video()` - Video playback
 - `canvas()` - Custom drawing
@@ -122,15 +128,15 @@ fn styled_card() -> impl View {
 
 ## 📱 Platform Support
 
-| Platform | Backend | Status |
-|----------|---------|--------|
-| Linux Desktop | GTK4 | ✅ Stable |
-| macOS Desktop | GTK4 | ✅ Stable |
-| Windows Desktop | GTK4 | ✅ Stable |
-| Web Browser | WebAssembly | 🚧 Beta |
-| iOS | Native | 🗓️ Planned |
-| Android | Native | 🗓️ Planned |
-| Embedded | `no-std` | ✅ Experimental |
+| Platform        | Backend     | Status          |
+| --------------- | ----------- | --------------- |
+| Linux Desktop   | GTK4        | ✅ Stable       |
+| macOS Desktop   | GTK4        | ✅ Stable       |
+| Windows Desktop | GTK4        | ✅ Stable       |
+| Web Browser     | WebAssembly | 🚧 Beta         |
+| iOS             | Native      | 🗓️ Planned      |
+| Android         | Native      | 🗓️ Planned      |
+| Embedded        | `no-std`    | ✅ Experimental |
 
 ## 🔄 Reactive Programming
 
@@ -179,11 +185,11 @@ fn todo_app() -> impl View {
         "Build amazing apps".to_string(),
     ]);
     let input = binding(String::new());
-    
+
     vstack((
         // Header
         text!("Todo App").size(24.0).weight(.bold),
-        
+
         // Input section
         hstack((
             text_field("Add todo...", input.clone()),
@@ -198,7 +204,7 @@ fn todo_app() -> impl View {
                 }
             }),
         )),
-        
+
         // Todo list
         scroll(vstack(
             s!(todos.iter().enumerate().map(|(i, todo)| {
@@ -263,7 +269,7 @@ cargo clippy --all-targets --all-features
 ## 📚 Documentation
 
 - 📖 [Tutorial Book](tutorial-book/) - Complete learning guide
-- 📋 [API Reference](https://docs.rs/waterui) - Detailed API documentation  
+- 📋 [API Reference](https://docs.rs/waterui) - Detailed API documentation
 - 🏗️ [Architecture Guide](CODEBASE_DOCUMENTATION.md) - Framework internals
 - ✨ [Examples](examples/) - Sample applications
 
@@ -284,6 +290,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 WaterUI is in **active development**. The core framework is functional but APIs may change.
 
 ### Completed ✅
+
 - Core reactive system with Nami integration
 - GTK4 desktop backend
 - Component library (layout, forms, media)
@@ -291,11 +298,13 @@ WaterUI is in **active development**. The core framework is functional but APIs 
 - Comprehensive documentation and tutorial
 
 ### In Progress 🚧
+
 - WebAssembly backend improvements
 - Performance optimizations
 - Additional platform backends
 
 ### Planned 🗓️
+
 - iOS and Android native backends
 - Hot reloading for development
 - Visual designer/builder tool
@@ -310,7 +319,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Built with ❤️ in Rust
 - Inspired by SwiftUI, React, and Flutter
 - Powered by GTK4 for desktop rendering
-- State management by [Nami](https://github.com/your-org/nami)
+- State management by [Nami](https://github.com/water-rs/nami)
 
 ---
 

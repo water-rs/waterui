@@ -6,7 +6,7 @@ members = [
     "components/*",
     "utils/str",
     "backends/*", "render_utils"
-, "window"]
+, "window", "cli", "ffi"]
 resolver = "2"
 
 [package]
@@ -73,6 +73,7 @@ waterui-text = { path = "components/text" }
 waterui-media = { path = "components/media" }
 waterui-form = { path = "components/form" }
 waterui-canvas = { path = "components/canvas" }
+waterui-ffi = { path = "ffi" }
 native-executor = "0.1.0"
 nami = { path = "../nami"}
 waterui-layout = { path = "components/layout" }
