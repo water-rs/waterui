@@ -1,15 +1,15 @@
 //! Form example demonstrating various input widgets.
 
 use waterui::{
-    Binding, ViewExt,
+    ViewExt,
     component::{
-        form::{TextField, field, slider::slider, stepper, toggle},
-        layout::{scroll, stack::vstack},
+        form::{field, slider::slider, stepper, toggle},
+        layout::{scroll},
         text,
     },
     core::binding,
 };
-use waterui_gtk4::{Gtk4App, init, layout};
+use waterui_gtk4::{Gtk4App, init};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize GTK4

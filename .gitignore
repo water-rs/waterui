@@ -7,3 +7,7 @@
 /examples/*/src-water/Cargo.lock
 /examples/*/native/apple/build/
 /bindgen/swift/
+
+# Tutorial book build output
+/tutorial-book/book/
+/tutorial-book/target/

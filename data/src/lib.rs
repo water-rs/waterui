@@ -1,3 +1,9 @@
+//! Data management utilities for WaterUI applications.
+//!
+//! This crate provides data persistence, schemas, and database abstractions
+//! that integrate with WaterUI's reactive system. It includes generic data
+//! storage with serialization support and reactive collections.
+
 #![no_std]
 extern crate alloc;
 pub mod database;
