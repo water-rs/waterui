@@ -67,6 +67,9 @@ debug = 0
 
 
 [workspace.dependencies]
+native-executor = "0.1.0"
+nami = { version = "0.3.0" }
+
 waterui-core = { path = "core" }
 waterui-str = { path = "utils/str" }
 waterui-text = { path = "components/text" }
@@ -74,8 +77,6 @@ waterui-media = { path = "components/media" }
 waterui-form = { path = "components/form" }
 waterui-canvas = { path = "components/canvas" }
 waterui-ffi = { path = "ffi" }
-native-executor = "0.1.0"
-nami = { path = "../nami"}
 waterui-layout = { path = "components/layout" }
 waterui-navigation = { path = "components/navigation" }
 waterui-gtk4 = { path = "backends/gtk4" }
