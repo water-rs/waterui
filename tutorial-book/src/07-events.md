@@ -121,7 +121,7 @@ fn todo_list() -> impl View {
         
         // Event handler at the list level
         vstack(
-            todos.signal().map(|todos| {
+            todos.get().map(|todos| {
                 todos.into_iter().map(|todo| {
                     todo_item(todo, {
                         let todos = todos.clone();
@@ -436,7 +436,7 @@ fn async_button_demo() -> impl View {
                 }
             }),
             
-        is_loading.signal().map(|loading| {
+        is_loading.get().map(|loading| {
             if loading {
                 Some(progress_indicator())
             } else {
@@ -444,7 +444,7 @@ fn async_button_demo() -> impl View {
             }
         }),
         
-        result.signal().map(|result| {
+        result.get().map(|result| {
             result.map(|msg| text(msg))
         }),
     ))

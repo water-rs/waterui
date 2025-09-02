@@ -176,7 +176,7 @@ impl View for App {
     fn body(self, _env: &Environment) -> impl View {
         let is_dark_mode = binding(false);
         
-        let theme = is_dark_mode.signal().map(|&dark| {
+        let theme = is_dark_mode.get().map(|&dark| {
             if dark { AppTheme::dark() } else { AppTheme::light() }
         });
         
@@ -286,11 +286,11 @@ impl View for UserProfile {
         });
         
         // UI based on loading state
-        loading.signal().map(move |&loading| {
+        loading.get().map(move |&loading| {
             if loading {
                 progress_indicator()
             } else {
-                user_state.signal().map(|user_opt| {
+                user_state.get().map(|user_opt| {
                     match user_opt {
                         Some(user) => user_details_view(user.clone()),
                         None => error_view("Failed to load user"),
@@ -410,7 +410,7 @@ impl View for MultiLanguageApp {
     fn body(self, _env: &Environment) -> impl View {
         let current_language = binding(Language::English);
         
-        let localizer = current_language.signal()
+        let localizer = current_language.get()
             .map(|&lang| Localizer::new(lang));
             
         localizer.map(|localizer| {
