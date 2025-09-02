@@ -1,126 +1,323 @@
-# WaterUI Framework
+# WaterUI 🌊
 
-## Bring Your App to Every Platform, Once for All
+**A modern, cross-platform UI framework for Rust**
 
-WaterUI is a modern, experimental UI framework written in Rust that enables you to build applications using a single codebase that can run on any platform, including embedded devices.
+Build beautiful, reactive applications that run everywhere - from desktop to mobile to embedded devices.
 
-## Key Features
+## ✨ Features
 
-- **Type-safe, declarative and reactive API** - Build interfaces that automatically react to state changes
-- **First-class async support** - Seamlessly integrate with asynchronous operations
-- **Platform-independent core** - Create UIs that work consistently across platforms
-- **`no-std` support** - Deploy to embedded environments with minimal resources
-- **Flexible component system** - Compose and reuse UI elements to build complex interfaces
+- 🦀 **100% Rust** - Type-safe, memory-safe, fast
+- 🔄 **Reactive by Design** - UI automatically updates when data changes
+- 🌍 **Cross-Platform** - One codebase, every platform
+- 📱 **Platform Native** - GTK4 on desktop, WebAssembly on web
+- 🪶 **Lightweight** - `no-std` support for embedded devices
+- ⚡ **Performance** - Zero-cost abstractions, compile-time optimizations
 
-## Quick Start
+## 🚀 Quick Start
 
 ```rust
-use waterui::{
-    text, button, vstack,
-    binding, View, Environment,
-};
+use waterui::*;
+use nami::{binding, s};
 
-pub struct Counter;
+// Stateless components use functions
+fn counter_app() -> impl View {
+    let count = binding(0);
+    
+    vstack((
+        text!("Count: {}", count),
+        button("Increment", {
+            let count = count.clone();
+            move |_| count.update(|c| c + 1)
+        }),
+    ))
+    .padding(20.0)
+}
 
-impl View for Counter {
-    fn body(self, _env: &Environment) -> impl View {
-        let count = binding(0);
-        vstack([
-            text(count.display()),
-            button("Click me!").action({
-                let count = count.clone();
-                move |_| count.add(1)
-            }),
-        ])
-    }
+fn main() {
+    App::new().run(counter_app());
 }
 ```
 
-## Architecture
+## 🏗️ Architecture
 
-WaterUI is built around a few key concepts:
+WaterUI is built on three core concepts:
 
-1. **Views**: Composable UI elements that describe what should be displayed
-2. **Reactive State**: Values that automatically propagate changes
-3. **Environment**: A context passed through the view hierarchy for configuration
-
-The framework uses a platform-agnostic core with platform-specific backends to render your UI on different devices. This means your code looks exactly the same whether it's running on:
-
-- Mobile devices (iOS, Android)
-- Desktop platforms (Windows, macOS, Linux)
-- Web browsers (via WebAssembly)
-- Embedded devices (with no standard library)
-
-## Component System
-
-WaterUI provides a rich set of built-in components:
-
-- **Layout**: `VStack`, `HStack`, `ZStack`, Grid, Scroll
-- **Controls**: Button, Toggle, TextField, Slider, Stepper
-- **Navigation**: Navigation views, tabs, links
-- **Media**: Photo, Video, LivePhoto
-
-All components are designed to be composable, allowing you to build complex interfaces from simple building blocks.
-
-## Reactive Programming Model
-
-The framework uses a reactive programming model where UI components automatically update when their underlying data changes:
+### 1. Views
+Declarative UI components that describe what should be displayed:
 
 ```rust
-// Create a reactive binding
-let name = binding("World");
-
-// This text will automatically update when name changes - USE text! macro for reactivity
-let greeting = text!("Hello, {}!", name);
-
-// Later, update the binding
-name.set("Universe");  // Text now shows "Hello, Universe!"
+// Function-based views for stateless components
+fn user_card(name: &str, role: &str) -> impl View {
+    vstack((
+        text!(name).weight(.bold),
+        text!(role).color(Color::secondary()),
+    ))
+    .padding(15.0)
+    .background(Color::card())
+    .corner_radius(8.0)
+}
 ```
 
-## Comparison with Other Frameworks
+### 2. Reactive State
+Powered by the [Nami](https://github.com/your-org/nami) reactive system:
 
-| Feature | WaterUI | React Native | Flutter | SwiftUI |
-|---------|---------|--------------|---------|---------|
-| Language | Rust | JavaScript | Dart | Swift |
-| Runtime | Native | JS VM | Dart VM | Native |
-| no-std support | ✅ | ❌ | ❌ | ❌ |
-| Declarative UI | ✅ | ✅ | ✅ | ✅ |
-| Type Safety | Strong | Weak | Strong | Strong |
+```rust
+let username = binding("Alice".to_string());
+let greeting = s!("Hello, {}!", username);
 
-## Current Status
+// Use text! macro for reactive text
+let ui = text!(greeting);
 
-WaterUI is under active development and is currently in an experimental state. While it's ready for experimentation, we recommend waiting for a stable release before using it in production applications.
+// Updates automatically propagate
+username.set("Bob".to_string());
+```
 
-### TODO
+### 3. Environment System
+Type-safe dependency injection through the view hierarchy:
 
-- [ ] Better error handling
-- [ ] Support async and error handling without std
-- [ ] Icon component
-- [ ] Hot reloading
-- [ ] CLI tools for project management
-- [ ] Multi-window support
+```rust
+fn themed_button(label: &str) -> impl View {
+    button(label)
+        .background(env!(AppTheme).primary_color)
+        .color(env!(AppTheme).text_color)
+}
+```
 
-## Getting Started
+## 🧱 Component Ecosystem
 
-1. Add WaterUI to your Cargo.toml:
+### Layout Components
+- `vstack()`, `hstack()`, `zstack()` - Stack layouts
+- `grid()` - Flexible grid layout
+- `scroll()` - Scrollable containers
+- `padding()`, `margin()` - Spacing modifiers
+
+### Form Controls
+- `button()` - Interactive buttons
+- `text_field()` - Text input
+- `toggle()` - Boolean switches
+- `slider()` - Numeric input
+- `picker()` - Selection controls
+
+### Media & Graphics
+- `image()` - Static and dynamic images
+- `video()` - Video playback
+- `canvas()` - Custom drawing
+- `shape()` - Geometric shapes
+
+## 🎨 Styling System
+
+```rust
+fn styled_card() -> impl View {
+    vstack((
+        text!("Card Title").size(18.0),
+        text!("Card content goes here..."),
+    ))
+    .padding(20.0)
+    .background(Color::white())
+    .corner_radius(12.0)
+    .shadow(2.0)
+    .border(1.0, Color::gray(0.2))
+}
+```
+
+## 📱 Platform Support
+
+| Platform | Backend | Status |
+|----------|---------|--------|
+| Linux Desktop | GTK4 | ✅ Stable |
+| macOS Desktop | GTK4 | ✅ Stable |
+| Windows Desktop | GTK4 | ✅ Stable |
+| Web Browser | WebAssembly | 🚧 Beta |
+| iOS | Native | 🗓️ Planned |
+| Android | Native | 🗓️ Planned |
+| Embedded | `no-std` | ✅ Experimental |
+
+## 🔄 Reactive Programming
+
+WaterUI embraces reactive programming with the `s!` macro for computations:
+
+```rust
+let width = binding(100.0);
+let height = binding(50.0);
+
+// Reactive computations
+let area = s!(width * height);
+let aspect_ratio = s!(width / height);
+
+// Conditional reactivity
+let status = s!(if area > 1000.0 { "Large" } else { "Small" });
+
+// Use in UI
+vstack((
+    text!("Area: {:.1}", area),
+    text!("Ratio: {:.2}", aspect_ratio),
+    text!("Status: {}", status),
+))
+```
+
+## 📖 Getting Started
+
+### Installation
+
+Add to your `Cargo.toml`:
+
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = { version = "0.1", features = ["gtk4"] }
+nami = "0.1"  # Reactive state management
 ```
 
-2. Create a new UI:
+### Your First App
+
 ```rust
-use waterui::{text, View, Environment};
+use waterui::*;
+use nami::{binding, s};
 
-struct HelloWorld;
+fn todo_app() -> impl View {
+    let todos = binding(vec![
+        "Learn WaterUI".to_string(),
+        "Build amazing apps".to_string(),
+    ]);
+    let input = binding(String::new());
+    
+    vstack((
+        // Header
+        text!("Todo App").size(24.0).weight(.bold),
+        
+        // Input section
+        hstack((
+            text_field("Add todo...", input.clone()),
+            button("Add", {
+                let todos = todos.clone();
+                let input = input.clone();
+                move |_| {
+                    if !input.get().trim().is_empty() {
+                        todos.update(|list| list.push(input.get()));
+                        input.set(String::new());
+                    }
+                }
+            }),
+        )),
+        
+        // Todo list
+        scroll(vstack(
+            s!(todos.iter().enumerate().map(|(i, todo)| {
+                hstack((
+                    text!(todo),
+                    button("×", {
+                        let todos = todos.clone();
+                        move |_| todos.update(|list| { list.remove(i); })
+                    }),
+                ))
+            }).collect::<Vec<_>>())
+        )),
+    ))
+    .padding(20.0)
+}
 
-impl View for HelloWorld {
-    fn body(self, _env: &Environment) -> impl View {
-        text("Hello, World!")
-    }
+fn main() {
+    App::new()
+        .title("Todo App")
+        .size(400, 600)
+        .run(todo_app());
 }
 ```
 
-## Contributing
+## 🔧 Development Setup
 
-We welcome contributions to WaterUI! Whether you're fixing bugs, improving documentation, or proposing new features, your help is appreciated.
+### Prerequisites
+
+- Rust 1.85+ (2024 edition)
+- Platform dependencies:
+  - **Linux**: `sudo apt install libgtk-4-dev build-essential`
+  - **macOS**: `brew install gtk4`
+  - **Windows**: Install GTK4 via MSYS2
+
+### Building
+
+```bash
+# Debug build
+cargo build
+
+# Release build
+cargo build --release
+
+# Run examples
+cargo run --example counter
+cargo run --example todo-app
+```
+
+### Testing
+
+```bash
+# Run all tests
+cargo test --all-features
+
+# Test with memory safety checks
+cargo +nightly miri test
+
+# Linting
+cargo clippy --all-targets --all-features
+```
+
+## 📚 Documentation
+
+- 📖 [Tutorial Book](tutorial-book/) - Complete learning guide
+- 📋 [API Reference](https://docs.rs/waterui) - Detailed API documentation  
+- 🏗️ [Architecture Guide](CODEBASE_DOCUMENTATION.md) - Framework internals
+- ✨ [Examples](examples/) - Sample applications
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Development Workflow
+
+1. Fork and clone the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make your changes following our coding standards
+4. Run tests: `cargo test --all-features`
+5. Submit a pull request
+
+## 🛠️ Current Status
+
+WaterUI is in **active development**. The core framework is functional but APIs may change.
+
+### Completed ✅
+- Core reactive system with Nami integration
+- GTK4 desktop backend
+- Component library (layout, forms, media)
+- Environment system for dependency injection
+- Comprehensive documentation and tutorial
+
+### In Progress 🚧
+- WebAssembly backend improvements
+- Performance optimizations
+- Additional platform backends
+
+### Planned 🗓️
+- iOS and Android native backends
+- Hot reloading for development
+- Visual designer/builder tool
+- Plugin ecosystem
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- Built with ❤️ in Rust
+- Inspired by SwiftUI, React, and Flutter
+- Powered by GTK4 for desktop rendering
+- State management by [Nami](https://github.com/your-org/nami)
+
+---
+
+**Ready to build something amazing?** 🚀
+
+```bash
+cargo new my-waterui-app
+cd my-waterui-app
+# Add WaterUI to Cargo.toml and start coding!
+```
