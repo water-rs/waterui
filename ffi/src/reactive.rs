@@ -189,3 +189,5 @@ impl_binding!(
     waterui_watch_binding_bool,
     waterui_drop_binding_bool
 );
+
+ffi_type!(WuiWatcherMetadata, Metadata, waterui_drop_watcher_metadata);
