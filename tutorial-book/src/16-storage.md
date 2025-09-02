@@ -661,7 +661,7 @@ fn tasks_list(
 ) -> impl View {
     scroll(
         vstack(
-            tasks.signal().map(|tasks| {
+            tasks.get().map(|tasks| {
                 tasks.into_iter().map(|task| {
                     task_item(task, db.clone(), tasks.clone(), error.clone())
                 })
@@ -959,7 +959,7 @@ fn file_browser(
 ) -> impl View {
     scroll(
         vstack(
-            files.signal().map(|files| {
+            files.get().map(|files| {
                 files.into_iter().map(|file| {
                     file_entry_item(file, selected_file.clone())
                 })

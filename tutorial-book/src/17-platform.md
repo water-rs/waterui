@@ -718,7 +718,7 @@ fn notification_history_display(history: Binding<Vec<NotificationRecord>>) -> im
         
         scroll(
             vstack(
-                history.signal().map(|notifications| {
+                history.get().map(|notifications| {
                     if notifications.is_empty() {
                         vec![text("No notifications sent yet").color(Color::secondary())]
                     } else {

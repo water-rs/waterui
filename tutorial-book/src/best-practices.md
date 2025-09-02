@@ -87,8 +87,8 @@ let first_char = s!(name.chars().next());
 
 ```rust,ignore
 // More verbose and less readable
-let area = width.signal()
-    .zip(height.signal())
+let area = width.get()
+    .zip(height.get())
     .map(|(w, h)| w * h);
 ```
 
@@ -110,7 +110,7 @@ text!("{} scored {} points", name, score)
 
 ```rust,ignore
 // More verbose
-text(name.signal().map(|n| format!("Hello, {}!", n)))
+text(name.get().map(|n| format!("Hello, {}!", n)))
 ```
 
 ## State Management Best Practices
@@ -304,12 +304,10 @@ enum DataState<T> {
 fn data_view() -> impl View {
     let state = binding(DataState::Loading);
     
-    state.signal().map(|state| {
-        match state {
-            DataState::Loading => loading_spinner(),
-            DataState::Success(data) => data_list(data),
-            DataState::Error(msg) => error_message(msg),
-        }
+    s!(match state {
+        DataState::Loading => loading_spinner(),
+        DataState::Success(data) => data_list(data),
+        DataState::Error(msg) => error_message(msg),
     })
 }
 ```
