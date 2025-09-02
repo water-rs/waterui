@@ -249,7 +249,7 @@ fn file_upload_demo() -> impl View {
         
         // File list
         vstack(
-            uploaded_files.signal().map(|files| {
+            uploaded_files.get().map(|files| {
                 files.into_iter().map(|file| {
                     file_item(file)
                 })
@@ -438,7 +438,7 @@ fn form_validation_demo() -> impl View {
         } else {
             Some(
                 vstack(
-                    validation_errors.signal().map(|errors| {
+                    validation_errors.get().map(|errors| {
                         errors.into_iter().map(|error| {
                             text(&error)
                                 .color(Color::red())
