@@ -198,7 +198,7 @@ macro_rules! ffi_struct {
 
 #[macro_export]
 macro_rules! ffi_enum {
-    ($ty:ident,$ffi:ident,$($param:ident),*) => {
+    ($ty:ty,$ffi:ident,$($param:ident),*) => {
         #[repr(C)]
         pub enum $ffi{
             $(
@@ -211,9 +211,97 @@ macro_rules! ffi_enum {
             fn into_ffi(self) -> Self::FFI {
                 match self{
                     $(
-                        $ty::$param => $ffi::$param,
+                        <$ty>::$param => $ffi::$param,
                     )*
                 }
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_view {
+    ($view_ty:ty,$ffi_ty:ty,$id:ident,$force_as:ident) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $force_as(view: *mut waterui::AnyView) -> $ffi_ty {
+            unsafe {
+                let any: waterui::AnyView = $crate::IntoRust::into_rust(view).unwrap();
+                let view = (*any.downcast_unchecked::<$view_ty>());
+                $crate::IntoFFI::into_ffi(view)
+            }
+        }
+        $crate::ffi_view!($view_ty, $id);
+    };
+
+    ($view_ty:ty,$id:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $id() -> $crate::WuiTypeId {
+            $crate::IntoFFI::into_ffi(core::any::TypeId::of::<$view_ty>())
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_type {
+    ($name:ident,$ty:ty,$drop:ident) => {
+        #[allow(nonstandard_style)]
+        pub struct $name(pub(crate) $ty);
+
+        $crate::impl_deref!($name, $ty);
+
+        impl $crate::IntoFFI for $ty {
+            type FFI = *mut $name;
+            fn into_ffi(self) -> Self::FFI {
+                alloc::boxed::Box::into_raw(alloc::boxed::Box::new($name(self)))
+            }
+        }
+
+        impl $crate::IntoFFI for Option<$ty> {
+            type FFI = *mut $name;
+            fn into_ffi(self) -> Self::FFI {
+                if let Some(value) = self {
+                    value.into_ffi()
+                } else {
+                    core::ptr::null::<$name>() as *mut $name
+                }
+            }
+        }
+
+        impl $crate::IntoRust for *mut $name {
+            type Rust = $ty;
+            unsafe fn into_rust(self) -> Self::Rust {
+                unsafe { alloc::boxed::Box::from_raw(self).0 }
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        /// Drops the FFI value.
+        ///
+        /// # Safety
+        ///
+        /// The pointer must be a valid pointer to a properly initialized value
+        /// of the expected type, and must not be used after this function is called.
+        pub unsafe extern "C" fn $drop(value: *mut $name) {
+            unsafe {
+                let _ = $crate::IntoRust::into_rust(value);
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! impl_deref {
+    ($ty:ty,$target:ty) => {
+        impl core::ops::Deref for $ty {
+            type Target = $target;
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl core::ops::DerefMut for $ty {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
             }
         }
     };

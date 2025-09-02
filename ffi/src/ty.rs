@@ -1,5 +1,9 @@
 use core::mem::transmute;
 
+use waterui::core::handler::BoxHandler;
+
+use crate::OpaqueType;
+
 use super::{IntoFFI, IntoRust};
 
 /// A C-compatible representation of Rust's `core::any::TypeId`.
@@ -27,3 +31,5 @@ impl IntoRust for WuiTypeId {
         unsafe { transmute(self.inner) }
     }
 }
+
+impl OpaqueType for waterui::AnyView {}
