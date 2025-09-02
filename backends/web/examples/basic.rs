@@ -3,6 +3,7 @@ use waterui::{Environment, component::text};
 use waterui_web::{WebApp, init};
 
 #[wasm_bindgen(start)]
+#[allow(clippy::main_recursion)]
 pub fn main() {
     init();
 

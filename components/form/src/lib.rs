@@ -5,6 +5,11 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::string::String;
+
+#[doc(inline)]
+pub use waterui_form_derive::FormBuilder;
+
 /// Text field form component module.
 pub mod text_field;
 /// Toggle (switch) form component module.
@@ -24,30 +29,33 @@ pub mod stepper;
 pub use stepper::{Stepper, stepper};
 use waterui_core::{Binding, Color, Str, View};
 
-/// The result of building a form field, containing the view and its bound value.
-#[derive(Debug, Clone)]
-pub struct FormBuilderResult<T: 'static, V: View> {
-    /// The view representing the form field.
-    pub view: V,
-    /// The binding to the value of the form field.
-    pub value: Binding<T>,
-}
-
-/// Trait for types that can be constructed as form fields.
+/// Trait for types that can be automatically converted to form UI components.
+///
+/// This trait is implemented for types that can be rendered as form fields,
+/// either manually or through the `#[derive(FormBuilder)]` macro.
 pub trait FormBuilder: Sized {
-    /// Builds a form field with the given label, returning the view and value binding.
-    fn build(label: impl View) -> FormBuilderResult<Self, impl View>;
+    /// The view type that represents this form field.
+    type View: View;
+
+    /// Creates a view representation of this form field bound to the given binding.
+    fn view(binding: &Binding<Self>) -> Self::View;
+
+    /// Creates a new binding with the default value for this form.
+    #[must_use]
+    fn binding() -> Binding<Self>
+    where
+        Self: Default + Clone,
+    {
+        Binding::default()
+    }
 }
 
 macro_rules! impl_form_builder {
     ($ty:ty,$view:ty) => {
         impl FormBuilder for $ty {
-            fn build(label: impl View) -> FormBuilderResult<Self, impl View> {
-                let value = Binding::default();
-                FormBuilderResult {
-                    view: <$view>::new(&value).label(label),
-                    value,
-                }
+            type View = $view;
+            fn view(binding: &Binding<Self>) -> Self::View {
+                <$view>::new(binding)
             }
         }
     };
@@ -58,9 +66,30 @@ impl_form_builder!(i32, Stepper);
 impl_form_builder!(bool, Toggle);
 impl_form_builder!(Color, picker::ColorPicker);
 
-/*
+/// Creates a form view from a binding to a type that implements `FormBuilder`.
+///
+/// This is the main entry point for creating forms from structs that derive `FormBuilder`.
+#[must_use]
+pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
+    T::view(binding)
+}
 
-#[]
+/// Example form struct demonstrating the `FormBuilder` derive macro.
+///
+/// This struct shows how the `FormBuilder` derive macro can automatically
+/// generate form implementations for structs with supported field types.
+#[derive(Default, Clone, Debug)]
+pub struct Form {
+    /// The user's username
+    pub username: String, // will be a text field
+    /// The user's password
+    pub password: String, // will be a text field with password mode
+    /// Whether to remember the user
+    pub remember_me: bool, // will be a toggle
+    /// The user's age
+    pub age: i32, // will be a stepper
+}
 
-
-*/
+/// Secure form components for handling sensitive data like passwords.
+pub mod secure;
+pub use secure::{SecureField, secure};

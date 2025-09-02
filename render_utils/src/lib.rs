@@ -1,4 +1,8 @@
 //! Render utilities for handling view dispatching.
+//!
+//! This crate provides utilities for rendering backends to dispatch view types
+//! to appropriate rendering handlers. It includes a generic view dispatcher
+//! that can register handlers for specific view types and route them during rendering.
 
 use core::{any::TypeId, fmt::Debug};
 use std::collections::HashMap;
