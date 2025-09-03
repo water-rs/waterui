@@ -285,11 +285,19 @@ pub mod navigation {
         Bar, NavigationLink, NavigationView,
         tab::{Tab, TabsConfig},
     };
-    use waterui_text::Text;
 
-    // Mark navigation types as opaque for FFI
-    impl OpaqueType for NavigationView {}
-    impl OpaqueType for NavigationLink {}
+    pub struct WuiNavigationView {
+        pub root: *mut AnyView,
+        pub bar: *mut Bar,
+        pub links: *mut Vec<NavigationLink>,
+        pub tabs: *mut Option<TabsConfig>,
+        pub selection: *mut Option<Binding<Id>>,
+    }
+
+    pub struct WuiNavigationLink {
+        pub label: *mut AnyView,
+        pub destination: *mut WuiFn<*mut AnyView>,
+    }
 
     /// C representation of a navigation Bar configuration
     #[repr(C)]
