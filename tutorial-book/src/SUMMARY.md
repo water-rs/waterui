@@ -5,53 +5,55 @@
 
 # Getting Started
 
-- [Installation and Setup](01-setup.md)
-- [Your First WaterUI App](02-first-app.md)
-- [Understanding Views](03-views.md)
+- [Installation and Setup](getting-started/1-setup.md)
+- [Your First WaterUI App](getting-started/2-first-app.md)
+- [Understanding Views](getting-started/3-views.md)
 
 # Core Concepts
 
-- [The Environment System](04-environment.md)
-- [Reactive State Management](05-state.md)
-- [Component Composition](06-composition.md)
-- [Event Handling](07-events.md)
+- [The Environment System](core-concepts/1-environment.md)
+- [Reactive State Management](core-concepts/2-state.md)
+- [Conditional Rendering](core-concepts/3-conditional.md)
+- [Component Composition](core-concepts/4-composition.md)
+- [Event Handling](core-concepts/5-events.md)
 
 # Building User Interfaces
 
-- [Layout Components](08-layout.md)
-- [Text and Typography](09-text.md)
-- [Form Controls](10-forms.md)
-- [Media Components](11-media.md)
-- [Navigation and Routing](12-navigation.md)
+- [Layout Components](ui-building/1-layout.md)
+- [Text and Typography](ui-building/2-text.md)
+- [Form Controls](ui-building/3-forms.md)
+- [Media Components](ui-building/4-media.md)
+- [Navigation and Routing](ui-building/5-navigation.md)
 
 # Advanced Topics
 
-- [Custom Components](13-custom-components.md)
-- [Animation and Transitions](14-animations.md)
-- [Plugin Development](15-plugins.md)
-- [Memory Management](16-memory.md)
+- [Custom Components](advanced/1-custom-components.md)
+- [Animation and Transitions](advanced/2-animations.md)
+- [Suspense and Asynchronous Loading](advanced/3-suspense.md)
+- [Plugin Development](advanced/4-plugins.md)
+- [Memory Management](advanced/5-memory.md)
 
 # Platform Development
 
-- [Desktop Apps with GTK4](17-desktop.md)
-- [Web Apps with WASM](18-web.md)
-- [Embedded Development](19-embedded.md)
+- [Desktop Apps with GTK4](platforms/1-desktop.md)
+- [Web Apps with WASM](platforms/2-web.md)
+- [Embedded Development](platforms/3-embedded.md)
 
 # Practical Projects
 
-- [Todo Application](20-todo-app.md)
-- [Media Player](21-media-player.md)
-- [Dashboard App](22-dashboard.md)
+- [Todo Application](projects/1-todo-app.md)
+- [Media Player](projects/2-media-player.md)
+- [Dashboard App](projects/3-dashboard.md)
 
 # Production
 
-- [Testing Strategies](23-testing.md)
-- [Performance Optimization](24-performance.md)
-- [Deployment](25-deployment.md)
-- [Troubleshooting](26-troubleshooting.md)
+- [Testing Strategies](production/1-testing.md)
+- [Performance Optimization](production/2-performance.md)
+- [Deployment](production/3-deployment.md)
+- [Troubleshooting](production/4-troubleshooting.md)
 
 # Appendices
 
-- [API Reference](27-api-reference.md)
-- [Migration Guide](28-migration.md)
-- [Resources](29-resources.md)
+- [API Reference](appendices/1-api-reference.md)
+- [Migration Guide](appendices/2-migration.md)
+- [Resources](appendices/3-resources.md)
