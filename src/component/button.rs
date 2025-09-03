@@ -19,8 +19,10 @@
 use core::fmt::Debug;
 
 use alloc::boxed::Box;
-use waterui_core::configurable;
-use waterui_core::handler::{ActionObject, HandlerFn, into_handler};
+use waterui_core::Environment;
+use waterui_core::components::Native;
+use waterui_core::handler::{ActionObject, Handler, HandlerFn, IntoHandler, into_handler};
+use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 
 use crate::View;
 use crate::{AnyView, ViewExt};
@@ -38,29 +40,65 @@ pub struct ButtonConfig {
 
 impl_debug!(ButtonConfig);
 
-configurable!(Button, ButtonConfig);
-
-impl Default for Button {
-    fn default() -> Self {
-        Self(ButtonConfig {
-            label: ().anyview(),
-            action: Box::new(into_handler(|| {})),
-        })
+impl<Label, Action> View for Button<Label, Action>
+where
+    Label: View,
+    Action: Handler<()>,
+{
+    fn body(self, env: &Environment) -> impl View {
+        let config = self.config();
+        if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
+            hook.apply(env, config)
+        } else {
+            Native(config).anyview()
+        }
     }
 }
 
-impl Button {
+impl ViewConfiguration for ButtonConfig {
+    type View = Button<AnyView, ActionObject>;
+
+    fn render(self) -> Self::View {
+        Button {
+            label: self.label,
+            action: self.action,
+        }
+    }
+}
+
+impl<Label, Action> ConfigurableView for Button<Label, Action>
+where
+    Label: View,
+    Action: Handler<()>,
+{
+    type Config = ButtonConfig;
+
+    fn config(self) -> Self::Config {
+        ButtonConfig {
+            label: AnyView::new(self.label),
+            action: Box::new(self.action),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Button<Label, Action> {
+    label: Label,
+    action: Action,
+}
+
+impl<Label> Button<Label, ()> {
     /// Creates a new button with the specified label.
     ///
     /// # Arguments
     ///
     /// * `label` - The text or view to display on the button
-    pub fn new(label: impl View) -> Self {
-        let mut button = Self::default();
-        button.0.label = label.anyview();
-        button
+    pub fn new(label: Label) -> Self {
+        Self { label, action: () }
     }
+}
 
+impl<Label, Action> Button<Label, Action> {
     /// Sets the action to be performed when the button is clicked.
     ///
     /// # Arguments
@@ -71,9 +109,15 @@ impl Button {
     ///
     /// The modified button with the action set
     #[must_use]
-    pub fn action<P: 'static>(mut self, action: impl HandlerFn<P, ()>) -> Self {
-        self.0.action = Box::new(into_handler(action));
-        self
+    pub fn action<H, P>(self, action: H) -> Button<Label, IntoHandler<H, P, ()>>
+    where
+        H: HandlerFn<P, ()>,
+        P: 'static,
+    {
+        Button {
+            label: self.label,
+            action: into_handler(action),
+        }
     }
 }
 
@@ -86,6 +130,6 @@ impl Button {
 /// # Returns
 ///
 /// A new button instance
-pub fn button(label: impl View) -> Button {
+pub fn button<Label>(label: Label) -> Button<Label, ()> {
     Button::new(label)
 }
