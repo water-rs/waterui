@@ -83,10 +83,13 @@ let capitalized = s!(name.to_uppercase());
 let first_char = s!(name.chars().next());
 ```
 
-**❌ Avoid**: Manual signal mapping when `s!` would be clearer:
+**❌ Avoid**: Using `.get()` for reactive computations:
 
 ```rust,ignore
-// More verbose and less readable
+// WRONG - breaks reactivity!
+let area = width.get() * height.get(); // This is not reactive!
+
+// Also wrong - unnecessarily verbose
 let area = width.get()
     .zip(height.get())
     .map(|(w, h)| w * h);
@@ -106,10 +109,13 @@ text!("Score: {} points", score)
 text!("{} scored {} points", name, score)
 ```
 
-**❌ Avoid**: Manual signal mapping for text:
+**❌ Avoid**: Using `.get()` with `format!` - breaks reactivity:
 
 ```rust,ignore
-// More verbose
+// WRONG - breaks reactivity!
+text(format!("Hello, {}!", name.get()))
+
+// Also wrong - unnecessarily verbose
 text(name.get().map(|n| format!("Hello, {}!", n)))
 ```
 
@@ -304,10 +310,10 @@ enum DataState<T> {
 fn data_view() -> impl View {
     let state = binding(DataState::Loading);
     
-    s!(match state {
-        DataState::Loading => loading_spinner(),
-        DataState::Success(data) => data_list(data),
-        DataState::Error(msg) => error_message(msg),
+    when(state.clone(), |state| match state {
+        DataState::Loading => loading_spinner().into_view(),
+        DataState::Success(data) => data_list(data).into_view(),
+        DataState::Error(msg) => error_message(msg).into_view(),
     })
 }
 ```
