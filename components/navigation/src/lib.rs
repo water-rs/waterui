@@ -9,12 +9,12 @@ pub mod search;
 pub mod tab;
 
 use alloc::{boxed::Box, vec::Vec};
+use nami::Computed;
 use waterui_core::{
     AnyView, Color, View,
     handler::{BoxHandler, HandlerFn, into_handler},
     impl_debug, raw_view,
 };
-use nami::Computed;
 use waterui_text::Text;
 
 /// A view that combines a navigation bar with content.
