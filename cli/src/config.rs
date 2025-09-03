@@ -59,11 +59,11 @@ impl WaterConfig {
             features: FeaturesConfig::default(),
         }
     }
-    
+
     pub fn add_dependency(&mut self, name: String, version: String) {
         self.dependencies.insert(name, Dependency::Simple(version));
     }
-    
+
     pub fn to_toml_string(&self) -> anyhow::Result<String> {
         Ok(toml::to_string_pretty(self)?)
     }
