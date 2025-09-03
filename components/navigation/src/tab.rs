@@ -5,13 +5,13 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
+use nami::Binding;
 use waterui_core::{
     AnyView, configurable,
     handler::{BoxHandler, HandlerFn, into_handler},
     id::Id,
     impl_debug,
 };
-use nami::Binding;
 
 use super::NavigationView;
 use waterui_core::id::TaggedView;

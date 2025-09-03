@@ -7,9 +7,9 @@
 //! It also supports operations like finding the minimum and maximum dates, as well as iterating over the dates in the set.
 use alloc::collections::BTreeSet;
 
+use nami::Binding;
 use time::Date;
 use waterui_core::{AnyView, View, configurable};
-use nami::Binding;
 #[derive(Debug)]
 #[non_exhaustive]
 /// Configuration for the `MultiDatePicker` component.

@@ -2,7 +2,7 @@
 
 use vello::{
     Scene,
-    kurbo::{BezPath, Circle, Line, Point, Rect, Stroke, Affine},
+    kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke},
     peniko::{Brush, Color, Fill},
 };
 
@@ -35,14 +35,16 @@ impl<'a> GraphicsContext<'a> {
     pub fn fill_rect(&mut self, rect: impl Into<Rect>, color: Color) {
         let rect = rect.into();
         let brush = Brush::Solid(color);
-        self.scene.fill(Fill::NonZero, self.transform, &brush, None, &rect);
+        self.scene
+            .fill(Fill::NonZero, self.transform, &brush, None, &rect);
     }
 
     /// Fills a circle with the specified color.
     pub fn fill_circle(&mut self, center: Point, radius: f64, color: Color) {
         let circle = Circle::new(center, radius);
         let brush = Brush::Solid(color);
-        self.scene.fill(Fill::NonZero, self.transform, &brush, None, &circle);
+        self.scene
+            .fill(Fill::NonZero, self.transform, &brush, None, &circle);
     }
 
     /// Strokes a line with the specified color and width.
@@ -50,7 +52,8 @@ impl<'a> GraphicsContext<'a> {
         let line = Line::new(start, end);
         let stroke = Stroke::new(width);
         let brush = Brush::Solid(color);
-        self.scene.stroke(&stroke, self.transform, &brush, None, &line);
+        self.scene
+            .stroke(&stroke, self.transform, &brush, None, &line);
     }
 
     /// Strokes a rectangle with the specified color and width.
@@ -58,7 +61,8 @@ impl<'a> GraphicsContext<'a> {
         let rect = rect.into();
         let stroke = Stroke::new(width);
         let brush = Brush::Solid(color);
-        self.scene.stroke(&stroke, self.transform, &brush, None, &rect);
+        self.scene
+            .stroke(&stroke, self.transform, &brush, None, &rect);
     }
 
     /// Strokes a circle with the specified color and width.
@@ -66,12 +70,14 @@ impl<'a> GraphicsContext<'a> {
         let circle = Circle::new(center, radius);
         let stroke = Stroke::new(width);
         let brush = Brush::Solid(color);
-        self.scene.stroke(&stroke, self.transform, &brush, None, &circle);
+        self.scene
+            .stroke(&stroke, self.transform, &brush, None, &circle);
     }
 
     /// Fills a path with the specified brush.
     pub fn fill_path(&mut self, path: &BezPath, brush: &Brush) {
-        self.scene.fill(Fill::NonZero, self.transform, brush, None, path);
+        self.scene
+            .fill(Fill::NonZero, self.transform, brush, None, path);
     }
 
     /// Strokes a path with the specified brush and stroke style.
@@ -118,7 +124,8 @@ impl<'a> GraphicsContext<'a> {
         // Create a large rectangle to cover the entire canvas
         let large_rect = Rect::new(-1e6, -1e6, 1e6, 1e6);
         let brush = Brush::Solid(color);
-        self.scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &large_rect);
+        self.scene
+            .fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &large_rect);
     }
 }
 
