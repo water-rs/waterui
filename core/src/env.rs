@@ -65,7 +65,7 @@ use crate::{
     components::Metadata,
     handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
     plugin::Plugin,
-    view::{ConfigurableView, Modifier},
+    view::{ConfigurableView, Hook, ViewConfiguration},
 };
 
 impl Environment {
@@ -93,11 +93,11 @@ impl Environment {
         self.map.insert(TypeId::of::<T>(), Rc::new(value));
     }
 
-    /// Inserts a view modifier into the environment.
-    ///
-    /// Modifiers can be retrieved and applied to views of the specified type.
-    pub fn insert_modifier<V: ConfigurableView>(&mut self, modifier: Modifier<V>) {
-        self.insert(modifier);
+    pub fn insert_hook<T: ViewConfiguration, V: View>(
+        &mut self,
+        hook: impl Fn(&Environment, T) -> V + 'static,
+    ) {
+        self.insert(Hook::new(hook));
     }
 
     /// Removes a value from the environment by its type.
