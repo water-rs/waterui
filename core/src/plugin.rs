@@ -22,6 +22,8 @@ use crate::Environment;
 /// # Examples
 ///
 /// ```
+/// use waterui_core::{plugin::Plugin, Environment};
+///
 /// struct MyPlugin;
 ///
 /// impl Plugin for MyPlugin {
