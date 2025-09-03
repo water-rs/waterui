@@ -20,6 +20,14 @@ waterui-text.workspace = true
 waterui-form-derive = { path = "derive" }
 zeroize = { version = "1.8.1", default-features = false }
 bcrypt = "0.17.1"
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "waterui-core/serde"]
+
+[dev-dependencies]
+serde_json = "1.0"
 
 [lints]
 workspace = true

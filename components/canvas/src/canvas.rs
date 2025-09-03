@@ -1,7 +1,7 @@
 //! Canvas component implementation with drawing utilities.
 
 use crate::{CanvasView, Drawable, GraphicsContext};
-use alloc::{vec::Vec, sync::Arc};
+use alloc::{sync::Arc, vec::Vec};
 use vello::{
     Scene,
     kurbo::{BezPath, Circle, Line, Point, Rect, Stroke},
@@ -132,8 +132,8 @@ pub struct DynamicCanvasContent {
 
 impl DynamicCanvasContent {
     /// Creates a new dynamic canvas content with the given drawing function.
-    pub fn new<F>(draw_fn: F) -> Self 
-    where 
+    pub fn new<F>(draw_fn: F) -> Self
+    where
         F: Fn(&mut GraphicsContext) + Send + Sync + 'static,
     {
         Self {
@@ -261,26 +261,26 @@ pub const fn canvas<T: Drawable + Clone + 'static>(
 }
 
 /// Creates a new dynamic canvas with a drawing closure for flexible rendering.
-/// 
+///
 /// # Example
 /// ```rust
 /// use waterui_canvas::{canvas_with_context, GraphicsContext};
 /// use vello::peniko::Color;
-/// 
+///
 /// let canvas_view = canvas_with_context(400.0, 300.0, |context| {
 ///     // Clear background
 ///     context.clear(Color::WHITE);
 ///     
 ///     // Draw a red rectangle
 ///     context.fill_rect(
-///         context.rect(50.0, 50.0, 100.0, 80.0), 
+///         context.rect(50.0, 50.0, 100.0, 80.0),
 ///         Color::rgb(1.0, 0.2, 0.2)
 ///     );
 ///     
 ///     // Draw a green circle
 ///     context.fill_circle(
-///         context.point(250.0, 100.0), 
-///         40.0, 
+///         context.point(250.0, 100.0),
+///         40.0,
 ///         Color::rgb(0.2, 1.0, 0.2)
 ///     );
 ///     
@@ -294,9 +294,9 @@ pub const fn canvas<T: Drawable + Clone + 'static>(
 /// });
 /// ```
 pub fn canvas_with_context<F>(
-    width: f32, 
-    height: f32, 
-    draw_fn: F
+    width: f32,
+    height: f32,
+    draw_fn: F,
 ) -> CanvasView<DynamicCanvasContent>
 where
     F: Fn(&mut GraphicsContext) + Send + Sync + 'static,
