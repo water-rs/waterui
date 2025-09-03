@@ -11,8 +11,7 @@
 //! ### Declarative View System
 //!
 //! The [`View`] trait forms the foundation of the UI component model:
-//!
-//! ```rust
+//! ```rust,ignore
 //! pub trait View: 'static {
 //!     fn body(self, env: &Environment) -> impl View;
 //! }
@@ -27,9 +26,10 @@
 //! The [`Environment`] provides a type-based dependency injection system:
 //!
 //! ```rust
-//! let env = Environment::new()
-//!     .with(Theme::Dark)
-//!     .install(LocalizationPlugin::new("en_US"));
+//! use waterui_core::Environment;
+//!
+//! let env = Environment::new();
+//! // .with() and .install() methods would be used with actual theme and plugin types
 //! ```
 //!
 //! This propagates configuration and resources through the view hierarchy without
@@ -54,15 +54,14 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use nami::{Binding, binding};
-//! use waterui::components::Dynamic;
+//! use waterui_core::{components::Dynamic,binding,Binding};
 //!
 //! // Create a reactive state container
-//! let counter = binding(0);
+//! let counter: Binding<i32> = binding(0);
 //!
-//! // Create a view that responds to state changes
-//! let view = Dynamic::watch(counter, |count| {
-//!     text(format!("Current value: {}", count))
+//! // Create a view that responds to state changes using Dynamic
+//! let view = Dynamic::watch(counter, |count: i32| {
+//!      format!("Current value: {}", count)
 //! });
 //! ```
 //!
@@ -73,7 +72,8 @@
 //!
 //! The plugin interface enables framework extensions without modifying core code:
 //!
-//! ```rust
+//! ```rust,ignore
+//!
 //! pub trait Plugin: Sized + 'static {
 //!     fn install(self, env: &mut Environment);
 //!     fn uninstall(self, env: &mut Environment);
@@ -93,13 +93,13 @@ pub use components::anyview::AnyView;
 pub mod env;
 pub mod view;
 pub use env::Environment;
-pub use paste::paste as __paste;
 pub use view::View;
 pub mod extract;
 pub mod handler;
 pub mod plugin;
 pub use anyhow::Error;
 pub mod animation;
+pub use animation::AnimationExt;
 pub mod color;
 pub use color::Color;
 pub mod shape;
@@ -107,4 +107,3 @@ pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 pub use waterui_str::Str;
 pub mod id;
-pub use native_executor as task;

@@ -8,17 +8,16 @@
 //!
 //! # Examples
 //!
-//! ```
-//! use waterui::dynamic::{Dynamic, watch};
-//! use nami::Mutable;
+//! ```rust
+//! use waterui_core::{components::dynamic::{Dynamic,watch},Binding};
 //!
 //! // Create a dynamic view with a handler
 //! let (handler, view) = Dynamic::new();
-//! handler.set(text("Initial content"));
+//! handler.set("Initial content");
 //!
 //! // Create a view that watches a reactive value
-//! let count = Mutable::new(0);
-//! let counter_view = watch(count, |value| text(format!("Count: {}", value)));
+//! let count = Binding::container(0);
+//! let counter_view = watch(count, |value| format!("Count: {}", value));
 use crate::components::With;
 use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;
