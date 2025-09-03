@@ -47,34 +47,35 @@ macro_rules! configurable {
             }
         }
 
+        impl $crate::view::ViewConfiguration for $config {
+            type View = $view;
+            fn render(self) -> Self::View {
+                $view(self)
+            }
+        }
+
         impl From<$config> for $view {
             fn from(value: $config) -> Self {
                 Self(value)
             }
         }
 
-
-
-
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
                 use $crate::view::ConfigurableView;
-                if let Some(modifier) = env.get::<$crate::view::Modifier<Self>>() {
-                    $crate::components::AnyView::new(
-                        modifier.clone().modify(env.clone(), self.config()),
-                    )
+                let config = self.config();
+                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
+                    $crate::components::AnyView::new(hook.apply(env, config))
                 } else {
-                    panic!("This view ({}) depends on a platform view, but the renderer is not handling it. Check the implementation of the renderer", core::any::type_name::<$view>())
+                    $crate::components::AnyView::new($crate::components::Native(config))
                 }
             }
         }
     };
 
     ($view:ident,$config:ty) => {
-        $crate::configurable!($view,$config,"");
+        $crate::configurable!($view, $config, "");
     };
-
-
 }
 
 macro_rules! tuples {
