@@ -65,9 +65,7 @@ impl CargoToml {
                 edition: "2021".to_string(),
             },
             dependencies,
-            features: Some(Features {
-                default: vec![],
-            }),
+            features: Some(Features { default: vec![] }),
         }
     }
 
