@@ -126,7 +126,7 @@ pub trait ConfigurableView: View {
     ///
     /// This type defines the structure of configuration data that can be
     /// applied to the view.
-    type Config: 'static;
+    type Config: ViewConfiguration;
 
     /// Returns the configuration for this view.
     ///
@@ -139,66 +139,58 @@ pub trait ConfigurableView: View {
     fn config(self) -> Self::Config;
 }
 
-/// A wrapper for functions that modify configurable views.
-///
-/// `Modifier` provides a way to transform views with specific configurations,
-/// enabling a consistent approach to view customization. Modifiers can be
-/// reused across different instances of the same view type.
-pub struct Modifier<V: ConfigurableView>(Box<dyn Fn(Environment, V::Config) -> AnyView>);
+pub trait ViewConfiguration: 'static {
+    // Note: the result would ignore any hook in the environment, to avoid infinite recursion.
+    type View: View;
+    fn render(self) -> Self::View;
+}
 
-impl<V: ConfigurableView> core::fmt::Debug for Modifier<V> {
+// Note: Hook could change the behavior of the view dynamically based on the environment
+// only view implemented `ViewConfiguration` can be hooked.
+// A struct implemented `View` can be not concrete, but `ViewConfiguration` providing
+// `config()` method, which would return a concrete type.
+// By add `Hook<Config>` into `Environment`, a
+pub struct Hook<C>(Box<dyn Fn(&Environment, C) -> AnyView>);
+
+impl<C> core::fmt::Debug for Hook<C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Modifier<{}>(..)", core::any::type_name::<V>())
+        write!(f, "Modifier<{}>(..)", core::any::type_name::<C>())
     }
 }
 
-impl<V, V2, F> From<F> for Modifier<V>
+impl<V, C, F> From<F> for Hook<C>
 where
-    V: ConfigurableView,
-    V2: View,
-    F: Fn(Environment, V::Config) -> V2 + 'static,
+    C: ViewConfiguration,
+    V: View,
+    F: Fn(&Environment, C) -> V + 'static,
 {
     fn from(value: F) -> Self {
-        Self(Box::new(move |mut env, config| {
-            env.remove::<Self>();
-            AnyView::new(Metadata::new(value(env.clone(), config), env))
+        Self(Box::new(move |env, config| {
+            let mut env = env.clone();
+            env.remove::<Self>(); // avoid infinite recursion
+            AnyView::new(Metadata::new(value(&env, config), env))
         }))
     }
 }
 
-impl<V: ConfigurableView> Modifier<V> {
-    /// Creates a new modifier that transforms a configurable view.
-    ///
-    /// # Arguments
-    ///
-    /// * `f` - A function that takes an environment and a configuration, and returns a view.
-    ///
-    /// # Returns
-    ///
-    /// A new `Modifier` instance that can be applied to views of type `V`.
-    pub fn new<V2, F>(f: F) -> Self
+impl<C> Hook<C>
+where
+    C: ViewConfiguration,
+{
+    pub fn new<V, F>(f: F) -> Self
     where
-        V: ConfigurableView,
-        V2: View,
-        F: Fn(Environment, V::Config) -> V2 + 'static,
+        V: View,
+        F: Fn(&Environment, C) -> V + 'static,
     {
         Self::from(f)
     }
 
-    /// Applies this modifier to a view configuration with the given environment.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment context to use when applying the modification.
-    /// * `config` - The configuration of the view to modify.
-    ///
-    /// # Returns
-    ///
-    /// An `AnyView` containing the modified view.
-    pub fn modify(&self, env: Environment, config: V::Config) -> AnyView {
+    pub fn apply(&self, env: &Environment, config: C) -> AnyView {
         (self.0)(env, config)
     }
 }
+
+impl<C: ViewConfiguration> Hook<C> {}
 
 macro_rules! impl_tuple_views {
     ($($ty:ident),*) => {

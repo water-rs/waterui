@@ -76,6 +76,8 @@ pub use {
     video::{Video, VideoPlayer},
 };
 
+mod url;
+
 use waterui_core::{AnyView, Environment, Str, View, reactive::impl_constant};
 
 use crate::live::LivePhotoSource;
