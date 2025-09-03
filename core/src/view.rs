@@ -24,9 +24,11 @@ use alloc::{boxed::Box, vec::Vec};
 ///
 /// # Example
 ///
-/// ```
+/// ```rust
+/// use waterui_core::View;
+///
 /// fn greeting() -> impl View {
-///     Text::new("Hello, World!")
+///     "Hello, World!" // &'static str implements View
 /// }
 ///
 #[must_use]
