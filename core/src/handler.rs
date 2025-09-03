@@ -78,6 +78,18 @@ pub type BoxHandler<T> = Box<dyn Handler<T>>;
 /// A boxed mutable handler with dynamic dispatch that does not return a value.
 pub type ActionObject = BoxHandler<()>;
 
+impl<T: 'static> Handler<T> for BoxHandler<T> {
+    fn handle(&self, env: &Environment) -> T {
+        self.as_ref().handle(env)
+    }
+}
+
+impl<T: 'static> HandlerMut<T> for BoxHandlerMut<T> {
+    fn handle(&mut self, env: &Environment) -> T {
+        self.as_mut().handle(env)
+    }
+}
+
 /// A boxed mutable handler with dynamic dispatch.
 pub type BoxHandlerMut<T> = Box<dyn HandlerMut<T>>;
 
@@ -247,10 +259,11 @@ into_handlers!(IntoHandlerOnce, HandlerOnce, HandlerFnOnce);
 /// # Returns
 ///
 /// A handler that implements the Handler trait
-pub fn into_handler<P, T>(h: impl HandlerFn<P, T>) -> impl Handler<T>
+pub const fn into_handler<H, P, T>(h: H) -> IntoHandler<H, P, T>
 where
     P: 'static,
     T: 'static,
+    H: HandlerFn<P, T>,
 {
     IntoHandler::new(h)
 }
@@ -264,8 +277,9 @@ where
 /// # Returns
 ///
 /// A handler that implements the [`HandlerMut`] trait
-pub fn into_handler_mut<P, T>(h: impl HandlerFnMut<P, T>) -> impl HandlerMut<T>
+pub const fn into_handler_mut<H, P, T>(h: H) -> IntoHandlerMut<H, P, T>
 where
+    H: HandlerFnMut<P, T>,
     P: 'static,
     T: 'static,
 {
@@ -281,8 +295,9 @@ where
 /// # Returns
 ///
 /// A handler that implements the [`HandlerOnce`] trait
-pub fn into_handler_once<P, T>(h: impl HandlerFnOnce<P, T>) -> impl HandlerOnce<T>
+pub const fn into_handler_once<H, P, T>(h: H) -> IntoHandlerOnce<H, P, T>
 where
+    H: HandlerFnOnce<P, T>,
     P: 'static,
     T: 'static,
 {

@@ -6,7 +6,6 @@ use waterui_core::{AnyView, View};
 use waterui_text::Text;
 
 configurable!(TextField, TextFieldConfig);
-configurable!(SecureField, TextFieldConfig);
 
 /// Configuration options for a `TextField`.
 #[non_exhaustive]

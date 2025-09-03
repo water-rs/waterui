@@ -26,19 +26,6 @@ use waterui_core::id::TaggedView;
 
 use waterui_layout::{Edge, Frame};
 
-/// Extension trait for configurable views, adding modifier capabilities.
-pub trait ConfigViewExt: ConfigurableView + Sized {
-    /// Apply a modifier to this view, returning a new modified view.
-    ///
-    /// # Arguments
-    /// * `modifier` - The modifier to apply to this view
-    fn modifier(self, modifier: impl Into<Modifier<Self>>) -> impl View {
-        modifier.into().modify(Environment::new(), self.config())
-    }
-}
-
-impl<V: ConfigurableView> ConfigViewExt for V {}
-
 /// A trait for types that can build views from an environment.
 pub trait ViewBuilder: 'static {
     /// Creates a view using the provided environment.
