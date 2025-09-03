@@ -48,8 +48,11 @@ pub struct Color {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
 #[non_exhaustive]
+/// Represents the supported color spaces for color representation.
 pub enum Colorspace {
+    /// Standard RGB color space (sRGB) with values typically in the range 0-255.
     Srgb,
+    /// Display P3 color space with extended color gamut, using floating-point values 0.0-1.0.
     P3,
 }
 
@@ -110,6 +113,11 @@ impl Color {
         )
     }
 
+    /// Get the P3 color values as f32 (0.0 to 1.0 range).
+    ///
+    /// Returns the color components in P3 color space. If the color is stored in sRGB,
+    /// it will be converted to P3 representation.
+    #[must_use]
     pub fn p3(&self) -> (f32, f32, f32, f32) {
         match &self.color {
             ColorInner::P3(p3) => (p3.red, p3.green, p3.blue, self.opacity),
@@ -131,6 +139,10 @@ impl Color {
         }
     }
 
+    /// Returns the color space of this color.
+    ///
+    /// This method indicates whether the color is stored internally as sRGB or P3.
+    #[must_use]
     pub const fn color_space(&self) -> Colorspace {
         match &self.color {
             ColorInner::Srgb(_) => Colorspace::Srgb,
