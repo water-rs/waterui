@@ -20,20 +20,23 @@
 //!
 //! ### Animation Extension Methods
 //!
-//! `WaterUI` provides convenient extension methods on all `Compute` types to easily attach
+//! `WaterUI` provides convenient extension methods on all reactive types to easily attach
 //! animation configurations:
 //!
 //! ```rust
-//! let color = binding(Color::RED);
+//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use nami::binding;
+//! use core::time::Duration;
+//! 
+//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0))); // Red color
 //!
 //! // Use the .animated() method to apply default animation
-//! view.background(color.animated());
+//! let _animated_color = color.animated();
 //!
 //! // Or specify a specific animation type
-//! view.background(color.with(Animation::ease_in_out(300)));
+//! let color2: nami::Binding<Color> = binding(Color::from((0, 255, 0)));
+//! let _custom_animated = color2.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //! ```
-//!
-//! ### Animation Types
 //!
 //! The system supports various animation types:
 //!
@@ -48,19 +51,24 @@
 //! UI components automatically respect animation metadata when rendering:
 //!
 //! ```rust
+//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use nami::binding;
+//! use core::time::Duration;
+//! 
+//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
+//!
 //! // Three different ways to animate properties:
 //!
 //! // 1. Default animation (uses system defaults)
-//! let view = View::new()
-//!     .background(color.animated());
+//! let _view1_color = color.animated();
 //!
 //! // 2. Custom animation using convenience methods
-//! let view = View::new()
-//!     .background(color.with(Animation::ease_in_out(300)));
+//! let color2: nami::Binding<Color> = binding(Color::from((0, 255, 0)));
+//! let _view2_color = color2.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //!
 //! // 3. Spring animation using the convenience method
-//! let view = View::new()
-//!     .background(color.with(Animation::spring(100.0, 10.0)));
+//! let color3: nami::Binding<Color> = binding(Color::from((0, 0, 255)));
+//! let _view3_color = color3.with_animation(Animation::spring(100.0, 10.0));
 //! ```
 //!
 //! ## Animation Pipeline
@@ -78,18 +86,22 @@
 //! Complex animations can be created by coordinating multiple animated values:
 //!
 //! ```rust
+//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use nami::binding;
+//! use core::time::Duration;
+//! 
+//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
+//! let position: nami::Binding<(i32, i32)> = binding((0, 0));
+//!
 //! // Create a choreographed animation sequence
-//! let animated_color = color.with(Animation::ease_in_out(300));
+//! let animated_color = color.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //!
 //! // Position animates with a spring physics model
-//! let animated_position = position.with(
-//!     Animation::spring(100.0, 10.0)
-//! );
+//! let animated_position = position.with_animation(Animation::spring(100.0, 10.0));
 //!
-//! // Use both animated values in your view
-//! let view = View::new()
-//!     .background(animated_color)
-//!     .position(animated_position);
+//! // Both animated values can be used in views
+//! // The UI framework will automatically handle the animation timing
+//! drop((animated_color, animated_position)); // Prevent unused variable warnings
 //! ```
 //!
 //! ### Composition with Other Reactive Features
@@ -97,16 +109,26 @@
 //! Animation metadata seamlessly composes with other reactive features:
 //!
 //! ```rust
+//! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
+//! use nami::binding;
+//! use core::time::Duration;
+//! 
+//! let count: nami::Binding<i32> = binding(0i32);
+//! let value1: nami::Binding<i32> = binding(1i32);
+//! let value2: nami::Binding<i32> = binding(2i32);
+//!
 //! // Combine mapping and animation
 //! let opacity = count
-//!     .map(|n| if n > 5 { 1.0 } else { 0.5 })
+//!     .map(|n: i32| if n > 5 { 1.0 } else { 0.5 })
 //!     .animated();  // Apply animation to the mapped result
 //!
 //! // Combine multiple reactive values with animation
 //! let combined = value1
 //!     .zip(value2)
 //!     .map(|(a, b)| a + b)
-//!     .with(Animation::ease_in_out(250));
+//!     .with_animation(Animation::ease_in_out(Duration::from_millis(250)));
+//!
+//! drop((opacity, combined)); // Prevent unused variable warnings
 //! ```
 //!
 
@@ -155,7 +177,10 @@ impl Animation {
     /// # Examples
     ///
     /// ```
-    /// let animation = Animation::linear(300); // 300ms
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// let animation = Animation::linear(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::linear(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn linear(duration: impl Into<Duration>) -> Self {
@@ -170,7 +195,10 @@ impl Animation {
     /// # Examples
     ///
     /// ```
-    /// let animation = Animation::ease_in(300); // 300ms
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// let animation = Animation::ease_in(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_in(duration: impl Into<Duration>) -> Self {
@@ -185,7 +213,10 @@ impl Animation {
     /// # Examples
     ///
     /// ```
-    /// let animation = Animation::ease_out(300); // 300ms
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// let animation = Animation::ease_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_out(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_out(duration: impl Into<Duration>) -> Self {
@@ -200,7 +231,10 @@ impl Animation {
     /// # Examples
     ///
     /// ```
-    /// let animation = Animation::ease_in_out(300); // 300ms
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// let animation = Animation::ease_in_out(Duration::from_millis(300)); // 300ms
     /// let animation = Animation::ease_in_out(Duration::from_secs(1)); // 1 second
     /// ```
     pub fn ease_in_out(duration: impl Into<Duration>) -> Self {
@@ -212,6 +246,8 @@ impl Animation {
     /// # Examples
     ///
     /// ```
+    /// use waterui_core::animation::Animation;
+    ///
     /// let animation = Animation::spring(100.0, 10.0);
     /// ```
     #[must_use]
@@ -219,3 +255,33 @@ impl Animation {
         Self::Spring { stiffness, damping }
     }
 }
+
+use nami::signal::WithMetadata;
+
+/// Extension trait providing animation methods for reactive values
+pub trait AnimationExt: nami::SignalExt {
+    /// Apply default animation to this reactive value
+    /// 
+    /// Uses a reasonable default animation (ease-in-out with 250ms duration)
+    fn animated(self) -> WithMetadata<Self, Animation>
+    where
+        Self: Sized,
+    {
+        self.with(Animation::ease_in_out(Duration::from_millis(250)))
+    }
+    
+    /// Apply a specific animation to this reactive value
+    /// 
+    /// # Arguments
+    /// 
+    /// * `animation` - The animation to apply
+    fn with_animation(self, animation: Animation) -> WithMetadata<Self, Animation>
+    where
+        Self: Sized,
+    {
+        self.with(animation)
+    }
+}
+
+// Implement AnimationExt for all types that implement SignalExt
+impl<S: nami::SignalExt> AnimationExt for S {}

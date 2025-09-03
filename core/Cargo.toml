@@ -12,17 +12,11 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
-waterui-str.workspace = true
-nami.workspace = true
-native-executor.workspace = true
-paste = "1.0"
+waterui-str = { version = "0.1.0", path = "../utils/str" }
+nami = "0.3.0"
 
 [dependencies.anyhow]
 version = "1.0"
-default-features = false
-
-[dependencies.smol]
-version = "2.0"
 default-features = false
 
 [dependencies.serde]

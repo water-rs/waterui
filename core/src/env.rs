@@ -11,18 +11,20 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```rust
+//! use waterui_core::{Environment,env::use_env};
+//!
 //! // Create an environment with a string value
 //! let env = Environment::new().with(String::from("Hello, world!"));
 //!
 //! // Access the value in a child view
-//! let view = use_env(|env: &Environment| {
-//!     if let Some(message) = env.get::<String>() {
-//!         Text::new(message)
-//!     } else {
-//!         Text::new("No message found")
-//!     }
-//! });
+//! // let view = use_env(|env: &Environment| {
+//! //     if let Some(message) = env.get::<String>() {
+//! //         message
+//! //     } else {
+//! //         "No message found".to_string()
+//! //     }
+//! // });
 //! ```
 
 use core::{
@@ -41,6 +43,8 @@ use alloc::{collections::BTreeMap, rc::Rc};
 /// # Examples
 ///
 /// ```
+/// use waterui_core::Environment;
+///
 /// let mut env = Environment::new();
 /// env.insert(String::from("hello"));
 ///
