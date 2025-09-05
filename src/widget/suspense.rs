@@ -84,7 +84,7 @@ pub struct Suspense<V, Loading> {
 ///
 /// This trait defines how content should be loaded asynchronously. Any type that
 /// implements this trait can be used as the content in a [`Suspense`] component.
-/// 
+///
 /// The trait is automatically implemented for any `Future` that resolves to a `View`,
 /// making it easy to use async functions directly with `Suspense`.
 ///

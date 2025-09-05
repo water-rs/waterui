@@ -10,14 +10,14 @@ use waterui_core::handler::BoxHandler;
 /// A `Dialog` contains all the information needed to display a modal dialog,
 /// including its text content and the available user actions.
 #[derive(Debug)]
-#[allow(dead_code)] // These will be used by dialog managers
+#[non_exhaustive]
 pub struct Dialog {
     /// The dialog's title text.
-    title: String,
+    pub title: String,
     /// The main content text of the dialog.
-    content: String,
+    pub content: String,
     /// Available action options for the user.
-    options: Vec<DialogOption>,
+    pub options: Vec<DialogOption>,
 }
 
 /// Represents an action option within a dialog.
@@ -25,14 +25,14 @@ pub struct Dialog {
 /// Each `DialogOption` defines a button or action that the user can take
 /// to respond to the dialog.
 #[derive(Debug)]
-#[allow(dead_code)] // These will be used by dialog managers
+#[non_exhaustive]
 pub struct DialogOption {
     /// The text label for the option button.
-    label: String,
+    pub label: String,
     /// The action to execute when the option is selected.
-    action: BoxHandler<()>,
+    pub action: BoxHandler<()>,
     /// Whether this action is destructive (e.g., "Delete", "Cancel").
-    is_destructive: bool,
+    pub is_destructive: bool,
 }
 
 /// Trait for handling dialog lifecycle events.

@@ -1,4 +1,4 @@
-use waterui_core::{Computed, Str, configurable, reactive::signal::IntoComputed};
+use waterui_core::{Computed, configurable, reactive::signal::IntoComputed};
 
 use crate::Url;
 

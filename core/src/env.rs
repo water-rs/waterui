@@ -65,7 +65,7 @@ use crate::{
     components::Metadata,
     handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
     plugin::Plugin,
-    view::{ConfigurableView, Hook, ViewConfiguration},
+    view::{Hook, ViewConfiguration},
 };
 
 impl Environment {
@@ -93,9 +93,12 @@ impl Environment {
         self.map.insert(TypeId::of::<T>(), Rc::new(value));
     }
 
+    /// Inserts a view configuration hook into the environment.
+    ///
+    /// Hooks allow you to intercept and modify view configurations globally.
     pub fn insert_hook<T: ViewConfiguration, V: View>(
         &mut self,
-        hook: impl Fn(&Environment, T) -> V + 'static,
+        hook: impl Fn(&Self, T) -> V + 'static,
     ) {
         self.insert(Hook::new(hook));
     }
