@@ -17,8 +17,8 @@ create-missing = true
 
 [output.html]
 no-section-label = false
-git-repository-url = "https://github.com/waterui-rs/waterui"
-edit-url-template = "https://github.com/waterui-rs/waterui/edit/main/tutorial-book/{path}"
+git-repository-url = "https://github.com/water-rs/waterui"
+edit-url-template = "https://github.com/water-rs/waterui/edit/main/tutorial-book/{path}"
 
 [output.html.search]
 enable = true

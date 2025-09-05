@@ -139,9 +139,14 @@ pub trait ConfigurableView: View {
     fn config(self) -> Self::Config;
 }
 
+/// A trait for types that can be used to configure views.
+///
+/// View configurations are used by hooks to modify how views are rendered.
 pub trait ViewConfiguration: 'static {
     // Note: the result would ignore any hook in the environment, to avoid infinite recursion.
+    /// The view type that this configuration produces.
     type View: View;
+    /// Renders this configuration into a view.
     fn render(self) -> Self::View;
 }
 
@@ -150,7 +155,13 @@ pub trait ViewConfiguration: 'static {
 // A struct implemented `View` can be not concrete, but `ViewConfiguration` providing
 // `config()` method, which would return a concrete type.
 // By add `Hook<Config>` into `Environment`, a
-pub struct Hook<C>(Box<dyn Fn(&Environment, C) -> AnyView>);
+/// A function type for view hooks.
+type HookFn<C> = Box<dyn Fn(&Environment, C) -> AnyView>;
+
+/// A hook that can intercept and modify view configurations.
+///
+/// Hooks are used to apply global transformations to views based on their configuration.
+pub struct Hook<C>(HookFn<C>);
 
 impl<C> core::fmt::Debug for Hook<C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -177,6 +188,10 @@ impl<C> Hook<C>
 where
     C: ViewConfiguration,
 {
+    /// Creates a new hook from a function.
+    ///
+    /// The function will be called with the environment and configuration
+    /// whenever a matching view configuration is encountered.
     pub fn new<V, F>(f: F) -> Self
     where
         V: View,
@@ -185,6 +200,7 @@ where
         Self::from(f)
     }
 
+    /// Applies this hook to a configuration, producing a view.
     pub fn apply(&self, env: &Environment, config: C) -> AnyView {
         (self.0)(env, config)
     }

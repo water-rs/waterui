@@ -13,6 +13,7 @@ use core::{
     marker::PhantomData,
     num::NonZeroUsize,
 };
+use nami::Signal;
 use nami::watcher::BoxWatcher;
 
 use waterui_core::id::{Identifable, IdentifableExt, SelfId};
@@ -47,6 +48,19 @@ pub struct AnyViews<V>(Rc<dyn Views<Item = V, Id = SelfId<NonZeroUsize>>>);
 impl<V> Debug for AnyViews<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(type_name::<Self>())
+    }
+}
+
+impl<V> Signal for AnyViews<V> {
+    type Output = Self;
+    type Guard = ();
+    fn get(&self) -> Self::Output {
+        self.clone()
+    }
+    fn watch(
+        &self,
+        watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
+    ) -> Self::Guard {
     }
 }
 
@@ -150,10 +164,7 @@ impl<V> Collection for AnyViews<V> {
     fn len(&self) -> usize {
         self.0.len()
     }
-    fn watch(
-        &self,
-        watcher: nami::watcher::Watcher<()>,
-    ) -> nami::watcher::WatcherGuard {
+    fn watch(&self, watcher: nami::watcher::Watcher<()>) -> nami::watcher::WatcherGuard {
         self.0.watch(watcher)
     }
 }
@@ -215,10 +226,7 @@ where
     fn remove(&self, index: usize) {
         self.data.remove(index);
     }
-    fn watch(
-        &self,
-        watcher: nami::watcher::Watcher<()>,
-    ) -> nami::watcher::WatcherGuard {
+    fn watch(&self, watcher: nami::watcher::Watcher<()>) -> nami::watcher::WatcherGuard {
         self.data.watch(watcher)
     }
 }
