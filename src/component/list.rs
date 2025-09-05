@@ -16,14 +16,14 @@
 //! ```
 
 use alloc::boxed::Box;
-use nami::collection::Collection;
+use nami::{collection::Collection, impl_constant};
 
 use crate::{
     component::views::{AnyViews, ForEach},
     view::ViewExt,
 };
 use waterui_core::{AnyView, Environment, View};
-impl_compute_result!(AnyViews<ListItem>);
+impl_constant!(AnyViews<ListItem>);
 
 /// Configuration for a list component.
 #[derive(Debug)]
