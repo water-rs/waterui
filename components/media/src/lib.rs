@@ -76,13 +76,13 @@ pub use {
     video::{Video, VideoPlayer},
 };
 
-mod url;
+/// URL types for working with media resources
+pub mod url;
+pub use url::Url;
 
-use waterui_core::{AnyView, Environment, Str, View, reactive::impl_constant};
+use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
 
 use crate::live::LivePhotoSource;
-
-type Url = Str;
 
 /// A unified media type that can represent different kinds of media content.
 ///

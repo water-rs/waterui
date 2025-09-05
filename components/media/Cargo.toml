@@ -13,10 +13,12 @@ categories = ["gui", "multimedia"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-url.workspace = true
 typeshare.workspace = true
 [features]
-default = ["media-picker"]
+default = ["media-picker", "std"]
 media-picker = []
+std = ["waterui-core/std"]
 
 
 [lints]
