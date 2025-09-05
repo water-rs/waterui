@@ -5,7 +5,7 @@ use crate::component::{
     Text,
     views::{AnyViews, Views},
 };
-use nami::{Computed, compute::IntoComputed};
+use nami::{Computed, impl_constant, signal::IntoComputed};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl Table {
     }
 }
 
-impl_compute_result!(TableColumn);
+impl_constant!(TableColumn);
 
 /// Represents a column in a table.
 #[derive(Clone)]
@@ -38,7 +38,6 @@ pub struct TableColumn {
     pub rows: AnyViews<Text>,
 }
 
-impl_compute_result!(AnyViews<Text>);
 impl_debug!(TableColumn);
 
 impl TableColumn {
