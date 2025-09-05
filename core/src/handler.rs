@@ -104,6 +104,14 @@ pub trait HandlerFn<P, T>: 'static {
     fn handle_inner(&self, env: &Environment) -> T;
 }
 
+/// Function-like trait for immutable handlers that extract parameters from the environment with additional state.
+///
+/// P represents the parameter types to extract, T represents the return type, S represents the state type.
+pub trait HandlerFnWithState<P, T, S>: 'static {
+    /// Internal implementation that extracts parameters from the environment and calls the handler.
+    fn handle_inner(&self, state: S, env: &Environment) -> T;
+}
+
 /// Function-like trait for mutable handlers that extract parameters from the environment.
 ///
 /// P represents the parameter types to extract, T represents the return type.
@@ -139,6 +147,28 @@ macro_rules! impl_handle_fn {
         }
     };
 }
+
+macro_rules! impl_handle_fn_with_state {
+    ($($ty:ident),*) => {
+        #[allow(unused_variables)]
+        #[allow(non_snake_case)]
+        impl<F, S, R, $($ty:Extractor,)*> HandlerFnWithState<($($ty,)*),R,S> for F
+        where
+            F: Fn(S,$($ty,)*) -> R+ 'static,
+        {
+            fn handle_inner(&self, state:S, env: &Environment) -> R {
+
+                $(
+                    let $ty:$ty=Extractor::extract(env).unwrap();
+                )*
+
+                self(state,$($ty,)*)
+            }
+        }
+    };
+}
+
+tuples!(impl_handle_fn_with_state);
 
 macro_rules! impl_handle_fn_mut {
     ($($ty:ident),*) => {
@@ -209,6 +239,50 @@ macro_rules! into_handlers {
             }
         }
     };
+}
+
+pub struct IntoHandlerWithState<H, P, T, S> {
+    h: H,
+    state: S,
+    _marker: PhantomData<(P, T, S)>,
+}
+
+impl<H, P, T, S> IntoHandlerWithState<H, P, T, S>
+where
+    H: HandlerFnWithState<P, T, S>,
+    S: 'static + Clone,
+{
+    /// Creates a new handler wrapper around the given function and state.
+    #[must_use]
+    pub const fn new(h: H, state: S) -> Self {
+        Self {
+            h,
+            state,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<H, P, T, S> Handler<T> for IntoHandlerWithState<H, P, T, S>
+where
+    H: HandlerFnWithState<P, T, S>,
+    S: 'static + Clone,
+    T: 'static,
+    P: 'static,
+{
+    fn handle(&self, env: &Environment) -> T {
+        self.h.handle_inner(self.state.clone(), env)
+    }
+}
+
+pub fn into_handler_with_state<H, P, T, S>(h: H, state: S) -> IntoHandlerWithState<H, P, T, S>
+where
+    H: HandlerFnWithState<P, T, S>,
+    S: 'static + Clone,
+    T: 'static,
+    P: 'static,
+{
+    IntoHandlerWithState::new(h, state)
 }
 
 into_handlers!(IntoHandler, Handler, HandlerFn);

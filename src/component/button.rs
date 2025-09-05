@@ -21,7 +21,10 @@ use core::fmt::Debug;
 use alloc::boxed::Box;
 use waterui_core::Environment;
 use waterui_core::components::Native;
-use waterui_core::handler::{ActionObject, Handler, HandlerFn, IntoHandler, into_handler};
+use waterui_core::handler::{
+    ActionObject, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
+    into_handler, into_handler_with_state,
+};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 
 use crate::View;
@@ -118,6 +121,20 @@ impl<Label, Action> Button<Label, Action> {
             label: self.label,
             action: into_handler(action),
         }
+    }
+
+    #[must_use]
+    pub fn action_with<H, P, S>(
+        self,
+        state: &S,
+        action: H,
+    ) -> Button<Label, IntoHandlerWithState<H, P, (), S>>
+    where
+        H: HandlerFnWithState<P, (), S>,
+        S: 'static + Clone,
+        P: 'static,
+    {
+        into_handler_with_state(action, state.clone())
     }
 }
 
