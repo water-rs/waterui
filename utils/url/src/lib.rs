@@ -201,6 +201,8 @@ impl Url {
         }
     }
 
+    /// Returns the inner string representation of the URL.
+    #[must_use]
     pub fn inner(&self) -> Str {
         self.inner.clone()
     }
