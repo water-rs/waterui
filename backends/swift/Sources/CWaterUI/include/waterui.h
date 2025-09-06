@@ -1548,3 +1548,7 @@ struct WuiStr *waterui_str_from_bytes(const char *bytes, unsigned int len);
  * * The data pointed to is not modified
  */
 const uint8_t *waterui_str_as_ptr(const struct Str *str);
+
+WuiEnv* waterui_init(void);
+
+WuiAnyView* waterui_main(void);

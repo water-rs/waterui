@@ -32,6 +32,27 @@ use core::ptr::null_mut;
 use alloc::boxed::Box;
 pub use ty::*;
 use waterui::{AnyView, View};
+#[macro_export]
+macro_rules! export {
+    () => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
+            let env: waterui::Environment = init();
+            $crate::IntoFFI::into_ffi(env)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
+            fn _inner() -> impl View {
+                main()
+            }
+
+            let view = waterui::AnyView::new(_inner());
+
+            $crate::IntoFFI::into_ffi(view)
+        }
+    };
+}
 
 use crate::str::WuiStr;
 /// Defines a trait for converting Rust types to FFI-compatible representations.

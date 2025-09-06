@@ -12,11 +12,11 @@ pub fn render_dynamic(dynamic: Dynamic, env: &Environment) -> Widget {
     dynamic.connect({
         let container = container.clone();
         let env = env.clone();
-        move |new_view, _metadata| {
+        move |ctx| {
             if let Some(child) = container.first_child() {
                 container.remove(&child);
             }
-            container.append(&render(new_view, &env));
+            container.append(&render(ctx.value, &env));
         }
     });
 
