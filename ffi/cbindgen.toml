@@ -1,11 +1,16 @@
 language = "C"
 
+trailer = """
+WuiEnv* waterui_init(void);
+
+WuiAnyView* waterui_main(void);
+"""
+
 [export.rename]
 
 [enum]
 prefix_with_name = true
 
-[export]
 
 [ptr]
 non_null_attribute = "_Nonnull"
@@ -18,3 +23,5 @@ include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text",
 
 [parse.expand]
 crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","nami"]
+
+
