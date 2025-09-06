@@ -7,9 +7,9 @@
 
 import SwiftUI
 import CWaterUI
-
+/*
 struct NavigationView: View,Component {
-    static var id=waterui_view_navigation_view_id()
+    static var id=waterui_navigation_view_id()
     var content:WaterUI.AnyView
     var title:SwiftUI.Text
     var body: some View {
@@ -17,10 +17,10 @@ struct NavigationView: View,Component {
     }
     
     init(anyview:OpaquePointer,env:WaterUI.Environment) {
-        self.init(navigationView: waterui_view_force_as_navigation_view(anyview),env:env)
+        self.init(navigationView: waterui_force_as_navigation_view(anyview),env:env)
     }
     
-    init(navigationView:waterui_navigation_view,env:WaterUI.Environment) {
+    init(navigationView:WuiNavigationView,env:WaterUI.Environment) {
         title=WaterUI.Text(text: navigationView.bar.title).toText()
         content=AnyView(anyview: navigationView.content, env: env)
     }
@@ -58,7 +58,7 @@ class NavigationViewBuilder{
 
 @MainActor
 struct NavigationLink: View,Component {
-    static var id=waterui_view_navigation_link_id()
+    static var id=navigation_link_id()
     var label:WaterUI.AnyView
     var content:NavigationViewBuilder
     var body: some View {
@@ -82,7 +82,7 @@ struct NavigationLink: View,Component {
     }
     
     init(anyview:OpaquePointer,env:WaterUI.Environment) {
-        self.init(link: waterui_view_force_as_navigation_link(anyview),env:env)
+        self.init(link: force_as_navigation_link(anyview),env:env)
     }
     
     init(link:waterui_navigation_link,env:WaterUI.Environment) {
@@ -91,3 +91,4 @@ struct NavigationLink: View,Component {
     }
 }
 
+*/

@@ -7,6 +7,7 @@
 
 import CWaterUI
 import SwiftUI
+/*
 
 struct WithEnv:View,Component{
     static var id=waterui_metadata_env_id()
@@ -24,3 +25,4 @@ struct WithEnv:View,Component{
         self.content=WaterUI.AnyView(anyview: withEnv.content, env: WaterUI.Environment(withEnv.value))
     }
 }
+*/
