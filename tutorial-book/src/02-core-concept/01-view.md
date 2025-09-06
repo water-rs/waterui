@@ -36,10 +36,8 @@ WaterUI provides many built-in Views for common UI elements:
 text!("Hello, {}!", name)
 
 // Styled text
-"Important!"
-    .size(24)
-    .weight(.bold)
-    .color(Color::red())
+waterui_text::Text::new("Important!")
+    .size(24.0)
 ```
 
 ### Control Views
@@ -49,12 +47,12 @@ button("Click me")
     .action(|| println!("Clicked!"))
 
 // Text field
-let input = binding("");
+let input = waterui::reactive::binding(String::new());
 text_field(&input)
     .placeholder("Enter text...")
 
 // Toggle switch
-let enabled = binding(false);
+let enabled = waterui::reactive::binding(false);
 toggle(&enabled)
 ```
 
@@ -92,14 +90,10 @@ The real power of WaterUI comes from creating your own custom Views. Let's explo
 // Simpler and cleaner - no View trait needed!
 fn welcome_message(name: &str) -> impl View {
     vstack((
-        "Welcome!"
-            .size(24.0)
-            .weight(.bold),
-        text(format!("Hello, {}!", name))
-            .color(Color::blue()),
+        waterui_text::Text::new("Welcome!").size(24.0),
+        waterui_text::Text::new(format!("Hello, {}!", name)),
     ))
-    .spacing(10.0)
-    .padding(20.0)
+    .frame(waterui::component::layout::Frame::new().margin(waterui::component::layout::Edge::round(20.0)))
 }
 
 // Usage - functions are automatically views!
@@ -111,7 +105,7 @@ let lazy_view = || welcome_message("Bob");
 
 ### Struct Views (For Components with State)
 
-Only use the View trait when your component needs to store state, or you prefer access environment directly (but why not use `use_env` function in your View?):
+Only use the View trait when your component needs to store state, or you prefer direct access to the environment in `body`.
 
 ```rust,ignore
 // Only needed when the struct holds state
@@ -127,7 +121,7 @@ impl View for CounterWidget {
         vstack((
             text!("Count: {}", count),
             button("+")
-                .action_with(&count, |count| count.increment(step) }),
+                .action_with(&count, move |count| count.update(|n| n + self.step)),
         ))
     }
 }
