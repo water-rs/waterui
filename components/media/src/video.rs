@@ -77,21 +77,8 @@ configurable!(VideoPlayer, VideoPlayerConfig);
 /// // When used as a View, automatically becomes a VideoPlayer
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(transparent)]
 pub struct Video {
     url: Url,
-}
-
-impl From<Url> for Video {
-    fn from(value: Url) -> Self {
-        Self { url: value }
-    }
-}
-
-impl From<Video> for Url {
-    fn from(value: Video) -> Self {
-        value.url
-    }
 }
 
 impl_constant!(Video);
@@ -132,6 +119,11 @@ impl Video {
     #[must_use]
     pub fn player(self) -> VideoPlayer {
         todo!()
+    }
+
+    #[must_use]
+    pub const fn url(&self) -> &Url {
+        &self.url
     }
 }
 
