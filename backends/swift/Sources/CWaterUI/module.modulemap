@@ -1,0 +1,4 @@
+module CWaterUI {
+  header "CWaterUI.h"
+  export *
+}
