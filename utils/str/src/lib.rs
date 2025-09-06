@@ -27,7 +27,6 @@ use core::{
 /// cloning and passing, automatically using the most appropriate representation
 /// based on the source.
 #[derive(Debug)]
-#[repr(C)]
 pub struct Str {
     /// Pointer to the string data.
     ptr: NonNull<()>,
@@ -199,6 +198,18 @@ impl Str {
                 len: s.len() as isize,
             }
         }
+    }
+
+    pub const unsafe fn from_raw(ptr: *mut (), len: isize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr),
+            len,
+        }
+    }
+
+    pub fn into_raw(self) -> (*mut (), isize) {
+        let this = ManuallyDrop::new(self);
+        (this.ptr.as_ptr(), this.len)
     }
 
     fn from_string(string: String) -> Self {

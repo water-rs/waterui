@@ -1,4 +1,4 @@
-use crate::IntoFFI;
+use crate::{IntoFFI, str::WuiStr};
 
 pub mod layout;
 
@@ -39,7 +39,7 @@ pub mod button {
 
 ffi_view!(
     waterui::Str,
-    waterui::Str,
+    WuiStr,
     waterui_force_as_label,
     waterui_label_id
 );
@@ -124,7 +124,6 @@ pub mod form {
         text_field::{KeyboardType, TextFieldConfig},
         toggle::ToggleConfig,
     };
-    
 
     ffi_enum_with_default!(
         KeyboardType,
@@ -280,10 +279,7 @@ pub mod navigation {
     use waterui::AnyView;
     use waterui::{Binding, Color, Computed};
     use waterui_core::id::Id;
-    use waterui_navigation::{
-        Bar, NavigationLink, NavigationView,
-        tab::TabsConfig,
-    };
+    use waterui_navigation::{Bar, NavigationLink, NavigationView, tab::TabsConfig};
 
     pub struct WuiNavigationView {
         pub root: *mut AnyView,
@@ -322,10 +318,11 @@ pub mod navigation {
 
 /// Media component FFI bindings
 pub mod media {
+    use crate::str::WuiStr;
     use crate::{IntoFFI, ffi_struct, ffi_view};
     use waterui::AnyView;
     use waterui::component::Native;
-    use waterui::{Binding, Computed, Str};
+    use waterui::{Binding, Computed};
     use waterui_media::{
         Video,
         live::{LivePhotoConfig, LivePhotoSource},
@@ -334,7 +331,7 @@ pub mod media {
     };
 
     // Type alias for URL
-    type Url = Str;
+    type Url = WuiStr;
     type Volume = f64;
 
     /// C representation of Photo configuration
@@ -392,7 +389,7 @@ pub mod media {
     }
 
     impl IntoFFI for waterui_media::Url {
-        type FFI = Str;
+        type FFI = WuiStr;
         fn into_ffi(self) -> Self::FFI {
             self.inner().into_ffi()
         }
