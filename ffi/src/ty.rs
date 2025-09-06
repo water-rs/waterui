@@ -1,7 +1,5 @@
 use core::mem::transmute;
 
-use crate::OpaqueType;
-
 use super::{IntoFFI, IntoRust};
 
 /// A C-compatible representation of Rust's `core::any::TypeId`.
