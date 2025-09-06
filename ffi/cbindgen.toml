@@ -1,0 +1,20 @@
+language = "C"
+
+[export.rename]
+
+[enum]
+prefix_with_name = true
+
+[export]
+
+[ptr]
+non_null_attribute = "_Nonnull"
+
+
+[parse]
+parse_deps = true
+include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","nami"]
+
+
+[parse.expand]
+crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","nami"]
