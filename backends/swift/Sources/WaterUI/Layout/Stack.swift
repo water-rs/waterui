@@ -16,11 +16,11 @@ enum StackMode{
 }
 
 extension StackMode{
-    init(_ mode:waterui_stack_mode){
+    init(_ mode:WuiStackMode){
         switch mode {
-        case STACK_MODE_HORIZONAL:
+        case WuiStackMode_Horizonal:
             self = .Horizontal
-        case STACK_MODE_LAYERED:
+        case WuiStackMode_Layered:
             self = .Layered
         default:
             self = .Default
@@ -28,21 +28,21 @@ extension StackMode{
     }
 }
 
-extension waterui_array_____waterui_anyview{
+extension WuiArray_____WuiAnyView{
     func toArray() -> Array<OpaquePointer?>{
-        
-        let array =  Array(UnsafeBufferPointer<OpaquePointer?>(start: self.head, count: Int(self.len)))
-        waterui_free_array(self.head, self.len)
-        return array
+        let array = Array(UnsafeBufferPointer<OpaquePointer?>(start: self.head, count: Int(self.len)))
+        let array2 = array
+        waterui_free_anyview_array_without_free_elements(self)
+        return array2
     }
 }
 
 @MainActor
 struct Stack: View,Component {
-    static var id=waterui_view_stack_id()
+    static var id=waterui_stack_id()
     private var contents:[AnyView]
     private var mode:StackMode
-    init(stack: waterui_stack, env: Environment) {
+    init(stack: WuiStack, env: Environment) {
         let array = stack.contents.toArray()
 
         contents = array.map { view in
@@ -52,7 +52,7 @@ struct Stack: View,Component {
     }
     
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(stack: waterui_view_force_as_stack(anyview), env: env)
+        self.init(stack: waterui_force_as_stack(anyview), env: env)
     }
 
     var body: some View {
