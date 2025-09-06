@@ -7,7 +7,7 @@
 
 import CWaterUI
 import SwiftUI
-
+/*
 struct Frame:View,Component{
     static var id=waterui_metadata_frame_id()
     var content:WaterUI.AnyView
@@ -126,3 +126,4 @@ extension SwiftUI.Alignment{
         }
     }
 }
+*/

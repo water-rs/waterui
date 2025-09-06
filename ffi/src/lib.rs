@@ -31,7 +31,9 @@ use core::ptr::null_mut;
 
 use alloc::boxed::Box;
 pub use ty::*;
-use waterui::AnyView;
+use waterui::{AnyView, View};
+
+use crate::str::WuiStr;
 /// Defines a trait for converting Rust types to FFI-compatible representations.
 ///
 /// This trait is used to convert Rust types that are not directly FFI-compatible
@@ -183,77 +185,28 @@ pub extern "C" fn waterui_env_new() -> *mut WuiEnv {
 /// `waterui::Environment` instance and that the environment remains valid for the
 /// duration of this function call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_clone_env(
-    env: *const waterui::Environment,
-) -> *mut waterui::Environment {
-    if env.is_null() {
-        return core::ptr::null_mut();
-    }
-    let env = unsafe { &*env };
-    let cloned = env.clone();
-    Box::into_raw(Box::new(cloned))
-}
-
-/// Returns the main widget for the application
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_widget_main() -> *mut WuiAnyView {
-    // This should be implemented by the application, for now return a placeholder
-    use waterui_text::Text;
-    let text = Text::new("Main Widget Placeholder");
-    let widget = AnyView::new(text);
-    widget.into_ffi()
-}
-
-/// Example function that creates a simple text view for iOS
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_create_counter_view() -> *mut WuiAnyView {
-    use waterui_text::Text;
-    use waterui_layout::stack::{Stack, StackMode};
-    
-    let view = Stack::new((
-        Text::new("WaterUI iOS Example"),
-        Text::new("Counter: 42"),
-        Text::new("Built with Rust + SwiftUI")
-    ), StackMode::Vertical);
-    
-    let any_view = AnyView::new(view);
-    any_view.into_ffi()
-}
-
-/// Example function that creates a hello world view
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_create_hello_world() -> *mut WuiAnyView {
-    use waterui_text::Text;
-    use waterui_layout::stack::{Stack, StackMode};
-    use waterui::AnyView;
-    
-    let view = Stack::new((
-        Text::new("Hello from WaterUI!"),
-        Text::new("This view was created in Rust"),
-        Text::new("and rendered in SwiftUI"),
-    ), StackMode::Vertical);
-    
-    let any_view = AnyView::new(view);
-    any_view.into_ffi()
+pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
+    unsafe { (*env).clone().into_ffi() }
 }
 
 /// Gets the body of a view given the environment
+///
+/// # Safety
+/// The caller must ensure that both `view` and `env` are valid pointers to properly
+/// initialized instances and that they remain valid for the duration of this function call.
+/// The `view` pointer will be consumed and should not be used after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_body(
     view: *mut WuiAnyView,
     env: *mut waterui::Environment,
 ) -> *mut WuiAnyView {
-    if view.is_null() || env.is_null() {
-        return core::ptr::null_mut();
+    unsafe {
+        let body = view.into_rust().body(&*env);
+        AnyView::new(body).into_ffi()
     }
+}
 
-    let _view = unsafe { &*view };
-    let _env = unsafe { &*env };
-
-    // For now, just return a new placeholder view - this would need proper implementation
-    // to call the view's body method with the environment
-    use waterui_text::Text;
-    let text = Text::new("View Body Placeholder");
-    let body = AnyView::new(text);
-    body.into_ffi()
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
+    unsafe { IntoFFI::into_ffi((*view).type_id()) }
 }

@@ -9,8 +9,9 @@
 import CWaterUI
 import SwiftUI
 
+/*
 struct Image:View,Component{
-    static var id=waterui_view_image_id()
+    static var id=image_id()
     @ObservedObject var data:ComputedData
     
     var body: some View{
@@ -22,7 +23,7 @@ struct Image:View,Component{
     }
     
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(image: waterui_view_force_as_image(anyview), env: env)
+        self.init(image: force_as_image(anyview), env: env)
     }
     
     init(image: waterui_image, env: Environment) {
@@ -36,3 +37,4 @@ extension Data{
         self.init(buffer: UnsafeBufferPointer<UInt8>(start: data.head, count: Int(data.len)))
     }
 }
+*/

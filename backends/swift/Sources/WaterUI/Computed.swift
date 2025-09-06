@@ -68,12 +68,12 @@ class ComputedStr{
     }
     
     func compute()  -> String{
-        waterui_read_computed_str(self.inner).toString()
+       WuiStr(waterui_read_computed_str(self.inner)).toString()
     }
     
     
     func watch(_ f:@escaping (String,Animation?)->()) -> WatcherGuard{
-        let g=waterui_watch_computed_str(self.inner, WuiWatcher_WuiStr({value,animation in
+        let g=waterui_watch_computed_str(self.inner, WuiWatcher_____WuiStr({value,animation in
             f(value,animation)
         }))
         return WatcherGuard(g!)
@@ -177,7 +177,7 @@ extension SwiftUI.Animation{
 }
 
 
-extension WuiWatcher_WuiStr {
+extension WuiWatcher_____WuiStr {
     init(_ f: @escaping (String,Animation?) -> Void) {
         class Wrapper {
             var inner: (String,Animation?) -> Void
@@ -190,7 +190,7 @@ extension WuiWatcher_WuiStr {
 
         self.init(data: data, call: { data, value, metadata in
             let f = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue().inner
-            f(value.toString(),Animation(waterui_get_animation(metadata)))
+            f(WuiStr(value!).toString(),Animation(waterui_get_animation(metadata)))
         }, drop: { data in
             _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()
 

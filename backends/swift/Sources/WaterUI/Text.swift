@@ -12,16 +12,16 @@ import SwiftUI
 
 @MainActor
 struct Text: View,Component {
-    static var id = waterui_view_text_id()
+    static var id = waterui_text_id()
     @State var content: ComputedStr
     
-    init(text: waterui_text) {
+    init(text: WuiText) {
         
         self.content = ComputedStr(inner: text.content)
     }
     
     init(anyview: OpaquePointer,env: Environment) {
-        self.init(text: waterui_view_force_as_text(anyview))
+        self.init(text: waterui_force_as_text(anyview))
     }
     
     func toText() -> SwiftUI.Text{

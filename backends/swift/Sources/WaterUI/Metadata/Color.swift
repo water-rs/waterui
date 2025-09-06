@@ -6,6 +6,7 @@
 //
 import SwiftUI
 import CWaterUI
+/*
 struct BackgroundColor:View,Component{
     static var id=waterui_metadata_background_color_id()
     @ObservedObject var color:ComputedColor
@@ -205,3 +206,4 @@ class BindingColor:ObservableObject{
         
     }
 }
+*/

@@ -7,6 +7,7 @@
 import CWaterUI
 import Combine
 import SwiftUI
+/*
 struct LazyViewListView:View{
     var inner:LazyViewList
     var list:[WaterUI.AnyView]
@@ -132,3 +133,4 @@ extension waterui_fnonce_____waterui_anyview {
         })
     }
 }
+*/

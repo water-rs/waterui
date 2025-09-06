@@ -34,22 +34,23 @@ final class BindingStr: ObservableObject {
     }
 
     func compute() -> String {
-        let wuiStr = waterui_read_binding_str(self.inner)
+        let wuiStr = WuiStr(waterui_read_binding_str(self.inner))
         return wuiStr.toString()
     }
 
     func watch(_ f: @escaping (String, Animation?) -> Void) -> WatcherGuard {
         let g = waterui_watch_binding_str(
             self.inner,
-            WuiWatcher_WuiStr({ value, animation in
+            WuiWatcher_____WuiStr({ value, animation in
                 f(value, animation)
             }))
         return WatcherGuard(g!)
     }
 
     func set(_ value: String) {
-        let wuiStr = WuiStr(value)
-        waterui_set_binding_str(self.inner, wuiStr)
+        let wuiStr = WuiStr(string:value)
+        wuiStr.leak()
+        waterui_set_binding_str(self.inner, wuiStr.inner)
     }
 
     deinit {

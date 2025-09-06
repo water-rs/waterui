@@ -1,56 +1,43 @@
 import CWaterUI
 import SwiftUI
 
-extension WuiStr {
-    init(_ string: String) {
-        // Using waterui_str_from_bytes to properly handle strings with null bytes
-        let utf8 = Array(string.utf8)
-        self = utf8.withUnsafeBufferPointer { buffer in
-            // Cast UInt8 to Int8 (char) for C interface
-            let charPtr = buffer.baseAddress?.withMemoryRebound(to: Int8.self, capacity: buffer.count) { $0 }
-            return waterui_str_from_bytes(charPtr, UInt32(buffer.count))
-        }
+class WuiStr{
+    var inner:OpaquePointer
+    var isLeak:Bool = false
+    init(_ inner:OpaquePointer){
+        self.inner=inner
     }
     
-    func toString() -> String {
-        // IMPORTANT: WuiStr behaves like Str - it can be either:
-        // - A static reference (len >= 0): ptr points to static UTF-8 data  
-        // - A reference-counted string (len < 0): ptr points to heap-allocated Shared struct
-        //
-        // We MUST use FFI functions to safely access the data, never directly read memory!
-        
-        let length = abs(Int(self.len))
-        
-        guard length > 0 else {
-            return ""
-        }
-        
-        // Get the actual length using FFI function
-        var copy = self
-        let actualLength = withUnsafePointer(to: &copy) { ptr in
-            waterui_str_len(OpaquePointer(ptr))
-        }
-        
-        // Get pointer to the UTF-8 bytes using the new FFI function
-        let bytesPtr = withUnsafePointer(to: &copy) { ptr in
-            waterui_str_as_ptr(OpaquePointer(ptr))
-        }
-        
-        guard let bytes = bytesPtr else {
-            return ""
-        }
-        
-        // Create a buffer from the bytes and convert to String
-        let buffer = UnsafeBufferPointer(start: bytes, count: Int(actualLength))
-        return String(decoding: buffer, as: UTF8.self)
+    init(string:String){
+        self.inner = string.utf8.withContiguousStorageIfAvailable{head in
+            return waterui_str_from_bytes(head.baseAddress, UInt32(string.count))
+        }!
     }
     
-    func drop() {
-        waterui_str_drop(self)
+    func toString() -> String{
+        // By ptr and len, copying the data
+        let start = waterui_str_as_ptr(self.inner)
+        let len = Int(waterui_str_len(self.inner))
+        let buf = UnsafeBufferPointer<UInt8>(start: start, count: len) // do not copy
+
+       
+        return String(decoding: buf, as: UTF8.self) // copy here
+
+    }
+    
+    func leak(){
+        self.isLeak  = true
+    }
+    
+    deinit{
+        if !isLeak{
+            waterui_str_drop(self.inner)
+        }
     }
 }
 
-extension WuiTypeId: Equatable {
+
+extension WuiTypeId: @retroactive Equatable {
     public static func == (lhs: WuiTypeId, rhs: WuiTypeId) -> Bool {
         return lhs.inner.0 == rhs.inner.0 && lhs.inner.1 == rhs.inner.1
     }
@@ -62,16 +49,14 @@ protocol Component:View{
     init(anyview: OpaquePointer,env:WaterUI.Environment)
 }
 
-
-
-
-
-
-@MainActor
-public func mainWidget() -> some View{
-    let env=Environment(waterui_env_new())
-    return NavigationStack{
-        WaterUI.AnyView(anyview: waterui_widget_main(), env: env)
+struct App{
+    init(){
+        
     }
     
+    var main:some View{
+        SwiftUI.EmptyView()
+    }
 }
+
+

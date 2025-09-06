@@ -8,9 +8,9 @@
 import Foundation
 import CWaterUI
 import SwiftUI
-
+/*
 struct Picker:View,Component {
-    static var id=waterui_view_picker_id()
+    static var id=waterui_picker_id()
     @ObservedObject var selection:BindingInt
     @ObservedObject var items:ComputedPickerItems
     init(picker: waterui_picker, env: Environment) {
@@ -19,7 +19,7 @@ struct Picker:View,Component {
     }
     
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(picker: waterui_view_force_as_picker(anyview), env: env)
+        self.init(picker: force_as_picker(anyview), env: env)
     }
     var body: some View {
         SwiftUI.Text("\(selection.value.wrappedValue)")
@@ -108,3 +108,4 @@ extension waterui_watcher_waterui_array_waterui_picker_item {
         })
     }
 }
+*/
