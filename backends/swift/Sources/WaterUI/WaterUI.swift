@@ -49,14 +49,14 @@ protocol Component:View{
     init(anyview: OpaquePointer,env:WaterUI.Environment)
 }
 
+@MainActor
 struct App{
+    var env:WaterUI.Environment
     init(){
-        
+        self.env = WaterUI.Environment(waterui_init())
     }
     
     var main:some View{
-        SwiftUI.EmptyView()
+        WaterUI.AnyView(anyview: waterui_main(), env: env)
     }
 }
-
-
