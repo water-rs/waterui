@@ -13,7 +13,7 @@ enum ProgressStyle{
     case Circular
     case Linear
 }
-
+/*
 extension ProgressStyle{
     init(_ style:waterui_style_progress){
         switch style{
@@ -42,7 +42,7 @@ extension ProgressStyle:SwiftUI.ProgressViewStyle{
 }
 
 struct Progress:View,Component{
-    static var id=waterui_view_progress_id()
+    static var id=progress_id()
     var label:AnyView
     @StateObject var value:ComputedDouble
     var style:ProgressStyle
@@ -54,7 +54,7 @@ struct Progress:View,Component{
     }
     
     init(anyview:OpaquePointer,env:Environment) {
-        self.init(progress: waterui_view_force_as_progress(anyview),env:env)
+        self.init(progress: force_as_progress(anyview),env:env)
     }
     
     var body:some View{
@@ -77,3 +77,4 @@ struct Progress:View,Component{
 }
 
 
+*/

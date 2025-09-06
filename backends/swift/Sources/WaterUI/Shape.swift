@@ -6,8 +6,9 @@
 //
 import SwiftUI
 import CWaterUI
+/*
 struct Rectangle:View,Component{
-    static var id=waterui_view_rectangle_id()
+    static var id=rectangle_id()
     var body: some View {
         SwiftUI.Rectangle()
     }
@@ -19,21 +20,21 @@ struct Rectangle:View,Component{
 }
 
 struct RoundedRectangle:View,Component{
-    static var id=waterui_view_rounded_rectangle_id()
+    static var id=rounded_rectangle_id()
     @ObservedObject var radius:ComputedDouble
     var body: some View {
         SwiftUI.RoundedRectangle(cornerRadius: radius.value)
     }
     
     init(anyview: OpaquePointer,env:WaterUI.Environment){
-        let view=waterui_view_force_as_rounded_rectangle(anyview)
+        let view=force_as_rounded_rectangle(anyview)
         self.radius=ComputedDouble(inner: view.radius)
     }
 
 }
 
 struct Circle:View,Component{
-    static var id=waterui_view_circle_id()
+    static var id=circle_id()
     
     var body: some View {
         SwiftUI.Circle()
@@ -45,3 +46,4 @@ struct Circle:View,Component{
     }
 
 }
+*/
