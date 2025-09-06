@@ -15,15 +15,15 @@ use core::{
 };
 use nami::collection::Collection;
 use nami::watcher::{BoxWatcher, BoxWatcherGuard, Context};
-use waterui_core::{Environment, View};
+use waterui_core::View;
 
-use waterui_core::id::{Identifable, IdentifableExt, SelfId};
+use waterui_core::id::Identifable;
 
 /// A trait for collections that can provide unique identifiers for their elements.
 ///
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
-pub trait Views: Collection<Item: Hash + Ord> {
+pub trait Views: Collection<Item: Hash + Ord> + Clone {
     type View: View;
     fn get_view(&self, index: usize) -> Option<Self::View>;
 }
@@ -86,9 +86,20 @@ where
     V: Views,
 {
     contents: V,
-    id: IdGenerator<V::Item>,
+    id: Rc<IdGenerator<V::Item>>,
 }
 
+impl<V> Clone for IntoAnyViews<V>
+where
+    V: Views,
+{
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            id: self.id.clone(),
+        }
+    }
+}
 impl<V> AnyViewsImpl for IntoAnyViews<V>
 where
     V: Views,
@@ -112,11 +123,16 @@ where
         range: (Bound<usize>, Bound<usize>),
         watcher: BoxWatcher<Vec<NonZeroUsize>>,
     ) -> BoxWatcherGuard {
-        todo!()
+        let id = self.id.clone();
+        Box::new(self.contents.watch(range, move |ctx| {
+            let metadata = ctx.metadata;
+            let values: Vec<_> = ctx.value.into_iter().map(|data| id.to_id(data)).collect();
+            watcher(Context::new(values, metadata));
+        }))
     }
 
     fn clone(&self) -> Box<dyn AnyViewsImpl<View = Self::View>> {
-        todo!()
+        Box::new(Clone::clone(self))
     }
 }
 impl<V> AnyViews<V>
@@ -138,7 +154,7 @@ where
         C: Views<View = V> + 'static,
     {
         Self(Box::new(IntoAnyViews {
-            id: IdGenerator::<C::Item>::new(),
+            id: Rc::new(IdGenerator::<C::Item>::new()),
             contents,
         }))
     }
@@ -241,7 +257,9 @@ where
     F: Fn(T) -> V,
     V: View,
 {
+    #[allow(dead_code)]
     data: T,
+    #[allow(dead_code)]
     generator: Rc<F>,
 }
 

@@ -247,6 +247,9 @@ macro_rules! ffi_enum_with_default {
 #[macro_export]
 macro_rules! ffi_view {
     ($view_ty:ty,$ffi_ty:ty,$id:ident,$force_as:ident) => {
+        /// # Safety
+        /// This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+        /// The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $force_as(view: *mut waterui::AnyView) -> $ffi_ty {
             unsafe {
