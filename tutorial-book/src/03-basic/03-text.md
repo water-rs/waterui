@@ -15,7 +15,8 @@ In WaterUI, several types implement the `View` trait directly and are called "la
 Labels are rendered as simple, unstyled text and are perfect for static content:
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::component::layout::stack::vstack;
 
 fn label_examples() -> impl View {
     vstack((
@@ -37,7 +38,10 @@ line breaks"#,
 The `Text` component provides reactive updates and rich styling options:
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::reactive::binding;
+use waterui::component::layout::stack::vstack;
+use waterui::component::button::button;
 use waterui_text::{text, Text};
 
 fn text_component_examples() -> impl View {
@@ -53,9 +57,7 @@ fn text_component_examples() -> impl View {
         text!("Hello, {}!", name),
 
         // Text component with styling
-        "Styled text"
-            .size(20.0)
-            .font(Font::default().weight(FontWeight::Bold)),
+        Text::new("Styled text").size(20.0),
 
         button("Increment")
             .action({
@@ -73,8 +75,9 @@ Only the `Text` component (created with `text()` function or `Text::new()`) supp
 ### Font Properties
 
 ```rust
-use waterui::prelude::*;
-use waterui_text::{text, Font, FontWeight};
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui_text::text;
 
 fn font_styling_demo() -> impl View {
     vstack((
@@ -88,13 +91,8 @@ fn font_styling_demo() -> impl View {
         text("Small text")
             .size(12.0),
 
-        text("Bold text")
-            .font(Font::default().weight(FontWeight::Bold)),
-
-        text("Styleable text")
-            .font(Font::default()
-                .size(18.0)
-                .weight(FontWeight::SemiBold)),
+        // Bold/weight not yet available
+        text("Styleable text").size(18.0),
     ))
 }
 ```
@@ -104,8 +102,9 @@ fn font_styling_demo() -> impl View {
 Choose the right approach based on your needs:
 
 ```rust
-use waterui::prelude::*;
-use waterui_text::{text, Font, FontWeight};
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui_text::text;
 
 fn choosing_text_type() -> impl View {
     vstack((
@@ -114,10 +113,7 @@ fn choosing_text_type() -> impl View {
         "Simple description text",
 
         // Use Text component for styled text
-        text("Styled heading")
-            .font(Font::default()
-                .size(20.0)
-                .weight(FontWeight::Bold)),
+        text("Styled heading").size(20.0),
 
         // Use text! macro for reactive content
         {
@@ -133,12 +129,15 @@ fn choosing_text_type() -> impl View {
 The `text!` macro creates reactive Text components that automatically update when underlying data changes:
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::reactive::{binding, s};
+use waterui::component::layout::stack::{vstack, hstack};
+use waterui::component::button::button;
 use waterui_text::text;
 
 fn reactive_text_demo() -> impl View {
     let count = binding(0);
-    let name = binding("Alice".to_string());
+    let name = binding(String::from("Alice"));
     let temperature = binding(22.5);
 
     vstack((
@@ -169,12 +168,14 @@ fn reactive_text_demo() -> impl View {
 Always use `text!` macro for reactive text, never `format!` macro which loses reactivity:
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui::reactive::binding;
 use waterui_text::text;
 
 fn formatting_best_practices() -> impl View {
     let user_count = binding(42);
-    let status = binding("Active".to_string());
+    let status = binding(String::from("Active"));
 
     vstack((
         // ✅ CORRECT: Use text! for reactive content
@@ -200,7 +201,9 @@ The Text component provides additional capabilities beyond basic labels:
 ### Text Display Options
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui::reactive::binding;
 use waterui_text::{text, Text};
 
 fn text_display_demo() -> impl View {
@@ -219,46 +222,17 @@ fn text_display_demo() -> impl View {
 }
 ```
 
-### Font Customization
-
-```rust
-fn rich_text_demo() -> impl View {
-    vstack((
-        rich_text([
-            text_span("Regular text, ")
-                .color(Color::primary()),
-            text_span("bold text, ")
-                .font_weight(FontWeight::Bold)
-                .color(Color::blue()),
-            text_span("italic text, ")
-                .font_style(FontStyle::Italic)
-                .color(Color::green()),
-            text_span("and underlined text.")
-                .underline(true)
-                .color(Color::red()),
-        )),
-
-        rich_text([
-            text_span("Temperature: "),
-            text_span("25°C")
-                .font_weight(FontWeight::Bold)
-                .color(Color::orange()),
-            text_span(" ("),
-            text_span("Normal")
-                .color(Color::green()),
-            text_span(")"),
-        )),
-    ))
-    .spacing(15.0)
-}
-```
+// Rich text (spans, bold/italic) is planned but not yet available.
 
 ## Performance Considerations
 
 ### Efficient Reactive Updates
 
 ```rust
-use waterui::prelude::*;
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui::component::button::button;
+use waterui::reactive::{binding, s};
 use waterui_text::text;
 
 fn efficient_text_updates() -> impl View {
@@ -303,8 +277,10 @@ WaterUI's text system provides:
 ### Quick Reference
 
 ```rust
-use waterui::prelude::*;
-use waterui_text::{text, Text, Font, FontWeight};
+use waterui::View;
+use waterui::component::layout::stack::vstack;
+use waterui::reactive::binding;
+use waterui_text::{text, Text};
 
 fn text_reference() -> impl View {
     let count = binding(42);
@@ -326,4 +302,4 @@ fn text_reference() -> impl View {
 }
 ```
 
-Next: [Forms](10-forms.md)
+Next: [Forms](../03-basic/04-form.md)

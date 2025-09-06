@@ -35,8 +35,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-waterui = "0.1.0"
-waterui_gtk4 = "0.1.0"
+waterui = { path = ".." }
+waterui_gtk4 = { path = "../backends/gtk4" }
 ```
 
 ## Building the Counter Step by Step
@@ -49,17 +49,17 @@ Start with a simple view structure. Since our initial view doesn't need state, w
 
 **Filename**: `src/main.rs`
 ```rust,ignore
-use waterui::{component::text,View};
+use waterui::View;
 use waterui_gtk4::{Gtk4App, init};
 
-pub fn counter() -> impl View{
-	"Counter App"
+pub fn counter() -> impl View {
+    "Counter App"
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init()?;
     let app = Gtk4App::new("com.example.counter-app");
-    app.run(counter)
+    Ok(app.run(counter).into())
 }
 ```
 
@@ -75,20 +75,13 @@ You should see a window with "Counter App" displayed.
 Now let's add some layout structure using stacks:
 
 ```rust,ignore
-use waterui::{component::{text, layout::stack::vstack},View};
-use waterui_gtk4::{Gtk4App, init};
+use waterui::{component::layout::stack::vstack, View};
 
-pub fn counter() -> impl View{
-	vstack((
+pub fn counter() -> impl View {
+    vstack((
         "Counter App",
         "Count: 0",
     ))
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init()?;
-    let app = Gtk4App::new("com.example.counter-app");
-    app.run(counter)
 }
 ```
 
@@ -101,32 +94,25 @@ Now comes the exciting part - let's add reactive state! We'll use the `s!` macro
 ```rust,ignore
 use waterui::{
     component::{
-        text, text!,
         layout::stack::{vstack, hstack},
         button::button,
     },
-    Binding,View
+    View,
 };
-use waterui_gtk4::{Gtk4App, init};
+use waterui_text::text;
+use waterui::reactive::binding;
 
-
-pub fn counter() -> impl View{
-    let count = Binding::int(0);
-	vstack((
+pub fn counter() -> impl View {
+    let count = binding(0);
+    vstack((
         "Counter App",
         // Use text! macro for reactive text
         text!("Count: {}", count),
         hstack((
-            button("- Decrement").action_with(&count,|count| count.increment()),
-            button("+ Increment").action_with(&count,|count| count.decrement()),
+            button("- Decrement").action_with(&count, |count| count.update(|n| n - 1)),
+            button("+ Increment").action_with(&count, |count| count.update(|n| n + 1)),
         )),
     ))
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init()?;
-    let app = Gtk4App::new("com.example.counter-app");
-    app.run(counter)
 }
 ```
 
@@ -147,25 +133,21 @@ This creates a reactive binding with an initial value of 0. When this value chan
 ### Reactive Text Display
 
 ```rust,ignore
-// ❌ Avoid: Using .get() and format!
-text(count.get().map(|&n| format!("Count: {}", n)))
-
-// ✅ Better: Use text! macro for reactive display
+// ✅ Use the text! macro for reactive display
 text!("Count: {}", count)
 ```
 
 - The `text!` macro automatically handles reactivity
-- Never use `.get()` in your code, you will lose reactivity!
-- The text will automatically update whenever `count` changes
+- The text will update whenever `count` changes
 
 ### Event Handling
 
 ```rust,ignore
-button("- Decrement").action_with(&count,|count| count.increment()),
+button("- Decrement").action_with(&count, |count| count.update(|n| n - 1))
 ```
 
-- `.action_with()` attaches an event handler to the button with a state
-- `count.increment()` is a convenience method on `Binding<i32>`, it would update the internal value of Binding and notify all watchers.
+- `.action_with()` attaches an event handler with captured state
+- `Binding<T>::update(|v| ...)` updates the value and notifies watchers
 
 ### Layout with Stacks
 

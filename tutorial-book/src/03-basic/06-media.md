@@ -20,7 +20,9 @@ The `Photo` component displays images from URLs with support for placeholder vie
 ### Basic Usage
 
 ```rust
-use waterui::*;
+use waterui::View;
+use waterui_media::Photo;
+use waterui_text::text;
 
 pub fn photo_example() -> impl View {
     Photo::new("https://example.com/image.jpg")
@@ -34,10 +36,7 @@ pub fn photo_example() -> impl View {
 pub fn local_photo() -> impl View {
     Photo::new("assets/photo.jpg")
         .placeholder(
-            vstack((
-                text!("📷"),
-                text!("Loading...")
-            ))
+            waterui_layout::stack::vstack((text!("📷"), text!("Loading...")))
         )
 }
 ```
@@ -47,24 +46,24 @@ pub fn local_photo() -> impl View {
 You can create sophisticated placeholder views that match your app's design:
 
 ```rust
-use waterui::*;
+use waterui::{View, ViewExt, background::Background};
+use waterui_layout::stack::{vstack, zstack};
+use waterui_text::text;
+use waterui::component::layout::{Edge, Frame};
 
 pub fn styled_photo() -> impl View {
     Photo::new("https://example.com/large-image.jpg")
         .placeholder(
             zstack((
-                // Background
-                Rectangle::new()
-                    .fill(Color::gray(0.1)),
+                // Background color layer
+                ().background(Background::color((0.1, 0.1, 0.1))),
                 // Loading indicator
                 vstack((
-                    text!("📸")
-                        .font_size(48.0),
-                    text!("Loading image...")
-                        .foreground_color(Color::gray(0.6))
-                ))
+                    text!("📸").size(48.0),
+                    text!("Loading image...").foreground((0.6, 0.6, 0.6)),
+                )),
             ))
-            .frame(width: 300.0, height: 200.0)
+            .frame(Frame::new().width(300.0).height(200.0))
         )
 }
 ```
@@ -76,7 +75,8 @@ WaterUI provides both `Video` sources and `VideoPlayer` components for video pla
 ### Basic Video
 
 ```rust
-use waterui::*;
+use waterui::View;
+use waterui_media::Video;
 
 pub fn basic_video() -> impl View {
     Video::new("https://example.com/video.mp4")
@@ -90,21 +90,22 @@ When a `Video` is used as a view, it automatically creates a `VideoPlayer`.
 For more control over video playback, use `VideoPlayer` directly:
 
 ```rust
-use waterui::*;
+use waterui::{View, ViewExt};
+use waterui_media::{Video, VideoPlayer};
+use waterui_text::text;
+use waterui::reactive::binding;
+use waterui_layout::stack::{vstack, hstack};
 
 pub fn video_with_controls() -> impl View {
     let video = Video::new("assets/demo.mp4");
     let muted = binding(false);
     
     vstack((
-        VideoPlayer::new(video)
-            .muted(&muted),
+        VideoPlayer::new(video).muted(&muted),
         
         // Mute toggle button
-        Button::new(text!("Toggle Mute"))
-            .on_click(move || {
-                muted.update(|m| !m);
-            })
+        waterui::component::button::button("Toggle Mute")
+            .action_with(&muted, |muted| muted.update(|m| !m))
     ))
 }
 ```
@@ -118,7 +119,11 @@ The video player uses a unique volume system where:
 - When unmuting, the absolute value is restored
 
 ```rust
-use waterui::*;
+use waterui::{View};
+use waterui_media::{Video, VideoPlayer};
+use waterui::reactive::binding;
+use waterui_layout::stack::{vstack, hstack};
+use waterui_text::text;
 
 pub fn volume_control_example() -> impl View {
     let video = Video::new("video.mp4");
@@ -126,15 +131,14 @@ pub fn volume_control_example() -> impl View {
     let volume = binding(0.7); // 70% volume
     
     vstack((
-        VideoPlayer::new(video)
-            .muted(&muted),
+        VideoPlayer::new(video).muted(&muted),
             
         // Volume controls
         hstack((
-            Button::new(text!("🔇"))
-                .on_click(move || muted.set(true)),
-            Button::new(text!("🔉"))
-                .on_click(move || muted.set(false)),
+            waterui::component::button::button("🔇")
+                .action_with(&muted, |muted| muted.set(true)),
+            waterui::component::button::button("🔉")
+                .action_with(&muted, |muted| muted.set(false)),
             // Volume internally stored as -0.7 when muted, +0.7 when unmuted
         ))
     ))
@@ -148,8 +152,8 @@ Live Photos combine a still image with a short video, similar to Apple's Live Ph
 ### Basic Live Photo
 
 ```rust
-use waterui::*;
-use waterui::media::{LivePhoto, LivePhotoSource};
+use waterui::View;
+use waterui_media::{LivePhoto, LivePhotoSource};
 
 pub fn live_photo_example() -> impl View {
     let source = LivePhotoSource::new(
@@ -164,8 +168,11 @@ pub fn live_photo_example() -> impl View {
 ### Reactive Live Photo
 
 ```rust
-use waterui::*;
-use waterui::media::{LivePhoto, LivePhotoSource};
+use waterui::{View};
+use waterui_media::{LivePhoto, LivePhotoSource};
+use waterui_text::text;
+use waterui_layout::stack::{vstack, hstack};
+use waterui::reactive::binding;
 
 pub fn reactive_live_photo() -> impl View {
     let photo_index = binding(0);
@@ -181,14 +188,12 @@ pub fn reactive_live_photo() -> impl View {
         LivePhoto::new(live_source),
         
         hstack((
-            Button::new(text!("Previous"))
-                .on_click(move || {
-                    photo_index.update(|idx| if idx > 0 { idx - 1 } else { idx });
+            waterui::component::button::button("Previous")
+                .action_with(&photo_index, |photo_index| {
+                    photo_index.update(|idx| if idx > 0 { idx - 1 } else { idx })
                 }),
-            Button::new(text!("Next"))
-                .on_click(move || {
-                    photo_index.update(|idx| idx + 1);
-                })
+            waterui::component::button::button("Next")
+                .action_with(&photo_index, |photo_index| photo_index.update(|idx| idx + 1)),
         ))
     ))
 }
@@ -199,8 +204,9 @@ pub fn reactive_live_photo() -> impl View {
 The `Media` enum provides a unified way to handle different types of media content:
 
 ```rust
-use waterui::*;
-use waterui::media::Media;
+use waterui::View;
+use waterui_media::{Media, LivePhotoSource};
+use waterui_layout::stack::vstack;
 
 pub fn media_gallery() -> impl View {
     let media_items = vec![
@@ -216,7 +222,7 @@ pub fn media_gallery() -> impl View {
     vstack(
         media_items
             .into_iter()
-            .map(|media| media.frame(width: 300.0, height: 200.0))
+            .map(|media| media.frame(waterui::component::layout::Frame::new().width(300.0).height(200.0)))
             .collect::<Vec<_>>()
     )
 }
@@ -227,24 +233,26 @@ pub fn media_gallery() -> impl View {
 The `MediaPicker` component provides platform-native media selection when available:
 
 ```rust
-use waterui::*;
-use waterui::media::{MediaPicker, MediaFilter};
+use waterui::View;
+use waterui_media::{MediaPicker, MediaFilter};
+use waterui::widget::condition::when;
+use waterui_layout::stack::vstack;
+use waterui_text::text;
+use waterui::reactive::binding;
 
 pub fn photo_picker_example() -> impl View {
     let selected_media = binding(None);
     
     vstack((
-        Button::new(text!("Select Photo"))
-            .on_click(move || {
-                // Platform-native photo picker would open
-            }),
+        waterui::component::button::button("Select Photo")
+            .action(|| { /* open picker */ }),
             
         // Display selected media
-        when(selected_media.clone(), |media| if let Some(media) = media {
-            media.into_view()
-        } else {
-            text!("No media selected").into_view()
+        when(waterui::reactive::s!(selected_media.is_some()), || {
+            // Simplest approach: show placeholder text when none is selected
+            text!("Media selected")
         })
+        .or(|| text!("No media selected"))
     ))
 }
 ```
@@ -277,8 +285,12 @@ let no_videos = MediaFilter::Not(vec![MediaFilter::Video]);
 Here's a complete example of a media gallery with different types of content:
 
 ```rust
-use waterui::*;
-use waterui::media::*;
+use waterui::{View, ViewExt};
+use waterui_media::*;
+use waterui_layout::stack::{vstack, hstack};
+use waterui_text::text;
+use waterui::reactive::binding;
+use waterui::component::layout::{Edge, Frame};
 
 pub fn media_gallery_app() -> impl View {
     let selected_index = binding(0);
@@ -298,40 +310,40 @@ pub fn media_gallery_app() -> impl View {
     vstack((
         // Header
         text!("Media Gallery")
-            .font_size(24.0)
-            .padding(16.0),
+            .size(24.0)
+            .frame(Frame::new().margin(Edge::round(16.0))),
             
         // Main media display
-        when(current_media.clone(), |media| if let Some(media) = media {
-            media
-                .frame(width: 600.0, height: 400.0)
-                .padding(16.0)
-                .into_view()
-        } else {
-            text!("No media available").into_view()
+        waterui::component::Dynamic::watch(current_media, |media| {
+            if let Some(media) = media {
+                media
+                    .frame(Frame::new().width(600.0).height(400.0))
+                    .frame(Frame::new().margin(Edge::round(16.0)))
+                    .anyview()
+            } else {
+                text!("No media available").anyview()
+            }
         }),
         
         // Navigation controls
         hstack((
-            Button::new(text!("◀ Previous"))
-                .on_click(move || {
-                    selected_index.update(|idx| if idx > 0 { idx - 1 } else { idx });
+            waterui::component::button::button("◀ Previous")
+                .action_with(&selected_index, |selected_index| {
+                    selected_index.update(|idx| if idx > 0 { idx - 1 } else { idx })
                 }),
                 
             text!("{} / {}", 
                 s!(selected_index + 1), 
                 media_items.len()
             )
-            .padding_horizontal(16.0),
+            .frame(Frame::new().margin(Edge::horizontal(16.0))),
             
-            Button::new(text!("Next ▶"))
-                .on_click(move || {
-                    selected_index.update(|idx| {
-                        if idx < media_items.len() - 1 { idx + 1 } else { idx }
-                    });
+            waterui::component::button::button("Next ▶")
+                .action_with(&selected_index, |selected_index| {
+                    selected_index.update(|idx| if idx + 1 < media_items.len() { idx + 1 } else { idx })
                 })
         ))
-        .padding(16.0),
+        .frame(Frame::new().margin(Edge::round(16.0))),
         
         // Thumbnail strip
         hstack(
@@ -339,15 +351,12 @@ pub fn media_gallery_app() -> impl View {
                 .iter()
                 .enumerate()
                 .map(|(index, media)| {
-                    Button::new(
-                        media.clone()
-                            .frame(width: 80.0, height: 60.0)
-                    )
-                    .on_click(move || selected_index.set(index))
+                    waterui::component::button::button( media.clone().frame(Frame::new().width(80.0).height(60.0)) )
+                        .action_with(&selected_index, move |selected_index| selected_index.set(index))
                 })
                 .collect::<Vec<_>>()
         )
-        .padding(16.0)
+        .frame(Frame::new().margin(Edge::round(16.0)))
     ))
 }
 ```
@@ -377,17 +386,22 @@ Photo::new("large-image.jpg")
 For large media galleries, consider lazy loading:
 
 ```rust
-use waterui::*;
+use waterui::View;
+use waterui_text::text;
+use waterui_layout::stack::vstack;
 
 pub fn efficient_gallery() -> impl View {
-    let visible_items = computed(|| {
+    let visible_items = waterui::reactive::Computed::new({
         // Only load visible items based on scroll position
-        get_visible_media_items()
+        // Placeholder for example
+        Vec::<Media>::new()
     });
     
-    LazyVStack::new(
-        visible_items,
-        |media| media.frame(width: 300.0, height: 200.0)
+    // Lazy stacks are experimental; use a regular vstack for now
+    vstack(
+        visible_items.get().into_iter()
+            .map(|media| media.frame(Frame::new().width(300.0).height(200.0)))
+            .collect::<Vec<_>>()
     )
 }
 ```
@@ -397,19 +411,5 @@ pub fn efficient_gallery() -> impl View {
 Make media components responsive to different screen sizes:
 
 ```rust
-pub fn responsive_photo() -> impl View {
-    Photo::new("responsive-image.jpg")
-        .frame(
-            width: env.screen_width * 0.9,
-            height: env.screen_width * 0.6
-        )
-        .placeholder(
-            Rectangle::new()
-                .fill(Color::gray(0.1))
-                .frame(
-                    width: env.screen_width * 0.9,
-                    height: env.screen_width * 0.6
-                )
-        )
-}
+// Example placeholder: responsive sizing requires reading screen metrics from the backend
 ```
