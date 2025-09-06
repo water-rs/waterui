@@ -13,7 +13,7 @@
 
 /* Begin PBXFileReference section */
 		D018675E2E6C7BBB00802E96 /* demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = demo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* libdemo.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdemo.a; path = ../../target/debug/libdemo.a; sourceTree = "<group>"; };
+		D01867752E6C818300802E96 /* libdemo.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdemo.a; path = ../../target/aarch64-apple-darwin/debug/libdemo.a; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
