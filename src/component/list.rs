@@ -16,14 +16,10 @@
 //! ```
 
 use alloc::boxed::Box;
-use nami::{collection::Collection, impl_constant};
+use nami::collection::Collection;
 
-use crate::{
-    component::views::{AnyViews, ForEach},
-    view::ViewExt,
-};
-use waterui_core::{AnyView, Environment, View};
-impl_constant!(AnyViews<ListItem>);
+use crate::component::views::{AnyViews, ForEach, Views};
+use waterui_core::{AnyView, Environment, View, id::Identifable};
 
 /// Configuration for a list component.
 #[derive(Debug)]
@@ -34,25 +30,30 @@ pub struct ListConfig {
 
 /// A component that displays items in a list format.
 #[derive(Debug)]
-pub struct List<C, F, V>(ForEach<C, F, V, V>);
+pub struct List<V: Views<View = ListItem>>(V);
 
-impl<C, F, V> List<C, F, V>
+impl<V> List<V>
 where
-    C: Collection,
-    F: Fn(C::Item) -> V,
-    V: View,
+    V: Views<View = ListItem>,
 {
-    /// Creates a new list from a collection and a function to generate views.
+    /// Creates a new list with the specified contents.
     ///
     /// # Arguments
-    /// * `data` - The collection of data to display
-    /// * `generator` - Function to transform collection items into views
-    pub fn new(data: C, generator: F) -> Self {
+    /// * `contents` - A collection of items to display in the list.
+    pub fn new(contents: V) -> Self {
+        Self(contents)
+    }
+}
+
+impl<C, F> List<ForEach<C, F, ListItem>>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> ListItem,
+{
+    pub fn for_each(data: C, generator: F) -> Self {
         Self(ForEach::new(data, generator))
     }
-
-    /// Enables search functionality for the list.
-    pub fn searchable() {}
 }
 
 /// An item in a list that can be configured with various behaviors.
@@ -61,6 +62,12 @@ pub struct ListItem {
     pub content: AnyView,
     /// Optional callback function for when the item is deleted.
     pub on_delete: Option<OnDelete>,
+}
+
+impl View for ListItem {
+    fn body(self, _env: &Environment) -> impl View {
+        self.content
+    }
 }
 
 type OnDelete = Box<dyn Fn(&Environment, usize)>;
@@ -81,17 +88,5 @@ impl ListItem {
     pub fn disable_delete(mut self) -> Self {
         self.on_delete = None;
         self
-    }
-}
-
-impl<V> From<V> for ListItem
-where
-    V: View,
-{
-    fn from(value: V) -> Self {
-        Self {
-            content: value.anyview(),
-            on_delete: None,
-        }
     }
 }
