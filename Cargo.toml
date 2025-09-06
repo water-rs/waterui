@@ -11,7 +11,7 @@ members = [
     "window",
     "cli",
     "ffi"
-]
+, "template"]
 resolver = "2"
 
 [package]

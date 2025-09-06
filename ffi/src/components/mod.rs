@@ -13,8 +13,7 @@ ffi_view!(waterui::component::divder::Divider, waterui_divider_id);
 
 pub mod button {
     use crate::action::WuiAction;
-    use crate::{ffi_struct, ffi_view};
-    use waterui::AnyView;
+    use crate::{WuiAnyView, ffi_struct, ffi_view};
     use waterui::component::Native;
     use waterui::component::button::ButtonConfig;
 
@@ -23,7 +22,7 @@ pub mod button {
     #[repr(C)]
     pub struct WuiButton {
         /// Pointer to the button's label view
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         /// Pointer to the button's action handler
         pub action: *mut WuiAction,
     }
@@ -45,13 +44,13 @@ ffi_view!(
 );
 
 pub mod link {
-    use crate::{ffi_struct, ffi_view};
+    use crate::{WuiAnyView, ffi_struct, ffi_view};
     use waterui::component::link::LinkConfig;
     use waterui::{AnyView, Computed, Str, component::Native};
 
     #[repr(C)]
     pub struct WuiLink {
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         pub url: *mut Computed<Str>,
     }
 
@@ -114,8 +113,7 @@ pub mod text {
 /// Form component FFI bindings
 pub mod form {
     use crate::components::text::WuiText;
-    use crate::{ffi_struct, ffi_view};
-    use waterui::AnyView;
+    use crate::{WuiAnyView, ffi_struct, ffi_view};
     use waterui::component::Native;
     use waterui::{Binding, Computed, Str};
     use waterui_form::{
@@ -140,7 +138,7 @@ pub mod form {
     #[repr(C)]
     pub struct WuiTextField {
         /// Pointer to the text field's label view
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         /// Pointer to the text value binding
         pub value: *mut Binding<Str>,
         /// Pointer to the prompt text
@@ -153,7 +151,7 @@ pub mod form {
     #[repr(C)]
     pub struct WuiToggle {
         /// Pointer to the toggle's label view
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         /// Pointer to the toggle state binding
         pub toggle: *mut Binding<bool>,
     }
@@ -171,11 +169,11 @@ pub mod form {
     #[repr(C)]
     pub struct WuiSlider {
         /// Pointer to the slider's label view
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         /// Pointer to the minimum value label view
-        pub min_value_label: *mut AnyView,
+        pub min_value_label: *mut WuiAnyView,
         /// Pointer to the maximum value label view
-        pub max_value_label: *mut AnyView,
+        pub max_value_label: *mut WuiAnyView,
         /// The range of values
         pub range: WuiRange<f64>,
         /// Pointer to the value binding
@@ -190,7 +188,7 @@ pub mod form {
         /// Pointer to the step size computed value
         pub step: *mut Computed<i32>,
         /// Pointer to the stepper's label view
-        pub label: *mut AnyView,
+        pub label: *mut WuiAnyView,
         /// The valid range of values
         pub range: WuiRange<i32>,
     }
@@ -273,16 +271,16 @@ pub mod form {
 
 /// Navigation component FFI bindings
 pub mod navigation {
+    use crate::WuiAnyView;
     use crate::components::text::WuiText;
     use crate::{closure::WuiFn, ffi_struct, ffi_view};
     use alloc::vec::Vec;
-    use waterui::AnyView;
     use waterui::{Binding, Color, Computed};
     use waterui_core::id::Id;
     use waterui_navigation::{Bar, NavigationLink, NavigationView, tab::TabsConfig};
 
     pub struct WuiNavigationView {
-        pub root: *mut AnyView,
+        pub root: *mut WuiAnyView,
         pub bar: *mut Bar,
         pub links: *mut Vec<NavigationLink>,
         pub tabs: *mut Option<TabsConfig>,
@@ -290,8 +288,8 @@ pub mod navigation {
     }
 
     pub struct WuiNavigationLink {
-        pub label: *mut AnyView,
-        pub destination: *mut WuiFn<*mut AnyView>,
+        pub label: *mut WuiAnyView,
+        pub destination: *mut WuiFn<*mut WuiAnyView>,
     }
 
     /// C representation of a navigation Bar configuration
@@ -319,8 +317,7 @@ pub mod navigation {
 /// Media component FFI bindings
 pub mod media {
     use crate::str::WuiStr;
-    use crate::{IntoFFI, ffi_struct, ffi_view};
-    use waterui::AnyView;
+    use crate::{IntoFFI, WuiAnyView, ffi_struct, ffi_view};
     use waterui::component::Native;
     use waterui::{Binding, Computed};
     use waterui_media::{
@@ -340,7 +337,7 @@ pub mod media {
         /// The image source URL
         pub source: Url,
         /// Pointer to the placeholder view
-        pub placeholder: *mut AnyView,
+        pub placeholder: *mut WuiAnyView,
     }
     #[repr(C)]
     pub struct WuiVideo {

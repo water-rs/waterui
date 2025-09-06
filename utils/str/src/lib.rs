@@ -200,13 +200,58 @@ impl Str {
         }
     }
 
+    /// Creates a `Str` from raw parts.
+    ///
+    /// This function creates a `Str` directly from a raw pointer and length.
+    /// The caller must ensure that the pointer and length represent valid string data.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because improper use may lead to memory unsafety. For it to be safe, the caller must ensure that:
+    ///
+    /// * `ptr` must be non-null and properly aligned
+    /// * If `len >= 0`, `ptr` must point to valid UTF-8 string data of exactly `len` bytes
+    /// * If `len < 0`, `ptr` must point to a valid `Shared` structure containing a reference-counted String
+    /// * The memory pointed to by `ptr` must remain valid for the lifetime of the returned `Str`
+    /// * The caller must not use the raw pointer after passing it to this function
     pub const unsafe fn from_raw(ptr: *mut (), len: isize) -> Self {
         Self {
-            ptr: NonNull::new_unchecked(ptr),
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
             len,
         }
     }
 
+    /// Consumes this `Str` and returns its raw parts.
+    ///
+    /// This function decomposes a `Str` into its internal representation:
+    /// a raw pointer and a length value. The returned values can be used to
+    /// reconstruct the `Str` later using [`from_raw`](Self::from_raw).
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// * `*mut ()` - A raw pointer to the string data
+    /// * `isize` - The length information (positive for static strings, negative for owned strings)
+    ///
+    /// # Safety
+    ///
+    /// After calling this function, the caller is responsible for the memory management
+    /// of the returned pointer. The pointer must eventually be passed back to
+    /// [`from_raw`](Self::from_raw) to properly clean up the memory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s = Str::from("hello");
+    /// let (ptr, len) = s.into_raw();
+    ///
+    /// // SAFETY: We immediately reconstruct the Str from the same raw parts
+    /// let s2 = unsafe { Str::from_raw(ptr, len) };
+    /// assert_eq!(s2, "hello");
+    /// ```
+    #[must_use]
     pub fn into_raw(self) -> (*mut (), isize) {
         let this = ManuallyDrop::new(self);
         (this.ptr.as_ptr(), this.len)
