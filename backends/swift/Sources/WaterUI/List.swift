@@ -8,13 +8,13 @@
 import SwiftUI
 import CWaterUI
 
-
+/*
 
 struct List:Component,View{
-    static var id=waterui_view_list_id()
+    static var id=list_id()
     var contents:[WaterUI.AnyView] = []
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(list: waterui_view_force_as_list(anyview), env: env)
+        self.init(list: force_as_list(anyview), env: env)
     }
     
     init(list: waterui_list, env: Environment) {
@@ -35,3 +35,4 @@ struct List:Component,View{
 }
 
 
+*/

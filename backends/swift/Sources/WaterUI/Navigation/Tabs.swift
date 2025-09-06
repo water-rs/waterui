@@ -7,13 +7,13 @@
 
 import SwiftUI
 import CWaterUI
-
+/*
 struct Tabs: View, Component {
-    static var id=waterui_view_tabs_id()
+    static var id=tabs_id()
     var selection:BindingInt
     var tabs:Array<Tab>
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(tabs: waterui_view_force_as_tabs(anyview), env: env)
+        self.init(tabs: force_as_tabs(anyview), env: env)
     }
     
     init(tabs: waterui_tabs, env: Environment) {
@@ -57,3 +57,4 @@ struct Tab{
         self.content=NavigationViewBuilder(inner: tab.content, env: env)
     }
 }
+*/
