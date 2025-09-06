@@ -9,7 +9,6 @@ members = [
     "backends/web",
     "render_utils",
     "window",
-    "cli",
     "ffi"
 , "demo"]
 resolver = "2"
