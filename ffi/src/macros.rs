@@ -251,9 +251,9 @@ macro_rules! ffi_view {
         /// This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
         /// The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $force_as(view: *mut waterui::AnyView) -> $ffi_ty {
+        pub unsafe extern "C" fn $force_as(view: *mut $crate::WuiAnyView) -> $ffi_ty {
             unsafe {
-                let any: waterui::AnyView = $crate::IntoRust::into_rust(view).unwrap();
+                let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
                 let view = (*any.downcast_unchecked::<$view_ty>());
                 $crate::IntoFFI::into_ffi(view)
             }

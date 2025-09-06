@@ -10,16 +10,16 @@ import Foundation
 import SwiftUI
 
 struct Stepper: View,Component {
-    static var id=waterui_view_stepper_id()
+    static var id = waterui_stepper_id()
     @ObservedObject var step: ComputedInt
     @ObservedObject var value: BindingInt
-    init(stepper: waterui_stepper){
+    init(stepper: WuiStepper, env: Environment){
         step = ComputedInt(inner: stepper.step)
         value = BindingInt(inner: stepper.value)
     }
 
-    init(anyview: OpaquePointer,env:Environment) {
-        self.init(stepper: waterui_view_force_as_stepper(anyview))
+    init(anyview: OpaquePointer, env:Environment) {
+        self.init(stepper: waterui_force_as_stepper(anyview), env: env)
     }
 
     var body: some View {
