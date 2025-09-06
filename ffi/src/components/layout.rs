@@ -1,6 +1,5 @@
 pub mod stack {
-    use crate::{array::WuiArray, ffi_enum, ffi_struct, ffi_view};
-    use waterui::AnyView;
+    use crate::{WuiAnyView, array::WuiArray, ffi_enum, ffi_struct, ffi_view};
 
     use waterui::component::layout::stack::{Stack, StackMode};
 
@@ -8,7 +7,7 @@ pub mod stack {
 
     #[repr(C)]
     pub struct WuiStack {
-        pub contents: WuiArray<*mut AnyView>,
+        pub contents: WuiArray<*mut WuiAnyView>,
         pub mode: WuiStackMode,
     }
 
@@ -26,8 +25,7 @@ ffi_enum!(
 );
 
 pub mod grid {
-    use crate::{array::WuiArray, ffi_struct, ffi_view};
-    use waterui::AnyView;
+    use crate::{WuiAnyView, array::WuiArray, ffi_struct, ffi_view};
 
     use super::WuiAlignment;
 
@@ -35,7 +33,7 @@ pub mod grid {
 
     #[repr(C)]
     pub struct WuiGridRow {
-        pub columns: WuiArray<*mut AnyView>,
+        pub columns: WuiArray<*mut WuiAnyView>,
     }
 
     ffi_struct!(GridRow, WuiGridRow, columns);
@@ -59,11 +57,11 @@ pub(crate) mod scroll {
         component::layout::scroll::{Axis, ScrollView},
     };
 
-    use crate::{ffi_enum, ffi_struct};
+    use crate::{WuiAnyView, ffi_enum, ffi_struct};
 
     #[repr(C)]
     pub struct WuiScrollView {
-        pub content: *mut AnyView,
+        pub content: *mut WuiAnyView,
         pub axis: WuiAxis,
     }
 
@@ -79,13 +77,13 @@ pub(crate) mod scroll {
 }
 
 pub mod overlay {
-    use waterui::{AnyView, component::layout::overlay::Overlay};
+    use waterui::component::layout::overlay::Overlay;
 
-    use crate::{ffi_struct, ffi_view};
+    use crate::{WuiAnyView, ffi_struct, ffi_view};
 
     #[repr(C)]
     pub struct WuiOverlay {
-        pub content: *mut AnyView,
+        pub content: *mut WuiAnyView,
     }
 
     ffi_struct!(Overlay, WuiOverlay, content);

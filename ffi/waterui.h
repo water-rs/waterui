@@ -162,6 +162,30 @@ typedef struct Computed_f64 Computed_f64;
 typedef struct Computed_i32 Computed_i32;
 
 /**
+ * An `Environment` stores a map of types to values.
+ *
+ * Each type can have at most one value in the environment. The environment
+ * is used to pass contextual information from parent views to child views.
+ *
+ * # Examples
+ *
+ * ```
+ * use waterui_core::Environment;
+ *
+ * let mut env = Environment::new();
+ * env.insert(String::from("hello"));
+ *
+ * // Get the value back
+ * assert_eq!(env.get::<String>(), Some(&String::from("hello")));
+ *
+ * // Remove the value
+ * env.remove::<String>();
+ * assert_eq!(env.get::<String>(), None);
+ * ```
+ */
+typedef struct Environment Environment;
+
+/**
  * A type-erased container for metadata that can be associated with computation results.
  *
  * `Metadata` allows attaching arbitrary typed information to computation results
@@ -180,11 +204,11 @@ typedef struct Str Str;
 
 typedef struct WuiAction WuiAction;
 
+typedef struct WuiEnv WuiEnv;
+
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
-
-typedef struct waterui_env waterui_env;
 
 /**
  * A C-compatible representation of Rust's `core::any::TypeId`.
@@ -533,7 +557,32 @@ typedef struct WuiWatcher_WuiId {
  * The pointer must be a valid pointer to a properly initialized value
  * of the expected type, and must not be used after this function is called.
  */
-void waterui_env_drop(struct waterui_env *value);
+void waterui_env_drop(struct WuiEnv *value);
+
+/**
+ * Creates a new environment instance
+ */
+struct WuiEnv *waterui_env_new(void);
+
+/**
+ * Clones an existing environment instance
+ *
+ * # Safety
+ * The caller must ensure that `env` is a valid pointer to a properly initialized
+ * `waterui::Environment` instance and that the environment remains valid for the
+ * duration of this function call.
+ */
+struct Environment *waterui_clone_env(const struct Environment *env);
+
+/**
+ * Returns the main widget for the application
+ */
+struct AnyView *waterui_widget_main(void);
+
+/**
+ * Gets the body of a view given the environment
+ */
+struct AnyView *waterui_view_body(struct AnyView *view, struct Environment *env);
 
 /**
  * Drops the FFI value.
@@ -553,7 +602,7 @@ void waterui_drop_action(struct WuiAction *value);
  * * `action` must be a valid pointer to a `waterui_action` struct.
  * * `env` must be a valid pointer to a `waterui_env` struct.
  */
-void waterui_call_action(struct WuiAction *action, const struct waterui_env *env);
+void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
@@ -1435,3 +1484,27 @@ int waterui_str_contains(const struct Str *str, const struct Str *substring);
  * in undefined behavior.
  */
 struct WuiStr waterui_str_from_bytes(const char *bytes, unsigned int len);
+
+/**
+ * Gets a pointer to the raw UTF-8 bytes of a Str.
+ *
+ * This function returns a pointer to the actual string data, regardless of whether
+ * the string is static or heap-allocated. The returned pointer is valid as long as
+ * the Str instance exists.
+ *
+ * # Parameters
+ *
+ * * `str` - A pointer to a valid Str instance
+ *
+ * # Returns
+ *
+ * A pointer to the UTF-8 bytes, or null if the input is null.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * * `str` is a valid pointer to a Str instance
+ * * The returned pointer is not used after the Str is dropped
+ * * The data pointed to is not modified
+ */
+const uint8_t *waterui_str_as_ptr(const struct Str *str);

@@ -9,17 +9,17 @@ import SwiftUI
 
 @MainActor
 struct Button: View ,Component{
-    static var id=waterui_view_button_id()
+    static var id = waterui_button_id()
     private var label: AnyView
     private var action: Action
 
-    init(button: waterui_button, env: WaterUI.Environment) {
+    init(button: WuiButton, env: WaterUI.Environment) {
         label = AnyView(anyview: button.label, env: env)
         action = Action(inner: button.action,env:env)
     }
     
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(button: waterui_view_force_as_button(anyview), env: env)
+        self.init(button: waterui_force_as_button(anyview), env: env)
     }
 
     var body: some View {

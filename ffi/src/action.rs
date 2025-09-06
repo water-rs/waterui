@@ -1,6 +1,6 @@
 use waterui::core::handler::BoxHandler;
 
-use crate::waterui_env;
+use crate::WuiEnv;
 
 ffi_type!(WuiAction, BoxHandler<()>, waterui_drop_action);
 
@@ -11,7 +11,7 @@ ffi_type!(WuiAction, BoxHandler<()>, waterui_drop_action);
 /// * `action` must be a valid pointer to a `waterui_action` struct.
 /// * `env` must be a valid pointer to a `waterui_env` struct.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const waterui_env) {
+pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const WuiEnv) {
     unsafe {
         (*action).handle(&*env);
     }
