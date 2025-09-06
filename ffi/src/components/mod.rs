@@ -387,8 +387,15 @@ pub mod media {
         type FFI = WuiVideo;
         fn into_ffi(self) -> Self::FFI {
             WuiVideo {
-                url: Url::from(self).into_ffi(),
+                url: self.url().inner().into_ffi(),
             }
+        }
+    }
+
+    impl IntoFFI for waterui_media::Url {
+        type FFI = Str;
+        fn into_ffi(self) -> Self::FFI {
+            self.inner().into_ffi()
         }
     }
 
