@@ -13,23 +13,23 @@ import SwiftUI
 
 
 @MainActor
-class BindingStr :ObservableObject{
+final class BindingStr :ObservableObject{
     private var inner: OpaquePointer
-    private var rustWatcher=Set<OpaquePointer>()
-    private var swiftWatcher:AnyCancellable!
-    @Published var value:String = ""
+    private var watcher:WatcherGuard!
+    
+    var value:Binding<String>{
+        Binding(get: {
+            self.compute()
+        }, set: {new in
+            self.set(new)
+        })
+    }
+    
     init(inner: OpaquePointer) {
         self.inner = inner
-        value=self.compute()
         
-        
-        swiftWatcher=self.$value.removeDuplicates().sink{new in
-            self.set(new)
-        }
-        
-
-        self.watch{new in
-            self.value=new
+        watcher=self.watch{new,animation in
+            useAnimation(animation: animation, publisher: self.objectWillChange)
         }
     }
     
@@ -41,11 +41,11 @@ class BindingStr :ObservableObject{
 
     
     
-    func watch(_ f:@escaping (String)->()) {
-        let g = waterui_watch_binding_str(self.inner, waterui_fn_waterui_str({value in
-            f(value)
+    func watch(_ f:@escaping (String,Animation?)->()) -> WatcherGuard{
+        let g = waterui_watch_binding_str(self.inner, waterui_watcher_waterui_str({value,animation in
+            f(value,animation)
         }))
-        rustWatcher.insert(g!)
+        return WatcherGuard(g!)
     }
     
     func set(_ value:String){
@@ -53,68 +53,76 @@ class BindingStr :ObservableObject{
     }
 
 
-
+    
     deinit {
-        waterui_drop_binding_str(self.inner)
-            for watcher in self.rustWatcher{
-                waterui_drop_watcher_guard(watcher)
+     
+            
+        
+        weak var this=self
+        Task{@MainActor in
+            if let this=this{
+                waterui_drop_binding_str(this.inner)
             }
+        }
+        
+
         
     }
 }
 
-struct Value<T>{
-    var value:T
-    var fromRust:Bool
-}
+
 
 @MainActor
 class BindingInt:ObservableObject{
     private var inner: OpaquePointer
-    private var rustWatcher=Set<OpaquePointer>()
-    private var swiftWatcher=Set<AnyCancellable>()
+    private var watcher:WatcherGuard!
     
-    @Published var value=0
+    var value:Binding<Int32>{
+        Binding(get: {
+            self.compute()
+        }, set: {new in
+            self.set(new)
+        })
+    }
     
     init(inner: OpaquePointer) {
         self.inner = inner
-        value=self.compute()
-        
-        
-        self.$value.removeDuplicates().sink{new in
-            self.set(new)
-        }.store(in: &swiftWatcher)
-        
-
-        self.watch{new in
-            self.value=new
+        self.watcher=self.watch{new,animation in
+            useAnimation(animation: animation, publisher: self.objectWillChange)
         }
     }
+
     
     
-    func compute()  -> Int{
-        Int(waterui_read_binding_int(self.inner))
+    func compute()  -> Int32{
+        waterui_read_binding_int(self.inner)
     }
     
-    func watch(_ f:@escaping (Int)->()){
-        let g = waterui_watch_binding_int(self.inner, waterui_fn_i32({value in
-            f(Int(value))
+    func watch(_ f:@escaping (Int,Animation?)->()) -> WatcherGuard{
+        let g = waterui_watch_binding_int(self.inner, waterui_watcher_i32({value,animation in
+            f(Int(value),animation)
         }))
-        rustWatcher.insert(g!)
+        
+        return WatcherGuard(g!)
     }
     
-    func set(_ value:Int){
-        waterui_set_binding_int(self.inner, Int32(value))
+    func set(_ value:Int32){
+        waterui_set_binding_int(self.inner, value)
 
     }
 
 
 
     deinit {
-            waterui_drop_binding_int(self.inner)
-            for watcher in self.rustWatcher{
-                waterui_drop_watcher_guard(watcher)
+     
+        
+        weak var this=self
+        Task{@MainActor in
+            if let this=this{
+                waterui_drop_binding_int(this.inner)
             }
+        }
+        
         
     }
 }
@@ -123,20 +131,20 @@ class BindingInt:ObservableObject{
 @MainActor
 class BindingBool:ObservableObject{
     private var inner: OpaquePointer
-    private var rustWatcher=Set<OpaquePointer>()
-    private var swiftWatcher:AnyCancellable!
+    private var watcher:WatcherGuard!
 
-    @Published var value = false
+    var value:Binding<Bool>{
+        Binding(get: {
+            self.compute()
+        }, set: {new in
+            self.set(new)
+        })
+    }
     init(inner: OpaquePointer) {
         self.inner = inner
-        self.value=self.compute()
-        self.swiftWatcher=_value.projectedValue.sink{new in
-            self.set(new)
-        }
-        self.watch{new in
-            if self.value != new{
-                self.value=new
-            }
+
+        self.watcher=self.watch{new,animation in
+            useAnimation(animation: animation, publisher: self.objectWillChange)
         }
     }
     
@@ -145,11 +153,11 @@ class BindingBool:ObservableObject{
         waterui_read_binding_bool(self.inner)
     }
     
-    func watch(_ f:@escaping (Bool)->()){
-        let g = waterui_watch_binding_bool(self.inner, waterui_fn_bool({value in
-            f(value)
+    func watch(_ f:@escaping (Bool,Animation?)->()) -> WatcherGuard{
+        let g = waterui_watch_binding_bool(self.inner, waterui_watcher_bool({value,animation in
+            f(value,animation)
         }))
-        rustWatcher.insert(g!)
+        return WatcherGuard(g!)
     }
     
     func set(_ value:Bool){
@@ -160,10 +168,66 @@ class BindingBool:ObservableObject{
 
 
     deinit {
-            waterui_drop_binding_bool(self.inner)
-            for watcher in self.rustWatcher{
-                waterui_drop_watcher_guard(watcher)
+    
+        weak var this=self
+        Task{@MainActor in
+            if let this=this{
+                waterui_drop_binding_bool(this.inner)
             }
+        }
+        
+        
+    }
+}
+
+@MainActor
+class BindingDouble:ObservableObject{
+    private var inner: OpaquePointer
+    private var watcher:WatcherGuard!
+
+    var value:Binding<Double>{
+        Binding(get: {
+            self.compute()
+        }, set: {new in
+            self.set(new)
+        })
+    }
+    init(inner: OpaquePointer) {
+        self.inner = inner
+
+        self.watcher=self.watch{new,animation in
+            useAnimation(animation: animation, publisher: self.objectWillChange)
+        }
+    }
+    
+    
+    func compute()  -> Double{
+        waterui_read_binding_double(self.inner)
+    }
+    
+    func watch(_ f:@escaping (Double,Animation?)->()) -> WatcherGuard{
+        let g = waterui_watch_binding_double(self.inner, waterui_watcher_f64({value,animation in
+            f(value,animation)
+        }))
+        return WatcherGuard(g!)
+    }
+    
+    func set(_ value:Double){
+        waterui_set_binding_double(self.inner, value)
+
+    }
+
+
+
+    deinit {
+      
+        weak var this=self
+        Task{@MainActor in
+            if let this=this{
+                waterui_drop_binding_double(this.inner)
+            }
+        }
+        
         
     }
 }

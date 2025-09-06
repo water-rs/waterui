@@ -3,15 +3,19 @@ import SwiftUI
 
 extension waterui_str {
     init(_ string: String) {
-        let len = string.utf8.count
-        let raw = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: len)
-        _ = raw.initialize(fromContentsOf: string.utf8)
-        self.init(head: raw.baseAddress, len: UInt(len))
+        self.init()
+        withUnsafeBytes(of: string.utf8){ptr in
+            self = waterui_new_str(ptr.baseAddress, UInt(ptr.count))
+        }
     }
-
+    
     func toString() -> String {
-        let buf = UnsafeMutableBufferPointer(start: head, count: Int(len))
-        let data = Data(buf)
+        let len = Int(self.len)
+        let ref=UnsafeBufferPointer(start: waterui_str_get_head(self), count: len)
+        let data = Data(ref)
+        
+        waterui_free_str(self)
+        
         return String(decoding: data, as: UTF8.self)
     }
 }
@@ -22,28 +26,22 @@ extension waterui_type_id: Equatable {
     }
 }
 
-extension waterui_fnonce {
-    init(_ f: @escaping () -> Void) {
-        class Wrapper {
-            var inner: () -> Void
-            init(_ inner: @escaping () -> Void) {
-                self.inner = inner
-            }
-        }
-
-        let data = UnsafeMutableRawPointer(Unmanaged.passRetained(Wrapper(f)).toOpaque())
-
-        self.init(data: data, call: { value in
-            let f = Unmanaged<Wrapper>.fromOpaque(value!).takeRetainedValue().inner
-            f()
-        })
-    }
+@MainActor
+protocol Component:View{
+    static var id:waterui_type_id {get}
+    init(anyview: OpaquePointer,env:WaterUI.Environment)
 }
 
 
 
+
+
+
 @MainActor
-public func mainWidget() -> WaterUI.AnyView{
+public func mainWidget() -> some View{
     let env=Environment(waterui_init())
-    return WaterUI.AnyView(view: waterui_widget_main(), env: env)
+    return NavigationStack{
+        WaterUI.AnyView(anyview: waterui_widget_main(), env: env)
+    }
+    
 }

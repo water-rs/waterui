@@ -40,8 +40,19 @@ class NavigationViewBuilder{
     }
     
     deinit{
+     
+        
+        weak var this=self
+        Task{@MainActor in
+            if let this=this{
+                waterui_drop_navigation_view_builder(this.inner)
+            }
+        }
+        
         
     }
+    
+    
 }
 
 
