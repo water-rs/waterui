@@ -31,6 +31,7 @@ use core::ptr::null_mut;
 
 use alloc::boxed::Box;
 pub use ty::*;
+use waterui::AnyView;
 /// Defines a trait for converting Rust types to FFI-compatible representations.
 ///
 /// This trait is used to convert Rust types that are not directly FFI-compatible
@@ -164,4 +165,62 @@ pub trait IntoRust {
 
 ffi_safe!(u8, i32, f64, bool);
 
-ffi_type!(waterui_env, waterui::Environment, waterui_env_drop);
+ffi_type!(WuiEnv, waterui::Environment, waterui_env_drop);
+
+ffi_type!(WuiAnyView, waterui::AnyView, waterui_any_view_drop);
+
+/// Creates a new environment instance
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_env_new() -> *mut WuiEnv {
+    let env = waterui::Environment::new();
+    env.into_ffi()
+}
+
+/// Clones an existing environment instance
+///
+/// # Safety
+/// The caller must ensure that `env` is a valid pointer to a properly initialized
+/// `waterui::Environment` instance and that the environment remains valid for the
+/// duration of this function call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_clone_env(
+    env: *const waterui::Environment,
+) -> *mut waterui::Environment {
+    if env.is_null() {
+        return core::ptr::null_mut();
+    }
+    let env = unsafe { &*env };
+    let cloned = env.clone();
+    Box::into_raw(Box::new(cloned))
+}
+
+/// Returns the main widget for the application
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_widget_main() -> *mut WuiAnyView {
+    // This should be implemented by the application, for now return a placeholder
+    use waterui_text::Text;
+    let text = Text::new("Main Widget Placeholder");
+    let widget = AnyView::new(text);
+    widget.into_ffi()
+}
+
+/// Gets the body of a view given the environment
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_body(
+    view: *mut WuiAnyView,
+    env: *mut waterui::Environment,
+) -> *mut WuiAnyView {
+    if view.is_null() || env.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    let _view = unsafe { &*view };
+    let _env = unsafe { &*env };
+
+    // For now, just return a new placeholder view - this would need proper implementation
+    // to call the view's body method with the environment
+    use waterui_text::Text;
+    let text = Text::new("View Body Placeholder");
+    let body = AnyView::new(text);
+    body.into_ffi()
+}
