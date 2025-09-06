@@ -165,20 +165,18 @@ Let's create a simple "Hello, World!" application to verify everything works.
 
 **Filename**: `src/main.rs`
 ```rust,ignore
-use waterui::{component::text,View};
+use waterui::View;
 use waterui_gtk4::{Gtk4App, init};
 
-fn home() -> impl View{
-	"Hello, WaterUI! 🌊"
-}
+fn home() -> impl View { "Hello, WaterUI! 🌊" }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the GTK4 backend
     init()?;
-    
+
     // Create and run the application
     let app = Gtk4App::new("com.example.hello-waterui");
-    app.run(home)
+    Ok(app.run(home).into())
 }
 ```
 
