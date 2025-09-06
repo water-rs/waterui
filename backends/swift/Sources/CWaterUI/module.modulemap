@@ -1,4 +1,4 @@
 module CWaterUI {
-  header "CWaterUI.h"
+  umbrella header "include/waterui.h"
   export *
 }
