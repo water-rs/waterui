@@ -65,7 +65,7 @@ pub mod link {
 }
 
 pub mod text {
-    use crate::{IntoFFI, IntoRust};
+    use crate::IntoFFI;
     use crate::{color::WuiColor, ffi_struct, ffi_view};
     use waterui::component::Native;
     use waterui::{Computed, Str, view::ConfigurableView};
@@ -114,7 +114,7 @@ pub mod text {
 /// Form component FFI bindings
 pub mod form {
     use crate::components::text::WuiText;
-    use crate::{ffi_enum, ffi_struct, ffi_view};
+    use crate::{ffi_struct, ffi_view};
     use waterui::AnyView;
     use waterui::component::Native;
     use waterui::{Binding, Computed, Str};
@@ -124,9 +124,8 @@ pub mod form {
         text_field::{KeyboardType, TextFieldConfig},
         toggle::ToggleConfig,
     };
-    use waterui_text::Text;
+    
 
-    /// KeyboardType enum for FFI
     ffi_enum_with_default!(
         KeyboardType,
         WuiKeyboardType,
@@ -276,14 +275,14 @@ pub mod form {
 /// Navigation component FFI bindings
 pub mod navigation {
     use crate::components::text::WuiText;
-    use crate::{OpaqueType, closure::WuiFn, ffi_struct, ffi_view};
+    use crate::{closure::WuiFn, ffi_struct, ffi_view};
     use alloc::vec::Vec;
     use waterui::AnyView;
     use waterui::{Binding, Color, Computed};
     use waterui_core::id::Id;
     use waterui_navigation::{
         Bar, NavigationLink, NavigationView,
-        tab::{Tab, TabsConfig},
+        tab::TabsConfig,
     };
 
     pub struct WuiNavigationView {
@@ -323,12 +322,12 @@ pub mod navigation {
 
 /// Media component FFI bindings
 pub mod media {
-    use crate::{IntoFFI, OpaqueType, ffi_enum, ffi_struct, ffi_view};
+    use crate::{IntoFFI, ffi_struct, ffi_view};
     use waterui::AnyView;
     use waterui::component::Native;
     use waterui::{Binding, Computed, Str};
     use waterui_media::{
-        LivePhoto, Media, Photo, Video, VideoPlayer,
+        Video,
         live::{LivePhotoConfig, LivePhotoSource},
         photo::PhotoConfig,
         video::VideoPlayerConfig,

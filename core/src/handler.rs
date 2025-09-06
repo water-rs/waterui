@@ -241,6 +241,8 @@ macro_rules! into_handlers {
     };
 }
 
+/// A wrapper that allows a handler function with state to be used as a regular handler.
+#[derive(Debug)]
 pub struct IntoHandlerWithState<H, P, T, S> {
     h: H,
     state: S,
@@ -275,7 +277,8 @@ where
     }
 }
 
-pub fn into_handler_with_state<H, P, T, S>(h: H, state: S) -> IntoHandlerWithState<H, P, T, S>
+/// Creates a handler with associated state from a handler function and state value.
+pub const fn into_handler_with_state<H, P, T, S>(h: H, state: S) -> IntoHandlerWithState<H, P, T, S>
 where
     H: HandlerFnWithState<P, T, S>,
     S: 'static + Clone,
