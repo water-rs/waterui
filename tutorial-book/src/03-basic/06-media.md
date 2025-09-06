@@ -413,25 +413,3 @@ pub fn responsive_photo() -> impl View {
         )
 }
 ```
-
-## Platform Considerations
-
-### File Formats
-
-Different platforms support different media formats:
-
-- **Images**: JPEG, PNG, WebP (web), HEIC (iOS)
-- **Videos**: MP4, MOV, WebM (web)
-- **Live Photos**: Platform-specific implementations
-
-### URLs and Paths
-
-- Use proper URL schemes: `https://`, `file://`, `assets://`
-- Handle network connectivity for remote media
-- Provide fallbacks for unsupported formats
-
-## Next Steps
-
-In the next chapter, we'll explore [Navigation and Routing](12-navigation.md) to learn how to create multi-screen applications with proper navigation patterns.
-
-The media components integrate seamlessly with WaterUI's reactive system, making it easy to build rich, interactive media experiences in your applications.
