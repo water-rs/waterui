@@ -587,7 +587,7 @@ struct WuiAnyView *waterui_widget_main(void);
 /**
  * Returns the TypeId of the contained view inside an AnyView
  */
-struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
+struct WuiTypeId id(const struct WuiAnyView *view);
 
 /**
  * Example function that creates a simple text view for iOS
@@ -602,7 +602,7 @@ struct WuiAnyView *waterui_create_hello_world(void);
 /**
  * Gets the body of a view given the environment
  */
-struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
+struct WuiAnyView *body(struct WuiAnyView *view, struct Environment *env);
 
 /**
  * Drops the FFI value.

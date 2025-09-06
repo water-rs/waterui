@@ -6,6 +6,8 @@ use core::{
 
 use alloc::{boxed::Box, vec::Vec};
 
+use crate::WuiAnyView;
+
 use super::{IntoFFI, IntoRust};
 
 /// A type alias representing binary data as a byte array.
@@ -18,6 +20,16 @@ pub type WuiData = WuiArray<u8>;
 pub struct WuiArray<T> {
     head: *mut T,
     len: usize,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_free_anyview_array_without_free_elements(
+    arr: WuiArray<*mut WuiAnyView>,
+) {
+    unsafe {
+        let mut arr = arr.into_rust();
+        arr.set_len(0); // Prevent dropping the elements
+    }
 }
 
 impl<T> Deref for WuiArray<T> {
