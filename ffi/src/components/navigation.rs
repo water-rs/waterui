@@ -1,20 +1,20 @@
 use crate::array::WuiArray;
 use crate::components::text::WuiText;
-use crate::{IntoFFI, WuiAnyView, impl_binding};
+use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use crate::{closure::WuiFn, ffi_struct, ffi_view};
-use alloc::vec::Vec;
 use waterui::{Binding, Color, Computed};
+use waterui_core::handler::BoxHandler;
 use waterui_core::id::Id;
 use waterui_navigation::tab::Tab;
 use waterui_navigation::{Bar, NavigationLink, NavigationView, tab::TabsConfig};
 
+#[repr(C)]
 pub struct WuiNavigationView {
-    pub root: *mut WuiAnyView,
-    pub bar: *mut Bar,
-    pub links: *mut Vec<NavigationLink>,
-    pub tabs: *mut Option<TabsConfig>,
-    pub selection: *mut Option<Binding<Id>>,
+    bar: WuiBar,
+    content: *mut WuiAnyView,
 }
+
+ffi_struct!(NavigationView, WuiNavigationView, bar, content);
 
 pub struct WuiNavigationLink {
     pub label: *mut WuiAnyView,
@@ -48,6 +48,12 @@ pub struct WuiTabs {
     pub tabs: WuiArray<WuiTab>,
 }
 
+ffi_type!(
+    WuiTabContent,
+    BoxHandler<NavigationView>,
+    waterui_drop_tab_content
+);
+
 #[repr(C)]
 pub struct WuiTab {
     /// The unique identifier for the tab.
@@ -57,7 +63,26 @@ pub struct WuiTab {
     pub label: *mut WuiAnyView,
 
     /// Pointer to the tab's content view.
-    pub content: *mut WuiAnyView,
+    pub content: *mut WuiTabContent,
+}
+
+/// Creates a navigation view from tab content.
+///
+/// # Safety
+///
+/// This function is unsafe because:
+/// - `handler` must be a valid, non-null pointer to a `WuiTabContent`
+/// - `env` must be a valid, non-null pointer to a `WuiEnv`
+/// - Both pointers must remain valid for the duration of the function call
+/// - The caller must ensure proper memory management of the returned view
+pub unsafe extern "C" fn waterui_tab_content(
+    handler: *mut WuiTabContent,
+    env: *const WuiEnv,
+) -> WuiNavigationView {
+    unsafe {
+        let view = (&*handler).handle(&*env);
+        IntoFFI::into_ffi(view)
+    }
 }
 
 impl IntoFFI for Tab<Id> {
@@ -66,7 +91,7 @@ impl IntoFFI for Tab<Id> {
         WuiTab {
             id: self.label.tag,
             label: self.label.content.into_ffi(),
-            content: todo!(),
+            content: self.content.into_ffi(),
         }
     }
 }

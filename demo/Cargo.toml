@@ -15,8 +15,5 @@ categories.workspace = true
 waterui.workspace = true
 waterui-ffi.workspace = true
 
-[lints]
-workspace = true
-
 [lib]
 crate-type = ["lib","staticlib"]

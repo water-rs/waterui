@@ -11,9 +11,34 @@
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
 /* End PBXBuildFile section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		D0000001000000000000001 /* Build Rust Library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../demo/Cargo.toml",
+				"$(SRCROOT)/../../demo/src/lib.rs",
+			);
+			name = "Build Rust Library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/libdemo.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "# Build Rust library\nset -e\n\n# Ensure cargo is in PATH (Xcode doesn't inherit user's PATH)\nexport PATH=\"$HOME/.cargo/bin:$PATH\"\n\n# Get project directories\nPROJECT_ROOT=\"$SRCROOT/../..\"\nCARGO_MANIFEST=\"$PROJECT_ROOT/demo/Cargo.toml\"\n\n# Determine target architecture\nif [ \"$PLATFORM_NAME\" = \"macosx\" ]; then\n    if [ \"$ARCHS\" = \"x86_64\" ]; then\n        RUST_TARGET=\"x86_64-apple-darwin\"\n    else\n        RUST_TARGET=\"aarch64-apple-darwin\"\n    fi\nelse\n    # Default to native arch\n    if [ \"$(uname -m)\" = \"x86_64\" ]; then\n        RUST_TARGET=\"x86_64-apple-darwin\"\n    else\n        RUST_TARGET=\"aarch64-apple-darwin\"\n    fi\nfi\n\n# Determine build profile\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    CARGO_ARGS=\"--release\"\n    PROFILE_DIR=\"release\"\nelse\n    CARGO_ARGS=\"\"\n    PROFILE_DIR=\"debug\"\nfi\n\necho \"Building Rust library for target: $RUST_TARGET\"\necho \"Configuration: $CONFIGURATION\"\n\n# Build the Rust library\ncd \"$PROJECT_ROOT/demo\"\ncargo build --target \"$RUST_TARGET\" $CARGO_ARGS\n\n# Copy library to build products\nRUST_LIB=\"$PROJECT_ROOT/target/$RUST_TARGET/$PROFILE_DIR/libdemo.a\"\ncp \"$RUST_LIB\" \"$BUILT_PRODUCTS_DIR/libdemo.a\"\n\necho \"Successfully built and copied Rust library\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXFileReference section */
 		D018675E2E6C7BBB00802E96 /* demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = demo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* libdemo.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdemo.a; path = ../../target/aarch64-apple-darwin/debug/libdemo.a; sourceTree = "<group>"; };
+		D01867752E6C818300802E96 /* libdemo.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdemo.a; path = "$(BUILT_PRODUCTS_DIR)/libdemo.a"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +94,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "demo" */;
 			buildPhases = (
+				D0000001000000000000001 /* Build Rust Library */,
 				D018675A2E6C7BBB00802E96 /* Sources */,
 				D018675B2E6C7BBB00802E96 /* Frameworks */,
 				D018675C2E6C7BBB00802E96 /* Resources */,
@@ -287,7 +313,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				LIBRARY_SEARCH_PATHS = "../../target/aarch64-apple-darwin/debug";
+				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-ldemo";
@@ -328,7 +354,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				LIBRARY_SEARCH_PATHS = "../../target/aarch64-apple-darwin/release";
+				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-ldemo";
