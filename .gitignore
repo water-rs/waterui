@@ -4,10 +4,19 @@
 /*/target
 /*/Cargo.lock
 /backends/swift/build
-/ios/WaterUIDemo/build
 
 # Tutorial book build output
 /tutorial-book/book/
 /tutorial-book/target/
 
 .vscode/*
+
+# Build artifacts
+/demo/apple/build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+*.pdb
