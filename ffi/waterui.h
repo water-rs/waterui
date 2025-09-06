@@ -43,13 +43,6 @@ typedef enum WuiStackMode {
 } WuiStackMode;
 
 /**
- * A type-erased wrapper for a `View`.
- *
- * This allows storing and passing around different view types uniformly.
- */
-typedef struct AnyView AnyView;
-
-/**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
  *
  * Bindings provide a reactive way to work with values. When a binding's value
@@ -204,6 +197,8 @@ typedef struct Str Str;
 
 typedef struct WuiAction WuiAction;
 
+typedef struct WuiAnyView WuiAnyView;
+
 typedef struct WuiEnv WuiEnv;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
@@ -229,18 +224,18 @@ typedef struct WuiStr {
  *
  * This type is used as an FFI-compatible representation of Rust collections.
  */
-typedef struct WuiArray_____AnyView {
-  struct AnyView **head;
+typedef struct WuiArray_____WuiAnyView {
+  struct WuiAnyView **head;
   uintptr_t len;
-} WuiArray_____AnyView;
+} WuiArray_____WuiAnyView;
 
 typedef struct WuiStack {
-  struct WuiArray_____AnyView contents;
+  struct WuiArray_____WuiAnyView contents;
   enum WuiStackMode mode;
 } WuiStack;
 
 typedef struct WuiGridRow {
-  struct WuiArray_____AnyView columns;
+  struct WuiArray_____WuiAnyView columns;
 } WuiGridRow;
 
 /**
@@ -261,12 +256,12 @@ typedef struct WuiGrid {
 } WuiGrid;
 
 typedef struct WuiScrollView {
-  struct AnyView *content;
+  struct WuiAnyView *content;
   enum WuiAxis axis;
 } WuiScrollView;
 
 typedef struct WuiOverlay {
-  struct AnyView *content;
+  struct WuiAnyView *content;
 } WuiOverlay;
 
 /**
@@ -276,7 +271,7 @@ typedef struct WuiButton {
   /**
    * Pointer to the button's label view
    */
-  struct AnyView *label;
+  struct WuiAnyView *label;
   /**
    * Pointer to the button's action handler
    */
@@ -284,7 +279,7 @@ typedef struct WuiButton {
 } WuiButton;
 
 typedef struct WuiLink {
-  struct AnyView *label;
+  struct WuiAnyView *label;
   struct Computed_Str *url;
 } WuiLink;
 
@@ -309,7 +304,7 @@ typedef struct WuiTextField {
   /**
    * Pointer to the text field's label view
    */
-  struct AnyView *label;
+  struct WuiAnyView *label;
   /**
    * Pointer to the text value binding
    */
@@ -331,7 +326,7 @@ typedef struct WuiToggle {
   /**
    * Pointer to the toggle's label view
    */
-  struct AnyView *label;
+  struct WuiAnyView *label;
   /**
    * Pointer to the toggle state binding
    */
@@ -359,15 +354,15 @@ typedef struct WuiSlider {
   /**
    * Pointer to the slider's label view
    */
-  struct AnyView *label;
+  struct WuiAnyView *label;
   /**
    * Pointer to the minimum value label view
    */
-  struct AnyView *min_value_label;
+  struct WuiAnyView *min_value_label;
   /**
    * Pointer to the maximum value label view
    */
-  struct AnyView *max_value_label;
+  struct WuiAnyView *max_value_label;
   /**
    * The range of values
    */
@@ -407,7 +402,7 @@ typedef struct WuiStepper {
   /**
    * Pointer to the stepper's label view
    */
-  struct AnyView *label;
+  struct WuiAnyView *label;
   /**
    * The valid range of values
    */
@@ -427,7 +422,7 @@ typedef struct WuiPhoto {
   /**
    * Pointer to the placeholder view
    */
-  struct AnyView *placeholder;
+  struct WuiAnyView *placeholder;
 } WuiPhoto;
 
 /**
@@ -560,6 +555,16 @@ typedef struct WuiWatcher_WuiId {
 void waterui_env_drop(struct WuiEnv *value);
 
 /**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_any_view_drop(struct WuiAnyView *value);
+
+/**
  * Creates a new environment instance
  */
 struct WuiEnv *waterui_env_new(void);
@@ -577,12 +582,22 @@ struct Environment *waterui_clone_env(const struct Environment *env);
 /**
  * Returns the main widget for the application
  */
-struct AnyView *waterui_widget_main(void);
+struct WuiAnyView *waterui_widget_main(void);
+
+/**
+ * Example function that creates a simple text view for iOS
+ */
+struct WuiAnyView *waterui_create_counter_view(void);
+
+/**
+ * Example function that creates a hello world view
+ */
+struct WuiAnyView *waterui_create_hello_world(void);
 
 /**
  * Gets the body of a view given the environment
  */
-struct AnyView *waterui_view_body(struct AnyView *view, struct Environment *env);
+struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
 
 /**
  * Drops the FFI value.
@@ -613,7 +628,7 @@ struct WuiTypeId waterui_divider_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStr waterui_label_id(struct AnyView *view);
+struct WuiStr waterui_label_id(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_force_as_label(void);
 
@@ -622,7 +637,7 @@ struct WuiTypeId waterui_force_as_label(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStack waterui_force_as_stack(struct AnyView *view);
+struct WuiStack waterui_force_as_stack(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_stack_id(void);
 
@@ -631,7 +646,7 @@ struct WuiTypeId waterui_stack_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiGrid waterui_force_as_grid(struct AnyView *view);
+struct WuiGrid waterui_force_as_grid(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_grid_id(void);
 
@@ -640,7 +655,7 @@ struct WuiTypeId waterui_grid_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiScrollView waterui_force_as_scroll(struct AnyView *view);
+struct WuiScrollView waterui_force_as_scroll(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_scroll_id(void);
 
@@ -649,7 +664,7 @@ struct WuiTypeId waterui_scroll_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiOverlay waterui_force_as_overlay(struct AnyView *view);
+struct WuiOverlay waterui_force_as_overlay(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_overlay_id(void);
 
@@ -658,7 +673,7 @@ struct WuiTypeId waterui_overlay_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiButton waterui_force_as_button(struct AnyView *view);
+struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_button_id(void);
 
@@ -667,7 +682,7 @@ struct WuiTypeId waterui_button_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiLink waterui_force_as_link(struct AnyView *view);
+struct WuiLink waterui_force_as_link(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_link_id(void);
 
@@ -676,7 +691,7 @@ struct WuiTypeId waterui_link_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiText waterui_force_as_text(struct AnyView *view);
+struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_text_id(void);
 
@@ -685,7 +700,7 @@ struct WuiTypeId waterui_text_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiTextField waterui_force_as_text_field(struct AnyView *view);
+struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_text_field_id(void);
 
@@ -694,7 +709,7 @@ struct WuiTypeId waterui_text_field_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiToggle waterui_force_as_toggle(struct AnyView *view);
+struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_toggle_id(void);
 
@@ -703,7 +718,7 @@ struct WuiTypeId waterui_toggle_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiSlider waterui_force_as_slider(struct AnyView *view);
+struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_slider_id(void);
 
@@ -712,7 +727,7 @@ struct WuiTypeId waterui_slider_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStepper waterui_force_as_stepper(struct AnyView *view);
+struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_stepper_id(void);
 
@@ -725,7 +740,7 @@ struct WuiTypeId waterui_navigation_link_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiPhoto waterui_force_as_photo(struct AnyView *view);
+struct WuiPhoto waterui_force_as_photo(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_photo_id(void);
 
@@ -734,7 +749,7 @@ struct WuiTypeId waterui_photo_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiVideoPlayer waterui_force_as_video_player(struct AnyView *view);
+struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_video_player_id(void);
 
@@ -743,7 +758,7 @@ struct WuiTypeId waterui_video_player_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiLivePhoto waterui_force_as_live_photo(struct AnyView *view);
+struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_live_photo_id(void);
 

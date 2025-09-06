@@ -7,20 +7,29 @@ WaterUI provides powerful layout components for arranging UI elements. This chap
 ### VStack - Vertical Arrangement
 
 ```rust,ignore
+use waterui::{View, ViewExt};
+use waterui::component::layout::stack::vstack;
+use waterui::component::layout::{Edge, Frame};
+
 fn vertical_layout() -> impl View {
     vstack((
         "First item",
         "Second item",
         "Third item",
     ))
-    .spacing(10.0)
-    .padding(20.0)
+    .frame(Frame::new().margin(Edge::round(20.0)))
 }
 ```
 
 ### HStack - Horizontal Arrangement
 
 ```rust,ignore
+use waterui::{View, ViewExt};
+use waterui::component::layout::stack::hstack;
+use waterui::component::layout::spacer::spacer;
+use waterui::component::button::button;
+use waterui::component::layout::{Edge, Frame};
+
 fn navigation_bar() -> impl View {
     hstack((
         button("← Back"),
@@ -29,68 +38,46 @@ fn navigation_bar() -> impl View {
         spacer(),
         button("Menu"),
     ))
-    .padding(15.0)
+    .frame(Frame::new().margin(Edge::round(15.0)))
 }
 ```
 
 ### ZStack - Overlay Arrangement
 
 ```rust,ignore
-fn card_with_badge() -> impl View {
-    zstack((
-        // Background card
-        card_background(),
-        
-        // Main content
-        card_content(),
-        
-        // Badge overlay (top-right)
-        badge("New")
-            .alignment(.top_trailing),
-    ))
-}
+// Overlay examples depend on your backend renderer; use zstack to layer views.
 ```
 
 ## Grid Layout
 
 ```rust,ignore
+use waterui::View;
+use waterui_layout::grid::Grid;
+use waterui_layout::{row, Alignment};
+
 fn photo_grid() -> impl View {
-    grid([
-        [photo("1.jpg"), photo("2.jpg"), photo("3.jpg")],
-        [photo("4.jpg"), photo("5.jpg"), photo("6.jpg")],
-        [photo("7.jpg"), photo("8.jpg"), photo("9.jpg")],
-    ))
-    .spacing(5.0)
+    Grid::new(
+        Alignment::Center,
+        [
+            row((photo("1.jpg"), photo("2.jpg"), photo("3.jpg"))),
+            row((photo("4.jpg"), photo("5.jpg"), photo("6.jpg"))),
+            row((photo("7.jpg"), photo("8.jpg"), photo("9.jpg"))),
+        ],
+    )
 }
 ```
 
 ## Scrolling
 
 ```rust,ignore
-fn long_list() -> impl View {
-    scroll(
-        vstack(
-            (0..1000).map(|i| text(format!("Item {}", i)))
-        )
-    )
-    .max_height(400.0)
-}
+// Scrolling helpers exist; see waterui_layout::scroll for details.
 ```
 
 ## Sizing and Constraints
 
 ```rust,ignore
-fn responsive_layout() -> impl View {
-    hstack((
-        sidebar()
-            .width(250.0)
-            .max_width(300.0),
-            
-        content()
-            .flex(1)  // Takes remaining space
-            .min_width(400.0),
-    ))
-}
+// Use Frame to control size constraints:
+// view.frame(Frame::new().width(250.0).max_width(300.0))
 ```
 
-Next: [Text and Typography](09-text.md)
+Next: [Text and Typography](03-text.md)

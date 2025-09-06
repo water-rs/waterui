@@ -204,6 +204,39 @@ pub extern "C" fn waterui_widget_main() -> *mut WuiAnyView {
     widget.into_ffi()
 }
 
+/// Example function that creates a simple text view for iOS
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_create_counter_view() -> *mut WuiAnyView {
+    use waterui_text::Text;
+    use waterui_layout::stack::{Stack, StackMode};
+    
+    let view = Stack::new((
+        Text::new("WaterUI iOS Example"),
+        Text::new("Counter: 42"),
+        Text::new("Built with Rust + SwiftUI")
+    ), StackMode::Vertical);
+    
+    let any_view = AnyView::new(view);
+    any_view.into_ffi()
+}
+
+/// Example function that creates a hello world view
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_create_hello_world() -> *mut WuiAnyView {
+    use waterui_text::Text;
+    use waterui_layout::stack::{Stack, StackMode};
+    use waterui::AnyView;
+    
+    let view = Stack::new((
+        Text::new("Hello from WaterUI!"),
+        Text::new("This view was created in Rust"),
+        Text::new("and rendered in SwiftUI"),
+    ), StackMode::Vertical);
+    
+    let any_view = AnyView::new(view);
+    any_view.into_ffi()
+}
+
 /// Gets the body of a view given the environment
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_body(

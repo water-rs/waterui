@@ -10,6 +10,7 @@ The most common way to add values to an environment:
 
 ```rust,ignore
 use waterui::{Environment, View, ViewExt};
+use waterui::component::layout::{Edge, Frame};
 
 #[derive(Debug, Clone)]
 struct AppConfig {
@@ -19,20 +20,20 @@ struct AppConfig {
 
 #[derive(Debug, Clone)]
 struct Theme {
-    primary_color: Color,
-    background_color: Color,
+    primary_color: waterui::core::Color,
+    background_color: waterui::core::Color,
 }
 
-pub fn entry() -> impl View{
-	home
-	.with(AppConfig {
+pub fn entry() -> impl View {
+    home
+        .with(AppConfig {
         api_url: "https://api.example.com".to_string(),
         timeout_seconds: 30,
     })
     .with(Theme {
-        primary_color: Color::blue(),
-        background_color: Color::white(),
-    });
+        primary_color: (0.0, 0.4, 1.0).into(),
+        background_color: (1.0, 1.0, 1.0).into(),
+    })
 }
 
 pub fn home() -> impl View{
@@ -56,48 +57,39 @@ impl View for ApiStatusView {
             .expect("AppConfig should be provided");
             
         let theme = env.get::<Theme>()
-            .unwrap_or(&Theme::default());
+            .expect("Theme should be provided");
         
         vstack((
-            text(format!("API: {}", config.api_url))
-                .color(theme.primary_color),
-            text(format!("Timeout: {}s", config.timeout_seconds))
-                .size(14.0),
+            waterui_text::Text::new(config.api_url.clone()).foreground(theme.primary_color.clone()),
+            waterui_text::Text::new(format!("Timeout: {}s", config.timeout_seconds)).size(14.0),
         ))
-        .background(theme.background_color)
+        .background(waterui::background::Background::color(theme.background_color.clone()))
+        .frame(Frame::new().margin(Edge::round(12.0)))
     }
 }
 ```
 
-#### For Function Views (Recommended)
-`use_env` function could extract value from environment
-
-```rust,ignore
-pub fn api_status() -> impl View{
-	use_env(|config:AppConfig, theme: Option<Theme>|{
-		let theme = theme.unwrap_or_default();
-		    vstack((
-            text(format!("API: {}", config.api_url))
-                .color(theme.primary_color),
-            text(format!("Timeout: {}s", config.timeout_seconds))
-                .size(14.0),
-        ))
-        .background(theme.background_color)
-	})
-}
-```
+#### For Function Views
+You can pass values through the environment at the call site and read them inside struct views as shown above. Function views typically compose other views and don’t receive `env` directly.
 
 #### In `action`
 ```rust,ignore
-#[derive(Debug,Clone)]
+use waterui::{View};
+use waterui::reactive::binding;
+use waterui_text::text;
+use waterui::component::{layout::stack::vstack, button::button};
+
+#[derive(Debug, Clone)]
 pub struct Message(&'static str);
 
-pub fn click_me() -> impl View{
-	let binding = Binding::container("");
-	vstack((
-		button("Show environment value")
-			.action_with(&binding, |binding, message:Message| binding.set(message.0)),
-		text(binding)
-	)).with(Message("I'm Lexo"))
+pub fn click_me() -> impl View {
+    let value = binding(String::new());
+    vstack((
+        button("Show environment value").action_with(&value, |value, msg: waterui::core::extract::Use<Message>| {
+            value.set(msg.0 .0.to_string());
+        }),
+        text!("{}", value),
+    ))
+    .with(Message("I'm Lexo"))
 }
 ```

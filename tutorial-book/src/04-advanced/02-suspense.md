@@ -7,7 +7,10 @@ Modern applications often need to load data asynchronously from APIs, databases,
 The simplest way to use Suspense is with async functions that return views:
 
 ```rust,no_run
-use waterui::{Suspense, text, vstack};
+use waterui::{View};
+use waterui_text::text;
+use waterui::component::layout::stack::{vstack};
+use waterui::widget::suspense::Suspense;
 
 // Async function that loads data
 async fn load_user_profile(user_id: u32) -> impl View {
@@ -35,21 +38,23 @@ fn user_profile_view(user_id: u32) -> impl View {
 You can set up default loading views in your application's environment:
 
 ```rust,no_run
-use waterui::{Suspense, DefaultLoadingView, Environment};
-use waterui_core::view::ViewBuilder;
+use waterui::{Environment};
+use waterui::view::AnyViewBuilder;
+use waterui::widget::suspense::{Suspense, DefaultLoadingView};
+use waterui_text::text;
+use waterui::component::layout::stack::vstack;
+use waterui::component::layout::{Edge, Frame};
 
 // Set up default loading view in your app
 fn setup_app_environment() -> Environment {
-    let loading_view = ViewBuilder::new(|| {
+    let loading_view = AnyViewBuilder::new(|_| {
         vstack((
-            spinner(),
             text!("Loading..."),
         ))
-        .padding(20)
+        .frame(Frame::new().margin(Edge::round(20.0)))
     });
-    
-    Environment::new()
-        .with(DefaultLoadingView(loading_view.anybuilder()))
+
+    Environment::new().with(DefaultLoadingView(loading_view))
 }
 
 // Components can now use the default loading view
@@ -65,7 +70,8 @@ Any type can be used with Suspense by implementing the `SuspendedView` trait. Th
 ### Automatic Implementation for Futures
 
 ```rust,no_run
-use waterui::{Suspense, SuspendedView, text};
+use waterui::widget::suspense::{Suspense, SuspendedView};
+use waterui_text::text;
 
 // These all work with Suspense automatically:
 
@@ -104,7 +110,10 @@ let content_view = Suspense::new(get_async_content());
 For more complex scenarios, you can implement `SuspendedView` manually:
 
 ```rust,no_run
-use waterui::{SuspendedView, Environment, View, text, vstack};
+use waterui::{Environment, View};
+use waterui::widget::suspense::SuspendedView;
+use waterui_text::text;
+use waterui::component::layout::stack::vstack;
 
 struct DataLoader {
     user_id: u32,
