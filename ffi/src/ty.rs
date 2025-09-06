@@ -50,5 +50,3 @@ impl IntoRust for WuiTypeId {
         unsafe { transmute(self.inner) }
     }
 }
-
-impl OpaqueType for waterui::AnyView {}
