@@ -121,6 +121,7 @@ impl Video {
         todo!()
     }
 
+    /// Returns the URL of the video.
     #[must_use]
     pub const fn url(&self) -> &Url {
         &self.url

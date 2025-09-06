@@ -5,8 +5,13 @@ members = [
     "kit", 
     "components/*",
     "utils/*",
-    "backends/*", "render_utils"
-, "window", "cli", "ffi"]
+    "backends/gtk4",
+    "backends/web",
+    "render_utils",
+    "window",
+    "cli",
+    "ffi"
+]
 resolver = "2"
 
 [package]
