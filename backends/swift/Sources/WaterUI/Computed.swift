@@ -21,7 +21,7 @@ class WatcherGuard{
         weak var this=self
         Task{@MainActor in
             if let this=this{
-                waterui_drop_watcher_guard(this.inner)
+                waterui_drop_box_watcher_guard(this.inner)
             }
         }
        
@@ -73,7 +73,7 @@ class ComputedStr{
     
     
     func watch(_ f:@escaping (String,Animation?)->()) -> WatcherGuard{
-        let g=waterui_watch_computed_str(self.inner, waterui_watcher_waterui_str({value,animation in
+        let g=waterui_watch_computed_str(self.inner, WuiWatcher_WuiStr({value,animation in
             f(value,animation)
         }))
         return WatcherGuard(g!)
@@ -110,7 +110,7 @@ class ComputedInt:ObservableObject{
     }
     
     func watch(_ f:@escaping (Int,Animation?)->()) -> WatcherGuard{
-        let g = waterui_watch_computed_int(self.inner, waterui_watcher_i32({value,animation in
+        let g = waterui_watch_computed_int(self.inner, WuiWatcher_i32({value,animation in
             f(Int(value),animation)
         }))
         return WatcherGuard(g!)
@@ -146,7 +146,7 @@ class ComputedDouble:ObservableObject{
     }
     
     func watch(_ f:@escaping (Double,Animation?)->()) -> WatcherGuard{
-        let g = waterui_watch_computed_double(self.inner, waterui_watcher_f64({value,animation in
+        let g = waterui_watch_computed_double(self.inner, WuiWatcher_f64({value,animation in
             f(value,animation)
         }))
         return WatcherGuard(g!)
@@ -161,46 +161,15 @@ class ComputedDouble:ObservableObject{
     }
 }
 
-@MainActor
-class ComputedData:ObservableObject{
-    private var inner: OpaquePointer
-    private var watcher:WatcherGuard!
-    var value:Data{
-        self.compute()
-    }
-    
-    init(inner: OpaquePointer) {
-        self.inner = inner
-        self.watcher=self.watch{new,animation in
-            self.objectWillChange.send()
-        }
-    }
-    
-    func compute() -> Data{
-        Data(waterui_read_computed_data(self.inner))
-    }
-    
-    func watch(_ f:@escaping (Data,Animation?)->()) -> WatcherGuard{
-        let g = waterui_watch_computed_data(self.inner, waterui_watcher_waterui_data({value,animation in
-            f(value,animation)
-        }))
-        return WatcherGuard(g!)
-    }
-
-    deinit {
-        let this=self
-        Task{@MainActor in
-            waterui_drop_computed_data(this.inner)
-        }
-        
-    }
-}
+// ComputedData is not currently supported in the FFI layer
 
 extension SwiftUI.Animation{
-    init?(_ animation:waterui_animation){
+    init?(_ animation: WuiAnimation){
         switch animation{
-            case WATERUI_ANIMATION_DEFAULT:
+            case WuiAnimation_Default:
                     self = .default
+            case WuiAnimation_None:
+                return nil
             default:
                 return nil
         }
@@ -208,7 +177,7 @@ extension SwiftUI.Animation{
 }
 
 
-extension waterui_watcher_waterui_str {
+extension WuiWatcher_WuiStr {
     init(_ f: @escaping (String,Animation?) -> Void) {
         class Wrapper {
             var inner: (String,Animation?) -> Void
@@ -229,7 +198,7 @@ extension waterui_watcher_waterui_str {
     }
 }
 
-extension waterui_watcher_f64 {
+extension WuiWatcher_f64 {
     init(_ f: @escaping (Double,Animation?) -> Void) {
         class Wrapper {
             var inner: (Double,Animation?) -> Void
@@ -252,7 +221,7 @@ extension waterui_watcher_f64 {
 }
 
 
-extension waterui_watcher_i32 {
+extension WuiWatcher_i32 {
     init(_ f: @escaping (Int32,Animation?) -> Void) {
         class Wrapper {
             var inner: (Int32,Animation?) -> Void
@@ -275,29 +244,9 @@ extension waterui_watcher_i32 {
 }
 
 
-extension waterui_watcher_waterui_data {
-    init(_ f: @escaping (Data,Animation?) -> Void) {
-        class Wrapper {
-            var inner: (Data,Animation?) -> Void
-            init(_ inner: @escaping (Data,Animation?) -> Void) {
-                self.inner = inner
-            }
-        }
+// WuiWatcher_Data is not currently supported in the FFI layer
 
-        let data = UnsafeMutableRawPointer(Unmanaged.passRetained(Wrapper(f)).toOpaque())
-
-        self.init(data: data, call: { data, value,metadata in
-            let f = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue().inner
-            f(Data(value),Animation(waterui_get_animation(metadata)))
-
-        }, drop: { data in
-            _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()
-
-        })
-    }
-}
-
-extension waterui_watcher_bool {
+extension WuiWatcher_bool {
     init(_ f: @escaping (Bool,Animation?) -> Void) {
         class Wrapper {
             var inner: (Bool,Animation?) -> Void

@@ -331,3 +331,33 @@ pub unsafe extern "C" fn waterui_str_from_bytes(bytes: *const c_char, len: c_uin
     let slice = unsafe { core::slice::from_raw_parts(bytes as *const u8, len as usize) };
     unsafe { Str::from(core::str::from_utf8_unchecked(slice)).into_ffi() }
 }
+
+/// Gets a pointer to the raw UTF-8 bytes of a Str.
+///
+/// This function returns a pointer to the actual string data, regardless of whether
+/// the string is static or heap-allocated. The returned pointer is valid as long as
+/// the Str instance exists.
+///
+/// # Parameters
+///
+/// * `str` - A pointer to a valid Str instance
+///
+/// # Returns
+///
+/// A pointer to the UTF-8 bytes, or null if the input is null.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// * `str` is a valid pointer to a Str instance
+/// * The returned pointer is not used after the Str is dropped
+/// * The data pointed to is not modified
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_str_as_ptr(str: *const Str) -> *const u8 {
+    if str.is_null() {
+        return core::ptr::null();
+    }
+    
+    let s = unsafe { &*str };
+    s.as_str().as_ptr()
+}
