@@ -43,3 +43,19 @@ struct Text: View,Component {
 }
 
 
+struct Label:View,Component{
+    static var id = waterui_label_id()
+    var label:WuiStr
+    init(label:WuiStr){
+        self.label=label
+    }
+    
+    init(anyview: OpaquePointer,env: Environment) {
+        self.init(label: WuiStr(waterui_force_as_label(anyview)))
+    }
+    
+    var body: some View{
+        SwiftUI.Text(label.toString())
+    }
+    
+}

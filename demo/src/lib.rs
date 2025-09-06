@@ -4,6 +4,8 @@ pub fn init() -> Environment {
     Environment::new()
 }
 
-pub fn main() -> impl View {}
+pub fn main() -> impl View {
+    "Hello, world!"
+}
 
 waterui_ffi::export!();

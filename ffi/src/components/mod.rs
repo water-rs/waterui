@@ -16,8 +16,8 @@ pub mod button;
 ffi_view!(
     waterui::Str,
     *mut WuiStr,
-    waterui_force_as_label,
-    waterui_label_id
+    waterui_label_id,
+    waterui_force_as_label
 );
 
 pub mod link;

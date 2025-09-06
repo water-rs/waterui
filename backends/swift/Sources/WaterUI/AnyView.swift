@@ -47,6 +47,7 @@ struct Render{
           //  WaterUI.ForegroundColor.self,
            // WaterUI.Frame.self,
             WaterUI.Slider.self,
+            WaterUI.Label.self,
            // WaterUI.ColorPicker.self,
             //WaterUI.Padding.self,
            // WaterUI.Icon.self
