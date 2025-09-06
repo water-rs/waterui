@@ -1,4 +1,4 @@
-use crate::IntoNullableFFI;
+use crate::{IntoFFI, IntoNullableFFI, IntoRust};
 
 use waterui::{Color, core::color::Colorspace};
 
@@ -52,6 +52,16 @@ impl IntoNullableFFI for Color {
             yellow: 0.0,
             blue: 0.0,
             opacity: 0.0,
+        }
+    }
+}
+
+impl IntoRust for WuiColor {
+    type Rust = Color;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self.color_space {
+            WuiColorSpace::Srgb => Color::from_rgba(self.red, self.yellow, self.blue, self.opacity),
+            _ => unreachable!(),
         }
     }
 }

@@ -51,11 +51,8 @@ pub mod grid {
     ffi_view!(Grid, WuiGrid, waterui_grid_id, waterui_force_as_grid);
 }
 
-pub(crate) mod scroll {
-    use waterui::{
-        AnyView,
-        component::layout::scroll::{Axis, ScrollView},
-    };
+pub mod scroll {
+    use waterui::component::layout::scroll::{Axis, ScrollView};
 
     use crate::{WuiAnyView, ffi_enum, ffi_struct};
 

@@ -23,6 +23,7 @@ use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
+use nami::watcher::Context;
 use nami::{Computed, Signal, watcher::Metadata};
 
 /// A dynamic view that can be updated.
@@ -38,7 +39,7 @@ raw_view!(Dynamic);
 #[derive(Clone)]
 pub struct DynamicHandler(Rc<RefCell<Receiver>>);
 
-type Receiver = Box<dyn Fn(AnyView, Metadata)>;
+type Receiver = Box<dyn Fn(Context<AnyView>)>;
 
 impl_debug!(Dynamic);
 impl_debug!(DynamicHandler);
@@ -51,7 +52,7 @@ impl DynamicHandler {
     /// * `view` - The new view to display
     /// * `metadata` - Additional metadata associated with the update
     pub fn set_with_metadata(&self, view: impl View, metadata: Metadata) {
-        (self.0.borrow())(AnyView::new(view), metadata);
+        (self.0.borrow())(Context::new(AnyView::new(view), metadata));
     }
 
     /// Sets the content of the Dynamic view with the provided view.
@@ -75,7 +76,7 @@ impl Dynamic {
     /// A tuple containing the [`DynamicHandler`] and Dynamic view
     #[must_use]
     pub fn new() -> (DynamicHandler, Self) {
-        let handler = DynamicHandler(Rc::new(RefCell::new(Box::new(|_, _| {}))));
+        let handler = DynamicHandler(Rc::new(RefCell::new(Box::new(|_| {}))));
         (handler.clone(), Self(handler))
     }
 
@@ -113,7 +114,7 @@ impl Dynamic {
     /// # Arguments
     ///
     /// * `receiver` - A function that receives view updates
-    pub fn connect(self, receiver: impl Fn(AnyView, Metadata) + 'static) {
+    pub fn connect(self, receiver: impl Fn(Context<AnyView>) + 'static) {
         #[allow(unused_must_use)]
         // It would be used on swift side
         self.0.0.replace(Box::new(receiver));

@@ -11,16 +11,16 @@ import SwiftUI
 
 
 public struct Toggle:View,Component{
-    static var id=waterui_view_toggle_id()
+    static var id=waterui_toggle_id()
     @ObservedObject private var isOn:BindingBool
     var label:AnyView
-    init(toggle:waterui_toggle,env:Environment){
+    init(toggle:WuiToggle,env:Environment){
         isOn = BindingBool(inner: toggle.toggle)
         label = AnyView(anyview: toggle.label, env: env)
     }
     
     init(anyview:OpaquePointer,env:Environment){
-        self.init(toggle: waterui_view_force_as_toggle(anyview), env: env)
+        self.init(toggle: waterui_force_as_toggle(anyview), env: env)
     }
     
     public var body:some View{

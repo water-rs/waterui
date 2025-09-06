@@ -13,7 +13,7 @@ import SwiftUI
 
 @MainActor
 struct Render{
-    var map:[waterui_type_id:any Component.Type]
+    var map:[WuiTypeId:any Component.Type]
     
     init() {
         self.map = [:]
@@ -34,14 +34,22 @@ struct Render{
             WaterUI.Stack.self,
             WaterUI.TextField.self,
             WaterUI.Stepper.self,
-            WaterUI.Progress.self,
+           // WaterUI.Progress.self,
             WaterUI.Toggle.self,
-            WaterUI.NavigationView.self,
+           // WaterUI.NavigationView.self,
             WaterUI.Dynamic.self,
-            WaterUI.WithEnv.self,
-            WaterUI.NavigationLink.self,
-            WaterUI.ScrollView.self,
-            WaterUI.Picker.self,WaterUI.BackgroundColor.self,WaterUI.Rectangle.self,WaterUI.ForegroundColor.self,WaterUI.Frame.self,WaterUI.Slider.self,WaterUI.ColorPicker.self,WaterUI.Padding.self,WaterUI.Icon.self
+           // WaterUI.WithEnv.self,
+           // WaterUI.NavigationLink.self,
+            //WaterUI.ScrollView.self,
+           // WaterUI.Picker.self,
+            //WaterUI.BackgroundColor.self,
+            //WaterUI.Rectangle.self,
+          //  WaterUI.ForegroundColor.self,
+           // WaterUI.Frame.self,
+            WaterUI.Slider.self,
+           // WaterUI.ColorPicker.self,
+            //WaterUI.Padding.self,
+           // WaterUI.Icon.self
         ])
     }
     
@@ -62,7 +70,7 @@ struct Render{
     }
 }
 
-extension waterui_type_id:@retroactive Hashable{
+extension WuiTypeId:@retroactive Hashable{
     public func hash(into hasher: inout Hasher) {
         self.inner.0.hash(into: &hasher)
         self.inner.1.hash(into: &hasher)

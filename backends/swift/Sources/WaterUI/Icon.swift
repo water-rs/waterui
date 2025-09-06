@@ -5,15 +5,15 @@
 //  Created by Lexo Liu on 10/21/24.
 //
 
-
+/*
 import SwiftUI
 import CWaterUI
 struct Icon:View,Component{
-    static var id=waterui_view_icon_id()
+    static var id=icon_id()
     @State var name:ComputedStr
     @ObservedObject var size:ComputedDouble
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(icon: waterui_view_force_as_icon(anyview), env: env)
+        self.init(icon: force_as_icon(anyview), env: env)
     }
     
     init(icon: waterui_icon, env: Environment) {
@@ -29,3 +29,4 @@ struct Icon:View,Component{
         SwiftUI.Image(systemName: name.value).font(font)
     }
 }
+*/
