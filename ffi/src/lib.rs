@@ -35,12 +35,14 @@ use waterui::{AnyView, View};
 #[macro_export]
 macro_rules! export {
     () => {
+        /// Initializes a new WaterUI environment
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
             let env: waterui::Environment = init();
             $crate::IntoFFI::into_ffi(env)
         }
 
+        /// Creates the main view for the WaterUI application
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
             fn _inner() -> impl View {
@@ -54,7 +56,6 @@ macro_rules! export {
     };
 }
 
-use crate::str::WuiStr;
 /// Defines a trait for converting Rust types to FFI-compatible representations.
 ///
 /// This trait is used to convert Rust types that are not directly FFI-compatible
@@ -227,7 +228,13 @@ pub unsafe extern "C" fn waterui_view_body(
     }
 }
 
+/// Gets the type ID of a view
+///
+/// # Safety
+/// The caller must ensure that `view` is a valid pointer to a properly
+/// initialized `WuiAnyView` instance and that it remains valid for the
+/// duration of this function call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
-    unsafe { IntoFFI::into_ffi((*view).type_id()) }
+    unsafe { (&*view).type_id().into_ffi() }
 }

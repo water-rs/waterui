@@ -4,10 +4,10 @@
 //! The API is designed to be memory-safe while still providing the full functionality
 //! of the Str type.
 
-use core::ffi::{c_char, c_int, c_uint};
+use core::ffi::{c_char, c_uint};
 use core::ptr::null_mut;
 
-use crate::{IntoFFI, IntoRust, impl_drop};
+use crate::IntoFFI;
 use alloc::ffi::CString;
 use alloc::string::String;
 

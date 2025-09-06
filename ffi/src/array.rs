@@ -22,6 +22,14 @@ pub struct WuiArray<T> {
     len: usize,
 }
 
+/// Frees a WuiArray without dropping its elements.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `arr` is a valid WuiArray that was previously created by Rust code
+/// - The array elements are handled separately and not accessed after this call
+/// - This function is only called once per array
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_free_anyview_array_without_free_elements(
     arr: WuiArray<*mut WuiAnyView>,
