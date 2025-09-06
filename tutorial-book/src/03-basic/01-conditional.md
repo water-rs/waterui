@@ -7,8 +7,9 @@ Conditional rendering is a fundamental technique for creating dynamic user inter
 The `when` function is the primary tool for conditional rendering in WaterUI. It takes a reactive boolean condition and a closure that returns a view to display when the condition is true.
 
 ```rust,ignore
-use waterui::{when, text};
-use nami::{binding, s};
+use waterui::widget::condition::when;
+use waterui_text::text;
+use waterui::reactive::{binding, s};
 
 let is_logged_in = binding(false);
 
@@ -22,8 +23,10 @@ when(&is_logged_in, || {
 Here's a simple example showing how to conditionally display content:
 
 ```rust,ignore
-use waterui::{when, text, button, vstack};
-use nami::binding;
+use waterui::widget::condition::when;
+use waterui_text::text;
+use waterui::component::{button::button, layout::stack::vstack};
+use waterui::reactive::binding;
 
 pub fn login_view() -> impl View {
 	#[derive(Debug,Clone,Default)]
@@ -53,7 +56,7 @@ use nami::binding;
 
 let is_visible = binding(true);
 
-when(&!is_visible, || text!("Hidden"));
+when(!is_visible, || text!("Hidden"));
 ```
 
 ## Complete Conditional Rendering with `or`
@@ -61,8 +64,10 @@ when(&!is_visible, || text!("Hidden"));
 For situations where you need to display one of two views, use the `.or()` method:
 
 ```rust,ignore
-use waterui::{when, text, button};
-use nami::binding;
+use waterui::widget::condition::when;
+use waterui_text::text;
+use waterui::component::button::button;
+use waterui::reactive::binding;
 
 let has_data = binding(false);
 

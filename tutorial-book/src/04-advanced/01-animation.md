@@ -93,6 +93,53 @@ fn animated_examples() -> impl View {
 }
 ```
 
+### Practical Examples (Current API)
+
+While some sections below use conceptual shape APIs (marked as rust,ignore), you can use `.animated()` today with existing view modifiers like `.frame(...)`, `.foreground(...)`, and normal components. Here are two minimal, working examples:
+
+```rust
+use waterui::{View, ViewExt, Color};
+use waterui::reactive::{binding};
+use nami::SignalExt; // map/computed helpers
+use waterui::component::layout::stack::{vstack, hstack};
+use waterui::component::layout::{Edge, Frame};
+use waterui::component::button::button;
+use waterui_text::text;
+
+// Animate padding by mapping an animated number to Frame margins
+fn animated_padding_demo() -> impl View {
+    let pad = binding(8.0);
+    let animated_pad = pad.animated();
+    let frame = animated_pad.map(|p| Frame::new().margin(Edge::round(p))).computed();
+
+    vstack((
+        text!("Animated padding"),
+        hstack((
+            button("Less").action_with(&pad, |pad| pad.update(|p| (p - 4.0).max(0.0))),
+            button("More").action_with(&pad, |pad| pad.update(|p| p + 4.0)),
+        )),
+    ))
+    .frame(frame)
+}
+
+// Animate text alpha by mapping an animated number to a Color
+fn animated_color_demo() -> impl View {
+    let alpha = binding(1.0);
+    let animated_alpha = alpha.animated();
+    let color = animated_alpha
+        .map(|a| Color::from_rgba(0.0, 0.5, 1.0, a))
+        .computed();
+
+    vstack((
+        text!("Fade me").foreground(color.clone()),
+        hstack((
+            button("Hide").action_with(&alpha, |a| a.set(0.0)),
+            button("Show").action_with(&alpha, |a| a.set(1.0)),
+        )),
+    ))
+}
+```
+
 ## Custom Animation Configurations
 
 While `.animated()` provides sensible defaults, you can customize animations using the `.with_animation()` method:
@@ -517,7 +564,7 @@ fn transform_animations() -> impl View {
                     })
             ))
             .spacing(10.0)
-            .padding(10.0)
+            .frame(waterui::component::layout::Frame::new().margin(waterui::component::layout::Edge::round(10.0)))
         )
 }
 ```
@@ -556,7 +603,7 @@ fn color_animations() -> impl View {
             .corner_radius(12.0)
             .overlay(
                 text!(theme_name)
-                    .font_size(24.0)
+                    .size(24.0)
                     .color(text_color)
             ),
         
@@ -620,10 +667,10 @@ fn size_animations() -> impl View {
             .overlay(
                 vstack((
                     text!("📦")
-                        .font_size(32.0),
+                        .size(32.0),
                     text!(is_expanded.map(|&exp| if exp { "Expanded!" } else { "Compact" }))
                         .color(color::WHITE)
-                        .font_size(16.0),
+                        .size(16.0),
                 ))
                 .spacing(8.0)
                 .padding(padding)
@@ -659,7 +706,7 @@ fn size_animations() -> impl View {
                 if exp { "180" } else { "100" }
             )
         }))
-        .font_size(12.0)
+        .size(12.0)
         .color(color::GRAY)
     ))
     .spacing(25.0)
@@ -800,7 +847,7 @@ fn swipe_cards() -> impl View {
                 .overlay(
                     text(card)
                         .color(Color::white())
-                        .font_size(18.0)
+                        .size(18.0)
                 )
                 .gesture(
                     DragGesture::new()
@@ -1124,7 +1171,7 @@ fn page_transition_example() -> impl View {
                     .animation(Animation::ease_out(Duration::from_millis(300)))
                     .overlay(
                         text(page)
-                            .font_size(24.0)
+                            .size(24.0)
                             .color(Color::black())
                     )
             }).collect::<Vec<_>>()
@@ -1169,9 +1216,9 @@ fn animation_debug_view(animated_view: impl View) -> impl View {
                 text("GPU Accelerated: Yes"),
                 text("Active Animations: 2"),
             ))
-            .background(Color::black().opacity(0.8))
+            .background(waterui::background::Background::color((0.0, 0.0, 0.0, 0.8)))
             .color(Color::white())
-            .padding(10.0)
+            .frame(waterui::component::layout::Frame::new().margin(waterui::component::layout::Edge::round(10.0)))
             .into_view()
         } else {
             empty().into_view()

@@ -8,7 +8,7 @@ The easiest way to create forms in WaterUI is using the `#[derive(FormBuilder)]`
 
 ```rust
 use waterui_form::{FormBuilder, form};
-use waterui::core::Binding;
+use waterui::reactive::Binding;
 
 #[derive(Default, Clone, Debug, FormBuilder)]
 pub struct LoginForm {
@@ -54,13 +54,10 @@ Let's build a more comprehensive form:
 
 ```rust
 use waterui_form::{FormBuilder, form};
-use waterui::{
-    core::{Binding, Color},
-    component::{
-        layout::stack::vstack,
-        text,
-    },
-};
+use waterui::reactive::Binding;
+use waterui::core::Color;
+use waterui::component::layout::stack::vstack;
+use waterui_text::{text};
 
 #[derive(Default, Clone, Debug, FormBuilder)]
 struct RegistrationForm {
@@ -118,7 +115,7 @@ You can also use form controls individually:
 
 ```rust
 use waterui_form::{TextField, field};
-use waterui::core::binding;
+use waterui::reactive::binding;
 
 fn text_field_example() -> impl View {
     let name = binding("".to_string());
