@@ -11,14 +11,17 @@ import SwiftUI
 
 
 @MainActor
-struct Text: View {
-    @ObservedObject var content: ComputedStr
+struct Text: View,Component {
+    static var id = waterui_view_text_id()
+    @State var content: ComputedStr
+    
     init(text: waterui_text) {
+        
         self.content = ComputedStr(inner: text.content)
     }
     
-    init(view: OpaquePointer, env: WaterUI.Environment) {
-        self.init(text: waterui_view_force_as_text(view))
+    init(anyview: OpaquePointer,env: Environment) {
+        self.init(text: waterui_view_force_as_text(anyview))
     }
     
     func toText() -> SwiftUI.Text{
@@ -26,6 +29,17 @@ struct Text: View {
     }
 
     var body: some View {
-        toText()
+        let lines=content.value.split(separator: "\n").map{line in
+            (line,UUID())
+        }
+        LazyVStack{
+            ForEach(lines,id:\.1){(line,_) in
+                SwiftUI.Text(line)
+            }
+        }
+        
     }
+    
 }
+
+

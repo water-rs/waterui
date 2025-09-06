@@ -17,9 +17,9 @@ enum ProgressStyle{
 extension ProgressStyle{
     init(_ style:waterui_style_progress){
         switch style{
-            case waterui_style_progress_LINEAR:
+        case WATERUI_STYLE_PROGRESS_LINEAR:
             self = .Linear
-        case waterui_style_progress_CIRCULAR:
+        case WATERUI_STYLE_PROGRESS_CIRCULAR:
             self = .Circular
         default:
             self = .Default
@@ -41,32 +41,33 @@ extension ProgressStyle:SwiftUI.ProgressViewStyle{
     }
 }
 
-struct Progress:View{
+struct Progress:View,Component{
+    static var id=waterui_view_progress_id()
     var label:AnyView
-    @ObservedObject var value:ComputedInt
+    @StateObject var value:ComputedDouble
     var style:ProgressStyle
     
     init(progress: waterui_progress,env:Environment) {
-        label = AnyView(view: progress.label, env: env)
+        label = AnyView(anyview: progress.label, env: env)
         style=ProgressStyle(progress.style)
-        value = ComputedInt(inner: progress.value)
+        _value = StateObject(wrappedValue:ComputedDouble(inner: progress.value))
     }
     
-    init(view:OpaquePointer,env:Environment) {
-        self.init(progress: waterui_view_force_as_progress(view),env:env)
+    init(anyview:OpaquePointer,env:Environment) {
+        self.init(progress: waterui_view_force_as_progress(anyview),env:env)
     }
     
     var body:some View{
         VStack{
-            if value.value > 0{
-                SwiftUI.ProgressView(value: 1.0/Double(Int(Int32.max)/value.value) , label: {
-                    label
-                })
-            }
-            else{
+            if value.value.isNaN{
                 SwiftUI.ProgressView{
                     label
                 }
+            }else{
+                SwiftUI.ProgressView(value: value.value, label: {
+                    label
+                })
+                .animation(.default, value: value.value)
                 
             }
         }.progressViewStyle(style)

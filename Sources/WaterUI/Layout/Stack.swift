@@ -8,11 +8,6 @@
 import CWaterUI
 import SwiftUI
 
-private struct WithId<T, Id: Hashable>: Identifiable {
-    var data: T
-    var id: Id
-}
-
 enum StackMode{
     case Default
     case Vertical
@@ -23,9 +18,9 @@ enum StackMode{
 extension StackMode{
     init(_ mode:waterui_stack_mode){
         switch mode {
-        case waterui_stack_mode_HORIZONTAL:
+        case STACK_MODE_HORIZONAL:
             self = .Horizontal
-        case waterui_stack_mode_LAYERED:
+        case STACK_MODE_LAYERED:
             self = .Layered
         default:
             self = .Default
@@ -33,40 +28,47 @@ extension StackMode{
     }
 }
 
+extension waterui_array_____waterui_anyview{
+    func toArray() -> Array<OpaquePointer?>{
+        
+        let array =  Array(UnsafeBufferPointer<OpaquePointer?>(start: self.head, count: Int(self.len)))
+        waterui_free_array(self.head, self.len)
+        return array
+    }
+}
+
 @MainActor
-struct Stack: View {
-    private var views:[WithId<AnyView,Int>]
+struct Stack: View,Component {
+    static var id=waterui_view_stack_id()
+    private var contents:[AnyView]
     private var mode:StackMode
     init(stack: waterui_stack, env: Environment) {
-        let array = Array(UnsafeBufferPointer<OpaquePointer?>(start: stack.contents.head, count: Int(stack.contents.len)))
+        let array = stack.contents.toArray()
 
-        print(array.count)
-
-        views = array.enumerated().map { index, view in
-            WithId(data: AnyView(view: view!, env: env), id: index)
+        contents = array.map { view in
+            AnyView(anyview: view!, env: env)
         }
         mode = StackMode(stack.mode)
-
-        
+    }
+    
+    init(anyview: OpaquePointer, env: Environment) {
+        self.init(stack: waterui_view_force_as_stack(anyview), env: env)
     }
 
     var body: some View {
-        let content=ForEach(views){value in
-            value.data
-        }
-        
+        let each=SwiftUI.ForEach(contents, id: \.id, content: {content in
+            content
+        })
+       
         VStack{
             switch mode{
             case .Horizontal:
-                    HStack{
-                        content
-                    }
+                HStack{each}
             case .Layered:
-                ZStack{content}
+                ZStack{each}
                     
-                
-                default:
-                VStack{content}
+            default:
+                VStack{each}
                 
                 
             }
