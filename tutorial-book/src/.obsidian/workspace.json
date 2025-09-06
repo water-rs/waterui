@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "02-core-concept/01-view.md",
+                "file": "04-advanced/02-suspense.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "01-view"
+              "title": "02-suspense"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "02-core-concept/01-view.md",
+                "file": "04-advanced/02-suspense.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for 01-view"
+              "title": "Backlinks for 02-suspense"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "02-core-concept/01-view.md",
+                "file": "04-advanced/02-suspense.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from 01-view"
+              "title": "Outgoing links from 02-suspense"
             }
           },
           {
@@ -142,13 +142,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "02-core-concept/01-view.md",
+                "file": "04-advanced/02-suspense.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 01-view"
+              "title": "Outline of 02-suspense"
             }
           }
         ]
@@ -170,18 +170,18 @@
   },
   "active": "a3f08daf1bac4007",
   "lastOpenFiles": [
-    "02-core-concept/02-reactive.md",
-    "03-basic/01-conditional.md",
-    "03-basic/06-media.md",
-    "Introduction.md",
     "04-advanced/01-animation.md",
     "04-advanced/02-suspense.md",
-    "02-core-concept/01-view.md",
-    "03-basic/02-layout.md",
-    "03-basic/03-text.md",
-    "03-basic/04-form.md",
-    "03-basic/05-navigation.md",
     "04-advanced/03-plugin.md",
+    "03-basic/06-media.md",
+    "03-basic/05-navigation.md",
+    "03-basic/04-form.md",
+    "03-basic/03-text.md",
+    "03-basic/01-conditional.md",
+    "02-core-concept/01-view.md",
+    "Introduction.md",
+    "02-core-concept/02-reactive.md",
+    "03-basic/02-layout.md",
     "01-getting-start/01-setup.md",
     "01-getting-start/02-first-app.md",
     "SUMMARY.md",

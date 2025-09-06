@@ -388,23 +388,3 @@ fn save_settings(settings: &UserSettings) {
     // Save to database, file, etc.
 }
 ```
-
-## Summary
-
-WaterUI's form system provides:
-
-- ✅ **Automatic form generation** with `#[derive(FormBuilder)]`
-- ✅ **Type-safe form controls** mapped from Rust types
-- ✅ **Real-time reactive validation**
-- ✅ **Secure field support** for sensitive data
-- ✅ **Custom layouts** for complex forms
-- ✅ **Multi-step form wizards**
-- ✅ **Seamless state management integration**
-
-Key takeaways:
-- Use `FormBuilder` derive macro for rapid form development
-- Individual controls available for custom layouts
-- Reactive validation provides instant user feedback
-- Forms integrate naturally with WaterUI's state system
-
-Next, let's explore [Media Components](11-media.md) for handling images, videos, and other rich media!

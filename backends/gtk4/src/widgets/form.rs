@@ -80,7 +80,7 @@ pub fn render_text_field(field: TextFieldConfig, _env: &Environment) -> Widget {
             let text = entry.text().to_string();
             if text != binding.get() {
                 updating.set(true);
-                binding.set(text.into());
+                binding.set(text);
                 updating.set(false);
             }
         }
@@ -342,7 +342,7 @@ pub fn render_picker(picker: PickerConfig, _env: &Environment) -> Widget {
         }
     });
 
-    // Set up reactive bindings for selection changes  
+    // Set up reactive bindings for selection changes
     {
         let id_mapping_for_changed = id_mapping;
         let binding_for_changed = binding.clone();
@@ -351,10 +351,11 @@ pub fn render_picker(picker: PickerConfig, _env: &Environment) -> Widget {
             if !updating_for_changed.get() {
                 updating_for_changed.set(true);
                 if let Some(index) = combo_box.active()
-                    && (index as usize) < id_mapping_for_changed.len() {
-                        let selected_id = &id_mapping_for_changed[index as usize];
-                        binding_for_changed.set(*selected_id);
-                    }
+                    && (index as usize) < id_mapping_for_changed.len()
+                {
+                    let selected_id = &id_mapping_for_changed[index as usize];
+                    binding_for_changed.set(*selected_id);
+                }
                 updating_for_changed.set(false);
             }
         });
@@ -369,16 +370,21 @@ fn time_date_to_glib_datetime(date: &time::Date) -> glib::DateTime {
         date.year(),
         date.month() as i32,
         date.day() as i32,
-        0, 0, 0.0
-    ).unwrap_or_else(|_| glib::DateTime::now_local().unwrap())
+        0,
+        0,
+        0.0,
+    )
+    .unwrap_or_else(|_| glib::DateTime::now_local().unwrap())
 }
 
 /// Convert GTK4 Calendar's DateTime to time::Date
-fn glib_datetime_to_time_date(datetime: &glib::DateTime) -> Result<time::Date, time::error::ComponentRange> {
+fn glib_datetime_to_time_date(
+    datetime: &glib::DateTime,
+) -> Result<time::Date, time::error::ComponentRange> {
     time::Date::from_calendar_date(
         datetime.year(),
         time::Month::try_from(datetime.month() as u8)?,
-        datetime.day_of_month() as u8
+        datetime.day_of_month() as u8,
     )
 }
 

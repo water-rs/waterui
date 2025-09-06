@@ -7,14 +7,15 @@
 use alloc::fmt::Debug;
 use alloc::{collections::BTreeMap, rc::Rc};
 use core::any::type_name;
+use core::ops::{Bound, RangeBounds};
 use core::{
     cell::{Cell, RefCell},
     hash::Hash,
-    marker::PhantomData,
     num::NonZeroUsize,
 };
-use nami::Signal;
-use nami::watcher::BoxWatcher;
+use nami::collection::Collection;
+use nami::watcher::{BoxWatcher, BoxWatcherGuard, Context};
+use waterui_core::{Environment, View};
 
 use waterui_core::id::{Identifable, IdentifableExt, SelfId};
 
@@ -22,20 +23,9 @@ use waterui_core::id::{Identifable, IdentifableExt, SelfId};
 ///
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
-pub trait Views: Collection {
-    /// The type of identifier used for elements in the collection.
-    /// Must implement `Hash` and `Ord` to enable efficient lookups.
-    type Id: Hash + Ord;
-
-    /// Returns the unique identifier for the element at the specified index.
-    ///
-    /// # Parameters
-    /// * `index` - The position in the collection to retrieve the ID for
-    ///
-    /// # Returns
-    /// * `Some(Id)` if the element exists at the specified index
-    /// * `None` if the index is out of bounds
-    fn get_id(&self, index: usize) -> Option<Self::Id>;
+pub trait Views: Collection<Item: Hash + Ord> {
+    type View: View;
+    fn get_view(&self, index: usize) -> Option<Self::View>;
 }
 
 /// A type-erased container for `Views` collections.
@@ -43,7 +33,7 @@ pub trait Views: Collection {
 /// `AnyViews` provides a uniform interface to different views collections
 /// by wrapping them in a type-erased container. This enables working with
 /// heterogeneous view collections through a common interface.
-pub struct AnyViews<V>(Rc<dyn Views<Item = V, Id = SelfId<NonZeroUsize>>>);
+pub struct AnyViews<V>(Box<dyn AnyViewsImpl<View = V>>);
 
 impl<V> Debug for AnyViews<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -51,17 +41,18 @@ impl<V> Debug for AnyViews<V> {
     }
 }
 
-impl<V> Signal for AnyViews<V> {
-    type Output = Self;
-    type Guard = ();
-    fn get(&self) -> Self::Output {
-        self.clone()
-    }
+trait AnyViewsImpl {
+    type View;
+
+    fn get_view(&self, index: usize) -> Option<Self::View>;
+    fn get_id(&self, index: usize) -> Option<NonZeroUsize>;
+    fn len(&self) -> usize;
     fn watch(
         &self,
-        watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
-    ) -> Self::Guard {
-    }
+        range: (Bound<usize>, Bound<usize>),
+        watcher: BoxWatcher<Vec<NonZeroUsize>>,
+    ) -> BoxWatcherGuard;
+    fn clone(&self) -> Box<dyn AnyViewsImpl<View = Self::View>>;
 }
 
 #[derive(Debug)]
@@ -90,45 +81,48 @@ impl<Id: Hash + Ord> IdGenerator<Id> {
     }
 }
 
-struct IntoAnyViews<V, Id> {
+struct IntoAnyViews<V>
+where
+    V: Views,
+{
     contents: V,
-    id: IdGenerator<Id>,
+    id: IdGenerator<V::Item>,
 }
 
-impl<V, Id> Collection for IntoAnyViews<V, Id>
+impl<V> AnyViewsImpl for IntoAnyViews<V>
 where
-    V: Views<Id = Id>,
-    Id: Ord + Hash,
+    V: Views,
 {
-    type Item = V::Item;
-    fn get(&self, index: usize) -> Option<Self::Item> {
-        self.contents.get(index)
+    type View = V::View;
+
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.contents.get_view(index)
     }
-    fn remove(&self, index: usize) {
-        self.contents.remove(index);
+
+    fn get_id(&self, index: usize) -> Option<NonZeroUsize> {
+        self.contents.get(index).map(|item| self.id.to_id(item))
     }
+
     fn len(&self) -> usize {
         self.contents.len()
     }
-    fn add_watcher(&self, watcher: BoxWatcher<()>) -> nami::watcher::WatcherGuard {
-        self.contents.watch(watcher)
+
+    fn watch(
+        &self,
+        range: (Bound<usize>, Bound<usize>),
+        watcher: BoxWatcher<Vec<NonZeroUsize>>,
+    ) -> BoxWatcherGuard {
+        todo!()
+    }
+
+    fn clone(&self) -> Box<dyn AnyViewsImpl<View = Self::View>> {
+        todo!()
     }
 }
-
-impl<V, Id> Views for IntoAnyViews<V, Id>
+impl<V> AnyViews<V>
 where
-    V: Views<Id = Id>,
-    Id: Ord + Hash,
+    V: View,
 {
-    type Id = SelfId<NonZeroUsize>;
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.contents
-            .get_id(index)
-            .map(|value| self.id.to_id(value).self_id())
-    }
-}
-
-impl<V> AnyViews<V> {
     /// Creates a new type-erased view collection from any type implementing the `Views` trait.
     ///
     /// This function wraps the provided collection in a type-erased container, allowing
@@ -139,9 +133,12 @@ impl<V> AnyViews<V> {
     ///
     /// # Returns
     /// A new `AnyViews` instance containing the provided collection
-    pub fn new(contents: impl Views<Item = V> + 'static) -> Self {
-        Self(Rc::new(IntoAnyViews {
-            id: IdGenerator::new(),
+    pub fn new<C>(contents: C) -> Self
+    where
+        C: Views<View = V> + 'static,
+    {
+        Self(Box::new(IntoAnyViews {
+            id: IdGenerator::<C::Item>::new(),
             contents,
         }))
     }
@@ -153,42 +150,76 @@ impl<V> Clone for AnyViews<V> {
     }
 }
 
-impl<V> Collection for AnyViews<V> {
-    type Item = V;
+impl<V: 'static> Collection for AnyViews<V> {
+    type Item = NonZeroUsize;
+    type Guard = BoxWatcherGuard;
     fn get(&self, index: usize) -> Option<Self::Item> {
-        self.0.get(index)
+        self.0.get_id(index)
     }
-    fn remove(&self, index: usize) {
-        self.0.remove(index);
-    }
+
     fn len(&self) -> usize {
         self.0.len()
     }
-    fn watch(&self, watcher: nami::watcher::Watcher<()>) -> nami::watcher::WatcherGuard {
-        self.0.watch(watcher)
+    fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl Fn(nami::watcher::Context<Vec<Self::Item>>) + 'static,
+    ) -> Self::Guard {
+        self.0.watch(
+            (range.start_bound().cloned(), range.end_bound().cloned()),
+            Box::new(watcher),
+        )
     }
 }
 
-impl<V> Views for AnyViews<V> {
-    type Id = SelfId<NonZeroUsize>;
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.0.get_id(index)
+impl<V> Views for AnyViews<V>
+where
+    V: View,
+{
+    type View = V;
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.0.get_view(index)
     }
 }
-
 /// A utility for transforming elements of a collection with a mapping function.
 ///
 /// `ForEach` applies a transformation function to each element of a source collection,
 /// producing a new collection with the transformed elements. This is useful for
 /// transforming data models into view representations.
 #[derive(Debug)]
-pub struct ForEach<C, F, V, Output> {
+pub struct ForEach<C, F, V>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: Fn(C::Item) -> V,
+    V: View,
+{
     data: C,
-    generator: F,
-    _marker: PhantomData<(V, Output)>,
+    generator: Rc<F>,
 }
 
-impl<C, F, V, Output> ForEach<C, F, V, Output> {
+impl<C, F, V> Clone for ForEach<C, F, V>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: Fn(C::Item) -> V,
+    V: View,
+{
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            generator: self.generator.clone(),
+        }
+    }
+}
+
+impl<C, F, V> ForEach<C, F, V>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: Fn(C::Item) -> V,
+    V: View,
+{
     /// Creates a new `ForEach` transformation with the provided data collection and generator function.
     ///
     /// # Parameters
@@ -197,49 +228,62 @@ impl<C, F, V, Output> ForEach<C, F, V, Output> {
     ///
     /// # Returns
     /// A new `ForEach` instance that will apply the transformation when accessed
-    pub const fn new(data: C, generator: F) -> Self {
+    pub fn new(data: C, generator: F) -> Self {
         Self {
             data,
-            generator,
-            _marker: PhantomData,
+            generator: Rc::new(generator),
         }
     }
 }
 
-impl<C, Id, F, V, Output> Collection for ForEach<C, F, V, Output>
+pub struct ForEachItem<T, F, V>
+where
+    F: Fn(T) -> V,
+    V: View,
+{
+    data: T,
+    generator: Rc<F>,
+}
+
+impl<C, F, V> Collection for ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifable<Id = Id>,
-    F: Fn(C::Item) -> V,
-    V: Into<Output>,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
 {
-    type Item = Output;
+    type Item = <C::Item as Identifable>::Id;
+    type Guard = C::Guard;
     fn get(&self, index: usize) -> Option<Self::Item> {
-        self.data
-            .get(index)
-            .map(|value| (self.generator)(value).into())
+        self.data.get(index).map(|item| item.id())
     }
 
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn remove(&self, index: usize) {
-        self.data.remove(index);
-    }
-    fn watch(&self, watcher: nami::watcher::Watcher<()>) -> nami::watcher::WatcherGuard {
-        self.data.watch(watcher)
+
+    fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl Fn(nami::watcher::Context<Vec<Self::Item>>) + 'static,
+    ) -> Self::Guard {
+        self.data.watch(range, move |ctx| {
+            let metadata = ctx.metadata;
+            let values: Vec<_> = ctx.value.into_iter().map(|data| data.id()).collect();
+            watcher(Context::new(values, metadata));
+        })
     }
 }
 
-impl<C, F, V, Output> Views for ForEach<C, F, V, Output>
+impl<C, F, V> Views for ForEach<C, F, V>
 where
     C: Collection,
     C::Item: Identifable,
-    F: Fn(C::Item) -> V,
-    V: Into<Output>,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
 {
-    type Id = <C::Item as Identifable>::Id;
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.data.get(index).map(|data| data.id())
+    type View = V;
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.data.get(index).map(|item| (self.generator)(item))
     }
 }

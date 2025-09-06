@@ -12,8 +12,8 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
-waterui-str = { version = "0.1.0", path = "../utils/str" }
-nami = "0.3.0"
+waterui-str.workspace = true
+nami.workspace = true
 
 [dependencies.anyhow]
 version = "1.0"
