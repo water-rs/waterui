@@ -9,3 +9,5 @@
 # Tutorial book build output
 /tutorial-book/book/
 /tutorial-book/target/
+
+.vscode/*
