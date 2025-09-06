@@ -8,7 +8,7 @@
 import CWaterUI
 import SwiftUI
 
-
+/*
 struct Padding:View,Component{
     static var id=waterui_metadata_padding_id()
     var content:WaterUI.AnyView
@@ -27,3 +27,4 @@ struct Padding:View,Component{
         self.edge=metadata.value
     }
 }
+*/

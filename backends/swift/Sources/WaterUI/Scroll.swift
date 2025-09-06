@@ -6,9 +6,9 @@
 //
 import SwiftUI
 import CWaterUI
-
+/*
 struct ScrollView:View,Component{
-    static var id=waterui_view_scroll_id()
+    static var id=waterui_scroll_id()
     var axis:SwiftUI.Axis.Set
     var content:WaterUI.AnyView
     var body: some View{
@@ -18,10 +18,10 @@ struct ScrollView:View,Component{
     }
     
     init(anyview: OpaquePointer, env: Environment) {
-        self.init(scroll: waterui_view_force_as_scroll(anyview), env: env)
+        self.init(scroll: waterui_force_as_scroll(anyview), env: env)
     }
     
-    init(scroll: waterui_scroll, env: Environment) {
+    init(scroll: WuiScroll, env: Environment) {
         switch scroll.axis{
         case WATERUI_AXIS_VERTICAL:
             self.axis=[.vertical]
@@ -35,3 +35,4 @@ struct ScrollView:View,Component{
         self.content=AnyView(anyview: scroll.content, env: env)
     }
 }
+*/
