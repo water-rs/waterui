@@ -7,13 +7,34 @@
 use core::ffi::{c_char, c_int, c_uint};
 use core::ptr::null_mut;
 
-use crate::{IntoFFI, ffi_safe, impl_drop};
+use crate::{IntoFFI, IntoRust, impl_drop};
 use alloc::ffi::CString;
 use alloc::string::String;
 
 use waterui::Str;
 
-ffi_safe!(Str);
+#[repr(C)]
+pub struct WuiStr {
+    ptr: *mut (),
+    len: isize,
+}
+
+impl IntoFFI for Str {
+    type FFI = WuiStr;
+
+    fn into_ffi(self) -> Self::FFI {
+        let (ptr, len) = self.into_raw();
+        WuiStr { ptr, len }
+    }
+}
+
+impl IntoRust for WuiStr {
+    type Rust = Str;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        unsafe { Str::from_raw(self.ptr, self.len) }
+    }
+}
 
 /// Creates a new empty Str instance.
 ///
@@ -21,7 +42,7 @@ ffi_safe!(Str);
 ///
 /// A new empty Str instance.
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_str_new() -> Str {
+pub extern "C" fn waterui_str_new() -> WuiStr {
     Str::new().into_ffi()
 }
 
@@ -44,12 +65,12 @@ pub extern "C" fn waterui_str_new() -> Str {
 ///
 /// Undefined behavior (UB) will occur if any of these conditions are violated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_from_cstr(c_str: *const c_char) -> Str {
+pub unsafe extern "C" fn waterui_str_from_cstr(c_str: *const c_char) -> WuiStr {
     let c_str = unsafe { core::ffi::CStr::from_ptr(c_str) };
-    Str::from(String::from(c_str.to_str().unwrap()))
+    Str::from(String::from(c_str.to_str().unwrap())).into_ffi()
 }
 
-impl_drop!(Str, waterui_str_drop);
+impl_drop!(WuiStr, waterui_str_drop);
 
 /// Creates a clone of the given Str instance.
 ///
@@ -66,8 +87,8 @@ impl_drop!(Str, waterui_str_drop);
 /// The caller must ensure that `str` is a valid pointer to a Str instance.
 /// If `str` is null or invalid, undefined behavior will occur.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn waterui_str_clone(str: *const Str) -> Str {
-    unsafe { (*str).clone() }
+unsafe extern "C" fn waterui_str_clone(str: *const Str) -> WuiStr {
+    unsafe { (*str).clone().into_ffi() }
 }
 
 /// Returns the length of the Str in bytes.
@@ -175,10 +196,10 @@ pub unsafe extern "C" fn waterui_str_append(str: *mut Str, c_str: *const c_char)
 /// The caller must ensure that both `str1` and `str2` are valid pointers to Str instances.
 /// If either pointer is null or points to invalid memory, undefined behavior will occur.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_concat(str1: *const Str, str2: *const Str) -> Str {
+pub unsafe extern "C" fn waterui_str_concat(str1: *const Str, str2: *const Str) -> WuiStr {
     let s1 = unsafe { &*str1 };
     let s2 = unsafe { &*str2 };
-    s1.clone() + s2.as_str()
+    (s1.clone() + s2.as_str()).into_ffi()
 }
 
 /// Compares two Str instances.
@@ -253,9 +274,13 @@ pub unsafe extern "C" fn waterui_str_ref_count(str: *const Str) -> c_int {
 /// This function uses `get_unchecked` internally, so providing an invalid range will result
 /// in undefined behavior.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_substring(str: *const Str, start: c_uint, end: c_uint) -> Str {
+pub unsafe extern "C" fn waterui_str_substring(
+    str: *const Str,
+    start: c_uint,
+    end: c_uint,
+) -> WuiStr {
     let s = unsafe { &*str };
-    unsafe { s.get_unchecked(start as usize..end as usize).into() }
+    unsafe { Str::from(s.get_unchecked(start as usize..end as usize)).into_ffi() }
 }
 
 /// Checks if a Str contains a substring.
@@ -302,7 +327,7 @@ pub unsafe extern "C" fn waterui_str_contains(str: *const Str, substring: *const
 /// This function uses `from_utf8_unchecked` internally, so providing invalid UTF-8 will result
 /// in undefined behavior.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_from_bytes(bytes: *const c_char, len: c_uint) -> Str {
+pub unsafe extern "C" fn waterui_str_from_bytes(bytes: *const c_char, len: c_uint) -> WuiStr {
     let slice = unsafe { core::slice::from_raw_parts(bytes as *const u8, len as usize) };
-    unsafe { core::str::from_utf8_unchecked(slice).into() }
+    unsafe { Str::from(core::str::from_utf8_unchecked(slice)).into_ffi() }
 }
