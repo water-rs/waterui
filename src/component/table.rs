@@ -46,7 +46,7 @@ impl TableColumn {
     /// # Arguments
     ///
     /// * `contents` - The text content to display in this column.
-    pub fn new(contents: impl Views<Item = Text> + 'static) -> Self {
+    pub fn new(contents: impl Views<View = Text> + 'static) -> Self {
         Self {
             rows: AnyViews::new(contents),
         }

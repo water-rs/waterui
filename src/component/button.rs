@@ -134,7 +134,10 @@ impl<Label, Action> Button<Label, Action> {
         S: 'static + Clone,
         P: 'static,
     {
-        into_handler_with_state(action, state.clone())
+        Button {
+            label: self.label,
+            action: into_handler_with_state(action, state.clone()),
+        }
     }
 }
 
