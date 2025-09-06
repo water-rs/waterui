@@ -648,9 +648,9 @@ struct WuiTypeId waterui_divider_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStr *waterui_label_id(struct WuiAnyView *view);
+struct WuiStr *waterui_force_as_label(struct WuiAnyView *view);
 
-struct WuiTypeId waterui_force_as_label(void);
+struct WuiTypeId waterui_label_id(void);
 
 struct WuiTypeId waterui_empty_id(void);
 
