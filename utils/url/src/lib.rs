@@ -30,14 +30,14 @@ use std::path::{Path, PathBuf};
 /// let web_url = Url::parse("https://example.com/image.jpg").unwrap();
 /// assert!(web_url.is_web());
 /// assert_eq!(web_url.scheme(), Some("https"));
-/// 
+///
 /// // Local file paths
 /// # #[cfg(feature = "std")]
 /// # {
 /// let file_url = Url::from_file_path("/home/user/image.jpg");
 /// assert!(file_url.is_local());
 /// # }
-/// 
+///
 /// // Automatic detection
 /// let auto_url = Url::new("./relative/path.png");
 /// assert!(auto_url.is_local());
@@ -95,7 +95,7 @@ impl Url {
     /// ```
     pub fn parse(url: impl AsRef<str>) -> Option<Self> {
         let url_str = url.as_ref();
-        
+
         // Check if it's a valid web URL
         if Self::is_valid_web_url(url_str) {
             Some(Self {
@@ -150,11 +150,11 @@ impl Url {
     #[must_use]
     pub fn from_data(mime_type: &str, data: &[u8]) -> Self {
         use alloc::format;
-        
+
         // Base64 encode the data
         let encoded = base64_encode(data);
         let url_str = format!("data:{mime_type};base64,{encoded}");
-        
+
         Self {
             inner: Str::from(url_str),
             kind: UrlKind::Data,
@@ -192,10 +192,17 @@ impl Url {
             UrlKind::Web | UrlKind::Data | UrlKind::Blob => true,
             UrlKind::Local => {
                 let s = self.inner.as_str();
-                s.starts_with('/') || s.starts_with('\\') || 
-                (s.len() >= 3 && s.as_bytes()[1] == b':' && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
+                s.starts_with('/')
+                    || s.starts_with('\\')
+                    || (s.len() >= 3
+                        && s.as_bytes()[1] == b':'
+                        && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
             }
         }
+    }
+
+    pub fn inner(&self) -> Str {
+        self.inner.clone()
     }
 
     /// Returns true if this is a relative path.
@@ -227,8 +234,10 @@ impl Url {
 
         let s = self.inner.as_str();
         let start = s.find("://").map(|idx| idx + 3)?;
-        let end = s[start..].find(&['/', '?', '#'][..]).map_or(s.len(), |idx| start + idx);
-        
+        let end = s[start..]
+            .find(&['/', '?', '#'][..])
+            .map_or(s.len(), |idx| start + idx);
+
         Some(&s[start..end])
     }
 
@@ -257,7 +266,7 @@ impl Url {
         let path = self.path();
         let name = path.rsplit('/').next()?;
         let ext_start = name.rfind('.')?;
-        
+
         if ext_start == 0 || ext_start == name.len() - 1 {
             None
         } else {
@@ -298,7 +307,7 @@ impl Url {
             UrlKind::Web => {
                 let base = self.inner.as_str();
                 let mut result = String::from(base);
-                
+
                 // Ensure base ends with /
                 if !result.ends_with('/') {
                     // Check if we have a path after the host
@@ -308,7 +317,10 @@ impl Url {
                             // We have a path, check if it looks like a file
                             let full_path_start = scheme_end + 3 + path_start;
                             let after_slash = &result[full_path_start + 1..];
-                            if after_slash.contains('.') || after_slash.contains('?') || after_slash.contains('#') {
+                            if after_slash.contains('.')
+                                || after_slash.contains('?')
+                                || after_slash.contains('#')
+                            {
                                 // Remove the file part
                                 if let Some(last_slash) = result.rfind('/') {
                                     result.truncate(last_slash + 1);
@@ -324,7 +336,7 @@ impl Url {
                         result.push('/');
                     }
                 }
-                
+
                 result.push_str(path);
                 Self::new(result)
             }
@@ -402,10 +414,9 @@ impl Url {
     fn is_valid_web_url(s: &str) -> bool {
         // Common web URL schemes
         const WEB_SCHEMES: &[&str] = &[
-            "http://", "https://", "ftp://", "ftps://", 
-            "ws://", "wss://", "rtsp://", "rtmp://"
+            "http://", "https://", "ftp://", "ftps://", "ws://", "wss://", "rtsp://", "rtmp://",
         ];
-        
+
         WEB_SCHEMES.iter().any(|scheme| s.starts_with(scheme))
     }
 }
@@ -482,33 +493,33 @@ impl Signal for Fetched {
 // Simple base64 encoding for data URLs
 fn base64_encode(data: &[u8]) -> String {
     use alloc::vec::Vec;
-    
+
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    
+
     let mut result = Vec::with_capacity(data.len().div_ceil(3) * 4);
-    
+
     for chunk in data.chunks(3) {
         let mut buf = [0u8; 3];
         for (i, &byte) in chunk.iter().enumerate() {
             buf[i] = byte;
         }
-        
+
         result.push(TABLE[(buf[0] >> 2) as usize]);
         result.push(TABLE[(((buf[0] & 0x03) << 4) | (buf[1] >> 4)) as usize]);
-        
+
         if chunk.len() > 1 {
             result.push(TABLE[(((buf[1] & 0x0f) << 2) | (buf[2] >> 6)) as usize]);
         } else {
             result.push(b'=');
         }
-        
+
         if chunk.len() > 2 {
             result.push(TABLE[(buf[2] & 0x3f) as usize]);
         } else {
             result.push(b'=');
         }
     }
-    
+
     String::from_utf8(result).unwrap()
 }
 
@@ -532,11 +543,11 @@ mod tests {
         assert!(url1.is_local());
         assert!(!url1.is_web());
         assert!(url1.is_absolute());
-        
+
         let url2 = Url::new("./relative/path.txt");
         assert!(url2.is_local());
         assert!(url2.is_relative());
-        
+
         let url3 = Url::new("file.txt");
         assert!(url3.is_local());
         assert!(url3.is_relative());
@@ -547,7 +558,7 @@ mod tests {
         assert!(Url::parse("http://localhost:3000").is_some());
         assert!(Url::parse("https://example.com/path?query=1").is_some());
         assert!(Url::parse("ftp://server.com/file").is_some());
-        
+
         assert!(Url::parse("/local/path").is_none());
         assert!(Url::parse("relative/path").is_none());
     }
@@ -563,13 +574,13 @@ mod tests {
     fn test_extension_extraction() {
         let url1 = Url::new("https://example.com/image.jpg");
         assert_eq!(url1.extension(), Some("jpg"));
-        
+
         let url2 = Url::new("/path/to/file.tar.gz");
         assert_eq!(url2.extension(), Some("gz"));
-        
+
         let url3 = Url::new("https://example.com/noext");
         assert_eq!(url3.extension(), None);
-        
+
         let url4 = Url::new("https://example.com/.hidden");
         assert_eq!(url4.extension(), None);
     }
@@ -578,10 +589,10 @@ mod tests {
     fn test_filename_extraction() {
         let url1 = Url::new("https://example.com/path/image.jpg");
         assert_eq!(url1.filename(), Some("image.jpg"));
-        
+
         let url2 = Url::new("/path/to/file.txt");
         assert_eq!(url2.filename(), Some("file.txt"));
-        
+
         let url3 = Url::new("https://example.com/");
         assert_eq!(url3.filename(), None);
     }
@@ -591,11 +602,11 @@ mod tests {
         let base1 = Url::new("https://example.com/images/");
         let joined1 = base1.join("photo.jpg");
         assert_eq!(joined1.as_str(), "https://example.com/images/photo.jpg");
-        
+
         let base2 = Url::new("https://example.com/images/old.jpg");
         let joined2 = base2.join("new.jpg");
         assert_eq!(joined2.as_str(), "https://example.com/images/new.jpg");
-        
+
         let base3 = Url::new("https://example.com");
         let joined3 = base3.join("images/photo.jpg");
         assert_eq!(joined3.as_str(), "https://example.com/images/photo.jpg");
@@ -619,13 +630,13 @@ mod tests {
     fn test_url_host_extraction() {
         let url1 = Url::new("https://example.com/path");
         assert_eq!(url1.host(), Some("example.com"));
-        
+
         let url2 = Url::new("http://localhost:8080/api");
         assert_eq!(url2.host(), Some("localhost:8080"));
-        
+
         let url3 = Url::new("https://sub.domain.com");
         assert_eq!(url3.host(), Some("sub.domain.com"));
-        
+
         let url4 = Url::new("/local/path");
         assert_eq!(url4.host(), None);
     }
@@ -635,10 +646,10 @@ mod tests {
         let url = Url::new("https://example.com");
         let as_str: &str = url.as_ref();
         assert_eq!(as_str, "https://example.com");
-        
+
         let as_string = url.clone().into_string();
         assert_eq!(as_string, "https://example.com");
-        
+
         let from_string = Url::from("test".to_string());
         assert_eq!(from_string.as_str(), "test");
     }
@@ -647,10 +658,10 @@ mod tests {
     fn test_base64_encoding() {
         let encoded = base64_encode(b"hello");
         assert_eq!(encoded, "aGVsbG8=");
-        
+
         let encoded2 = base64_encode(b"hi");
         assert_eq!(encoded2, "aGk=");
-        
+
         let encoded3 = base64_encode(b"test");
         assert_eq!(encoded3, "dGVzdA==");
     }
@@ -662,7 +673,10 @@ mod tests {
         assert_eq!(Url::new("ftp://example.com").scheme(), Some("ftp"));
         assert_eq!(Url::new("ws://example.com").scheme(), Some("ws"));
         assert_eq!(Url::new("data:text/plain,hello").scheme(), Some("data"));
-        assert_eq!(Url::new("blob:https://example.com/uuid").scheme(), Some("blob"));
+        assert_eq!(
+            Url::new("blob:https://example.com/uuid").scheme(),
+            Some("blob")
+        );
         assert_eq!(Url::new("/local/path").scheme(), Some("file"));
     }
 
@@ -670,10 +684,10 @@ mod tests {
     fn test_path_parsing() {
         let url1 = Url::new("https://example.com/api/v1/users?id=123#section");
         assert_eq!(url1.path(), "/api/v1/users");
-        
+
         let url2 = Url::new("https://example.com");
         assert_eq!(url2.path(), "/");
-        
+
         let url3 = Url::new("/local/path/file.txt");
         assert_eq!(url3.path(), "/local/path/file.txt");
     }
@@ -684,7 +698,7 @@ mod tests {
         assert!(Url::new("/absolute/path").is_absolute());
         assert!(Url::new("C:\\Windows\\file.txt").is_absolute());
         assert!(Url::new("data:text/plain,hello").is_absolute());
-        
+
         assert!(Url::new("relative/path").is_relative());
         assert!(Url::new("./relative/path").is_relative());
         assert!(Url::new("../parent/path").is_relative());
