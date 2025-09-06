@@ -170,7 +170,6 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 waterui = { version = "0.1", features = ["gtk4"] }
-nami = "0.1"  # Reactive state management
 ```
 
 ### Your First App
