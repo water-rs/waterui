@@ -29,7 +29,7 @@
 
 use core::future::Future;
 
-use native_executor::LocalTask;
+use native_executor::spawn_local;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::{
@@ -240,10 +240,11 @@ where
         handler.set(self.loading);
 
         let new_env = env.clone();
-        LocalTask::on_main(async move {
+        spawn_local(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
-        });
+        })
+        .detach();
 
         view
     }

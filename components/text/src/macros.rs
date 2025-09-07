@@ -11,16 +11,11 @@
 /// ```
 #[macro_export]
 macro_rules! text {
-    ($fmt:tt,$($arg:ident),*) => {
+    ($($arg:tt)*) => {
         {
-            let args=($($arg.clone()),*);
-            use $crate::__nami::SignalExt;
+            use $crate::__nami as nami;
             #[allow(unused_parens)]
-            $crate::Text::new(SignalExt::map(
-                args.clone(),|($($arg),*)|{
-                    format!($fmt,$($arg),*)
-                }
-            ).computed())
+            $crate::Text::new(nami::s!($($arg)*))
         }
     };
 }

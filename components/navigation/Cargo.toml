@@ -15,7 +15,7 @@ categories = ["gui"]
 waterui-core.workspace = true
 waterui-text.workspace = true
 nami.workspace = true
-typeshare.workspace = true
+
 
 [lints]
 workspace = true
