@@ -22,6 +22,7 @@ pub use waterui_core::{
     env::{self, Environment},
     impl_extractor, raw_view, shape,
 };
+pub use waterui_text::text;
 
 #[doc(inline)]
 pub use nami::{Binding, Computed, Signal, signal};
