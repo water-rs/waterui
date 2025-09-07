@@ -29,9 +29,5 @@ let s4 = s2.clone();
 // Converting to String
 let owned = s2.into_string();
 
-// Static strings don't have reference counts
-// reference count is intentionally not exposed
 
-// Owned strings have reference counts
-// reference count is intentionally not exposed
 ```

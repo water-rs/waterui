@@ -54,20 +54,21 @@ clippy.cargo = "warn"
 native-executor = "0.4.0"
 nami = { version = "0.5.0" }
 
-waterui-core = { path = "core" }
-waterui-str = { path = "utils/str" }
-waterui-url = { path = "utils/url" }
-waterui-text = { path = "components/text" }
-waterui-media = { path = "components/media" }
-waterui-form = { path = "components/form" }
-waterui-canvas = { path = "components/canvas" }
-waterui-ffi = { path = "ffi" }
-waterui-layout = { path = "components/layout" }
-waterui-navigation = { path = "components/navigation" }
-waterui-gtk4 = { path = "backends/gtk4" }
-waterui-web = { path = "backends/web" }
-waterui-render-utils = { path = "render_utils" }
-waterui = { path = "." }
+waterui-core = { version = "0.1.0", path = "core" }
+waterui-str = { version = "0.2.0", path = "utils/str" }
+waterui-url = { version = "0.1.0", path = "utils/url" }
+waterui-text = { version = "0.1.0", path = "components/text" }
+waterui-media = { version = "0.1.0", path = "components/media" }
+waterui-form = { version = "0.1.0", path = "components/form" }
+waterui-form-derive = { version = "0.1.0", path = "components/form/derive" }
+waterui-canvas = { version = "0.1.0", path = "components/canvas" }
+waterui-ffi = { version = "0.1.0", path = "ffi" }
+waterui-layout = { version = "0.1.0", path = "components/layout" }
+waterui-navigation = { version = "0.1.0", path = "components/navigation" }
+waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
+waterui-web = { version = "0.1.0", path = "backends/web" }
+waterui-render-utils = { version = "0.1.0", path = "render_utils" }
+waterui = { version = "0.1.0", path = "." }
 serde = { version = "1.0", default-features = false }
 time = "0.3"
 
@@ -81,7 +82,6 @@ waterui-text.workspace = true
 waterui-media.workspace = true
 waterui-navigation.workspace = true
 waterui-form.workspace = true
-waterui-canvas.workspace = true
 native-executor.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
