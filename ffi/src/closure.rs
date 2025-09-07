@@ -67,7 +67,9 @@ pub struct WuiFnOnce<T> {
 impl<T: 'static> IntoRust for WuiFnOnce<T> {
     type Rust = Box<dyn FnOnce(T)>;
     unsafe fn into_rust(self) -> Self::Rust {
-        Box::new(move |v| self.call(v))
+        let data = self.data;
+        let call = self.call;
+        Box::new(move |v| unsafe { call(data, v) })
     }
 }
 

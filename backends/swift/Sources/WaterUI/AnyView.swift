@@ -68,7 +68,8 @@ struct Render{
             SwiftUI.AnyView(component)
         }
         else{
-            SwiftUI.AnyView(render(anyview: waterui_view_body(anyview, waterui_clone_env(env.inner)), env: env))
+            let next = waterui_view_body(anyview,env.inner)
+            SwiftUI.AnyView(render(anyview: next!, env: env))
         }
     }
 }
