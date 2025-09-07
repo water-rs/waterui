@@ -1,7 +1,7 @@
 //! Example demonstrating the `#[form]` attribute macro.
 
 use waterui_core::Binding;
-use waterui_form::{form, FormBuilder};
+use waterui_form::{FormBuilder, form};
 
 /// User profile form for testing the #[form] macro
 #[form]
@@ -14,7 +14,7 @@ struct UserProfile {
     /// Email notifications enabled
     remember_me: bool,
     /// Profile completion (0.0 to 1.0)
-    completion: f32,
+    completion: f64,
 }
 
 fn main() {
@@ -33,18 +33,18 @@ fn main() {
     println!("Created binding");
 
     // Create the form view using the derived FormBuilder implementation
-    let _form_view = UserProfile::view(&binding);
+    let _form_view = form(&binding);
     println!("Form view created successfully!");
 
     // Test nami Project trait for reactive state management
     let projected = binding.project();
     println!("Created projected bindings for reactive updates");
-    
+
     // Show that we can access individual field bindings
     projected.username.set("John Doe".to_string());
     projected.age.set(25);
     projected.completion.set(0.75);
-    
+
     let updated_form = binding.get();
     println!("Updated form via projected bindings: {updated_form:?}");
 
@@ -54,7 +54,7 @@ fn main() {
         use serde_json;
         let json = serde_json::to_string(&updated_form).expect("Failed to serialize");
         println!("Serialized form: {json}");
-        
+
         let deserialized: UserProfile = serde_json::from_str(&json).expect("Failed to deserialize");
         println!("Deserialized form: {deserialized:?}");
     }

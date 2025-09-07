@@ -20,13 +20,11 @@ extern crate alloc;
 use alloc::string::ToString;
 use core::fmt::Display;
 use locale::Formatter;
-use waterui_core::configurable;
+use waterui_core::{Str, configurable};
 
 use nami::SignalExt;
 use nami::zip::FlattenMap;
 use nami::{Computed, Signal, signal::IntoComputed};
-
-use waterui_core::Str;
 
 configurable!(Text, TextConfig);
 
