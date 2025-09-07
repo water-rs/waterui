@@ -1,13 +1,16 @@
 //! Example demonstrating the `FormBuilder` derive macro.
 
-use waterui::Binding;
-use waterui_form::FormBuilder;
+use waterui::{Binding, component::form::FormBuilder};
+use waterui_form::form;
 
-#[derive(FormBuilder, Default, Clone, Debug)]
+#[form]
 #[allow(dead_code)] // This is just an example
-struct UserForm {
+pub struct UserForm {
+    /// The user's username
     username: String,
+    /// The user's age
     age: i32,
+    /// Whether to remember the user
     remember_me: bool,
 }
 
@@ -23,7 +26,7 @@ fn main() {
     println!("Created binding");
 
     // Create the form view using the derived implementation
-    let _form_view = UserForm::view(&binding);
+    let _form_view = form(&binding);
     println!("Form view created successfully!");
     println!("FormBuilder derive macro is working!");
 }
