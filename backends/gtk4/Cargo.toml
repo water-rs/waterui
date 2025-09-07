@@ -14,11 +14,11 @@ categories = ["gui"]
 waterui.workspace = true
 waterui-render-utils.workspace = true
 waterui-canvas.workspace = true
-gtk4 = "0.9"
-vello = "0.3"
-glib = "0.20"
-gdk4 = "0.9"
-pango = "0.20"
+gtk4 = "0.10"
+vello = "0.5"
+glib = "0.21"
+gdk4 = "0.10"
+pango = "0.21"
 time = "0.3"
 
 [features]

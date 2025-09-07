@@ -8,7 +8,7 @@
 //!
 //! ```rust
 //! use waterui_form::{FormBuilder, form};
-//! use waterui_core::{Binding, View};
+//! use waterui::{Binding, View};
 //!
 //! #[derive(Default, Clone, Debug, FormBuilder)]
 //! pub struct RegistrationForm {
@@ -90,7 +90,7 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 ///
 /// ```rust
 /// use waterui_form::{FormBuilder, form};
-/// use waterui_core::{Binding, View};
+/// use waterui::{Binding, View};
 ///
 /// #[derive(Default, Clone, Debug, FormBuilder)]
 /// pub struct UserProfile {
@@ -116,7 +116,7 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 ///
 /// ```rust
 /// use waterui_form::{FormBuilder, form};
-/// use waterui_core::{Binding, View};
+/// use waterui::{Binding, View};
 /// use waterui_layout::vstack;
 /// use waterui_text::text;
 ///
@@ -218,9 +218,9 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     // For now, create a simple implementation that shows we can derive the trait
     let expanded = quote! {
         impl crate::FormBuilder for #name {
-            type View = waterui_core::Str;
+            type View = ::waterui::Str;
 
-            fn view(_binding: &waterui_core::Binding<Self>) -> Self::View {
+            fn view(_binding: &::waterui::Binding<Self>) -> Self::View {
                 "Generated Form (FormBuilder derive working!)".into()
             }
         }
@@ -264,7 +264,7 @@ fn get_form_component_for_type(ty: &Type) -> Option<proc_macro2::TokenStream> {
 }
 
 /// The `#[form]` attribute macro that automatically derives multiple traits commonly used for forms.
-/// 
+///
 /// This macro derives the following traits:
 /// - `Default`
 /// - `Clone`
@@ -272,12 +272,12 @@ fn get_form_component_for_type(ty: &Type) -> Option<proc_macro2::TokenStream> {
 /// - `FormBuilder`
 /// - `Project` (from nami for reactive state management)
 /// - `Serialize` and `Deserialize` (from serde, if available)
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use waterui_form::{form, form};
-/// 
+///
 /// #[form]
 /// pub struct UserForm {
 ///     /// User's full name
@@ -287,24 +287,24 @@ fn get_form_component_for_type(ty: &Type) -> Option<proc_macro2::TokenStream> {
 ///     /// Email notifications enabled
 ///     pub notifications: bool,
 /// }
-/// 
+///
 /// fn create_form() -> impl View {
 ///     let form_binding = UserForm::binding();
 ///     form(&form_binding)
 /// }
 /// ```
-/// 
+///
 /// This is equivalent to manually writing:
-/// 
+///
 /// ```rust
 /// #[derive(Default, Clone, Debug, FormBuilder)]
 /// #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 /// pub struct UserForm {
 ///     pub name: String,
-///     pub age: i32, 
+///     pub age: i32,
 ///     pub notifications: bool,
 /// }
-/// 
+///
 /// impl Project for UserForm {
 ///     // ... implementation provided by nami derive
 /// }
@@ -314,7 +314,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    
+
     // Check if it's a struct with named fields
     let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
@@ -330,8 +330,8 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
         },
         _ => {
             return syn::Error::new_spanned(
-                input, 
-                "The #[form] macro can only be applied to structs"
+                input,
+                "The #[form] macro can only be applied to structs",
             )
             .to_compile_error()
             .into();
@@ -340,7 +340,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
 
     // Create the projected struct name for nami Project trait
     let projected_struct_name = syn::Ident::new(&format!("{name}Projected"), name.span());
-    
+
     // Generate fields for the projected struct
     let projected_fields = fields.named.iter().map(|field| {
         let field_name = &field.ident;

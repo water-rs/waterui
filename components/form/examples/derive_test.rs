@@ -1,7 +1,7 @@
 //! Example demonstrating the `FormBuilder` derive macro.
 
-use waterui_core::Binding;
-use waterui_form::FormBuilder;
+use waterui::Binding;
+use waterui::FormBuilder;
 
 #[derive(FormBuilder, Default, Clone, Debug)]
 #[allow(dead_code)] // This is just an example
