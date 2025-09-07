@@ -21,6 +21,8 @@ use core::{
     slice,
 };
 
+nami::impl_constant!(Str);
+
 /// A string type that can be either a static reference or a ref-counted owned string.
 ///
 /// `Str` combines the benefits of both `&'static str` and `String` with efficient

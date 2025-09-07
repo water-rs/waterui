@@ -51,18 +51,18 @@ impl Stack {
 raw_view!(Stack);
 
 /// Provides convenient functions to create stacks with different orientations.
-pub fn vstack(contents: impl TupleViews) -> Stack {
-    Stack::vertical(contents)
+pub fn vstack(contents: impl TupleViews) -> VStack {
+    VStack::new(contents)
 }
 
 /// Creates a horizontal stack of views.
-pub fn hstack(contents: impl TupleViews) -> Stack {
-    Stack::horizonal(contents)
+pub fn hstack(contents: impl TupleViews) -> HStack {
+    HStack::new(contents)
 }
 
 /// Creates a layered stack of views, allowing overlapping content.
-pub fn zstack(contents: impl TupleViews) -> Stack {
-    Stack::layered(contents)
+pub fn zstack(contents: impl TupleViews) -> ZStack {
+    ZStack::new(contents)
 }
 
 macro_rules! impl_stack {
