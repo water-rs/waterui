@@ -48,27 +48,3 @@ let views: Vec<AnyView> = vec![
     AnyView::new(Button::new("Click me")),
 ];
 ```
-
-## Example
-
-```rust
-use waterui_core::{View, Environment, AnyView};
-use waterui_text::text;
-
-struct MyView {
-    title: String,
-}
-
-impl View for MyView {
-    fn body(self, _env: &Environment) -> impl View {
-        text(self.title)
-    }
-}
-```
-
-## Dependencies
-
-- `waterui-str`: Efficient string handling
-- `nami`: Reactive state management
-
-This crate is typically used through the main `waterui` crate, which re-exports the most commonly used types and traits.
