@@ -9,7 +9,7 @@ mod tests {
         fn welcome_message(name: &str) -> String {
             format!("Welcome, {}!", name)
         }
-        
+
         let result = welcome_message("Alice");
         assert_eq!(result, "Welcome, Alice!");
     }
@@ -20,23 +20,23 @@ mod tests {
         struct Counter {
             value: i32,
         }
-        
+
         impl Counter {
             fn new(initial: i32) -> Self {
                 Self { value: initial }
             }
-            
+
             fn increment(&mut self) {
                 self.value += 1;
             }
-            
+
             fn get_value(&self) -> i32 {
                 self.value
             }
         }
-        
+
         let mut counter = Counter::new(0);
-        counter.increment();
+        counter.increment(1);
         assert_eq!(counter.get_value(), 1);
     }
 }
