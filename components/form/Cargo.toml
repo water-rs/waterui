@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Form components for WaterUI (inputs, buttons, validation)"
 keywords = ["form", "input", "validation", "ui", "components"]
 categories = ["gui"]
+exclude = ["examples/*"]
 
 
 [dependencies]
@@ -17,7 +18,7 @@ waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
-waterui-form-derive = { path = "derive" }
+waterui-form-derive = { version = "0.1.0", path = "derive" }
 zeroize = { version = "1.8.1", default-features = false }
 bcrypt = "0.17.1"
 serde = { workspace = true, features = ["derive"], optional = true }
@@ -28,7 +29,6 @@ serde = ["dep:serde", "waterui-core/serde"]
 
 [dev-dependencies]
 serde_json = "1.0"
-waterui.workspace = true
 
 [lints]
 workspace = true

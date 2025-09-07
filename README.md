@@ -19,9 +19,9 @@ pub fn counter() -> impl View {
         
         hstack((
             button("Increment")
-                .action(move || count.increment(1)),
+                .action_with(&count,|count| count.increment(1)),
             button("Reset")
-                .action(move || count.set(0))
+                .action_with(&count,|count| count.set(0))
                 .foreground_color(Color::red()),
         ))
         .spacing(10),
@@ -47,7 +47,3 @@ Check it [here](./demo).
 ## 📚 Documentation
 - [Tutorial book](https://water-rs.github.io/waterui/)
 - [API reference](https://docs.rs/waterui)
-
-## License
-
-MIT — see `LICENSE`.
