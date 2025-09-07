@@ -36,9 +36,10 @@ pub struct WuiArray<T> {
 pub unsafe extern "C" fn waterui_free_anyview_array_without_free_elements(
     arr: WuiArray<*mut WuiAnyView>,
 ) {
+    // Free only the array buffer allocated on the Rust side, without touching
+    // element pointers. The element pointers remain owned by the caller.
     unsafe {
-        let mut arr = arr.into_rust();
-        arr.set_len(0); // Prevent dropping the elements
+        let _ = Box::from_raw(slice_from_raw_parts_mut(arr.head, arr.len));
     }
 }
 
