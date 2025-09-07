@@ -2,6 +2,36 @@
 
 A cross-platform UI framework for Rust with cross-platform native rendering
 
+# Counter example
+
+```rust
+use waterui::prelude::*;
+
+pub fn counter() -> impl View {
+    let count = Binding::int(0);
+    let doubled = count.map(|n| n * 2);
+    
+    vstack((
+        text!("Count: {count}"),
+        text!("Doubled: {doubled}")
+            .font_size(20)
+            .foreground_color(Color::gray()),
+        
+        hstack((
+            button("Increment")
+                .action(move || count.increment(1)),
+            button("Reset")
+                .action(move || count.set(0))
+                .foreground_color(Color::red()),
+        ))
+        .spacing(10),
+    ))
+    .padding(20)
+    .spacing(15)
+}
+
+```
+
 ## ✨ Features
 
 - True native rendering - Uses SwiftUI on Apple platforms (yes, even visionOS/watchOS/widgets!)
@@ -15,9 +45,8 @@ A cross-platform UI framework for Rust with cross-platform native rendering
 Check it [here](./demo).
 
 ## 📚 Documentation
-
-- Tutorial book: `tutorial-book/` (work-in-progress)
-- Demo: `demo/`
+- [Tutorial book](https://water-rs.github.io/waterui/)
+- [API reference](https://docs.rs/waterui)
 
 ## License
 
