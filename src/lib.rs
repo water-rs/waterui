@@ -14,6 +14,31 @@ pub mod view;
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
+pub mod prelude {
+    //! A collection of commonly used traits and types for easy importing.
+    //!
+    //! This module re-exports essential components from the library, allowing users to
+    //! import them all at once with a single `use` statement. It includes traits for
+    //! building views, handling signals, and working with colors and text.
+    //!
+    //! # Example
+    //!
+    //! ```rust
+    //! use waterui::prelude::*;
+    //!
+    //! fn my_view() -> impl View {
+    //!     // Your view implementation here
+    //! }
+    //! ```
+    pub use crate::{Str, background, component::*, filter, task, view::View, widget};
+    pub use nami::{Binding, Computed, Signal, signal};
+    pub use waterui_core::{
+        AnyView, Color, animation,
+        env::{self, Environment},
+        impl_extractor, raw_view, shape,
+    };
+    pub use waterui_text::text;
+}
 #[doc(inline)]
 pub use view::ViewExt;
 #[doc(inline)]
