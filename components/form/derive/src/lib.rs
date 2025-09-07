@@ -3,69 +3,10 @@
 //! This crate provides the `#[derive(FormBuilder)]` procedural macro for automatically
 //! implementing the `FormBuilder` trait on struct types. This enables ergonomic form
 //! creation by mapping Rust data structures directly to interactive UI components.
-//!
-//! ## Quick Example
-//!
-//! ```rust
-//! use waterui_form::{FormBuilder, form};
-//! use waterui::{Binding, View};
-//!
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! pub struct RegistrationForm {
-//!     /// User's full name
-//!     pub full_name: String,
-//!     /// User's email address
-//!     pub email: String,
-//!     /// User's age (must be 18+)
-//!     pub age: i32,
-//!     /// Subscribe to newsletter
-//!     pub subscribe: bool,
-//! }
-//!
-//! fn registration_view() -> impl View {
-//!     let form_binding = RegistrationForm::binding();
-//!     form(&form_binding)
-//! }
-//! ```
-//!
-//! ## Type Mapping Rules
-//!
-//! The derive macro automatically selects appropriate form components based on field types:
-//!
-//! - **Text Types**: `String`, `&str`, `alloc::string::String` → `TextField`
-//! - **Boolean**: `bool` → `Toggle` (switch/checkbox)  
-//! - **Integers**: `i8`, `i16`, `i32`, `i64`, `i128`, `isize`, `u8`, `u16`, `u32`, `u64`, `u128`, `usize` → `Stepper`
-//! - **Floats**: `f32`, `f64` → `Slider` (0.0 to 1.0 range)
-//! - **Colors**: `Color` → `ColorPicker`
-//!
-//! ## Requirements
-//!
-//! To use `#[derive(FormBuilder)]`, your struct must:
-//!
-//! 1. Have named fields (not tuple structs or unit structs)
-//! 2. All fields must have supported types
-//! 3. Typically should also derive `Default` and `Clone` for convenience
-//!
-//! ## Doc Comments as Labels
-//!
-//! Documentation comments on struct fields become labels in the generated form:
-//!
-//! ```rust
-//! # use waterui_form::FormBuilder;
-//! #[derive(FormBuilder)]
-//! struct UserSettings {
-//!     /// Your display name (visible to other users)
-//!     display_name: String,
-//!     /// Enable dark mode theme
-//!     dark_mode: bool,
-//!     /// Notification volume level
-//!     volume: f32,
-//! }
-//! ```
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
+use syn::{Data, DeriveInput, Fields, Meta, parse_macro_input};
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
 ///
@@ -85,118 +26,12 @@ use syn::{Data, DeriveInput, Fields, Type, parse_macro_input};
 /// | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `Stepper` | Unsigned numeric input |
 /// | `f32`, `f64` | `Slider` | Slider with 0.0-1.0 range |
 /// | `Color` | `ColorPicker` | Color selection widget |
-///
-/// # Basic Example
-///
-/// ```rust
-/// use waterui_form::{FormBuilder, form};
-/// use waterui::{Binding, View};
-///
-/// #[derive(Default, Clone, Debug, FormBuilder)]
-/// pub struct UserProfile {
-///     /// User's display name
-///     username: String,
-///     /// Account password (will be secured automatically)
-///     password: String,
-///     /// User's current age
-///     age: i32,
-///     /// Email notification preference
-///     email_notifications: bool,
-///     /// Profile completion percentage
-///     completion: f32,
-/// }
-///
-/// fn profile_form() -> impl View {
-///     let binding = UserProfile::binding();
-///     form(&binding)
-/// }
-/// ```
-///
-/// # Advanced Usage with Validation
-///
-/// ```rust
-/// use waterui_form::{FormBuilder, form};
-/// use waterui::{Binding, View};
-/// use waterui_layout::vstack;
-/// use waterui_text::text;
-///
-/// #[derive(Default, Clone, Debug, FormBuilder)]
-/// struct RegistrationForm {
-///     /// Full name (required)
-///     full_name: String,
-///     /// Email address (must be valid)
-///     email: String,
-///     /// Age (must be 18+)
-///     age: i32,
-///     /// Agree to terms and conditions
-///     agree_terms: bool,
-/// }
-///
-/// fn registration_with_validation() -> impl View {
-///     let form_binding = RegistrationForm::binding();
-///     
-///     vstack((
-///         form(&form_binding),
-///         // Real-time validation feedback
-///         text!(
-///             if form_binding.full_name.get().is_empty() {
-///                 "Please enter your full name"
-///             } else if form_binding.age.get() < 18 {
-///                 "Must be 18 or older"
-///             } else if !form_binding.agree_terms.get() {
-///                 "Please agree to terms"
-///             } else {
-///                 "Form is valid!"
-///             }
-///         ),
-///     ))
-/// }
-/// ```
-///
-/// # Requirements
-///
-/// For successful derivation, your struct must:
-///
-/// 1. **Named Fields**: Must be a struct with named fields (`struct Foo { field: Type }`)
-/// 2. **Supported Types**: All fields must use types from the mapping table above
-/// 3. **Recommended Traits**: Should also derive `Default`, `Clone`, and `Debug`
-///
-/// # Generated Layout
-///
-/// The macro generates a vertical stack (`VStack`) containing form fields in the order
-/// they appear in the struct definition. Each field becomes a labeled form control
-/// using any doc comments as the label text.
-///
-/// # Compile-Time Errors
-///
-/// This macro will produce compile-time errors (not runtime panics) if:
-///
-/// - Applied to enums, unions, or tuple structs
-/// - Applied to structs with unnamed fields
-/// - Any struct field has an unsupported type
-/// - Required trait bounds are not satisfied
-///
-/// # Doc Comments as Labels
-///
-/// Documentation comments on fields become user-visible labels:
-///
-/// ```rust
-/// # use waterui_form::FormBuilder;
-/// #[derive(FormBuilder)]
-/// struct Settings {
-///     /// Your preferred display name
-///     display_name: String,  // Label: "Your preferred display name"
-///     
-///     /// Enable dark mode for better night viewing
-///     dark_mode: bool,       // Label: "Enable dark mode for better night viewing"
-/// }
-/// ```
 #[proc_macro_derive(FormBuilder)]
 pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
-    let _fields = match &input.data {
+    let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Named(fields) => &fields.named,
             _ => {
@@ -215,13 +50,75 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
         }
     };
 
-    // For now, create a simple implementation that shows we can derive the trait
+    // Collect field information
+    let field_views = fields.iter().map(|field| {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_type = &field.ty;
+
+        // Convert field name from snake_case to "Title Case" for label
+        let field_name_str = field_name.to_string();
+        let label_text = snake_to_title_case(&field_name_str);
+
+        // Extract doc comments as placeholder text
+        let placeholder = field
+            .attrs
+            .iter()
+            .filter_map(|attr| {
+                if attr.path().is_ident("doc")
+                    && let Meta::NameValue(meta) = &attr.meta
+                    && let syn::Expr::Lit(expr_lit) = &meta.value
+                    && let syn::Lit::Str(lit_str) = &expr_lit.lit
+                {
+                    let doc = lit_str.value();
+                    // Clean up the doc comment (remove leading/trailing whitespace)
+                    let cleaned = doc.trim();
+                    if !cleaned.is_empty() {
+                        return Some(cleaned.to_string());
+                    }
+                }
+                None
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Use FormBuilder trait for all types
+        // The FormBuilder::view method will handle whether to use the placeholder or not
+        quote! {
+            <#field_type as crate::FormBuilder>::view(
+                &projected.#field_name,
+                ::waterui::AnyView::new(#label_text),
+                ::waterui::Str::from(#placeholder)
+            )
+        }
+    });
+
+    // Check if we need to require Project trait
+    let requires_project = !fields.is_empty();
+
+    let view_body = if requires_project {
+        quote! {
+            // Use the Project trait to get individual field bindings
+            let projected = <Self as ::waterui::reactive::project::Project>::project(binding);
+
+            // Create a vstack with all form fields
+            ::waterui::component::layout::stack::vstack((
+                #(#field_views,)*
+            ))
+        }
+    } else {
+        // Empty struct case
+        quote! {
+            ::waterui::component::layout::stack::vstack(())
+        }
+    };
+
+    // Generate the implementation
     let expanded = quote! {
         impl crate::FormBuilder for #name {
-            type View = ::waterui::Str;
+            type View = ::waterui::component::layout::stack::VStack;
 
-            fn view(_binding: &::waterui::Binding<Self>) -> Self::View {
-                "Generated Form (FormBuilder derive working!)".into()
+            fn view(binding: &::waterui::Binding<Self>, _label: ::waterui::AnyView, _placeholder: ::waterui::Str) -> Self::View {
+                #view_body
             }
         }
     };
@@ -229,38 +126,20 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Maps a type to the appropriate form component.
-#[allow(dead_code)]
-fn get_form_component_for_type(ty: &Type) -> Option<proc_macro2::TokenStream> {
-    let type_str = match ty {
-        Type::Path(type_path) => {
-            let path = &type_path.path;
-            if path.segments.len() == 1 {
-                let segment = &path.segments[0];
-                segment.ident.to_string()
-            } else {
-                quote!(#ty).to_string()
-            }
-        }
-        _ => quote!(#ty).to_string(),
-    };
-
-    match type_str.as_str() {
-        "String" | "str" | "&str" => Some(quote! { crate::TextField }),
-        "bool" => Some(quote! { crate::Toggle }),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" => Some(quote! { crate::Stepper }),
-        "f32" | "f64" => Some(quote! { crate::slider::Slider }),
-        "Color" => Some(quote! { crate::picker::ColorPicker }),
-        _ => {
-            // Handle qualified paths like alloc::string::String
-            if type_str.contains("String") {
-                Some(quote! { crate::TextField })
-            } else {
-                None
-            }
-        }
-    }
+/// Converts snake_case to "Title Case"
+fn snake_to_title_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first
+                    .to_uppercase()
+                    .chain(chars.as_str().to_lowercase().chars())
+                    .collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The `#[form]` attribute macro that automatically derives multiple traits commonly used for forms.
@@ -346,7 +225,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
         let field_name = &field.ident;
         let field_type = &field.ty;
         quote! {
-            pub #field_name: nami::Binding<#field_type>
+            pub #field_name: ::waterui::reactive::Binding<#field_type>
         }
     });
 
@@ -356,7 +235,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
         quote! {
             #field_name: {
                 let source = source.clone();
-                nami::Binding::mapping(
+                ::waterui::reactive::Binding::mapping(
                     &source,
                     |value| value.#field_name.clone(),
                     move |binding, value| {
@@ -391,10 +270,10 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
         }
 
         // Project trait implementation
-        impl #impl_generics_with_static nami::project::Project for #name #ty_generics #where_clause {
+        impl #impl_generics_with_static ::waterui::reactive::project::Project for #name #ty_generics #where_clause {
             type Projected = #projected_struct_name #ty_generics;
 
-            fn project(source: &nami::Binding<Self>) -> Self::Projected {
+            fn project(source: &::waterui::reactive::Binding<Self>) -> Self::Projected {
                 #projected_struct_name {
                     #(#field_projections,)*
                 }
