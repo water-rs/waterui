@@ -11,7 +11,7 @@ keywords = ["canvas", "graphics", "vello", "ui", "components"]
 categories = ["gui"]
 
 [dependencies]
-vello = "0.3"
+vello = "0.5"
 waterui-core.workspace = true
 nami.workspace = true
 

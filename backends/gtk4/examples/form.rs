@@ -4,7 +4,7 @@ use waterui::{
     ViewExt,
     component::{
         form::{field, slider::slider, stepper, toggle},
-        layout::{scroll},
+        layout::scroll,
         text,
     },
     core::binding,
