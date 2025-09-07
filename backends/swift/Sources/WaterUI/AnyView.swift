@@ -42,7 +42,7 @@ struct Render{
             WaterUI.Dynamic.self,
            // WaterUI.WithEnv.self,
            // WaterUI.NavigationLink.self,
-            //WaterUI.ScrollView.self,
+            WaterUI.ScrollView.self,
            // WaterUI.Picker.self,
             //WaterUI.BackgroundColor.self,
             //WaterUI.Rectangle.self,

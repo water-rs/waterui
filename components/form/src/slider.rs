@@ -1,6 +1,5 @@
 use core::ops::RangeInclusive;
 
-use alloc::format;
 use nami::Binding;
 use waterui_core::{AnyView, View, configurable};
 use waterui_text::text;

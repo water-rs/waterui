@@ -4,12 +4,7 @@
 //! The API is designed to be memory-safe while still providing the full functionality
 //! of the Str type.
 
-use core::ffi::{c_char, c_uint};
-use core::ptr::null_mut;
-
 use crate::IntoFFI;
-use alloc::ffi::CString;
-use alloc::string::String;
 
 use waterui::Str;
 
@@ -23,30 +18,6 @@ ffi_type!(WuiStr, Str, waterui_str_drop);
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_str_new() -> *mut WuiStr {
     Str::new().into_ffi()
-}
-
-/// Creates a new Str instance from a C string.
-///
-/// # Parameters
-///
-/// * `c_str` - A null-terminated C string pointer
-///
-/// # Returns
-///
-/// A new Str instance containing the content of the C string.
-///
-/// # Safety
-///
-/// The caller must ensure that:
-/// * `c_str` is a valid pointer to a null-terminated C string
-/// * `c_str` points to a valid UTF-8 encoded string
-/// * The memory referenced by `c_str` remains valid for the duration of this call
-///
-/// Undefined behavior (UB) will occur if any of these conditions are violated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_from_cstr(c_str: *const c_char) -> *mut WuiStr {
-    let c_str = unsafe { core::ffi::CStr::from_ptr(c_str) };
-    Str::from(String::from(c_str.to_str().unwrap())).into_ffi()
 }
 
 /// Creates a clone of the given Str instance.
@@ -88,55 +59,6 @@ pub unsafe extern "C" fn waterui_str_len(str: *const Str) -> usize {
     s.len()
 }
 
-/// Converts a Str to a C string.
-///
-/// # Parameters
-///
-/// * `str` - A pointer to a valid Str instance
-///
-/// # Returns
-///
-/// A pointer to a new null-terminated C string or NULL if conversion fails.
-/// The caller is responsible for freeing this memory using the appropriate C function.
-///
-/// # Safety
-///
-/// The caller must ensure that:
-/// * `str` is a valid pointer to a Str instance
-/// * The returned C string must be freed by the caller to avoid memory leaks
-///
-/// If `str` is null or points to invalid memory, undefined behavior will occur.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_to_cstr(str: *const Str) -> *mut c_char {
-    let s = unsafe { &*str };
-    match CString::new(s.as_str()) {
-        Ok(c_str) => c_str.into_raw(),
-        Err(_) => null_mut(),
-    }
-}
-
-/// Appends a C string to the end of a Str.
-///
-/// # Parameters
-///
-/// * `str` - A pointer to a valid Str instance that will be modified
-/// * `c_str` - A null-terminated C string to append
-///
-/// # Safety
-///
-/// The caller must ensure that:
-/// * `str` is a valid pointer to a Str instance
-/// * `c_str` is a valid pointer to a null-terminated C string
-/// * `c_str` points to a valid UTF-8 encoded string
-/// * The memory referenced by both pointers remains valid for the duration of this call
-///
-/// Undefined behavior will occur if any of these conditions are violated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_append(str: *mut Str, c_str: *const c_char) {
-    let c_str = unsafe { core::ffi::CStr::from_ptr(c_str) };
-    unsafe { (*str).append(c_str.to_str().unwrap()) }
-}
-
 /// Concatenates two Str instances.
 ///
 /// # Parameters
@@ -159,7 +81,7 @@ pub unsafe extern "C" fn waterui_str_concat(str1: *const Str, str2: *const Str) 
     (s1.clone() + s2.as_str()).into_ffi()
 }
 
-/// Creates a Str from a byte array.
+/// Creates a Str by copying a byte array.
 ///
 /// # Parameters
 ///
@@ -180,9 +102,11 @@ pub unsafe extern "C" fn waterui_str_concat(str1: *const Str, str2: *const Str) 
 /// This function uses `from_utf8_unchecked` internally, so providing invalid UTF-8 will result
 /// in undefined behavior.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_str_from_bytes(bytes: *const c_char, len: c_uint) -> *mut WuiStr {
-    let slice = unsafe { core::slice::from_raw_parts(bytes as *const u8, len as usize) };
-    unsafe { Str::from(core::str::from_utf8_unchecked(slice)).into_ffi() }
+pub unsafe extern "C" fn waterui_str_from_bytes(bytes: *const u8, len: usize) -> *mut WuiStr {
+    let slice = unsafe { core::slice::from_raw_parts(bytes, len) };
+    // Warning: This slice is temporarily borrowed from foreign code.
+    let vec = slice.to_vec();
+    unsafe { Str::from_utf8_unchecked(vec).into_ffi() }
 }
 
 /// Gets a pointer to the raw UTF-8 bytes of a Str.
