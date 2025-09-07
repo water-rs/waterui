@@ -12,7 +12,7 @@ categories = ["text-processing", "data-structures"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"], optional = true }
-
+nami = { workspace = true }
 
 [features]
 default = []
