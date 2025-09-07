@@ -44,3 +44,5 @@ pub extern "C" fn waterui_empty_id() -> WuiTypeId {
 pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
     core::any::TypeId::of::<waterui::component::layout::spacer::Spacer>().into_ffi()
 }
+
+pub mod progress;
