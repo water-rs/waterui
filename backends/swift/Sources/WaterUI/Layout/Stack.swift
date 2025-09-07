@@ -31,9 +31,9 @@ extension StackMode{
 extension WuiArray_____WuiAnyView{
     func toArray() -> Array<OpaquePointer?>{
         let array = Array(UnsafeBufferPointer<OpaquePointer?>(start: self.head, count: Int(self.len)))
-        let array2 = array
-        //waterui_free_anyview_array_without_free_elements(self) TODO: Free memory here
-        return array2
+        // Free only the Rust-allocated buffer; do not free elements
+        waterui_free_anyview_array_without_free_elements(self)
+        return array
     }
 }
 
