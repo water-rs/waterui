@@ -2,292 +2,6 @@
 //!
 //! This crate provides a comprehensive form system for `WaterUI` applications with ergonomic
 //! macros and type-safe form building capabilities.
-//!
-//! ## Quick Start
-//!
-//! The easiest way to create forms is using the `#[derive(FormBuilder)]` macro:
-//!
-//! ```rust
-//! use waterui_form::FormBuilder;
-//! use waterui_core::View;
-//!
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! pub struct LoginForm {
-//!     /// The user's username
-//!     pub username: String, // will be a text field
-//!     /// The user's password  
-//!     pub password: String, // will be a text field with password mode
-//!     /// Whether to remember the user
-//!     pub remember_me: bool, // will be a toggle
-//!     /// The user's age
-//!     pub age: i32, // will be a stepper
-//! }
-//!
-//! fn login_view() -> impl View {
-//!     let form_binding = LoginForm::binding();
-//!     form(&form_binding)
-//! }
-//! ```
-//!
-//! ## Type-to-Component Mapping
-//!
-//! The `FormBuilder` derive macro automatically maps Rust types to appropriate form components:
-//!
-//! | Rust Type | Form Component | Description |
-//! |-----------|----------------|-------------|
-//! | `String`, `&str` | [`TextField`] | Single-line text input |
-//! | `bool` | [`Toggle`] | On/off switch |
-//! | `i32`, `i64`, etc. | [`Stepper`] | Numeric input with +/- buttons |
-//! | `f32`, `f64` | [`Slider`] | Slider with 0.0-1.0 range |
-//! | [`Color`](waterui_core::Color) | [`ColorPicker`](picker::ColorPicker) | Color selection widget |
-//!
-//! ## Advanced Usage
-//!
-//! ### Custom Form Layouts
-//!
-//! You can compose forms with custom layouts by implementing [`FormBuilder`] manually:
-//!
-//! ```rust
-//! use waterui_form::{FormBuilder, TextField, Toggle};
-//! use waterui_core::{Binding, View};
-//! use waterui_layout::{hstack, vstack};
-//!
-//! struct CustomForm {
-//!     name: String,
-//!     active: bool,
-//! }
-//!
-//! impl FormBuilder for CustomForm {
-//!     type View = VStack;
-//!
-//!     fn view(binding: &Binding<Self>) -> Self::View {
-//!         vstack((
-//!             TextField::new(&binding.name),
-//!             hstack((
-//!                 text!("Active:"),
-//!                 Toggle::new(&binding.active),
-//!             ))
-//!         ))
-//!     }
-//! }
-//! ```
-//!
-//! ### Secure Fields
-//!
-//! For sensitive data like passwords, use [`SecureField`]:
-//!
-//! ```rust
-//! use waterui_form::{SecureField, secure};
-//! use waterui_core::{Binding, View};
-//!
-//! fn password_form() -> impl View {
-//!     let password_binding = Binding::<String>::default();
-//!     secure(&password_binding)
-//! }
-//! ```
-//!
-//! ## Form Validation
-//!
-//! Forms integrate seamlessly with `WaterUI`'s reactive state system. Use bindings
-//! to access form values and implement validation logic:
-//!
-//! ```rust
-//! use waterui_form::FormBuilder;
-//! use waterui_core::{Binding, View};
-//! use waterui_text::text;
-//!
-//! #[derive(Default, Clone, FormBuilder)]
-//! struct ValidatedForm {
-//!     email: String,
-//!     age: i32,
-//! }
-//!
-//! fn validated_form_view() -> impl View {
-//!     let form_binding = ValidatedForm::binding();
-//!     
-//!     vstack((
-//!         form(&form_binding),
-//!         // Add validation feedback
-//!         text!(
-//!             if form_binding.email.get().contains('@') {
-//!                 "Valid email"
-//!             } else {
-//!                 "Please enter a valid email"
-//!             }
-//!         ),
-//!     ))
-//! }
-//! ```
-//!
-//! ## Complete Examples
-//!
-//! ### E-commerce Product Form
-//!
-//! ```rust
-//! use waterui_form::{FormBuilder, form};
-//! use waterui_core::{Binding, View, Color};
-//! use waterui_layout::vstack;
-//! use waterui_text::text;
-//!
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! struct ProductForm {
-//!     /// Product name
-//!     name: String,
-//!     /// Product description
-//!     description: String,
-//!     /// Price in cents
-//!     price_cents: i32,
-//!     /// Discount percentage (0.0 to 1.0)
-//!     discount: f32,
-//!     /// Product is currently active
-//!     active: bool,
-//!     /// Brand color theme
-//!     brand_color: Color,
-//! }
-//!
-//! fn product_editor() -> impl View {
-//!     let form_binding = ProductForm::binding();
-//!
-//!     vstack((
-//!         text!("Product Editor"),
-//!         form(&form_binding),
-//!         // Real-time preview
-//!         vstack((
-//!             text!(format!("Name: {}", form_binding.name.get())),
-//!             text!(format!("Price: ${:.2}", form_binding.price_cents.get() as f32 / 100.0)),
-//!             text!(format!("Discount: {:.0}%", form_binding.discount.get() * 100.0)),
-//!             text!(format!("Status: {}",
-//!                 if form_binding.active.get() { "Active" } else { "Inactive" }
-//!             )),
-//!         ))
-//!     ))
-//! }
-//! ```
-//!
-//! ### User Settings with Validation
-//!
-//! ```rust
-//! # use waterui_form::{FormBuilder, form};
-//! # use waterui_core::{Binding, View};
-//! # use waterui_layout::vstack;
-//! # use waterui_text::text;
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! struct UserSettings {
-//!     /// Display name (2-50 characters)
-//!     display_name: String,
-//!     /// Email address for notifications
-//!     email: String,
-//!     /// Age (must be 13+)
-//!     age: i32,
-//!     /// Maximum file upload size (MB)
-//!     max_upload_mb: i32,
-//!     /// Enable email notifications
-//!     email_notifications: bool,
-//!     /// Enable push notifications
-//!     push_notifications: bool,
-//!     /// Theme opacity (0.0 = transparent, 1.0 = opaque)
-//!     theme_opacity: f32,
-//! }
-//!
-//! fn settings_form_with_validation() -> impl View {
-//!     let settings_binding = UserSettings::binding();
-//!
-//!     vstack((
-//!         text!("Account Settings"),
-//!         form(&settings_binding),
-//!         
-//!         // Validation feedback
-//!         text!(
-//!             validate_settings(&settings_binding.get())
-//!         ),
-//!     ))
-//! }
-//!
-//! fn validate_settings(settings: &UserSettings) -> &'static str {
-//!     if settings.display_name.len() < 2 {
-//!         "Display name too short"
-//!     } else if settings.age < 13 {
-//!         "Must be 13 or older"
-//!     } else if !settings.email.contains('@') {
-//!         "Please enter a valid email"
-//!     } else if settings.max_upload_mb > 100 {
-//!         "Upload limit cannot exceed 100MB"
-//!     } else {
-//!         "All settings are valid ✓"
-//!     }
-//! }
-//! ```
-//!
-//! ### Multi-step Form with State Management  
-//!
-//! ```rust
-//! # use waterui_form::{FormBuilder, form};
-//! # use waterui_core::{Binding, View};
-//! # use waterui_layout::{vstack, hstack};
-//! # use waterui_text::text;
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! struct PersonalInfo {
-//!     /// First name
-//!     first_name: String,
-//!     /// Last name  
-//!     last_name: String,
-//!     /// Date of birth (age)
-//!     age: i32,
-//! }
-//!
-//! #[derive(Default, Clone, Debug, FormBuilder)]
-//! struct ContactInfo {
-//!     /// Email address
-//!     email: String,
-//!     /// Phone number
-//!     phone: String,
-//!     /// Preferred contact method
-//!     prefer_email: bool, // true = email, false = phone
-//! }
-//!
-//! #[derive(Default, Clone, Debug)]
-//! struct RegistrationState {
-//!     personal: PersonalInfo,
-//!     contact: ContactInfo,
-//!     current_step: i32,
-//! }
-//!
-//! fn multi_step_registration() -> impl View {
-//!     let state_binding = Binding::new(RegistrationState::default());
-//!
-//!     vstack((
-//!         text!(format!("Step {} of 2", state_binding.current_step.get() + 1)),
-//!         
-//!         match state_binding.current_step.get() {
-//!             0 => vstack((
-//!                 text!("Personal Information"),
-//!                 form(&state_binding.personal),
-//!             )),
-//!             1 => vstack((
-//!                 text!("Contact Information"),
-//!                 form(&state_binding.contact),
-//!             )),
-//!             _ => text!("Registration Complete!"),
-//!         },
-//!
-//!         // Navigation buttons
-//!         hstack((
-//!             if state_binding.current_step.get() > 0 {
-//!                 // Previous button (implementation depends on button component)
-//!                 text!("← Previous")
-//!             } else {
-//!                 text!("")
-//!             },
-//!             if state_binding.current_step.get() < 2 {
-//!                 // Next button (implementation depends on button component)  
-//!                 text!("Next →")
-//!             } else {
-//!                 text!("Submit")
-//!             },
-//!         ))
-//!     ))
-//! }
-//! ```
 
 #![no_std]
 extern crate alloc;
@@ -312,7 +26,7 @@ pub mod picker;
 pub mod stepper;
 #[doc(inline)]
 pub use stepper::{Stepper, stepper};
-use waterui_core::{Binding, Color, Str, View};
+use waterui_core::{AnyView, Binding, Color, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
 ///
@@ -375,7 +89,7 @@ use waterui_core::{Binding, Color, Str, View};
 /// ```rust
 /// # use waterui_form::FormBuilder;
 /// # use waterui_core::{Binding, View};
-/// # #[derive(Default, Clone, FormBuilder)]
+/// # #[derive(Default, Clone, Project, FormBuilder)]
 /// # struct MyForm { name: String }
 /// fn reactive_example() -> impl View {
 ///     let form_binding = MyForm::binding();
@@ -383,7 +97,7 @@ use waterui_core::{Binding, Color, Str, View};
 ///     // Form updates are immediately reflected in the binding
 ///     vstack((
 ///         form(&form_binding),
-///         text!(format!("Hello, {}!", form_binding.name.get())),
+///         text!("Hello, {}!", form_binding.project().name),
 ///     ))
 /// }
 /// ```
@@ -407,7 +121,7 @@ pub trait FormBuilder: Sized {
     /// # Returns
     ///
     /// A view that renders the form's UI components, automatically bound to the data
-    fn view(binding: &Binding<Self>) -> Self::View;
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View;
 
     /// Creates a new binding with the default value for this form.
     ///
@@ -433,21 +147,70 @@ pub trait FormBuilder: Sized {
     }
 }
 
-macro_rules! impl_form_builder {
-    ($ty:ty,$view:ty) => {
-        impl FormBuilder for $ty {
-            type View = $view;
-            fn view(binding: &Binding<Self>) -> Self::View {
-                <$view>::new(binding)
-            }
+// TextField has prompt, so handle it specially
+impl FormBuilder for Str {
+    type View = TextField;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        let mut field = TextField::new(binding).label(label);
+        if !placeholder.is_empty() {
+            field = field.prompt(placeholder);
         }
-    };
+        field
+    }
 }
 
-impl_form_builder!(Str, TextField);
-impl_form_builder!(i32, Stepper);
-impl_form_builder!(bool, Toggle);
-impl_form_builder!(Color, picker::ColorPicker);
+// String also uses TextField with prompt
+impl FormBuilder for alloc::string::String {
+    type View = TextField;
+
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        use alloc::string::ToString;
+        use nami::Binding as NamiBinding;
+        // Map String to Str binding
+        let str_binding = NamiBinding::mapping(binding, Str::from, |binding, str_val: Str| {
+            *binding.get_mut() = str_val.to_string();
+        });
+        let mut field = TextField::new(&str_binding).label(label);
+        if !placeholder.is_empty() {
+            field = field.prompt(placeholder);
+        }
+        field
+    }
+}
+
+// Other components don't have prompt
+impl FormBuilder for i32 {
+    type View = Stepper;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        Stepper::new(binding).label(label)
+    }
+}
+
+impl FormBuilder for bool {
+    type View = Toggle;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        Toggle::new(binding).label(label)
+    }
+}
+
+impl FormBuilder for Color {
+    type View = picker::ColorPicker;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        picker::ColorPicker::new(binding).label(label)
+    }
+}
+
+impl FormBuilder for f64 {
+    type View = Slider;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        Slider::new(0.0..=1.0, binding).label(label)
+    }
+}
 
 /// Secure form components for handling sensitive data like passwords.
 pub mod secure;
@@ -528,5 +291,5 @@ pub use secure::{SecureField, secure};
 /// A view that renders interactive form controls for all fields in the bound data structure
 #[must_use]
 pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
-    T::view(binding)
+    T::view(binding, AnyView::default(), Str::default())
 }
