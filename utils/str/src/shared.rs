@@ -22,7 +22,8 @@ impl Shared {
         }
     }
 
-    pub const fn reference_count(&self) -> usize {
+    // Internal: do not expose reference count publicly.
+    const fn reference_count(&self) -> usize {
         self.count.get()
     }
 

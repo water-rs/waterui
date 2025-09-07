@@ -1,3 +1,5 @@
+# waterui-str
+
 A zero-copy string type that can either hold a static reference or a ref-counted owned string.
 
 The `Str` type provides a unified interface for both static string references and dynamically
@@ -28,8 +30,8 @@ let s4 = s2.clone();
 let owned = s2.into_string();
 
 // Static strings don't have reference counts
-assert_eq!(s1.reference_count(), None);
+// reference count is intentionally not exposed
 
 // Owned strings have reference counts
-assert_eq!(s4.reference_count(), Some(1));
+// reference count is intentionally not exposed
 ```

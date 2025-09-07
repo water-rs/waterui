@@ -190,7 +190,7 @@ impl Str {
     ///
     /// let s = Str::from_static("hello");
     /// assert_eq!(s, "hello");
-    /// assert_eq!(s.reference_count(), None); // Static reference
+    /// // Reference count is intentionally not exposed
     /// ```
     #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
@@ -288,32 +288,7 @@ impl Str {
         self.len() == 0
     }
 
-    /// Returns the reference count for owned strings, or `None` for static strings.
-    ///
-    /// This method is primarily useful for testing and debugging purposes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use waterui_str::Str;
-    ///
-    /// let s1 = Str::from("static");
-    /// assert_eq!(s1.reference_count(), None); // Static string
-    ///
-    /// let s2 = Str::from(String::from("owned"));
-    /// assert_eq!(s2.reference_count(), Some(1)); // Owned string
-    ///
-    /// let s3 = s2.clone();
-    /// assert_eq!(s2.reference_count(), Some(2)); // Reference count increased
-    /// assert_eq!(s3.reference_count(), Some(2)); // Both point to same shared data
-    /// ```
-    #[must_use]
-    pub const fn reference_count(&self) -> Option<usize> {
-        match self.as_shared() {
-            Ok(shared) => Some(shared.reference_count()),
-            Err(_) => None,
-        }
-    }
+    // Intentionally no public API exposing reference counts.
 
     /// Converts this `Str` into a `String`.
     ///
@@ -365,7 +340,7 @@ impl Str {
     ///
     /// let s = Str::new();
     /// assert_eq!(s, "");
-    /// assert_eq!(s.reference_count(), None); // Static reference
+    /// // Reference count is intentionally not exposed
     /// ```
     #[must_use]
     pub const fn new() -> Self {
@@ -390,7 +365,7 @@ impl Str {
     /// let bytes = vec![104, 101, 108, 108, 111]; // "hello" in UTF-8
     /// let s = Str::from_utf8(bytes).unwrap();
     /// assert_eq!(s, "hello");
-    /// assert_eq!(s.reference_count(), Some(1)); // Owned string
+    /// // Reference count is intentionally not exposed
     ///
     /// // Invalid UTF-8 sequence
     /// let invalid = vec![0xFF, 0xFF];
@@ -462,7 +437,7 @@ impl From<&'static str> for Str {
     ///
     /// let s = Str::from("hello");
     /// assert_eq!(s, "hello");
-    /// assert_eq!(s.reference_count(), None); // Static reference
+    /// // Reference count is intentionally not exposed
     /// ```
     fn from(value: &'static str) -> Self {
         Self::from_static(value)
@@ -481,7 +456,7 @@ impl From<String> for Str {
     ///
     /// let s = Str::from(String::from("hello"));
     /// assert_eq!(s, "hello");
-    /// assert_eq!(s.reference_count(), Some(1)); // Owned string
+    /// // Reference count is intentionally not exposed
     /// ```
     fn from(value: String) -> Self {
         Self::from_string(value)
@@ -505,7 +480,7 @@ mod tests {
         assert_eq!(s.as_str(), "hello");
         assert_eq!(s.len(), 5);
         assert!(!s.is_empty());
-        assert_eq!(s.reference_count(), None);
+        // no reference count exposed
     }
 
     #[test]
@@ -514,7 +489,7 @@ mod tests {
         assert_eq!(s.as_str(), "hello");
         assert_eq!(s.len(), 5);
         assert!(!s.is_empty());
-        assert_eq!(s.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
@@ -523,7 +498,7 @@ mod tests {
         assert_eq!(s.as_str(), "");
         assert_eq!(s.len(), 0);
         assert!(s.is_empty());
-        assert_eq!(s.reference_count(), None); // Empty string is static
+        // no reference count exposed
     }
 
     #[test]
@@ -533,18 +508,13 @@ mod tests {
 
         assert_eq!(s1.as_str(), "hello");
         assert_eq!(s2.as_str(), "hello");
-        assert_eq!(s1.reference_count(), None);
-        assert_eq!(s2.reference_count(), None);
+        // no reference count exposed
     }
 
     #[test]
     fn test_owned_string_clone() {
         let s1 = Str::from(String::from("hello"));
-        assert_eq!(s1.reference_count(), Some(1));
-
         let s2 = s1.clone();
-        assert_eq!(s1.reference_count(), Some(2));
-        assert_eq!(s2.reference_count(), Some(2));
 
         assert_eq!(s1.as_str(), "hello");
         assert_eq!(s2.as_str(), "hello");
@@ -557,39 +527,31 @@ mod tests {
         let s3 = s1.clone();
         let s4 = s2.clone();
 
-        assert_eq!(s1.reference_count(), Some(4));
-        assert_eq!(s2.reference_count(), Some(4));
-        assert_eq!(s3.reference_count(), Some(4));
-        assert_eq!(s4.reference_count(), Some(4));
+        // no reference count exposed
 
         drop(s4);
-        assert_eq!(s1.reference_count(), Some(3));
-        assert_eq!(s2.reference_count(), Some(3));
-        assert_eq!(s3.reference_count(), Some(3));
+        // no reference count exposed
 
         drop(s3);
         drop(s2);
-        assert_eq!(s1.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
     fn test_reference_counting_drop() {
         let s1 = Str::from(String::from("hello"));
-        assert_eq!(s1.reference_count(), Some(1));
 
         {
             let s2 = s1.clone();
-            assert_eq!(s1.reference_count(), Some(2));
-            assert_eq!(s2.reference_count(), Some(2));
         } // s2 is dropped here
 
-        assert_eq!(s1.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
     fn test_into_string_unique() {
         let s = Str::from(String::from("hello"));
-        assert_eq!(s.reference_count(), Some(1));
+        // no reference count exposed
 
         let string = s.into_string();
         assert_eq!(string, "hello");
@@ -599,11 +561,10 @@ mod tests {
     fn test_into_string_shared() {
         let s1 = Str::from(String::from("hello"));
         let s2 = s1.clone();
-        assert_eq!(s1.reference_count(), Some(2));
 
         let string = s1.into_string();
         assert_eq!(string, "hello");
-        assert_eq!(s2.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
@@ -618,7 +579,6 @@ mod tests {
         let bytes = vec![104, 101, 108, 108, 111]; // "hello"
         let s = Str::from_utf8(bytes).unwrap();
         assert_eq!(s.as_str(), "hello");
-        assert_eq!(s.reference_count(), Some(1));
     }
 
     #[test]
@@ -632,7 +592,7 @@ mod tests {
         let bytes = vec![104, 101, 108, 108, 111]; // "hello"
         let s = unsafe { Str::from_utf8_unchecked(bytes) };
         assert_eq!(s.as_str(), "hello");
-        assert_eq!(s.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
@@ -640,17 +600,14 @@ mod tests {
         let mut s = Str::from("hello");
         s.append(" world");
         assert_eq!(s.as_str(), "hello world");
-        assert_eq!(s.reference_count(), Some(1));
     }
 
     #[test]
     fn test_append_static_to_owned() {
         let mut s = Str::from_static("hello");
-        assert_eq!(s.reference_count(), None);
 
         s.append(" world");
         assert_eq!(s.as_str(), "hello world");
-        assert_eq!(s.reference_count(), Some(1));
     }
 
     #[test]
@@ -671,7 +628,7 @@ mod tests {
         let s = Str::from(String::new());
         assert_eq!(s.as_str(), "");
         assert!(s.is_empty());
-        assert_eq!(s.reference_count(), None); // Empty strings use static reference
+        // no reference count exposed
     }
 
     // Memory safety tests designed for Miri
@@ -726,15 +683,15 @@ mod tests {
             clones.push(original.clone());
         }
 
-        assert_eq!(original.reference_count(), Some(51));
+        // no reference count exposed
 
         // Drop half the clones
         clones.truncate(25);
-        assert_eq!(original.reference_count(), Some(26));
+        // no reference count exposed
 
         // Drop all clones
         clones.clear();
-        assert_eq!(original.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
@@ -743,20 +700,19 @@ mod tests {
         let s2 = s1.clone();
         let s3 = s1.clone();
 
-        assert_eq!(s1.reference_count(), Some(3));
+        // no reference count exposed
 
         // Converting to string should not affect other references
         let string = s1.into_string();
         assert_eq!(string, "unique test");
-        assert_eq!(s2.reference_count(), Some(2));
-        assert_eq!(s3.reference_count(), Some(2));
+        // no reference count exposed
     }
 
     #[test]
     fn test_memory_safety_unique_into_string() {
         // Test that unique references properly transfer ownership
         let s = Str::from(String::from("unique"));
-        assert_eq!(s.reference_count(), Some(1));
+        // no reference count exposed
 
         let string = s.into_string();
         assert_eq!(string, "unique");
@@ -777,39 +733,37 @@ mod tests {
             owned_clones.push(owned_str.clone());
         }
 
-        assert_eq!(static_str.reference_count(), None);
-        assert_eq!(owned_str.reference_count(), Some(101));
+        // no reference count exposed
 
         // Verify all clones work correctly
         for clone in &static_clones {
             assert_eq!(clone.as_str(), "static");
-            assert_eq!(clone.reference_count(), None);
+            // no reference count exposed
         }
 
         for clone in &owned_clones {
             assert_eq!(clone.as_str(), "owned");
-            assert_eq!(clone.reference_count(), Some(101));
+            // no reference count exposed
         }
     }
 
     #[test]
     fn test_memory_safety_mixed_operations() {
         let mut s = Str::from_static("hello");
-        assert_eq!(s.reference_count(), None);
+        // no reference count exposed
 
         // Convert to owned by appending
         s.append(" world");
-        assert_eq!(s.reference_count(), Some(1));
+        // no reference count exposed
 
         // Clone the owned string
         let s2 = s.clone();
-        assert_eq!(s.reference_count(), Some(2));
-        assert_eq!(s2.reference_count(), Some(2));
+        // no reference count exposed
 
         // Convert back to string
         let string = s.into_string();
         assert_eq!(string, "hello world");
-        assert_eq!(s2.reference_count(), Some(1));
+        // no reference count exposed
     }
 
     #[test]
@@ -826,10 +780,7 @@ mod tests {
         assert!(empty4.is_empty());
 
         // All empty strings should be static references
-        assert_eq!(empty1.reference_count(), None);
-        assert_eq!(empty2.reference_count(), None);
-        assert_eq!(empty3.reference_count(), None);
-        assert_eq!(empty4.reference_count(), None);
+        // no reference count exposed
     }
 
     #[test]
@@ -837,11 +788,10 @@ mod tests {
         // Test with larger strings to ensure proper memory handling
         let large_content = "x".repeat(10000);
         let s1 = Str::from(large_content.clone());
-        assert_eq!(s1.reference_count(), Some(1));
+        // no reference count exposed
 
         let s2 = s1.clone();
-        assert_eq!(s1.reference_count(), Some(2));
-        assert_eq!(s2.reference_count(), Some(2));
+        // no reference count exposed
 
         assert_eq!(s1.len(), 10000);
         assert_eq!(s2.len(), 10000);
@@ -860,7 +810,7 @@ mod tests {
             handles.push(base.clone());
         }
 
-        assert_eq!(base.reference_count(), Some(1001));
+        // no reference count exposed
 
         // Process in chunks, dropping some while keeping others
         for chunk in handles.chunks_mut(100) {
@@ -881,13 +831,11 @@ mod tests {
         });
 
         // Verify reference count updated correctly
-        let expected_count = handles.len() + 1; // +1 for base
-        assert_eq!(base.reference_count(), Some(expected_count));
+        let _expected_count = handles.len() + 1; // +1 for base
 
         // Verify all remaining handles are valid
         for handle in &handles {
             assert_eq!(handle.as_str(), "base");
-            assert_eq!(handle.reference_count(), Some(expected_count));
         }
     }
 
@@ -900,7 +848,7 @@ mod tests {
         let s4 = s2.clone();
         let s5 = s3.clone();
 
-        assert_eq!(s1.reference_count(), Some(5));
+        // no reference count exposed
 
         // Drop in different orders across multiple test runs
         {
@@ -911,19 +859,19 @@ mod tests {
             // temp1 and temp2 dropped first
         }
 
-        assert_eq!(s1.reference_count(), Some(5));
+        // no reference count exposed
 
         drop(s5); // Drop s5 first
-        assert_eq!(s1.reference_count(), Some(4));
+        // no reference count exposed
 
         drop(s2); // Drop s2 (middle)
-        assert_eq!(s1.reference_count(), Some(3));
+        // no reference count exposed
 
         drop(s1); // Drop original
-        assert_eq!(s3.reference_count(), Some(2));
+        // no reference count exposed
 
         drop(s4); // Drop s4
-        assert_eq!(s3.reference_count(), Some(1));
+        // no reference count exposed
 
         // s3 is the last one standing
         assert_eq!(s3.as_str(), "original");
@@ -972,7 +920,6 @@ mod tests {
             // Verify all remaining references are valid
             for r in &refs {
                 assert_eq!(r.as_str(), "alternating");
-                assert_eq!(r.reference_count(), Some(refs.len()));
             }
         }
     }

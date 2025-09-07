@@ -398,7 +398,7 @@ impl Str {
     pub const fn from_static(s: &'static str) -> Self;
     pub fn from_utf8(bytes: Vec<u8>) -> Result<Self, FromUtf8Error>;
     pub fn as_str(&self) -> &str;
-    pub fn reference_count(&self) -> Option<usize>;
+    // intentionally not exposed: reference counts are private
     pub fn into_string(self) -> String;
     pub fn append(&mut self, s: impl AsRef<str>);
 }
