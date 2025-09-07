@@ -9,9 +9,10 @@ class WuiStr {
     }
 
     init(string: String) {
-        self.inner = string.utf8.withContiguousStorageIfAvailable { head in
-            return waterui_str_from_bytes(head.baseAddress, UInt32(string.count))
-        }!
+        var buf = string
+        self.inner = buf.withUTF8 { head in
+            return waterui_str_from_bytes(head.baseAddress, UInt32(head.count))
+        }
     }
 
     func toString() -> String {
@@ -55,6 +56,8 @@ public struct App:View{
     }
 
     public var body: some View {
-        WaterUI.AnyView(anyview: waterui_main(), env: env)
+        VStack{
+            WaterUI.AnyView(anyview: waterui_main(), env: env)
+        }
     }
 }
