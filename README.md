@@ -38,7 +38,7 @@ pub fn counter() -> impl View {
 - Vue-like fine-grained reactivity - Allows efficient updates without virtual DOM
 - Type-safe from top to bottom - Leverage Rust's type system fully
 - Declarative & reactive - Familiar to SwiftUI/React developers
-- Cross-platform - Windows, Linux, macOS, iOS, Android (Web coming soon)
+- Cross-platform - Supports multiple backends (gtk4 backend and swiftui backend are ready now)
 
 ## 🧑‍🏫 Demo (SwiftUI backend)
 
