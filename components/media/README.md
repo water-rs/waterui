@@ -34,13 +34,12 @@ Display and control video playback with reactive volume control:
 
 ```rust
 use waterui_media::{Video, VideoPlayer};
-use waterui_core::{binding, Binding};
+use nami::binding;
 
 // Create a video from URL
 let video = Video::new("https://example.com/video.mp4");
 
-// The video automatically creates a player when used as a View
-let video_view = video.view();
+// When used as a View, `Video` renders via `VideoPlayer`
 
 // Or create a player directly with custom configuration
 let mut volume = binding(0.7); // 70% volume
@@ -71,10 +70,10 @@ let source = LivePhotoSource::new(
 let live_photo = LivePhoto::new(source);
 
 // Can also use reactive data
-use waterui_core::compute;
-let reactive_source = compute(|| {
+use nami::s;
+let reactive_source = s!(
     LivePhotoSource::new("dynamic_photo.jpg".into(), "dynamic_video.mov".into())
-});
+);
 let reactive_live_photo = LivePhoto::new(reactive_source);
 ```
 
@@ -104,12 +103,12 @@ Platform-native media selection interface:
 ```rust
 #[cfg(feature = "media-picker")]
 use waterui_media::picker::{MediaPicker, MediaFilter, Selected};
-use waterui_core::{compute, binding};
+use nami::{binding, s};
 
 #[cfg(feature = "media-picker")]
 {
     let selection = binding(Selected(0));
-    let filter = compute(|| MediaFilter::Image);
+    let filter = s!(MediaFilter::Image);
     
     let picker = MediaPicker::new()
         .selection(selection.clone())
@@ -155,7 +154,7 @@ let any_media = MediaFilter::Any(vec![
 All components integrate with WaterUI's reactive system:
 
 ```rust
-use waterui_core::{binding, compute};
+use nami::{binding, s};
 use waterui_media::{Photo, Video, VideoPlayer};
 
 // Reactive image URL
@@ -166,9 +165,7 @@ let photo = Photo::new(image_url.clone());
 image_url.set("new_image.jpg".into());
 
 // Computed values
-let video_url = compute(|| {
-    format!("video_{}.mp4", get_current_id())
-});
+let video_url = s!(format!("video_{}.mp4", get_current_id()));
 let video = Video::new(video_url);
 
 // Reactive volume control
@@ -239,18 +236,19 @@ The media components are built using WaterUI's configuration pattern:
 
 ```rust
 use waterui_media::{Photo, Media};
-use waterui_layout::vstack;
+use waterui_layout::stack::vstack;
 use waterui_text::text;
-use waterui_core::{binding, View, Environment};
+use nami::binding;
+use waterui_core::{View, Environment};
 
 struct PhotoGallery {
     photos: Vec<String>,
-    current_index: binding<usize>,
+    current_index: nami::Binding<usize>,
 }
 
 impl View for PhotoGallery {
     fn body(self, _env: &Environment) -> impl View {
-        vstack([
+        vstack((
             // Main photo display
             Photo::new(&self.photos[self.current_index.get()])
                 .placeholder(text("Loading...")),
@@ -260,7 +258,7 @@ impl View for PhotoGallery {
                 self.current_index.get() + 1, 
                 self.photos.len()
             ),
-        ])
+        ))
     }
 }
 ```
@@ -269,22 +267,23 @@ impl View for PhotoGallery {
 
 ```rust
 use waterui_media::{Video, VideoPlayer};
-use waterui_layout::vstack;
-use waterui_core::{Button, binding, View, Environment};
+use waterui_layout::stack::vstack;
+use nami::binding;
+use waterui::{View, Environment};
+use waterui::component::button;
 
 fn video_with_controls(video_url: &str) -> impl View {
     let muted = binding(false);
     let player = VideoPlayer::new(Video::new(video_url))
         .muted(&muted);
     
-    vstack([
+    vstack((
         player,
-        Button::new("Toggle Mute")
-            .on_press({
-                let muted = muted.clone();
-                move |_| muted.set(!muted.get())
-            }),
-    ])
+        button("Toggle Mute").action({
+            let muted = muted.clone();
+            move |_| muted.set(!muted.get())
+        }),
+    ))
 }
 ```
 
@@ -292,12 +291,12 @@ fn video_with_controls(video_url: &str) -> impl View {
 
 ```rust
 use waterui_media::{Media, LivePhotoSource};
-use waterui_core::{compute, binding};
+use nami::{binding, s};
 
 fn dynamic_media_view() -> impl View {
     let media_type = binding("image");
     
-    let media = compute(move || {
+    let media = s!(
         match media_type.get().as_str() {
             "image" => Media::Image("photo.jpg".into()),
             "video" => Media::Video("video.mp4".into()),
@@ -307,7 +306,7 @@ fn dynamic_media_view() -> impl View {
             )),
             _ => Media::Image("default.jpg".into()),
         }
-    });
+    );
     
     media
 }

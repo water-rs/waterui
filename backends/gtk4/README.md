@@ -16,12 +16,13 @@ A GTK4 backend implementation for the WaterUI framework, enabling native desktop
 Add this to your `Cargo.toml`:
 
 ```toml
+# In this repository, use path dependencies. When publishing, use versions instead.
 [dependencies]
-waterui-gtk4 = "0.1.0"
-waterui-core = "0.1.0"
-waterui-text = "0.1.0"
-waterui-form = "0.1.0"
-waterui-layout = "0.1.0"
+waterui-gtk4 = { path = "../../backends/gtk4" }
+waterui-core = { path = "../../core" }
+waterui-text = { path = "../../components/text" }
+waterui-form = { path = "../../components/form" }
+waterui-layout = { path = "../../components/layout" }
 ```
 
 ## Quick Start
@@ -29,7 +30,7 @@ waterui-layout = "0.1.0"
 ```rust
 use waterui_gtk4::{init, Gtk4App};
 use waterui_text::text;
-use waterui_layout::vstack;
+use waterui_layout::stack::vstack;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize GTK4
@@ -40,11 +41,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run with your UI
     let _exit_code = app.run(|| {
-        vstack([
+        vstack((
             text("Hello, GTK4!"),
             text("Built with WaterUI"),
-        ])
-        .spacing(10.0)
+        ))
+        .padding()
     });
 
     Ok(())
@@ -80,14 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 See the `examples/` directory for complete working examples:
 
-- `simple.rs` - Basic text and form widgets
-- `form.rs` - Comprehensive form with all input types
-- `layout.rs` - Layout examples with stacks and grids
+- `shapes.rs` - Basic shapes and text
+- `form.rs` - Form inputs (text, toggle, slider, stepper, color)
 
 Run examples with:
 ```bash
-cargo run --example simple
 cargo run --example form
+cargo run --example shapes
 ```
 
 ## Architecture
