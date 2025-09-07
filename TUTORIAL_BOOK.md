@@ -2117,7 +2117,7 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_counter_increment() {
+    fn test_counter_increment(1) {
         let counter = binding(0);
         
         // Test initial value
