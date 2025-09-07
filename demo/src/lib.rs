@@ -4,7 +4,7 @@ use waterui::{
         divder::Divider,
         form::{FormBuilder, Slider, form, stepper},
         layout::{
-            spacer,
+            scroll, spacer,
             stack::{hstack, vstack},
         },
         progress::{loading, progress},
@@ -24,7 +24,7 @@ struct UserProfile {
     email: String,
     age: i32,
     notifications: bool,
-    theme_brightness: f32,
+    theme_brightness: f64,
 }
 
 pub fn main() -> impl View {
@@ -33,7 +33,7 @@ pub fn main() -> impl View {
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    vstack((
+    scroll((
         // App header
         vstack((
             text("WaterUI Demo").size(24.0),
@@ -64,8 +64,8 @@ pub fn main() -> impl View {
         // Interactive controls
         vstack((
             text("Controls").size(18.0),
-            hstack(("Progress: ", Slider::new(0.0..=1.0, &progress_value))),
-            progress(progress_value.get()),
+            Slider::new(0.0..=1.0, &progress_value),
+            progress(progress_value),
             loading(),
         )),
         spacer(),
