@@ -49,30 +49,10 @@ clippy.pedantic = "warn"
 clippy.nursery = "warn"
 clippy.cargo = "warn"
 
-# Optimization profiles
-[profile.dev]
-# Faster debug builds
-opt-level = 1
-debug = 1
-incremental = true
-
-[profile.release]
-# Optimize for size and speed
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-panic = "abort"
-
-# Fast development profile
-[profile.dev-fast] 
-inherits = "dev"
-opt-level = 1
-debug = 0
-
 
 [workspace.dependencies]
-native-executor = "0.3.1"
-nami = { version = "0.4.0" }
+native-executor = "0.4.0"
+nami = { version = "0.5.0" }
 
 waterui-core = { path = "core" }
 waterui-str = { path = "utils/str" }
@@ -88,9 +68,9 @@ waterui-gtk4 = { path = "backends/gtk4" }
 waterui-web = { path = "backends/web" }
 waterui-render-utils = { path = "render_utils" }
 waterui = { path = "." }
-
 serde = { version = "1.0", default-features = false }
-typeshare = "1.0"
+time = "0.3"
+
 
 [dependencies]
 nami.workspace = true
@@ -103,7 +83,6 @@ waterui-navigation.workspace = true
 waterui-form.workspace = true
 waterui-canvas.workspace = true
 native-executor.workspace = true
-typeshare.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 
