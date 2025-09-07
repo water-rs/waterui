@@ -3,36 +3,31 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef enum WuiAlignment
-{
+typedef enum WuiAlignment {
   WuiAlignment_Default,
   WuiAlignment_Leading,
   WuiAlignment_Center,
   WuiAlignment_Trailing,
 } WuiAlignment;
 
-typedef enum WuiAnimation
-{
+typedef enum WuiAnimation {
   WuiAnimation_Default,
   WuiAnimation_None,
 } WuiAnimation;
 
-typedef enum WuiAxis
-{
+typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
   WuiAxis_All,
 } WuiAxis;
 
-typedef enum WuiColorSpace
-{
+typedef enum WuiColorSpace {
   WuiColorSpace_Srgb,
   WuiColorSpace_P3,
   WuiColorSpace_Invalid,
 } WuiColorSpace;
 
-typedef enum WuiKeyboardType
-{
+typedef enum WuiKeyboardType {
   WuiKeyboardType_Text,
   WuiKeyboardType_Secure,
   WuiKeyboardType_Email,
@@ -41,8 +36,12 @@ typedef enum WuiKeyboardType
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
-typedef enum WuiStackMode
-{
+enum WuiProgressStyle {
+  WuiProgressStyle_Linear,
+  WuiProgressStyle_Circular,
+};
+
+typedef enum WuiStackMode {
   WuiStackMode_Vertical,
   WuiStackMode_Horizonal,
   WuiStackMode_Layered,
@@ -227,6 +226,8 @@ typedef struct WuiEnv WuiEnv;
 
 typedef struct WuiStr WuiStr;
 
+typedef struct WuiTabContent WuiTabContent;
+
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
@@ -236,8 +237,7 @@ typedef struct WuiWatcherMetadata WuiWatcherMetadata;
  *
  * This struct is used for passing TypeId across FFI boundaries.
  */
-typedef struct WuiTypeId
-{
+typedef struct WuiTypeId {
   uint64_t inner[2];
 } WuiTypeId;
 
@@ -246,20 +246,17 @@ typedef struct WuiTypeId
  *
  * This type is used as an FFI-compatible representation of Rust collections.
  */
-typedef struct WuiArray_____WuiAnyView
-{
+typedef struct WuiArray_____WuiAnyView {
   struct WuiAnyView **head;
   uintptr_t len;
 } WuiArray_____WuiAnyView;
 
-typedef struct WuiStack
-{
+typedef struct WuiStack {
   struct WuiArray_____WuiAnyView contents;
   enum WuiStackMode mode;
 } WuiStack;
 
-typedef struct WuiGridRow
-{
+typedef struct WuiGridRow {
   struct WuiArray_____WuiAnyView columns;
 } WuiGridRow;
 
@@ -268,36 +265,31 @@ typedef struct WuiGridRow
  *
  * This type is used as an FFI-compatible representation of Rust collections.
  */
-typedef struct WuiArray_WuiGridRow
-{
+typedef struct WuiArray_WuiGridRow {
   struct WuiGridRow *head;
   uintptr_t len;
 } WuiArray_WuiGridRow;
 
-typedef struct WuiGrid
-{
+typedef struct WuiGrid {
   enum WuiAlignment alignment;
   double h_space;
   double v_space;
   struct WuiArray_WuiGridRow rows;
 } WuiGrid;
 
-typedef struct WuiScrollView
-{
+typedef struct WuiScrollView {
   struct WuiAnyView *content;
   enum WuiAxis axis;
 } WuiScrollView;
 
-typedef struct WuiOverlay
-{
+typedef struct WuiOverlay {
   struct WuiAnyView *content;
 } WuiOverlay;
 
 /**
  * C representation of a WaterUI button for FFI purposes.
  */
-typedef struct WuiButton
-{
+typedef struct WuiButton {
   /**
    * Pointer to the button's label view
    */
@@ -308,8 +300,7 @@ typedef struct WuiButton
   struct WuiAction *action;
 } WuiButton;
 
-typedef struct WuiLink
-{
+typedef struct WuiLink {
   struct WuiAnyView *label;
   struct Computed_Str *url;
 } WuiLink;
@@ -317,8 +308,7 @@ typedef struct WuiLink
 /**
  * C representation of Text configuration
  */
-typedef struct WuiText
-{
+typedef struct WuiText {
   /**
    * Pointer to the text content computed value
    */
@@ -332,8 +322,7 @@ typedef struct WuiText
 /**
  * C representation of a TextField configuration
  */
-typedef struct WuiTextField
-{
+typedef struct WuiTextField {
   /**
    * Pointer to the text field's label view
    */
@@ -355,8 +344,7 @@ typedef struct WuiTextField
 /**
  * C representation of a Toggle configuration
  */
-typedef struct WuiToggle
-{
+typedef struct WuiToggle {
   /**
    * Pointer to the toggle's label view
    */
@@ -370,8 +358,7 @@ typedef struct WuiToggle
 /**
  * C representation of a range
  */
-typedef struct WuiRange_f64
-{
+typedef struct WuiRange_f64 {
   /**
    * Start of the range
    */
@@ -385,8 +372,7 @@ typedef struct WuiRange_f64
 /**
  * C representation of a Slider configuration
  */
-typedef struct WuiSlider
-{
+typedef struct WuiSlider {
   /**
    * Pointer to the slider's label view
    */
@@ -412,8 +398,7 @@ typedef struct WuiSlider
 /**
  * C representation of a range
  */
-typedef struct WuiRange_i32
-{
+typedef struct WuiRange_i32 {
   /**
    * Start of the range
    */
@@ -427,8 +412,7 @@ typedef struct WuiRange_i32
 /**
  * C representation of a Stepper configuration
  */
-typedef struct WuiStepper
-{
+typedef struct WuiStepper {
   /**
    * Pointer to the value binding
    */
@@ -447,14 +431,12 @@ typedef struct WuiStepper
   struct WuiRange_i32 range;
 } WuiStepper;
 
-typedef struct WuiColorPicker
-{
+typedef struct WuiColorPicker {
   struct WuiAnyView *label;
   struct Binding_Color *value;
 } WuiColorPicker;
 
-typedef struct WuiColor
-{
+typedef struct WuiColor {
   enum WuiColorSpace color_space;
   float red;
   float yellow;
@@ -462,11 +444,10 @@ typedef struct WuiColor
   float opacity;
 } WuiColor;
 
-typedef struct WuiWatcher_WuiColor
-{
+typedef struct WuiWatcher_WuiColor {
   void *data;
-  void (*call)(const void *, struct WuiColor, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiColor, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_WuiColor;
 
 typedef struct WuiStr *Url;
@@ -474,8 +455,7 @@ typedef struct WuiStr *Url;
 /**
  * C representation of Photo configuration
  */
-typedef struct WuiPhoto
-{
+typedef struct WuiPhoto {
   /**
    * The image source URL
    */
@@ -489,8 +469,7 @@ typedef struct WuiPhoto
 /**
  * C representation of VideoPlayer configuration
  */
-typedef struct WuiVideoPlayer
-{
+typedef struct WuiVideoPlayer {
   /**
    * Pointer to the video computed value
    */
@@ -504,54 +483,54 @@ typedef struct WuiVideoPlayer
 /**
  * C representation of LivePhoto configuration
  */
-typedef struct WuiLivePhoto
-{
+typedef struct WuiLivePhoto {
   /**
    * Pointer to the live photo source computed value
    */
   struct Computed_LivePhotoSource *source;
 } WuiLivePhoto;
 
-typedef struct WuiWatcher_____WuiAnyView
-{
+typedef struct WuiWatcher_____WuiAnyView {
   void *data;
-  void (*call)(const void *, struct WuiAnyView *, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiAnyView*, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_____WuiAnyView;
 
-typedef struct WuiWatcher_____WuiStr
-{
+typedef struct WuiProgress {
+  struct WuiAnyView *label;
+  struct WuiAnyView *value_label;
+  struct Computed_f64 *value;
+  enum WuiProgressStyle style;
+} WuiProgress;
+
+typedef struct WuiWatcher_____WuiStr {
   void *data;
-  void (*call)(const void *, struct WuiStr *, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiStr*, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_____WuiStr;
 
-typedef struct WuiWatcher_i32
-{
+typedef struct WuiWatcher_i32 {
   void *data;
-  void (*call)(const void *, int32_t, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, int32_t, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_i32;
 
-typedef struct WuiWatcher_bool
-{
+typedef struct WuiWatcher_bool {
   void *data;
-  void (*call)(const void *, bool, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, bool, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_bool;
 
-typedef struct WuiWatcher_f64
-{
+typedef struct WuiWatcher_f64 {
   void *data;
-  void (*call)(const void *, double, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, double, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_f64;
 
 /**
  * C representation of Font
  */
-typedef struct WuiFont
-{
+typedef struct WuiFont {
   double size;
   bool italic;
   struct WuiColor strikethrough;
@@ -559,30 +538,26 @@ typedef struct WuiFont
   bool bold;
 } WuiFont;
 
-typedef struct WuiWatcher_WuiFont
-{
+typedef struct WuiWatcher_WuiFont {
   void *data;
-  void (*call)(const void *, struct WuiFont, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiFont, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_WuiFont;
 
-typedef struct WuiVideo
-{
+typedef struct WuiVideo {
   Url url;
 } WuiVideo;
 
-typedef struct WuiWatcher_WuiVideo
-{
+typedef struct WuiWatcher_WuiVideo {
   void *data;
-  void (*call)(const void *, struct WuiVideo, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiVideo, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_WuiVideo;
 
 /**
  * C representation of LivePhotoSource
  */
-typedef struct WuiLivePhotoSource
-{
+typedef struct WuiLivePhotoSource {
   /**
    * The image URL
    */
@@ -593,23 +568,20 @@ typedef struct WuiLivePhotoSource
   Url video;
 } WuiLivePhotoSource;
 
-typedef struct WuiWatcher_WuiLivePhotoSource
-{
+typedef struct WuiWatcher_WuiLivePhotoSource {
   void *data;
-  void (*call)(const void *, struct WuiLivePhotoSource, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiLivePhotoSource, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_WuiLivePhotoSource;
 
-typedef struct WuiId
-{
+typedef struct WuiId {
   int32_t inner;
 } WuiId;
 
-typedef struct WuiWatcher_WuiId
-{
+typedef struct WuiWatcher_WuiId {
   void *data;
-  void (*call)(const void *, struct WuiId, const struct Metadata *);
-  void (*drop)(void *);
+  void (*call)(const void*, struct WuiId, const struct Metadata*);
+  void (*drop)(void*);
 } WuiWatcher_WuiId;
 
 /**
@@ -657,6 +629,14 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  */
 struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
 
+/**
+ * Gets the type ID of a view
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to a properly
+ * initialized `WuiAnyView` instance and that it remains valid for the
+ * duration of this function call.
+ */
 struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
 
 /**
@@ -681,6 +661,16 @@ void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
+/**
+ * Frees a WuiArray without dropping its elements.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `arr` is a valid WuiArray that was previously created by Rust code
+ * - The array elements are handled separately and not accessed after this call
+ * - This function is only called once per array
+ */
 void waterui_free_anyview_array_without_free_elements(struct WuiArray_____WuiAnyView arr);
 
 struct WuiTypeId waterui_divider_id(void);
@@ -852,6 +842,16 @@ struct WuiTypeId waterui_navigation_view_id(void);
 struct WuiTypeId waterui_navigation_link_id(void);
 
 /**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_drop_tab_content(struct WuiTabContent *value);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -900,6 +900,15 @@ struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 struct WuiTypeId waterui_dynamic_id(void);
 
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_____WuiAnyView watcher);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_progress_id(void);
 
 /**
  * Drops the FFI value.
@@ -1591,6 +1600,6 @@ struct WuiStr *waterui_str_from_bytes(const char *bytes, unsigned int len);
  */
 const uint8_t *waterui_str_as_ptr(const struct Str *str);
 
-WuiEnv *waterui_init(void);
+WuiEnv* waterui_init(void);
 
-WuiAnyView *waterui_main(void);
+WuiAnyView* waterui_main(void);

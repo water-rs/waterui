@@ -1,5 +1,5 @@
 use waterui::{
-    Binding, Color, Environment, View,
+    Binding, Environment, View,
     component::{
         divder::Divider,
         form::{FormBuilder, Slider, form, stepper},
@@ -8,7 +8,7 @@ use waterui::{
             stack::{hstack, vstack},
         },
         progress::{loading, progress},
-        text::{Text, text},
+        text::text,
     },
     reactive::Project,
 };

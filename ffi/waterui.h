@@ -36,6 +36,12 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
+enum WuiProgressStyle {
+  WuiProgressStyle_Linear,
+  WuiProgressStyle_Circular,
+};
+typedef uint8_t WuiProgressStyle;
+
 typedef enum WuiStackMode {
   WuiStackMode_Vertical,
   WuiStackMode_Horizonal,
@@ -220,6 +226,8 @@ typedef struct WuiDynamic WuiDynamic;
 typedef struct WuiEnv WuiEnv;
 
 typedef struct WuiStr WuiStr;
+
+typedef struct WuiTabContent WuiTabContent;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
@@ -489,6 +497,13 @@ typedef struct WuiWatcher_____WuiAnyView {
   void (*drop)(void*);
 } WuiWatcher_____WuiAnyView;
 
+typedef struct WuiProgress {
+  struct WuiAnyView *label;
+  struct WuiAnyView *value_label;
+  struct Computed_f64 *value;
+  WuiProgressStyle style;
+} WuiProgress;
+
 typedef struct WuiWatcher_____WuiStr {
   void *data;
   void (*call)(const void*, struct WuiStr*, const struct Metadata*);
@@ -615,6 +630,14 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  */
 struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
 
+/**
+ * Gets the type ID of a view
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to a properly
+ * initialized `WuiAnyView` instance and that it remains valid for the
+ * duration of this function call.
+ */
 struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
 
 /**
@@ -639,6 +662,16 @@ void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
+/**
+ * Frees a WuiArray without dropping its elements.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `arr` is a valid WuiArray that was previously created by Rust code
+ * - The array elements are handled separately and not accessed after this call
+ * - This function is only called once per array
+ */
 void waterui_free_anyview_array_without_free_elements(struct WuiArray_____WuiAnyView arr);
 
 struct WuiTypeId waterui_divider_id(void);
@@ -810,6 +843,16 @@ struct WuiTypeId waterui_navigation_view_id(void);
 struct WuiTypeId waterui_navigation_link_id(void);
 
 /**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_drop_tab_content(struct WuiTabContent *value);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -858,6 +901,15 @@ struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 struct WuiTypeId waterui_dynamic_id(void);
 
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_____WuiAnyView watcher);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_progress_id(void);
 
 /**
  * Drops the FFI value.
