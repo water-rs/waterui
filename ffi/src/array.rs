@@ -16,6 +16,8 @@ pub type WuiData = WuiArray<u8>;
 /// A C-compatible array structure that wraps a pointer and length.
 ///
 /// This type is used as an FFI-compatible representation of Rust collections.
+///
+/// Warning: `T` must be FFI-safe. Using non-FFI-safe types may lead to undefined behavior.
 #[repr(C)]
 pub struct WuiArray<T> {
     head: *mut T,
