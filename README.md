@@ -40,10 +40,23 @@ pub fn counter() -> impl View {
 - Declarative & reactive - Familiar to SwiftUI/React developers
 - Cross-platform - Supports multiple backends (gtk4 backend and swiftui backend are ready now)
 
-## 🧑‍🏫 Demo (SwiftUI backend)
+
+## ⚠️ Status
+This project is under early stage. 
+
+## Contribution
+
+Pull request is welcomed
+
+## 🐱 Demo (SwiftUI backend)
 
 Check it [here](./demo).
 
+## 🐶 Demo (GTK4 backend)
+
+Check it [here](./backends/gtk4/examples/).
+
 ## 📚 Documentation
 - [Tutorial book](https://water-rs.github.io/waterui/)
-- [API reference](https://docs.rs/waterui)
+- [API reference (latest)](https://water-rs.github.io/waterui/api)
+- [API reference (docs.rs)](https://docs.rs/waterui)
