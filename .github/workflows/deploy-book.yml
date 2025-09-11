@@ -1,12 +1,14 @@
-name: Deploy Tutorial Book to Pages
+name: Deploy Tutorial Book (mdBook + rustdoc) to Pages
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - tutorial-book/**
-      - .github/workflows/deploy-book.yml
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/deploy-book.yml"
   workflow_dispatch:
 
 permissions:
@@ -46,6 +48,22 @@ jobs:
             cargo install mdbook --version 0.4.40
           fi
 
+      # === NEW: Build rustdoc for the whole workspace ===
+      - name: Build rustdoc (workspace)
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs -D warnings"
+        run: |
+          cargo doc --workspace --no-deps --all-features
+          CRATE=waterui
+          echo '<meta http-equiv="refresh" content="0; url='"$CRATE"'/index.html">' > target/doc/index.html
+
+      # === NEW: Mount rustdoc under mdBook's /api/ ===
+      - name: Stage rustdoc into mdBook /api
+        run: |
+          rm -rf tutorial-book/src/api
+          mkdir -p tutorial-book/src/api
+          rsync -a --delete target/doc/ tutorial-book/src/api/
+
       - name: Build mdBook
         working-directory: tutorial-book
         run: mdbook build
@@ -65,4 +83,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
