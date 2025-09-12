@@ -83,7 +83,7 @@
 //! This enables modular functionality like theming, localization, and platform-specific features.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(never_type)]
+#![cfg_attr(feature = "nightly", feature(never_type))]
 extern crate alloc;
 
 #[macro_use]
