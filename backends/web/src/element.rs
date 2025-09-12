@@ -1,8 +1,8 @@
 //! DOM element wrapper for the web backend.
 
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement, Text};
-use std::collections::HashMap;
 
 /// A wrapper around DOM elements for the web backend.
 #[derive(Debug, Clone)]
@@ -19,7 +19,9 @@ impl WebElement {
     /// Create a new element with the given tag name.
     pub fn create(tag: &str) -> Result<Self, JsValue> {
         let window = web_sys::window().ok_or("No global `window` exists")?;
-        let document = window.document().ok_or("Should have a document on window")?;
+        let document = window
+            .document()
+            .ok_or("Should have a document on window")?;
         let element = document.create_element(tag)?;
         Ok(Self::new(element))
     }
@@ -27,7 +29,9 @@ impl WebElement {
     /// Create a text node.
     pub fn create_text(content: &str) -> Result<Text, JsValue> {
         let window = web_sys::window().ok_or("No global `window` exists")?;
-        let document = window.document().ok_or("Should have a document on window")?;
+        let document = window
+            .document()
+            .ok_or("Should have a document on window")?;
         Ok(document.create_text_node(content))
     }
 
