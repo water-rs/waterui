@@ -17,7 +17,10 @@ use crate::{Environment, View};
 pub struct Native<T>(pub T);
 
 impl<T: 'static> View for Native<T> {
+    #[allow(unused)]
+    #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
-        panic!("Native view ({})", type_name::<T>())
+        panic!("Native view ({})", type_name::<T>());
+        return;
     }
 }
