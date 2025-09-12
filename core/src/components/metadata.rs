@@ -39,11 +39,15 @@ impl<T> Metadata<T> {
 }
 
 impl<T: 'static> View for Metadata<T> {
+    #[allow(unused)]
+    #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
         panic!(
             "The metadata `{}`is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
             core::any::type_name::<Self>()
         );
+
+        return;
     }
 }
 
