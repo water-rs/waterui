@@ -20,3 +20,4 @@
 *.exe
 *.dll
 *.pdb
+/demo/apple/demo.xcodeproj/project.xcworkspace/xcuserdata/*

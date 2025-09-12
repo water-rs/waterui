@@ -11,13 +11,14 @@ fn is_expandable_widget(widget: &Widget) -> bool {
     // Check widget type name to determine if it should expand
     let type_name = widget.type_().name();
     let type_str = type_name.to_string();
-    
-    matches!(type_str.as_str(), 
+
+    matches!(
+        type_str.as_str(),
         "GtkScale" |        // Slider
         "GtkEntry" |        // TextField  
         "GtkBox" |          // Container that might contain form elements
         "GtkCheckButton" |  // Toggle/Checkbox
-        "GtkButton"         // Button
+        "GtkButton" // Button
     )
 }
 
@@ -43,10 +44,10 @@ fn render_vstack(contents: Vec<AnyView>, env: &Environment) -> Widget {
 
     // Create an inner centered container for the actual content
     let inner_box = GtkBox::new(Orientation::Vertical, 8);
-    inner_box.set_halign(Align::Center);  // Center the content container
+    inner_box.set_halign(Align::Center); // Center the content container
     inner_box.set_valign(Align::Center);
-    inner_box.set_width_request(400);  // Set a reasonable max width like SwiftUI forms
-    inner_box.set_hexpand(false);  // Don't expand, stay at preferred width
+    inner_box.set_width_request(400); // Set a reasonable max width like SwiftUI forms
+    inner_box.set_hexpand(false); // Don't expand, stay at preferred width
 
     // Add content to inner box
     for child in contents {

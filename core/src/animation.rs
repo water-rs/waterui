@@ -27,7 +27,7 @@
 //! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
-//! 
+//!
 //! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0))); // Red color
 //!
 //! // Use the .animated() method to apply default animation
@@ -54,7 +54,7 @@
 //! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
-//! 
+//!
 //! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
 //!
 //! // Three different ways to animate properties:
@@ -89,7 +89,7 @@
 //! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
-//! 
+//!
 //! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
 //! let position: nami::Binding<(i32, i32)> = binding((0, 0));
 //!
@@ -112,7 +112,7 @@
 //! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
-//! 
+//!
 //! let count: nami::Binding<i32> = binding(0i32);
 //! let value1: nami::Binding<i32> = binding(1i32);
 //! let value2: nami::Binding<i32> = binding(2i32);
@@ -261,7 +261,7 @@ use nami::signal::WithMetadata;
 /// Extension trait providing animation methods for reactive values
 pub trait AnimationExt: nami::SignalExt {
     /// Apply default animation to this reactive value
-    /// 
+    ///
     /// Uses a reasonable default animation (ease-in-out with 250ms duration)
     fn animated(self) -> WithMetadata<Self, Animation>
     where
@@ -269,11 +269,11 @@ pub trait AnimationExt: nami::SignalExt {
     {
         self.with(Animation::ease_in_out(Duration::from_millis(250)))
     }
-    
+
     /// Apply a specific animation to this reactive value
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `animation` - The animation to apply
     fn with_animation(self, animation: Animation) -> WithMetadata<Self, Animation>
     where

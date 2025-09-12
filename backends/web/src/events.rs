@@ -15,7 +15,11 @@ pub type KeyCallback = Box<dyn Fn(&KeyboardEvent)>;
 pub type MouseCallback = Box<dyn Fn(&MouseEvent)>;
 
 /// Attach an event listener to a web element.
-pub fn attach_event_listener<F>(element: &HtmlElement, event_type: &str, handler: F) -> Result<(), JsValue>
+pub fn attach_event_listener<F>(
+    element: &HtmlElement,
+    event_type: &str,
+    handler: F,
+) -> Result<(), JsValue>
 where
     F: Fn(&Event) + 'static,
 {
@@ -33,13 +37,18 @@ where
     let closure = Closure::wrap(Box::new(move |_event: Event| {
         handler();
     }) as Box<dyn Fn(Event)>);
-    element.add_event_listener_with_callback(EventTypes::CLICK, closure.as_ref().unchecked_ref())?;
+    element
+        .add_event_listener_with_callback(EventTypes::CLICK, closure.as_ref().unchecked_ref())?;
     closure.forget();
     Ok(())
 }
 
 /// Attach a keyboard event listener.
-pub fn attach_keyboard_listener<F>(element: &HtmlElement, event_type: &str, handler: F) -> Result<(), JsValue>
+pub fn attach_keyboard_listener<F>(
+    element: &HtmlElement,
+    event_type: &str,
+    handler: F,
+) -> Result<(), JsValue>
 where
     F: Fn(&KeyboardEvent) + 'static,
 {
@@ -54,7 +63,11 @@ where
 }
 
 /// Attach a mouse event listener.
-pub fn attach_mouse_listener<F>(element: &HtmlElement, event_type: &str, handler: F) -> Result<(), JsValue>
+pub fn attach_mouse_listener<F>(
+    element: &HtmlElement,
+    event_type: &str,
+    handler: F,
+) -> Result<(), JsValue>
 where
     F: Fn(&MouseEvent) + 'static,
 {
