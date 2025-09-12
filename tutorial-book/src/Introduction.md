@@ -21,6 +21,10 @@ Before starting this book, you should have:
 - **Command Line Comfort**: Ability to use terminal/command prompt
 
 If you're new to Rust, we recommend reading [The Rust Programming Language](https://doc.rust-lang.org/book/) first.
+
+# Roadmap
+Check our roadmap [here](waterui.dev/roadmap)!
+
 ## Contributing
 
 This book is open source! Found a typo, unclear explanation, or want to add content?
@@ -28,3 +32,4 @@ This book is open source! Found a typo, unclear explanation, or want to add cont
 - **Source Code**: Available on [GitHub](https://github.com/water-rs/waterui/tree/main/tutorial-book)
 - **Issues**: Report problems or suggestions
 - **Pull Requests**: Submit improvements
+

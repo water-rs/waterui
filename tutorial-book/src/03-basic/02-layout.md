@@ -17,7 +17,6 @@ fn vertical_layout() -> impl View {
         "Second item",
         "Third item",
     ))
-    .frame(Frame::new().margin(Edge::round(20.0)))
 }
 ```
 
@@ -38,14 +37,13 @@ fn navigation_bar() -> impl View {
         spacer(),
         button("Menu"),
     ))
-    .frame(Frame::new().margin(Edge::round(15.0)))
 }
 ```
 
 ### ZStack - Overlay Arrangement
 
 ```rust,ignore
-// Overlay examples depend on your backend renderer; use zstack to layer views.
+[WIP] - introduce the difference of zstack and overlay
 ```
 
 ## Grid Layout
@@ -56,28 +54,38 @@ use waterui_layout::grid::Grid;
 use waterui_layout::{row, Alignment};
 
 fn photo_grid() -> impl View {
-    Grid::new(
-        Alignment::Center,
-        [
-            row((photo("1.jpg"), photo("2.jpg"), photo("3.jpg"))),
-            row((photo("4.jpg"), photo("5.jpg"), photo("6.jpg"))),
-            row((photo("7.jpg"), photo("8.jpg"), photo("9.jpg"))),
-        ],
-    )
+    Grid::center([
+        row((photo("1.jpg"), photo("2.jpg"), photo("3.jpg"))),
+        row((photo("4.jpg"), photo("5.jpg"), photo("6.jpg"))),
+        row((photo("7.jpg"), photo("8.jpg"), photo("9.jpg"))),
+    ])
 }
 ```
 
 ## Scrolling
 
 ```rust,ignore
-// Scrolling helpers exist; see waterui_layout::scroll for details.
+[WIP]
 ```
 
 ## Sizing and Constraints
 
 ```rust,ignore
-// Use Frame to control size constraints:
-// view.frame(Frame::new().width(250.0).max_width(300.0))
+[WIP]
 ```
 
-Next: [Text and Typography](03-text.md)
+
+# Advanced Layout: Layout trait
+
+```rust
+pub trait Layout {
+	fn layout(
+		self,
+		constraint: Constraint, 
+		measured_children: &[MeasuredChild]
+	) -> LayoutResult;
+}
+```
+
+
+[WIP]
