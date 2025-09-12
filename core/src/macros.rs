@@ -21,8 +21,11 @@ macro_rules! impl_debug {
 macro_rules! raw_view {
     ($ty:ty) => {
         impl $crate::View for $ty {
+            #[allow(clippy::unused_unit)]
+            #[allow(unused)]
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually", core::any::type_name::<$ty>());
+                ()
             }
         }
     };
