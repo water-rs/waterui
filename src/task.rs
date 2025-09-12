@@ -6,8 +6,8 @@
 
 use core::cell::RefCell;
 
+pub use executor_core::{spawn, spawn_local};
 use nami::watcher::WatcherGuard;
-pub use native_executor::*;
 use waterui_core::{Signal, View};
 
 /// A view that executes a callback when a computed value changes.
