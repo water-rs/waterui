@@ -53,17 +53,14 @@ fn text_component_examples() -> impl View {
         "Styleable text content",
 
         // Reactive text with text! macro
-        text!("Count: {}", count),
-        text!("Hello, {}!", name),
+        text!("Count: {count}"),
+        text!("Hello, {name}!"),
 
         // Text component with styling
         Text::new("Styled text").size(20.0),
 
         button("Increment")
-            .action({
-                let count = count.clone();
-                move |_| count.update(|c| c + 1)
-            }),
+            .action_with(&count,|c| c.increment(1)),
     ))
 }
 ```
@@ -102,7 +99,7 @@ fn font_styling_demo() -> impl View {
 Choose the right approach based on your needs:
 
 ```rust
-use waterui::View;
+use waterui::{View,Binding};
 use waterui::component::layout::stack::vstack;
 use waterui_text::text;
 
@@ -117,8 +114,8 @@ fn choosing_text_type() -> impl View {
 
         // Use text! macro for reactive content
         {
-            let count = binding(42);
-            text!("Dynamic count: {}", count)
+            let count = Binding::int(42);
+            text!("Dynamic count: {count}")
         },
     ))
 }
@@ -129,40 +126,33 @@ fn choosing_text_type() -> impl View {
 The `text!` macro creates reactive Text components that automatically update when underlying data changes:
 
 ```rust
-use waterui::View;
-use waterui::reactive::{binding, s};
+use waterui::{View,Binding};
+use waterui::reactive::{binding};
 use waterui::component::layout::stack::{vstack, hstack};
 use waterui::component::button::button;
 use waterui_text::text;
 
 fn reactive_text_demo() -> impl View {
-    let count = binding(0);
     let name = binding(String::from("Alice"));
-    let temperature = binding(22.5);
+    let temperature:Binding<f64> = binding(22.5);
 
     vstack((
         // Reactive formatted text
-        text!("Count: {}", count),
-        text!("Hello, {}!", name),
-        text!("Temperature: {:.1}°C", temperature),
+        text!("Hello, {name}!"),
+        text!("Temperature: {temperature:.1}°C"),
 
         // Reactive with computed expressions using s! macro
-        text!("Status: {}", s!(if count > 5 { "High" } else { "Low" })),
+        text!("Status: {}", temperature.map(|t| t>30 ).select("High","Low")),
 
         hstack((
-            button("Increment").action({
-                let count = count.clone();
-                move |_| count.update(|c| c + 1)
-            }),
-            button("Reset").action({
-                let count = count.clone();
-                move |_| count.set(0)
-            }),
+            button("Increment").action_with(&temperature,|t| t.increment(1.0)),
+            button("Reset").action_with(&temperature,|t| t.set(22.5)),
         )),
     ))
 }
 ```
 
+You can see more convenicence method of `Binding` at nami's API reference
 ### Formatting Best Practices
 
 Always use `text!` macro for reactive text, never `format!` macro which loses reactivity:
@@ -179,7 +169,7 @@ fn formatting_best_practices() -> impl View {
 
     vstack((
         // ✅ CORRECT: Use text! for reactive content
-        text!("Users: {} ({})", user_count, status),
+        text!("Users: {user_count} ({status})"),
 
         // ❌ WRONG: .get() breaks reactivity!
         // text(format!("Users: {} ({})", user_count.get(), status.get()))
@@ -221,85 +211,3 @@ fn text_display_demo() -> impl View {
     ))
 }
 ```
-
-// Rich text (spans, bold/italic) is planned but not yet available.
-
-## Performance Considerations
-
-### Efficient Reactive Updates
-
-```rust
-use waterui::View;
-use waterui::component::layout::stack::vstack;
-use waterui::component::button::button;
-use waterui::reactive::{binding, s};
-use waterui_text::text;
-
-fn efficient_text_updates() -> impl View {
-    let counter = binding(0);
-
-    vstack((
-        // ✅ GOOD: Reactive text with text! macro
-        text!("Counter: {}", counter),
-
-        // ✅ GOOD: Computed reactive text
-        text!("Status: {}", s!(match counter {
-            0..=10 => "Low",
-            11..=50 => "Medium",
-            _ => "High"
-        })),
-
-        button("Increment").action({
-            let counter = counter.clone();
-            move |_| counter.update(|c| c + 1)
-        }),
-    ))
-}
-```
-
-## Summary
-
-WaterUI's text system provides:
-
-- **Labels (`&str`, `String`, `Str`)**: Simple, unstyled text for static content
-- **Text Component**: Reactive, styleable text with font customization
-- **text! macro**: Reactive formatted text that updates automatically
-- **Font API**: Comprehensive typography control for Text components
-
-### Key Guidelines
-
-- Use **labels** for simple, static text without styling
-- Use **Text component** when you need styling or reactive updates
-- Use **text! macro** for formatted reactive content
-- Never use `format!` with reactive values - it breaks reactivity
-- Choose the simplest approach that meets your needs
-
-### Quick Reference
-
-```rust
-use waterui::View;
-use waterui::component::layout::stack::vstack;
-use waterui::reactive::binding;
-use waterui_text::{text, Text};
-
-fn text_reference() -> impl View {
-    let count = binding(42);
-
-    vstack((
-        // Label: static, no styling
-        "Simple text",
-
-        // Text: static, with styling
-        text("Styled text").size(18.0),
-
-        // Text: reactive, formatted
-        text!("Count: {}", count),
-
-        // Text: reactive, custom formatting
-        Text::display(count),
-        Text::format(count, |n| format!("#{:03}", n)),
-    ))
-}
-```
-
-Next: [Forms](../03-basic/04-form.md)

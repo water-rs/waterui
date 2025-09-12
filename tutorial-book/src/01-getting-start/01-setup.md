@@ -215,3 +215,6 @@ rustup update
 1. Ensure you have the Microsoft C++ Build Tools installed
 2. Use the `x86_64-pc-windows-msvc` toolchain
 3. Consider using WSL2 for a Linux-like environment
+
+
+TODO: Build a CLI to automate these workflows

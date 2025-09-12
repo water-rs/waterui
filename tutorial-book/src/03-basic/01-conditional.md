@@ -14,7 +14,7 @@ use waterui::reactive::{binding, s};
 let is_logged_in = binding(false);
 
 when(&is_logged_in, || {
-    text!("Welcome back!")
+    "Welcome back!"
 })
 ```
 
@@ -35,7 +35,7 @@ pub fn login_view() -> impl View {
     vstack((
         use_env(|Authenticated(auth):Authenticated|{
 	        when(&auth, || {
-		            text!("You are logged in!")
+		        text!("You are logged in!")
 	        }),
         
 	        when(&!is_authenticated, |Authenticated(auth):Authenticated| {
@@ -56,7 +56,7 @@ use nami::binding;
 
 let is_visible = binding(true);
 
-when(!is_visible, || text!("Hidden"));
+when(!is_visible, || "Hidden");
 ```
 
 ## Complete Conditional Rendering with `or`
@@ -65,15 +65,14 @@ For situations where you need to display one of two views, use the `.or()` metho
 
 ```rust,ignore
 use waterui::widget::condition::when;
-use waterui_text::text;
 use waterui::component::button::button;
 use waterui::reactive::binding;
 
 let has_data = binding(false);
 
 when(&has_data, || {
-    text!("Data loaded successfully!")
+    "Data loaded successfully!"
 }).or(|| {
-    text!("Loading...")
+    "Loading..."
 })
 ```
