@@ -10,7 +10,7 @@ members = [
     "render_utils",
     "window",
     "ffi"
-, "demo"]
+, "demo", "cli"]
 resolver = "2"
 
 [package]
@@ -51,8 +51,8 @@ clippy.cargo = "warn"
 
 
 [workspace.dependencies]
-native-executor = "0.4.0"
-nami = { version = "0.5.0" }
+executor-core = { version = "0.6.0", features = ["std"]}
+nami = { version = "0.6.1" }
 
 waterui-core = { version = "0.1.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
@@ -82,7 +82,7 @@ waterui-text.workspace = true
 waterui-media.workspace = true
 waterui-navigation.workspace = true
 waterui-form.workspace = true
-native-executor.workspace = true
+executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 
@@ -91,3 +91,7 @@ default = []
 std = []
 all = ["serde", "std"]
 serde = ["dep:serde", "waterui-core/serde"]
+
+
+[lints]
+workspace = true
