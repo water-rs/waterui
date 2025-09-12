@@ -7,8 +7,9 @@ edition = "2021"
 
 [dependencies]
 # Real WaterUI dependencies from the workspace
-waterui = { path = "../", features = ["gtk4"] }
-nami = { path = "../../nami" }
+waterui = { git = "https://github.com/water-rs/waterui"}
+waterui_gtk = { git = "https://github.com/water-rs/waterui"}
+
 
 # Common dependencies
 tokio = { version = "1.0", features = ["rt", "macros", "rt-multi-thread"] }

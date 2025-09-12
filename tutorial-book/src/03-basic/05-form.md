@@ -2,6 +2,12 @@
 
 WaterUI provides a comprehensive form system that makes creating interactive forms both simple and powerful. The centerpiece of this system is the `FormBuilder` derive macro, which automatically generates form UIs from your data structures.
 
+## Two-binding in WaterUI
+
+```rust
+[WIP]
+```
+
 ## Quick Start with FormBuilder
 
 The easiest way to create forms in WaterUI is using the `#[derive(FormBuilder)]` macro:

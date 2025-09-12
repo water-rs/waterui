@@ -14,11 +14,13 @@
   - [Conditional Rendering](03-basic/01-conditional.md)
   - [Layout](03-basic/02-layout.md)
   - [Text](03-basic/03-text.md)
-  - [Forms](03-basic/04-form.md)
-  - [Navigation](03-basic/05-navigation.md)
-  - [Media](03-basic/06-media.md)
+  - [Forms](03-basic/05-form.md)
+  - [Navigation](03-basic/08-navigation.md)
+  - [Media](03-basic/07-media.md)
 
 - [Advanced]()
   - [Animation](04-advanced/01-animation.md)
   - [Suspense](04-advanced/02-suspense.md)
-  - [Plugins](04-advanced/03-plugin.md)
+  - [Plugins](./04-advanced/04-plugin.md)
+
+

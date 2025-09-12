@@ -13,15 +13,30 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "04-advanced/02-suspense.md",
+                "file": "SUMMARY.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "02-suspense"
+              "title": "SUMMARY"
+            }
+          },
+          {
+            "id": "b0e390deb067e9d5",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "SUMMARY.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "SUMMARY"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -94,7 +109,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "04-advanced/02-suspense.md",
+                "file": "SUMMARY.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +119,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for 02-suspense"
+              "title": "Backlinks for SUMMARY"
             }
           },
           {
@@ -113,12 +128,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "04-advanced/02-suspense.md",
+                "file": "SUMMARY.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from 02-suspense"
+              "title": "Outgoing links from SUMMARY"
             }
           },
           {
@@ -142,13 +157,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "04-advanced/02-suspense.md",
+                "file": "SUMMARY.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 02-suspense"
+              "title": "Outline of SUMMARY"
             }
           }
         ]
@@ -168,34 +183,35 @@
       "command-palette:Open command palette": false
     }
   },
-  "active": "a3f08daf1bac4007",
+  "active": "b0e390deb067e9d5",
   "lastOpenFiles": [
-    "04-advanced/01-animation.md",
-    "04-advanced/02-suspense.md",
-    "04-advanced/03-plugin.md",
-    "03-basic/06-media.md",
-    "03-basic/05-navigation.md",
-    "03-basic/04-form.md",
-    "03-basic/03-text.md",
-    "03-basic/01-conditional.md",
-    "02-core-concept/01-view.md",
     "Introduction.md",
-    "02-core-concept/02-reactive.md",
+    "05-internal/05-philosophy.md",
+    "05-internal/03-decode-layout-system.md",
+    "05-internal/02-decode-hot-reload.md",
+    "05-internal/01-how-waterui-rendered.md",
+    "04-advanced/08-shader.md",
+    "04-advanced/07-canvas.md",
+    "04-advanced/06-i18n.md",
+    "04-advanced/05-accessibility.md",
+    "04-advanced/04-plugin.md",
+    "04-advanced/03-error-handling.md",
+    "04-advanced/02-suspense.md",
+    "04-advanced/01-animation.md",
+    "03-basic/10-web-request.md",
+    "03-basic/09-gesture-and-haptic.md",
+    "03-basic/08-navigation.md",
+    "03-basic/07-media.md",
+    "03-basic/06-list.md",
+    "03-basic/05-form.md",
+    "03-basic/04-button.md",
+    "03-basic/03-text.md",
     "03-basic/02-layout.md",
-    "01-getting-start/01-setup.md",
-    "01-getting-start/02-first-app.md",
-    "SUMMARY.md",
-    "best-practices.md",
-    "advanced/1-custom-components.md",
-    "advanced/2-animations.md",
-    "advanced/4-plugins.md",
-    "advanced/5-memory.md",
-    "advanced/14-animations.md",
-    "advanced/17-memory.md",
-    "advanced/16-plugins.md",
-    "advanced/15-suspense.md",
-    "advanced/13-custom-components.md",
-    "advanced/3-suspense.md",
+    "02-core-concept/01-view.md",
+    "02-core-concept/02-reactive.md",
+    "02-core-concept/03-environment.md",
+    "03-basic/01-conditional.md",
+    "05-internal",
     "04-advanced",
     "03-basic",
     "02-core-concept",

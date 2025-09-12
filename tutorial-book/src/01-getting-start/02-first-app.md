@@ -32,11 +32,11 @@ Update your `Cargo.toml`:
 [package]
 name = "counter-app"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-waterui = { path = ".." }
-waterui_gtk4 = { path = "../backends/gtk4" }
+waterui = "0.1.0"
+waterui_gtk4 = "0.1.0"
 ```
 
 ## Building the Counter Step by Step
@@ -107,7 +107,7 @@ pub fn counter() -> impl View {
     vstack((
         "Counter App",
         // Use text! macro for reactive text
-        text!("Count: {}", count),
+        text!("Count: {count}"),
         hstack((
             button("- Decrement").action_with(&count, |count| count.update(|n| n - 1)),
             button("+ Increment").action_with(&count, |count| count.update(|n| n + 1)),
@@ -134,7 +134,7 @@ This creates a reactive binding with an initial value of 0. When this value chan
 
 ```rust,ignore
 // ✅ Use the text! macro for reactive display
-text!("Count: {}", count)
+text!("Count: {count}")
 ```
 
 - The `text!` macro automatically handles reactivity
