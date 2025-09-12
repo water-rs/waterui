@@ -19,7 +19,7 @@ use waterui::{
             Slider, Stepper, TextField, Toggle,
             picker::{ColorPicker, DatePicker, Picker},
         },
-        layout::{Edge, scroll::ScrollView, stack::Stack},
+        layout::{Edge, scroll::ScrollView},
     },
 };
 use waterui_render_utils::ViewDispatcher;
@@ -45,7 +45,7 @@ pub fn dispatcher() -> ViewDispatcher<(), (), WebElement> {
     });
 
     // Layout components
-    dispatcher.register(|_, _, stack: Stack, env: &Environment| render_stack(stack, env));
+    // TODO: Implement layout rendering
 
     // Layout components
     dispatcher
@@ -71,27 +71,6 @@ pub fn render_empty() -> WebElement {
         // Fallback if div creation fails
         WebElement::create("span").expect("Failed to create fallback span element")
     })
-}
-
-/// Render a stack layout for web
-pub fn render_stack(_stack: Stack, _env: &Environment) -> WebElement {
-    let container = WebElement::create("div").expect("Failed to create stack container");
-
-    // Apply stack-specific styling (simplified implementation)
-    let _ = container.set_styles(
-        &[
-            ("display", "flex"),
-            ("flex-direction", "column"),
-            ("gap", "8px"),
-        ]
-        .iter()
-        .cloned()
-        .collect(),
-    );
-
-    // TODO: Implement proper stack rendering when Stack API is available
-
-    container
 }
 
 /// Render a dynamic view for web
