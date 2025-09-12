@@ -232,6 +232,7 @@ impl<V: View> View for (V,) {
     }
 }
 
+#[cfg(feature = "nightly")]
 impl View for ! {
     fn body(self, _env: &Environment) -> impl View {}
 }
