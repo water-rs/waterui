@@ -6,6 +6,7 @@ extern crate alloc;
 mod macros;
 pub mod background;
 pub mod component;
+pub mod error;
 pub mod filter;
 /// Task management utilities and async support.
 pub mod task;
@@ -58,3 +59,37 @@ pub use task::task;
 #[doc(inline)]
 pub use waterui_core as core;
 pub use waterui_str::Str;
+
+#[macro_export]
+macro_rules! wrapper {
+    ($ident:ident,$ty:ty) => {
+        #[derive(Debug, Clone)]
+        pub struct $ident(pub $ty);
+
+        impl From<$ty> for $ident {
+            fn from(value: $ty) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<$ident> for $ty {
+            fn from(value: $ident) -> Self {
+                value.0
+            }
+        }
+
+        impl core::ops::Deref for $ident {
+            type Target = $ty;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl core::ops::DerefMut for $ident {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+    };
+}

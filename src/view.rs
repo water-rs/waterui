@@ -24,7 +24,7 @@ use crate::background::{Background, ForegroundColor};
 use crate::component::{Metadata, Text, badge::Badge, focu::Focused};
 use waterui_core::id::TaggedView;
 
-use waterui_layout::{Edge, Frame};
+use waterui_layout::{Edge, Frame, overlay::Overlay};
 
 /// A trait for types that can build views from an environment.
 pub trait ViewBuilder: 'static {
@@ -128,6 +128,11 @@ pub trait ViewExt: View + Sized {
     /// Adds default padding to this view.
     fn padding(self) -> Metadata<Edge> {
         Metadata::new(self, Edge::default())
+    }
+
+    /// Creates an overlay container for this view.
+    fn overlay(self) -> Overlay {
+        Overlay::new(self)
     }
 
     /// Sets a frame for this view.

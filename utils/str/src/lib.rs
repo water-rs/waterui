@@ -470,6 +470,8 @@ impl From<Str> for String {
 }
 
 #[cfg(test)]
+#[allow(unused)]
+#[allow(clippy::redundant_clone)]
 mod tests {
     use super::*;
     use alloc::vec;
@@ -542,7 +544,7 @@ mod tests {
         let s1 = Str::from(String::from("hello"));
 
         {
-            let s2 = s1.clone();
+            let s2 = s1;
         } // s2 is dropped here
 
         // no reference count exposed
