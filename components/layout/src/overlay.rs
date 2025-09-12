@@ -1,6 +1,6 @@
-use waterui_core::{AnyView, View};
-use crate::engine::{Container, Layout, Constraint, MeasuredChild, LayoutResult};
 use crate::Size;
+use crate::engine::{Constraint, Container, Layout, LayoutResult, MeasuredChild};
+use waterui_core::{AnyView, View};
 /// Represents an overlay that can be displayed on top of other content.
 #[derive(Debug)]
 #[must_use]
@@ -25,43 +25,46 @@ pub fn overlay(content: impl View) -> Overlay {
 }
 
 impl Layout for Overlay {
-    fn layout(
-        self,
-        constraint: Constraint,
-        measured_children: &[MeasuredChild],
-    ) -> LayoutResult {
+    fn layout(self, constraint: Constraint, measured_children: &[MeasuredChild]) -> LayoutResult {
         // Overlay typically contains a single child that fills the available space
         if measured_children.is_empty() {
             return LayoutResult {
-                size: Size { width: 0.0, height: 0.0 },
+                size: Size {
+                    width: 0.0,
+                    height: 0.0,
+                },
                 child_positions: Vec::new(),
                 child: AnyView::new(self),
             };
         }
-        
+
         let child = &measured_children[0];
         let mut child_positions = Vec::new();
-        
+
         // The overlay content should fill the available space
-        let content_width = constraint.max.width
+        let content_width = constraint
+            .max
+            .width
             .min(child.max_size.width)
             .max(child.min_size.width)
             .max(constraint.min.width);
-            
-        let content_height = constraint.max.height
+
+        let content_height = constraint
+            .max
+            .height
             .min(child.max_size.height)
             .max(child.min_size.height)
             .max(constraint.min.height);
-        
+
         // Center the content within the available space
         let child_x = (constraint.max.width - content_width) / 2.0;
         let child_y = (constraint.max.height - content_height) / 2.0;
-        
+
         child_positions.push(Size {
-            width: child_x.max(0.0),   // Store x position in width
-            height: child_y.max(0.0),  // Store y position in height
+            width: child_x.max(0.0),  // Store x position in width
+            height: child_y.max(0.0), // Store y position in height
         });
-        
+
         LayoutResult {
             size: Size {
                 width: constraint.max.width.max(constraint.min.width),

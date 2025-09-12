@@ -11,10 +11,10 @@
 //! use nami::binding;
 //!
 //! let is_visible = binding(true);
-//! 
+//!
 //! when(is_visible, || text!("This text is visible"))
 //!     .or(|| text!("This text is shown when hidden"));
-//! 
+//!
 //! // Binding implements Not trait - no need to wrap with s!()
 //! when(!is_visible, || text!("This text is hidden"));
 //! ```
@@ -44,13 +44,13 @@ use waterui_core::{
 /// use nami::binding;
 ///
 /// let show_message = binding(true);
-/// 
+///
 /// // Simple conditional rendering
 /// when(show_message, || text!("Hello, World!"));
-/// 
+///
 /// // Using negation (Binding implements Not)
 /// when(!show_message, || text!("Message is hidden"));
-/// 
+///
 /// // With an alternative view
 /// when(show_message, || text!("Logged in"))
 ///     .or(|| text!("Please log in"));
@@ -83,7 +83,7 @@ where
     ///
     /// let condition = binding(true);
     /// let when_component = When::new(condition, || text!("Visible"));
-    /// 
+    ///
     /// // Using negation
     /// let when_not = When::new(!condition, || text!("Hidden"));
     /// ```
@@ -116,7 +116,7 @@ where
 /// use nami::binding;
 ///
 /// let is_logged_in = binding(false);
-/// 
+///
 /// // Basic conditional rendering
 /// when(is_logged_in, || {
 ///     vstack((
@@ -124,10 +124,10 @@ where
 ///         button("Logout", || {}),
 ///     ))
 /// });
-/// 
+///
 /// // Using negation directly (no s!() needed)
 /// when(!is_logged_in, || text!("Please log in"));
-/// 
+///
 /// // With alternative view
 /// when(is_logged_in, || text!("Dashboard"))
 ///     .or(|| text!("Please log in"));
@@ -174,10 +174,10 @@ impl<Condition, Then> When<Condition, Then> {
     /// use nami::binding;
     ///
     /// let has_data = binding(false);
-    /// 
+    ///
     /// when(has_data, || text!("Data loaded"))
     ///     .or(|| text!("Loading..."));
-    /// 
+    ///
     /// // Equivalent using negation
     /// when(!has_data, || text!("Loading..."))
     ///     .or(|| text!("Data loaded"));
@@ -218,7 +218,7 @@ impl<Condition, Then> When<Condition, Then> {
 /// use nami::binding;
 ///
 /// let is_loading = binding(true);
-/// 
+///
 /// when(!is_loading, || {
 ///     vstack((
 ///         text!("Welcome!"),
