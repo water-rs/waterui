@@ -29,7 +29,7 @@
 
 use core::future::Future;
 
-use native_executor::spawn_local;
+use executor_core::{Task, spawn_local};
 use waterui_core::{AnyView, Environment, View};
 
 use crate::{
