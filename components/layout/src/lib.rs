@@ -8,6 +8,9 @@ extern crate alloc;
 /// Stack layout components for arranging views linearly or in layers.
 pub mod stack;
 
+/// Layout engine for container-based layouts.
+pub mod engine;
+
 /// Grid layout components for two-dimensional arrangements.
 pub mod grid;
 pub use grid::row;
@@ -42,40 +45,56 @@ pub enum Alignment {
 ///
 /// This struct contains all the properties that define how a view
 /// should be sized and positioned within its container.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Frame {
-    /// The preferred width of the frame.
-    pub width: f64,
-    /// The minimum allowed width.
-    pub min_width: f64,
-    /// The maximum allowed width.
-    pub max_width: f64,
-    /// The preferred height of the frame.
-    pub height: f64,
-    /// The minimum allowed height.
-    pub min_height: f64,
-    /// The maximum allowed height.
-    pub max_height: f64,
-    /// The margin spacing around the frame.
-    pub margin: Edge,
+    /// The minimum size constraints for the frame.
+    pub min_size: Size,
+    /// The preferred size of the frame.
+    pub size: Size,
+
+    /// The maximum size constraints for the frame.
+    pub max_size: Size,
+
     /// The alignment of the frame within its container.
     pub alignment: Alignment,
 }
 
-impl Default for Frame {
-    fn default() -> Self {
-        Self {
-            width: f64::NAN,
-            min_width: f64::NAN,
-            max_width: f64::NAN,
-            height: f64::NAN,
-            min_height: f64::NAN,
-            max_height: f64::NAN,
-            margin: Edge::default(),
-            alignment: Alignment::default(),
-        }
-    }
+/// Represents a 2D size with width and height dimensions.
+///
+/// This is used throughout the layout system to represent dimensions,
+/// constraints, and measurements.
+#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct Size {
+    /// The width of the size.
+    pub width: f64,
+    /// The height of the size.
+    pub height: f64,
+}
+
+/// Represents a 2D point with x and y coordinates.
+///
+/// Used for positioning elements within the layout system.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct Point {
+    /// The x-coordinate of the point.
+    pub x: f64,
+    /// The y-coordinate of the point.
+    pub y: f64,
+}
+
+/// Represents a rectangle defined by an origin point and size.
+///
+/// Used for defining bounds and areas within the layout system.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct Rectangle {
+    /// The origin point (top-left corner) of the rectangle.
+    pub origin: Point,
+    /// The size (width and height) of the rectangle.
+    pub size: Size,
 }
 
 impl Frame {
@@ -90,9 +109,8 @@ impl Frame {
 ///
 /// This struct defines spacing values for all four edges of a rectangle,
 /// commonly used for margins, padding, and border spacing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[repr(C)]
 pub struct Edge {
     /// Spacing for the top edge.
     pub top: f64,
@@ -102,17 +120,6 @@ pub struct Edge {
     pub bottom: f64,
     /// Spacing for the left edge.
     pub left: f64,
-}
-
-impl Default for Edge {
-    fn default() -> Self {
-        Self {
-            top: f64::NAN,
-            right: f64::NAN,
-            bottom: f64::NAN,
-            left: f64::NAN,
-        }
-    }
 }
 
 impl Edge {
@@ -169,12 +176,73 @@ impl Edge {
 }
 
 impl Frame {
-    modify_field!(width, f64);
-    modify_field!(min_width, f64);
-    modify_field!(max_width, f64);
-    modify_field!(height, f64);
-    modify_field!(min_height, f64);
-    modify_field!(max_height, f64);
-    modify_field!(margin, Edge);
     modify_field!(alignment, Alignment);
+}
+
+impl Frame {
+    /// Sets the width of the frame.
+    #[must_use]
+    pub fn width(mut self, size: impl Into<f64>) -> Self {
+        self.size.width = size.into();
+        self
+    }
+
+    /// Sets the minimum width constraint of the frame.
+    #[must_use]
+    pub fn min_width(mut self, size: impl Into<f64>) -> Self {
+        self.min_size.width = size.into();
+        self
+    }
+
+    /// Sets the maximum width constraint of the frame.
+    #[must_use]
+    pub fn max_width(mut self, size: impl Into<f64>) -> Self {
+        self.max_size.width = size.into();
+        self
+    }
+
+    /// Sets the height of the frame.
+    #[must_use]
+    pub fn height(mut self, size: impl Into<f64>) -> Self {
+        self.size.height = size.into();
+        self
+    }
+
+    /// Sets the minimum height constraint of the frame.
+    #[must_use]
+    pub fn min_height(mut self, size: impl Into<f64>) -> Self {
+        self.min_size.height = size.into();
+        self
+    }
+
+    /// Sets the maximum height constraint of the frame.
+    #[must_use]
+    pub fn max_height(mut self, size: impl Into<f64>) -> Self {
+        self.max_size.height = size.into();
+        self
+    }
+
+    /// Sets both width and height of the frame.
+    #[must_use]
+    pub fn size(mut self, width: impl Into<f64>, height: impl Into<f64>) -> Self {
+        self.size.width = width.into();
+        self.size.height = height.into();
+        self
+    }
+
+    /// Sets both minimum width and height constraints of the frame.
+    #[must_use]
+    pub fn min_size(mut self, width: impl Into<f64>, height: impl Into<f64>) -> Self {
+        self.min_size.width = width.into();
+        self.min_size.height = height.into();
+        self
+    }
+
+    /// Sets both maximum width and height constraints of the frame.
+    #[must_use]
+    pub fn max_size(mut self, width: impl Into<f64>, height: impl Into<f64>) -> Self {
+        self.max_size.width = width.into();
+        self.max_size.height = height.into();
+        self
+    }
 }
