@@ -33,7 +33,7 @@ WaterUI provides many built-in Views for common UI elements:
 "Hello, World!"
 
 // Equal to text(name.map(|n| format!("Hello, {n}!")))
-text!("Hello, {}!", name)
+text!("Hello, {name}!")
 
 // Styled text
 waterui_text::Text::new("Important!")
@@ -42,17 +42,18 @@ waterui_text::Text::new("Important!")
 
 ### Control Views
 ```rust,ignore
+use waterui::reactive::binding;
 // Button
 button("Click me")
     .action(|| println!("Clicked!"))
 
 // Text field
-let input = waterui::reactive::binding(String::new());
+let input = binding(String::new());
 text_field(&input)
     .placeholder("Enter text...")
 
 // Toggle switch
-let enabled = waterui::reactive::binding(false);
+let enabled = binding(false);
 toggle(&enabled)
 ```
 
