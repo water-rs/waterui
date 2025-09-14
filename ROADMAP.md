@@ -9,46 +9,46 @@
 
 ## 0.2.0 - Usable
 
-- [] Fix memory leak
-- [] Stabilized the layout system
-- [] MVP of Android backend
-- [] CLI
-- [] Gesture support
-- [] Hot reload
-- [] i18n
-- [] Styling
-- [] Document all completed features in our book
+- [ ] Fix memory leak
+- [ ] Stabilized the layout system
+- [ ] MVP of Android backend
+- [ ] CLI
+- [ ] Gesture support
+- [ ] Hot reload
+- [ ] i18n
+- [ ] Styling
+- [ ] Document all completed features in our book
 
 ## 0.3.0 - Practical
 
-- [] Media widget
-- [] Resource manager
-- [] Canvas API
-- [] Persistence
-- [] Some platform-specific APIs (notification, camera, etc.)
-- [] Faster hot reload
-- [] Accessibility
+- [ ] Media widget
+- [ ] Resource manager
+- [ ] Canvas API
+- [ ] Persistence
+- [ ] Some platform-specific APIs (notification, camera, etc.)
+- [ ] Faster hot reload
+- [ ] Accessibility
 
 ## 0.4.0 - Self-Rendering MVP
 
-- [] MVP of self-rendering backend
+- [ ] MVP of self-rendering backend
 
 ## 0.5.0 - Rich text
 
-- [] RichText
-- [] RichTextField
-- [] Built-in markdown support
+- [ ] RichText
+- [ ] RichTextField
+- [ ] Built-in markdown support
 
 ## 0.6.0 - Self-Rendering Enhancements
 
-- [] Support more widgets in self-rendering backend
+- [ ] Support more widgets in self-rendering backend
 
 # 0.7.0 - Developing Enhancement
 
-- [] Preview a view
-- [] VSCode plugin
+- [ ] Preview a view
+- [ ] VSCode plugin
 
 ## 0.8.0 - Animated Self-Rendering
 
-- [] Support animation in self-rendering backend
-- [] Inspector
+- [ ] Support animation in self-rendering backend
+- [ ] Inspector
