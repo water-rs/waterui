@@ -34,9 +34,21 @@
               "icon": "lucide-file",
               "title": "SUMMARY"
             }
+          },
+          {
+            "id": "de7657b41f1670ca",
+            "type": "leaf",
+            "state": {
+              "type": "release-notes",
+              "state": {
+                "currentVersion": "1.9.12"
+              },
+              "icon": "lucide-book-up",
+              "title": "Release Notes 1.9.12"
+            }
           }
         ],
-        "currentTab": 1
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -175,6 +187,7 @@
   },
   "left-ribbon": {
     "hiddenItems": {
+      "bases:Create new base": false,
       "switcher:Open quick switcher": false,
       "graph:Open graph view": false,
       "canvas:Create new canvas": false,
@@ -183,8 +196,10 @@
       "command-palette:Open command palette": false
     }
   },
-  "active": "b0e390deb067e9d5",
+  "active": "de7657b41f1670ca",
   "lastOpenFiles": [
+    "04-advanced/03-error-handling.md.tmp.72017.1757647163670",
+    "04-advanced/03-error-handling.md.tmp.72017.1757647113535",
     "Introduction.md",
     "05-internal/05-philosophy.md",
     "05-internal/03-decode-layout-system.md",
@@ -210,7 +225,6 @@
     "02-core-concept/01-view.md",
     "02-core-concept/02-reactive.md",
     "02-core-concept/03-environment.md",
-    "03-basic/01-conditional.md",
     "05-internal",
     "04-advanced",
     "03-basic",
