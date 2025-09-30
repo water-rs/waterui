@@ -26,6 +26,11 @@ use syn::{Data, DeriveInput, Fields, Meta, parse_macro_input};
 /// | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `Stepper` | Unsigned numeric input |
 /// | `f32`, `f64` | `Slider` | Slider with 0.0-1.0 range |
 /// | `Color` | `ColorPicker` | Color selection widget |
+///
+/// # Panics
+///
+/// This function will panic if the struct contains fields without identifiers,
+/// which should not happen with named fields in normal Rust structs.
 #[proc_macro_derive(FormBuilder)]
 pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -126,7 +131,7 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Converts snake_case to "Title Case"
+/// Converts `snake_case` to "Title Case"
 fn snake_to_title_case(s: &str) -> String {
     s.split('_')
         .map(|word| {

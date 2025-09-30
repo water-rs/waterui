@@ -1,0 +1,121 @@
+//
+//  AnyView.swift
+//
+//
+//  Created by Lexo Liu on 8/1/24.
+//
+
+import Foundation
+import SwiftUI
+import CWaterUI
+
+
+@MainActor
+struct Render{
+    var map:[WuiTypeId:WuiComponent.Type]
+    
+    init() {
+        self.map = [:]
+    }
+    
+    init(_ components: [WuiComponent.Type]){
+        self.init()
+        for component in components {
+            self.map[component.id]=component
+        }
+    }
+    
+    static var main:Render{
+        .init([
+            WuiEmptyView.self,
+            WuiText.self,
+            WuiButton.self,
+            // Stack components will be added here when Rust FFI is implemented:
+            // WaterUI.TextField.self,
+            // WaterUI.Stepper.self,
+            // WaterUI.Divider.self,
+            // WaterUI.Spacer.self,
+            // WaterUI.Progress.self,
+            // WaterUI.Toggle.self,
+            // WaterUI.NavigationView.self,
+            // WaterUI.Dynamic.self,
+            // WaterUI.WithEnv.self,
+            // WaterUI.NavigationLink.self,
+            WuiScrollView.self,
+            WuiContainer.self,
+            // WaterUI.Picker.self,
+            //WaterUI.BackgroundColor.self,
+            //WaterUI.Rectangle.self,
+            //  WaterUI.ForegroundColor.self,
+            // WaterUI.Frame.self,
+            // WaterUI.Slider.self,
+            WuiLabel.self,
+            // WaterUI.ColorPicker.self,
+            //WaterUI.Padding.self,
+            // WaterUI.Icon.self
+        ])
+    }
+    
+    mutating func register(_ component:WuiComponent.Type){
+        self.map[component.id]=component
+    }
+    
+    func render(anyview: OpaquePointer, env: WuiEnvironment) ->SwiftUI.AnyView{
+        let id = waterui_view_id(anyview)
+        if let ty = map[id]{
+            let component=ty.init(anyview: anyview, env: env) as (any View)
+            return SwiftUI.AnyView(component)
+        }
+        else{
+            let next = waterui_view_body(anyview,env.inner)
+            return SwiftUI.AnyView(render(anyview: next!, env: env))
+        }
+    }
+}
+
+extension WuiTypeId:@retroactive Hashable{
+    public func hash(into hasher: inout Hasher) {
+        self.inner.0.hash(into: &hasher)
+        self.inner.1.hash(into: &hasher)
+    }
+}
+
+
+
+@MainActor
+public struct WuiAnyView: View, Identifiable {
+    public var id = UUID()
+    var main: any View
+    private var anyviewPtr: OpaquePointer
+    private var env: WuiEnvironment
+    
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
+        self.anyviewPtr = anyview
+        self.env = env
+        self.main = Render.main.render(anyview: anyview, env: env)
+    }
+    
+    /// Get the type ID of this view for identification purposes
+    public func viewId() -> WuiTypeId {
+        return waterui_view_id(anyviewPtr)
+    }
+    
+    /// Force downcast to a specific component type
+    func forceAs<T: WuiComponent>(_ type: T.Type) -> T? {
+        let currentId = waterui_view_id(anyviewPtr)
+        if currentId == T.id {
+            return T(anyview: anyviewPtr, env: env)
+        }
+        return nil
+    }
+    
+    /// Check if this view is of a specific component type
+    func isType<T: WuiComponent>(_ type: T.Type) -> Bool {
+        let currentId = waterui_view_id(anyviewPtr)
+        return currentId == T.id
+    }
+    
+    public var body: some View {
+        AnyView(main).id(id)
+    }
+}
