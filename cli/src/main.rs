@@ -29,7 +29,7 @@ enum Commands {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let _cli = Cli::parse();
 }
 
 pub fn add_swiftui_backend() {

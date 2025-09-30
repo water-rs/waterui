@@ -75,17 +75,17 @@ extension WuiWatcher_WuiFont {
 }
 
 @MainActor
-struct Text: View, Component {
+struct WuiText: View, WuiComponent {
     static var id = waterui_text_id()
     @State var content: ComputedStr
     @State var font: ComputedFont
 
-    init(text: WuiText) {
+    init(text: CWaterUI.WuiText) {
         self.content = ComputedStr(inner: text.content)
         self.font = ComputedFont(inner: text.font)
     }
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(text: waterui_force_as_text(anyview))
     }
 
@@ -119,14 +119,14 @@ extension SwiftUI.Font {
     }
 }
 
-struct Label: View, Component {
+struct WuiLabel: View, WuiComponent {
     static var id = waterui_label_id()
     var label: WuiStr
     init(label: WuiStr) {
         self.label = label
     }
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(label: WuiStr(waterui_force_as_label(anyview)))
     }
 

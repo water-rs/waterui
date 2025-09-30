@@ -1,76 +1,79 @@
-use waterui_core::raw_view;
-use waterui_core::{AnyView, View, view::TupleViews};
+use waterui_core::{AnyView, View, raw_view};
 
-use crate::stack::hstack;
-
-use super::stack::vstack;
+/// A scrollable container that can display content larger than its bounds.
+///
+/// `ScrollView` is a special component that requires renderer support for actual scrolling behavior.
+/// It cannot be implemented purely through the layout system and must be bridged through FFI
+/// to the platform-specific scrolling implementations.
 #[derive(Debug)]
-#[must_use]
-/// A view that allows scrolling through its content.
 pub struct ScrollView {
-    /// The content to be scrolled.
-    pub content: AnyView,
-    /// The axis along which the content can be scrolled.
-    pub axis: Axis,
+    axis: Axis,
+    content: AnyView,
 }
 
-/// Represents the axis along which the content of a [`ScrollView`] can be scrolled.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Defines the scrolling directions supported by `ScrollView`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum Axis {
-    /// Scrolls horizontally.
+    /// Allow horizontal scrolling only
     Horizontal,
-    /// Scrolls vertically.
+    /// Allow vertical scrolling only (default)
     #[default]
     Vertical,
-    /// Scrolls in both horizontal and vertical directions.
+    /// Allow scrolling in both directions
     All,
 }
 
-// ScrollView implements View manually
-
 impl ScrollView {
-    /// Creates a new [`ScrollView`] scrolling in both horizontal and vertical directions.
-    pub fn new(content: impl View) -> Self {
-        Self {
-            content: AnyView::new(content),
-            axis: Axis::All,
-        }
+    /// Creates a new `ScrollView` with the specified scroll axis and content.
+    #[must_use]
+    pub const fn new(axis: Axis, content: AnyView) -> Self {
+        Self { axis, content }
     }
-    /// Creates a new [`ScrollView`] scrolling horizontally.
+
+    /// Decomposes the `ScrollView` into its axis and content.
+    pub fn into_inner(self) -> (Axis, AnyView) {
+        (self.axis, self.content)
+    }
+
+    /// Creates a `ScrollView` with horizontal scrolling.
     pub fn horizontal(content: impl View) -> Self {
-        Self {
-            content: AnyView::new(content),
-            axis: Axis::Horizontal,
-        }
+        Self::new(Axis::Horizontal, AnyView::new(content))
     }
-    /// Creates a new [`ScrollView`] scrolling vertically.
+
+    /// Creates a `ScrollView` with vertical scrolling.
     pub fn vertical(content: impl View) -> Self {
-        Self {
-            content: AnyView::new(content),
-            axis: Axis::Vertical,
-        }
+        Self::new(Axis::Vertical, AnyView::new(content))
     }
-}
 
-/// Creates a new [`ScrollView`] with the given content arranged vertically.
-///
-/// Equal to calling `ScrollView::new(vstack(content))`.
-pub fn scroll(content: impl TupleViews) -> ScrollView {
-    ScrollView::new(vstack(content))
-}
-
-/// Creates a new [`ScrollView`] with the given content arranged vertically and scrolling vertically.
-///
-/// Equal to calling `ScrollView::vertical(vstack(contents))`.
-pub fn vscroll(contents: impl TupleViews) -> ScrollView {
-    ScrollView::vertical(vstack(contents))
-}
-
-/// Creates a new [`ScrollView`] with the given content arranged horizontally and scrolling horizontally.
-///
-/// Equal to calling `ScrollView::horizontal(hstack(contents))`.
-pub fn hscroll(contents: impl TupleViews) -> ScrollView {
-    ScrollView::horizontal(hstack(contents))
+    /// Creates a `ScrollView` with scrolling in both directions.
+    pub fn both(content: impl View) -> Self {
+        Self::new(Axis::All, AnyView::new(content))
+    }
 }
 
 raw_view!(ScrollView);
+
+/// Creates a vertical `ScrollView` with the given content.
+///
+/// This is the most common scroll direction for lists and long content.
+/// The actual scrolling behavior is implemented by the renderer backend.
+pub fn scroll(content: impl View) -> ScrollView {
+    ScrollView::vertical(content)
+}
+
+/// Creates a horizontal `ScrollView` with the given content.
+///
+/// Useful for wide content that needs to scroll left-right.
+/// The actual scrolling behavior is implemented by the renderer backend.
+pub fn scroll_horizontal(content: impl View) -> ScrollView {
+    ScrollView::horizontal(content)
+}
+
+/// Creates a `ScrollView` that can scroll in both directions.
+///
+/// Useful for large content like images or tables that may need both horizontal and vertical scrolling.
+/// The actual scrolling behavior is implemented by the renderer backend.
+pub fn scroll_both(content: impl View) -> ScrollView {
+    ScrollView::both(content)
+}

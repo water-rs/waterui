@@ -1,4 +1,4 @@
-use crate::{IntoFFI, WuiTypeId, str::WuiStr};
+use crate::{IntoFFI, WuiStr, WuiTypeId};
 
 pub mod layout;
 
@@ -15,7 +15,7 @@ pub mod button;
 
 ffi_view!(
     waterui::Str,
-    *mut WuiStr,
+    WuiStr,
     waterui_label_id,
     waterui_force_as_label
 );
@@ -38,11 +38,6 @@ pub mod dynamic;
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_empty_id() -> WuiTypeId {
     core::any::TypeId::of::<()>().into_ffi()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
-    core::any::TypeId::of::<waterui::component::layout::spacer::Spacer>().into_ffi()
 }
 
 pub mod progress;

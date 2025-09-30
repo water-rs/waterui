@@ -8,19 +8,19 @@
 import SwiftUI
 import CWaterUI
 @MainActor
-struct Dynamic: View,Component {
+struct WuiDynamic: View,WuiComponent {
     static var id=waterui_dynamic_id()
-    @State var view:AnyView?
+    @State var view:WuiAnyView?
     var dynamic:OpaquePointer
-    var env:Environment
+    var env:WuiEnvironment
     
-    init(dynamic:OpaquePointer,env:Environment){
+    init(dynamic:OpaquePointer,env:WuiEnvironment){
         self.dynamic=dynamic
         self.env=env
     }
 
     
-    init(anyview: OpaquePointer,env:Environment) {
+    init(anyview: OpaquePointer,env:WuiEnvironment) {
         self.init(dynamic: waterui_force_as_dynamic(anyview), env: env)
     }
     
@@ -39,11 +39,11 @@ struct Dynamic: View,Component {
 
 extension WuiWatcher_____WuiAnyView{
     @MainActor
-    init(_ f:@escaping (WaterUI.AnyView)->Void, env:Environment) {
+    init(_ f:@escaping (WuiAnyView)->Void, env:WuiEnvironment) {
         class Wrapper {
-            var inner: (WaterUI.AnyView) -> Void
-            var env:Environment
-            init(inner: @escaping (WaterUI.AnyView) -> Void,env:Environment) {
+            var inner: (WuiAnyView) -> Void
+            var env:WuiEnvironment
+            init(inner: @escaping (WuiAnyView) -> Void,env:WuiEnvironment) {
                 self.inner = inner
                 self.env=env
             }
@@ -53,7 +53,7 @@ extension WuiWatcher_____WuiAnyView{
 
         self.init(data: data, call: { data, value,ctx in
             let data = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue()
-            (data.inner)(AnyView(anyview: value!, env: data.env))
+            (data.inner)(WuiAnyView(anyview: value!, env: data.env))
 
         }, drop: { data in
             _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()

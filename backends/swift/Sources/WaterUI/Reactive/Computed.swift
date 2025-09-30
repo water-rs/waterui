@@ -11,6 +11,33 @@ import Combine
 import SwiftUI
 
 @MainActor
+class Computed<T>{
+    var inner: OpaquePointer
+    var drop: (OpaquePointer)->Void
+    
+    init(inner: OpaquePointer, drop: @escaping (OpaquePointer)->Void){
+        self.inner = inner
+        self.drop = drop
+    }
+    
+    func getValue() -> T {
+        fatalError("Not implemented")
+    }
+    
+    func watch(_ f:@escaping (T,Animation?)->()) -> WatcherGuard{
+        fatalError("Not implemented")
+    }
+    
+    deinit{
+        let this=self
+        Task{@MainActor in
+            this.drop(this.inner)
+        }
+    }
+
+}
+
+@MainActor
 class WatcherGuard{
     var inner:OpaquePointer
     init(_ inner: OpaquePointer) {
@@ -73,7 +100,7 @@ class ComputedStr{
     
     
     func watch(_ f:@escaping (String,Animation?)->()) -> WatcherGuard{
-        let g=waterui_watch_computed_str(self.inner, WuiWatcher_____WuiStr({value,animation in
+        let g=waterui_watch_computed_str(self.inner, WuiWatcher_WuiStr({value,animation in
             f(value,animation)
         }))
         return WatcherGuard(g!)
@@ -177,7 +204,8 @@ extension SwiftUI.Animation{
 }
 
 
-extension WuiWatcher_____WuiStr {
+@MainActor
+extension WuiWatcher_WuiStr {
     init(_ f: @escaping (String,Animation?) -> Void) {
         class Wrapper {
             var inner: (String,Animation?) -> Void
@@ -190,7 +218,7 @@ extension WuiWatcher_____WuiStr {
 
         self.init(data: data, call: { data, value, metadata in
             let f = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue().inner
-            f(WuiStr(value!).toString(),Animation(waterui_get_animation(metadata)))
+            f(WuiStr(value).toString(),Animation(waterui_get_animation(metadata)))
         }, drop: { data in
             _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()
 

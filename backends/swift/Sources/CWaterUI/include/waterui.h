@@ -3,12 +3,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef enum WuiAlignment {
-  WuiAlignment_Default,
-  WuiAlignment_Leading,
-  WuiAlignment_Center,
-  WuiAlignment_Trailing,
-} WuiAlignment;
+
+typedef struct WuiArraySlice {
+  void *head;
+  uintptr_t len;
+} WuiArraySlice;
+
+typedef struct WuiArrayVTable {
+  void (*drop)(void*);
+  struct WuiArraySlice (*slice)(const void*);
+} WuiArrayVTable;
+
+typedef struct WuiArray {
+  void *data;
+  struct WuiArrayVTable vtable;
+} WuiArray;
+
+
 
 typedef enum WuiAnimation {
   WuiAnimation_Default,
@@ -36,16 +47,10 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
-enum WuiProgressStyle {
+typedef enum WuiProgressStyle {
   WuiProgressStyle_Linear,
   WuiProgressStyle_Circular,
-};
-
-typedef enum WuiStackMode {
-  WuiStackMode_Vertical,
-  WuiStackMode_Horizonal,
-  WuiStackMode_Layered,
-} WuiStackMode;
+} WuiProgressStyle;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -207,15 +212,6 @@ typedef struct Environment Environment;
  */
 typedef struct Metadata Metadata;
 
-/**
- * A string type that can be either a static reference or a ref-counted owned string.
- *
- * `Str` combines the benefits of both `&'static str` and `String` with efficient
- * cloning and passing, automatically using the most appropriate representation
- * based on the source.
- */
-typedef struct Str Str;
-
 typedef struct WuiAction WuiAction;
 
 typedef struct WuiAnyView WuiAnyView;
@@ -224,7 +220,7 @@ typedef struct WuiDynamic WuiDynamic;
 
 typedef struct WuiEnv WuiEnv;
 
-typedef struct WuiStr WuiStr;
+typedef struct WuiLayout WuiLayout;
 
 typedef struct WuiTabContent WuiTabContent;
 
@@ -241,50 +237,150 @@ typedef struct WuiTypeId {
   uint64_t inner[2];
 } WuiTypeId;
 
+typedef struct WuiArraySlice_u8 {
+  uint8_t *head;
+  uintptr_t len;
+} WuiArraySlice_u8;
+
+typedef struct WuiArrayVTable_u8 {
+  void (*drop)(void*);
+  struct WuiArraySlice_u8 (*slice)(const void*);
+} WuiArrayVTable_u8;
+
 /**
- * A C-compatible array structure that wraps a pointer and length.
- *
- * This type is used as an FFI-compatible representation of Rust collections.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
-typedef struct WuiArray_____WuiAnyView {
+typedef struct WuiArray_u8 {
+  uint8_t *_Nonnull data;
+  struct WuiArrayVTable_u8 vtable;
+} WuiArray_u8;
+
+typedef struct WuiStr {
+  struct WuiArray_u8 _0;
+} WuiStr;
+
+typedef struct WuiArraySlice_____WuiAnyView {
   struct WuiAnyView **head;
   uintptr_t len;
-} WuiArray_____WuiAnyView;
+} WuiArraySlice_____WuiAnyView;
 
-typedef struct WuiStack {
-  struct WuiArray_____WuiAnyView contents;
-  enum WuiStackMode mode;
-} WuiStack;
-
-typedef struct WuiGridRow {
-  struct WuiArray_____WuiAnyView columns;
-} WuiGridRow;
+typedef struct WuiArrayVTable_____WuiAnyView {
+  void (*drop)(void*);
+  struct WuiArraySlice_____WuiAnyView (*slice)(const void*);
+} WuiArrayVTable_____WuiAnyView;
 
 /**
- * A C-compatible array structure that wraps a pointer and length.
- *
- * This type is used as an FFI-compatible representation of Rust collections.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
-typedef struct WuiArray_WuiGridRow {
-  struct WuiGridRow *head;
-  uintptr_t len;
-} WuiArray_WuiGridRow;
+typedef struct WuiArray_____WuiAnyView {
+  struct WuiAnyView **_Nonnull data;
+  struct WuiArrayVTable_____WuiAnyView vtable;
+} WuiArray_____WuiAnyView;
 
-typedef struct WuiGrid {
-  enum WuiAlignment alignment;
-  double h_space;
-  double v_space;
-  struct WuiArray_WuiGridRow rows;
-} WuiGrid;
+typedef struct WuiContainer {
+  struct WuiLayout *layout;
+  struct WuiArray_____WuiAnyView contents;
+} WuiContainer;
+
+typedef struct WuiProposalSize {
+  double width;
+  double height;
+} WuiProposalSize;
+
+typedef struct WuiArraySlice_WuiProposalSize {
+  struct WuiProposalSize *head;
+  uintptr_t len;
+} WuiArraySlice_WuiProposalSize;
+
+typedef struct WuiArrayVTable_WuiProposalSize {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiProposalSize (*slice)(const void*);
+} WuiArrayVTable_WuiProposalSize;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ */
+typedef struct WuiArray_WuiProposalSize {
+  struct WuiProposalSize *_Nonnull data;
+  struct WuiArrayVTable_WuiProposalSize vtable;
+} WuiArray_WuiProposalSize;
+
+typedef struct WuiChildMetadata {
+  struct WuiProposalSize proposal;
+  uint8_t priority;
+  bool stretch;
+} WuiChildMetadata;
+
+typedef struct WuiArraySlice_WuiChildMetadata {
+  struct WuiChildMetadata *head;
+  uintptr_t len;
+} WuiArraySlice_WuiChildMetadata;
+
+typedef struct WuiArrayVTable_WuiChildMetadata {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiChildMetadata (*slice)(const void*);
+} WuiArrayVTable_WuiChildMetadata;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ */
+typedef struct WuiArray_WuiChildMetadata {
+  struct WuiChildMetadata *_Nonnull data;
+  struct WuiArrayVTable_WuiChildMetadata vtable;
+} WuiArray_WuiChildMetadata;
 
 typedef struct WuiScrollView {
-  struct WuiAnyView *content;
   enum WuiAxis axis;
+  struct WuiAnyView *content;
 } WuiScrollView;
 
-typedef struct WuiOverlay {
-  struct WuiAnyView *content;
-} WuiOverlay;
+typedef struct WuiPoint {
+  double x;
+  double y;
+} WuiPoint;
+
+typedef struct WuiSize {
+  double width;
+  double height;
+} WuiSize;
+
+typedef struct WuiRect {
+  struct WuiPoint origin;
+  struct WuiSize size;
+} WuiRect;
+
+typedef struct WuiArraySlice_WuiRect {
+  struct WuiRect *head;
+  uintptr_t len;
+} WuiArraySlice_WuiRect;
+
+typedef struct WuiArrayVTable_WuiRect {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiRect (*slice)(const void*);
+} WuiArrayVTable_WuiRect;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ */
+typedef struct WuiArray_WuiRect {
+  struct WuiRect *_Nonnull data;
+  struct WuiArrayVTable_WuiRect vtable;
+} WuiArray_WuiRect;
 
 /**
  * C representation of a WaterUI button for FFI purposes.
@@ -450,7 +546,7 @@ typedef struct WuiWatcher_WuiColor {
   void (*drop)(void*);
 } WuiWatcher_WuiColor;
 
-typedef struct WuiStr *Url;
+typedef struct WuiStr Url;
 
 /**
  * C representation of Photo configuration
@@ -503,11 +599,11 @@ typedef struct WuiProgress {
   enum WuiProgressStyle style;
 } WuiProgress;
 
-typedef struct WuiWatcher_____WuiStr {
+typedef struct WuiWatcher_WuiStr {
   void *data;
-  void (*call)(const void*, struct WuiStr*, const struct Metadata*);
+  void (*call)(const void*, struct WuiStr, const struct Metadata*);
   void (*drop)(void*);
-} WuiWatcher_____WuiStr;
+} WuiWatcher_WuiStr;
 
 typedef struct WuiWatcher_i32 {
   void *data;
@@ -592,7 +688,7 @@ typedef struct WuiWatcher_WuiId {
  * The pointer must be a valid pointer to a properly initialized value
  * of the expected type, and must not be used after this function is called.
  */
-void waterui_env_drop(struct WuiEnv *value);
+void waterui_drop_env(struct WuiEnv *value);
 
 /**
  * Drops the FFI value.
@@ -602,7 +698,7 @@ void waterui_env_drop(struct WuiEnv *value);
  * The pointer must be a valid pointer to a properly initialized value
  * of the expected type, and must not be used after this function is called.
  */
-void waterui_any_view_drop(struct WuiAnyView *value);
+void waterui_drop_any_view(struct WuiAnyView *value);
 
 /**
  * Creates a new environment instance
@@ -639,6 +735,8 @@ struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment
  */
 struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
 
+struct WuiAnyView *waterui_empty_anyview(void);
+
 /**
  * Drops the FFI value.
  *
@@ -661,18 +759,6 @@ void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
-/**
- * Frees a WuiArray without dropping its elements.
- *
- * # Safety
- *
- * The caller must ensure that:
- * - `arr` is a valid WuiArray that was previously created by Rust code
- * - The array elements are handled separately and not accessed after this call
- * - This function is only called once per array
- */
-void waterui_free_anyview_array_without_free_elements(struct WuiArray_____WuiAnyView arr);
-
 struct WuiTypeId waterui_divider_id(void);
 
 /**
@@ -680,11 +766,21 @@ struct WuiTypeId waterui_divider_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStr *waterui_force_as_label(struct WuiAnyView *view);
+struct WuiStr waterui_force_as_label(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_label_id(void);
 
 struct WuiTypeId waterui_empty_id(void);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_drop_layout(struct WuiLayout *value);
 
 struct WuiTypeId waterui_spacer_id(void);
 
@@ -693,36 +789,55 @@ struct WuiTypeId waterui_spacer_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiStack waterui_force_as_stack(struct WuiAnyView *view);
+struct WuiContainer waterui_force_as_container(struct WuiAnyView *view);
 
-struct WuiTypeId waterui_stack_id(void);
+struct WuiTypeId waterui_container_id(void);
+
+/**
+ * Proposes sizes for children based on parent constraints and child metadata.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ * The caller must ensure the layout object remains valid for the duration of this call.
+ */
+struct WuiArray_WuiProposalSize waterui_layout_propose(struct WuiLayout *layout,
+                                                       struct WuiProposalSize parent,
+                                                       struct WuiArray_WuiChildMetadata children);
+
+/**
+ * Calculates the size required by the layout based on parent constraints and child metadata.
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ * The caller must ensure the layout object remains valid for the duration of this call.
+ */
+struct WuiProposalSize waterui_layout_size(struct WuiLayout *layout,
+                                           struct WuiProposalSize parent,
+                                           struct WuiArray_WuiChildMetadata children);
 
 /**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiGrid waterui_force_as_grid(struct WuiAnyView *view);
+struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
-struct WuiTypeId waterui_grid_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiScrollView waterui_force_as_scroll(struct WuiAnyView *view);
-
-struct WuiTypeId waterui_scroll_id(void);
+struct WuiTypeId waterui_scroll_view_id(void);
 
 /**
+ * Places child views within the specified bounds based on layout constraints and child metadata.
+ *
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ * The caller must ensure the layout object remains valid for the duration of this call.
  */
-struct WuiOverlay waterui_force_as_overlay(struct WuiAnyView *view);
-
-struct WuiTypeId waterui_overlay_id(void);
+struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
+                                             struct WuiRect bound,
+                                             struct WuiProposalSize proposal,
+                                             struct WuiArray_WuiChildMetadata children);
 
 /**
  * # Safety
@@ -938,7 +1053,7 @@ void waterui_drop_computed_str(struct Computed_Str *value);
  *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiStr *waterui_read_computed_str(const struct Computed_Str *computed);
+struct WuiStr waterui_read_computed_str(const struct Computed_Str *computed);
 
 /**
  * Watches for changes in a computed
@@ -949,7 +1064,7 @@ struct WuiStr *waterui_read_computed_str(const struct Computed_Str *computed);
  * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_str(const struct Computed_Str *computed,
-                                                   struct WuiWatcher_____WuiStr watcher);
+                                                   struct WuiWatcher_WuiStr watcher);
 
 /**
  * Drops the FFI value.
@@ -1217,7 +1332,7 @@ void waterui_drop_binding_str(struct Binding_Str *value);
  *
  * The binding pointer must be valid and point to a properly initialized binding object.
  */
-struct WuiStr *waterui_read_binding_str(const struct Binding_Str *binding);
+struct WuiStr waterui_read_binding_str(const struct Binding_Str *binding);
 
 /**
  * Sets a new value to a binding
@@ -1227,7 +1342,7 @@ struct WuiStr *waterui_read_binding_str(const struct Binding_Str *binding);
  * The binding pointer must be valid and point to a properly initialized binding object.
  * The value must be a valid instance of the FFI type.
  */
-void waterui_set_binding_str(struct Binding_Str *binding, struct WuiStr *value);
+void waterui_set_binding_str(struct Binding_Str *binding, struct WuiStr value);
 
 /**
  * Watches for changes in a binding
@@ -1238,7 +1353,7 @@ void waterui_set_binding_str(struct Binding_Str *binding, struct WuiStr *value);
  * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_binding_str(const struct Binding_Str *binding,
-                                                  struct WuiWatcher_____WuiStr watcher);
+                                                  struct WuiWatcher_WuiStr watcher);
 
 /**
  * Drops the FFI value.
@@ -1414,192 +1529,7 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *bindin
  */
 void waterui_drop_watcher_metadata(struct WuiWatcherMetadata *value);
 
-/**
- * Drops the FFI value.
- *
- * # Safety
- *
- * The pointer must be a valid pointer to a properly initialized value
- * of the expected type, and must not be used after this function is called.
- */
-void waterui_str_drop(struct WuiStr *value);
-
-/**
- * Creates a new empty Str instance.
- *
- * # Returns
- *
- * A new empty Str instance.
- */
-struct WuiStr *waterui_str_new(void);
-
-/**
- * Creates a new Str instance from a C string.
- *
- * # Parameters
- *
- * * `c_str` - A null-terminated C string pointer
- *
- * # Returns
- *
- * A new Str instance containing the content of the C string.
- *
- * # Safety
- *
- * The caller must ensure that:
- * * `c_str` is a valid pointer to a null-terminated C string
- * * `c_str` points to a valid UTF-8 encoded string
- * * The memory referenced by `c_str` remains valid for the duration of this call
- *
- * Undefined behavior (UB) will occur if any of these conditions are violated.
- */
-struct WuiStr *waterui_str_from_cstr(const char *c_str);
-
-/**
- * Creates a clone of the given Str instance.
- *
- * # Parameters
- *
- * * `str` - A pointer to a valid Str instance
- *
- * # Returns
- *
- * A new Str instance that is a clone of the input Str.
- *
- * # Safety
- *
- * The caller must ensure that `str` is a valid pointer to a Str instance.
- * If `str` is null or invalid, undefined behavior will occur.
- */
-struct WuiStr *waterui_str_clone(const struct Str *str);
-
-/**
- * Returns the length of the Str in bytes.
- *
- * # Parameters
- *
- * * `str` - A pointer to a valid Str instance
- *
- * # Returns
- *
- * The length of the string in bytes.
- *
- * # Safety
- *
- * The caller must ensure that `str` is a valid pointer to a Str instance.
- * If `str` is null or points to invalid memory, undefined behavior will occur.
- */
-uintptr_t waterui_str_len(const struct Str *str);
-
-/**
- * Converts a Str to a C string.
- *
- * # Parameters
- *
- * * `str` - A pointer to a valid Str instance
- *
- * # Returns
- *
- * A pointer to a new null-terminated C string or NULL if conversion fails.
- * The caller is responsible for freeing this memory using the appropriate C function.
- *
- * # Safety
- *
- * The caller must ensure that:
- * * `str` is a valid pointer to a Str instance
- * * The returned C string must be freed by the caller to avoid memory leaks
- *
- * If `str` is null or points to invalid memory, undefined behavior will occur.
- */
-char *waterui_str_to_cstr(const struct Str *str);
-
-/**
- * Appends a C string to the end of a Str.
- *
- * # Parameters
- *
- * * `str` - A pointer to a valid Str instance that will be modified
- * * `c_str` - A null-terminated C string to append
- *
- * # Safety
- *
- * The caller must ensure that:
- * * `str` is a valid pointer to a Str instance
- * * `c_str` is a valid pointer to a null-terminated C string
- * * `c_str` points to a valid UTF-8 encoded string
- * * The memory referenced by both pointers remains valid for the duration of this call
- *
- * Undefined behavior will occur if any of these conditions are violated.
- */
-void waterui_str_append(struct Str *str, const char *c_str);
-
-/**
- * Concatenates two Str instances.
- *
- * # Parameters
- *
- * * `str1` - A pointer to the first valid Str instance
- * * `str2` - A pointer to the second valid Str instance
- *
- * # Returns
- *
- * A new Str instance that is the concatenation of str1 and str2.
- *
- * # Safety
- *
- * The caller must ensure that both `str1` and `str2` are valid pointers to Str instances.
- * If either pointer is null or points to invalid memory, undefined behavior will occur.
- */
-struct WuiStr *waterui_str_concat(const struct Str *str1, const struct Str *str2);
-
-/**
- * Creates a Str from a byte array.
- *
- * # Parameters
- *
- * * `bytes` - A pointer to a byte array
- * * `len` - The length of the byte array
- *
- * # Returns
- *
- * A new Str instance containing the bytes interpreted as UTF-8.
- *
- * # Safety
- *
- * The caller must ensure that:
- * * `bytes` is a valid pointer to a byte array of at least `len` bytes
- * * The bytes must form a valid UTF-8 string
- * * The memory referenced by `bytes` remains valid for the duration of this call
- *
- * This function uses `from_utf8_unchecked` internally, so providing invalid UTF-8 will result
- * in undefined behavior.
- */
-struct WuiStr *waterui_str_from_bytes(const char *bytes, unsigned int len);
-
-/**
- * Gets a pointer to the raw UTF-8 bytes of a Str.
- *
- * This function returns a pointer to the actual string data, regardless of whether
- * the string is static or heap-allocated. The returned pointer is valid as long as
- * the Str instance exists.
- *
- * # Parameters
- *
- * * `str` - A pointer to a valid Str instance
- *
- * # Returns
- *
- * A pointer to the UTF-8 bytes, or null if the input is null.
- *
- * # Safety
- *
- * The caller must ensure that:
- * * `str` is a valid pointer to a Str instance
- * * The returned pointer is not used after the Str is dropped
- * * The data pointed to is not modified
- */
-const uint8_t *waterui_str_as_ptr(const struct Str *str);
-
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
+

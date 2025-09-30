@@ -25,13 +25,14 @@ pub mod closure;
 pub mod color;
 pub mod components;
 pub mod reactive;
-pub mod str;
 mod ty;
 use core::ptr::null_mut;
 
 use alloc::boxed::Box;
 pub use ty::*;
-use waterui::{AnyView, View};
+use waterui::{AnyView, Str, View};
+
+use crate::array::WuiArray;
 #[macro_export]
 macro_rules! export {
     () => {
@@ -189,9 +190,9 @@ pub trait IntoRust {
 
 ffi_safe!(u8, i32, f64, bool);
 
-ffi_type!(WuiEnv, waterui::Environment, waterui_env_drop);
+ffi_type!(WuiEnv, waterui::Environment, waterui_drop_env);
 
-ffi_type!(WuiAnyView, waterui::AnyView, waterui_any_view_drop);
+ffi_type!(WuiAnyView, waterui::AnyView, waterui_drop_any_view);
 
 /// Creates a new environment instance
 #[unsafe(no_mangle)]
@@ -237,4 +238,29 @@ pub unsafe extern "C" fn waterui_view_body(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
     unsafe { (&*view).type_id().into_ffi() }
+}
+
+// UTF-8 string represented as a byte array
+#[repr(C)]
+pub struct WuiStr(WuiArray<u8>);
+
+impl IntoFFI for Str {
+    type FFI = WuiStr;
+    fn into_ffi(self) -> Self::FFI {
+        WuiStr(WuiArray::new(self))
+    }
+}
+
+impl IntoRust for WuiStr {
+    type Rust = Str;
+    unsafe fn into_rust(self) -> Self::Rust {
+        let bytes = unsafe { self.0.into_rust() };
+        // Safety: We assume the input bytes are valid UTF-8
+        unsafe { Str::from_utf8_unchecked(bytes) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
+    AnyView::default().into_ffi()
 }

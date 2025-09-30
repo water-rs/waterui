@@ -7,7 +7,7 @@ members = [
     "utils/*",
     # "backends/gtk4",
     # Gtk4 blocks the build of the api doc, so we disable it temporarily
-    "backends/web",
+    # "backends/web",
     "render_utils",
     "window",
     "ffi"
