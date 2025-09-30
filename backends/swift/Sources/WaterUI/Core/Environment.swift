@@ -8,7 +8,7 @@
 import CWaterUI
 
 @MainActor
-public class Environment{
+public class WuiEnvironment {
     var inner: OpaquePointer
     init(_ inner: OpaquePointer) {
         self.inner = inner
@@ -18,7 +18,7 @@ public class Environment{
         weak var this=self
         Task{@MainActor in
             if let this=this{
-                waterui_env_drop(this.inner)
+                waterui_drop_env(this.inner)
             }
         }
        
