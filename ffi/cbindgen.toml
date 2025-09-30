@@ -1,9 +1,30 @@
 language = "C"
 
+after_includes = """
+
+
+typedef struct WuiArraySlice {
+  void *head;
+  uintptr_t len;
+} WuiArraySlice;
+
+typedef struct WuiArrayVTable {
+  void (*drop)(void*);
+  struct WuiArraySlice (*slice)(const void*);
+} WuiArrayVTable;
+
+typedef struct WuiArray {
+  void *data;
+  struct WuiArrayVTable vtable;
+} WuiArray;
+
+"""
+
 trailer = """
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
+
 """
 
 [export.rename]
@@ -18,10 +39,10 @@ non_null_attribute = "_Nonnull"
 
 [parse]
 parse_deps = true
-include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","nami"]
+include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","nami"]
 
 
 [parse.expand]
-crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","nami"]
+crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","nami"]
 
 

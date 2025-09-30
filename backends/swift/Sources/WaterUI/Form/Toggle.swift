@@ -10,16 +10,16 @@ import CWaterUI
 import SwiftUI
 
 
-public struct Toggle:View,Component{
+public struct Toggle:View,WuiComponent{
     static var id=waterui_toggle_id()
     @ObservedObject private var isOn:BindingBool
-    var label:AnyView
-    init(toggle:WuiToggle,env:Environment){
+    var label:WuiAnyView
+    init(toggle:WuiToggle,env:WuiEnvironment){
         isOn = BindingBool(inner: toggle.toggle)
-        label = AnyView(anyview: toggle.label, env: env)
+        label = WuiAnyView(anyview: toggle.label, env: env)
     }
     
-    init(anyview:OpaquePointer,env:Environment){
+    init(anyview:OpaquePointer,env:WuiEnvironment){
         self.init(toggle: waterui_force_as_toggle(anyview), env: env)
     }
     

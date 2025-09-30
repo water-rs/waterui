@@ -1,14 +1,14 @@
 import CWaterUI
 import SwiftUI
 
-struct Spacer: View, Component {
+struct WuiSpacer: View, WuiComponent {
     static var id = waterui_spacer_id()
 
     var body: some View {
-        SwiftUI.Spacer()
+        Spacer()
     }
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
 
     }
 }
