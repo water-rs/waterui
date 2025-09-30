@@ -135,7 +135,7 @@ cargo doc --all-features --no-deps --workspace
 
 ## 🏗️ Project Status
 
-**⚠️ Early Development** - WaterUI is in active early development. APIs may change as we stabilize the framework. We're working towards production-ready releases with comprehensive platform support.
+**⚠️ Early Development** - `WaterUI` is in active early development. APIs may change as we stabilize the framework. We're working towards production-ready releases with comprehensive platform support.
 
 ## 📄 License
 
