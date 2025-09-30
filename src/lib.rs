@@ -6,6 +6,7 @@ extern crate alloc;
 mod macros;
 pub mod background;
 pub mod component;
+/// Error handling utilities for converting standard errors into renderable views.
 pub mod error;
 pub mod filter;
 /// Task management utilities and async support.
