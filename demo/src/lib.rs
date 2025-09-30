@@ -33,7 +33,7 @@ pub fn main() -> impl View {
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    scroll((
+    scroll(vstack((
         // App header
         vstack((
             text("WaterUI Demo").size(24.0),
@@ -71,7 +71,7 @@ pub fn main() -> impl View {
         spacer(),
         Divider,
         "Built with WaterUI - Cross-platform Reactive UI Framework",
-    ))
+    )))
 }
 
 waterui_ffi::export!();

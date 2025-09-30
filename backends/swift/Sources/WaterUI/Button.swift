@@ -8,22 +8,22 @@ import CWaterUI
 import SwiftUI
 
 @MainActor
-struct Button: View, Component {
+struct WuiButton: View, WuiComponent {
     static var id = waterui_button_id()
-    private var label: AnyView
+    private var label: WuiAnyView
     private var action: Action
 
-    init(button: WuiButton, env: WaterUI.Environment) {
-        label = AnyView(anyview: button.label, env: env)
+    init(button: CWaterUI.WuiButton, env: WuiEnvironment) {
+        label = WuiAnyView(anyview: button.label, env: env)
         action = Action(inner: button.action, env: env)
     }
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(button: waterui_force_as_button(anyview), env: env)
     }
 
     var body: some View {
-        SwiftUI.Button {
+        Button {
             action.call()
         } label: {
             label
@@ -34,8 +34,8 @@ struct Button: View, Component {
 @MainActor
 class Action {
     private var inner: OpaquePointer
-    private var env: WaterUI.Environment
-    init(inner: OpaquePointer, env: WaterUI.Environment) {
+    private var env: WuiEnvironment
+    init(inner: OpaquePointer, env: WuiEnvironment) {
         self.inner = inner
         self.env = env
     }
@@ -46,11 +46,9 @@ class Action {
 
     deinit {
 
-        weak var this = self
+        let this = self
         Task { @MainActor in
-            if let this = this {
-                waterui_drop_action(this.inner)
-            }
+            waterui_drop_action(this.inner)
         }
 
     }

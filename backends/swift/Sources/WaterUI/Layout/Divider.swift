@@ -8,14 +8,14 @@
 import CWaterUI
 import SwiftUI
 
-struct Divider: View, Component {
+struct Divider: View, WuiComponent {
     static var id = waterui_divider_id()
 
     var body: some View {
         SwiftUI.Divider()
     }
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
 
     }
 }
