@@ -1,8 +1,7 @@
 use crate::color::WuiColor;
 use crate::components::media::{WuiLivePhotoSource, WuiVideo};
 use crate::components::text::WuiFont;
-use crate::str::WuiStr;
-use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiId, impl_opaque_drop};
+use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::{AnyView, Color, Str};
 use waterui::{Binding, Computed, Signal, reactive::watcher::Metadata};
@@ -105,7 +104,7 @@ macro_rules! impl_binding {
 
 impl_computed!(
     Str,
-    *mut WuiStr,
+    WuiStr,
     waterui_read_computed_str,
     waterui_watch_computed_str,
     waterui_drop_computed_str
@@ -211,7 +210,7 @@ impl<T> Drop for WuiWatcher<T> {
 
 impl_binding!(
     Str,
-    *mut WuiStr,
+    WuiStr,
     waterui_read_binding_str,
     waterui_set_binding_str,
     waterui_watch_binding_str,

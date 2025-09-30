@@ -1,8 +1,112 @@
-//! Error handling for the framework.
+//! Error handling for the `WaterUI` framework.
 //!
-//! This module provides error handling utilities that integrate with the framework's view system.
-//! It includes types to convert standard errors into renderable views and extension traits to
-//! simplify error handling in view-based applications.
+//! This module provides comprehensive error handling utilities that seamlessly integrate with the
+//! framework's view system. It enables developers to convert standard Rust errors into renderable
+//! views, customize error presentation, and handle errors gracefully within the declarative UI paradigm.
+//!
+//! # Overview
+//!
+//! The error handling system is built around several key components:
+//!
+//! - [`Error`]: A type-erased error wrapper that can render as a view
+//! - [`DefaultErrorView`]: Environment-based configuration for default error rendering
+//! - [`UseDefaultErrorView`]: A view that delegates to the environment's error renderer
+//! - [`ResultExt`]: Extension trait for `Result` types to simplify error-to-view conversion
+//!
+//! # Basic Usage
+//!
+//! ## Converting Errors to Views
+//!
+//! Any standard error can be converted to a renderable view:
+//!
+//! ```rust
+//! use waterui::widget::error::Error;
+//! use std::io;
+//!
+//! fn handle_io_error() -> Error {
+//!     let io_error = io::Error::new(io::ErrorKind::NotFound, "File not found");
+//!     Error::new(io_error)
+//! }
+//! ```
+//!
+//! ## Configuring Default Error Views
+//!
+//! Set up a custom error renderer in your environment:
+//!
+//! ```rust
+//! use waterui::Environment;
+//! use waterui::widget::error::{DefaultErrorView, BoxedStdError};
+//!
+//! let env = Environment::new()
+//!     .with(DefaultErrorView::new(|error: BoxedStdError| {
+//!         format!("❌ Error: {}", error)
+//!     }));
+//! ```
+//!
+//! ## Using Result Extensions
+//!
+//! Convert `Result` errors to custom views inline:
+//!
+//! ```rust
+//! use waterui::widget::error::ResultExt;
+//! use waterui::View;
+//!
+//! fn load_data() -> Result<String, std::io::Error> {
+//!     // ... some operation that might fail
+//!     Ok("data".to_string())
+//! }
+//!
+//! fn my_view() -> impl View {
+//!     match load_data().error_view(|err| format!("Failed to load: {}", err)) {
+//!         Ok(data) => data.into(),
+//!         Err(error_view) => error_view.into(),
+//!     }
+//! }
+//! ```
+//!
+//! # Advanced Features
+//!
+//! ## Type Downcasting
+//!
+//! Errors can be downcast to specific types for specialized handling:
+//!
+//! ```rust
+//! use waterui::widget::error::Error;
+//! use std::io;
+//!
+//! let error = Error::new(io::Error::new(io::ErrorKind::NotFound, "File not found"));
+//! match error.downcast::<io::Error>() {
+//!     Ok(io_error) => {
+//!         // Handle specific IO error
+//!         println!("IO Error: {:?}", io_error);
+//!     }
+//!     Err(original_error) => {
+//!         // Handle as generic error
+//!         println!("Other error: {}", original_error);
+//!     }
+//! }
+//! ```
+//!
+//! ## Creating Errors from Views
+//!
+//! Create errors directly from custom views:
+//!
+//! ```rust
+//! use waterui::widget::error::Error;
+//! use waterui::VStack;
+//!
+//! let custom_error = Error::from_view(VStack((
+//!     "Something went wrong!",
+//!     "Please try again later.",
+//! )));
+//! ```
+//!
+//! # Architecture
+//!
+//! The error system uses type erasure and trait objects to handle different error types
+//! uniformly while preserving the ability to downcast to specific types when needed.
+//! The [`DefaultErrorView`] mechanism allows for environment-based error styling
+//! configuration that can be inherited throughout the view hierarchy.
 
 use crate::{AnyView, Environment, View};
 use alloc::boxed::Box;
