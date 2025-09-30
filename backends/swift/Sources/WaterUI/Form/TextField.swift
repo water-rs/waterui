@@ -9,25 +9,25 @@ import CWaterUI
 import Foundation
 import SwiftUI
 
-public struct TextField: View,Component {
+public struct WuiTextField: View,WuiComponent {
     static var id=waterui_text_field_id()
-    private var label: WaterUI.AnyView
+    private var label: WuiAnyView
     
-    private var prompt: SwiftUI.Text
+    private var prompt: Text
     @ObservedObject var value: BindingStr
 
 
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(field: waterui_force_as_text_field(anyview), env: env)
     }
 
-    init(field: WuiTextField, env: Environment) {
-        label = WaterUI.AnyView(anyview: field.label, env: env)
-        prompt = WaterUI.Text(text: field.prompt).toText()
+    init(field: CWaterUI.WuiTextField, env: WuiEnvironment) {
+        label = WuiAnyView(anyview: field.label, env: env)
+        prompt = WuiText(text: field.prompt).toText()
         value =  BindingStr(inner: field.value)
     }
 
     public var body: some View {
-        SwiftUI.TextField(text:value.value, prompt: prompt, label: {label})
+        TextField(text:value.value, prompt: prompt, label: {label})
     }
 }

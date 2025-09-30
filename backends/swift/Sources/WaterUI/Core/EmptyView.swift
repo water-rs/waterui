@@ -6,12 +6,12 @@
 //
 import SwiftUI
 import CWaterUI
-struct EmptyView:View,Component{
+struct WuiEmptyView:View,WuiComponent{
     static var id=waterui_empty_id()
-    init(anyview: OpaquePointer, env: Environment) {
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
         
     }
     var body: some View {
-        SwiftUI.EmptyView()
+        EmptyView()
     }
 }

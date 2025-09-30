@@ -41,7 +41,7 @@ final class BindingStr: ObservableObject {
     func watch(_ f: @escaping (String, Animation?) -> Void) -> WatcherGuard {
         let g = waterui_watch_binding_str(
             self.inner,
-            WuiWatcher_____WuiStr({ value, animation in
+            WuiWatcher_WuiStr({ value, animation in
                 f(value, animation)
             }))
         return WatcherGuard(g!)
@@ -49,8 +49,7 @@ final class BindingStr: ObservableObject {
 
     func set(_ value: String) {
         let wuiStr = WuiStr(string:value)
-        wuiStr.leak()
-        waterui_set_binding_str(self.inner, wuiStr.inner)
+        waterui_set_binding_str(self.inner, wuiStr.toCWuiStr())
     }
 
     deinit {

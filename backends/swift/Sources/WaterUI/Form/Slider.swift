@@ -7,11 +7,11 @@
 
 import SwiftUI
 import CWaterUI
-struct Slider:View,Component{
+struct Slider:View,WuiComponent{
     static var id=waterui_slider_id()
-    var label:WaterUI.AnyView
-    var min_value_label: WaterUI.AnyView
-    var max_value_label: WaterUI.AnyView
+    var label:WuiAnyView
+    var min_value_label: WuiAnyView
+    var max_value_label: WuiAnyView
     var range: WuiRange_f64
     @ObservedObject var value: BindingDouble
     var body: some View {
@@ -24,15 +24,15 @@ struct Slider:View,Component{
         })
     }
     
-    init(slider: WuiSlider, env:WaterUI.Environment){
-        self.label=AnyView(anyview: slider.label, env: env)
-        self.min_value_label=AnyView(anyview: slider.min_value_label, env: env)
-        self.max_value_label=AnyView(anyview: slider.max_value_label, env: env)
+    init(slider: WuiSlider, env:WuiEnvironment){
+        self.label=WuiAnyView(anyview: slider.label, env: env)
+        self.min_value_label=WuiAnyView(anyview: slider.min_value_label, env: env)
+        self.max_value_label=WuiAnyView(anyview: slider.max_value_label, env: env)
         self.range=slider.range
         self.value=BindingDouble(inner: slider.value)
     }
     
-    init(anyview: OpaquePointer,env:WaterUI.Environment){
+    init(anyview: OpaquePointer,env:WuiEnvironment){
         self.init(slider: waterui_force_as_slider(anyview), env: env)
     }
     

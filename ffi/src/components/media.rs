@@ -1,4 +1,4 @@
-use crate::str::WuiStr;
+use crate::WuiStr;
 use crate::{IntoFFI, WuiAnyView, ffi_struct, ffi_view};
 use waterui::component::Native;
 use waterui::{Binding, Computed};
@@ -10,7 +10,7 @@ use waterui_media::{
 };
 
 // Type alias for URL
-type Url = *mut WuiStr;
+type Url = WuiStr;
 type Volume = f64;
 
 /// C representation of Photo configuration
@@ -68,7 +68,7 @@ impl IntoFFI for Video {
 }
 
 impl IntoFFI for waterui_media::Url {
-    type FFI = *mut WuiStr;
+    type FFI = WuiStr;
     fn into_ffi(self) -> Self::FFI {
         self.inner().into_ffi()
     }
