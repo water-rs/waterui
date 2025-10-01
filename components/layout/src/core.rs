@@ -7,8 +7,7 @@
 
 use core::fmt::Debug;
 
-use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{AnyView, raw_view};
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ChildMetadata {
@@ -164,23 +163,3 @@ impl ProposalSize {
         }
     }
 }
-
-pub struct Container {
-    layout: Box<dyn Layout>,
-    contents: Vec<AnyView>,
-}
-
-impl Container {
-    pub fn new(layout: impl Layout + 'static, contents: Vec<AnyView>) -> Self {
-        Self {
-            layout: Box::new(layout),
-            contents,
-        }
-    }
-    #[must_use]
-    pub fn into_inner(self) -> (Box<dyn Layout>, Vec<AnyView>) {
-        (self.layout, self.contents)
-    }
-}
-
-raw_view!(Container);
