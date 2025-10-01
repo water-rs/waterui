@@ -22,9 +22,8 @@ private final class ArrayInfo {
     }
 }
 
-@MainActor
 final class WuiRawArray {
-    var inner: CWaterUI.WuiArray
+    private var inner: CWaterUI.WuiArray?
 
    
     
@@ -32,103 +31,96 @@ final class WuiRawArray {
         self.inner = inner
     }
     
-    init<T>(array:[T]){
-        let contiguousArray = ContiguousArray(array)
-        
-        // Create vtable functions that don't capture generic parameters
-        let dropFunction: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ptr in
-            guard let ptr = ptr else { return }
-            Unmanaged<AnyObject>.fromOpaque(ptr).release()
-        }
-        
-        // For slice, we need to store the element size and stride information
-        let elementSize = MemoryLayout<T>.size
-        let elementStride = MemoryLayout<T>.stride
-        
-        let sliceFunction: @convention(c) (UnsafeRawPointer?) -> WuiArraySlice = { ptr in
-            guard let ptr = ptr else {
+    func intoInner() -> CWaterUI.WuiArray {
+        let v = inner!
+        inner = nil
+        return v
+    }
+    
+    init<T>(array: [T]) {
+            let contiguousArray = ContiguousArray(array)
+            
+            // Simplified drop function
+            let dropFunction: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ptr in
+                guard let ptr = ptr else { return }
+                // This releases the ArrayInfo object
+                _ = Unmanaged<AnyObject>.fromOpaque(ptr).takeRetainedValue()
+            }
+            
+            let sliceFunction: @convention(c) (UnsafeRawPointer?) -> WuiArraySlice = { ptr in
+                guard let ptr = ptr else {
+                    return WuiArraySlice(head: nil, len: 0)
+                }
+                
+                let box = Unmanaged<AnyObject>.fromOpaque(ptr).takeUnretainedValue()
+                if let arrayInfo = box as? ArrayInfo {
+                    return WuiArraySlice(
+                        head: arrayInfo.baseAddress,
+                        len: UInt(arrayInfo.count)
+                    )
+                }
+                
                 return WuiArraySlice(head: nil, len: 0)
             }
             
-            // Get the stored array information
-            let box = Unmanaged<AnyObject>.fromOpaque(ptr).takeUnretainedValue()
+            let vtable = WuiArrayVTable(drop: dropFunction, slice: sliceFunction)
             
-            // We stored both the array and metadata
-            if let arrayInfo = box as? ArrayInfo {
-                return WuiArraySlice(
-                    head: arrayInfo.baseAddress,
-                    len: UInt(arrayInfo.count)
+            let innerArray = contiguousArray.withUnsafeBufferPointer { buffer in
+                let arrayInfo = ArrayInfo(
+                    baseAddress: UnsafeMutableRawPointer(mutating: buffer.baseAddress),
+                    count: buffer.count,
+                    elementSize: MemoryLayout<T>.size,
+                    retainedArray: contiguousArray
                 )
+                let ptr = Unmanaged.passRetained(arrayInfo as AnyObject).toOpaque()
+                return CWaterUI.WuiArray(data: ptr, vtable: vtable)
             }
             
-            return WuiArraySlice(head: nil, len: 0)
+            self.inner = innerArray
         }
         
-        let vtable = WuiArrayVTable(drop: dropFunction, slice: sliceFunction)
-        
-        // Create array info that stores the buffer pointer and count
-        let innerArray = contiguousArray.withUnsafeBufferPointer { buffer in
-            let arrayInfo = ArrayInfo(
-                baseAddress: UnsafeMutableRawPointer(mutating: buffer.baseAddress),
-                count: buffer.count,
-                elementSize: elementSize,
-                retainedArray: contiguousArray
-            )
-            let ptr = Unmanaged.passRetained(arrayInfo as AnyObject).toOpaque()
-            return CWaterUI.WuiArray(data: ptr, vtable: vtable)
-        }
-        
-        self.inner = innerArray
-    }
     
-    
-    subscript<T>(index:Int) -> T {
+    subscript<T>(index: Int) -> T {
         get {
-            let slice = (inner.vtable.slice)(inner.data)
+            let slice = (inner!.vtable.slice)(inner!.data)
             let head = slice.head!
             let len = Int(slice.len)
             precondition(index >= 0 && index < len, "Index out of bounds")
-            let elementPtr = head.advanced(by: index)
-            return elementPtr.withMemoryRebound(to: T.self, capacity: 1) {
-                $0.pointee
-            }
+            
+            let typedPtr = head.assumingMemoryBound(to: T.self)
+            return typedPtr[index]
         }
         
-        set{
-            let slice = (inner.vtable.slice)(inner.data)
+        set {
+            let slice = (inner!.vtable.slice)(inner!.data)
             let head = slice.head!
             let len = Int(slice.len)
             precondition(index >= 0 && index < len, "Index out of bounds")
-            let elementPtr = head.advanced(by: index)
-            elementPtr.withMemoryRebound(to: T.self, capacity: 1) {
-                $0.pointee = newValue
-                
-            }
+            
+            let typedPtr = head.assumingMemoryBound(to: T.self)
+            typedPtr[index] = newValue
         }
     }
     
-    func toArray<T>() -> [T]{
-        let slice = (inner.vtable.slice)(inner.data)
+    func toArray<T>() -> [T] {
+        let slice = (inner!.vtable.slice)(inner!.data)
         let head = slice.head!.assumingMemoryBound(to: T.self)
         let len = Int(slice.len)
-        // Copy to Swift array
-        let buffer = UnsafeBufferPointer<T>(start: head, count: len)
         
+        let buffer = UnsafeBufferPointer<T>(start: head, count: len)
         return Array(buffer)
-            
     }
     
 
-    deinit {// Some type may not thread-safe...So let's deinit it on main thread!
-        let this = self
-        Task { @MainActor in
-            (this.inner.vtable.drop)(this.inner.data)
-
+    @MainActor deinit {
+        if let inner = inner{
+            inner.vtable.drop(inner.data)
         }
+       
+        
     }
 }
 
-@MainActor
 struct WuiArray<T> {
     var inner: WuiRawArray
     
@@ -166,7 +158,6 @@ extension WuiArray<UInt8>{
     }
 }
 
-@MainActor
 struct WuiAnyViews{
     var inner: WuiArray<OpaquePointer>
     var env: WuiEnvironment
@@ -177,13 +168,14 @@ struct WuiAnyViews{
         self.env = env
     }
 
-    
+    @MainActor
     mutating func take(index:Int) -> WuiAnyView{
         let ptr = self.inner[index]
         self.inner[index] = waterui_empty_anyview()
         return WuiAnyView(anyview: ptr, env: env)
     }
     
+    @MainActor
     mutating func toArray() -> [WuiAnyView]{
         // Need set original buffer to all empty anyview, preventing double free
         
@@ -199,7 +191,6 @@ struct WuiAnyViews{
 }
 
 
-@MainActor
 struct WuiStr{
     var inner: WuiArray<UInt8>
     
@@ -218,7 +209,7 @@ struct WuiStr{
     }
     
     func toCWuiStr() -> CWaterUI.WuiStr{
-        .init(_0: unsafeBitCast(self.inner.inner, to: CWaterUI.WuiArray_u8.self))
+        .init(_0: unsafeBitCast(self.inner.inner.intoInner(), to: CWaterUI.WuiArray_u8.self))
     }
     
 }

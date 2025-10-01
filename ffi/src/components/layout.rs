@@ -10,7 +10,7 @@ ffi_type!(WuiLayout, Box<dyn Layout>, waterui_drop_layout);
 #[repr(C)]
 pub struct WuiContainer {
     layout: *mut WuiLayout,
-    contents: WuiArray<*mut WuiAnyView>, // Tip: Rust takes the responsibility to drop the array
+    contents: WuiArray<*mut WuiAnyView>,
 }
 
 #[unsafe(no_mangle)]
@@ -136,7 +136,7 @@ pub unsafe extern "C" fn waterui_layout_size(
     layout: *mut WuiLayout,
     parent: WuiProposalSize,
     children: WuiArray<WuiChildMetadata>,
-) -> WuiProposalSize {
+) -> WuiSize {
     // Convert FFI types to Rust types
     let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
     let parent = unsafe { parent.into_rust() };
@@ -145,10 +145,7 @@ pub unsafe extern "C" fn waterui_layout_size(
 
     let size = layout.size(parent, &children);
 
-    WuiProposalSize {
-        width: size.width,
-        height: size.height,
-    }
+    size.into_ffi()
 }
 
 #[repr(C)]

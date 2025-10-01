@@ -1,5 +1,4 @@
 use core::{
-    mem::transmute,
     ops::{Deref, DerefMut},
     ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut},
 };
@@ -17,7 +16,8 @@ pub type WuiData = WuiArray<u8>;
 /// For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
 #[repr(C)]
 pub struct WuiArray<T: 'static> {
-    data: NonNull<T>,
+    // Store the original boxed data for proper dropping
+    data: NonNull<()>,
     vtable: WuiArrayVTable<T>,
 }
 
@@ -79,7 +79,7 @@ impl<T> WuiArray<T> {
     ///
     /// The caller must ensure that the pointer is valid and points to an array of the specified length.
     /// The memory must remain valid for the lifetime of the `WuiArray`.
-    pub const unsafe fn from_raw(data: *mut T, vtable: WuiArrayVTable<T>) -> Self {
+    pub const unsafe fn from_raw(data: *mut (), vtable: WuiArrayVTable<T>) -> Self {
         Self {
             data: unsafe { NonNull::new_unchecked(data) },
             vtable,
@@ -91,7 +91,7 @@ impl<T> WuiArray<T> {
         U: AsRef<[T]> + 'static,
     {
         let boxed = Box::new(array);
-        let data = Box::into_raw(boxed) as *mut T;
+        let data = Box::into_raw(boxed) as *mut ();
         let vtable = WuiArrayVTable::new::<U>();
         unsafe { Self::from_raw(data, vtable) }
     }
@@ -106,14 +106,14 @@ impl<T> WuiArray<T> {
 
     pub fn as_slice(&self) -> &[T] {
         unsafe {
-            let slice = (self.vtable.slice)(self.data.as_ptr() as *const ());
+            let slice = (self.vtable.slice)(self.data.as_ptr());
             &*slice_from_raw_parts(slice.head, slice.len)
         }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe {
-            let slice = (self.vtable.slice)(self.data.as_ptr() as *const ());
+            let slice = (self.vtable.slice)(self.data.as_ptr());
             &mut *slice_from_raw_parts_mut(slice.head, slice.len)
         }
     }
@@ -152,7 +152,7 @@ impl<T> AsRef<[T]> for WuiArray<T> {
 
 impl<T> Drop for WuiArray<T> {
     fn drop(&mut self) {
-        unsafe { (self.vtable.drop)(self.data.as_ptr() as *mut ()) }
+        unsafe { (self.vtable.drop)(self.data.as_ptr()) }
     }
 }
 
