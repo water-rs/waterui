@@ -18,6 +18,7 @@ use waterui_core::{
 
 use alloc::boxed::Box;
 use nami::{Binding, Computed, signal::IntoComputed};
+use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_navigation::NavigationView;
 
 use crate::background::{Background, ForegroundColor};
@@ -145,6 +146,14 @@ pub trait ViewExt: View + Sized {
     /// * `value` - The numeric value to display in the badge
     fn badge(self, value: impl IntoComputed<i32>) -> Badge {
         Badge::new(value, self)
+    }
+
+    fn padding_with(self,edge:EdgeInsets) -> Padding{
+        Padding::new(edge,self)
+    }
+
+    fn padding(self) -> Padding{
+        Padding::new(EdgeInsets::default(),self)
     }
 
     /// Tags this view with a custom tag for identification.
