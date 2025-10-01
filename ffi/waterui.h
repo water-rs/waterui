@@ -254,7 +254,7 @@ typedef struct WuiArrayVTable_u8 {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
 typedef struct WuiArray_u8 {
-  uint8_t *_Nonnull data;
+  NonNull data;
   struct WuiArrayVTable_u8 vtable;
 } WuiArray_u8;
 
@@ -279,7 +279,7 @@ typedef struct WuiArrayVTable_____WuiAnyView {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
 typedef struct WuiArray_____WuiAnyView {
-  struct WuiAnyView **_Nonnull data;
+  NonNull data;
   struct WuiArrayVTable_____WuiAnyView vtable;
 } WuiArray_____WuiAnyView;
 
@@ -310,7 +310,7 @@ typedef struct WuiArrayVTable_WuiProposalSize {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
 typedef struct WuiArray_WuiProposalSize {
-  struct WuiProposalSize *_Nonnull data;
+  NonNull data;
   struct WuiArrayVTable_WuiProposalSize vtable;
 } WuiArray_WuiProposalSize;
 
@@ -337,9 +337,14 @@ typedef struct WuiArrayVTable_WuiChildMetadata {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
 typedef struct WuiArray_WuiChildMetadata {
-  struct WuiChildMetadata *_Nonnull data;
+  NonNull data;
   struct WuiArrayVTable_WuiChildMetadata vtable;
 } WuiArray_WuiChildMetadata;
+
+typedef struct WuiSize {
+  double width;
+  double height;
+} WuiSize;
 
 typedef struct WuiScrollView {
   enum WuiAxis axis;
@@ -350,11 +355,6 @@ typedef struct WuiPoint {
   double x;
   double y;
 } WuiPoint;
-
-typedef struct WuiSize {
-  double width;
-  double height;
-} WuiSize;
 
 typedef struct WuiRect {
   struct WuiPoint origin;
@@ -378,7 +378,7 @@ typedef struct WuiArrayVTable_WuiRect {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  */
 typedef struct WuiArray_WuiRect {
-  struct WuiRect *_Nonnull data;
+  NonNull data;
   struct WuiArrayVTable_WuiRect vtable;
 } WuiArray_WuiRect;
 
@@ -737,6 +737,8 @@ struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
 
 struct WuiAnyView *waterui_empty_anyview(void);
 
+struct WuiTypeId waterui_anyview_id(void);
+
 /**
  * Drops the FFI value.
  *
@@ -813,9 +815,9 @@ struct WuiArray_WuiProposalSize waterui_layout_propose(struct WuiLayout *layout,
  * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
  * The caller must ensure the layout object remains valid for the duration of this call.
  */
-struct WuiProposalSize waterui_layout_size(struct WuiLayout *layout,
-                                           struct WuiProposalSize parent,
-                                           struct WuiArray_WuiChildMetadata children);
+struct WuiSize waterui_layout_size(struct WuiLayout *layout,
+                                   struct WuiProposalSize parent,
+                                   struct WuiArray_WuiChildMetadata children);
 
 /**
  * # Safety
