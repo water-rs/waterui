@@ -3,6 +3,8 @@
 //! `waterui_core` provides the essential building blocks for developing cross-platform reactive UIs.
 //! This foundation layer establishes a unified architecture that works consistently across desktop,
 //! mobile, web, and embedded environments.
+
+#![cfg_attr(feature = "nightly", feature(never_type))]
 //!
 //! ## Architecture Overview
 //!
