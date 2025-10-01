@@ -15,6 +15,10 @@ impl Container {
             contents: contents.into_views(),
         }
     }
+
+    pub fn into_inner(self) -> (Box<dyn Layout>, Vec<AnyView>) {
+        (self.layout, self.contents)
+    }
 }
 
 raw_view!(Container); // Underhood, the renderer will use `layout` trait object to layout its children

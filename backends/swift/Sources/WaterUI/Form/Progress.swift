@@ -25,13 +25,13 @@ extension WuiProgressStyle: SwiftUI.ProgressViewStyle {
     }
 }
 
-struct Progress: View, WuiComponent {
+struct WuiProgress: View, WuiComponent {
     static var id = waterui_progress_id()
     var label: WuiAnyView
     @StateObject var value: ComputedDouble
     var style: WuiProgressStyle
 
-    init(progress: WuiProgress, env: WuiEnvironment) {
+    init(progress: CWaterUI.WuiProgress, env: WuiEnvironment) {
         label = WuiAnyView(anyview: progress.label, env: env)
         style = progress.style
         _value = StateObject(wrappedValue: ComputedDouble(inner: progress.value))

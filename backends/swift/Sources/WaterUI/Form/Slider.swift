@@ -7,7 +7,7 @@
 
 import SwiftUI
 import CWaterUI
-struct Slider:View,WuiComponent{
+struct WuiSlider:View,WuiComponent{
     static var id=waterui_slider_id()
     var label:WuiAnyView
     var min_value_label: WuiAnyView
@@ -24,7 +24,7 @@ struct Slider:View,WuiComponent{
         })
     }
     
-    init(slider: WuiSlider, env:WuiEnvironment){
+    init(slider: CWaterUI.WuiSlider, env:WuiEnvironment){
         self.label=WuiAnyView(anyview: slider.label, env: env)
         self.min_value_label=WuiAnyView(anyview: slider.min_value_label, env: env)
         self.max_value_label=WuiAnyView(anyview: slider.max_value_label, env: env)

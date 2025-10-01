@@ -1,7 +1,7 @@
 language = "C"
 
 after_includes = """
-
+typedef void *NonNull;
 
 typedef struct WuiArraySlice {
   void *head;
@@ -28,6 +28,7 @@ WuiAnyView* waterui_main(void);
 """
 
 [export.rename]
+
 
 [enum]
 prefix_with_name = true

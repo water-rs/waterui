@@ -224,8 +224,12 @@ pub unsafe extern "C" fn waterui_view_body(
     env: *mut waterui::Environment,
 ) -> *mut WuiAnyView {
     unsafe {
-        let body = view.into_rust().body(&*env);
-        AnyView::new(body).into_ffi()
+        let view = view.into_rust();
+        let body = view.body(&*env);
+
+        let body = AnyView::new(body);
+
+        body.into_ffi()
     }
 }
 
@@ -263,4 +267,9 @@ impl IntoRust for WuiStr {
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
     AnyView::default().into_ffi()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_anyview_id() -> WuiTypeId {
+    core::any::TypeId::of::<AnyView>().into_ffi()
 }

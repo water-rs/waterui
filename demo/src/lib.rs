@@ -1,16 +1,14 @@
 use waterui::{
-    Binding, Environment, View,
     component::{
         divder::Divider,
-        form::{FormBuilder, Slider, form, stepper},
+        form::{form, stepper, FormBuilder, Slider},
         layout::{
             scroll, spacer,
             stack::{hstack, vstack},
         },
         progress::{loading, progress},
         text::text,
-    },
-    reactive::Project,
+    }, prelude::layout::padding::EdgeInsets, reactive::Project, Binding, Environment, View, ViewExt
 };
 
 pub fn init() -> Environment {
@@ -71,7 +69,7 @@ pub fn main() -> impl View {
         spacer(),
         Divider,
         "Built with WaterUI - Cross-platform Reactive UI Framework",
-    )))
+    )).padding_with(EdgeInsets::all(100.0)))
 }
 
 waterui_ffi::export!();
