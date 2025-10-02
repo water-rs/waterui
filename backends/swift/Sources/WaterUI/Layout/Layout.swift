@@ -198,7 +198,9 @@ final class WuiLayout {
 
 @MainActor
 struct WuiContainer: WuiComponent, View {
-    static var id = waterui_container_id()
+    static var id:WuiTypeId{
+        waterui_container_id()
+    }
 
     private var layout: WuiLayout
     private var children: [WuiAnyView]
