@@ -44,12 +44,8 @@ class Action {
         waterui_call_action(self.inner, env.inner)
     }
 
-    deinit {
-
-        let this = self
-        Task { @MainActor in
-            waterui_drop_action(this.inner)
-        }
+    @MainActor deinit {
+        waterui_drop_action(inner)
 
     }
 }

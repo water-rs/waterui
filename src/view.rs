@@ -17,7 +17,7 @@ use waterui_core::{
 };
 
 use alloc::boxed::Box;
-use nami::{Binding, Computed, signal::IntoComputed};
+use nami::{Binding, signal::IntoComputed};
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_navigation::NavigationView;
 
@@ -148,10 +148,15 @@ pub trait ViewExt: View + Sized {
         Badge::new(value, self)
     }
 
+    /// Adds padding to this view with custom edge insets.
+    ///
+    /// # Arguments
+    /// * `edge` - The edge insets to apply as padding
     fn padding_with(self,edge:EdgeInsets) -> Padding{
         Padding::new(edge,self)
     }
 
+    /// Adds default padding to this view.
     fn padding(self) -> Padding{
         Padding::new(EdgeInsets::default(),self)
     }
