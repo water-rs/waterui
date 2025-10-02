@@ -36,7 +36,7 @@ pub enum HorizontalAlignment {
 }
 
 /// Combined two-dimensional alignment used by overlay stacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq,PartialOrd, Eq, Ord,Default)]
 pub enum Alignment {
     /// Place the child in the top centre.
     Top,
@@ -57,4 +57,26 @@ pub enum Alignment {
     Leading,
     /// Place the child in the vertical centre along the trailing edge.
     Trailing,
+}
+
+impl Alignment{
+    /// Returns the horizontal alignment component of this alignment.
+    #[must_use] 
+    pub const fn horizontal(&self) -> HorizontalAlignment {
+        match self {
+            Self::TopLeading | Self::Leading | Self::BottomLeading => HorizontalAlignment::Leading,
+            Self::TopTrailing | Self::Trailing | Self::BottomTrailing => HorizontalAlignment::Trailing,
+            _ => HorizontalAlignment::Center,
+        }
+    }
+
+    /// Returns the vertical alignment component of this alignment.
+    #[must_use] 
+    pub const fn vertical(&self) -> VerticalAlignment {
+        match self {
+            Self::TopLeading | Self::Top | Self::TopTrailing => VerticalAlignment::Top,
+            Self::BottomLeading | Self::Bottom | Self::BottomTrailing => VerticalAlignment::Bottom,
+            _ => VerticalAlignment::Center,
+        }
+    }
 }
