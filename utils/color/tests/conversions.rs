@@ -1,4 +1,4 @@
-use waterui_color::{Color};
+use waterui_color::Color;
 
 #[test]
 fn test_srgb_to_linear() {

@@ -5,6 +5,11 @@ edition.workspace = true
 author.workspace = true
 license.workspace = true
 readme = "README.md"
+description = "A lightweight internationalization plugin for the WaterUI framework, providing text translation capabilities."
+repository = "https://github.com/waterui/waterui"
+keywords = ["waterui", "i18n", "internationalization", "translation", "locale"]
+categories = ["gui", "localization"]
+authors = ["WaterUI Team"]
 
 [dependencies]
 waterui-text.workspace = true
