@@ -9,7 +9,9 @@ import SwiftUI
 import CWaterUI
 @MainActor
 struct WuiDynamic: View,WuiComponent {
-    static var id=waterui_dynamic_id()
+    static var id:WuiTypeId{
+        waterui_dynamic_id()
+    }
     @State var view:WuiAnyView?
     var dynamic:OpaquePointer
     var env:WuiEnvironment

@@ -37,7 +37,7 @@ pub mod prelude {
     pub use waterui_core::{
         AnyView, Color, animation,
         env::{self, Environment},
-        impl_extractor, raw_view, shape,
+        impl_extractor, raw_view,
     };
     pub use waterui_text::text;
 }
@@ -47,7 +47,7 @@ pub use view::ViewExt;
 pub use waterui_core::{
     AnyView, Color, animation,
     env::{self, Environment},
-    impl_extractor, raw_view, shape,
+    impl_extractor, raw_view,
 };
 pub use waterui_text::text;
 
@@ -60,3 +60,4 @@ pub use task::task;
 #[doc(inline)]
 pub use waterui_core as core;
 pub use waterui_str::Str;
+//pub mod hot_reload; Hot reload is tough :cry

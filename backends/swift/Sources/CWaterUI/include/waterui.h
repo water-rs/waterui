@@ -2,9 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-
 typedef void *NonNull;
-
 
 typedef struct WuiArraySlice {
   void *head;
@@ -156,6 +154,14 @@ typedef struct Computed_Str Computed_Str;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Video Computed_Video;
 
 /**
@@ -238,6 +244,20 @@ typedef struct WuiWatcherMetadata WuiWatcherMetadata;
 typedef struct WuiTypeId {
   uint64_t inner[2];
 } WuiTypeId;
+
+typedef struct WuiColor {
+  enum WuiColorSpace color_space;
+  float red;
+  float green;
+  float blue;
+  float opacity;
+} WuiColor;
+
+typedef struct WuiWatcher_WuiColor {
+  void *data;
+  void (*call)(const void*, struct WuiColor, const struct Metadata*);
+  void (*drop)(void*);
+} WuiWatcher_WuiColor;
 
 typedef struct WuiArraySlice_u8 {
   uint8_t *head;
@@ -534,19 +554,10 @@ typedef struct WuiColorPicker {
   struct Binding_Color *value;
 } WuiColorPicker;
 
-typedef struct WuiColor {
-  enum WuiColorSpace color_space;
-  float red;
-  float yellow;
-  float blue;
-  float opacity;
-} WuiColor;
-
-typedef struct WuiWatcher_WuiColor {
-  void *data;
-  void (*call)(const void*, struct WuiColor, const struct Metadata*);
-  void (*drop)(void*);
-} WuiWatcher_WuiColor;
+typedef struct WuiPicker {
+  struct Computed_Vec_PickerItem_Id *items;
+  struct Binding_Id *selection;
+} WuiPicker;
 
 typedef struct WuiStr Url;
 
@@ -625,6 +636,42 @@ typedef struct WuiWatcher_f64 {
   void (*drop)(void*);
 } WuiWatcher_f64;
 
+typedef struct WuiId {
+  int32_t inner;
+} WuiId;
+
+typedef struct WuiPickerItem {
+  struct WuiId tag;
+  struct WuiText content;
+} WuiPickerItem;
+
+typedef struct WuiArraySlice_WuiPickerItem {
+  struct WuiPickerItem *head;
+  uintptr_t len;
+} WuiArraySlice_WuiPickerItem;
+
+typedef struct WuiArrayVTable_WuiPickerItem {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiPickerItem (*slice)(const void*);
+} WuiArrayVTable_WuiPickerItem;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ */
+typedef struct WuiArray_WuiPickerItem {
+  NonNull data;
+  struct WuiArrayVTable_WuiPickerItem vtable;
+} WuiArray_WuiPickerItem;
+
+typedef struct WuiWatcher_WuiArray_WuiPickerItem {
+  void *data;
+  void (*call)(const void*, struct WuiArray_WuiPickerItem, const struct Metadata*);
+  void (*drop)(void*);
+} WuiWatcher_WuiArray_WuiPickerItem;
+
 /**
  * C representation of Font
  */
@@ -671,10 +718,6 @@ typedef struct WuiWatcher_WuiLivePhotoSource {
   void (*call)(const void*, struct WuiLivePhotoSource, const struct Metadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiLivePhotoSource;
-
-typedef struct WuiId {
-  int32_t inner;
-} WuiId;
 
 typedef struct WuiWatcher_WuiId {
   void *data;
@@ -762,6 +805,47 @@ void waterui_drop_action(struct WuiAction *value);
 void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * If `value` is NULL, this function does nothing. If `value` is not a valid pointer
+ * to a properly initialized value of the expected type, undefined behavior will occur.
+ * The pointer must not be used after this function is called.
+ */
+void waterui_drop_color_watcher_guard(struct Binding_Color *value);
+
+/**
+ * Reads the current value from a binding
+ *
+ * # Safety
+ *
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiColor waterui_binding_read_color(const struct Binding_Color *binding);
+
+/**
+ * Sets a new value to a binding
+ *
+ * # Safety
+ *
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The value must be a valid instance of the FFI type.
+ */
+void waterui_binding_set_color(struct Binding_Color *binding, struct WuiColor value);
+
+/**
+ * Watches for changes in a binding
+ *
+ * # Safety
+ *
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_binding_watch_color(const struct Binding_Color *binding,
+                                                    struct WuiWatcher_WuiColor watcher);
 
 struct WuiTypeId waterui_divider_id(void);
 
@@ -916,45 +1000,13 @@ struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 struct WuiTypeId waterui_color_picker_id(void);
 
 /**
- * Drops the FFI value.
- *
  * # Safety
- *
- * If `value` is NULL, this function does nothing. If `value` is not a valid pointer
- * to a properly initialized value of the expected type, undefined behavior will occur.
- * The pointer must not be used after this function is called.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-void waterui_drop_color_watcher_guard(struct Binding_Color *value);
+struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
-/**
- * Reads the current value from a binding
- *
- * # Safety
- *
- * The binding pointer must be valid and point to a properly initialized binding object.
- */
-struct WuiColor waterui_binding_read_color(const struct Binding_Color *binding);
-
-/**
- * Sets a new value to a binding
- *
- * # Safety
- *
- * The binding pointer must be valid and point to a properly initialized binding object.
- * The value must be a valid instance of the FFI type.
- */
-void waterui_binding_set_color(struct Binding_Color *binding, struct WuiColor value);
-
-/**
- * Watches for changes in a binding
- *
- * # Safety
- *
- * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
- */
-struct WuiWatcherGuard *waterui_watch_color(const struct Binding_Color *binding,
-                                            struct WuiWatcher_WuiColor watcher);
+struct WuiTypeId waterui_picker_id(void);
 
 struct WuiTypeId waterui_navigation_view_id(void);
 
@@ -1193,6 +1245,37 @@ double waterui_read_computed_double(const struct Computed_f64 *computed);
  */
 struct WuiWatcherGuard *waterui_watch_computed_double(const struct Computed_f64 *computed,
                                                       struct WuiWatcher_f64 watcher);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * If `value` is NULL, this function does nothing. If `value` is not a valid pointer
+ * to a properly initialized value of the expected type, undefined behavior will occur.
+ * The pointer must not be used after this function is called.
+ */
+void waterui_drop_computed_picker_items(struct Computed_Vec_PickerItem_Id *value);
+
+/**
+ * Reads the current value from a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(const struct Computed_Vec_PickerItem_Id *computed);
+
+/**
+ * Watches for changes in a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_picker_items(const struct Computed_Vec_PickerItem_Id *computed,
+                                                            struct WuiWatcher_WuiArray_WuiPickerItem watcher);
 
 /**
  * Drops the FFI value.
