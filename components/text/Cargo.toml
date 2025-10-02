@@ -12,6 +12,7 @@ categories = ["gui", "text-processing"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-color.workspace = true
 nami.workspace = true
 time.workspace = true
 

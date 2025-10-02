@@ -35,20 +35,22 @@ pub mod prelude {
     pub use crate::{Str, background, component::*, filter, task, view::View, widget};
     pub use nami::{Binding, Computed, Signal, signal};
     pub use waterui_core::{
-        AnyView, Color, animation,
+        AnyView, animation,
         env::{self, Environment},
         impl_extractor, raw_view,
     };
+    pub use waterui_color::Color;
     pub use waterui_text::text;
 }
 #[doc(inline)]
 pub use view::ViewExt;
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Color, animation,
+    AnyView, animation,
     env::{self, Environment},
     impl_extractor, raw_view,
 };
+pub use waterui_color::Color;
 pub use waterui_text::text;
 
 #[doc(inline)]

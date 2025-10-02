@@ -60,6 +60,7 @@ log = "0.4.28"
 waterui-core = { version = "0.1.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
 waterui-url = { version = "0.1.0", path = "utils/url" }
+waterui-color = { version = "0.1.0", path = "utils/color" }
 waterui-text = { version = "0.1.0", path = "components/text" }
 waterui-media = { version = "0.1.0", path = "components/media" }
 waterui-form = { version = "0.1.0", path = "components/form" }
@@ -84,6 +85,7 @@ waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media.workspace = true
 waterui-navigation.workspace = true
+waterui-color.workspace = true
 waterui-form.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
