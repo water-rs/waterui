@@ -12,6 +12,7 @@ pub mod attributed;
 pub mod link;
 /// Localization and formatting utilities.
 pub mod locale;
+pub mod highlight;
 /// Macros for convenient text creation.
 #[macro_use]
 pub mod macros;
