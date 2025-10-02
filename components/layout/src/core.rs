@@ -9,7 +9,9 @@ use core::fmt::Debug;
 
 use alloc::vec::Vec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Backend-supplied metrics that describe how a child responded to a layout
+/// proposal.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChildMetadata {
     proposal: ProposalSize,
     priority: u8,
@@ -17,7 +19,9 @@ pub struct ChildMetadata {
 }
 
 impl ChildMetadata {
-    pub fn new(proposal: ProposalSize, priority: u8, stretch: bool) -> Self {
+    /// Creates a metadata instance describing a single child.
+    #[must_use]
+    pub const fn new(proposal: ProposalSize, priority: u8, stretch: bool) -> Self {
         Self {
             proposal,
             priority,
@@ -25,35 +29,49 @@ impl ChildMetadata {
         }
     }
 
-    pub fn proposal(&self) -> ProposalSize {
-        self.proposal
+    /// Returns the proposal that originated this metadata.
+    #[must_use]
+    pub const fn proposal(&self) -> &ProposalSize {
+        &self.proposal
     }
 
-    pub fn proposal_height(&self) -> Option<f64> {
+    /// Shortcut for the proposed height.
+    #[must_use]
+    pub const fn proposal_height(&self) -> Option<f64> {
         self.proposal.height
     }
 
-    pub fn proposal_width(&self) -> Option<f64> {
+    /// Shortcut for the proposed width.
+    #[must_use]
+    pub const fn proposal_width(&self) -> Option<f64> {
         self.proposal.width
     }
 
-    pub fn priority(&self) -> u8 {
+    /// Priority hints future layout scheduling (unused for now).
+    #[must_use]
+    pub const fn priority(&self) -> u8 {
         self.priority
     }
 
-    pub fn stretch(&self) -> bool {
+    /// Whether the child is willing to expand beyond its intrinsic size.
+    #[must_use]
+    pub const fn stretch(&self) -> bool {
         self.stretch
     }
 }
 
+/// Behaviour shared by all layout containers.
 pub trait Layout {
-    // Propose sizes for each child based on the parent's proposal and children's metadata.
+    /// Proposes sizes for each child based on the parent's proposal and the
+    /// metadata collected during the previous frame.
     fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize>;
 
-    // These children will receive proposal by underlying renderer, then report their current proposal.
+    /// Computes the layout's own size after its children have answered the
+    /// proposals created in [`propose`](Self::propose).
     fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size;
 
-    // Place children within the given bounds and return their final rectangles.
+    /// Places children within the final bounds chosen by the parent and
+    /// returns the rectangles they should occupy.
     fn place(
         &mut self,
         bound: Rect,
@@ -62,74 +80,98 @@ pub trait Layout {
     ) -> Vec<Rect>;
 }
 
+/// Axis-aligned rectangle relative to its parent.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rect {
     origin: Point,
     size: Size,
 }
 
 impl Rect {
+    /// Creates a new [`Rect`] with the provided `origin` and `size`.
+    #[must_use]
     pub const fn new(origin: Point, size: Size) -> Self {
         Self { origin, size }
     }
 
+    /// Returns the rectangle's origin.
+    #[must_use]
     pub const fn origin(&self) -> Point {
         self.origin
     }
 
-    pub const fn size(&self) -> Size {
-        self.size
+    /// Returns the rectangle's size.
+    #[must_use]
+    pub const fn size(&self) -> &Size {
+        &self.size
     }
 
+    /// Returns the rectangle's x-coordinate.
+    #[must_use]
     pub const fn x(&self) -> f64 {
         self.origin.x
     }
-
+    /// Returns the rectangle's y-coordinate.
+    #[must_use]
     pub const fn y(&self) -> f64 {
         self.origin.y
     }
-
+    
+    /// Returns the rectangle's width.
+    #[must_use]
     pub const fn width(&self) -> f64 {
         self.size.width
     }
-
+    /// Returns the rectangle's height.
+    #[must_use]
     pub const fn height(&self) -> f64 {
         self.size.height
     }
-
+    /// Returns the rectangle's maximum x-coordinate.
+    #[must_use]
     pub const fn max_x(&self) -> f64 {
         self.origin.x + self.size.width
     }
-
+    /// Returns the rectangle's maximum y-coordinate.
+    #[must_use]
     pub const fn max_y(&self) -> f64 {
         self.origin.y + self.size.height
     }
-
+    /// Returns the rectangle's midpoint x-coordinate.
+    #[must_use]
     pub const fn mid_x(&self) -> f64 {
         self.origin.x + self.size.width / 2.0
     }
-
+    /// Returns the rectangle's midpoint y-coordinate.
+    #[must_use]
     pub const fn mid_y(&self) -> f64 {
         self.origin.y + self.size.height / 2.0
     }
-
+    /// Returns the rectangle's minimum x-coordinate.
+    #[must_use]
     pub const fn min_x(&self) -> f64 {
         self.origin.x - self.size.width
     }
-
+    /// Returns the rectangle's minimum y-coordinate.
+    #[must_use]
     pub const fn min_y(&self) -> f64 {
         self.origin.y - self.size.height
     }
 }
 
 /// Two-dimensional size expressed in absolute pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Size {
+    /// The width in pixels.
     pub width: f64,
+    /// The height in pixels.
     pub height: f64,
 }
 
 impl Size {
-    pub fn new(width: f64, height: f64) -> Self {
+    /// Constructs a [`Size`] with the given `width` and `height`.
+    #[must_use]
+    pub const fn new(width: f64, height: f64) -> Self {
         Self { width, height }
     }
 }
@@ -137,25 +179,31 @@ impl Size {
 /// Absolute coordinate relative to a parent layout's origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
+    /// The x-coordinate in pixels.
     pub x: f64,
+    /// The y-coordinate in pixels.
     pub y: f64,
 }
 
 impl Point {
-    pub fn new(x: f64, y: f64) -> Self {
+    /// Constructs a [`Point`] at the given `x` and `y`.
+    #[must_use]
+    pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 }
 
 /// Soft constraint describing the desired size for a layout or subview.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ProposalSize {
-    // exact value: Some(f64), unconstrained: None, infinite: f64::INFINITY
+    /// Width constraint: `Some(f64)` for exact value, None for unconstrained, [`f64::INFINITY`] for infinite
     pub width: Option<f64>,
+    /// Height constraint: `Some(f64)` for exact value, None for unconstrained, [`f64::INFINITY`] for infinite
     pub height: Option<f64>,
 }
 
 impl ProposalSize {
+    /// Creates a [`ProposalSize`] from optional width and height hints.
     pub fn new(width: impl Into<Option<f64>>, height: impl Into<Option<f64>>) -> Self {
         Self {
             width: width.into(),
