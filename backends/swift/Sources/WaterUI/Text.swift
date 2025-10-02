@@ -76,7 +76,9 @@ extension WuiWatcher_WuiFont {
 
 @MainActor
 struct WuiText: View, WuiComponent {
-    static var id = waterui_text_id()
+    static var id:WuiTypeId{
+        waterui_text_id()
+    }
     @State var content: ComputedStr
     @State var font: ComputedFont
 
@@ -134,7 +136,9 @@ extension SwiftUI.Font {
 }
 
 struct WuiLabel: View, WuiComponent {
-    static var id = waterui_label_id()
+    static var id:WuiTypeId{
+        waterui_label_id()
+    }
     var label: WuiStr
     init(label: WuiStr) {
         self.label = label

@@ -9,7 +9,9 @@ import CWaterUI
 import SwiftUI
 
 struct WuiDivider: View, WuiComponent {
-    static var id = waterui_divider_id()
+    static var id: WuiTypeId {
+        waterui_divider_id()
+    }
 
     var body: some View {
         SwiftUI.Divider()

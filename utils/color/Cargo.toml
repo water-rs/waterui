@@ -1,20 +1,21 @@
 [package]
-name = "demo"
+name = "waterui-color"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
-readme = "README.md"
+readme.workspace = true
 repository.workspace = true
-description = "A demo project of WaterUI"
+description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui.workspace = true
-waterui-ffi.workspace = true
 nami.workspace = true
+waterui-core.workspace = true
+[features]
 
-[lib]
-crate-type = ["lib","staticlib","cdylib"]
+
+[lints]
+workspace = true

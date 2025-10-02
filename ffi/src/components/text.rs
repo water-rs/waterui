@@ -10,8 +10,8 @@ use waterui_text::{TextConfig, font::Font};
 pub struct WuiFont {
     pub size: f64,
     pub italic: bool,
-    pub strikethrough: WuiColor,
-    pub underlined: WuiColor,
+    pub strikethrough: *mut WuiColor,
+    pub underlined: *mut WuiColor,
     pub bold: bool,
 }
 
