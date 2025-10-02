@@ -160,7 +160,7 @@ impl Rect {
 }
 
 /// Two-dimensional size expressed in absolute pixels.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq,PartialOrd)]
 pub struct Size {
     /// The width in pixels.
     pub width: f64,
@@ -168,11 +168,23 @@ pub struct Size {
     pub height: f64,
 }
 
+impl Default for Size {
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
 impl Size {
     /// Constructs a [`Size`] with the given `width` and `height`.
     #[must_use]
     pub const fn new(width: f64, height: f64) -> Self {
         Self { width, height }
+    }
+
+    /// Creates a [`Size`] with zero width and height.
+    #[must_use] 
+    pub const fn zero() -> Self {
+        Self { width: 0.0, height: 0.0 }
     }
 }
 
@@ -190,6 +202,12 @@ impl Point {
     #[must_use]
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
+    }
+
+    /// Creates a [`Point`] at the origin (0, 0).
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self { x: 0.0, y: 0.0 }
     }
 }
 
