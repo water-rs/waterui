@@ -14,10 +14,9 @@ categories.workspace = true
 [dependencies]
 nami.workspace = true
 waterui-core.workspace = true
+
 [features]
 
-[dev-dependencies]
-waterui-color = { path = "." }
 
 [lints]
 workspace = true
