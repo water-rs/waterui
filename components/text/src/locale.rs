@@ -52,6 +52,12 @@ impl Extractor for DateFormatter {
 #[derive(Debug, Clone)]
 pub struct Locale(pub Str);
 
+impl Default for Locale {
+    fn default() -> Self {
+        Self("en-US".into())
+    }
+}
+
 impl Extractor for Locale {
     fn extract(env: &waterui_core::Environment) -> Result<Self, waterui_core::Error> {
         env.get::<Self>()

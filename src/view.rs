@@ -9,9 +9,10 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Color, Environment,
+    AnyView, Environment,
     env::With,
     handler::{Handler, HandlerFn, IntoHandler},
 };
