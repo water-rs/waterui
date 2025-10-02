@@ -26,7 +26,9 @@ extension WuiProgressStyle: SwiftUI.ProgressViewStyle {
 }
 
 struct WuiProgress: View, WuiComponent {
-    static var id = waterui_progress_id()
+    static var id:WuiTypeId{
+        waterui_progress_id()
+    }
     var label: WuiAnyView
     @StateObject var value: ComputedDouble
     var style: WuiProgressStyle

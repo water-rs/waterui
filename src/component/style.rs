@@ -20,7 +20,7 @@ use waterui_core::Color;
 ///
 /// A shadow is defined by its color, offset from the original element,
 /// and blur radius.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
     pub color: Color,

@@ -4,7 +4,7 @@ use waterui_core::Color;
 ///
 /// This struct defines all the visual properties that can be applied to text,
 /// including size, styling, and decorations.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Font {
     /// The font size in points.
