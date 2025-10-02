@@ -8,15 +8,18 @@
 import SwiftUI
 import CWaterUI
 
-/*
 
-struct ColorPicker:View,Component {
-    static var id=waterui_color_picker_id()
-    var label:WaterUI.AnyView
+/*
+struct WuiColorPicker:View,WuiComponent {
+    static var id:WuiTypeId{
+        waterui_color_picker_id()
+    }
+    
+    var label:WuiAnyView
     @ObservedObject var value:BindingColor
     @State var color=Color.red
     init(picker: WuiColorPicker, env: Environment) {
-        self.label=AnyView(anyview: picker.label, env: env)
+        self.label=WuiAnyView(anyview: picker.label, env: env)
         self.value=BindingColor(inner: picker.value)
     }
     

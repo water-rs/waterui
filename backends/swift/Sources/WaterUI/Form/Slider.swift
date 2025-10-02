@@ -8,7 +8,9 @@
 import SwiftUI
 import CWaterUI
 struct WuiSlider:View,WuiComponent{
-    static var id=waterui_slider_id()
+    static var id:WuiTypeId{
+        waterui_slider_id()
+    }
     var label:WuiAnyView
     var min_value_label: WuiAnyView
     var max_value_label: WuiAnyView

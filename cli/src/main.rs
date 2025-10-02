@@ -1,12 +1,20 @@
+mod config;
+mod create;
+mod run;
+mod util;
+
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use util::LogLevel;
 
 #[derive(Parser)]
 #[command(name = "water")]
 #[command(about = "CLI of WaterUI", long_about = None)]
 #[command(version, author)]
 struct Cli {
-    #[arg(short, long, global = true)]
-    verbose: bool,
+    /// Increase output verbosity (-v, -vv)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
 
     #[command(subcommand)]
     command: Commands,
@@ -14,28 +22,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    New {
-        // Setting up all backends by default
-    },
-    Run {
-        // Hot reload enabled by default
-    },
-    Build {},
-    I18n {},
-
-    Plugin {},
-
-    Backend {},
+    /// Interactively create a new WaterUI application project
+    Create(create::CreateArgs),
+    /// Build and run a WaterUI application with SwiftUI hot reload support
+    Run(run::RunArgs),
 }
 
-fn main() {
-    let _cli = Cli::parse();
-}
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    util::init_logging(LogLevel::from_count(cli.verbose));
 
-pub fn add_swiftui_backend() {
-    println!("Adding SwiftUI backend...");
-}
-
-pub fn add_android_backend() {
-    println!("Adding Android backend...");
+    match cli.command {
+        Commands::Create(args) => create::run(args),
+        Commands::Run(args) => run::run(args),
+    }
 }

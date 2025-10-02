@@ -116,7 +116,7 @@ impl Rect {
     pub const fn y(&self) -> f64 {
         self.origin.y
     }
-    
+
     /// Returns the rectangle's width.
     #[must_use]
     pub const fn width(&self) -> f64 {
@@ -160,7 +160,7 @@ impl Rect {
 }
 
 /// Two-dimensional size expressed in absolute pixels.
-#[derive(Clone, Debug, PartialEq,PartialOrd)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Size {
     /// The width in pixels.
     pub width: f64,
@@ -182,9 +182,12 @@ impl Size {
     }
 
     /// Creates a [`Size`] with zero width and height.
-    #[must_use] 
+    #[must_use]
     pub const fn zero() -> Self {
-        Self { width: 0.0, height: 0.0 }
+        Self {
+            width: 0.0,
+            height: 0.0,
+        }
     }
 }
 

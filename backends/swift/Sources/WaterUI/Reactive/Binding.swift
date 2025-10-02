@@ -157,15 +157,8 @@ class BindingBool: ObservableObject {
 
     }
 
-    deinit {
-
-        weak var this = self
-        Task { @MainActor in
-            if let this = this {
-                waterui_drop_binding_bool(this.inner)
-            }
-        }
-
+    @MainActor deinit {
+        waterui_drop_binding_bool(inner)
     }
 }
 
@@ -209,14 +202,10 @@ class BindingDouble: ObservableObject {
 
     }
 
-    deinit {
-
-        weak var this = self
-        Task { @MainActor in
-            if let this = this {
-                waterui_drop_binding_double(this.inner)
-            }
-        }
+    @MainActor  deinit {
+        waterui_drop_binding_double(inner)
 
     }
 }
+
+
