@@ -9,6 +9,7 @@ members = [
     # Gtk4 blocks the build of the api doc, so we disable it temporarily
     # "backends/web",
     "render_utils",
+    "plugins/i18n",
     "window",
     "ffi"
 , "demo", "cli"]
@@ -51,6 +52,7 @@ clippy.nursery = "warn"
 clippy.cargo = "warn"
 
 
+
 [workspace.dependencies]
 executor-core = { version = "0.6.0", features = ["std"]}
 nami = { version = "0.6.1" }
@@ -71,7 +73,7 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-render-utils = { version = "0.1.0", path = "render_utils" }
 waterui = { version = "0.1.0", path = "." }
 serde = { version = "1.0", default-features = false }
-wgpu = "27.0.0"
+wgpu = "0.19"
 time = "0.3"
 
 [dependencies]
