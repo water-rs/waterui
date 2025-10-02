@@ -24,7 +24,7 @@ impl Clone for Color {
 
 impl Default for Color {
     fn default() -> Self {
-        Color::new(Srgb::new(0, 0, 0, 0.0))
+        Color::srgb(0, 0, 0, 0.0)
     }
 }
 
@@ -68,10 +68,16 @@ impl P3 {
 
 impl CustomColor for P3 {
     fn resolve(&self, _env: &Environment) -> ResolvedColor {
+        let linear_p3 = [
+            srgb_to_linear(self.red),
+            srgb_to_linear(self.green),
+            srgb_to_linear(self.blue),
+        ];
+        let linear_srgb = p3_to_linear_srgb(linear_p3);
         ResolvedColor {
-            red: self.red,
-            green: self.green,
-            blue: self.blue,
+            red: linear_srgb[0],
+            green: linear_srgb[1],
+            blue: linear_srgb[2],
             headroom: 0.0,
             opacity: self.opacity,
         }
@@ -80,14 +86,14 @@ impl CustomColor for P3 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Srgb {
-    red: u8,
-    green: u8,
-    blue: u8,
+    red: f32,
+    green: f32,
+    blue: f32,
     opacity: f32,
 }
 
 impl Srgb {
-    pub fn new(red: u8, green: u8, blue: u8, opacity: f32) -> Self {
+    pub fn new(red: f32, green: f32, blue: f32, opacity: f32) -> Self {
         Self {
             red,
             green,
@@ -100,9 +106,9 @@ impl Srgb {
 impl CustomColor for Srgb {
     fn resolve(&self, _env: &Environment) -> ResolvedColor {
         ResolvedColor {
-            red: self.red as f32 / 255.0,
-            green: self.green as f32 / 255.0,
-            blue: self.blue as f32 / 255.0,
+            red: srgb_to_linear(self.red),
+            green: srgb_to_linear(self.green),
+            blue: srgb_to_linear(self.blue),
             headroom: 0.0,
             opacity: self.opacity,
         }
@@ -112,11 +118,11 @@ impl CustomColor for Srgb {
 // Extended SRGB
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedColor {
-    red: f32, // 0.0-1.0 for sRGB, <0 or >1 for P3
-    green: f32,
-    blue: f32,
-    headroom: f32,
-    opacity: f32,
+    pub red: f32, // 0.0-1.0 for sRGB, <0 or >1 for P3
+    pub green: f32,
+    pub blue: f32,
+    pub headroom: f32,
+    pub opacity: f32,
 }
 
 pub struct WithOpacity {
@@ -153,6 +159,15 @@ impl Color {
     }
 
     pub fn srgb(red: u8, green: u8, blue: u8, opacity: f32) -> Self {
+        Self::new(Srgb::new(
+            red as f32 / 255.0,
+            green as f32 / 255.0,
+            blue as f32 / 255.0,
+            opacity,
+        ))
+    }
+
+    pub fn srgb_f32(red: f32, green: f32, blue: f32, opacity: f32) -> Self {
         Self::new(Srgb::new(red, green, blue, opacity))
     }
 
@@ -166,3 +181,22 @@ impl Color {
 }
 
 raw_view!(Color); // should be filled rectangle
+
+// https://www.w3.org/TR/css-color-4/#color-conversion-code
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+// Conversion matrix from P3 to sRGB
+// https://www.w3.org/TR/css-color-4/#color-conversion-code
+fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
+    [
+        1.2249401 * p3[0] - 0.2249401 * p3[1],
+        -0.0420301 * p3[0] + 1.0420301 * p3[1],
+        -0.0197211 * p3[0] - 0.0786361 * p3[1] + 1.0983572 * p3[2],
+    ]
+}
