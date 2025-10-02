@@ -52,17 +52,9 @@ impl Layout for ZStackLayout {
         }
 
         // Respect parent constraints - don't exceed them
-        let final_width = if let Some(parent_width) = parent.width {
-            max_width.min(parent_width)
-        } else {
-            max_width
-        };
+        let final_width = parent.width.map_or(max_width, |parent_width| max_width.min(parent_width));
 
-        let final_height = if let Some(parent_height) = parent.height {
-            max_height.min(parent_height)
-        } else {
-            max_height
-        };
+        let final_height = parent.height.map_or(max_height, |parent_height| max_height.min(parent_height));
 
         Size::new(final_width, final_height)
     }
@@ -95,7 +87,7 @@ impl Layout for ZStackLayout {
                 .max(0.0);
 
             // Position the child within the ZStack bounds according to alignment
-            let (x, y) = self.calculate_position(&bound, Size::new(child_width, child_height));
+            let (x, y) = self.calculate_position(&bound, &Size::new(child_width, child_height));
 
             rects.push(Rect::new(
                 Point::new(x, y),
@@ -109,7 +101,7 @@ impl Layout for ZStackLayout {
 
 impl ZStackLayout {
     /// Calculate the position of a child within the `ZStack` bounds based on alignment
-    fn calculate_position(&self, bound: &Rect, child_size: Size) -> (f64, f64) {
+    fn calculate_position(&self, bound: &Rect, child_size: &Size) -> (f64, f64) {
         let available_width = bound.width();
         let available_height = bound.height();
 

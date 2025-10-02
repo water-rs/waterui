@@ -72,14 +72,13 @@ impl<Id: Hash + Ord> IdGenerator<Id> {
     }
     pub fn to_id(&self, value: Id) -> NonZeroUsize {
         let mut this = self.map.borrow_mut();
-        if let Some(id) = this.get(&value) {
-            *id
-        } else {
-            let id = self.counter.get();
-            self.counter.set(id.checked_add(1).unwrap());
-            this.insert(value, id);
-            id
+        if let Some(&id) = this.get(&value) {
+            return id;
         }
+        let id = self.counter.get();
+        self.counter.set(id.checked_add(1).unwrap());
+        this.insert(value, id);
+        id
     }
 }
 
@@ -254,6 +253,7 @@ where
     }
 }
 
+/// Represents a single transformed item, pairing data with a generator function to produce a view.
 #[derive(Debug)]
 pub struct ForEachItem<T, F, V>
 where
