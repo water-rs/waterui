@@ -84,6 +84,12 @@ impl CustomColor for P3 {
     }
 }
 
+impl<T:CustomColor + 'static> From<T> for Color {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Srgb {
     red: f32,

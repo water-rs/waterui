@@ -10,8 +10,9 @@ pub mod tab;
 
 use alloc::{boxed::Box, vec::Vec};
 use nami::Computed;
+use waterui_color::Color;
 use waterui_core::{
-    AnyView, Color, View,
+    AnyView, View,
     handler::{BoxHandler, HandlerFn, into_handler},
     impl_debug, raw_view,
 };
