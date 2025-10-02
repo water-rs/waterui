@@ -94,12 +94,12 @@ where
 
 /// Creates a new `When` component for conditional view rendering.
 ///
-/// This is the primary function for creating conditional views in WaterUI. It accepts
+/// This is the primary function for creating conditional views in `WaterUI`. It accepts
 /// a reactive boolean condition and a closure that returns a view to render when
 /// the condition is `true`.
 ///
 /// The condition is reactive, meaning the UI will automatically update when the
-/// condition changes. This is achieved through WaterUI's integration with the
+/// condition changes. This is achieved through `WaterUI`'s integration with the
 /// [`nami`] reactive system.
 ///
 /// # Arguments
@@ -132,7 +132,7 @@ where
 /// when(is_logged_in, || text!("Dashboard"))
 ///     .or(|| text!("Please log in"));
 /// ```
-pub fn when<Condition, P, Then, V>(
+pub const fn when<Condition, P, Then, V>(
     condition: Condition,
     then: Then,
 ) -> When<Condition, IntoHandler<Then, P, V>>

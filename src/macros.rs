@@ -1,4 +1,4 @@
-//! Utility macros for common implementations across the WaterUI framework.
+//! Utility macros for common implementations across the `WaterUI` framework.
 //!
 //! This module provides macros that help reduce boilerplate code when implementing
 //! common traits and patterns throughout the framework.

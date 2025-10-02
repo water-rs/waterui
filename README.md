@@ -1,4 +1,4 @@
-# WaterUI 🌊
+# `WaterUI` 🌊
 
 [![Crates.io](https://img.shields.io/crates/v/waterui.svg)](https://crates.io/crates/waterui)
 [![docs.rs](https://docs.rs/waterui/badge.svg)](https://docs.rs/waterui)
@@ -8,7 +8,7 @@ A modern, cross-platform UI framework for Rust that delivers true native renderi
 
 ## 🚀 Quick Start
 
-Add WaterUI to your `Cargo.toml`:
+Add `WaterUI` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -46,21 +46,21 @@ pub fn counter() -> impl View {
 
 ## ✨ Features
 
-- **🎯 True Native Rendering** - Uses SwiftUI on Apple platforms (macOS, iOS, visionOS, watchOS, widgets!)
+- **🎯 True Native Rendering** - Uses `SwiftUI` on Apple platforms (macOS, iOS, visionOS, watchOS, widgets!)
 - **⚡ Fine-Grained Reactivity** - Vue-like reactive updates without virtual DOM overhead
 - **🔒 Type Safety** - Leverage Rust's powerful type system from UI to data
-- **🔄 Declarative & Reactive** - Familiar API for SwiftUI and React developers
-- **🌐 Cross-Platform** - Multiple backends: SwiftUI, GTK4, Web, and more planned
+- **🔄 Declarative & Reactive** - Familiar API for `SwiftUI` and React developers
+- **🌐 Cross-Platform** - Multiple backends: `SwiftUI`, GTK4, Web, and more planned
 - **🚫 No-std Support** - Deploy to embedded environments
 - **🎨 Composable Architecture** - Build complex UIs from simple, reusable components
 
 ## 📦 Architecture
 
-WaterUI follows a modular architecture with clear separation of concerns:
+`WaterUI` follows a modular architecture with clear separation of concerns:
 
 - **Core Framework** (`waterui-core`) - View trait, Environment system, reactive state
 - **Component Libraries** - Text, Layout, Forms, Media, Navigation components
-- **Platform Backends** - SwiftUI, GTK4, Web renderers
+- **Platform Backends** - `SwiftUI`, GTK4, Web renderers
 - **Utilities** - String handling, color management, cross-platform tools
 
 ## 🛣️ Roadmap
@@ -68,7 +68,7 @@ WaterUI follows a modular architecture with clear separation of concerns:
 **Current Version: 0.1.0** - First glance ✅
 
 - ✅ Basic widgets: stack, text, scroll, form
-- ✅ SwiftUI backend
+- ✅ `SwiftUI` backend
 - ✅ MVP of GTK4 backend
 - ✅ Stabilized core design
 
@@ -94,21 +94,21 @@ WaterUI follows a modular architecture with clear separation of concerns:
 
 ## 🎮 Examples & Demos
 
-**SwiftUI Backend Demo**  
+**`SwiftUI` Backend Demo**\
 Native macOS/iOS applications → [View Demo](./demo)
 
-**GTK4 Backend Examples**  
+**GTK4 Backend Examples**\
 Cross-platform desktop apps → [View Examples](./backends/gtk4/examples/)
 
 ## 📚 Documentation
 
-- **[Tutorial Book](https://water-rs.github.io/waterui/)** - Learn WaterUI step by step
+- **[Tutorial Book](https://water-rs.github.io/waterui/)** - Learn `WaterUI` step by step
 - **[API Reference (Latest)](https://water-rs.github.io/waterui/api)** - Development docs
 - **[API Reference (docs.rs)](https://docs.rs/waterui)** - Stable release docs
 
 ## 🤝 Contributing
 
-We welcome contributions! WaterUI is in active development and there's plenty to work on:
+We welcome contributions! `WaterUI` is in active development and there's plenty to work on:
 
 1. **Fork the repository**
 2. **Create a feature branch**: `git checkout -b feature/amazing-feature`

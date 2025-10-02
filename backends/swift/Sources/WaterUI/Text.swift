@@ -88,17 +88,31 @@ struct WuiText: View, WuiComponent {
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(text: waterui_force_as_text(anyview))
     }
-
-    func toText() -> SwiftUI.Text {
-        return SwiftUI.Text(content.value)
+    
+    func text() -> ObservableText{
+        .init(content: content, font: font)
     }
+
 
     var body: some View {
-
-        SwiftUI.Text(content.value).font(Font.init(wuiFont: font.value))
-
+        Text(content.value).font(Font.init(wuiFont: font.value))
     }
+}
 
+@Observable
+@MainActor
+class ObservableText{
+    private var content:ComputedStr
+    private var font:ComputedFont
+    
+    var text:Text{
+        Text(content.value).font(Font.init(wuiFont: font.value))
+    }
+    
+    init(content: ComputedStr, font: ComputedFont) {
+        self.content = content
+        self.font = font
+    }
 }
 
 extension SwiftUI.Font {
