@@ -9,6 +9,6 @@ struct WuiSpacer: View, WuiComponent {
     }
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
-
+        
     }
 }

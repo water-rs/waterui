@@ -94,7 +94,7 @@ impl IntoFFI for ChildMetadata {
     type FFI = WuiChildMetadata;
     fn into_ffi(self) -> Self::FFI {
         WuiChildMetadata {
-            proposal: self.proposal().into_ffi(),
+            proposal: self.proposal().clone().into_ffi(),
             priority: self.priority(),
             stretch: self.stretch(),
         }
@@ -189,7 +189,7 @@ impl IntoFFI for Rect {
     fn into_ffi(self) -> Self::FFI {
         WuiRect {
             origin: self.origin().into_ffi(),
-            size: self.size().into_ffi(),
+            size: self.size().clone().into_ffi(),
         }
     }
 }

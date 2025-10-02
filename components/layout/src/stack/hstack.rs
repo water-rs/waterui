@@ -1,20 +1,24 @@
+//! Horizontal stack layout.
+
 use alloc::{vec, vec::Vec};
 use waterui_core::view::TupleViews;
 
-use crate::{container, stack::VerticalAlignment, ChildMetadata, Layout, Point, ProposalSize, Rect, Size};
+use crate::{
+    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container, stack::VerticalAlignment,
+};
 
+/// Layout engine shared by the public [`HStack`] view.
 #[derive(Debug, Clone)]
 pub struct HStackLayout {
+    /// The vertical alignment of children within the stack.
     pub alignment: VerticalAlignment,
+    /// The spacing between children in the stack.
     pub spacing: f64,
 }
 
+#[allow(clippy::cast_precision_loss)]
 impl Layout for HStackLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-    ) -> Vec<ProposalSize> {
+    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
         vec![ProposalSize::new(None, parent.height); children.len()]
     }
 
@@ -23,7 +27,7 @@ impl Layout for HStackLayout {
             return Size::new(0.0, 0.0);
         }
 
-        let has_stretchy_children = children.iter().any(|c| c.stretch());
+        let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
 
         let non_stretchy_width: f64 = children
             .iter()
@@ -39,7 +43,6 @@ impl Layout for HStackLayout {
 
         let intrinsic_width = non_stretchy_width + total_spacing;
 
-
         let final_width = if has_stretchy_children {
             parent.width.unwrap_or(intrinsic_width)
         } else {
@@ -51,7 +54,7 @@ impl Layout for HStackLayout {
             .map(|c| c.proposal().height.unwrap_or(0.0))
             .max_by(f64::total_cmp)
             .unwrap_or(0.0);
-        
+
         let final_height = parent.height.unwrap_or(max_height);
 
         Size::new(final_width, final_height)
@@ -79,7 +82,7 @@ impl Layout for HStackLayout {
         } else {
             0.0
         };
-        
+
         let remaining_width = bound.width() - non_stretchy_width - total_spacing;
         let stretchy_child_width = if stretchy_children_count > 0 {
             (remaining_width / stretchy_children_count as f64).max(0.0)
@@ -105,7 +108,9 @@ impl Layout for HStackLayout {
 
             let y = match self.alignment {
                 VerticalAlignment::Top => bound.origin().y,
-                VerticalAlignment::Center => bound.origin().y + (bound.height() - child_height) / 2.0,
+                VerticalAlignment::Center => {
+                    bound.origin().y + (bound.height() - child_height) / 2.0
+                }
                 VerticalAlignment::Bottom => bound.origin().y + bound.height() - child_height,
             };
 
@@ -120,9 +125,15 @@ impl Layout for HStackLayout {
     }
 }
 
-container!(HStack, HStackLayout);
+container!(
+    HStack,
+    HStackLayout,
+    "A horizontal stack layout that arranges its children in a horizontal line with specified alignment and spacing."
+);
 
 impl HStack {
+    /// Creates a horizontal stack with the provided alignment, spacing, and
+    /// children.
     pub fn new(alignment: VerticalAlignment, spacing: f64, contents: impl TupleViews) -> Self {
         Self {
             layout: HStackLayout { alignment, spacing },
@@ -131,6 +142,7 @@ impl HStack {
     }
 }
 
+/// Convenience constructor that centres children and uses the default spacing.
 pub fn hstack(contents: impl TupleViews) -> HStack {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }

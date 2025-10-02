@@ -1,10 +1,18 @@
+//! Overlay stack layout.
+
 use alloc::{vec, vec::Vec};
 use waterui_core::view::TupleViews;
 
 use crate::{Layout, Point, ProposalSize, Rect, Size, container, stack::Alignment};
 
+/// A layout implementation for stacking views on top of each other with specified alignment.
+///
+/// `ZStackLayout` positions all child views within the same bounds, overlaying them
+/// according to the specified alignment. Each child is sized independently and
+/// positioned based on the alignment setting.
 #[derive(Debug, Clone)]
 pub struct ZStackLayout {
+    /// The alignment used to position children within the `ZStack`
     pub alignment: Alignment,
 }
 
@@ -76,13 +84,13 @@ impl Layout for ZStackLayout {
             // Each child gets sized to its ideal size, but constrained by the ZStack bounds
             let child_width = child
                 .proposal_width()
-                .unwrap_or(bound.width())
+                .unwrap_or_else(|| bound.width())
                 .min(bound.width())
                 .max(0.0);
 
             let child_height = child
                 .proposal_height()
-                .unwrap_or(bound.height())
+                .unwrap_or_else(|| bound.height())
                 .min(bound.height())
                 .max(0.0);
 
@@ -100,7 +108,7 @@ impl Layout for ZStackLayout {
 }
 
 impl ZStackLayout {
-    /// Calculate the position of a child within the ZStack bounds based on alignment
+    /// Calculate the position of a child within the `ZStack` bounds based on alignment
     fn calculate_position(&self, bound: &Rect, child_size: Size) -> (f64, f64) {
         let available_width = bound.width();
         let available_height = bound.height();
@@ -137,9 +145,14 @@ impl ZStackLayout {
     }
 }
 
-container!(ZStack, ZStackLayout);
+container!(
+    ZStack,
+    ZStackLayout,
+    "A stack layout that overlays its children on top of each other, aligning them based on the specified alignment."
+);
 
 impl ZStack {
+    /// Creates a new `ZStack` with the specified alignment and contents.
     pub fn new(alignment: Alignment, contents: impl TupleViews) -> Self {
         Self {
             layout: ZStackLayout { alignment },
@@ -148,6 +161,9 @@ impl ZStack {
     }
 }
 
+/// Creates a new `ZStack` with center alignment and the specified contents.
+///
+/// This is a convenience function that creates a `ZStack` with `Alignment::Center`.
 pub fn zstack(contents: impl TupleViews) -> ZStack {
     ZStack::new(Alignment::Center, contents)
 }

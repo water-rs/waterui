@@ -44,7 +44,7 @@ struct Render {
             WuiContainer.self,
             WuiToggle.self,
             WuiSpacer.self,
-            // WaterUI.Picker.self,
+            //WuiPicker.self,
             //WaterUI.BackgroundColor.self,
             //WaterUI.Rectangle.self,
             //  WaterUI.ForegroundColor.self,
@@ -87,7 +87,7 @@ public struct WuiAnyView: View, Identifiable {
     var main: any View
     private var anyviewPtr: OpaquePointer
     private var env: WuiEnvironment
-    public var typeId:WuiTypeId
+    public var typeId: WuiTypeId
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.anyviewPtr = anyview
@@ -96,7 +96,6 @@ public struct WuiAnyView: View, Identifiable {
         self.main = Render.main.render(anyview: anyview, env: env)
     }
 
-  
     /// Force downcast to a specific component type
     func forceAs<T: WuiComponent>(_ type: T.Type) -> T? {
         let currentId = waterui_view_id(anyviewPtr)

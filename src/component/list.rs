@@ -1,7 +1,7 @@
-//! List component implementation for WaterUI.
+//! List component implementation for `WaterUI`.
 //!
 //! This module provides the necessary components to build and configure lists
-//! in the WaterUI framework. It includes the `List` component for displaying collections
+//! in the `WaterUI` framework. It includes the `List` component for displaying collections
 //! of data, and `ListItem` for configuring individual items in the list.
 //!
 //! # Examples
@@ -40,7 +40,7 @@ where
     ///
     /// # Arguments
     /// * `contents` - A collection of items to display in the list.
-    pub fn new(contents: V) -> Self {
+    pub const fn new(contents: V) -> Self {
         Self(contents)
     }
 }
@@ -85,6 +85,7 @@ impl ListItem {
     }
 
     /// Disables deletion functionality for this item.
+    #[must_use] 
     pub fn disable_delete(mut self) -> Self {
         self.on_delete = None;
         self

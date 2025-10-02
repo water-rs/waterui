@@ -9,7 +9,7 @@ import Foundation
 import CWaterUI
 import SwiftUI
 /*
-struct Picker:View,Component {
+struct Picker:View,WuiComponent {
     static var id=waterui_picker_id()
     @ObservedObject var selection:BindingInt
     @ObservedObject var items:ComputedPickerItems
@@ -108,4 +108,4 @@ extension waterui_watcher_waterui_array_waterui_picker_item {
         })
     }
 }
-*/
+ */

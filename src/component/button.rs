@@ -96,7 +96,7 @@ impl<Label> Button<Label, ()> {
     /// # Arguments
     ///
     /// * `label` - The text or view to display on the button
-    pub fn new(label: Label) -> Self {
+    pub const fn new(label: Label) -> Self {
         Self { label, action: () }
     }
 }
@@ -150,6 +150,6 @@ impl<Label, Action> Button<Label, Action> {
 /// # Returns
 ///
 /// A new button instance
-pub fn button<Label>(label: Label) -> Button<Label, ()> {
+pub const fn button<Label>(label: Label) -> Button<Label, ()> {
     Button::new(label)
 }

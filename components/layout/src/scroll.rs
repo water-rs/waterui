@@ -1,3 +1,5 @@
+//! Scroll containers that defer behaviour to the active renderer backend.
+
 use waterui_core::{AnyView, View, raw_view};
 
 /// A scrollable container that can display content larger than its bounds.
@@ -15,12 +17,12 @@ pub struct ScrollView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 #[non_exhaustive]
 pub enum Axis {
-    /// Allow horizontal scrolling only
+    /// Allow horizontal scrolling only.
     Horizontal,
-    /// Allow vertical scrolling only (default)
+    /// Allow vertical scrolling only (default).
     #[default]
     Vertical,
-    /// Allow scrolling in both directions
+    /// Allow scrolling in both directions.
     All,
 }
 
