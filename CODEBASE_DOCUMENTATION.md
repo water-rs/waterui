@@ -666,7 +666,3 @@ cargo +nightly miri test -p waterui-str
 - Enhanced type safety
 - Performance optimizations
 - API stabilization
-
----
-
-This documentation provides a comprehensive overview of the WaterUI codebase architecture, implementation details, and development practices. The framework represents a modern approach to cross-platform UI development with strong emphasis on type safety, performance, and developer experience.
