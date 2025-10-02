@@ -19,6 +19,7 @@ waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
 waterui-form-derive = { version = "0.1.0", path = "derive" }
+waterui-color.workspace = true
 zeroize = { version = "1.8.1", default-features = false }
 bcrypt = "0.17.1"
 serde = { workspace = true, features = ["derive"], optional = true }

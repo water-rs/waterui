@@ -1,7 +1,8 @@
 //! Color Picker Component
 
 use nami::Binding;
-use waterui_core::{AnyView, Color, View, configurable};
+use waterui_color::Color;
+use waterui_core::{AnyView, View, configurable};
 
 #[derive(Debug)]
 #[non_exhaustive]

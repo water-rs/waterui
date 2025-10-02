@@ -14,7 +14,8 @@
 //! };
 //! ```
 
-use waterui_core::Color;
+use waterui_color::Color;
+
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
