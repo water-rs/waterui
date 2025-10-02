@@ -1,10 +1,15 @@
+use crate::array::WuiArray;
 use crate::color::WuiColor;
+use crate::components::form::WuiPickerItem;
 use crate::components::media::{WuiLivePhotoSource, WuiVideo};
 use crate::components::text::WuiFont;
 use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
+use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::{AnyView, Color, Str};
 use waterui::{Binding, Computed, Signal, reactive::watcher::Metadata};
+use waterui_core::id::Id;
+use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
 use waterui_text::font::Font;
@@ -140,6 +145,15 @@ impl_computed!(
     waterui_read_computed_double,
     waterui_watch_computed_double,
     waterui_drop_computed_double
+);
+
+// Computed<Vec<PickerItem<Id>>>,
+impl_computed!(
+    Vec<PickerItem<Id>>,
+    WuiArray<WuiPickerItem>,
+    waterui_read_computed_picker_items,
+    waterui_watch_computed_picker_items,
+    waterui_drop_computed_picker_items
 );
 
 impl_computed!(
