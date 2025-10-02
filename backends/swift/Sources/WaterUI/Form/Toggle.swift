@@ -11,7 +11,9 @@ import SwiftUI
 
 
 public struct WuiToggle:View,WuiComponent{
-    static var id=waterui_toggle_id()
+    static var id:WuiTypeId{
+        waterui_toggle_id()
+    }
     @ObservedObject private var isOn:BindingBool
     var label:WuiAnyView
     init(toggle:CWaterUI.WuiToggle,env:WuiEnvironment){

@@ -4,7 +4,7 @@
 //! into a `View` that can be rendered by the UI, optionally leveraging a
 //! user-supplied builder stored in the [`Environment`].
 
-use core::fmt::{Debug};
+use core::fmt::Debug;
 
 use waterui_core::{AnyView, Environment, View};
 
@@ -34,7 +34,7 @@ type BoxedError = Box<dyn core::error::Error>;
 /// Holds a custom renderer used to turn errors into views.
 pub struct ErrorViewBuilder(Box<dyn Fn(BoxedError, &Environment) -> AnyView>);
 
-impl Debug for ErrorViewBuilder{
+impl Debug for ErrorViewBuilder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ErrorViewBuilder")
             .field("func", &"Box<dyn Fn(BoxedError, &Environment) -> AnyView>")

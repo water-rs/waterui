@@ -14,13 +14,7 @@ public class WuiEnvironment {
         self.inner = inner
     }
     
-    deinit{
-        weak var this=self
-        Task{@MainActor in
-            if let this=this{
-                waterui_drop_env(this.inner)
-            }
-        }
-       
+    @MainActor deinit{
+        waterui_drop_env(inner)
     }
 }

@@ -4,10 +4,13 @@
 //! child's incoming proposal. The struct below documents the intent so that
 //! renderers and component authors have a reference point.
 
-use alloc::{vec::{Vec},vec};
+use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{stack::{Alignment, HorizontalAlignment, VerticalAlignment}, ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size};
+use crate::{
+    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+};
 
 /// Planned layout that clamps a single child's proposal.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -34,11 +37,11 @@ impl Layout for FrameLayout {
         let child_proposal = ProposalSize {
             width: proposed_width.map(|w| {
                 w.max(self.min_width.unwrap_or(f64::NEG_INFINITY))
-                 .min(self.max_width.unwrap_or(f64::INFINITY))
+                    .min(self.max_width.unwrap_or(f64::INFINITY))
             }),
             height: proposed_height.map(|h| {
                 h.max(self.min_height.unwrap_or(f64::NEG_INFINITY))
-                 .min(self.max_height.unwrap_or(f64::INFINITY))
+                    .min(self.max_height.unwrap_or(f64::INFINITY))
             }),
         };
 
@@ -51,7 +54,10 @@ impl Layout for FrameLayout {
         // but overridden by its own ideal dimensions and clamped by its min/max.
 
         let child_size = children.first().map_or(Size::zero(), |c| {
-            Size::new(c.proposal_width().unwrap_or(0.0), c.proposal_height().unwrap_or(0.0))
+            Size::new(
+                c.proposal_width().unwrap_or(0.0),
+                c.proposal_height().unwrap_or(0.0),
+            )
         });
 
         // 1. Determine the frame's ideal width based on its own properties and its child.
@@ -59,7 +65,7 @@ impl Layout for FrameLayout {
         target_width = target_width
             .max(self.min_width.unwrap_or(f64::NEG_INFINITY))
             .min(self.max_width.unwrap_or(f64::INFINITY));
-        
+
         // 2. Determine the frame's ideal height.
         let mut target_height = self.ideal_height.unwrap_or(child_size.height);
         target_height = target_height
@@ -81,7 +87,9 @@ impl Layout for FrameLayout {
         _proposal: ProposalSize,
         children: &[ChildMetadata],
     ) -> Vec<Rect> {
-        let child = children.first().expect("FrameLayout expects exactly one child");
+        let child = children
+            .first()
+            .expect("FrameLayout expects exactly one child");
 
         let child_size = Size::new(
             child.proposal_width().unwrap_or(0.0),
@@ -100,9 +108,9 @@ impl Layout for FrameLayout {
             VerticalAlignment::Center => bound.y() + (bound.height() - child_size.height) / 2.0,
             VerticalAlignment::Bottom => bound.max_y() - child_size.height,
         };
-        
+
         let child_origin = Point::new(child_x, child_y);
-        
+
         vec![Rect::new(child_origin, child_size)]
     }
 }
@@ -139,45 +147,43 @@ impl Frame {
         }
     }
 
-    
     /// Sets the ideal width of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn width(mut self, width: f64) -> Self {
         self.layout.ideal_width = Some(width);
         self
     }
 
     /// Sets the ideal height of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn height(mut self, height: f64) -> Self {
         self.layout.ideal_height = Some(height);
         self
     }
-    
+
     /// Sets the minimum width of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn min_width(mut self, width: f64) -> Self {
         self.layout.min_width = Some(width);
         self
     }
 
     /// Sets the maximum width of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn max_width(mut self, width: f64) -> Self {
         self.layout.max_width = Some(width);
         self
     }
 
-
     /// Sets the minimum height of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn min_height(mut self, height: f64) -> Self {
         self.layout.min_height = Some(height);
         self
     }
 
     /// Sets the maximum height of the frame.
-    #[must_use] 
+    #[must_use]
     pub const fn max_height(mut self, height: f64) -> Self {
         self.layout.max_height = Some(height);
         self
