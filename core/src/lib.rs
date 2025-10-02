@@ -101,8 +101,6 @@ pub mod plugin;
 pub use anyhow::Error;
 pub mod animation;
 pub use animation::AnimationExt;
-pub mod color;
-pub use color::Color;
 pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 pub use waterui_str::Str;

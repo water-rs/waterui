@@ -6,6 +6,7 @@
 #![no_std]
 extern crate alloc;
 
+use waterui_color::Color;
 #[doc(inline)]
 pub use waterui_form_derive::{FormBuilder, form};
 
@@ -26,7 +27,7 @@ pub mod picker;
 pub mod stepper;
 #[doc(inline)]
 pub use stepper::{Stepper, stepper};
-use waterui_core::{AnyView, Binding, Color, Str, View};
+use waterui_core::{AnyView, Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
 ///

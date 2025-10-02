@@ -16,8 +16,9 @@
 
 use crate::ViewExt;
 use nami::{Computed, Signal, signal::IntoComputed};
+use waterui_color::Color;
 use waterui_core::{AnyView, View};
-use waterui_core::{Color, configurable};
+use waterui_core::{ configurable};
 
 /// Configuration for the Badge component
 #[derive(Debug)]

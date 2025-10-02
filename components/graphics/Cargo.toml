@@ -6,13 +6,16 @@ authors.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-description.workspace = true
-keywords.workspace = true
+description = "Graphic components for WaterUI"
+keywords = ["graphics", "2d", "vello", "ui", "waterui"]
 categories = ["gui"]
 
 
 [dependencies]
 waterui-core.workspace = true
+waterui-color.workspace = true
+vello = { version = "0.1.0", features = ["wgpu"] }
+kurbo = "0.11.0"
 wgpu.workspace = true
 
 [lints]
