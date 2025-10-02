@@ -17,6 +17,7 @@ pub struct VStackLayout {
     pub spacing: f64,
 }
 
+#[allow(clippy::cast_precision_loss)]
 impl Layout for VStackLayout {
     fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
         vec![ProposalSize::new(parent.width, None); children.len()]
@@ -27,7 +28,7 @@ impl Layout for VStackLayout {
             return Size::new(0.0, 0.0);
         }
 
-        let has_stretchy_children = children.iter().any(|c| c.stretch());
+        let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
 
         let non_stretchy_height: f64 = children
             .iter()
