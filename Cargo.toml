@@ -62,7 +62,7 @@ waterui-text = { version = "0.1.0", path = "components/text" }
 waterui-media = { version = "0.1.0", path = "components/media" }
 waterui-form = { version = "0.1.0", path = "components/form" }
 waterui-form-derive = { version = "0.1.0", path = "components/form/derive" }
-waterui-canvas = { version = "0.1.0", path = "components/canvas" }
+waterui-graphics = { version = "0.1.0", path = "components/graphics" }
 waterui-ffi = { version = "0.1.0", path = "ffi" }
 waterui-layout = { version = "0.1.0", path = "components/layout" }
 waterui-navigation = { version = "0.1.0", path = "components/navigation" }
