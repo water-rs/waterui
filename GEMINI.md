@@ -84,15 +84,51 @@ The project uses standard Cargo commands, which are orchestrated in the CI workf
     cargo doc --all-features --no-deps --workspace
     ```
 
-## 5. Development Conventions
+## 5. Core Design Patterns & Conventions
 
-*   **Workspace Structure:** All code is organized into crates within the Cargo workspace. Dependencies between workspace crates are defined with `package.workspace = true`.
+To ensure consistency and a clean architecture, all new components should adhere to the following patterns, choosing the appropriate pattern for the component's role.
 
-*   **The `ConfigurableView` Pattern:** This is the central pattern for creating new components. A new component should consist of a builder-like `View` struct and a plain data `...Config` struct. This ensures it's extensible and compatible with the FFI layer.
+### Component Archetypes
 
-*   **FFI Automation Macros:** The `ffi` crate uses macros to reduce boilerplate when exposing components to the native side.
-    *   `ffi_struct!`: Automatically implements the conversion from a Rust `...Config` struct to its C-compatible `Wui...` counterpart.
-    *   `ffi_view!`: Creates the necessary FFI functions for a given component.
-    *   When adding a new component, you must update the `ffi` crate and use these macros.
+WaterUI has two main types of components, and it is crucial to choose the right pattern for the job:
 
-*   **Reactivity:** State should be managed using `nami`. Use `binding()` for mutable state and signals (`.map()`, `Computed`) for derived values. This is the idiomatic way to ensure the UI updates automatically.
+1.  **Configuration-Driven Components:** These are components whose primary purpose is to be customized with data, styles, and child views. They act like "documents" that describe a piece of the UI. **This archetype uses the `Configurable` pattern.**
+    *   **Examples:** `Button`, `Slider`.
+
+2.  **Behavior-Driven (or Primitive) Components:** These are components that provide a specific, often low-level, functionality. Their identity is defined by their behavior, not by child components. They often use the `raw_view!` macro and require specific handling in the backend.
+    *   **Example:** `Dynamic` (provides the behavior of dynamically swapping content).
+
+### 1. The `Configurable` View Pattern (for Configuration-Driven Components)
+
+This is the fundamental pattern for creating customizable, composite UI components.
+
+*   **`...Config` Struct:** For each component (e.g., `MyView`), create a `MyViewConfig` struct to hold all its properties, state, and child views (using `AnyView`).
+*   **`View` Struct:** The public `MyView` struct acts as a thin, builder-like wrapper around its `...Config` struct.
+*   **`configurable!` Macro:** Use `configurable!(MyView, MyViewConfig)` to wire them together, allowing the framework's engine to extract the configuration.
+
+### 2. The Builder API Pattern
+
+Components should provide a fluent, chainable API for customization.
+
+*   **Chainable Methods:** Methods that modify a property should take `mut self` and return `self` (e.g., `Canvas::new(...).width(200.0)`).
+*   **Convenience Function:** Provide a lowercase free function (e.g., `slider(...)`) as a shortcut for `Slider::new(...)`.
+
+### 3. The `Context` Pattern for Complex Operations
+
+For components requiring complex, scoped operations (like drawing), use a `Context` object passed to a closure.
+
+*   **Closure-based API:** The component takes a closure in its constructor (e.g., `Canvas::new(move |ctx| { ... })`).
+*   **Scoped `Context` Object:** A temporary `Context` (e.g., `&mut GraphicsContext`) is passed to the closure, providing a safe, specialized API (`ctx.fill()`, `ctx.stroke()`).
+
+### 4. The Rendering Bridge Pattern (`WgpuView`)
+
+For any component that needs to perform custom rendering on the GPU (2D, 3D, shaders), the `WgpuView` primitive is the foundation.
+
+*   **The `WgpuView` Primitive:** This is a `raw_view!` component that acts as a bridge between WaterUI and the WGPU rendering context. Its sole responsibility is to provide a drawing closure (`on_draw`) with a `wgpu::Device`, `wgpu::Queue`, and a `wgpu::TextureView` to render into.
+*   **Backend Responsibility:** The native backend is responsible for creating a shareable texture, executing the `on_draw` closure to let Rust render into it, and then displaying this texture.
+*   **High-Level Components as Users:** High-level components like `Canvas` are *users* of `WgpuView`. The `Canvas` view's `body()` method returns a `WgpuView`, and inside the `on_draw` closure, it implements its Vello-based rendering logic.
+*   **Extensibility:** This pattern is highly extensible. Anyone can create a new component that uses `WgpuView` to render with custom WGPU logic, without needing to change the backend.
+
+### 5. The Backend Abstraction Principle
+
+Public APIs **must not** expose backend-specific types (e.g., `vello`, `kurbo`). The conversion to backend types must be an internal implementation detail (`pub(crate)` or private).
