@@ -51,6 +51,11 @@ where
     C::Item: Identifable,
     F: 'static + Fn(C::Item) -> ListItem,
 {
+    /// Creates a new list by iterating over a collection and generating items.
+    ///
+    /// # Arguments
+    /// * `data` - The collection to iterate over
+    /// * `generator` - A function that converts each collection item into a `ListItem`
     pub fn for_each(data: C, generator: F) -> Self {
         Self(ForEach::new(data, generator))
     }
@@ -79,6 +84,7 @@ impl ListItem {
     ///
     /// # Arguments
     /// * `on_delete` - The callback function that receives environment and index
+    #[must_use]
     pub fn on_delete(mut self, on_delete: impl Fn(&Environment, usize) + 'static) -> Self {
         self.on_delete = Some(Box::new(on_delete));
         self

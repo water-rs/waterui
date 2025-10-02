@@ -84,6 +84,7 @@ where
     }
 }
 
+/// A button component that can be configured with a label and an action.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Button<Label, Action> {
     label: Label,
@@ -122,7 +123,16 @@ impl<Label, Action> Button<Label, Action> {
             action: into_handler(action),
         }
     }
-
+    /// Sets the action to be performed when the button is clicked, with access to a state.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the state that the action can access.
+    /// * `action` - The callback function to execute when the button is clicked.
+    ///
+    /// # Returns
+    ///
+    /// The modified button with the action and state set.
     #[must_use]
     pub fn action_with<H, P, S>(
         self,
