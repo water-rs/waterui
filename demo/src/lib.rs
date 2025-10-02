@@ -1,14 +1,17 @@
 use waterui::{
+    Binding, Environment, View, ViewExt,
     component::{
         divder::Divider,
-        form::{form, stepper, FormBuilder, Slider},
+        form::{FormBuilder, Slider, form, stepper},
         layout::{
             scroll, spacer,
             stack::{hstack, vstack},
         },
         progress::{loading, progress},
         text::text,
-    }, prelude::layout::padding::EdgeInsets, reactive::Project, Binding, Environment, View, ViewExt
+    },
+    prelude::layout::padding::EdgeInsets,
+    reactive::Project,
 };
 
 pub fn init() -> Environment {
@@ -31,45 +34,48 @@ pub fn main() -> impl View {
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    scroll(vstack((
-        // App header
+    scroll(
         vstack((
-            text("WaterUI Demo").size(24.0),
-            "Cross-platform Reactive UI Framework",
-            Divider,
-        )),
-        spacer(),
-        // Counter demo with reactive updates
-        vstack((
-            text("Interactive Counter").size(18.0),
-            hstack((
-                "Count: ",
-                waterui::text!("{}", counter),
-                spacer(),
-                stepper(&counter),
+            // App header
+            vstack((
+                text("WaterUI Demo").size(24.0),
+                "Cross-platform Reactive UI Framework",
+                Divider,
             )),
-            progress(counter.get() as f64 / 10.0),
-        )),
-        spacer(),
-        // User profile form
-        vstack((
-            text("User Profile").size(18.0),
-            form(&profile),
-            hstack(("Name: ", waterui::text!("{}", profile.project().name))),
-            hstack(("Email: ", waterui::text!("{}", profile.project().email))),
-        )),
-        spacer(),
-        // Interactive controls
-        vstack((
-            text("Controls").size(18.0),
-            Slider::new(0.0..=1.0, &progress_value),
-            progress(progress_value),
-            loading(),
-        )),
-        spacer(),
-        Divider,
-        "Built with WaterUI - Cross-platform Reactive UI Framework",
-    )).padding_with(EdgeInsets::all(100.0)))
+            spacer(),
+            // Counter demo with reactive updates
+            vstack((
+                text("Interactive Counter").size(18.0),
+                hstack((
+                    "Count: ",
+                    waterui::text!("{}", counter),
+                    spacer(),
+                    stepper(&counter),
+                )),
+                progress(counter.get() as f64 / 10.0),
+            )),
+            spacer(),
+            // User profile form
+            vstack((
+                text("User Profile").size(18.0),
+                form(&profile),
+                hstack(("Name: ", waterui::text!("{}", profile.project().name))),
+                hstack(("Email: ", waterui::text!("{}", profile.project().email))),
+            )),
+            spacer(),
+            // Interactive controls
+            vstack((
+                text("Controls").size(18.0),
+                Slider::new(0.0..=1.0, &progress_value),
+                progress(progress_value),
+                loading(),
+            )),
+            spacer(),
+            Divider,
+            "Built with WaterUI - Cross-platform Reactive UI Framework",
+        ))
+        .padding_with(EdgeInsets::all(100.0)),
+    )
 }
 
 waterui_ffi::export!();

@@ -52,9 +52,13 @@ impl Layout for ZStackLayout {
         }
 
         // Respect parent constraints - don't exceed them
-        let final_width = parent.width.map_or(max_width, |parent_width| max_width.min(parent_width));
+        let final_width = parent
+            .width
+            .map_or(max_width, |parent_width| max_width.min(parent_width));
 
-        let final_height = parent.height.map_or(max_height, |parent_height| max_height.min(parent_height));
+        let final_height = parent
+            .height
+            .map_or(max_height, |parent_height| max_height.min(parent_height));
 
         Size::new(final_width, final_height)
     }

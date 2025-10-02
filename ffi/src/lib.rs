@@ -29,6 +29,7 @@ mod ty;
 use core::ptr::null_mut;
 
 use alloc::boxed::Box;
+use executor_core::{init_global_executor, init_local_executor};
 pub use ty::*;
 use waterui::{AnyView, Str, View};
 
@@ -39,13 +40,13 @@ macro_rules! export {
         /// Initializes a new WaterUI environment
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
+            $crate::__init_executor();
             let env: waterui::Environment = init();
             $crate::IntoFFI::into_ffi(env)
         }
 
-        /// Creates the main view for the WaterUI application
         #[unsafe(no_mangle)]
-        pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
+        pub extern "C" fn waterui_main_reloadble() -> *mut $crate::WuiAnyView {
             fn _inner() -> impl View {
                 main()
             }
@@ -54,7 +55,25 @@ macro_rules! export {
 
             $crate::IntoFFI::into_ffi(view)
         }
+
+        /// Creates the main view for the WaterUI application
+        #[unsafe(no_mangle)]
+        pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
+            /*unsafe {
+                $crate::IntoFFI::into_ffi(waterui::AnyView::new(waterui::hot_reload!(
+                    "waterui_main_reloadble"
+                )))
+            }*/
+
+            waterui_main_reloadble()
+        }
     };
+}
+
+#[doc(hidden)]
+pub fn __init_executor() {
+    init_global_executor(native_executor::NativeExecutor);
+    init_local_executor(native_executor::NativeExecutor);
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
