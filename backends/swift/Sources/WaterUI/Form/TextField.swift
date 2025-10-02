@@ -13,7 +13,7 @@ public struct WuiTextField: View,WuiComponent {
     static var id=waterui_text_field_id()
     private var label: WuiAnyView
     
-    private var prompt: Text
+    @State private var prompt: ObservableText
     @ObservedObject var value: BindingStr
 
 
@@ -23,11 +23,11 @@ public struct WuiTextField: View,WuiComponent {
 
     init(field: CWaterUI.WuiTextField, env: WuiEnvironment) {
         label = WuiAnyView(anyview: field.label, env: env)
-        prompt = WuiText(text: field.prompt).toText()
+        prompt = WuiText(text: field.prompt).text()
         value =  BindingStr(inner: field.value)
     }
 
     public var body: some View {
-        TextField(text:value.value, prompt: prompt, label: {label})
+        TextField(text:value.value, prompt: prompt.text, label: {label})
     }
 }

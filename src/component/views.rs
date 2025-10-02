@@ -24,7 +24,9 @@ use waterui_core::id::Identifable;
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
 pub trait Views: Collection<Item: Hash + Ord> + Clone {
+    /// The view type that this collection produces for each element.
     type View: View;
+    /// Returns the view at the specified index, or `None` if the index is out of bounds.
     fn get_view(&self, index: usize) -> Option<Self::View>;
 }
 
@@ -252,6 +254,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct ForEachItem<T, F, V>
 where
     F: Fn(T) -> V,

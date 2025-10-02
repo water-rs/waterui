@@ -1,20 +1,24 @@
-use alloc::{ vec, vec::Vec };
+//! Vertical stack layout.
+
+use alloc::{vec, vec::Vec};
 use waterui_core::view::TupleViews;
 
-use crate::{ container, stack::{HorizontalAlignment, VerticalAlignment}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size };
+use crate::{
+    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container,
+    stack::{HorizontalAlignment},
+};
 
+/// Layout engine shared by the public [`VStack`] view.
 #[derive(Debug, Clone)]
 pub struct VStackLayout {
+    /// The horizontal alignment of children within the stack.
     pub alignment: HorizontalAlignment,
+    /// The spacing between children in the stack.
     pub spacing: f64,
 }
 
 impl Layout for VStackLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-    ) -> Vec<ProposalSize> {
+    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
         vec![ProposalSize::new(parent.width, None); children.len()]
     }
 
@@ -36,10 +40,9 @@ impl Layout for VStackLayout {
         } else {
             0.0
         };
-        
+
         let intrinsic_height = non_stretchy_height + total_spacing;
 
-       
         let final_height = if has_stretchy_children {
             parent.height.unwrap_or(intrinsic_height)
         } else {
@@ -51,7 +54,7 @@ impl Layout for VStackLayout {
             .map(|c| c.proposal().width.unwrap_or(0.0))
             .max_by(f64::total_cmp)
             .unwrap_or(0.0);
-        
+
         let final_width = parent.width.unwrap_or(max_width);
 
         Size::new(final_width, final_height)
@@ -79,7 +82,7 @@ impl Layout for VStackLayout {
         } else {
             0.0
         };
-        
+
         let remaining_height = bound.height() - non_stretchy_height - total_spacing;
         let stretchy_child_height = if stretchy_children_count > 0 {
             (remaining_height / stretchy_children_count as f64).max(0.0)
@@ -94,7 +97,7 @@ impl Layout for VStackLayout {
             if i > 0 {
                 current_y += self.spacing;
             }
-            
+
             let child_proposal = child.proposal();
             let child_width = child_proposal.width.unwrap_or(0.0);
             let child_height = if child.stretch() {
@@ -105,7 +108,9 @@ impl Layout for VStackLayout {
 
             let x = match self.alignment {
                 HorizontalAlignment::Leading => bound.origin().x,
-                HorizontalAlignment::Center => bound.origin().x + (bound.width() - child_width) / 2.0,
+                HorizontalAlignment::Center => {
+                    bound.origin().x + (bound.width() - child_width) / 2.0
+                }
                 HorizontalAlignment::Trailing => bound.origin().x + bound.width() - child_width,
             };
 
@@ -119,9 +124,15 @@ impl Layout for VStackLayout {
         placements
     }
 }
-container!(VStack, VStackLayout);
+container!(
+    VStack,
+    VStackLayout,
+    "A vertical stack layout that arranges its children in a vertical line with specified alignment and spacing."
+);
 
 impl VStack {
+    /// Creates a vertical stack with the provided alignment, spacing, and
+    /// children.
     pub fn new(alignment: HorizontalAlignment, spacing: f64, contents: impl TupleViews) -> Self {
         Self {
             layout: VStackLayout { alignment, spacing },
@@ -130,6 +141,7 @@ impl VStack {
     }
 }
 
+/// Convenience constructor that centres children and uses the default spacing.
 pub fn vstack(contents: impl TupleViews) -> VStack {
     VStack::new(HorizontalAlignment::Center, 10.0, contents)
 }
