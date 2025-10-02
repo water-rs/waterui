@@ -12,4 +12,14 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+anyhow = "1.0.93"
 clap = { version = "4.5.47", features = ["derive"] }
+ctrlc = "3.4.4"
+dialoguer = "0.11.0"
+notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
+serde = { version = "1.0.217", features = ["derive"] }
+toml = "0.8.19"
+walkdir = "2.5.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+which = "6.0.2"
