@@ -91,7 +91,7 @@ impl ListItem {
     }
 
     /// Disables deletion functionality for this item.
-    #[must_use] 
+    #[must_use]
     pub fn disable_delete(mut self) -> Self {
         self.on_delete = None;
         self

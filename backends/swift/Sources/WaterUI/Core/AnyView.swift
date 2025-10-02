@@ -37,7 +37,7 @@ struct Render {
             WuiProgress.self,
             // WaterUI.Toggle.self,
             // WaterUI.NavigationView.self,
-            // WaterUI.Dynamic.self,
+            WuiDynamic.self,
             // WaterUI.WithEnv.self,
             // WaterUI.NavigationLink.self,
             WuiScrollView.self,

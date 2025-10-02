@@ -10,7 +10,9 @@ import Foundation
 import SwiftUI
 
 struct WuiStepper: View,WuiComponent {
-    static var id = waterui_stepper_id()
+    static var id:WuiTypeId{
+        waterui_stepper_id()
+    }
     @ObservedObject var step: ComputedInt
     @ObservedObject var value: BindingInt
     init(stepper: CWaterUI.WuiStepper, env: WuiEnvironment){
