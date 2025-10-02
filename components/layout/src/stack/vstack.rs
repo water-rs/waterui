@@ -4,8 +4,7 @@ use alloc::{vec, vec::Vec};
 use waterui_core::view::TupleViews;
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container,
-    stack::{HorizontalAlignment},
+    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container, stack::HorizontalAlignment,
 };
 
 /// Layout engine shared by the public [`VStack`] view.

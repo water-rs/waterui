@@ -7,7 +7,10 @@
 import SwiftUI
 import CWaterUI
 struct WuiEmptyView:View,WuiComponent{
-    static var id=waterui_empty_id()
+    static var id:WuiTypeId{
+        waterui_empty_id()
+    }
+    
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         
     }

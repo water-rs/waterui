@@ -2,7 +2,9 @@ import CWaterUI
 import SwiftUI
 
 struct WuiSpacer: View, WuiComponent {
-    static var id = waterui_spacer_id()
+    static var id:WuiTypeId{
+        waterui_spacer_id()
+    }
 
     var body: some View {
         Spacer()

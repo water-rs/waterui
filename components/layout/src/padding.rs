@@ -114,8 +114,6 @@ impl EdgeInsets {
         }
     }
 
-   
-
     /// Returns symmetric vertical and horizontal insets.
     #[must_use]
     pub const fn symmetric(vertical: f64, horizontal: f64) -> Self {

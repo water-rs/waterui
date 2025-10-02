@@ -11,7 +11,7 @@ use core::fmt::Debug;
 
 use nami::impl_constant;
 
-use crate::{Environment, View};
+use waterui_core::{Environment, raw_view};
 
 #[derive(Debug)]
 pub struct Color(Box<dyn CustomColorImpl>);
@@ -24,7 +24,7 @@ impl Clone for Color {
 
 impl Default for Color {
     fn default() -> Self {
-        todo!()
+        Color::new(Srgb::new(0, 0, 0, 0.0))
     }
 }
 
@@ -47,6 +47,7 @@ pub trait CustomColor: Debug + Clone {
     fn resolve(&self, env: &Environment) -> ResolvedColor;
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct P3 {
     red: f32,
     green: f32,
@@ -54,6 +55,30 @@ pub struct P3 {
     opacity: f32,
 }
 
+impl P3 {
+    pub fn new(red: f32, green: f32, blue: f32, opacity: f32) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            opacity,
+        }
+    }
+}
+
+impl CustomColor for P3 {
+    fn resolve(&self, _env: &Environment) -> ResolvedColor {
+        ResolvedColor {
+            red: self.red,
+            green: self.green,
+            blue: self.blue,
+            headroom: 0.0,
+            opacity: self.opacity,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Srgb {
     red: u8,
     green: u8,
@@ -61,13 +86,36 @@ pub struct Srgb {
     opacity: f32,
 }
 
+impl Srgb {
+    pub fn new(red: u8, green: u8, blue: u8, opacity: f32) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            opacity,
+        }
+    }
+}
+
+impl CustomColor for Srgb {
+    fn resolve(&self, _env: &Environment) -> ResolvedColor {
+        ResolvedColor {
+            red: self.red as f32 / 255.0,
+            green: self.green as f32 / 255.0,
+            blue: self.blue as f32 / 255.0,
+            headroom: 0.0,
+            opacity: self.opacity,
+        }
+    }
+}
+
+// Extended SRGB
+#[derive(Debug, Clone, Copy)]
 pub struct ResolvedColor {
-    space: Colorspace,
-    color_space: Colorspace,
-    red: f32,
+    red: f32, // 0.0-1.0 for sRGB, <0 or >1 for P3
     green: f32,
     blue: f32,
-    headroom: f32, // HDR headroom support
+    headroom: f32,
     opacity: f32,
 }
 
@@ -102,6 +150,14 @@ impl_constant!(Color);
 impl Color {
     pub fn new(custom: impl CustomColor + 'static) -> Self {
         Self(Box::new(custom))
+    }
+
+    pub fn srgb(red: u8, green: u8, blue: u8, opacity: f32) -> Self {
+        Self::new(Srgb::new(red, green, blue, opacity))
+    }
+
+    pub fn p3(red: f32, green: f32, blue: f32, opacity: f32) -> Self {
+        Self::new(P3::new(red, green, blue, opacity))
     }
 
     pub fn resolve(&self, env: &Environment) -> ResolvedColor {

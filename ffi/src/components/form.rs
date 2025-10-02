@@ -1,10 +1,10 @@
 use crate::color::WuiColor;
 use crate::components::text::WuiText;
-use crate::{ffi_struct, ffi_view, impl_binding, WuiAnyView, WuiId};
+use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view, impl_binding};
 use alloc::vec::Vec;
 use waterui::component::Native;
 use waterui::{Binding, Color, Computed, Str};
-use waterui_core::id::{Id};
+use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::{PickerConfig, PickerItem};
 use waterui_form::{
@@ -166,7 +166,12 @@ ffi_view!(
     waterui_force_as_color_picker
 );
 
-ffi_view!(Native<PickerConfig>,WuiPicker,waterui_picker_id,waterui_force_as_picker);
+ffi_view!(
+    Native<PickerConfig>,
+    WuiPicker,
+    waterui_picker_id,
+    waterui_force_as_picker
+);
 
 /*
 
@@ -178,22 +183,20 @@ ffi_view!(Native<PickerConfig>,WuiPicker,waterui_picker_id,waterui_force_as_pick
 */
 
 #[repr(C)]
-pub struct WuiPicker{
-    items:*mut Computed<Vec<PickerItem<Id>>>,
-    selection:*mut Binding<Id>,
+pub struct WuiPicker {
+    items: *mut Computed<Vec<PickerItem<Id>>>,
+    selection: *mut Binding<Id>,
 }
-
 
 #[repr(C)]
-pub struct WuiPickerItem{
-    tag:WuiId,
-    content:WuiText,
+pub struct WuiPickerItem {
+    tag: WuiId,
+    content: WuiText,
 }
 
-ffi_struct!(PickerItem<Id>,WuiPickerItem,tag,content);
+ffi_struct!(PickerItem<Id>, WuiPickerItem, tag, content);
 
-ffi_struct!(PickerConfig,WuiPicker,items,selection);
-
+ffi_struct!(PickerConfig, WuiPicker, items, selection);
 
 #[repr(C)]
 pub struct WuiColorPicker {
@@ -202,12 +205,3 @@ pub struct WuiColorPicker {
 }
 
 ffi_struct!(ColorPickerConfig, WuiColorPicker, label, value);
-
-impl_binding!(
-    Color,
-    WuiColor,
-    waterui_binding_read_color,
-    waterui_binding_set_color,
-    waterui_watch_color,
-    waterui_drop_color_watcher_guard
-);

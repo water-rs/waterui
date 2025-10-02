@@ -54,7 +54,7 @@ clippy.cargo = "warn"
 [workspace.dependencies]
 executor-core = { version = "0.6.0", features = ["std"]}
 nami = { version = "0.6.1" }
-
+log = "0.4.28"
 waterui-core = { version = "0.1.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
 waterui-url = { version = "0.1.0", path = "utils/url" }
@@ -71,8 +71,8 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-render-utils = { version = "0.1.0", path = "render_utils" }
 waterui = { version = "0.1.0", path = "." }
 serde = { version = "1.0", default-features = false }
+wgpu = "27.0.0"
 time = "0.3"
-
 
 [dependencies]
 nami.workspace = true
@@ -85,7 +85,7 @@ waterui-navigation.workspace = true
 waterui-form.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
-
+log.workspace = true
 
 [features]
 default = []

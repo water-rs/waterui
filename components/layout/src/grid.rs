@@ -2,9 +2,12 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
-use waterui_core::{view::TupleViews, AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
-use crate::{stack::{Alignment, HorizontalAlignment, VerticalAlignment}, ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size};
+use crate::{
+    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+};
 
 /// The core layout engine for a `Grid`.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -16,7 +19,7 @@ pub struct GridLayout {
 
 impl GridLayout {
     /// Creates a new `GridLayout` with the specified columns, spacing, and alignment.
-    #[must_use] 
+    #[must_use]
     pub const fn new(columns: NonZeroUsize, spacing: Size, alignment: Alignment) -> Self {
         Self {
             columns,
@@ -98,7 +101,7 @@ impl Layout for GridLayout {
                     .fold(0.0, f64::max)
             })
             .collect();
-        
+
         let total_h_spacing = self.spacing.width * (num_columns - 1) as f64;
         let column_width = ((bound.width() - total_h_spacing) / num_columns as f64).max(0.0);
 
@@ -110,7 +113,10 @@ impl Layout for GridLayout {
             let mut cursor_x = bound.x();
 
             for child in row_children {
-                let cell_frame = Rect::new(Point::new(cursor_x, cursor_y), Size::new(column_width, row_height));
+                let cell_frame = Rect::new(
+                    Point::new(cursor_x, cursor_y),
+                    Size::new(column_width, row_height),
+                );
 
                 let child_size = Size::new(
                     child.proposal_width().unwrap_or(0.0),
@@ -120,13 +126,17 @@ impl Layout for GridLayout {
                 // Align the child within its cell (same logic as Frame layout)
                 let child_x = match self.alignment.horizontal() {
                     HorizontalAlignment::Leading => cell_frame.x(),
-                    HorizontalAlignment::Center => cell_frame.x() + (cell_frame.width() - child_size.width) / 2.0,
+                    HorizontalAlignment::Center => {
+                        cell_frame.x() + (cell_frame.width() - child_size.width) / 2.0
+                    }
                     HorizontalAlignment::Trailing => cell_frame.max_x() - child_size.width,
                 };
 
                 let child_y = match self.alignment.vertical() {
                     VerticalAlignment::Top => cell_frame.y(),
-                    VerticalAlignment::Center => cell_frame.y() + (cell_frame.height() - child_size.height) / 2.0,
+                    VerticalAlignment::Center => {
+                        cell_frame.y() + (cell_frame.height() - child_size.height) / 2.0
+                    }
                     VerticalAlignment::Bottom => cell_frame.max_y() - child_size.height,
                 };
 
@@ -137,7 +147,7 @@ impl Layout for GridLayout {
 
             cursor_y += row_height + self.spacing.height;
         }
-        
+
         final_rects
     }
 }
@@ -174,11 +184,11 @@ impl Grid {
     ///
     /// - `columns`: The number of columns in the grid. Must be greater than 0.
     /// - `rows`: A tuple of `GridRow` views.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if `columns` is 0.
-    pub fn new(columns: usize, rows: impl IntoIterator<Item=GridRow>) -> Self {
+    pub fn new(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Self {
         Self {
             layout: GridLayout::new(
                 NonZeroUsize::new(columns).expect("Grid columns must be greater than 0"),
@@ -190,14 +200,14 @@ impl Grid {
     }
 
     /// Sets the horizontal and vertical spacing for the grid.
-    #[must_use] 
+    #[must_use]
     pub const fn spacing(mut self, spacing: f64) -> Self {
         self.layout.spacing = Size::new(spacing, spacing);
         self
     }
-    
+
     /// Sets the alignment for children within their cells.
-    #[must_use] 
+    #[must_use]
     pub const fn alignment(mut self, alignment: Alignment) -> Self {
         self.layout.alignment = alignment;
         self
@@ -208,28 +218,29 @@ impl View for Grid {
     fn body(self, _env: &Environment) -> impl View {
         // Flatten the children from all GridRows into a single Vec<AnyView>.
         // This is the list that the GridLayout engine will operate on.
-        let flattened_children = self.rows
+        let flattened_children = self
+            .rows
             .into_iter()
             .flat_map(|row| row.contents)
             .collect::<Vec<AnyView>>();
-        
+
         Container::new(self.layout, flattened_children)
     }
 }
 
 /// Creates a new grid with the specified number of columns and rows.
-/// 
+///
 /// This is a convenience function that creates a `Grid` with default spacing and alignment.
-/// 
+///
 /// # Panics
-/// 
+///
 /// Panics if `columns` is 0.
 pub fn grid(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Grid {
     Grid::new(columns, rows)
 }
 
 /// Creates a new grid row containing the specified views.
-/// 
+///
 /// This is a convenience function for creating `GridRow` instances.
 pub fn row(contents: impl TupleViews) -> GridRow {
     GridRow::new(contents)

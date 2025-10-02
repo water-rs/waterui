@@ -9,7 +9,9 @@ import SwiftUI
 
 @MainActor
 struct WuiButton: View, WuiComponent {
-    static var id = waterui_button_id()
+    static var id:WuiTypeId{
+        waterui_button_id()
+    }
     private var label: WuiAnyView
     private var action: Action
 

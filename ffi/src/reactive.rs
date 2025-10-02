@@ -7,7 +7,7 @@ use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
 use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::{AnyView, Color, Str};
-use waterui::{Binding, Computed, Signal, reactive::watcher::Metadata};
+use waterui::{Computed, Signal, reactive::watcher::Metadata};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
@@ -60,8 +60,8 @@ macro_rules! impl_computed {
 #[macro_export]
 macro_rules! impl_binding {
     ($ty:ty,$ffi_ty:ty,$read:ident,$set:ident,$watch:ident,$drop:ident) => {
-        impl $crate::OpaqueType for Binding<$ty> {}
-        impl_opaque_drop!(Binding<$ty>, $drop);
+        impl $crate::OpaqueType for waterui::Binding<$ty> {}
+        impl_opaque_drop!(waterui::Binding<$ty>, $drop);
 
         #[unsafe(no_mangle)]
         /// Reads the current value from a binding
@@ -69,8 +69,8 @@ macro_rules! impl_binding {
         /// # Safety
         ///
         /// The binding pointer must be valid and point to a properly initialized binding object.
-        pub unsafe extern "C" fn $read(binding: *const Binding<$ty>) -> $ffi_ty {
-            unsafe { (*binding).get().into_ffi() }
+        pub unsafe extern "C" fn $read(binding: *const waterui::Binding<$ty>) -> $ffi_ty {
+            unsafe { $crate::IntoFFI::into_ffi((*binding).get()) }
         }
 
         /// Sets a new value to a binding
@@ -80,7 +80,7 @@ macro_rules! impl_binding {
         /// The binding pointer must be valid and point to a properly initialized binding object.
         /// The value must be a valid instance of the FFI type.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $set(binding: *mut Binding<$ty>, value: $ffi_ty) {
+        pub unsafe extern "C" fn $set(binding: *mut waterui::Binding<$ty>, value: $ffi_ty) {
             unsafe {
                 (*binding).set($crate::IntoRust::into_rust(value));
             }
@@ -94,13 +94,14 @@ macro_rules! impl_binding {
         /// The binding pointer must be valid and point to a properly initialized binding object.
         /// The watcher must be a valid callback function.
         pub unsafe extern "C" fn $watch(
-            binding: *const Binding<$ty>,
+            binding: *const waterui::Binding<$ty>,
             watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
         ) -> *mut $crate::reactive::WuiWatcherGuard {
             unsafe {
                 use waterui::Signal;
-                let guard =
-                    (*binding).watch(move |ctx| watcher.call(ctx.value.into_ffi(), ctx.metadata));
+                let guard = (*binding).watch(move |ctx| {
+                    watcher.call($crate::IntoFFI::into_ffi(ctx.value), ctx.metadata)
+                });
                 guard.into_ffi()
             }
         }
@@ -166,7 +167,7 @@ impl_computed!(
 
 impl_computed!(
     Color,
-    WuiColor,
+    *mut WuiColor,
     waterui_read_computed_color,
     waterui_watch_computed_color,
     waterui_drop_computed_color
