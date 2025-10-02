@@ -272,7 +272,6 @@ extension WuiWatcher_i32 {
 }
 
 
-// WuiWatcher_Data is not currently supported in the FFI layer
 
 extension WuiWatcher_bool {
     init(_ f: @escaping (Bool,Animation?) -> Void) {

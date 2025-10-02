@@ -10,7 +10,9 @@ import Foundation
 import SwiftUI
 
 public struct WuiTextField: View,WuiComponent {
-    static var id=waterui_text_field_id()
+    static var id:WuiTypeId{
+        waterui_text_field_id()
+    }
     private var label: WuiAnyView
     
     @State private var prompt: ObservableText
