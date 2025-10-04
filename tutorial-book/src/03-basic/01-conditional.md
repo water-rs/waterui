@@ -23,26 +23,20 @@ when(&is_logged_in, || {
 Here's a simple example showing how to conditionally display content:
 
 ```rust,ignore
-use waterui::widget::condition::when;
-use waterui_text::text;
-use waterui::component::{button::button, layout::stack::vstack};
-use waterui::reactive::binding;
+use waterui::prelude::*;
 
 pub fn login_view() -> impl View {
-	#[derive(Debug,Clone,Default)]
-	pub struct Authenticated(Binding<Bool>)
+    let is_logged_in = binding(false);
     
     vstack((
-        use_env(|Authenticated(auth):Authenticated|{
-	        when(&auth, || {
-		        text!("You are logged in!")
-	        }),
+        when(&is_logged_in, || {
+		    text!("You are logged in!")
+	    }),
         
-	        when(&!is_authenticated, |Authenticated(auth):Authenticated| {
-	            button("Login").action(move || auth.set(true)})
-	        })
-        })
-    )).with(Authenticated::default())
+	    when(&!is_logged_in, move || {
+	        button("Login").action_with(&is_logged_in, |is_logged_in| is_logged_in.set(true)})
+	    })
+    ))
 }
 ```
 
