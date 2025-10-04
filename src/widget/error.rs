@@ -34,12 +34,15 @@
 //! Set up a custom error renderer in your environment:
 //!
 //! ```rust
-//! use waterui::Environment;
+//! use waterui::prelude::*;
 //! use waterui::widget::error::{DefaultErrorView, BoxedStdError};
 //!
 //! let env = Environment::new()
 //!     .with(DefaultErrorView::new(|error: BoxedStdError| {
-//!         format!("❌ Error: {}", error)
+//!         vstack((
+//!             text!("❌ Error: {}", error),
+//!             text!("Please contact support if this persists.").foreground(Color::srgb(128, 128, 128, 255u8)),
+//!         ))
 //!     }));
 //! ```
 //!
@@ -48,8 +51,8 @@
 //! Convert `Result` errors to custom views inline:
 //!
 //! ```rust
+//! use waterui::prelude::*;
 //! use waterui::widget::error::ResultExt;
-//! use waterui::View;
 //!
 //! fn load_data() -> Result<String, std::io::Error> {
 //!     // ... some operation that might fail
@@ -57,9 +60,9 @@
 //! }
 //!
 //! fn my_view() -> impl View {
-//!     match load_data().error_view(|err| format!("Failed to load: {}", err)) {
-//!         Ok(data) => data.into(),
-//!         Err(error_view) => error_view.into(),
+//!     match load_data().error_view(|err| text!("Failed to load: {}", err)) {
+//!         Ok(data) => text!("{}", data).any_view(),
+//!         Err(error_view) => error_view.any_view(),
 //!     }
 //! }
 //! ```
@@ -71,6 +74,7 @@
 //! Errors can be downcast to specific types for specialized handling:
 //!
 //! ```rust
+//! use waterui::prelude::*;
 //! use waterui::widget::error::Error;
 //! use std::io;
 //!
@@ -78,11 +82,11 @@
 //! match error.downcast::<io::Error>() {
 //!     Ok(io_error) => {
 //!         // Handle specific IO error
-//!         println!("IO Error: {:?}", io_error);
+//!         format!("IO Error: {:?}", io_error);
 //!     }
 //!     Err(original_error) => {
 //!         // Handle as generic error
-//!         println!("Other error: {}", original_error);
+//!         format!("Other error: {:?}", original_error);
 //!     }
 //! }
 //! ```
@@ -92,10 +96,10 @@
 //! Create errors directly from custom views:
 //!
 //! ```rust
+//! use waterui::prelude::*;
 //! use waterui::widget::error::Error;
-//! use waterui::VStack;
 //!
-//! let custom_error = Error::from_view(VStack((
+//! let custom_error = Error::from_view(vstack((
 //!     "Something went wrong!",
 //!     "Please try again later.",
 //! )));
