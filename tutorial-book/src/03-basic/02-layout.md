@@ -79,11 +79,9 @@ fn photo_grid() -> impl View {
 
 ```rust
 pub trait Layout {
-	fn layout(
-		self,
-		constraint: Constraint, 
-		measured_children: &[MeasuredChild]
-	) -> LayoutResult;
+	fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize>;
+	fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size;
+	fn place(&mut self, bound: Rect, proposal: ProposalSize, children: &[ChildMetadata]) -> Vec<Rect>;
 }
 ```
 

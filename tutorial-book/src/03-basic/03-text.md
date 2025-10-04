@@ -141,11 +141,11 @@ fn reactive_text_demo() -> impl View {
         text!("Hello, {name}!"),
         text!("Temperature: {temperature:.1}°C"),
 
-        // Reactive with computed expressions using s! macro
-        text!("Status: {}", temperature.map(|t| t>30 ).select("High","Low")),
+        // Reactive with computed expressions using map
+        text!("Status: {}", temperature.map(|t| if *t > 30.0 { "High" } else { "Low" })),
 
         hstack((
-            button("Increment").action_with(&temperature,|t| t.increment(1.0)),
+            button("Increment").action_with(&temperature,|t| t.update(|t| *t += 1.0)),
             button("Reset").action_with(&temperature,|t| t.set(22.5)),
         )),
     ))
