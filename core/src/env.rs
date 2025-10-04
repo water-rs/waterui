@@ -68,6 +68,15 @@ use crate::{
     view::{Hook, ViewConfiguration},
 };
 
+/// A type-indexed storage container for values in an environment.
+///
+/// This struct allows storing values of any type `V` indexed by a type key `K`.
+#[derive(Debug)]
+pub struct Store<K,V>{
+    key:PhantomData<K>,
+    value:V,
+}
+
 impl Environment {
     /// Creates a new empty environment.
     #[must_use]
@@ -75,6 +84,23 @@ impl Environment {
         Self {
             map: BTreeMap::new(),
         }
+    }
+
+    /// Stores a value in the environment indexed by type `K`.
+    ///
+    /// # Arguments
+    /// * `value` - The value to store
+    pub fn store<K: 'static,V: 'static>(mut self,value:V)->Self{
+        self.insert(Store{key:PhantomData::<V>,value});
+        self
+    }
+
+    /// Queries for a value in the environment indexed by type `K`.
+    ///
+    /// # Returns
+    /// An optional reference to the stored value
+    pub fn query<K: 'static,V: 'static>(&self) -> Option<&V>{
+        self.get::<Store<K,V>>().map(|s|&s.value)
     }
 
     /// Installs a plugin into the environment.
