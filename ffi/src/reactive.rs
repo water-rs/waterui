@@ -1,18 +1,15 @@
 use crate::array::WuiArray;
-use crate::color::WuiColor;
 use crate::components::form::WuiPickerItem;
 use crate::components::media::{WuiLivePhotoSource, WuiVideo};
-use crate::components::text::WuiFont;
 use crate::{IntoFFI, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
 use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
-use waterui::{AnyView, Color, Str};
+use waterui::{AnyView, Str};
 use waterui::{Computed, reactive::watcher::Metadata};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
-use waterui_text::{ font::Font};
 
 ffi_type!(
     WuiWatcherGuard,

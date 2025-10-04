@@ -7,7 +7,6 @@ pub mod button;
 pub use button::{Button, button};
 
 pub mod badge;
-pub mod divder;
 pub mod focu;
 
 pub mod list;

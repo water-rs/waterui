@@ -27,24 +27,28 @@
 //! └───────────────────────────────────────────┘
 //! ```
 //!
-//! ## Usage Example
+//! # Example
 //!
-//! ```rust,no_run
-//! use waterui::{Binding, Focused};
+//! ```
+//! use waterui::prelude::*;
+//!
+//! #[derive(PartialEq, Eq, Clone)]
+//! enum Field { Username, Password, Submit }
 //!
 //! // Create a shared binding for focus state using an enum
-//! enum Field { Username, Password, Submit }
-//! let focus_binding = Binding::new(None::<Field>);
+//! let focus_binding = binding(None::<Field>);
 //!
-//! // Create focused states for each element
-//! let username_focused = Focused::new(focus_binding.clone(), Field::Username);
-//! let password_focused = Focused::new(focus_binding.clone(), Field::Password);
-//! let submit_focused = Focused::new(focus_binding.clone(), Field::Submit);
+//! // Create focused states for each field
+//! let username_focused = focu::Focused::new(&focus_binding, Field::Username);
+//! let password_focused = focu::Focused::new(&focus_binding, Field::Password);
+//! let submit_focused = focu::Focused::new(&focus_binding, Field::Submit);
 //!
 //! // Use focused states with UI elements
-//! // TextInput::new().focused(username_focused)
-//! // TextInput::new().focused(password_focused)
-//! // Button::new().focused(submit_focused)
+//! let view = vstack((
+//!     text("Username").focused(&focus_binding, Field::Username),
+//!     text("Password").focused(&focus_binding, Field::Password),
+//!     button("Submit").focused(&focus_binding, Field::Submit),
+//! ));
 //! ```
 //!
 //! When one element receives focus, any previously focused element will automatically

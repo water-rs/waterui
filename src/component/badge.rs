@@ -7,11 +7,9 @@
 //! # Example
 //!
 //! ```
-//! use waterui::components::Badge;
-//! use waterui_core::Color;
-//! use waterui::components::Button;
+//! use waterui::prelude::*;
 //!
-//! let badge = Badge::new(5, Button::new("Messages"));
+//! let badge = badge::Badge::new(5, button("Messages"));
 //! ```
 
 use crate::ViewExt;

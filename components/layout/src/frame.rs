@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Planned layout that clamps a single child's proposal.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, PartialOrd,Default)]
 pub struct FrameLayout {
     min_width: Option<f64>,
     ideal_width: Option<f64>,
@@ -132,19 +132,17 @@ impl Frame {
     /// * `content` - The child view to be contained within the frame
     /// * `alignment` - How the child should be aligned within the frame
     #[must_use]
-    pub fn new(content: impl View, alignment: Alignment) -> Self {
+    pub fn new(content: impl View) -> Self {
         Self {
-            layout: FrameLayout {
-                min_width: None,
-                ideal_width: None,
-                max_width: None,
-                min_height: None,
-                ideal_height: None,
-                max_height: None,
-                alignment,
-            },
+            layout: FrameLayout::default(),
             content: AnyView::new(content),
         }
+    }
+
+    #[must_use] 
+    pub const fn alignment(mut self, alignment: Alignment) -> Self {
+        self.layout.alignment = alignment;
+        self
     }
 
     /// Sets the ideal width of the frame.

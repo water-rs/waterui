@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! use waterui::progress;
+//! use waterui::prelude::*;
 //!
 //! // Create a basic linear progress indicator
 //! let basic_progress = progress(0.75); // 75% complete
@@ -18,7 +18,7 @@
 //! let labeled_progress = progress(0.3).label("Downloading...");
 //!
 //! // Create an indeterminate loading indicator
-//! let loading_indicator = loading();
+//! let loading_indicator = Progress::infinity().circular();
 //! ```
 
 use crate::AnyView;

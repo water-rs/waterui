@@ -1,7 +1,7 @@
 //! Overlay stack layout.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::view::TupleViews;
+use waterui_core::{view::TupleViews, AnyView, View};
 
 use crate::{Layout, Point, ProposalSize, Rect, Size, container, stack::Alignment};
 
@@ -154,6 +154,20 @@ impl ZStack {
             layout: ZStackLayout { alignment },
             contents: contents.into_views(),
         }
+    }
+
+    /// Sets the alignment for the `ZStack`.
+    #[must_use]
+    pub const fn alignment(mut self, alignment: Alignment) -> Self {
+        self.layout.alignment = alignment;
+        self
+    }
+}
+
+impl <V>FromIterator<V> for ZStack where V: View {
+    fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
+        let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
+        Self::new(Alignment::default(), contents)
     }
 }
 

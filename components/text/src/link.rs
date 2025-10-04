@@ -1,5 +1,6 @@
+use nami::signal::IntoComputed;
 use nami::Computed;
-use waterui_core::Str;
+use waterui_core::{Str, View};
 use waterui_core::{AnyView, configurable};
 
 #[derive(Debug)]
@@ -12,3 +13,17 @@ pub struct LinkConfig {
 }
 
 configurable!(Link, LinkConfig);
+
+impl Link{
+    /// Creates a new link component.
+    pub fn new(label: impl View, url: impl IntoComputed<Str>) -> Self {
+        Self(LinkConfig {
+            label: AnyView::new(label),
+            url: url.into_computed(),
+        })
+    }
+}
+
+pub fn link(label: impl View, url: impl IntoComputed<Str>) -> Link {
+    Link::new(label, url)
+}

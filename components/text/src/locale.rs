@@ -1,4 +1,5 @@
 use alloc::string::ToString;
+use nami::impl_constant;
 use time::Date;
 use waterui_core::Str;
 use waterui_core::{Error, extract::Extractor};
@@ -51,6 +52,8 @@ impl Extractor for DateFormatter {
 /// such as "en-US" or "fr-FR", used for locale-aware formatting.
 #[derive(Debug, Clone)]
 pub struct Locale(pub Str);
+
+impl_constant!(Locale);
 
 impl Default for Locale {
     fn default() -> Self {

@@ -16,8 +16,12 @@
 //! # Basic Usage
 //!
 //! ```rust,no_run
-//! use waterui::Suspense;
-//! use waterui_text::Text;
+//! use waterui::widget::suspense::Suspense;
+//! use waterui::component::text::Text;
+//!
+//! async fn fetch_user_data() -> impl waterui_core::View {
+//!     Text::new("User data")
+//! }
 //!
 //! // With custom loading view
 //! let view = Suspense::new(fetch_user_data())
@@ -54,25 +58,31 @@ use crate::{
 /// ## With Custom Loading View
 ///
 /// ```rust,no_run
-/// use waterui::Suspense;
-/// use waterui_text::Text;
+/// use waterui::widget::suspense::Suspense;
+/// use waterui::component::text::Text;
 ///
 /// async fn fetch_data() -> Text {
 ///     // Simulate async data fetching
 ///     Text::new("Data loaded!")
 /// }
 ///
-/// let view = Suspense::new(fetch_data)
+/// let view = Suspense::new(fetch_data())
 ///     .loading(Text::new("Loading data..."));
 /// ```
 ///
 /// ## With Default Loading View
 ///
 /// ```rust,no_run
-/// use waterui::Suspense;
+/// use waterui::widget::suspense::Suspense;
+/// use waterui::component::text::Text;
+///
+/// async fn fetch_data() -> Text {
+///     // Simulate async data fetching
+///     Text::new("Data loaded!")
+/// }
 ///
 /// // Uses the default loading view from environment
-/// let view = Suspense::new(fetch_data);
+/// let view = Suspense::new(fetch_data());
 /// ```
 #[derive(Debug)]
 pub struct Suspense<V, Loading> {
@@ -93,7 +103,8 @@ pub struct Suspense<V, Loading> {
 /// ## Using with async functions
 ///
 /// ```rust,no_run
-/// use waterui_text::Text;
+/// use waterui::component::text::Text;
+/// use waterui::widget::suspense::Suspense;
 ///
 /// async fn load_user_profile() -> Text {
 ///     // Fetch user data from API
@@ -101,15 +112,15 @@ pub struct Suspense<V, Loading> {
 /// }
 ///
 /// // This works because Future<Output = impl View> implements SuspendedView
-/// let suspense = Suspense::new(load_user_profile);
+/// let suspense = Suspense::new(load_user_profile());
 /// ```
 ///
 /// ## Custom implementation
 ///
 /// ```rust,no_run
-/// use waterui::SuspendedView;
+/// use waterui::widget::suspense::SuspendedView;
 /// use waterui_core::{Environment, View};
-/// use waterui_text::Text;
+/// use waterui::component::text::Text;
 ///
 /// struct UserLoader {
 ///     user_id: u32,
@@ -155,16 +166,17 @@ where
 /// # Example
 ///
 /// ```rust,no_run
-/// use waterui::{DefaultLoadingView, Environment};
-/// use waterui_text::Text;
-/// use waterui_core::view::ViewBuilder;
+/// use waterui::widget::suspense::{Suspense, DefaultLoadingView};
+/// use waterui_core::Environment;
+/// use waterui::component::text::Text;
+/// use waterui::view::ViewBuilder;
 ///
 /// // Using ViewBuilder for lazy initialization
 /// let loading_view = ViewBuilder::new(|| Text::new("Loading..."));
-/// let env = Environment::new().with(DefaultLoadingView(loading_view.anybuilder()));
+/// let env = Environment::new().with(DefaultLoadingView::new(loading_view.anybuilder()));
 ///
 /// // Or using FnOnce directly (also implements View for lazy initialization)
-/// let env = Environment::new().with(DefaultLoadingView(
+/// let env = Environment::new().with(DefaultLoadingView::new(
 ///     ViewBuilder::new(|| Text::new("Loading...")).anybuilder()
 /// ));
 /// ```
@@ -181,7 +193,12 @@ pub struct DefaultLoadingView(AnyViewBuilder);
 /// # Example
 ///
 /// ```rust,no_run
-/// use waterui::{Suspense, UseDefaultLoadingView};
+/// use waterui::widget::suspense::{Suspense, UseDefaultLoadingView};
+/// use waterui_core::View;
+///
+/// async fn async_content() -> impl View {
+///     waterui::component::text::Text::new("Content loaded")
+/// }
 ///
 /// // This will use the default loading view from environment
 /// let view = Suspense::new(async_content());
@@ -248,4 +265,9 @@ where
 
         view
     }
+}
+
+
+pub const fn suspense<V: SuspendedView>(content: V) -> Suspense<V, UseDefaultLoadingView> {
+    Suspense::new(content)
 }

@@ -3,13 +3,11 @@
 //! # Examples
 //!
 //! ```
-//! use crate::Shadow;
-//! use crate::Vector;
-//! use waterui_core::Color;
+//! use waterui::prelude::*;
 //!
-//! let shadow = Shadow {
-//!     color: Color::rgba(0, 0, 0, 0.5),
-//!     offset: Vector { x: 2.0, y: 2.0 },
+//! let shadow = style::Shadow {
+//!     color: Color::srgb(0, 0, 0, 0.5),
+//!     offset: style::Vector { x: 2.0, y: 2.0 },
 //!     radius: 4.0,
 //! };
 //! ```

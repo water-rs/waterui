@@ -15,6 +15,7 @@ categories.workspace = true
 waterui.workspace = true
 waterui-ffi.workspace = true
 nami.workspace = true
+wgpu.workspace = true
 
 [lib]
 crate-type = ["lib","staticlib","cdylib"]

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! use waterui::button;
+//! use waterui::prelude::*;
 //!
 //! let button = button("Click me").action(|| {
 //!     println!("Button clicked!");

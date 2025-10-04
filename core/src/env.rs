@@ -99,6 +99,7 @@ impl Environment {
     ///
     /// # Returns
     /// An optional reference to the stored value
+    #[must_use] 
     pub fn query<K: 'static,V: 'static>(&self) -> Option<&V>{
         self.get::<Store<K,V>>().map(|s|&s.value)
     }

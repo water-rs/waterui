@@ -1,6 +1,5 @@
-use crate::color::WuiColor;
 use crate::components::text::WuiText;
-use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view, impl_binding};
+use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view};
 use alloc::vec::Vec;
 use waterui::component::Native;
 use waterui::{Binding, Color, Computed, Str};
