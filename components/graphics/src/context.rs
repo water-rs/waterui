@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use crate::shape::{DrawStyle, Path};
 use kurbo::Affine;
 use vello::{
@@ -14,6 +16,15 @@ use waterui_core::{Environment, Signal};
 pub struct GraphicsContext<'a> {
     pub(crate) scene: &'a mut Scene,
     pub(crate) env: &'a Environment,
+}
+
+impl Debug for GraphicsContext<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GraphicsContext")
+            .field("scene", &"Scene { ... }")
+            .field("env", &self.env)
+            .finish()
+    }
 }
 
 impl GraphicsContext<'_> {
