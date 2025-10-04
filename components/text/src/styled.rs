@@ -1,19 +1,26 @@
 use core::{fmt::Display, mem::take, ops::Add};
 
 use alloc::{string::String, vec::Vec};
+use nami::impl_constant;
 use waterui_color::Color;
-use waterui_core::Str;
-use std::ops::AddAssign;
-use crate::font::{Font, FontWeight};
+use waterui_core::{Str, View};
+use core::ops::AddAssign;
+use crate::{font::{Font, FontWeight}, text};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
 pub struct Style {
+    /// The font to use.
     pub font: Font,
+    /// The foreground (text) color.
     pub foreground: Option<Color>,
+    /// The background color.
     pub background: Option<Color>,
+    /// Whether the text is italic.
     pub italic: bool,
+    /// Whether the text has an underline.
     pub underline: bool,
+    /// Whether the text has a strikethrough.
     pub strikethrough: bool,
 }
 
@@ -45,6 +52,8 @@ impl Style {
         self
     }
 
+    /// Sets the font weight.
+    #[must_use]
     pub fn weight(mut self, weight: FontWeight) -> Self {
         self.font = self.font.weight(weight);
         self
@@ -58,6 +67,8 @@ impl Style {
         self
     }
 
+    /// Sets the font size in points.
+    #[must_use]
     pub fn size(mut self, size: f32) -> Self {
         self.font = self.font.size(size);
         self
@@ -65,36 +76,42 @@ impl Style {
 
     /// Sets the italic style.
     #[must_use]
-    pub fn italic(mut self) -> Self {
+    pub const fn italic(mut self) -> Self {
         self.italic = true;
         self
     }
 
-    pub fn not_italic(mut self) -> Self {
+    /// Disables the italic style.
+    #[must_use]
+    pub const fn not_italic(mut self) -> Self {
         self.italic = false;
         self
     }
 
     /// Sets the underline style.
     #[must_use]
-    pub fn underline(mut self) -> Self {
+    pub const fn underline(mut self) -> Self {
         self.underline = true;
         self
     }
 
-    pub fn not_underline(mut self) -> Self {
+    /// Disables the underline style.
+    #[must_use]
+    pub const fn not_underline(mut self) -> Self {
         self.underline = false;
         self
     }
 
     /// Sets the strikethrough style.
     #[must_use]
-    pub fn strikethrough(mut self) -> Self {
+    pub const fn strikethrough(mut self) -> Self {
         self.strikethrough = true;
         self
     }
 
-    pub fn not_strikethrough(mut self) -> Self {
+    /// Disables the strikethrough style.
+    #[must_use]
+    pub const fn not_strikethrough(mut self) -> Self {
         self.strikethrough = false;
         self
     }
@@ -113,7 +130,9 @@ impl StyledStr {
         Self { chunks: Vec::new() }
     }
 
-    pub fn from_markdown(markdown: &str) -> Self {
+    /// Creates a styled string from markdown text. Not yet implemented.
+    #[must_use]
+    pub fn from_markdown(_markdown: &str) -> Self {
         todo!("Markdown parsing is not implemented yet");
     }
 
@@ -125,11 +144,13 @@ impl StyledStr {
         s
     }
 
+    /// Adds a new text chunk with the specified style.
     pub fn push(&mut self, text: impl Into<Str>, style: Style) {
         let text = text.into();
         self.chunks.push((text, style));
     }
 
+    /// Appends text to the last chunk, or creates a new chunk if empty.
     pub fn push_str(&mut self,text:impl Into<Str>){
         let text = text.into();
         if let Some(last) = self.chunks.last_mut(){
@@ -137,7 +158,7 @@ impl StyledStr {
             last_text.add_assign(text);
         }
         else{
-            self.chunks.push((text.into(),Style::default()));
+            self.chunks.push((text,Style::default()));
         }
     }
 
@@ -149,7 +170,7 @@ impl StyledStr {
 
     /// Checks if the attributed string is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
@@ -163,7 +184,7 @@ impl StyledStr {
 
         let mut result = String::new();
         for (text, _) in &self.chunks {
-            result.push_str(&text);
+            result.push_str(text);
         }
         result.into()
     }
@@ -186,54 +207,71 @@ impl StyledStr {
         self
     }
 
+    /// Sets the font size for all chunks.
+    #[must_use]
     pub fn size(self, size: f32) -> Self {
         self.apply_style(|s| *s = take(s).size(size))
     }
 
+    /// Sets the font for all chunks.
     #[must_use]
     pub fn font(self, font: Font) -> Self {
         self.apply_style(|s| s.font = font.clone())
     }
 
+    /// Sets the foreground color for all chunks.
     #[must_use]
     pub fn foreground(self, color: Color) -> Self {
         self.apply_style(|s| s.foreground = Some(color.clone()))
     }
 
+    /// Sets the background color for all chunks.
     #[must_use]
     pub fn background_color(self, color: Color) -> Self {
         self.apply_style(|s| s.background = Some(color.clone()))
     }
 
+    /// Sets the font weight for all chunks.
     #[must_use]
     pub fn weight(self, weight:FontWeight) -> Self {
         self.apply_style(|s| {
-            *s = take(s).weight(weight)
+            *s = take(s).weight(weight);
         })
     }
+    
+    /// Sets the font to bold for all chunks.
     #[must_use]
     pub fn bold(self) -> Self {
         self.weight(FontWeight::Bold)
     }
 
+    /// Sets the italic style for all chunks.
     #[must_use]
     pub fn italic(self, italic: bool) -> Self {
         self.apply_style(|s| s.italic = italic)
     }
 
+    /// Sets the underline style for all chunks.
     #[must_use]
     pub fn underline(self, underline: bool) -> Self {
         self.apply_style(|s| s.underline = underline)
     }
 
+    /// Sets the strikethrough style for all chunks.
     #[must_use]
     pub fn strikethrough(self, strikethrough: bool) -> Self {
         self.apply_style(|s| s.strikethrough = strikethrough)
     }
 }
 
+impl View for StyledStr {
+    fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
+        text(self)
+    }
+}
+
 impl Add for StyledStr {
-    type Output = StyledStr;
+    type Output = Self;
 
     fn add(mut self, rhs: Self) -> Self::Output {
         for (text, style) in rhs.chunks {
@@ -244,7 +282,7 @@ impl Add for StyledStr {
 }
 
 impl Add<&'static str> for StyledStr {
-    type Output = StyledStr;
+    type Output = Self;
 
     fn add(mut self, rhs: &'static str) -> Self::Output {
         self.push(rhs, Style::default());
@@ -332,3 +370,5 @@ impl<T: Into<Str>> ToStyledStr for T {
         s
     }
 }
+
+impl_constant!(Style, StyledStr);
