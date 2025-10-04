@@ -28,12 +28,8 @@ impl Path {
         let mut bez_path = BezPath::new();
         for command in &self.0 {
             match *command {
-                PathCommand::MoveTo(p) => {
-                    bez_path.move_to(Point::new(p[0] as f64, p[1] as f64))
-                }
-                PathCommand::LineTo(p) => {
-                    bez_path.line_to(Point::new(p[0] as f64, p[1] as f64))
-                }
+                PathCommand::MoveTo(p) => bez_path.move_to(Point::new(p[0] as f64, p[1] as f64)),
+                PathCommand::LineTo(p) => bez_path.line_to(Point::new(p[0] as f64, p[1] as f64)),
                 PathCommand::QuadTo(p1, p2) => bez_path.quad_to(
                     Point::new(p1[0] as f64, p1[1] as f64),
                     Point::new(p2[0] as f64, p2[1] as f64),

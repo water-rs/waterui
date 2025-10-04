@@ -13,9 +13,12 @@ categories = ["gui", "text-processing"]
 [dependencies]
 waterui-core.workspace = true
 waterui-color.workspace = true
+waterui-layout.workspace = true
 nami.workspace = true
 time.workspace = true
-
+inkjet = "0.11.1"
+async-oneshot = "0.5"
+pulldown-cmark = "0.9"
 
 [lints]
 workspace = true

@@ -129,7 +129,8 @@ dependencies {{
     </application>
 
 </manifest>
-"#.to_string();
+"#
+    .to_string();
     let mut manifest_file = fs::File::create(main_dir.join("AndroidManifest.xml"))?;
     manifest_file.write_all(manifest_content.as_bytes())?;
 
