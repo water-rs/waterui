@@ -9,7 +9,7 @@
 
 use core::fmt::Debug;
 
-use nami::{impl_constant, Computed, Signal, SignalExt};
+use nami::{impl_constant, Computed, Signal};
 
 use waterui_core::{raw_view, resolve::{self, AnyResolvable, Resolvable}, Environment};
 
@@ -23,7 +23,7 @@ pub struct Color(AnyResolvable<ResolvedColor>);
 
 impl Default for Color {
     fn default() -> Self {
-        Self::srgb(0, 0, 0, 0.0)
+        Self::srgb(0, 0, 0)
     }
 }
 
@@ -54,6 +54,23 @@ impl P3 {
             green,
             blue,
         }
+    }
+
+    /// Converts this P3 color to the sRGB color space.
+    #[must_use]
+    pub fn to_srgb(&self) -> Srgb {
+        // convert p3 to srgb color space
+        let linear = [
+            srgb_to_linear(self.red),
+            srgb_to_linear(self.green),
+            srgb_to_linear(self.blue),
+        ];
+        let srgb_linear = p3_to_linear_srgb(linear);
+        Srgb::new(
+            linear_to_srgb(srgb_linear[0]),
+            linear_to_srgb(srgb_linear[1]),
+            linear_to_srgb(srgb_linear[2]),
+        )
     }
 }
 
@@ -95,7 +112,66 @@ pub struct Srgb {
     blue: f32,
 }
 
+mod parse{
+    const fn hex_digit(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => panic!("invalid hex digit"),
+    }
+}
+
+const fn from_hex_byte(s: &[u8], i: usize) -> u8 {
+    (hex_digit(s[i]) << 4) | hex_digit(s[i + 1])
+}
+
+pub const fn parse_hex_color(s: &str) -> (u8, u8, u8) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    if !bytes.is_empty() && bytes[0] == b'#' {
+        i = 1;
+    } else if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] == b'x' || bytes[1] == b'X') {
+        i = 2;
+    }
+
+    if bytes.len() - i == 6 {
+        (
+            from_hex_byte(bytes, i),
+            from_hex_byte(bytes, i + 2),
+            from_hex_byte(bytes, i + 4),
+        )
+    } else {
+        panic!("expected 6 hex digits");
+    }
+}
+
+
+
+}
+
 impl Srgb {
+    const RED: Self = Self::from_hex("#F44336");
+    const PINK: Self = Self::from_hex("#E91E63");
+    const PURPLE: Self = Self::from_hex("#9C27B0");
+    const DEEP_PURPLE: Self = Self::from_hex("#673AB7");
+    const INDIGO: Self = Self::from_hex("#3F51B5");
+    const BLUE: Self = Self::from_hex("#2196F3");
+    const LIGHT_BLUE: Self = Self::from_hex("#03A9F4");
+    const CYAN: Self = Self::from_hex("#00BCD4");
+    const TEAL: Self = Self::from_hex("#009688");
+    const GREEN: Self = Self::from_hex("#4CAF50");
+    const LIGHT_GREEN: Self = Self::from_hex("#8BC34A");
+    const LIME: Self = Self::from_hex("#CDDC39");
+    const YELLOW: Self = Self::from_hex("#FFEB3B");
+    const AMBER: Self = Self::from_hex("#FFC107");
+    const ORANGE: Self = Self::from_hex("#FF9800");
+    const DEEP_ORANGE: Self = Self::from_hex("#FF5722");
+    const BROWN: Self = Self::from_hex("#795548");
+    const GREY: Self = Self::from_hex("#9E9E9E");
+    const BLUE_GREY: Self = Self::from_hex("#607D8B");
+
     /// Creates a new sRGB color from red, green, and blue components.
     ///
     /// # Arguments
@@ -110,23 +186,60 @@ impl Srgb {
             blue,
         }
     }
+
+    #[must_use] 
+    pub const fn new_u8(red: u8, green: u8, blue: u8) -> Self {
+        Self {
+            red: red as f32 / 255.0,
+            green: green as f32 / 255.0,
+            blue: blue as f32 / 255.0,
+        }
+    }
+
+    #[must_use] 
+    pub const fn from_hex(hex:&str) -> Self {
+        let (red,green,blue) = parse::parse_hex_color(hex);
+        Self::new_u8(red, green, blue)
+    }
     
     /// Converts this sRGB color to the P3 color space.
     #[must_use]
     pub fn to_p3(&self) -> P3{
         // convert srgb to p3 color space
-        todo!()
+        let linear = [
+            srgb_to_linear(self.red),
+            srgb_to_linear(self.green),
+            srgb_to_linear(self.blue),
+        ];
+        let p3_linear = linear_srgb_to_p3(linear);
+        P3::new(
+            linear_to_srgb(p3_linear[0]),
+            linear_to_srgb(p3_linear[1]),
+            linear_to_srgb(p3_linear[2]),
+        )
     }
 
     /// Creates a color with the specified opacity applied.
     ///
     /// # Arguments
     /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
+    #[must_use] 
     pub fn with_opacity(self, opacity: f32) -> impl Resolvable<Resolved = ResolvedColor> + 'static {
         resolve::Map::new(self, move |mut resolved| {
             resolved.opacity = opacity;
             resolved
         })
+    }
+
+    #[must_use] 
+    pub fn resolve(&self) -> ResolvedColor {
+        ResolvedColor {
+            red: srgb_to_linear(self.red),
+            green: srgb_to_linear(self.green),
+            blue: srgb_to_linear(self.blue),
+            headroom: 0.0,
+            opacity: 1.0,
+        }
     }
 
 
@@ -163,7 +276,6 @@ pub struct ResolvedColor {
     pub opacity: f32,
 }
 
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd, Hash, Eq, Ord)]
 #[non_exhaustive]
 /// Represents the supported color spaces for color representation.
@@ -192,12 +304,12 @@ impl Color {
     /// * `red` - Red component (0-255)
     /// * `green` - Green component (0-255)
     /// * `blue` - Blue component (0-255)
-    /// * `_opacity` - Opacity value (currently unused, reserved for future use)
-    pub fn srgb(red: u8, green: u8, blue: u8, _opacity: f32) -> Self {
+    #[must_use] 
+    pub fn srgb(red: u8, green: u8, blue: u8) -> Self {
         Self::new(Srgb::new(
-            red as f32 / 255.0,
-            green as f32 / 255.0,
-            blue as f32 / 255.0,
+            f32::from(red) / 255.0,
+            f32::from(green) / 255.0,
+            f32::from(blue) / 255.0,
         ))
     }
 
@@ -207,6 +319,7 @@ impl Color {
     /// * `red` - Red component (0.0 to 1.0)
     /// * `green` - Green component (0.0 to 1.0)
     /// * `blue` - Blue component (0.0 to 1.0)
+    #[must_use] 
     pub fn srgb_f32(red: f32, green: f32, blue: f32) -> Self {
         Self::new(Srgb::new(red, green, blue))
     }
@@ -217,6 +330,7 @@ impl Color {
     /// * `red` - Red component (0.0 to 1.0)
     /// * `green` - Green component (0.0 to 1.0)
     /// * `blue` - Blue component (0.0 to 1.0)
+    #[must_use] 
     pub fn p3(red: f32, green: f32, blue: f32) -> Self {
         Self::new(P3::new(red, green, blue))
     }
@@ -249,10 +363,51 @@ impl Color {
     ///
     /// # Arguments
     /// * `env` - The environment to resolve the color in
+    #[must_use] 
     pub fn resolve(&self, env: &Environment) -> Computed<ResolvedColor> {
         self.0.resolve(env)
     }
 }
+
+
+macro_rules! color_const {
+    ($name:ident, $color:expr,$doc:expr) => {
+        #[derive(Debug, Clone, Copy)]
+        #[doc=$doc]
+        pub struct $name;
+
+        impl Resolvable for $name {
+            type Resolved = ResolvedColor;
+            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                env.query::<Self,ResolvedColor>().copied().unwrap_or_else(|| $color.resolve())
+            }
+        }
+
+        impl waterui_core::View for $name {
+            fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
+                Color::new(self)
+            }
+        }
+    };
+}
+
+color_const!(Red, Srgb::RED, "Red color.");
+color_const!(Pink, Srgb::PINK, "Pink color.");
+color_const!(Purple, Srgb::PURPLE, "Purple color.");
+color_const!(DeepPurple, Srgb::DEEP_PURPLE, "Deep purple color.");
+color_const!(Indigo, Srgb::INDIGO, "Indigo color.");
+color_const!(Blue, Srgb::BLUE, "Blue color.");
+color_const!(LightBlue, Srgb::LIGHT_BLUE, "Light blue color.");
+color_const!(Cyan, Srgb::CYAN, "Cyan color.");
+color_const!(Teal, Srgb::TEAL, "Teal color.");
+color_const!(Green, Srgb::GREEN, "Green color.");
+color_const!(LightGreen, Srgb::LIGHT_GREEN, "Light green color.");
+color_const!(Lime, Srgb::LIME, "Lime color.");
+color_const!(Yellow, Srgb::YELLOW, "Yellow color.");
+color_const!(Amber, Srgb::AMBER, "Amber color.");
+color_const!(Orange, Srgb::ORANGE, "Orange color.");
+color_const!(DeepOrange, Srgb::DEEP_ORANGE, "Deep orange color.");
+color_const!(Brown, Srgb::BROWN, "Brown color.");
 
 raw_view!(Color); // should be filled rectangle
 
@@ -265,6 +420,14 @@ fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055_f32.mul_add(c.powf(1.0 / 2.4), -0.055)
+    }
+}
+
 // Conversion matrix from P3 to sRGB
 // https://www.w3.org/TR/css-color-4/#color-conversion-code
 fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
@@ -272,5 +435,15 @@ fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
         1.224_940_1_f32.mul_add(p3[0], -0.224_940_1 * p3[1]),
         (-0.042_030_1_f32).mul_add(p3[0], 1.042_030_1 * p3[1]),
         (-0.019_721_1_f32).mul_add(p3[0], (-0.078_636_1_f32).mul_add(p3[1], 1.098_357_2 * p3[2])),
+    ]
+}
+
+// Conversion matrix from sRGB to P3 (inverse of p3_to_linear_srgb)
+// https://www.w3.org/TR/css-color-4/#color-conversion-code
+fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
+    [
+        0.822_461_9_f32.mul_add(srgb[0], 0.177_538_1 * srgb[1]),
+        0.033_194_2_f32.mul_add(srgb[0], 0.966_805_8 * srgb[1]),
+        0.017_082_6_f32.mul_add(srgb[0], 0.072_397_4_f32.mul_add(srgb[1], 0.910_519_9 * srgb[2])),
     ]
 }
