@@ -142,6 +142,7 @@ impl VStack {
 
     
 
+    /// Sets the horizontal alignment of children within the stack.
     #[must_use] 
     pub const fn alignment(mut self, alignment: HorizontalAlignment) -> Self {
         self.layout.alignment = alignment;
