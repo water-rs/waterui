@@ -35,8 +35,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-waterui = "0.1.0"
-waterui_gtk4 = "0.1.0"
+waterui = { path = "../" }
 ```
 
 ## Building the Counter Step by Step
@@ -49,17 +48,15 @@ Start with a simple view structure. Since our initial view doesn't need state, w
 
 **Filename**: `src/main.rs`
 ```rust,ignore
-use waterui::View;
-use waterui_gtk4::{Gtk4App, init};
+use waterui::prelude::*;
 
-pub fn counter() -> impl View {
+fn counter() -> impl View {
     "Counter App"
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init()?;
-    let app = Gtk4App::new("com.example.counter-app");
-    Ok(app.run(counter).into())
+fn main() {
+    // Backend-specific initialization will be added here
+    // For now, we just define the view
 }
 ```
 
@@ -75,9 +72,9 @@ You should see a window with "Counter App" displayed.
 Now let's add some layout structure using stacks:
 
 ```rust,ignore
-use waterui::{component::layout::stack::vstack, View};
+use waterui::prelude::*;
 
-pub fn counter() -> impl View {
+fn counter() -> impl View {
     vstack((
         "Counter App",
         "Count: 0",
@@ -89,28 +86,20 @@ pub fn counter() -> impl View {
 
 ### Step 3: Adding Reactive State
 
-Now comes the exciting part - let's add reactive state! We'll use the `s!` macro from nami for reactive computations and the `text!` macro for reactive text:
+Now comes the exciting part - let's add reactive state! We'll use the `binding` function for reactive computations and the `text!` macro for reactive text:
 
 ```rust,ignore
-use waterui::{
-    component::{
-        layout::stack::{vstack, hstack},
-        button::button,
-    },
-    View,
-};
-use waterui_text::text;
-use waterui::reactive::binding;
+use waterui::prelude::*;
 
-pub fn counter() -> impl View {
+fn counter() -> impl View {
     let count = binding(0);
     vstack((
         "Counter App",
         // Use text! macro for reactive text
         text!("Count: {count}"),
         hstack((
-            button("- Decrement").action_with(&count, |count| count.update(|n| n - 1)),
-            button("+ Increment").action_with(&count, |count| count.update(|n| n + 1)),
+            button("- Decrement").action_with(&count, |count| count.update(|n| *n -= 1)),
+            button("+ Increment").action_with(&count, |count| count.update(|n| *n += 1)),
         )),
     ))
 }
@@ -125,7 +114,7 @@ Let's break down the key concepts introduced:
 ### Reactive State with `binding`
 
 ```rust,ignore
-let count = Binding::int(0);
+let count = binding(0);
 ```
 
 This creates a reactive binding with an initial value of 0. When this value changes, any UI elements that depend on it will automatically update.
@@ -143,7 +132,7 @@ text!("Count: {count}")
 ### Event Handling
 
 ```rust,ignore
-button("- Decrement").action_with(&count, |count| count.update(|n| n - 1))
+button("- Decrement").action_with(&count, |count| count.update(|n| *n -= 1))
 ```
 
 - `.action_with()` attaches an event handler with captured state

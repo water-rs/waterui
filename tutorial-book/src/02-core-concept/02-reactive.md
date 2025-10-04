@@ -9,7 +9,6 @@ Everything in nami's reactive system implements the `Signal` trait. This trait r
 ```rust,ignore
 pub trait Signal: Clone + 'static {
     type Output;
-    type Guard:WatcherGuard;
     
     // Get the current value
     fn get(&self) -> Self::Output;
@@ -45,11 +44,11 @@ let literal_number = 100;             // Already a Signal!
 `Binding<T>` is for **mutable** reactive state that can be changed and will notify the UI:
 
 ```rust,ignore
-use waterui::{binding, Binding};
+use waterui::prelude::*;
 
 // Create mutable reactive state
-let counter: Binding<i32> = binding(0);
-let name: Binding<String> = binding("Alice");
+let counter = binding(0);
+let name = binding("Alice".to_string());
 
 // Set new values (triggers UI updates)
 counter.set(42);
@@ -106,111 +105,13 @@ Now that you understand signals, let's dive into `Binding<T>` - the mutable reac
 ### Basic Operations
 
 ```rust,ignore
-let counter = Binding::int(0);
+let counter = binding(0);
 
 // Set new values (triggers UI updates)
 counter.set(42);
 
 // Bindings automatically provide their current value in reactive contexts
 // No need to extract values with .get() - just use the binding directly!
-```
-
-### Type-Specific Convenience Methods
-
-Nami provides specialized methods for different types to make common operations more ergonomic:
-
-#### Integer Bindings
-
-```rust,ignore
-let counter = Binding::int(0);
-
-// Convenient arithmetic operations
-counter.increment(1);     // counter += 1
-counter.decrement(2);     // counter -= 2
-counter.set(10);
-```
-
-#### Boolean Bindings
-
-```rust,ignore
-let is_enabled = Binding::bool(false);
-
-// Toggle between true/false
-is_enabled.toggle();
-
-// Logical NOT operation
-let is_disabled = !is_enabled; // Creates a new reactive binding
-```
-
-#### String Bindings
-
-```rust,ignore
-let text = Binding::container(String::from("Hello"));
-
-// Append text
-text.append(" World");
-text.clear();  // Empty the string
-```
-
-#### Vector Bindings
-
-```rust,ignore
-let items = binding(vec![1, 2, 3]);
-
-// Collection operations
-items.push(4);              // Add to end
-items.insert(1, 99);        // Insert at index
-let last = items.pop();      // Remove and return last
-items.clear();               // Remove all elements
-
-// For sortable vectors
-let sortable = binding(vec![3, 1, 4, 1, 5]);
-sortable.sort();             // Sort in-place
-```
-
-## Creating Computed Signals with SignalExt
-
-All signals get powerful transformation methods through the `SignalExt` trait:
-
-### Basic Transformations
-
-```rust,ignore
-use nami::SignalExt;
-
-let numbers = Binding::container(vec![1, 2, 3, 4, 5]);
-
-// Transform the data
-let doubled = numbers.map(|nums| {
-    nums.iter().map(|&n| n * 2).collect::<Vec<_>>()
-});
-
-// Single value transformations
-let count = numbers.map(|nums| nums.len());
-let sum = numbers.map(|nums| nums.iter().sum::<i32>());
-```
-
-### Combining Multiple Signals
-
-```rust,ignore
-let a = binding(10);
-let b = binding(20);
-
-// Combine two signals
-let sum = a.zip(b).map(|(x, y)| x + y);
-let product = a.zip(b).map(|(x, y)| x * y);
-let complex = a.zip(b).map(|(x, y)| x * 2 + y / 2);
-```
-
-### Performance Optimizations
-
-```rust,ignore
-let expensive_data = binding(vec![1, 2, 3, 4, 5]);
-
-// Cache expensive computations (only recomputes when data changes)
-let sum = expensive_data.cached().map(|nums| {
-    // Expensive operation here
-    nums.iter().sum::<i32>()
-});
 ```
 
 ## The `s!` Macro - Reactive String Formatting
@@ -253,40 +154,4 @@ let mut guard = data.get_mut();
 guard.push(4);
 guard.sort();
 // Updates are sent when guard is dropped
-```
-
-### Filtered/Constrained Bindings
-
-```rust,ignore
-let temperature = Binding::int(25);
-
-// Create a binding constrained to a range
-let safe_temp = temperature.range(0..=100);
-
-// Custom filters
-let even_numbers = binding(0);
-let only_even = even_numbers.filter(|&n| n % 2 == 0);
-```
-
-### Debounced Bindings
-
-```rust,ignore
-use std::time::Duration;
-
-let search_query = Binding::container(String::new());
-
-// Only update after user stops typing for 300ms
-let debounced_search = search_query.debounced(Duration::from_millis(300));
-```
-
-### Working with Optional Values
-
-```rust,ignore
-let maybe_name: Binding<Option<String>> = binding(None);
-
-// Provide default when None
-let display_name = maybe_name.unwrap_or_else(|| "Anonymous".to_string());
-
-// Transform the inner value if present
-let maybe_upper = maybe_name.map(|opt| opt.map(|s| s.to_uppercase()));
 ```

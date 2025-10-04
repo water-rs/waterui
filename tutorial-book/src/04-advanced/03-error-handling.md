@@ -44,7 +44,7 @@ The `ResultExt` trait provides convenient methods for converting `Result` types 
 
 ```rust
 use waterui::widget::error::ResultExt;
-use waterui::View;
+use waterui::prelude::*;
 
 fn load_user_data(user_id: u32) -> Result<String, DatabaseError> {
     // Simulate database operation
@@ -57,10 +57,10 @@ fn load_user_data(user_id: u32) -> Result<String, DatabaseError> {
 
 fn user_profile_view(user_id: u32) -> impl View {
     match load_user_data(user_id)
-        .error_view(|err| format!("Failed to load user: {}", err))
+        .error_view(|err| text!("Failed to load user: {}", err))
     {
-        Ok(user_data) => user_data.into(),
-        Err(error_view) => error_view.into(),
+        Ok(user_data) => text!(user_data),
+        Err(error_view) => error_view.any_view(),
     }
 }
 ```
@@ -71,11 +71,11 @@ You can handle errors inline within view construction:
 
 ```rust
 fn network_status_view() -> impl View {
-    VStack((
+    vstack((
         "Network Status",
         match check_connection() {
-            Ok(status) => format!("Connected: {}", status).into(),
-            Err(error) => Error::new(error).into(),
+            Ok(status) => text!(status),
+            Err(error) => Error::new(error).any_view(),
         }
     ))
 }
@@ -96,25 +96,25 @@ fn handle_file_error(error: Error) -> impl View {
         Ok(io_error) => {
             match io_error.kind() {
                 io::ErrorKind::NotFound => {
-                    VStack((
+                    vstack((
                         "File Not Found",
                         "The requested file could not be located.",
-                        Button::new("Browse for File", browse_action)
-                    ))
+                        button("Browse for File", browse_action)
+                    )).any_view()
                 }
                 io::ErrorKind::PermissionDenied => {
-                    VStack((
+                    vstack((
                         "Permission Denied",
                         "You don't have permission to access this file.",
-                        Button::new("Request Access", request_access_action)
-                    ))
+                        button("Request Access", request_access_action)
+                    )).any_view()
                 }
-                _ => format!("IO Error: {}", io_error)
+                _ => text!("IO Error: {}", io_error).any_view()
             }
         }
         Err(original_error) => {
             // Handle as generic error
-            format!("Error: {}", original_error)
+            text!("Error: {}", original_error).any_view()
         }
     }
 }
@@ -129,17 +129,15 @@ use waterui::widget::error::Error;
 
 fn validation_error_view(field: &str, message: &str) -> Error {
     Error::from_view(
-        HStack((
-            Icon::warning().color(Color::WARNING),
-            VStack((
-                format!("Validation Error: {}", field)
-                    .font_weight(FontWeight::BOLD),
-                message.color(Color::SECONDARY)
+        hstack((
+            Icon::warning().foreground(Color::WARNING),
+            vstack((
+                text!("Validation Error: {}", field),
+                text!(message).foreground(Color::SECONDARY)
             ))
         ))
-        .padding(16)
+        .padding(16.0)
         .background(Color::WARNING.opacity(0.1))
-        .corner_radius(8)
     )
 }
 
@@ -169,16 +167,16 @@ enum LoadingState<T> {
 fn data_view(state: LoadingState<UserData>) -> impl View {
     match state {
         LoadingState::Loading => {
-            HStack((
+            hstack((
                 ProgressIndicator::spinning(),
                 "Loading user data..."
-            ))
+            )).any_view()
         }
         LoadingState::Loaded(data) => {
-            user_profile_component(data)
+            user_profile_component(data).any_view()
         }
         LoadingState::Error(error) => {
-            error
+            error.any_view()
         }
     }
 }
@@ -192,21 +190,21 @@ Provide context-aware error messages based on the current view:
 fn api_request_view(endpoint: &str) -> impl View {
     match make_api_request(endpoint)
         .error_view(|err| {
-            VStack((
+            vstack((
                 "Network Request Failed",
-                format!("Endpoint: {}", endpoint),
-                format!("Error: {}", err),
-                HStack((
-                    Button::new("Retry", retry_action),
-                    Button::new("Go Offline", offline_mode_action)
+                text!("Endpoint: {}", endpoint),
+                text!("Error: {}", err),
+                hstack((
+                    button("Retry", retry_action),
+                    button("Go Offline", offline_mode_action)
                 ))
             ))
-            .padding(20)
+            .padding(20.0)
             .background(Color::ERROR.opacity(0.1))
         })
     {
-        Ok(response) => response_view(response).into(),
-        Err(error_view) => error_view.into(),
+        Ok(response) => response_view(response).any_view(),
+        Err(error_view) => error_view.any_view(),
     }
 }
 ```
@@ -220,17 +218,14 @@ Set up a consistent error presentation style at your app's root:
 ```rust
 fn app_root() -> impl View {
     ContentView::new()
-        .environment(DefaultErrorView::new(|error| {
-            VStack((
+        .with(DefaultErrorView::new(|error| {
+            vstack((
                 Icon::error().size(24),
-                format!("{}", error)
-                    .multiline_text_alignment(TextAlignment::CENTER),
-                "If this problem persists, please contact support."
-                    .font_size(12)
-                    .color(Color::SECONDARY)
+                text!("{}", error),
+                text!("If this problem persists, please contact support.")
+                    .foreground(Color::SECONDARY)
             ))
-            .padding(16)
-            .max_width(300)
+            .padding(16.0)
         }))
         .body(main_content_view())
 }
@@ -242,13 +237,13 @@ Include relevant actions users can take to resolve errors:
 
 ```rust
 fn network_error_view(error: NetworkError) -> impl View {
-    VStack((
+    vstack((
         "Connection Problem",
-        format!("{}", error),
-        HStack((
-            Button::new("Check Connection", check_connection_action),
-            Button::new("Work Offline", enable_offline_mode),
-            Button::new("Retry", retry_last_action)
+        text!("{}", error),
+        hstack((
+            button("Check Connection", check_connection_action),
+            button("Work Offline", enable_offline_mode),
+            button("Retry", retry_last_action)
         ))
     ))
 }
@@ -260,18 +255,18 @@ Handle different error types at appropriate levels in your view hierarchy:
 
 ```rust
 fn user_dashboard() -> impl View {
-    VStack((
+    vstack((
         // Handle critical errors at component level
         match load_user_session() {
-            Ok(session) => session_header(session).into(),
-            Err(auth_error) => login_prompt(auth_error).into(),
+            Ok(session) => session_header(session).any_view(),
+            Err(auth_error) => login_prompt(auth_error).any_view(),
         },
         
         // Handle non-critical errors inline
-        HStack((
+        hstack((
             user_avatar().unwrap_or_else(|_| default_avatar()),
             user_stats().unwrap_or_else(|err| {
-                "Stats unavailable".color(Color::SECONDARY)
+                text!("Stats unavailable").foreground(Color::SECONDARY)
             })
         ))
     ))

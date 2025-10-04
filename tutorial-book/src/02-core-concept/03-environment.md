@@ -6,11 +6,10 @@ The Environment system is WaterUI's approach to dependency injection and configu
 
 ### Storing Values
 
-The most common way to add values to an environment:
+The most common way to add values to an environment is with the `.with()` method:
 
 ```rust,ignore
-use waterui::{Environment, View, ViewExt};
-use waterui::component::layout::{Edge, Frame};
+use waterui::prelude::*;
 
 #[derive(Debug, Clone)]
 struct AppConfig {
@@ -64,20 +63,16 @@ impl View for ApiStatusView {
             waterui_text::Text::new(format!("Timeout: {}s", config.timeout_seconds)).size(14.0),
         ))
         .background(waterui::background::Background::color(theme.background_color.clone()))
-        .frame(Frame::new().margin(Edge::round(12.0)))
     }
 }
 ```
 
 #### For Function Views
-You can pass values through the environment at the call site and read them inside struct views as shown above. Function views typically compose other views and don’t receive `env` directly.
+Function views don't directly receive the `env` parameter. Instead, you can compose them with struct views that can access the environment. Alternatively, you can use `action_with` to extract values from the environment in event handlers.
 
 #### In `action`
 ```rust,ignore
-use waterui::{View};
-use waterui::reactive::binding;
-use waterui_text::text;
-use waterui::component::{layout::stack::vstack, button::button};
+use waterui::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct Message(&'static str);

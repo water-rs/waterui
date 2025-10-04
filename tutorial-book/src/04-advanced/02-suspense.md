@@ -67,6 +67,12 @@ fn simple_async_view() -> impl View {
 
 Any type can be used with Suspense by implementing the `SuspendedView` trait. The trait is automatically implemented for any `Future` that resolves to a `View`.
 
+```rust,no_run
+pub trait SuspendedView: 'static {
+    fn body(self, _env: Environment) -> impl Future<Output = impl View>;
+}
+```
+
 ### Automatic Implementation for Futures
 
 ```rust,no_run
