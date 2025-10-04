@@ -27,9 +27,9 @@
 use alloc::vec::Vec;
 use waterui_core::{configurable, id::IdentifableExt};
 
-use crate::{component::{
+use crate::component::{
     views::{AnyViews, Views}, Text
-}, prelude::views::ForEach};
+};
 use nami::{Computed, impl_constant, signal::IntoComputed};
 
 /// Configuration for a table component.
