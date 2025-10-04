@@ -116,6 +116,128 @@ class ComputedStr{
     }
 }
 
+struct TextStyleSnapshot {
+    var font: Font?
+    var bold: Bool
+    var italic: Bool
+    var underline: Bool
+    var strikethrough: Bool
+    var foreground: Color?
+    var background: Color?
+
+    init(style: inout CWaterUI.WuiTextStyle) {
+        bold = style.bold
+        italic = style.italic
+        underline = style.underline
+        strikethrough = style.strikethrough
+
+        if style.has_font {
+            let value = style.font
+            font = Font(wuiFont: value)
+
+            if let strike = value.strikethrough {
+                waterui_drop_color(strike)
+                style.font.strikethrough = nil
+            }
+
+            if let underlineColor = value.underlined {
+                waterui_drop_color(underlineColor)
+                style.font.underlined = nil
+            }
+        } else {
+            font = nil
+        }
+
+        if let fg = style.foreground {
+            foreground = fg.pointee.toSwiftUIColor()
+            waterui_drop_color(fg)
+            style.foreground = nil
+        } else {
+            foreground = nil
+        }
+
+        if let bg = style.background {
+            background = bg.pointee.toSwiftUIColor()
+            waterui_drop_color(bg)
+            style.background = nil
+        } else {
+            background = nil
+        }
+    }
+
+}
+
+struct AttributedTextSpan {
+    var text: String
+    var style: TextStyleSnapshot
+}
+
+@MainActor
+@Observable
+class ComputedAttributedText {
+    @ObservationIgnored private var inner: OpaquePointer
+    @ObservationIgnored private var watcher: WatcherGuard!
+
+    var value: [AttributedTextSpan] = []
+
+    init(inner: OpaquePointer) {
+        self.inner = inner
+        value = ComputedAttributedText.readSnapshot(inner: inner)
+
+        weak var this = self
+        self.watcher = self.watch { spans, animation in
+            guard let this else { return }
+            if let animation {
+                SwiftUI.withAnimation(animation) {
+                    this.value = spans
+                }
+            } else {
+                this.value = spans
+            }
+        }
+    }
+
+    func compute() -> [AttributedTextSpan] {
+        ComputedAttributedText.readSnapshot(inner: inner)
+    }
+
+    func watch(_ f: @escaping ([AttributedTextSpan], Animation?) -> Void) -> WatcherGuard {
+        let guardPtr = waterui_watch_computed_attributed_str(inner, WuiWatcher_WuiAttributedStr(f))
+        return WatcherGuard(guardPtr!)
+    }
+
+    deinit {
+        weak var this = self
+        Task { @MainActor in
+            if let this {
+                waterui_drop_computed_attributed_str(this.inner)
+            }
+        }
+    }
+
+    fileprivate static func readSnapshot(inner: OpaquePointer) -> [AttributedTextSpan] {
+        var attributed = waterui_read_computed_attributed_str(inner)
+        return snapshotInPlace(&attributed)
+    }
+
+    fileprivate static func snapshotInPlace(_ attributed: inout CWaterUI.WuiAttributedStr) -> [AttributedTextSpan] {
+        let raw = unsafeBitCast(attributed.chunks, to: CWaterUI.WuiArray.self)
+        var chunks = WuiArray<CWaterUI.WuiAttributedChunk>(c: raw).toArray()
+        var result: [AttributedTextSpan] = []
+        result.reserveCapacity(chunks.count)
+        for index in 0..<chunks.count {
+            let chunk = chunks[index]
+            var style = chunk.style
+            let span = AttributedTextSpan(
+                text: WuiStr(chunk.text).toString(),
+                style: TextStyleSnapshot(style: &style)
+            )
+            result.append(span)
+        }
+        return result
+    }
+}
+
 @MainActor
 class ComputedInt:ObservableObject{
     private var inner: OpaquePointer
@@ -226,6 +348,33 @@ extension WuiWatcher_WuiStr {
     }
 }
 
+@MainActor
+extension WuiWatcher_WuiAttributedStr {
+    init(_ f: @escaping ([AttributedTextSpan], Animation?) -> Void) {
+        class Wrapper {
+            var inner: ([AttributedTextSpan], Animation?) -> Void
+            init(_ inner: @escaping ([AttributedTextSpan], Animation?) -> Void) {
+                self.inner = inner
+            }
+        }
+
+        let data = UnsafeMutableRawPointer(Unmanaged.passRetained(Wrapper(f)).toOpaque())
+
+        self.init(
+            data: data,
+            call: { data, value, metadata in
+                let f = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue().inner
+                var copy = value
+                let spans = ComputedAttributedText.snapshotInPlace(&copy)
+                f(spans, Animation(waterui_get_animation(metadata)))
+            },
+            drop: { data in
+                _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()
+            }
+        )
+    }
+}
+
 extension WuiWatcher_f64 {
     init(_ f: @escaping (Double,Animation?) -> Void) {
         class Wrapper {
@@ -294,5 +443,3 @@ extension WuiWatcher_bool {
         })
     }
 }
-
-
