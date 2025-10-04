@@ -21,26 +21,19 @@ Create your first reactive counter:
 use waterui::prelude::*;
 
 pub fn counter() -> impl View {
-    let count = Binding::int(0);
-    let doubled = count.map(|n| n * 2);
+    let count = binding(0);
+    let doubled = count.map(|n| *n * 2);
 
     vstack((
         text!("Count: {count}"),
-        text!("Doubled: {doubled}")
-            .font_size(20)
-            .foreground_color(Color::gray()),
-
+        text!("Doubled: {doubled}"),
         hstack((
             button("Increment")
-                .action_with(&count, |count| count.increment(1)),
+                .action_with(&count, |count| count.update(|n| *n += 1)),
             button("Reset")
-                .action_with(&count, |count| count.set(0))
-                .foreground_color(Color::red()),
+                .action_with(&count, |count| count.set(0)),
         ))
-        .spacing(10),
     ))
-    .padding(20)
-    .spacing(15)
 }
 ```
 

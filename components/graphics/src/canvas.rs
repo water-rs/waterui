@@ -42,14 +42,14 @@ impl Canvas {
 
     /// Sets the canvas width.
     #[must_use]
-    pub fn width(mut self, width: f32) -> Self {
+    pub const fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
     }
 
     /// Sets the canvas height.
     #[must_use]
-    pub fn height(mut self, height: f32) -> Self {
+    pub const fn height(mut self, height: f32) -> Self {
         self.height = height;
         self
     }
