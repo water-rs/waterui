@@ -264,13 +264,13 @@ fn password_form() -> impl View {
 }
 
 fn password_validation(pwd: &Binding<String>, confirm: &Binding<String>) -> impl View {
-    text!(
-        if pwd.get() == confirm.get() && !pwd.get().is_empty() {
+    text!("{}", pwd.zip(confirm).map(|(pwd, confirm)| {
+        if pwd == confirm && !pwd.is_empty() {
             "Passwords match ✓"
         } else {
             "Passwords don't match"
         }
-    )
+    }))
 }
 ```
 
@@ -293,39 +293,39 @@ fn validated_form_view() -> impl View {
         form(&form),
         
         // Email validation
-        text!(
-            if form.email.get().contains('@') && form.email.get().contains('.') {
+        text!("{}", form.map(|form| {
+            if form.email.contains('@') && form.email.contains('.') {
                 "✓ Valid email"
             } else {
                 "✗ Please enter a valid email"
             }
-        ),
+        })),
         
         // Password validation
-        text!(
-            if form.password.get().len() >= 8 {
+        text!("{}", form.map(|form| {
+            if form.password.len() >= 8 {
                 "✓ Password is strong enough"
             } else {
                 "✗ Password must be at least 8 characters"
             }
-        ),
+        })),
         
         // Age validation
-        text!(
-            if form.age.get() >= 18 {
+        text!("{}", form.map(|form| {
+            if form.age >= 18 {
                 "✓ Age requirement met"
             } else {
                 "✗ Must be 18 or older"
             }
-        ),
+        })),
         
         // Submit button - only enabled when form is valid
         button("Submit")
-            .disabled(s!(
-                !form.email.get().contains('@') ||
-                form.password.get().len() < 8 ||
-                form.age.get() < 18
-            ))
+            .disabled(form.map(|form| {
+                !form.email.contains('@') ||
+                form.password.len() < 8 ||
+                form.age < 18
+            }))
             .action(|| {
                 // Handle form submission
                 println!("Form submitted!");
@@ -352,19 +352,19 @@ fn settings_panel() -> impl View {
     let settings = UserSettings::binding();
     
     // Computed values based on form state
-    let has_changes = s!(
-        settings.name.get() != "Default Name" ||
-        settings.theme.get() != "Light" ||
-        settings.notifications.get()
-    );
+    let has_changes = settings.map(|settings| {
+        settings.name != "Default Name" ||
+        settings.theme != "Light" ||
+        settings.notifications
+    });
     
-    let settings_summary = s!(
+    let settings_summary = settings.map(|settings| {
         format!("User: {} | Theme: {} | Notifications: {}",
-            settings.name.get(),
-            settings.theme.get(), 
-            if settings.notifications.get() { "On" } else { "Off" }
+            settings.name,
+            settings.theme, 
+            if settings.notifications { "On" } else { "Off" }
         )
-    );
+    });
     
     vstack((
         "Settings",
@@ -372,11 +372,11 @@ fn settings_panel() -> impl View {
         
         // Live preview
         "Preview:",
-        text!(settings_summary),
+        text!("{}", settings_summary),
         
         // Save button
         button("Save Changes")
-            .disabled(s!(!has_changes))
+            .disabled(!has_changes)
             .action({
                 let settings = settings.clone();
                 move |_| {

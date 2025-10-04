@@ -29,8 +29,8 @@ pub trait Plugin: Sized + 'static {
 
 By intersting environment, plugin can achieve something interesting purpose.
 
-## Implement an i18 Plugin
+## Implement an i18n Plugin
 
 ```rust
-
+[WIP]
 ```
