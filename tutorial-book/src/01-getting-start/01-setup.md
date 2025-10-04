@@ -97,55 +97,12 @@ Edit your `Cargo.toml` file to include WaterUI:
 [package]
 name = "hello-waterui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-waterui = "0.1.0"
-# Choose your backend(s)
-waterui_gtk4 = "0.1.0"    # For desktop applications
-# waterui_web = "0.1.0"     # For web applications
+waterui = { path = ".." }
+# Backend will be chosen in the future
 ```
-
-> **Tip**: You can include multiple backends in the same project to support different platforms.
-
-## Platform-Specific Setup
-
-Depending on your target platform, you may need additional system dependencies.
-
-### Desktop Development (GTK4)
-
-**Ubuntu/Debian**:
-```bash,ignore
-sudo apt update
-sudo apt install libgtk-4-dev build-essential
-```
-
-**Fedora/RHEL**:
-```bash,ignore
-sudo dnf install gtk4-devel gcc
-```
-
-**Arch Linux**:
-```bash,ignore
-sudo pacman -S gtk4 base-devel
-```
-
-**macOS**:
-```bash,ignore
-# Install Homebrew if you haven't already
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install GTK4
-brew install gtk4
-```
-
-**Windows**:
-1. Install [MSYS2](https://www.msys2.org/)
-2. Open MSYS2 terminal and run:
-   ```bash,ignore
-   pacman -S mingw-w64-x86_64-gtk4 mingw-w64-x86_64-toolchain
-   ```
-3. Add MSYS2 to your PATH: `C:\msys64\mingw64\bin`
 
 ### Web Development (WebAssembly)
 
@@ -165,18 +122,13 @@ Let's create a simple "Hello, World!" application to verify everything works.
 
 **Filename**: `src/main.rs`
 ```rust,ignore
-use waterui::View;
-use waterui_gtk4::{Gtk4App, init};
+use waterui::prelude::*;
 
 fn home() -> impl View { "Hello, WaterUI! 🌊" }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize the GTK4 backend
-    init()?;
-
-    // Create and run the application
-    let app = Gtk4App::new("com.example.hello-waterui");
-    Ok(app.run(home).into())
+fn main() {
+    // Backend-specific initialization will be added here
+    // For now, we just define the view
 }
 ```
 
@@ -191,12 +143,6 @@ cargo run
 If everything is set up correctly, you should see a window with "Hello, WaterUI! 🌊" displayed.
 
 ## Troubleshooting Common Issues
-
-### GTK4 Not Found
-
-**Error**: `Package 'gtk4' not found`
-
-**Solution**: Install GTK4 development libraries for your platform (see Platform-Specific Setup above).
 
 ### Rust Version Too Old
 
@@ -215,6 +161,3 @@ rustup update
 1. Ensure you have the Microsoft C++ Build Tools installed
 2. Use the `x86_64-pc-windows-msvc` toolchain
 3. Consider using WSL2 for a Linux-like environment
-
-
-TODO: Build a CLI to automate these workflows

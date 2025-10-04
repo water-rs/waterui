@@ -32,7 +32,7 @@ WaterUI provides many built-in Views for common UI elements:
 // Static text
 "Hello, World!"
 
-// Equal to text(name.map(|n| format!("Hello, {n}!")))
+// Reactive text
 text!("Hello, {name}!")
 
 // Styled text
@@ -42,7 +42,7 @@ waterui_text::Text::new("Important!")
 
 ### Control Views
 ```rust,ignore
-use waterui::reactive::binding;
+use waterui::prelude::*;
 // Button
 button("Click me")
     .action(|| println!("Clicked!"))
@@ -94,7 +94,6 @@ fn welcome_message(name: &str) -> impl View {
         waterui_text::Text::new("Welcome!").size(24.0),
         waterui_text::Text::new(format!("Hello, {}!", name)),
     ))
-    .frame(waterui::component::layout::Frame::new().margin(waterui::component::layout::Edge::round(20.0)))
 }
 
 // Usage - functions are automatically views!
@@ -122,7 +121,7 @@ impl View for CounterWidget {
         vstack((
             text!("Count: {}", count),
             button("+")
-                .action_with(&count, move |count| count.update(|n| n + self.step)),
+                .action_with(&count, move |count| count.update(|n| *n += self.step)),
         ))
     }
 }
