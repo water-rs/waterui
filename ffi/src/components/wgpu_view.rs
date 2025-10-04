@@ -1,10 +1,10 @@
+use crate::WuiEnv;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::any::Any;
 use core::cell::Cell;
 use core::ffi::c_void;
 use waterui_graphics::WgpuView;
-use crate::WuiEnv;
 
 // NOTE: The following are assumed to be defined elsewhere in the FFI crate
 // or backend context, providing access to the core runtime components.
@@ -22,19 +22,22 @@ pub struct WuiWgpuViewProperties {
 }
 
 /// Gets the properties (width and height) of a WgpuView.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn waterui_wgpu_view_get_properties(view_id: u64) -> WuiWgpuViewProperties {
     let width = Rc::new(Cell::new(0.0f32));
     let height = Rc::new(Cell::new(0.0f32));
     let width_capture = Rc::clone(&width);
     let height_capture = Rc::clone(&height);
     unsafe {
-        with_view_registry(view_id, Box::new(move |view_any| {
-            if let Some(wgpu_view) = view_any.downcast_ref::<WgpuView>() {
-                width_capture.set(wgpu_view.width);
-                height_capture.set(wgpu_view.height);
-            }
-        }))
+        with_view_registry(
+            view_id,
+            Box::new(move |view_any| {
+                if let Some(wgpu_view) = view_any.downcast_ref::<WgpuView>() {
+                    width_capture.set(wgpu_view.width);
+                    height_capture.set(wgpu_view.height);
+                }
+            }),
+        )
     };
     WuiWgpuViewProperties {
         width: width.get(),
@@ -43,7 +46,7 @@ pub extern "C" fn waterui_wgpu_view_get_properties(view_id: u64) -> WuiWgpuViewP
 }
 
 /// Triggers the drawing callback for a WgpuView.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn waterui_wgpu_view_draw(
     view_id: u64,
     env: *const WuiEnv,
@@ -51,31 +54,34 @@ pub extern "C" fn waterui_wgpu_view_draw(
     texture_format_u32: u32,
 ) {
     let _ = env;
-    let texture_format = decode_texture_format(texture_format_u32)
-        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm); // Sensible default until backend wiring is complete.
+    let texture_format =
+        decode_texture_format(texture_format_u32).unwrap_or(wgpu::TextureFormat::Bgra8Unorm); // Sensible default until backend wiring is complete.
     let device = unsafe { waterui_get_current_device() };
     let queue = unsafe { waterui_get_current_queue() };
     unsafe {
-        with_view_registry(view_id, Box::new(move |view_any| {
-            if let Some(wgpu_view) = view_any.downcast_ref::<WgpuView>() {
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("WgpuView Wrapped Texture"),
-                    size: wgpu::Extent3d {
-                        width: wgpu_view.width as u32,
-                        height: wgpu_view.height as u32,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: texture_format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                });
-                let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (wgpu_view.on_draw)(device, queue, &texture_view, texture_format);
-            }
-        }))
+        with_view_registry(
+            view_id,
+            Box::new(move |view_any| {
+                if let Some(wgpu_view) = view_any.downcast_ref::<WgpuView>() {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("WgpuView Wrapped Texture"),
+                        size: wgpu::Extent3d {
+                            width: wgpu_view.width as u32,
+                            height: wgpu_view.height as u32,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: texture_format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    });
+                    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    (wgpu_view.on_draw)(device, queue, &texture_view, texture_format);
+                }
+            }),
+        )
     };
 }
 

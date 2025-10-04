@@ -79,13 +79,14 @@ impl I18n {
             let file = file?;
             let path = file.path();
             if let Some(extension) = path.extension()
-                && extension == "toml" {
-                    let buf = read_to_string(&path).await?;
-                    let map: BTreeMap<Str, Str> = from_str(&buf)?;
-                    if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
-                        i18n.insert(Str::from(name.to_string()), map);
-                    }
+                && extension == "toml"
+            {
+                let buf = read_to_string(&path).await?;
+                let map: BTreeMap<Str, Str> = from_str(&buf)?;
+                if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+                    i18n.insert(Str::from(name.to_string()), map);
                 }
+            }
         }
         Ok(Self { map: i18n })
     }
