@@ -7,8 +7,7 @@
 //! # Basic Usage
 //!
 //! ```rust
-//! use waterui::when;
-//! use nami::binding;
+//! use waterui::prelude::*;
 //!
 //! let is_visible = binding(true);
 //!

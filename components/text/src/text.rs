@@ -1,5 +1,6 @@
 
 use alloc::string::ToString;
+use nami::impl_constant;
 use nami::signal::IntoSignal;
 use core::fmt::Display;
 use crate::font::FontWeight;
@@ -59,8 +60,8 @@ impl Text {
     ///
     /// This is a convenience method for creating text from values like
     /// numbers, booleans, or other displayable types.
-    pub fn display<T: Display>(source: impl IntoComputed<T>) -> Self {
-        Self::new(source.into_signal().map(|value| value.to_string()))
+    pub fn display<T: Display>(source: impl Signal<Output = T>) -> Self {
+        Self::new(source.map(|value| value.to_string()))
     }
 
     /// Creates a text component using a custom formatter.
@@ -96,6 +97,7 @@ impl Text {
         self
     }
 
+    /// Sets the font size.
     pub fn size(mut self, size: impl IntoSignal<f64>) -> Self {
         // A litle sad we have to do this conversion here
         let size = size.into_signal().map(|s| s as f32);
@@ -105,6 +107,7 @@ impl Text {
         self
     }
 
+    /// Sets the font weight.
     pub fn weight(mut self, weight: impl Signal<Output = FontWeight>) -> Self {
         self.0.content = self.0.content.zip(weight).map(|(content, weight)| {
             content.weight(weight)
@@ -112,10 +115,13 @@ impl Text {
         self
     }
 
-    pub fn bold(mut self) -> Self{
+    /// Sets the font to bold.
+    #[must_use] 
+    pub fn bold(self) -> Self{
         self.weight(FontWeight::Bold)
     }
 
+    /// Sets the italic style.
     pub fn italic(mut self, is_italic: impl Signal<Output = bool>) -> Self {
         self.0.content = self.0.content.zip(is_italic).map(|(content, is_italic)| {
             content.italic(is_italic)
@@ -143,3 +149,5 @@ where
         Self::new(value)
     }
 }
+
+impl_constant!(Text,TextConfig);

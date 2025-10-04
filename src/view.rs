@@ -19,7 +19,7 @@ use waterui_core::{
 
 use alloc::boxed::Box;
 use nami::{Binding, signal::IntoComputed};
-use waterui_layout::padding::{EdgeInsets, Padding};
+use waterui_layout::{frame::Frame, padding::{EdgeInsets, Padding}, stack::Alignment};
 use waterui_navigation::NavigationView;
 
 use crate::background::{Background, ForegroundColor};
@@ -147,6 +147,46 @@ pub trait ViewExt: View + Sized {
     /// * `value` - The numeric value to display in the badge
     fn badge(self, value: impl IntoComputed<i32>) -> Badge {
         Badge::new(value, self)
+    }
+
+    fn width(self, width: f64) -> Frame {
+        Frame::new(self).width(width)
+    }
+
+    fn height(self, height: f64) -> Frame {
+        Frame::new(self).height(height)
+    }
+
+    fn min_width(self, width: f64) -> Frame {
+        Frame::new(self).min_width(width)
+    }
+
+    fn max_width(self, width: f64) -> Frame {
+        Frame::new(self).max_width(width)
+    }
+
+    fn min_height(self, height: f64) -> Frame {
+        Frame::new(self).min_height(height)
+    }
+
+    fn max_height(self, height: f64) -> Frame {
+        Frame::new(self).max_height(height)
+    }
+
+    fn size(self, width: f64, height: f64) -> Frame {
+        Frame::new(self).width(width).height(height)
+    }
+
+    fn min_size(self, width: f64, height: f64) -> Frame {
+        Frame::new(self).min_width(width).min_height(height)
+    }
+
+    fn max_size(self, width: f64, height: f64) -> Frame {
+        Frame::new(self).max_width(width).max_height(height)
+    }
+
+    fn alignment(self, alignment: Alignment) -> Frame {
+        Frame::new(self).alignment(alignment)
     }
 
     /// Adds padding to this view with custom edge insets.
