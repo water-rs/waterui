@@ -105,3 +105,5 @@ pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 pub use waterui_str::Str;
 pub mod id;
+/// Module for resolving reactive values in different environments.
+pub mod resolve;

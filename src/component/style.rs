@@ -16,7 +16,6 @@
 
 use waterui_color::Color;
 
-
 /// Represents a shadow effect that can be applied to UI elements.
 ///
 /// A shadow is defined by its color, offset from the original element,
