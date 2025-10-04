@@ -9,7 +9,7 @@
 //! let photo = Photo::new("https://example.com/image.jpg")
 //!     .placeholder(Text::new("Loading..."));
 //! ```
-
+use crate::image::Image;
 use waterui_core::{AnyView, configurable};
 
 use crate::Url;
@@ -48,9 +48,12 @@ impl Photo {
         self.0.placeholder = placeholder.into();
         self
     }
+
+    pub async fn load(&self) -> Image{
+        todo!()
+       
+    }
 }
-
-
 
 
 
