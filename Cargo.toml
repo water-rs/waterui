@@ -9,7 +9,7 @@ members = [
     # Gtk4 blocks the build of the api doc, so we disable it temporarily
     # "backends/web",
     "render_utils",
-    "plugins/i18n",
+    # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
     "ffi"
 , "demo", "cli"]

@@ -23,8 +23,8 @@ pub fn render_text(text: waterui::component::Text, _env: &Environment) -> WebEle
 
     // Get text content from the text component
     let content = text.content();
-    let content_str = content.get();
-    element.set_text_content(content_str.as_ref());
+    let content_str = content.get().to_plain_string();
+    element.set_text_content(&content_str);
 
     // TODO: Apply more styling when needed
 
