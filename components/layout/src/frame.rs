@@ -139,6 +139,10 @@ impl Frame {
         }
     }
 
+    /// Sets the alignment of the child within the frame.
+    ///
+    /// # Arguments
+    /// * `alignment` - The alignment to apply to the child view
     #[must_use] 
     pub const fn alignment(mut self, alignment: Alignment) -> Self {
         self.layout.alignment = alignment;

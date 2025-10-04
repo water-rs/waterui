@@ -9,7 +9,6 @@ impl<T: IntoFFI> IntoFFI for waterui::component::Native<T> {
     }
 }
 
-ffi_view!(waterui::component::divider::Divider, waterui_divider_id);
 
 pub mod button;
 
