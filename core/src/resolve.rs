@@ -77,7 +77,7 @@ impl <T>AnyResolvable<T> {
     }
 }
 
-
+/// A mapping type that transforms a resolvable value using a function.
 #[derive(Clone)]
 pub struct Map<R,F>{
     resolvable: R,
@@ -94,6 +94,7 @@ impl <R:Debug,F>Debug for Map<R,F>{
 }
 
 impl <R,F>Map<R,F> {
+    /// Creates a new mapping that transforms the resolved value using the given function.
     #[must_use]
     pub const fn new<T,U>(resolvable: R, func: F) -> Self where
     R: Resolvable<Resolved=T>,
