@@ -65,6 +65,26 @@ class ComputedStr(private val ptr: Pointer) : Computed<String>(ptr, CWaterUI.INS
     }
 }
 
+class ComputedAttributedStr(private val ptr: Pointer) : Computed<String>(ptr, CWaterUI.INSTANCE::waterui_drop_computed_attributed_str) {
+    override fun readValue(): String {
+        return CWaterUI.INSTANCE.waterui_read_computed_attributed_str(ptr).toPlainString()
+    }
+
+    override fun startWatching() {
+        val watcher = CWaterUI.WuiWatcher_WuiAttributedStr().apply {
+            this.call = object : CWaterUI.WuiWatcherAttributedStrCallback {
+                override fun invoke(data: Pointer?, value: CWaterUI.WuiAttributedStr, metadata: Pointer?) {
+                    updateValue(value.toPlainString())
+                }
+            }
+            this.data = null
+            this.drop = null
+        }
+        val guardPtr = CWaterUI.INSTANCE.waterui_watch_computed_attributed_str(ptr, watcher)
+        setWatcher(guardPtr)
+    }
+}
+
 class ComputedDouble(private val ptr: Pointer) : Computed<Double>(ptr, CWaterUI.INSTANCE::waterui_drop_computed_double) {
     override fun readValue(): Double {
         return CWaterUI.INSTANCE.waterui_read_computed_double(ptr)

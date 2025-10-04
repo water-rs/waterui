@@ -1,6 +1,6 @@
 use crate::{context::GraphicsContext, wgpu_view::WgpuView};
 use std::cell::RefCell;
-use vello::{peniko::Color, AaConfig, AaSupport, Renderer, RendererOptions, RenderParams, Scene};
+use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, peniko::Color};
 use waterui_core::{Environment, View};
 
 // A type alias for the drawing closure that populates the GraphicsContext.
@@ -88,8 +88,8 @@ impl View for Canvas {
                     antialiasing_support: AaSupport::all(),
                     num_init_threads: None,
                 };
-                let renderer = Renderer::new(device, options)
-                    .expect("failed to create Vello renderer");
+                let renderer =
+                    Renderer::new(device, options).expect("failed to create Vello renderer");
                 *renderer_ref = Some(renderer);
             }
 
