@@ -49,3 +49,12 @@ impl Photo {
         self
     }
 }
+
+
+
+
+
+
+pub fn photo(source: impl Into<Url>) -> Photo {
+    Photo::new(source)
+}
