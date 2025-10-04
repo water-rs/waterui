@@ -16,7 +16,7 @@ pub struct GraphicsContext<'a> {
     pub(crate) env: &'a Environment,
 }
 
-impl<'a> GraphicsContext<'a> {
+impl GraphicsContext<'_> {
     /// Draws a path with a given style (fill or stroke).
     pub fn draw(&mut self, path: &Path, style: &DrawStyle) {
         let kurbo_path = path.to_kurbo();
@@ -56,12 +56,12 @@ impl<'a> GraphicsContext<'a> {
     }
 }
 
-/// Internal utility to convert WaterUI resolved color to Vello brush.
+/// Internal utility to convert `WaterUI` resolved color to Vello brush.
 fn to_peniko_brush(color: &ResolvedColor) -> peniko::Brush {
     peniko::Brush::Solid(peniko::Color::rgba(
-        color.red as f64,
-        color.green as f64,
-        color.blue as f64,
-        color.opacity as f64,
+        f64::from(color.red),
+        f64::from(color.green),
+        f64::from(color.blue),
+        f64::from(color.opacity),
     ))
 }

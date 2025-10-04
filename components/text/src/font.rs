@@ -1,5 +1,6 @@
 use core::fmt::Debug;
 
+use alloc::boxed::Box;
 use nami::{impl_constant, Computed, Signal};
 use waterui_core::{resolve::{self, AnyResolvable, Resolvable}, Environment};
 
@@ -17,45 +18,63 @@ impl Default for Font {
     }
 }
 
+/// A resolved font with specific size and weight.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ResolvedFont {
+    /// Font size in points.
     pub size: f32,
+    /// Font weight.
     pub weight:FontWeight,
 }
 
 impl ResolvedFont{
+    /// Creates a new resolved font with the given size and weight.
     #[must_use]
     pub const fn new(size:f32,weight:FontWeight) -> Self{
         Self{size,weight}
     }
 }
 
+/// Font weight enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash,Default)]
 pub enum FontWeight{
+    /// Thin weight (100).
     Thin,
+    /// Ultra-light weight (200).
     UltraLight,
+    /// Light weight (300).
     Light,
+    /// Normal weight (400).
     #[default]
     Normal,
+    /// Medium weight (500).
     Medium,
+    /// Semi-bold weight (600).
     SemiBold,
+    /// Bold weight (700).
     Bold,
+    /// Ultra-bold weight (800).
     UltraBold,
+    /// Black weight (900).
     Black,
 }
 
-impl_constant!(FontWeight);
+impl_constant!(Font,ResolvedFont,FontWeight);
 
+/// A trait for custom font types that can be resolved.
 pub trait CustomFont:Debug+Clone{
+    /// Resolves the font in the given environment.
     fn resolve(&self,env:&Environment) -> ResolvedFont;
 }
 
+#[allow(dead_code)]
 trait CustomFontImpl {
     fn resolve(&self, env: &Environment) -> ResolvedFont;
     fn box_clone(&self) -> Box<dyn CustomFontImpl>;
 }
 
+/// Title font style.
 #[derive(Debug, Clone,Copy)]
 pub struct Title;
 
@@ -67,6 +86,7 @@ impl Resolvable for Title {
     }
 }
 
+/// Body font style.
 #[derive(Debug, Clone,Copy)]
 pub struct Body;
 
@@ -78,10 +98,13 @@ impl Resolvable for Body {
 }
 
 impl Font{
+    /// Creates a new font from a resolvable value.
     pub fn new(font: impl Resolvable<Resolved = ResolvedFont> + 'static) -> Self {
         Self(AnyResolvable::new(font))
     }
 
+    /// Sets the font weight.
+    #[must_use]
     pub fn weight(self, weight: FontWeight) -> Self {
         Self::new(resolve::Map::new(self.0, move |font| {
             ResolvedFont {
@@ -91,6 +114,8 @@ impl Font{
         }))
     }
 
+    /// Sets the font size in points.
+    #[must_use]
     pub fn size(self, size: f32) -> Self {
         Self::new(resolve::Map::new(self.0, move |font| {
             ResolvedFont {
@@ -108,6 +133,8 @@ impl Font{
         self.weight(FontWeight::Bold)
     }
 
+    /// Resolves the font in the given environment.
+    #[must_use]
     pub fn resolve(&self,env:&Environment) -> Computed<ResolvedFont>{
         self.0.resolve(env)
     }

@@ -7,29 +7,29 @@
 //! # Example
 //!
 //! ```
-//! use waterui::component::{Table, TableColumn, Text};
+//! use waterui::prelude::*;
+//! use waterui::component::views::AnyViews;
 //!
 //! // Create two columns, each with two rows of text.
-//! let column1 = TableColumn::new([
+//! let column1 = table::TableColumn::new(AnyViews::new([
 //!     Text::new("Row 1, Col 1"),
 //!     Text::new("Row 2, Col 1"),
-//! ]);
+//! ]));
 //!
-//! let column2 = TableColumn::new([
+//! let column2 = table::TableColumn::new(AnyViews::new([
 //!     Text::new("Row 1, Col 2"),
 //!     Text::new("Row 2, Col 2"),
-//! ]);
+//! ]));
 //!
 //! // Create a table with the defined columns.
-//! let table = Table::new(vec![column1, column2]);
+//! let table = table::Table::new(vec![column1, column2]);
 //! ```
 use alloc::vec::Vec;
-use waterui_core::configurable;
+use waterui_core::{configurable, id::IdentifableExt};
 
-use crate::component::{
-    Text,
-    views::{AnyViews, Views},
-};
+use crate::{component::{
+    views::{AnyViews, Views}, Text
+}, prelude::views::ForEach};
 use nami::{Computed, impl_constant, signal::IntoComputed};
 
 /// Configuration for a table component.
@@ -51,6 +51,13 @@ impl Table {
         Self(TableConfig {
             columns: columns.into_computed(),
         })
+    }
+}
+
+// Tip: no reactivity here
+impl FromIterator<TableColumn> for Table {
+    fn from_iter<T: IntoIterator<Item = TableColumn>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect::<Vec<_>>())
     }
 }
 
@@ -76,4 +83,24 @@ impl TableColumn {
             rows: AnyViews::new(contents),
         }
     }
+}
+
+impl <T>FromIterator<T> for TableColumn where T: Into<Text> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let contents = iter.into_iter().enumerate().map(|(index,item)| item.into().use_id(index)).collect::<Vec<_>>();
+        //Self::new(contents)
+
+        //ForEach::new(contents, |d|{});
+
+        todo!()
+    }
+}
+
+
+pub fn table(columns: impl IntoComputed<Vec<TableColumn>>) -> Table {
+    Table::new(columns)
+}
+
+pub fn col(rows: impl Views<View = Text> + 'static) -> TableColumn {
+    TableColumn::new(rows)
 }

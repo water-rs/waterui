@@ -6,7 +6,7 @@ pub type WgpuDrawCallback = Box<dyn Fn(&Device, &Queue, &TextureView, wgpu::Text
 
 /// A raw, primitive view that provides a bridge for custom WGPU rendering.
 ///
-/// This is the fundamental primitive for all custom-drawn content in WaterUI.
+/// This is the fundamental primitive for all custom-drawn content in `WaterUI`.
 /// It provides a closure with a WGPU context (`Device`, `Queue`, `TextureView`)
 /// and relies on the backend to display the resulting texture.
 ///
@@ -35,7 +35,7 @@ impl std::fmt::Debug for WgpuView {
 raw_view!(WgpuView);
 
 impl WgpuView {
-    /// Creates a new WgpuView with a drawing closure.
+    /// Creates a new `WgpuView` with a drawing closure.
     pub fn new(
         on_draw: impl Fn(&Device, &Queue, &TextureView, wgpu::TextureFormat) + 'static,
     ) -> Self {
@@ -48,14 +48,14 @@ impl WgpuView {
 
     /// Sets the view width.
     #[must_use]
-    pub fn width(mut self, width: f32) -> Self {
+    pub const fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
     }
 
     /// Sets the view height.
     #[must_use]
-    pub fn height(mut self, height: f32) -> Self {
+    pub const fn height(mut self, height: f32) -> Self {
         self.height = height;
         self
     }

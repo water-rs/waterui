@@ -1,4 +1,4 @@
-#![doc = "2D and custom WGPU graphics components for WaterUI."]
+#![doc = "2D and custom WGPU graphics components for `WaterUI`."]
 
 extern crate alloc;
 
