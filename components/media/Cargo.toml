@@ -14,6 +14,11 @@ categories = ["gui", "multimedia"]
 [dependencies]
 waterui-core.workspace = true
 waterui-url.workspace = true
+waterui-color.workspace = true
+mime = "0.3.17"
+image = "0.25.8"
+blocking = "1.6.2"
+base64 = "0.22.1"
 
 [features]
 default = ["media-picker", "std"]

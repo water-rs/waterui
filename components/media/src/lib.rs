@@ -79,6 +79,7 @@ pub use {
 /// URL types for working with media resources
 pub mod url;
 pub use url::Url;
+pub mod image;
 
 use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
 
