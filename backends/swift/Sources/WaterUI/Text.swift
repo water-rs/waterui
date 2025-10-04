@@ -79,11 +79,11 @@ struct WuiText: View, WuiComponent {
     static var id:WuiTypeId{
         waterui_text_id()
     }
-    @State var content: ComputedStr
+    @State var content: ComputedAttributedText
     @State var font: ComputedFont
 
     init(text: CWaterUI.WuiText) {
-        self.content = ComputedStr(inner: text.content)
+        self.content = ComputedAttributedText(inner: text.content)
         self.font = ComputedFont(inner: text.font)
     }
 
@@ -97,23 +97,95 @@ struct WuiText: View, WuiComponent {
 
 
     var body: some View {
-        Text(content.value).font(Font.init(wuiFont: font.value))
+        text().text
     }
 }
 
 @Observable
 @MainActor
 class ObservableText{
-    private var content:ComputedStr
+    private var content:ComputedAttributedText
     private var font:ComputedFont
     
     var text:Text{
-        Text(content.value).font(Font.init(wuiFont: font.value))
+        Text(makeAttributedString())
     }
     
-    init(content: ComputedStr, font: ComputedFont) {
+    init(content: ComputedAttributedText, font: ComputedFont) {
         self.content = content
         self.font = font
+    }
+
+    private func makeAttributedString() -> AttributedString {
+        var baseFont = font.value
+        let baseStyle = TextBaseStyle(wuiFont: &baseFont)
+        return ObservableText.compose(spans: content.value, base: baseStyle)
+    }
+
+    private static func compose(spans: [AttributedTextSpan], base: TextBaseStyle) -> AttributedString {
+        var result = AttributedString()
+        for span in spans {
+            var substring = AttributedString(span.text)
+            var container = AttributeContainer()
+
+            var font = span.style.font ?? base.font
+            if span.style.bold {
+                font = font.weight(.bold)
+            }
+            if span.style.italic {
+                font = font.italic()
+            }
+            container.font = font
+
+            let foregroundColor = span.style.foreground
+            if let foregroundColor {
+                container.foregroundColor = foregroundColor
+            }
+
+            if let backgroundColor = span.style.background {
+                container.backgroundColor = backgroundColor
+            }
+
+            if span.style.underline || base.underline.enabled {
+                let underlineColor = span.style.underline ? (foregroundColor ?? base.underline.color) : base.underline.color
+                container.underlineStyle = Text.LineStyle(pattern: .solid, color: underlineColor)
+            }
+
+            if span.style.strikethrough || base.strikethrough.enabled {
+                let strikeColor = span.style.strikethrough ? (foregroundColor ?? base.strikethrough.color) : base.strikethrough.color
+                container.strikethroughStyle = Text.LineStyle(pattern: .solid, color: strikeColor)
+            }
+
+            substring.setAttributes(container, range: substring.startIndex..<substring.endIndex)
+            result += substring
+        }
+        return result
+    }
+}
+
+struct TextBaseStyle {
+    var font: Font
+    var underline: (enabled: Bool, color: Color?)
+    var strikethrough: (enabled: Bool, color: Color?)
+
+    init(wuiFont: inout WuiFont) {
+        font = Font(wuiFont: wuiFont)
+
+        if let underlinePtr = wuiFont.underlined {
+            underline = (true, underlinePtr.pointee.toSwiftUIColor())
+            waterui_drop_color(underlinePtr)
+            wuiFont.underlined = nil
+        } else {
+            underline = (false, nil)
+        }
+
+        if let strikePtr = wuiFont.strikethrough {
+            strikethrough = (true, strikePtr.pointee.toSwiftUIColor())
+            waterui_drop_color(strikePtr)
+            wuiFont.strikethrough = nil
+        } else {
+            strikethrough = (false, nil)
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 
 use nami::signal::IntoComputed;
 use waterui_color::Color;
-use waterui_core::{Computed};
+use waterui_core::Computed;
 use waterui_str::Str;
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.

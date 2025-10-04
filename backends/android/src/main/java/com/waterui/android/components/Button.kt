@@ -30,9 +30,9 @@ object WuiButton : WuiComponent {
             if (labelId == WuiText.id) {
                 val textComponent = CWaterUI.INSTANCE.waterui_force_as_text(labelPtr)
                 val computedStrPtr = textComponent.content
-                val wuiStr = CWaterUI.INSTANCE.waterui_read_computed_str(computedStrPtr)
-                button.text = wuiStr.toKString() // This consumes the WuiStr
-                CWaterUI.INSTANCE.waterui_drop_computed_str(computedStrPtr)
+                val attributed = CWaterUI.INSTANCE.waterui_read_computed_attributed_str(computedStrPtr)
+                button.text = attributed.toPlainString()
+                CWaterUI.INSTANCE.waterui_drop_computed_attributed_str(computedStrPtr)
             } else {
                 // If the label is not text, we can't display it on a standard button.
                 // Set a placeholder text.

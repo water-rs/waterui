@@ -233,12 +233,13 @@ Comprehensive text rendering and formatting:
 configurable!(Text, TextConfig);
 
 pub struct TextConfig {
-    pub content: Computed<Str>,
+    pub content: Computed<AttributedStr>,
     pub font: Computed<Font>,
 }
 
 impl Text {
     pub fn new(content: impl IntoComputed<Str>) -> Self;
+    pub fn attributed(content: impl IntoComputed<AttributedStr>) -> Self;
     pub fn display<T: Display>(source: impl IntoComputed<T>) -> Self;
     pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T>) -> Self;
     pub fn font(mut self, font: impl Signal<Output = Font>) -> Self;

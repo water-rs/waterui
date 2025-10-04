@@ -9,13 +9,13 @@
 
 ## 0.2.0 - Usable
 
-- [ ] Fix memory leak
-- [ ] Stabilized the layout system
-- [ ] MVP of Android backend
-- [ ] CLI
+- [x] Fix memory leak
+- [x] Stabilized the layout system
+- [x] MVP of Android backend
+- [x] CLI
 - [ ] Gesture support
 - [ ] Hot reload
-- [ ] i18n
+- [x] i18n
 - [ ] Styling
 - [ ] Document all completed features in our book
 
@@ -23,7 +23,7 @@
 
 - [ ] Media widget
 - [ ] Resource manager
-- [ ] Canvas API
+- [ ] Canvas API (👷WIP)
 - [ ] Persistence
 - [ ] Some platform-specific APIs (notification, camera, etc.)
 - [ ] Faster hot reload
@@ -35,7 +35,7 @@
 
 ## 0.5.0 - Rich text
 
-- [ ] RichText
+- [ ] RichText (👷WIP)
 - [ ] RichTextField
 - [ ] Built-in markdown support
 

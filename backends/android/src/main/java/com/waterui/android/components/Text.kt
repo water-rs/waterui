@@ -17,7 +17,7 @@ import com.sun.jna.Pointer
 import com.waterui.android.WuiComponent
 import com.waterui.android.core.WuiEnvironment
 import com.waterui.android.ffi.CWaterUI
-import com.waterui.android.reactive.ComputedStr
+import com.waterui.android.reactive.ComputedAttributedStr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,7 +35,7 @@ object WuiText : WuiComponent {
         val textView = TextView(context)
 
         if (computedStrPtr != null) {
-            val computedStr = ComputedStr(computedStrPtr)
+            val computedStr = ComputedAttributedStr(computedStrPtr)
 
             textView.text = computedStr.value.value // Set initial value
 
@@ -64,4 +64,3 @@ object WuiText : WuiComponent {
         return textView
     }
 }
-

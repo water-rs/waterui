@@ -24,7 +24,6 @@
 use crate::AnyView;
 use crate::SignalExt;
 use crate::ViewExt;
-use alloc::format;
 use nami::Computed;
 use nami::signal::IntoComputed;
 use nami::zip::FlattenMap;
@@ -105,8 +104,8 @@ impl Progress {
     pub fn new(value: impl IntoComputed<f64>) -> Self {
         let value = value.into_computed();
         Self(ProgressConfig {
-            label: text("Please wait...").anyview(),
-            value_label: text(value.clone().map(|v| format!("{v:.2} %"))).anyview(),
+            label: text!("Please wait...").anyview(),
+            value_label: text!("{value:.2} %").anyview(),
             value,
             style: ProgressStyle::Linear,
         })

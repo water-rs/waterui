@@ -140,7 +140,6 @@ interface CWaterUI : Library {
                 return ""
             }
             val bytes = slice.head!!.getByteArray(0, slice.len.toInt())
-            // Make sure to drop the underlying Rust data
             _0!!.vtable!!.drop!!.invoke(_0!!.data)
             return String(bytes, Charsets.UTF_8)
         }
@@ -153,9 +152,84 @@ interface CWaterUI : Library {
         }
     }
 
+    @Structure.FieldOrder("size", "italic", "strikethrough", "underlined", "bold")
+    open class WuiFont : Structure(), Structure.ByValue {
+        @JvmField var size: Double = Double.NaN
+        @JvmField var italic: Boolean = false
+        @JvmField var strikethrough: Pointer? = null
+        @JvmField var underlined: Pointer? = null
+        @JvmField var bold: Boolean = false
+    }
+
+    @Structure.FieldOrder("has_font", "font", "bold", "italic", "underline", "strikethrough", "foreground", "background")
+    open class WuiTextStyle : Structure(), Structure.ByValue {
+        @JvmField var has_font: Boolean = false
+        @JvmField var font: WuiFont? = null
+        @JvmField var bold: Boolean = false
+        @JvmField var italic: Boolean = false
+        @JvmField var underline: Boolean = false
+        @JvmField var strikethrough: Boolean = false
+        @JvmField var foreground: Pointer? = null
+        @JvmField var background: Pointer? = null
+    }
+
+    @Structure.FieldOrder("text", "style")
+    open class WuiAttributedChunk : Structure(), Structure.ByValue {
+        @JvmField var text: WuiStr? = null
+        @JvmField var style: WuiTextStyle? = null
+    }
+
+    @Structure.FieldOrder("drop", "slice")
+    open class WuiArrayVTable_WuiAttributedChunk : Structure() {
+        @JvmField var drop: DropCallback? = null
+        @JvmField var slice: SliceCallback<WuiArraySlice_WuiAttributedChunk>? = null
+    }
+
+    @Structure.FieldOrder("head", "len")
+    open class WuiArraySlice_WuiAttributedChunk : Structure(), Structure.ByValue {
+        @JvmField var head: Pointer? = null
+        @JvmField var len: Long = 0
+    }
+
+    @Structure.FieldOrder("data", "vtable")
+    open class WuiArray_WuiAttributedChunk : Structure(), Structure.ByValue {
+        @JvmField var data: Pointer? = null
+        @JvmField var vtable: WuiArrayVTable_WuiAttributedChunk? = null
+    }
+
+    @Structure.FieldOrder("chunks")
+    open class WuiAttributedStr : Structure(), Structure.ByValue {
+        @JvmField var chunks: WuiArray_WuiAttributedChunk? = null
+
+        fun toPlainString(): String {
+            val array = chunks ?: return ""
+            val vtable = array.vtable ?: return ""
+            val slice = vtable.slice?.invoke(array.data) ?: return ""
+            val head = slice.head ?: return ""
+            if (slice.len <= 0L) {
+                vtable.drop?.invoke(array.data)
+                return ""
+            }
+
+            val chunk = WuiAttributedChunk()
+            val chunkSize = chunk.size().toLong()
+            val builder = StringBuilder()
+
+            for (index in 0 until slice.len.toInt()) {
+                val ptr = head.share(index.toLong() * chunkSize)
+                val current = WuiAttributedChunk(ptr)
+                current.read()
+                builder.append(current.text?.toKString() ?: "")
+            }
+
+            vtable.drop?.invoke(array.data)
+            return builder.toString()
+        }
+    }
+
     @Structure.FieldOrder("content", "font")
     open class WuiText : Structure(), Structure.ByValue {
-        @JvmField var content: Pointer? = null // Computed_Str*
+        @JvmField var content: Pointer? = null // Computed_AttributedStr*
         @JvmField var font: Pointer? = null    // Computed_Font*
     }
 
@@ -266,6 +340,17 @@ interface CWaterUI : Library {
         @JvmField var drop: DropCallback? = null
     }
 
+    interface WuiWatcherAttributedStrCallback : Callback {
+        fun invoke(data: Pointer?, value: WuiAttributedStr, metadata: Pointer?)
+    }
+
+    @Structure.FieldOrder("data", "call", "drop")
+    open class WuiWatcher_WuiAttributedStr : Structure() {
+        @JvmField var data: Pointer? = null
+        @JvmField var call: WuiWatcherAttributedStrCallback? = null
+        @JvmField var drop: DropCallback? = null
+    }
+
     interface WuiWatcherDoubleCallback : Callback {
         fun invoke(data: Pointer?, value: Double, metadata: Pointer?)
     }
@@ -344,6 +429,10 @@ interface CWaterUI : Library {
     fun waterui_read_computed_str(computed: Pointer): WuiStr
     fun waterui_drop_computed_str(computed: Pointer?)
     fun waterui_watch_computed_str(computed: Pointer, watcher: WuiWatcher_WuiStr): Pointer // Returns WuiWatcherGuard*
+
+    fun waterui_read_computed_attributed_str(computed: Pointer): WuiAttributedStr
+    fun waterui_drop_computed_attributed_str(computed: Pointer?)
+    fun waterui_watch_computed_attributed_str(computed: Pointer, watcher: WuiWatcher_WuiAttributedStr): Pointer
 
     fun waterui_read_computed_double(computed: Pointer): Double
     fun waterui_drop_computed_double(computed: Pointer?)

@@ -1,8 +1,11 @@
 use crate::shape::{DrawStyle, Path};
 use kurbo::Affine;
-use vello::{peniko::{self, kurbo::Stroke}, Scene};
-use waterui_color::{ResolvedColor, Color};
-use waterui_core::Environment;
+use vello::{
+    Scene,
+    peniko::{self, kurbo::Stroke},
+};
+use waterui_color::{Color, ResolvedColor};
+use waterui_core::{Environment, Signal};
 
 /// A context for issuing 2D drawing commands.
 ///
@@ -23,7 +26,7 @@ impl<'a> GraphicsContext<'a> {
                 self.scene.fill(
                     peniko::Fill::NonZero,
                     Affine::IDENTITY,
-                    &to_peniko_brush(&color.resolve(self.env)),
+                    &to_peniko_brush(&color.resolve(self.env).get()),
                     None,
                     &kurbo_path,
                 );
@@ -32,7 +35,7 @@ impl<'a> GraphicsContext<'a> {
                 self.scene.stroke(
                     &Stroke::new(*width),
                     Affine::IDENTITY,
-                    &to_peniko_brush(&color.resolve(self.env)),
+                    &to_peniko_brush(&color.resolve(self.env).get()),
                     None,
                     &kurbo_path,
                 );

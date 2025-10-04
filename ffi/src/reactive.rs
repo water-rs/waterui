@@ -3,16 +3,16 @@ use crate::color::WuiColor;
 use crate::components::form::WuiPickerItem;
 use crate::components::media::{WuiLivePhotoSource, WuiVideo};
 use crate::components::text::WuiFont;
-use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
+use crate::{IntoFFI, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
 use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::{AnyView, Color, Str};
-use waterui::{Computed, Signal, reactive::watcher::Metadata};
+use waterui::{Computed, reactive::watcher::Metadata};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
-use waterui_text::font::Font;
+use waterui_text::{ font::Font};
 
 ffi_type!(
     WuiWatcherGuard,
@@ -23,7 +23,7 @@ ffi_type!(
 #[macro_export]
 macro_rules! impl_computed {
     ($ty:ty,$ffi_ty:ty,$read:ident,$watch:ident,$drop:ident) => {
-        impl OpaqueType for Computed<$ty> {}
+        impl $crate::OpaqueType for Computed<$ty> {}
         impl_opaque_drop!(Computed<$ty>, $drop);
 
         #[unsafe(no_mangle)]
@@ -33,6 +33,7 @@ macro_rules! impl_computed {
         ///
         /// The computed pointer must be valid and point to a properly initialized computed object.
         pub unsafe extern "C" fn $read(computed: *const Computed<$ty>) -> $ffi_ty {
+            use waterui::Signal;
             unsafe { (*computed).get().into_ffi() }
         }
 
@@ -45,9 +46,10 @@ macro_rules! impl_computed {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $watch(
             computed: *const Computed<$ty>,
-            watcher: WuiWatcher<$ffi_ty>,
-        ) -> *mut WuiWatcherGuard {
+            watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
+        ) -> *mut $crate::reactive::WuiWatcherGuard {
             use $crate::IntoFFI;
+            use waterui::Signal;
             unsafe {
                 let guard =
                     (*computed).watch(move |ctx| watcher.call(ctx.value.into_ffi(), ctx.metadata));
@@ -116,6 +118,7 @@ impl_computed!(
     waterui_drop_computed_str
 );
 
+
 impl_computed!(
     AnyView,
     *mut WuiAnyView,
@@ -157,21 +160,6 @@ impl_computed!(
     waterui_drop_computed_picker_items
 );
 
-impl_computed!(
-    Font,
-    WuiFont,
-    waterui_read_computed_font,
-    waterui_watch_computed_font,
-    waterui_drop_computed_font
-);
-
-impl_computed!(
-    Color,
-    *mut WuiColor,
-    waterui_read_computed_color,
-    waterui_watch_computed_color,
-    waterui_drop_computed_color
-);
 
 impl_computed!(
     Video,
