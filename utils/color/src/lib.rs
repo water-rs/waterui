@@ -7,9 +7,9 @@
 //! The primary type is `Color`, which can represent colors in either sRGB or P3
 //! color spaces, with conversion methods from various tuple formats.
 
-use core::fmt::Debug;
+use core::{fmt::Debug, ops::{Deref, DerefMut}};
 
-use nami::{impl_constant, Computed, Signal};
+use nami::{impl_constant, Computed, Signal, SignalExt};
 
 use waterui_core::{raw_view, resolve::{self, AnyResolvable, Resolvable}, Environment};
 
@@ -35,9 +35,9 @@ impl Default for Color {
 /// Component values are in the range 0.0 to 1.0.
 #[derive(Debug, Clone, Copy)]
 pub struct P3 {
-    red: f32,
-    green: f32,
-    blue: f32,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
 }
 
 impl P3 {
@@ -107,9 +107,52 @@ impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
 /// Component values are in the range 0.0 to 1.0.
 #[derive(Debug, Clone, Copy)]
 pub struct Srgb {
-    red: f32,
-    green: f32,
-    blue: f32,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct WithOpacity<T> {
+    color: T,
+    opacity: f32,
+}
+
+impl<T> WithOpacity<T> {
+    /// Creates a new color with the specified opacity applied.
+    ///
+    /// # Arguments
+    /// * `color` - The base color
+    /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
+    #[must_use] 
+    pub const fn new(color: T, opacity: f32) -> Self {
+        Self { color, opacity }
+    }
+}
+
+impl <T>Resolvable for WithOpacity<T> where T: Resolvable<Resolved = ResolvedColor> + 'static{
+    type Resolved = ResolvedColor;
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let opacity = self.opacity;
+        self.color.resolve(env).map(move |mut resolved| {
+            resolved.opacity = opacity;
+            resolved
+        })
+    }
+}
+
+
+impl <T>Deref for WithOpacity<T>{
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.color
+    }
+}
+
+impl<T> DerefMut for WithOpacity<T>{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.color
+    }
 }
 
 mod parse{
@@ -224,11 +267,8 @@ impl Srgb {
     /// # Arguments
     /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
     #[must_use] 
-    pub fn with_opacity(self, opacity: f32) -> impl Resolvable<Resolved = ResolvedColor> + 'static {
-        resolve::Map::new(self, move |mut resolved| {
-            resolved.opacity = opacity;
-            resolved
-        })
+    pub const fn with_opacity(self, opacity: f32) -> WithOpacity<Self> {
+        WithOpacity::new(self, opacity)
     }
 
     #[must_use] 

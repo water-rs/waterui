@@ -60,6 +60,7 @@ pub fn canvas(content: impl Fn(&mut GraphicsContext) + 'static) -> Canvas {
     Canvas::new(content)
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 impl View for Canvas {
     fn body(self, env: &Environment) -> impl View {
         // The Canvas view transforms itself into a primitive WgpuView.

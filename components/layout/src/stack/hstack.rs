@@ -141,12 +141,14 @@ impl HStack {
         }
     }
 
+    /// Sets the vertical alignment for children in the stack.
     #[must_use] 
     pub const fn alignment(mut self, alignment: VerticalAlignment) -> Self {
         self.layout.alignment = alignment;
         self
     }
 
+    /// Sets the spacing between children in the stack.
     #[must_use] 
     pub const fn spacing(mut self, spacing: f64) -> Self {
         self.layout.spacing = spacing;
