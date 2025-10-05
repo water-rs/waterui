@@ -40,8 +40,8 @@ impl Layout for GridLayout {
         // Calculate the width available for each column.
         // A Grid requires a defined width from its parent to function correctly.
         let child_width = parent.width.map(|w| {
-            let total_spacing = self.spacing.width * (self.columns.get() - 1) as f64;
-            ((w - total_spacing) / self.columns.get() as f64).max(0.0)
+            let total_spacing = self.spacing.width * (self.columns.get() - 1) as f32;
+            ((w - total_spacing) / self.columns.get() as f32).max(0.0)
         });
 
         // Grids are vertically unconstrained during the proposal phase.
@@ -65,11 +65,11 @@ impl Layout for GridLayout {
             let row_height = row_children
                 .iter()
                 .map(|c| c.proposal_height().unwrap_or(0.0))
-                .fold(0.0, f64::max); // Find the max height in the row
+                .fold(0.0, f32::max); // Find the max height in the row
             total_height += row_height;
         }
 
-        total_height += self.spacing.height * (num_rows.saturating_sub(1) as f64);
+        total_height += self.spacing.height * (num_rows.saturating_sub(1) as f32);
 
         // A Grid's width is defined by its parent. If not, it has no intrinsic width.
         let final_width = parent.width.unwrap_or(0.0);
@@ -92,18 +92,18 @@ impl Layout for GridLayout {
         let num_columns = self.columns.get();
 
         // Pre-calculate the height of each row by finding the tallest child in that row.
-        let row_heights: Vec<f64> = children
+        let row_heights: Vec<f32> = children
             .chunks(num_columns)
             .map(|row_children| {
                 row_children
                     .iter()
                     .map(|c| c.proposal_height().unwrap_or(0.0))
-                    .fold(0.0, f64::max)
+                    .fold(0.0, f32::max)
             })
             .collect();
 
-        let total_h_spacing = self.spacing.width * (num_columns - 1) as f64;
-        let column_width = ((bound.width() - total_h_spacing) / num_columns as f64).max(0.0);
+        let total_h_spacing = self.spacing.width * (num_columns - 1) as f32;
+        let column_width = ((bound.width() - total_h_spacing) / num_columns as f32).max(0.0);
 
         let mut final_rects = Vec::with_capacity(children.len());
         let mut cursor_y = bound.y();
@@ -201,7 +201,7 @@ impl Grid {
 
     /// Sets the horizontal and vertical spacing for the grid.
     #[must_use]
-    pub const fn spacing(mut self, spacing: f64) -> Self {
+    pub const fn spacing(mut self, spacing: f32) -> Self {
         self.layout.spacing = Size::new(spacing, spacing);
         self
     }

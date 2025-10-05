@@ -46,7 +46,7 @@ use crate::Url;
 /// - Volume 0.7 (70%) is stored as `0.7`
 /// - When muted, 0.7 becomes `-0.7`
 /// - When unmuted, `-0.7` becomes `0.7` again
-pub type Volume = f64;
+pub type Volume = f32;
 
 /// Configuration for the [`VideoPlayer`] component.
 ///
