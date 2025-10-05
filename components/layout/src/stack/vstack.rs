@@ -13,7 +13,7 @@ pub struct VStackLayout {
     /// The horizontal alignment of children within the stack.
     pub alignment: HorizontalAlignment,
     /// The spacing between children in the stack.
-    pub spacing: f64,
+    pub spacing: f32,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -29,14 +29,14 @@ impl Layout for VStackLayout {
 
         let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
 
-        let non_stretchy_height: f64 = children
+        let non_stretchy_height: f32 = children
             .iter()
             .filter(|c| !c.stretch())
             .map(|c| c.proposal().height.unwrap_or(0.0))
             .sum();
 
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f64 * self.spacing
+            (children.len() - 1) as f32 * self.spacing
         } else {
             0.0
         };
@@ -52,7 +52,7 @@ impl Layout for VStackLayout {
         let max_width = children
             .iter()
             .map(|c| c.proposal().width.unwrap_or(0.0))
-            .max_by(f64::total_cmp)
+            .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
         let final_width = parent.width.unwrap_or(max_width);
@@ -71,21 +71,21 @@ impl Layout for VStackLayout {
         }
 
         let stretchy_children_count = children.iter().filter(|c| c.stretch()).count();
-        let non_stretchy_height: f64 = children
+        let non_stretchy_height: f32 = children
             .iter()
             .filter(|c| !c.stretch())
             .map(|c| c.proposal().height.unwrap_or(0.0))
             .sum();
 
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f64 * self.spacing
+            (children.len() - 1) as f32 * self.spacing
         } else {
             0.0
         };
 
         let remaining_height = bound.height() - non_stretchy_height - total_spacing;
         let stretchy_child_height = if stretchy_children_count > 0 {
-            (remaining_height / stretchy_children_count as f64).max(0.0)
+            (remaining_height / stretchy_children_count as f32).max(0.0)
         } else {
             0.0
         };
@@ -133,7 +133,7 @@ container!(
 impl VStack {
     /// Creates a vertical stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: HorizontalAlignment, spacing: f64, contents: impl TupleViews) -> Self {
+    pub fn new(alignment: HorizontalAlignment, spacing: f32, contents: impl TupleViews) -> Self {
         Self {
             layout: VStackLayout { alignment, spacing },
             contents: contents.into_views(),
@@ -150,7 +150,7 @@ impl VStack {
     }
 
     #[must_use] 
-    pub const fn spacing(mut self, spacing: f64) -> Self {
+    pub const fn spacing(mut self, spacing: f32) -> Self {
         self.layout.spacing = spacing;
         self
     }

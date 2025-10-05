@@ -37,13 +37,13 @@ impl ChildMetadata {
 
     /// Shortcut for the proposed height.
     #[must_use]
-    pub const fn proposal_height(&self) -> Option<f64> {
+    pub const fn proposal_height(&self) -> Option<f32> {
         self.proposal.height
     }
 
     /// Shortcut for the proposed width.
     #[must_use]
-    pub const fn proposal_width(&self) -> Option<f64> {
+    pub const fn proposal_width(&self) -> Option<f32> {
         self.proposal.width
     }
 
@@ -108,53 +108,53 @@ impl Rect {
 
     /// Returns the rectangle's x-coordinate.
     #[must_use]
-    pub const fn x(&self) -> f64 {
+    pub const fn x(&self) -> f32 {
         self.origin.x
     }
     /// Returns the rectangle's y-coordinate.
     #[must_use]
-    pub const fn y(&self) -> f64 {
+    pub const fn y(&self) -> f32 {
         self.origin.y
     }
 
     /// Returns the rectangle's width.
     #[must_use]
-    pub const fn width(&self) -> f64 {
+    pub const fn width(&self) -> f32 {
         self.size.width
     }
     /// Returns the rectangle's height.
     #[must_use]
-    pub const fn height(&self) -> f64 {
+    pub const fn height(&self) -> f32 {
         self.size.height
     }
     /// Returns the rectangle's maximum x-coordinate.
     #[must_use]
-    pub const fn max_x(&self) -> f64 {
+    pub const fn max_x(&self) -> f32 {
         self.origin.x + self.size.width
     }
     /// Returns the rectangle's maximum y-coordinate.
     #[must_use]
-    pub const fn max_y(&self) -> f64 {
+    pub const fn max_y(&self) -> f32 {
         self.origin.y + self.size.height
     }
     /// Returns the rectangle's midpoint x-coordinate.
     #[must_use]
-    pub const fn mid_x(&self) -> f64 {
+    pub const fn mid_x(&self) -> f32 {
         self.origin.x + self.size.width / 2.0
     }
     /// Returns the rectangle's midpoint y-coordinate.
     #[must_use]
-    pub const fn mid_y(&self) -> f64 {
+    pub const fn mid_y(&self) -> f32 {
         self.origin.y + self.size.height / 2.0
     }
     /// Returns the rectangle's minimum x-coordinate.
     #[must_use]
-    pub const fn min_x(&self) -> f64 {
+    pub const fn min_x(&self) -> f32 {
         self.origin.x - self.size.width
     }
     /// Returns the rectangle's minimum y-coordinate.
     #[must_use]
-    pub const fn min_y(&self) -> f64 {
+    pub const fn min_y(&self) -> f32 {
         self.origin.y - self.size.height
     }
 }
@@ -163,9 +163,9 @@ impl Rect {
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Size {
     /// The width in pixels.
-    pub width: f64,
+    pub width: f32,
     /// The height in pixels.
-    pub height: f64,
+    pub height: f32,
 }
 
 impl Default for Size {
@@ -177,7 +177,7 @@ impl Default for Size {
 impl Size {
     /// Constructs a [`Size`] with the given `width` and `height`.
     #[must_use]
-    pub const fn new(width: f64, height: f64) -> Self {
+    pub const fn new(width: f32, height: f32) -> Self {
         Self { width, height }
     }
 
@@ -195,15 +195,15 @@ impl Size {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     /// The x-coordinate in pixels.
-    pub x: f64,
+    pub x: f32,
     /// The y-coordinate in pixels.
-    pub y: f64,
+    pub y: f32,
 }
 
 impl Point {
     /// Constructs a [`Point`] at the given `x` and `y`.
     #[must_use]
-    pub const fn new(x: f64, y: f64) -> Self {
+    pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
 
@@ -217,15 +217,15 @@ impl Point {
 /// Soft constraint describing the desired size for a layout or subview.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ProposalSize {
-    /// Width constraint: `Some(f64)` for exact value, None for unconstrained, [`f64::INFINITY`] for infinite
-    pub width: Option<f64>,
-    /// Height constraint: `Some(f64)` for exact value, None for unconstrained, [`f64::INFINITY`] for infinite
-    pub height: Option<f64>,
+    /// Width constraint: `Some(f32)` for exact value, None for unconstrained, [`f32::INFINITY`] for infinite
+    pub width: Option<f32>,
+    /// Height constraint: `Some(f32)` for exact value, None for unconstrained, [`f32::INFINITY`] for infinite
+    pub height: Option<f32>,
 }
 
 impl ProposalSize {
     /// Creates a [`ProposalSize`] from optional width and height hints.
-    pub fn new(width: impl Into<Option<f64>>, height: impl Into<Option<f64>>) -> Self {
+    pub fn new(width: impl Into<Option<f32>>, height: impl Into<Option<f32>>) -> Self {
         Self {
             width: width.into(),
             height: height.into(),

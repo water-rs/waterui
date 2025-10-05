@@ -149,39 +149,39 @@ pub trait ViewExt: View + Sized {
         Badge::new(value, self)
     }
 
-    fn width(self, width: f64) -> Frame {
+    fn width(self, width: f32) -> Frame {
         Frame::new(self).width(width)
     }
 
-    fn height(self, height: f64) -> Frame {
+    fn height(self, height: f32) -> Frame {
         Frame::new(self).height(height)
     }
 
-    fn min_width(self, width: f64) -> Frame {
+    fn min_width(self, width: f32) -> Frame {
         Frame::new(self).min_width(width)
     }
 
-    fn max_width(self, width: f64) -> Frame {
+    fn max_width(self, width: f32) -> Frame {
         Frame::new(self).max_width(width)
     }
 
-    fn min_height(self, height: f64) -> Frame {
+    fn min_height(self, height: f32) -> Frame {
         Frame::new(self).min_height(height)
     }
 
-    fn max_height(self, height: f64) -> Frame {
+    fn max_height(self, height: f32) -> Frame {
         Frame::new(self).max_height(height)
     }
 
-    fn size(self, width: f64, height: f64) -> Frame {
+    fn size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).width(width).height(height)
     }
 
-    fn min_size(self, width: f64, height: f64) -> Frame {
+    fn min_size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).min_width(width).min_height(height)
     }
 
-    fn max_size(self, width: f64, height: f64) -> Frame {
+    fn max_size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).max_width(width).max_height(height)
     }
 
