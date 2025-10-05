@@ -12,7 +12,7 @@
 #[repr(C)]
 pub struct Blur {
     /// The radius of the blur effect in pixels.
-    pub radius: f64,
+    pub radius: f32,
 }
 
 impl Blur {
@@ -22,7 +22,7 @@ impl Blur {
     ///
     /// * `radius` - The radius of the blur in pixels.
     #[must_use]
-    pub const fn new(radius: f64) -> Self {
+    pub const fn new(radius: f32) -> Self {
         Self { radius }
     }
 }
@@ -33,7 +33,7 @@ impl Blur {
 pub struct Brightness {
     /// The amount of brightness adjustment.
     /// Values above 1.0 increase brightness, values below 1.0 decrease brightness.
-    pub amount: f64,
+    pub amount: f32,
 }
 
 impl Brightness {
@@ -44,7 +44,7 @@ impl Brightness {
     /// * `amount` - The brightness adjustment amount. 1.0 is normal brightness,
     ///   values above 1.0 increase brightness, values below 1.0 decrease brightness.
     #[must_use]
-    pub const fn new(amount: f64) -> Self {
+    pub const fn new(amount: f32) -> Self {
         Self { amount }
     }
 }
@@ -55,7 +55,7 @@ impl Brightness {
 pub struct Contrast {
     /// The amount of contrast adjustment.
     /// Values above 1.0 increase contrast, values below 1.0 decrease contrast.
-    pub amount: f64,
+    pub amount: f32,
 }
 
 impl Contrast {
@@ -66,7 +66,7 @@ impl Contrast {
     /// * `amount` - The contrast adjustment amount. 1.0 is normal contrast,
     ///   values above 1.0 increase contrast, values below 1.0 decrease contrast.
     #[must_use]
-    pub const fn new(amount: f64) -> Self {
+    pub const fn new(amount: f32) -> Self {
         Self { amount }
     }
 }
@@ -77,7 +77,7 @@ impl Contrast {
 pub struct Saturation {
     /// The amount of saturation adjustment.
     /// Values above 1.0 increase saturation, values below 1.0 decrease saturation.
-    pub amount: f64,
+    pub amount: f32,
 }
 
 impl Saturation {
@@ -88,7 +88,7 @@ impl Saturation {
     /// * `amount` - The saturation adjustment amount. 1.0 is normal saturation,
     ///   values above 1.0 increase saturation, values below 1.0 decrease saturation.
     #[must_use]
-    pub const fn new(amount: f64) -> Self {
+    pub const fn new(amount: f32) -> Self {
         Self { amount }
     }
 }
@@ -99,7 +99,7 @@ impl Saturation {
 pub struct Grayscale {
     /// The intensity of the grayscale effect.
     /// 0.0 means no effect, 1.0 means full grayscale.
-    pub intensity: f64,
+    pub intensity: f32,
 }
 
 impl Grayscale {
@@ -110,7 +110,7 @@ impl Grayscale {
     /// * `intensity` - The intensity of the grayscale effect.
     ///   0.0 means no effect, 1.0 means full grayscale.
     #[must_use]
-    pub const fn new(intensity: f64) -> Self {
+    pub const fn new(intensity: f32) -> Self {
         Self { intensity }
     }
 }
@@ -120,7 +120,7 @@ impl Grayscale {
 #[repr(C)]
 pub struct HueRotation {
     /// The angle of rotation in degrees.
-    pub angle: f64,
+    pub angle: f32,
 }
 
 impl HueRotation {
@@ -130,7 +130,7 @@ impl HueRotation {
     ///
     /// * `angle` - The angle of hue rotation in degrees.
     #[must_use]
-    pub const fn new(angle: f64) -> Self {
+    pub const fn new(angle: f32) -> Self {
         Self { angle }
     }
 }
@@ -141,7 +141,7 @@ impl HueRotation {
 pub struct Invert {
     /// The intensity of the inversion effect.
     /// 0.0 means no effect, 1.0 means full inversion.
-    pub intensity: f64,
+    pub intensity: f32,
 }
 
 impl Invert {
@@ -152,7 +152,7 @@ impl Invert {
     /// * `intensity` - The intensity of the inversion effect.
     ///   0.0 means no effect, 1.0 means full inversion.
     #[must_use]
-    pub const fn new(intensity: f64) -> Self {
+    pub const fn new(intensity: f32) -> Self {
         Self { intensity }
     }
 }
