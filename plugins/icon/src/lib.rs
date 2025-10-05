@@ -20,7 +20,7 @@ pub struct IconConfig {
     /// The name or identifier of the icon.
     pub name: Computed<Str>,
     /// The size of the icon in pixels.
-    pub size: Computed<f64>,
+    pub size: Computed<f32>,
     /// The animation style for the icon.
     pub animation: IconAnimation,
 }
@@ -52,7 +52,7 @@ impl Icon {
     pub fn new(name: impl IntoComputed<Str>) -> Self {
         Self(IconConfig {
             name: name.into_computed(),
-            size: f64::NAN.into_computed(),
+            size: f32::NAN.into_computed(),
             animation: IconAnimation::default(),
         })
     }

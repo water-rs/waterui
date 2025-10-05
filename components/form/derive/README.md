@@ -24,5 +24,5 @@ pub struct UserForm {
 - `String`, `&str` → `TextField`
 - `bool` → `Toggle`
 - Integer types (`i32`, `u32`, etc.) → `Stepper`
-- Float types (`f32`, `f64`) → `Slider`
+- Float types (`f64`) → `Slider`
 - `Color` → `ColorPicker`

@@ -27,7 +27,7 @@ impl_computed!(
     WuiResolvedColor,
     waterui_read_computed_resolved_color,
     waterui_watch_computed_resolved_color,
-    waterui_drop_resolved_color_watcher_guard
+    waterui_drop_computed_resolved_color
 );
 
 impl_binding!(

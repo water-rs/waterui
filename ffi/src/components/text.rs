@@ -1,22 +1,21 @@
 use crate::array::WuiArray;
 use crate::color::{WuiColor};
-use crate::{ffi_struct, ffi_view, impl_computed, IntoFFI, WuiStr};
+use crate::{ffi_struct, ffi_view, impl_computed, IntoFFI, WuiEnv, WuiStr};
 use alloc::vec::Vec;
 use waterui::component::Native;
 use waterui::{Computed, view::ConfigurableView};
-use waterui_text::font::{Font, FontWeight};
+use waterui_text::font::{Font, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 use waterui_text::{Text, TextConfig};
 
 /// C representation of Font
 #[repr(C)]
 pub struct WuiResolvedFont {
-    pub size: f64,
-    pub italic: bool,
-    pub strikethrough: *mut WuiColor,
-    pub underlined: *mut WuiColor,
-    pub bold: bool,
+    size: f32,
+    weight: WuiFontWeight,
 }
+
+ffi_struct!(ResolvedFont, WuiResolvedFont, size, weight);
 
 ffi_type!(WuiFont, Font, waterui_drop_font);
 
@@ -85,6 +84,7 @@ impl_computed!(
     waterui_drop_computed_font
 );
 
+
 impl IntoFFI for Text {
     type FFI = WuiText;
     fn into_ffi(self) -> Self::FFI {
@@ -102,3 +102,19 @@ ffi_view!(
     waterui_text_id,
     waterui_force_as_text
 );
+
+impl_computed!(
+    ResolvedFont,
+    WuiResolvedFont,
+    waterui_read_computed_resolved_font,
+    waterui_watch_computed_resolved_font,
+    waterui_drop_computed_resolved_font
+);
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn waterui_resolve_font(font: *const WuiFont,env: *const WuiEnv) -> *mut Computed<ResolvedFont>{
+    let font = unsafe { &*font };
+    let env = unsafe { &*env };
+    let resolved = font.resolve(env);
+    resolved.into_ffi()
+}

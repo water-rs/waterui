@@ -48,7 +48,7 @@ pub fn toolbar() -> impl waterui::View {
   proposed sizes for each child, and finally returns a placement [`Rect`] for
   them. Implement this when building bespoke containers.
 - **`ProposalSize`** – optional width/height hints (`None` means unconstrained,
-  `Some(f64::INFINITY)` signals an infinite axis).
+  `Some(f32::INFINITY)` signals an infinite axis).
 - **`ChildMetadata`** – backend-supplied data describing how each child would
   like to be sized. The `stretch` flag indicates whether a child is willing to
   expand beyond its intrinsic size.

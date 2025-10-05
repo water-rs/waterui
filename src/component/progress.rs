@@ -102,11 +102,11 @@ impl Progress {
     ///
     /// * `value` - The progress value between 0.0 and 1.0.
     pub fn new(value: impl IntoComputed<f64>) -> Self {
-        let value = value.into_computed();
+        let value = value.into_signal();
         Self(ProgressConfig {
             label: text!("Please wait...").anyview(),
             value_label: text!("{value:.2} %").anyview(),
-            value,
+            value:value.computed(),
             style: ProgressStyle::Linear,
         })
     }
@@ -129,7 +129,7 @@ impl Progress {
     /// Creates an infinite progress indicator, typically shown as an indeterminate spinner.
     #[must_use]
     pub fn infinity() -> Self {
-        Self::new(f64::NAN)
+        Self::new(f32::NAN)
     }
 
     /// Sets a custom label for the progress indicator.

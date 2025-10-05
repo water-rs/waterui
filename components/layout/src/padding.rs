@@ -79,10 +79,10 @@ impl Layout for PaddingLayout {
 /// Insets applied to the four edges of a rectangle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeInsets {
-    top: f64,
-    bottom: f64,
-    leading: f64,
-    trailing: f64,
+    top: f32,
+    bottom: f32,
+    leading: f32,
+    trailing: f32,
 }
 
 impl Default for EdgeInsets {
@@ -94,7 +94,7 @@ impl Default for EdgeInsets {
 impl EdgeInsets {
     /// Creates an [`EdgeInsets`] value with explicit edges.
     #[must_use]
-    pub const fn new(top: f64, bottom: f64, leading: f64, trailing: f64) -> Self {
+    pub const fn new(top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
         Self {
             top,
             bottom,
@@ -105,7 +105,7 @@ impl EdgeInsets {
 
     /// Returns equal insets on every edge.
     #[must_use]
-    pub const fn all(value: f64) -> Self {
+    pub const fn all(value: f32) -> Self {
         Self {
             top: value,
             bottom: value,
@@ -116,7 +116,7 @@ impl EdgeInsets {
 
     /// Returns symmetric vertical and horizontal insets.
     #[must_use]
-    pub const fn symmetric(vertical: f64, horizontal: f64) -> Self {
+    pub const fn symmetric(vertical: f32, horizontal: f32) -> Self {
         Self {
             top: vertical,
             bottom: vertical,
