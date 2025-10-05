@@ -13,7 +13,7 @@ pub struct HStackLayout {
     /// The vertical alignment of children within the stack.
     pub alignment: VerticalAlignment,
     /// The spacing between children in the stack.
-    pub spacing: f64,
+    pub spacing: f32,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -29,14 +29,14 @@ impl Layout for HStackLayout {
 
         let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
 
-        let non_stretchy_width: f64 = children
+        let non_stretchy_width: f32 = children
             .iter()
             .filter(|c| !c.stretch())
             .map(|c| c.proposal().width.unwrap_or(0.0))
             .sum();
 
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f64 * self.spacing
+            (children.len() - 1) as f32 * self.spacing
         } else {
             0.0
         };
@@ -52,7 +52,7 @@ impl Layout for HStackLayout {
         let max_height = children
             .iter()
             .map(|c| c.proposal().height.unwrap_or(0.0))
-            .max_by(f64::total_cmp)
+            .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
         let final_height = parent.height.unwrap_or(max_height);
@@ -71,21 +71,21 @@ impl Layout for HStackLayout {
         }
 
         let stretchy_children_count = children.iter().filter(|c| c.stretch()).count();
-        let non_stretchy_width: f64 = children
+        let non_stretchy_width: f32 = children
             .iter()
             .filter(|c| !c.stretch())
             .map(|c| c.proposal().width.unwrap_or(0.0))
             .sum();
 
         let total_spacing = if children.len() > 1 {
-            (children.len() - 1) as f64 * self.spacing
+            (children.len() - 1) as f32 * self.spacing
         } else {
             0.0
         };
 
         let remaining_width = bound.width() - non_stretchy_width - total_spacing;
         let stretchy_child_width = if stretchy_children_count > 0 {
-            (remaining_width / stretchy_children_count as f64).max(0.0)
+            (remaining_width / stretchy_children_count as f32).max(0.0)
         } else {
             0.0
         };
@@ -134,7 +134,7 @@ container!(
 impl HStack {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: VerticalAlignment, spacing: f64, contents: impl TupleViews) -> Self {
+    pub fn new(alignment: VerticalAlignment, spacing: f32, contents: impl TupleViews) -> Self {
         Self {
             layout: HStackLayout { alignment, spacing },
             contents: contents.into_views(),
@@ -150,7 +150,7 @@ impl HStack {
 
     /// Sets the spacing between children in the stack.
     #[must_use] 
-    pub const fn spacing(mut self, spacing: f64) -> Self {
+    pub const fn spacing(mut self, spacing: f32) -> Self {
         self.layout.spacing = spacing;
         self
     }

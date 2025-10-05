@@ -25,7 +25,7 @@ struct UserProfile {
     email: String,
     age: i32,
     notifications: bool,
-    theme_brightness: f64,
+    theme_brightness: f32,
 }
 
 pub fn main() -> impl View {
@@ -52,7 +52,7 @@ pub fn main() -> impl View {
                     spacer(),
                     stepper(&counter),
                 )),
-                progress(counter.get() as f64 / 10.0),
+                progress(counter.get() as f32 / 10.0),
             )),
             spacer(),
             // User profile form
