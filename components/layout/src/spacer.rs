@@ -11,13 +11,13 @@ use crate::{ChildMetadata, Layout, ProposalSize, Rect, Size};
 /// create flexible spacing that adapts to the container size.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spacer {
-    min_length: f64,
+    min_length: f32,
 }
 
 impl Spacer {
     /// Creates a new spacer with the specified minimum length.
     #[must_use]
-    pub const fn new(min_length: f64) -> Self {
+    pub const fn new(min_length: f32) -> Self {
         Self { min_length }
     }
 
@@ -34,7 +34,7 @@ impl Spacer {
 /// in the direction they are placed, respecting their minimum length.
 #[derive(Debug, Clone)]
 pub struct SpacerLayout {
-    min_length: f64,
+    min_length: f32,
 }
 
 impl Layout for SpacerLayout {
@@ -87,6 +87,6 @@ pub const fn spacer() -> Spacer {
 ///
 /// This spacer will expand to fill available space but never shrink below the minimum.
 #[must_use]
-pub const fn spacer_min(min_length: f64) -> Spacer {
+pub const fn spacer_min(min_length: f32) -> Spacer {
     Spacer::new(min_length)
 }
