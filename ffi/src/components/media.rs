@@ -11,7 +11,7 @@ use waterui_media::{
 
 // Type alias for URL
 type Url = WuiStr;
-type Volume = f64;
+type Volume = f32;
 
 /// C representation of Photo configuration
 #[repr(C)]

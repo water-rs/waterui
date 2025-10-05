@@ -39,8 +39,8 @@ impl IntoFFI for Container {
 #[repr(C)]
 #[derive(Clone, Default)]
 pub struct WuiProposalSize {
-    width: f64, // May be f64::NAN
-    height: f64,
+    width: f32, // May be f32::NAN
+    height: f32,
 }
 
 impl IntoRust for WuiProposalSize {
@@ -65,8 +65,8 @@ impl IntoFFI for waterui_layout::ProposalSize {
     type FFI = WuiProposalSize;
     fn into_ffi(self) -> Self::FFI {
         WuiProposalSize {
-            width: self.width.unwrap_or(f64::NAN),
-            height: self.height.unwrap_or(f64::NAN),
+            width: self.width.unwrap_or(f32::NAN),
+            height: self.height.unwrap_or(f32::NAN),
         }
     }
 }
@@ -150,8 +150,8 @@ pub unsafe extern "C" fn waterui_layout_size(
 
 #[repr(C)]
 pub struct WuiPoint {
-    x: f64,
-    y: f64,
+    x: f32,
+    y: f32,
 }
 
 impl IntoRust for WuiPoint {
@@ -196,8 +196,8 @@ impl IntoFFI for Rect {
 
 #[repr(C)]
 pub struct WuiSize {
-    width: f64,
-    height: f64,
+    width: f32,
+    height: f32,
 }
 
 #[repr(C)]

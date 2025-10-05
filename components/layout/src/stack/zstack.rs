@@ -31,8 +31,8 @@ impl Layout for ZStackLayout {
     fn size(&mut self, parent: ProposalSize, children: &[crate::ChildMetadata]) -> Size {
         // ZStack's size is determined by the largest child
         // We find the maximum width and height among all children
-        let mut max_width: f64 = 0.0;
-        let mut max_height: f64 = 0.0;
+        let mut max_width: f32 = 0.0;
+        let mut max_height: f32 = 0.0;
 
         for child in children {
             if let Some(width) = child.proposal_width() {
@@ -105,7 +105,7 @@ impl Layout for ZStackLayout {
 
 impl ZStackLayout {
     /// Calculate the position of a child within the `ZStack` bounds based on alignment
-    fn calculate_position(&self, bound: &Rect, child_size: &Size) -> (f64, f64) {
+    fn calculate_position(&self, bound: &Rect, child_size: &Size) -> (f32, f32) {
         let available_width = bound.width();
         let available_height = bound.height();
 

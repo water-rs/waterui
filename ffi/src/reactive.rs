@@ -141,6 +141,14 @@ impl_computed!(
 );
 
 impl_computed!(
+    f32,
+    f32,
+    waterui_read_computed_float,
+    waterui_watch_computed_float,
+    waterui_drop_computed_float
+);
+
+impl_computed!(
     f64,
     f64,
     waterui_read_computed_double,
@@ -215,6 +223,15 @@ impl_binding!(
     waterui_set_binding_str,
     waterui_watch_binding_str,
     waterui_drop_binding_str
+);
+
+impl_binding!(
+    f32,
+    f32,
+    waterui_read_binding_float,
+    waterui_set_binding_float,
+    waterui_watch_binding_float,
+    waterui_drop_binding_float
 );
 
 impl_binding!(

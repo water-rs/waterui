@@ -39,7 +39,7 @@ That's it! WaterUI automatically creates appropriate form controls for each fiel
 - `String` → Text field
 - `bool` → Toggle switch
 - `i32` → Number stepper
-- `f32` → Slider
+- `f64` → Slider
 - And many more...
 
 ## Type-to-Component Mapping
@@ -51,7 +51,7 @@ The `FormBuilder` macro automatically maps Rust types to appropriate form compon
 | `String`, `&str` | `TextField` | Single-line text input |
 | `bool` | `Toggle` | On/off switch |
 | `i32`, `i64`, etc. | `Stepper` | Numeric input with +/- buttons |
-| `f32`, `f64` | `Slider` | Slider with 0.0-1.0 range |
+| `f64` | `Slider` | Slider with 0.0-1.0 range |
 | `Color` | `ColorPicker` | Color selection widget |
 
 ## Complete Example: User Registration Form

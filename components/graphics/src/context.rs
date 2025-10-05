@@ -44,7 +44,7 @@ impl GraphicsContext<'_> {
             }
             DrawStyle::Stroke(color, width) => {
                 self.scene.stroke(
-                    &Stroke::new(*width),
+                    &Stroke::new(*width as f64),
                     Affine::IDENTITY,
                     &to_peniko_brush(&color.resolve(self.env).get()),
                     None,
@@ -62,7 +62,7 @@ impl GraphicsContext<'_> {
     }
 
     /// Strokes a path with a solid color and width.
-    pub fn stroke(&mut self, path: &Path, color: &Color, width: f64) {
+    pub fn stroke(&mut self, path: &Path, color: &Color, width: f32) {
         self.draw(path, &DrawStyle::Stroke(color.clone(), width));
     }
 }

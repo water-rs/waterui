@@ -24,7 +24,7 @@ use syn::{Data, DeriveInput, Fields, Meta, parse_macro_input};
 /// | `bool` | `Toggle` | Switch/checkbox for boolean values |
 /// | `i8`, `i16`, `i32`, `i64`, `i128`, `isize` | `Stepper` | Numeric input with +/- buttons |
 /// | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `Stepper` | Unsigned numeric input |
-/// | `f32`, `f64` | `Slider` | Slider with 0.0-1.0 range |
+/// | `f64` | `Slider` | Slider with 0.0-1.0 range |
 /// | `Color` | `ColorPicker` | Color selection widget |
 ///
 /// # Panics
