@@ -7,8 +7,8 @@ use crate::element::WebElement;
 pub struct ImageConfig {
     pub src: String,
     pub alt: Option<String>,
-    pub width: Option<f64>,
-    pub height: Option<f64>,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
     pub fit: ImageFit,
 }
 
@@ -98,7 +98,7 @@ pub fn render_audio(src: &str, controls: bool, autoplay: bool) -> WebElement {
 }
 
 /// Render a canvas element for drawing.
-pub fn render_canvas(width: f64, height: f64) -> WebElement {
+pub fn render_canvas(width: f32, height: f32) -> WebElement {
     let canvas = WebElement::create("canvas").expect("Failed to create canvas element");
 
     let _ = canvas.set_attribute("width", &width.to_string());
@@ -109,7 +109,7 @@ pub fn render_canvas(width: f64, height: f64) -> WebElement {
 }
 
 /// Render an SVG container.
-pub fn render_svg(width: f64, height: f64, viewbox: Option<&str>) -> WebElement {
+pub fn render_svg(width: f32, height: f32, viewbox: Option<&str>) -> WebElement {
     // Note: This might not work correctly as WebElement expects HTML elements
     // SVG would need special handling in a real implementation
     let svg = WebElement::create("svg").expect("Failed to create svg element");
@@ -128,7 +128,7 @@ pub fn render_svg(width: f64, height: f64, viewbox: Option<&str>) -> WebElement 
 }
 
 /// Render an iframe for embedding external content.
-pub fn render_iframe(src: &str, width: Option<f64>, height: Option<f64>) -> WebElement {
+pub fn render_iframe(src: &str, width: Option<f32>, height: Option<f32>) -> WebElement {
     let iframe = WebElement::create("iframe").expect("Failed to create iframe element");
 
     let _ = iframe.set_attribute("src", src);

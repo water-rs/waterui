@@ -77,7 +77,7 @@ pub fn render_loading_progress() -> WebElement {
 }
 
 /// Render an element with padding applied.
-pub fn render_with_padding<F>(padding: f64, render_fn: F) -> WebElement
+pub fn render_with_padding<F>(padding: f32, render_fn: F) -> WebElement
 where
     F: FnOnce() -> WebElement,
 {

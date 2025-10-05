@@ -128,5 +128,5 @@ pub enum DrawStyle {
     /// Stroke the shape outline with a color and width.
     /// 
     /// The second parameter is the stroke width in pixels.
-    Stroke(Color, f64),
+    Stroke(Color, f32),
 }
