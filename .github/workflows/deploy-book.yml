@@ -48,12 +48,12 @@ jobs:
             cargo install mdbook --version 0.4.40
           fi
 
-      # === NEW: Build rustdoc for the whole workspace ===
+      # === NEW: Build rustdoc for main crate ===
       - name: Build rustdoc (workspace)
         env:
           RUSTDOCFLAGS: "--cfg docsrs -D warnings"
         run: |
-          cargo doc --workspace --no-deps --all-features
+          cargo doc --all-features --no-deps
           CRATE=waterui
           echo '<meta http-equiv="refresh" content="0; url='"$CRATE"'/index.html">' > target/doc/index.html
 
