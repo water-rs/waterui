@@ -98,7 +98,7 @@ impl Text {
     }
 
     /// Sets the font size.
-    pub fn size(mut self, size: impl IntoSignal<f64>) -> Self {
+    pub fn size(mut self, size: impl IntoSignal<f32>) -> Self {
         // A litle sad we have to do this conversion here
         let size = size.into_signal().map(|s| s as f32);
         self.0.content = self.0.content.zip(size).map(|(content, size)| {

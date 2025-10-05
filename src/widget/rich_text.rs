@@ -87,7 +87,7 @@ fn render_list(items:Vec<RichTextElement>,ordered:bool) -> impl View{
 fn quote(content:Vec<RichTextElement>) -> impl View{
     // Render as blockquote
     // blue marker
-    let quote_marker = Blue.width(4.0).height(f64::INFINITY);
+    let quote_marker = Blue.width(4.0).height(f32::INFINITY);
     hstack((
         quote_marker,
         VStack::from_iter(content)
