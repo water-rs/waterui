@@ -15,12 +15,12 @@ use crate::{
 /// Planned layout that clamps a single child's proposal.
 #[derive(Debug, Clone, PartialEq, PartialOrd,Default)]
 pub struct FrameLayout {
-    min_width: Option<f64>,
-    ideal_width: Option<f64>,
-    max_width: Option<f64>,
-    min_height: Option<f64>,
-    ideal_height: Option<f64>,
-    max_height: Option<f64>,
+    min_width: Option<f32>,
+    ideal_width: Option<f32>,
+    max_width: Option<f32>,
+    min_height: Option<f32>,
+    ideal_height: Option<f32>,
+    max_height: Option<f32>,
     alignment: Alignment,
 }
 
@@ -36,12 +36,12 @@ impl Layout for FrameLayout {
 
         let child_proposal = ProposalSize {
             width: proposed_width.map(|w| {
-                w.max(self.min_width.unwrap_or(f64::NEG_INFINITY))
-                    .min(self.max_width.unwrap_or(f64::INFINITY))
+                w.max(self.min_width.unwrap_or(f32::NEG_INFINITY))
+                    .min(self.max_width.unwrap_or(f32::INFINITY))
             }),
             height: proposed_height.map(|h| {
-                h.max(self.min_height.unwrap_or(f64::NEG_INFINITY))
-                    .min(self.max_height.unwrap_or(f64::INFINITY))
+                h.max(self.min_height.unwrap_or(f32::NEG_INFINITY))
+                    .min(self.max_height.unwrap_or(f32::INFINITY))
             }),
         };
 
@@ -63,14 +63,14 @@ impl Layout for FrameLayout {
         // 1. Determine the frame's ideal width based on its own properties and its child.
         let mut target_width = self.ideal_width.unwrap_or(child_size.width);
         target_width = target_width
-            .max(self.min_width.unwrap_or(f64::NEG_INFINITY))
-            .min(self.max_width.unwrap_or(f64::INFINITY));
+            .max(self.min_width.unwrap_or(f32::NEG_INFINITY))
+            .min(self.max_width.unwrap_or(f32::INFINITY));
 
         // 2. Determine the frame's ideal height.
         let mut target_height = self.ideal_height.unwrap_or(child_size.height);
         target_height = target_height
-            .max(self.min_height.unwrap_or(f64::NEG_INFINITY))
-            .min(self.max_height.unwrap_or(f64::INFINITY));
+            .max(self.min_height.unwrap_or(f32::NEG_INFINITY))
+            .min(self.max_height.unwrap_or(f32::INFINITY));
 
         // 3. The final size is the target size, but it must also respect the parent's proposal.
         // If the parent proposed a fixed size, we must take it.
@@ -151,42 +151,42 @@ impl Frame {
 
     /// Sets the ideal width of the frame.
     #[must_use]
-    pub const fn width(mut self, width: f64) -> Self {
+    pub const fn width(mut self, width: f32) -> Self {
         self.layout.ideal_width = Some(width);
         self
     }
 
     /// Sets the ideal height of the frame.
     #[must_use]
-    pub const fn height(mut self, height: f64) -> Self {
+    pub const fn height(mut self, height: f32) -> Self {
         self.layout.ideal_height = Some(height);
         self
     }
 
     /// Sets the minimum width of the frame.
     #[must_use]
-    pub const fn min_width(mut self, width: f64) -> Self {
+    pub const fn min_width(mut self, width: f32) -> Self {
         self.layout.min_width = Some(width);
         self
     }
 
     /// Sets the maximum width of the frame.
     #[must_use]
-    pub const fn max_width(mut self, width: f64) -> Self {
+    pub const fn max_width(mut self, width: f32) -> Self {
         self.layout.max_width = Some(width);
         self
     }
 
     /// Sets the minimum height of the frame.
     #[must_use]
-    pub const fn min_height(mut self, height: f64) -> Self {
+    pub const fn min_height(mut self, height: f32) -> Self {
         self.layout.min_height = Some(height);
         self
     }
 
     /// Sets the maximum height of the frame.
     #[must_use]
-    pub const fn max_height(mut self, height: f64) -> Self {
+    pub const fn max_height(mut self, height: f32) -> Self {
         self.layout.max_height = Some(height);
         self
     }
