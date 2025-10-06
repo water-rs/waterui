@@ -7,221 +7,134 @@
 
 import CWaterUI
 import SwiftUI
+import Foundation
 
-@MainActor
-class ComputedFont: ObservableObject {
-    private var inner: OpaquePointer
-    private var watcher: WatcherGuard!
+// MARK: - Text View
 
-    var value: WuiFont {
-        self.compute()
-    }
-
-    init(inner: OpaquePointer) {
-        self.inner = inner
-        // Avoid strong self in the stored closure
-        self.watcher = self.watch { [weak self] new, animation in
-            guard let self else { return }
-            useAnimation(animation: animation, publisher: self.objectWillChange)
-        }
-    }
-
-    func compute() -> WuiFont {
-        waterui_read_computed_font(self.inner)
-    }
-
-    func watch(_ f: @escaping (WuiFont, Animation?) -> Void) -> WatcherGuard {
-        let g = waterui_watch_computed_font(
-            self.inner,
-            WuiWatcher_WuiFont({ value, animation in
-                f(value, animation)
-            }))
-        return WatcherGuard(g!)
-
-    }
-
-    deinit {
-        let this = self
-        Task { @MainActor in
-            //waterui_drop_computed_font(this.inner) // I don't know why it crashes here
-        }
-
-    }
-}
-
-extension WuiWatcher_WuiFont {
-    init(_ f: @escaping (WuiFont, Animation?) -> Void) {
-        class Wrapper {
-            var inner: (WuiFont, Animation?) -> Void
-            init(_ inner: @escaping (WuiFont, Animation?) -> Void) {
-                self.inner = inner
-            }
-        }
-
-        let data = UnsafeMutableRawPointer(Unmanaged.passRetained(Wrapper(f)).toOpaque())
-
-        self.init(
-            data: data,
-            call: { data, value, metadata in
-                let f = Unmanaged<Wrapper>.fromOpaque(data!).takeUnretainedValue().inner
-                f(value, Animation(waterui_get_animation(metadata)))
-
-            },
-            drop: { data in
-                _ = Unmanaged<Wrapper>.fromOpaque(data!).takeRetainedValue()
-
-            })
-    }
-}
-
-@MainActor
 struct WuiText: View, WuiComponent {
-    static var id:WuiTypeId{
+    static var id: CWaterUI.WuiTypeId {
         waterui_text_id()
     }
-    @State var content: ComputedAttributedText
-    @State var font: ComputedFont
 
-    init(text: CWaterUI.WuiText) {
-        self.content = ComputedAttributedText(inner: text.content)
-        self.font = ComputedFont(inner: text.font)
-    }
+    @ObservedObject private var content: WuiComputed<CWaterUI.WuiStyledStr>
+    private var env: WuiEnvironment
+    
+    @State private var attributedString: AttributedString
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
-        self.init(text: waterui_force_as_text(anyview))
+        self.init(text: waterui_force_as_text(anyview), env: env)
     }
     
-    func text() -> ObservableText{
-        .init(content: content, font: font)
+    init(text:CWaterUI.WuiText, env: WuiEnvironment) {
+        self.env = env
+        let computed = WuiComputed<CWaterUI.WuiStyledStr>(
+            inner: text.content,
+            read: waterui_read_computed_attributed_str,
+            watch: { ptr, f in
+                let watcher = CWaterUI.WuiWatcher_WuiStyledStr(f)
+                let guardPtr = waterui_watch_computed_attributed_str(ptr, watcher)
+                return WatcherGuard(guardPtr!)
+            },
+            drop: waterui_drop_computed_attributed_str
+        )
+        self._content = ObservedObject(wrappedValue: computed)
+        self._attributedString = State(initialValue: Self.toAttributedString(from: computed.value, in: env))
     }
-
 
     var body: some View {
-        text().text
-    }
-}
-
-@Observable
-@MainActor
-class ObservableText{
-    private var content:ComputedAttributedText
-    private var font:ComputedFont
-    
-    var text:Text{
-        Text(makeAttributedString())
-    }
-    
-    init(content: ComputedAttributedText, font: ComputedFont) {
-        self.content = content
-        self.font = font
+        SwiftUI.Text(attributedString)
+            .onReceive(content.$value) { newValue in
+                self.attributedString = Self.toAttributedString(from: newValue, in: env)
+            }
     }
 
-    private func makeAttributedString() -> AttributedString {
-        var baseFont = font.value
-        let baseStyle = TextBaseStyle(wuiFont: &baseFont)
-        return ObservableText.compose(spans: content.value, base: baseStyle)
-    }
-
-    private static func compose(spans: [AttributedTextSpan], base: TextBaseStyle) -> AttributedString {
+    static func toAttributedString(from styledStr: CWaterUI.WuiStyledStr, in env: WuiEnvironment) -> AttributedString {
+        let cChunks = styledStr.chunks
+        let slice = cChunks.vtable.slice(cChunks.data)
+        let buffer = UnsafeBufferPointer(start: slice.head, count: Int(slice.len))
+        
         var result = AttributedString()
-        for span in spans {
-            var substring = AttributedString(span.text)
-            var container = AttributeContainer()
-
-            var font = span.style.font ?? base.font
-            if span.style.bold {
-                font = font.weight(.bold)
+        
+        for chunk in buffer {
+            let swiftString = WuiStr(chunk.text).toString()
+            var chunkAS = AttributedString(swiftString)
+            
+            let style = chunk.style
+            
+            if let fontPtr = style.font {
+                let resolvedFont = WuiFont(inner: fontPtr).resolve(in: env).value
+                chunkAS.font = .system(size: CGFloat(resolvedFont.size), weight: resolvedFont.weight.toSwiftUI())
             }
-            if span.style.italic {
-                font = font.italic()
+            
+            if let fg = style.foreground {
+                chunkAS.foregroundColor = WuiColor(fg).resolve(in: env).value.toSwiftUI()
             }
-            container.font = font
-
-            let foregroundColor = span.style.foreground
-            if let foregroundColor {
-                container.foregroundColor = foregroundColor
+            
+            if style.italic {
+                chunkAS.obliqueness = 0.2
             }
-
-            if let backgroundColor = span.style.background {
-                container.backgroundColor = backgroundColor
+            if style.underline {
+                chunkAS.underlineStyle = .single
             }
-
-            if span.style.underline || base.underline.enabled {
-                let underlineColor = span.style.underline ? (foregroundColor ?? base.underline.color) : base.underline.color
-                container.underlineStyle = Text.LineStyle(pattern: .solid, color: underlineColor)
+            if style.strikethrough {
+                chunkAS.strikethroughStyle = .single
             }
-
-            if span.style.strikethrough || base.strikethrough.enabled {
-                let strikeColor = span.style.strikethrough ? (foregroundColor ?? base.strikethrough.color) : base.strikethrough.color
-                container.strikethroughStyle = Text.LineStyle(pattern: .solid, color: strikeColor)
-            }
-
-            substring.setAttributes(container, range: substring.startIndex..<substring.endIndex)
-            result += substring
+            
+            result.append(chunkAS)
         }
+        
         return result
     }
 }
 
-struct TextBaseStyle {
-    var font: Font
-    var underline: (enabled: Bool, color: Color?)
-    var strikethrough: (enabled: Bool, color: Color?)
+// MARK: - Helpers
 
-    init(wuiFont: inout WuiFont) {
-        font = Font(wuiFont: wuiFont)
+@MainActor
+class WuiFont {
+    var inner: OpaquePointer
 
-        if let underlinePtr = wuiFont.underlined {
-            underline = (true, underlinePtr.pointee.toSwiftUIColor())
-            waterui_drop_color(underlinePtr)
-            wuiFont.underlined = nil
-        } else {
-            underline = (false, nil)
-        }
+    init(inner: OpaquePointer) {
+        self.inner = inner
+    }
 
-        if let strikePtr = wuiFont.strikethrough {
-            strikethrough = (true, strikePtr.pointee.toSwiftUIColor())
-            waterui_drop_color(strikePtr)
-            wuiFont.strikethrough = nil
-        } else {
-            strikethrough = (false, nil)
+    func resolve(in env: WuiEnvironment) -> WuiComputed<CWaterUI.WuiResolvedFont> {
+        let computedPtr = waterui_resolve_font(self.inner, env.inner)
+        return WuiComputed<CWaterUI.WuiResolvedFont>(inner: computedPtr!)
+    }
+
+    deinit {
+        waterui_drop_font(inner)
+    }
+}
+
+extension CWaterUI.WuiFontWeight {
+    func toSwiftUI() -> Font.Weight {
+        switch self {
+        case WuiFontWeight_Thin: return .thin
+        case WuiFontWeight_UltraLight: return .ultraLight
+        case WuiFontWeight_Light: return .light
+        case WuiFontWeight_Normal: return .regular
+        case WuiFontWeight_Medium: return .medium
+        case WuiFontWeight_SemiBold: return .semibold
+        case WuiFontWeight_Bold: return .bold
+        case WuiFontWeight_UltraBold: return .heavy
+        case WuiFontWeight_Black: return .black
+        default: return .regular
         }
     }
 }
 
-extension SwiftUI.Font {
-    init(wuiFont: WuiFont) {
-        if wuiFont.size.isNaN {
-            self = .body
-        } else {
-            self = .system(size: wuiFont.size)
-        }
-
-        if wuiFont.bold {
-            self = self.bold()
-        }
-
-        if wuiFont.italic {
-            self = self.italic()
-        }
+extension WuiComputed where T == CWaterUI.WuiResolvedFont {
+    convenience init(inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: waterui_read_computed_resolved_font,
+            watch: { ptr, f in
+                let watcher = CWaterUI.WuiWatcher_WuiResolvedFont(f)
+                let guardPtr = waterui_watch_computed_resolved_font(ptr, watcher)
+                return WatcherGuard(guardPtr!)
+            },
+            drop: waterui_drop_computed_resolved_font
+        )
     }
-}
-
-struct WuiLabel: View, WuiComponent {
-    static var id:WuiTypeId{
-        waterui_label_id()
-    }
-    var label: WuiStr
-    init(label: WuiStr) {
-        self.label = label
-    }
-
-    init(anyview: OpaquePointer, env: WuiEnvironment) {
-        self.init(label: WuiStr(waterui_force_as_label(anyview)))
-    }
-
-    var body: some View {
-        SwiftUI.Text(label.toString())
-    }
-
 }

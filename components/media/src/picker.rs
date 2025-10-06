@@ -28,7 +28,11 @@ pub struct MediaPickerConfig {
     pub filter: Computed<MediaFilter>,
 }
 
-configurable!(MediaPicker, MediaPickerConfig);
+configurable!(
+    #[doc = "A media picker view that lets users select photos, videos, or live media."]
+    MediaPicker,
+    MediaPickerConfig
+);
 
 /// Represents a selected media item by its unique identifier.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
