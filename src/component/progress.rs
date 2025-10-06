@@ -106,7 +106,7 @@ impl Progress {
         Self(ProgressConfig {
             label: text!("Please wait...").anyview(),
             value_label: text!("{value:.2} %").anyview(),
-            value:value.computed(),
+            value: value.computed(),
             style: ProgressStyle::Linear,
         })
     }

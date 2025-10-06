@@ -31,6 +31,11 @@
 //!
 //! ```
 //! use waterui::prelude::*;
+//! use waterui::ViewExt;
+//! use waterui_core::binding;
+//! use waterui_layout::stack::vstack;
+//! use waterui_text::text;
+//! use waterui::component::button;
 //!
 //! #[derive(PartialEq, Eq, Clone)]
 //! enum Field { Username, Password, Submit }

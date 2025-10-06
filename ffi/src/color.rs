@@ -1,7 +1,7 @@
-use crate::{impl_binding, impl_computed, IntoFFI, WuiEnv};
+use crate::{IntoFFI, WuiEnv, impl_binding, impl_computed};
 
 use nami::Computed;
-use waterui::{Color};
+use waterui::Color;
 use waterui_color::ResolvedColor;
 
 ffi_type!(WuiColor, Color, waterui_drop_color);
@@ -47,16 +47,16 @@ impl_computed!(
     waterui_drop_computed_color
 );
 
-
-
-
 /// Resolves a color in the given environment.
 ///
 /// # Safety
 ///
 /// Both `color` and `env` must be valid, non-null pointers to their respective types.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_resolve_color(color:*const WuiColor,env:*const WuiEnv) -> *mut Computed<ResolvedColor> {
+pub unsafe extern "C" fn waterui_resolve_color(
+    color: *const WuiColor,
+    env: *const WuiEnv,
+) -> *mut Computed<ResolvedColor> {
     unsafe {
         let color = &*color;
         let env = &*env;

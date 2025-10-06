@@ -1,50 +1,50 @@
 use std::{io, path::Path, sync::Arc};
 
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use blocking::unblock;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use mime::Mime;
 use waterui_color::{Srgb, WithOpacity};
 
-
 /// Represents a loaded image.
-#[derive(Debug,Clone)]
-pub struct Image{
-    mime:Mime,
-    image:Arc<DynamicImage>
+#[derive(Debug, Clone)]
+pub struct Image {
+    mime: Mime,
+    image: Arc<DynamicImage>,
 }
 
-impl Image{
+impl Image {
     /// Creates a new `Image` from raw image data.
-    /// 
+    ///
     /// It will decode the image on a background thread, preventing UI blocking.
     ///
     /// # Panics
     ///
     /// Panics if the MIME type is not supported or if the image data cannot be decoded.
-    #[must_use] 
-    pub async fn new(mime: Mime, data: Vec<u8>) -> Self{
-        let format = ImageFormat::from_mime_type(mime.essence_str()).expect("Unsupported MIME type");
+    #[must_use]
+    pub async fn new(mime: Mime, data: Vec<u8>) -> Self {
+        let format =
+            ImageFormat::from_mime_type(mime.essence_str()).expect("Unsupported MIME type");
 
-        let image = unblock(move ||{
-            image::load_from_memory_with_format(data.as_ref(), format).expect("Failed to decode image")
-        }).await;
-        
-        Self{
+        let image = unblock(move || {
+            image::load_from_memory_with_format(data.as_ref(), format)
+                .expect("Failed to decode image")
+        })
+        .await;
+
+        Self {
             mime,
-            image:Arc::new(image)
+            image: Arc::new(image),
         }
     }
 
     /// Process the image with a closure on a background thread
-    pub async fn process<F>(&mut self, func: F) 
+    pub async fn process<F>(&mut self, func: F)
     where
         F: FnOnce(Arc<DynamicImage>) -> DynamicImage + Send + 'static,
     {
         let image = self.image.clone();
-        self.image = unblock(move || {
-            Arc::new(func(image))
-        }).await;
+        self.image = unblock(move || Arc::new(func(image))).await;
     }
 
     /// Encodes the image to the specified MIME type.
@@ -52,27 +52,30 @@ impl Image{
     /// # Panics
     ///
     /// Panics if the MIME type is not supported or if encoding fails.
-    #[must_use] 
+    #[must_use]
     #[allow(clippy::needless_pass_by_value)]
-    pub async fn encode(&self,mime:Mime) -> Vec<u8>{
+    pub async fn encode(&self, mime: Mime) -> Vec<u8> {
         let format = ImageFormat::from_mime_type(mime.essence_str()).unwrap();
         let image = self.image.clone();
-        unblock(move||{
+        unblock(move || {
             let mut buf = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut buf, format).expect("Failed to encode image");
+            image
+                .write_to(&mut buf, format)
+                .expect("Failed to encode image");
             buf.into_inner()
-        }).await
+        })
+        .await
     }
 
     /// Encodes the image as PNG.
-    #[must_use] 
-    pub async fn encode_png(&self) -> Vec<u8>{
+    #[must_use]
+    pub async fn encode_png(&self) -> Vec<u8> {
         self.encode(mime::IMAGE_PNG).await
     }
 
     /// Encodes the image as JPEG with the specified quality (currently unused).
-    #[must_use] 
-    pub async fn encode_jpeg(&self, _quality:u8) -> Vec<u8>{
+    #[must_use]
+    pub async fn encode_jpeg(&self, _quality: u8) -> Vec<u8> {
         self.encode(mime::IMAGE_JPEG).await
     }
 
@@ -81,33 +84,31 @@ impl Image{
     /// # Panics
     ///
     /// Panics if the angle is not a multiple of 90 degrees or is outside the range 0-359.
-    pub async fn rotate(&mut self, angle: u32){
-        self.process(move |image| {
-            match angle % 360 {
-                0 => (*image).clone(),
-                90 => image.rotate90(),
-                180 => image.rotate180(),
-                270 => image.rotate270(),
-                _ => panic!("Unsupported rotation angle: {angle}"),
-            }
-        }).await;
+    pub async fn rotate(&mut self, angle: u32) {
+        self.process(move |image| match angle % 360 {
+            0 => (*image).clone(),
+            90 => image.rotate90(),
+            180 => image.rotate180(),
+            270 => image.rotate270(),
+            _ => panic!("Unsupported rotation angle: {angle}"),
+        })
+        .await;
     }
 
     /// Get the width of the image in pixels
-    #[must_use] 
+    #[must_use]
     pub fn width(&self) -> u32 {
         self.image.width()
     }
 
     /// Get the height of the image in pixels
-    #[must_use] 
+    #[must_use]
     pub fn height(&self) -> u32 {
         self.image.height()
     }
 
-
     /// Get the dimensions (width, height) of the image
-    #[must_use] 
+    #[must_use]
     pub fn dimensions(&self) -> (u32, u32) {
         self.image.dimensions()
     }
@@ -117,28 +118,32 @@ impl Image{
     pub async fn resize(&mut self, width: u32, height: u32) {
         self.process(move |image| {
             image.resize(width, height, image::imageops::FilterType::Lanczos3)
-        }).await;
+        })
+        .await;
     }
 
     /// Resize the image to fit within the specified dimensions while maintaining aspect ratio
     pub async fn resize_to_fit(&mut self, max_width: u32, max_height: u32) {
         self.process(move |image| {
             image.resize(max_width, max_height, image::imageops::FilterType::Lanczos3)
-        }).await;
+        })
+        .await;
     }
 
     /// Resize the image to fill the specified dimensions while maintaining aspect ratio
     pub async fn resize_to_fill(&mut self, width: u32, height: u32) {
         self.process(move |image| {
             image.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3)
-        }).await;
+        })
+        .await;
     }
 
     /// Resize the image exactly to the specified dimensions (may distort aspect ratio)
     pub async fn resize_exact(&mut self, width: u32, height: u32) {
         self.process(move |image| {
             image.resize_exact(width, height, image::imageops::FilterType::Lanczos3)
-        }).await;
+        })
+        .await;
     }
 
     /// Flip the image horizontally
@@ -156,11 +161,10 @@ impl Image{
     pub async fn crop(&mut self, x: u32, y: u32, width: u32, height: u32) -> bool {
         let img_width = self.width();
         let img_height = self.height();
-        
+
         if x + width <= img_width && y + height <= img_height {
-            self.process(move |image| {
-                image.crop_imm(x, y, width, height)
-            }).await;
+            self.process(move |image| image.crop_imm(x, y, width, height))
+                .await;
             true
         } else {
             false
@@ -181,7 +185,8 @@ impl Image{
     /// Adjust the contrast of the image
     /// contrast: floating point value (1.0 = no change, < 1.0 = less contrast, > 1.0 = more contrast)
     pub async fn adjust_contrast(&mut self, contrast: f32) {
-        self.process(move |image| image.adjust_contrast(contrast)).await;
+        self.process(move |image| image.adjust_contrast(contrast))
+            .await;
     }
 
     /// Convert the image to grayscale
@@ -195,18 +200,19 @@ impl Image{
             let mut img = (*image).clone();
             img.invert();
             img
-        }).await;
+        })
+        .await;
     }
 
     /// Apply an unsharpen mask to the image
     pub async fn unsharpen(&mut self, sigma: f32, threshold: i32) {
-        self.process(move |image| image.unsharpen(sigma, threshold)).await;
+        self.process(move |image| image.unsharpen(sigma, threshold))
+            .await;
     }
-
 
     /// Get the color of a specific pixel
     /// Returns None if the coordinates are out of bounds
-    #[must_use] 
+    #[must_use]
     #[allow(clippy::many_single_char_names)]
     pub fn get_pixel(&self, x: u32, y: u32) -> Option<WithOpacity<Srgb>> {
         if x < self.width() && y < self.height() {
@@ -219,7 +225,8 @@ impl Image{
 
     /// Create a thumbnail of the image with the specified maximum dimension
     pub async fn thumbnail(&mut self, max_size: u32) {
-        self.process(move |image| image.thumbnail(max_size, max_size)).await;
+        self.process(move |image| image.thumbnail(max_size, max_size))
+            .await;
     }
 
     /// Rotate the image 90 degrees clockwise
@@ -241,7 +248,8 @@ impl Image{
     pub async fn gaussian_blur(&mut self, sigma: f32) {
         self.process(move |image| {
             DynamicImage::ImageRgba8(image::imageops::blur(&image.to_rgba8(), sigma))
-        }).await;
+        })
+        .await;
     }
 
     /// Hue rotate the image by the specified degrees
@@ -250,26 +258,24 @@ impl Image{
     }
 
     /// Get the MIME type of the image
-    #[must_use] 
-    pub const fn mime(&self) -> &Mime{
+    #[must_use]
+    pub const fn mime(&self) -> &Mime {
         &self.mime
     }
-    
+
     /// Write the image to a file with the specified format
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be written.
-    pub async fn write(&self, format:Mime, path: impl AsRef<Path>) -> io::Result<()>{
+    pub async fn write(&self, format: Mime, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref().to_owned();
         let data = self.encode(format).await;
-        unblock(move ||{
-            std::fs::write(path, data)
-        }).await
+        unblock(move || std::fs::write(path, data)).await
     }
 
     /// Generate a base64-encoded data URL for the image encoded as PNG
-    /// 
+    ///
     /// For large images (>10KB), encoding is done on a background thread to prevent UI blocking.
     #[must_use]
     pub async fn url(&self) -> String {
@@ -281,12 +287,11 @@ impl Image{
                 let mut base64 = String::from("data:image/png;base64,");
                 BASE64_STANDARD.encode_string(data, &mut base64);
                 base64
-            }).await
-            
+            })
+            .await
         } else {
             let data = BASE64_STANDARD.encode(data);
             format!("data:image/png;base64,{data}")
         }
     }
 }
-

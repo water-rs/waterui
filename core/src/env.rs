@@ -72,9 +72,9 @@ use crate::{
 ///
 /// This struct allows storing values of any type `V` indexed by a type key `K`.
 #[derive(Debug)]
-pub struct Store<K,V>{
-    key:PhantomData<K>,
-    value:V,
+pub struct Store<K, V> {
+    key: PhantomData<K>,
+    value: V,
 }
 
 impl Environment {
@@ -90,8 +90,12 @@ impl Environment {
     ///
     /// # Arguments
     /// * `value` - The value to store
-    pub fn store<K: 'static,V: 'static>(mut self,value:V)->Self{
-        self.insert(Store{key:PhantomData::<V>,value});
+    #[must_use]
+    pub fn store<K: 'static, V: 'static>(mut self, value: V) -> Self {
+        self.insert(Store {
+            key: PhantomData::<V>,
+            value,
+        });
         self
     }
 
@@ -99,9 +103,9 @@ impl Environment {
     ///
     /// # Returns
     /// An optional reference to the stored value
-    #[must_use] 
-    pub fn query<K: 'static,V: 'static>(&self) -> Option<&V>{
-        self.get::<Store<K,V>>().map(|s|&s.value)
+    #[must_use]
+    pub fn query<K: 'static, V: 'static>(&self) -> Option<&V> {
+        self.get::<Store<K, V>>().map(|s| &s.value)
     }
 
     /// Installs a plugin into the environment.

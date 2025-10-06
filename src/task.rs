@@ -75,11 +75,12 @@ impl<V: View, G: WatcherGuard> View for OnChange<V, G> {
 ///
 /// ```rust
 /// # use waterui::prelude::*;
+/// use nami::binding;
 /// let counter = binding(0);
 /// let view = task(
-///     "Hello World",
+///     text("Hello World"),
 ///     &counter,
-///     |value| println!("Counter changed to: {}", value)
+///     |value: i32| println!("Counter changed to: {}", value)
 /// );
 /// ```
 pub fn task<V, C, F>(content: V, source: &C, handler: F) -> OnChange<V, C::Guard>
