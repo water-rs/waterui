@@ -25,8 +25,13 @@ pub use waterui_core::components::*;
 pub use media::*;
 pub use text::{Text, text};
 //pub use waterui_canvas as canvas;
+#[doc(inline)]
 pub use waterui_form as form;
+#[doc(inline)]
 pub use waterui_layout as layout;
+#[doc(inline)]
 pub use waterui_media as media;
+#[doc(inline)]
 pub use waterui_text as text;
+#[doc(inline)]
 pub use waterui_text::link;

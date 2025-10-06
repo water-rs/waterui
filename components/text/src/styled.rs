@@ -1,11 +1,14 @@
 use core::{fmt::Display, mem::take, ops::Add};
 
+use crate::{
+    font::{Font, FontWeight},
+    text,
+};
 use alloc::{string::String, vec::Vec};
+use core::ops::AddAssign;
 use nami::impl_constant;
 use waterui_color::Color;
 use waterui_core::{Str, View};
-use core::ops::AddAssign;
-use crate::{font::{Font, FontWeight}, text};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
@@ -151,14 +154,13 @@ impl StyledStr {
     }
 
     /// Appends text to the last chunk, or creates a new chunk if empty.
-    pub fn push_str(&mut self,text:impl Into<Str>){
+    pub fn push_str(&mut self, text: impl Into<Str>) {
         let text = text.into();
-        if let Some(last) = self.chunks.last_mut(){
-            let (last_text,_) = last;
+        if let Some(last) = self.chunks.last_mut() {
+            let (last_text, _) = last;
             last_text.add_assign(text);
-        }
-        else{
-            self.chunks.push((text,Style::default()));
+        } else {
+            self.chunks.push((text, Style::default()));
         }
     }
 
@@ -174,11 +176,10 @@ impl StyledStr {
         self.chunks.is_empty()
     }
 
-
     /// Converts the attributed string into its plain representation.
     #[must_use]
     pub fn to_plain(&self) -> Str {
-        if self.chunks.len() == 1{
+        if self.chunks.len() == 1 {
             return self.chunks[0].0.clone();
         }
 
@@ -215,30 +216,30 @@ impl StyledStr {
 
     /// Sets the font for all chunks.
     #[must_use]
-    pub fn font(self, font: Font) -> Self {
+    pub fn font(self, font: &Font) -> Self {
         self.apply_style(|s| s.font = font.clone())
     }
 
     /// Sets the foreground color for all chunks.
     #[must_use]
-    pub fn foreground(self, color: Color) -> Self {
+    pub fn foreground(self, color: &Color) -> Self {
         self.apply_style(|s| s.foreground = Some(color.clone()))
     }
 
     /// Sets the background color for all chunks.
     #[must_use]
-    pub fn background_color(self, color: Color) -> Self {
+    pub fn background_color(self, color: &Color) -> Self {
         self.apply_style(|s| s.background = Some(color.clone()))
     }
 
     /// Sets the font weight for all chunks.
     #[must_use]
-    pub fn weight(self, weight:FontWeight) -> Self {
+    pub fn weight(self, weight: FontWeight) -> Self {
         self.apply_style(|s| {
             *s = take(s).weight(weight);
         })
     }
-    
+
     /// Sets the font to bold for all chunks.
     #[must_use]
     pub fn bold(self) -> Self {

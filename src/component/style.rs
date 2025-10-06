@@ -4,12 +4,16 @@
 //!
 //! ```
 //! use waterui::prelude::*;
+//! use waterui::component::style;
+//! use waterui_color::Color;
 //!
-//! let shadow = style::Shadow {
-//!     color: Color::srgb(0, 0, 0, 0.5),
-//!     offset: style::Vector { x: 2.0, y: 2.0 },
-//!     radius: 4.0,
-//! };
+//! fn shadow_example() {
+//!     let shadow = style::Shadow {
+//!         color: Color::srgb(0, 0, 0),
+//!         offset: style::Vector { x: 2.0, y: 2.0 },
+//!         radius: 4.0,
+//!     };
+//! }
 //! ```
 
 use waterui_color::Color;
