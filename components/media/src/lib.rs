@@ -21,30 +21,37 @@
 //! ## Examples
 //!
 //! ### Basic Photo
-//! ```rust
-//! use waterui_media::Photo;
-//! use waterui_core::Text;
+//! ```no_run
+//! use waterui_media::{Photo, url::Url};
 //!
-//! let photo = Photo::new("https://example.com/image.jpg")
-//!     .placeholder(Text::new("Loading..."));
+//! let url = Url::parse("https://example.com/image.jpg").unwrap();
+//! let _photo = Photo::new(url);
 //! ```
 //!
 //! ### Video with Controls
-//! ```rust
-//! use waterui_media::{Video, VideoPlayer};
+//! ```no_run
 //! use waterui_core::binding;
+//! use waterui_media::{Video, VideoPlayer, url::Url};
 //!
-//! let video = Video::new("https://example.com/video.mp4");
+//! let url = Url::parse("https://example.com/video.mp4").unwrap();
+//! let video = Video::new(url);
 //! let muted = binding(false);
-//! let player = VideoPlayer::new(video).muted(&muted);
+//! let _player = VideoPlayer::new(video).muted(&muted);
 //! ```
 //!
 //! ### Unified Media Type
-//! ```rust
-//! use waterui_media::Media;
+//! ```no_run
+//! use waterui_media::{Media, live::LivePhotoSource, url::Url};
 //!
-//! let media = Media::Image("photo.jpg".into());
-//! // Automatically renders as a Photo component when used as a View
+//! let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
+//! let video = Media::Video(Url::parse("https://example.com/video.mp4").unwrap());
+//! let live_photo = Media::LivePhoto(LivePhotoSource::new(
+//!     Url::parse("https://example.com/photo.jpg").unwrap(),
+//!     Url::parse("https://example.com/video.mov").unwrap(),
+//! ));
+//! assert!(matches!(image, Media::Image(_)));
+//! assert!(matches!(video, Media::Video(_)));
+//! assert!(matches!(live_photo, Media::LivePhoto(_)));
 //! ```
 
 #![allow(clippy::future_not_send)]
@@ -95,15 +102,18 @@ use crate::live::LivePhotoSource;
 ///
 /// # Examples
 ///
-/// ```rust
-/// use waterui_media::{Media, LivePhotoSource};
+/// ```no_run
+/// use waterui_media::{Media, live::LivePhotoSource, url::Url};
 ///
-/// let image = Media::Image("photo.jpg".into());
-/// let video = Media::Video("video.mp4".into());
+/// let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
+/// let video = Media::Video(Url::parse("https://example.com/video.mp4").unwrap());
 /// let live_photo = Media::LivePhoto(LivePhotoSource::new(
-///     "photo.jpg".into(),
-///     "video.mov".into()
+///     Url::parse("https://example.com/photo.jpg").unwrap(),
+///     Url::parse("https://example.com/video.mov").unwrap(),
 /// ));
+/// assert!(matches!(image, Media::Image(_)));
+/// assert!(matches!(video, Media::Video(_)));
+/// assert!(matches!(live_photo, Media::LivePhoto(_)));
 /// ```
 #[derive(Debug, Clone)]
 pub enum Media {

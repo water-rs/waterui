@@ -7,10 +7,10 @@ fn main() {
     println!("⌛️ Generating bindings...");
     generate_with_config(
         &crate_dir,
-        Config::from_file(&crate_dir.join("cbindgen.toml")).unwrap(),
+        Config::from_file(crate_dir.join("cbindgen.toml")).unwrap(),
     )
     .expect("Unable to generate bindings")
-    .write_to_file(&crate_dir.join("waterui.h"));
+    .write_to_file(crate_dir.join("waterui.h"));
     println!(
         "✅ Bindings generated at {}",
         crate_dir.join("waterui.h").display()
