@@ -1,4 +1,5 @@
 #![doc = "2D and custom WGPU graphics components for `WaterUI`."]
+#![allow(clippy::multiple_crate_versions)]
 
 extern crate alloc;
 

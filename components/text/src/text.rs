@@ -1,14 +1,12 @@
-
+use crate::font::FontWeight;
+use crate::locale::Formatter;
+use crate::{font::Font, styled::StyledStr};
 use alloc::string::ToString;
+use core::fmt::Display;
 use nami::impl_constant;
 use nami::signal::IntoSignal;
-use core::fmt::Display;
-use crate::font::FontWeight;
-use crate::{font::Font, styled::StyledStr};
-use crate::locale::Formatter;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_core::{configurable};
-
+use waterui_core::configurable;
 
 configurable!(Text, TextConfig);
 
@@ -55,7 +53,6 @@ impl Text {
         })
     }
 
-
     /// Creates a text component from any type implementing `Display`.
     ///
     /// This is a convenience method for creating text from values like
@@ -91,41 +88,56 @@ impl Text {
     /// style, and other font properties.
     #[must_use]
     pub fn font(mut self, font: impl Signal<Output = Font>) -> Self {
-        self.0.content = self.0.content.zip(font).map(|(content, font)| {
-            content.font(font)
-        }).computed();
+        self.0.content = self
+            .0
+            .content
+            .zip(font)
+            .map(|(content, font)| content.font(&font))
+            .computed();
         self
     }
 
     /// Sets the font size.
+    #[must_use]
     pub fn size(mut self, size: impl IntoSignal<f32>) -> Self {
         // A litle sad we have to do this conversion here
-        let size = size.into_signal().map(|s| s as f32);
-        self.0.content = self.0.content.zip(size).map(|(content, size)| {
-            content.size(size)
-        }).computed();
+        let size = size.into_signal().map(|s| s);
+        self.0.content = self
+            .0
+            .content
+            .zip(size)
+            .map(|(content, size)| content.size(size))
+            .computed();
         self
     }
 
     /// Sets the font weight.
+    #[must_use]
     pub fn weight(mut self, weight: impl Signal<Output = FontWeight>) -> Self {
-        self.0.content = self.0.content.zip(weight).map(|(content, weight)| {
-            content.weight(weight)
-        }).computed();
+        self.0.content = self
+            .0
+            .content
+            .zip(weight)
+            .map(|(content, weight)| content.weight(weight))
+            .computed();
         self
     }
 
     /// Sets the font to bold.
-    #[must_use] 
-    pub fn bold(self) -> Self{
+    #[must_use]
+    pub fn bold(self) -> Self {
         self.weight(FontWeight::Bold)
     }
 
     /// Sets the italic style.
+    #[must_use]
     pub fn italic(mut self, is_italic: impl Signal<Output = bool>) -> Self {
-        self.0.content = self.0.content.zip(is_italic).map(|(content, is_italic)| {
-            content.italic(is_italic)
-        }).computed();
+        self.0.content = self
+            .0
+            .content
+            .zip(is_italic)
+            .map(|(content, is_italic)| content.italic(is_italic))
+            .computed();
         self
     }
 }
@@ -150,4 +162,4 @@ where
     }
 }
 
-impl_constant!(Text,TextConfig);
+impl_constant!(Text, TextConfig);

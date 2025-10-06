@@ -9,11 +9,13 @@
 //! ```
 //! # extern crate alloc;
 //! use waterui::prelude::*;
+//! use waterui::ViewExt;
+//! use waterui_core::id::IdentifableExt;
 //! use alloc::vec::Vec;
 //!
 //! // Create a simple list from a vector of strings
-//! let data = Vec::from([(0, "Item 1"), (1, "Item 2"), (2, "Item 3")]);
-//! let list = list::List::for_each(data, |item| list::ListItem { content: text(item.1).anyview(), on_delete: None });
+//! let data = vec!["Item 1", "Item 2", "Item 3"];
+//! let list = list::List::for_each(data.into_iter().enumerate().map(|(i, item)| (i, item).use_id(|(i, _): &(usize, &str)| *i)).collect::<Vec<_>>(), |item: waterui_core::id::UseId<(usize, &str), _>| list::ListItem { content: text(item.value.1).anyview(), on_delete: None });
 //! ```
 
 use alloc::boxed::Box;

@@ -1,6 +1,6 @@
 use crate::array::WuiArray;
-use crate::color::{WuiColor};
-use crate::{ffi_struct, ffi_view, impl_computed, IntoFFI, WuiEnv, WuiStr};
+use crate::color::WuiColor;
+use crate::{IntoFFI, WuiEnv, WuiStr, ffi_struct, ffi_view, impl_computed};
 use alloc::vec::Vec;
 use waterui::component::Native;
 use waterui::{Computed, view::ConfigurableView};
@@ -19,8 +19,19 @@ ffi_struct!(ResolvedFont, WuiResolvedFont, size, weight);
 
 ffi_type!(WuiFont, Font, waterui_drop_font);
 
-
-ffi_enum!(FontWeight, WuiFontWeight, Thin, UltraLight, Light, Normal, Medium, SemiBold, Bold, UltraBold, Black);
+ffi_enum!(
+    FontWeight,
+    WuiFontWeight,
+    Thin,
+    UltraLight,
+    Light,
+    Normal,
+    Medium,
+    SemiBold,
+    Bold,
+    UltraBold,
+    Black
+);
 
 #[repr(C)]
 pub struct WuiTextStyle {
@@ -32,7 +43,16 @@ pub struct WuiTextStyle {
     pub background: *mut WuiColor,
 }
 
-ffi_struct!(Style, WuiTextStyle, font, italic, underline, strikethrough, foreground, background);
+ffi_struct!(
+    Style,
+    WuiTextStyle,
+    font,
+    italic,
+    underline,
+    strikethrough,
+    foreground,
+    background
+);
 
 #[repr(C)]
 pub struct WuiStyledChunk {
@@ -47,16 +67,19 @@ pub struct WuiStyledStr {
 
 ffi_safe!(WuiStyledChunk);
 
-impl IntoFFI for StyledStr{
+impl IntoFFI for StyledStr {
     type FFI = WuiStyledStr;
     fn into_ffi(self) -> Self::FFI {
         WuiStyledStr {
-            chunks: self.into_chunks().into_iter().map(|(text, style)| {
-                WuiStyledChunk {
+            chunks: self
+                .into_chunks()
+                .into_iter()
+                .map(|(text, style)| WuiStyledChunk {
                     text: text.into_ffi(),
                     style: style.into_ffi(),
-                }
-            }).collect::<Vec<WuiStyledChunk>>().into_ffi()
+                })
+                .collect::<Vec<WuiStyledChunk>>()
+                .into_ffi(),
         }
     }
 }
@@ -84,14 +107,12 @@ impl_computed!(
     waterui_drop_computed_font
 );
 
-
 impl IntoFFI for Text {
     type FFI = WuiText;
     fn into_ffi(self) -> Self::FFI {
         self.config().into_ffi()
     }
 }
-
 
 ffi_struct!(TextConfig, WuiText, content);
 
@@ -112,7 +133,10 @@ impl_computed!(
 );
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn waterui_resolve_font(font: *const WuiFont,env: *const WuiEnv) -> *mut Computed<ResolvedFont>{
+unsafe extern "C" fn waterui_resolve_font(
+    font: *const WuiFont,
+    env: *const WuiEnv,
+) -> *mut Computed<ResolvedFont> {
     let font = unsafe { &*font };
     let env = unsafe { &*env };
     let resolved = font.resolve(env);

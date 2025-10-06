@@ -19,7 +19,11 @@ use waterui_core::{
 
 use alloc::boxed::Box;
 use nami::{Binding, signal::IntoComputed};
-use waterui_layout::{frame::Frame, padding::{EdgeInsets, Padding}, stack::Alignment};
+use waterui_layout::{
+    frame::Frame,
+    padding::{EdgeInsets, Padding},
+    stack::Alignment,
+};
 use waterui_navigation::NavigationView;
 
 use crate::background::{Background, ForegroundColor};
@@ -149,42 +153,52 @@ pub trait ViewExt: View + Sized {
         Badge::new(value, self)
     }
 
+    /// Fixes this view's width to the provided value.
     fn width(self, width: f32) -> Frame {
         Frame::new(self).width(width)
     }
 
+    /// Fixes this view's height to the provided value.
     fn height(self, height: f32) -> Frame {
         Frame::new(self).height(height)
     }
 
+    /// Applies a minimum width constraint.
     fn min_width(self, width: f32) -> Frame {
         Frame::new(self).min_width(width)
     }
 
+    /// Applies a maximum width constraint.
     fn max_width(self, width: f32) -> Frame {
         Frame::new(self).max_width(width)
     }
 
+    /// Applies a minimum height constraint.
     fn min_height(self, height: f32) -> Frame {
         Frame::new(self).min_height(height)
     }
 
+    /// Applies a maximum height constraint.
     fn max_height(self, height: f32) -> Frame {
         Frame::new(self).max_height(height)
     }
 
+    /// Fixes both width and height simultaneously.
     fn size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).width(width).height(height)
     }
 
+    /// Applies minimum constraints on both axes.
     fn min_size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).min_width(width).min_height(height)
     }
 
+    /// Applies maximum constraints on both axes.
     fn max_size(self, width: f32, height: f32) -> Frame {
         Frame::new(self).max_width(width).max_height(height)
     }
 
+    /// Aligns this view within its frame using the provided alignment.
     fn alignment(self, alignment: Alignment) -> Frame {
         Frame::new(self).alignment(alignment)
     }

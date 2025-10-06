@@ -49,15 +49,18 @@ impl Photo {
         self
     }
 
-    pub async fn load(&self) -> Image{
+    /// Loads the image associated with this `Photo`.
+    ///
+    /// # Panics
+    ///
+    /// Panics because the loader is not implemented yet.
+    #[allow(clippy::unused_async)]
+    pub async fn load(&self) -> Image {
         todo!()
-       
     }
 }
 
-
-
-
+/// Convenience constructor for building a `Photo` component inline.
 pub fn photo(source: impl Into<Url>) -> Photo {
     Photo::new(source)
 }

@@ -1,4 +1,4 @@
-//! View wrapper that lets arbitrary [`Layout`](crate::Layout) implementations
+//! View wrapper that lets arbitrary [`Layout`] implementations
 //! participate in the `WaterUI` view tree.
 
 use core::fmt::Debug;
@@ -8,7 +8,7 @@ use waterui_core::{AnyView, raw_view, view::TupleViews};
 
 use crate::Layout;
 
-/// A view wrapper that executes an arbitrary [`Layout`](crate::Layout)
+/// A view wrapper that executes an arbitrary [`Layout`]
 /// implementation.
 pub struct Container {
     layout: Box<dyn Layout>,

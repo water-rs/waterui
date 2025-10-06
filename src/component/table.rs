@@ -11,15 +11,15 @@
 //! use waterui::component::views::AnyViews;
 //!
 //! // Create two columns, each with two rows of text.
-//! let column1 = table::TableColumn::new(AnyViews::new([
+//! let column1 = table::TableColumn::new(AnyViews::new((
 //!     Text::new("Row 1, Col 1"),
 //!     Text::new("Row 2, Col 1"),
-//! ]));
+//! )));
 //!
-//! let column2 = table::TableColumn::new(AnyViews::new([
+//! let column2 = table::TableColumn::new(AnyViews::new((
 //!     Text::new("Row 1, Col 2"),
 //!     Text::new("Row 2, Col 2"),
-//! ]));
+//! )));
 //!
 //! // Create a table with the defined columns.
 //! let table = table::Table::new(vec![column1, column2]);
@@ -28,7 +28,8 @@ use alloc::vec::Vec;
 use waterui_core::{configurable, id::IdentifableExt};
 
 use crate::component::{
-    views::{AnyViews, Views}, Text
+    Text,
+    views::{AnyViews, Views},
 };
 use nami::{Computed, impl_constant, signal::IntoComputed};
 
@@ -85,22 +86,27 @@ impl TableColumn {
     }
 }
 
-impl <T>FromIterator<T> for TableColumn where T: Into<Text> {
+impl<T> FromIterator<T> for TableColumn
+where
+    T: Into<Text>,
+{
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let contents = iter.into_iter().enumerate().map(|(index,item)| item.into().use_id(index)).collect::<Vec<_>>();
-        //Self::new(contents)
-
-        //ForEach::new(contents, |d|{});
-
+        let contents = iter
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| item.into().use_id(index))
+            .collect::<Vec<_>>();
+        let _ = contents;
         todo!()
     }
 }
 
-
+/// Convenience constructor for building a `Table` from column data.
 pub fn table(columns: impl IntoComputed<Vec<TableColumn>>) -> Table {
     Table::new(columns)
 }
 
+/// Convenience constructor for creating a single table column.
 pub fn col(rows: impl Views<View = Text> + 'static) -> TableColumn {
     TableColumn::new(rows)
 }
