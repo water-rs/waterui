@@ -12,9 +12,7 @@
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment,
-    env::With,
-    handler::{Handler, HandlerFn, IntoHandler},
+    components::IgnorableMetadata, env::With, handler::{Handler, HandlerFn, IntoHandler}, AnyView, Environment
 };
 
 use alloc::boxed::Box;
@@ -25,8 +23,9 @@ use waterui_layout::{
     stack::Alignment,
 };
 use waterui_navigation::NavigationView;
+use waterui_str::Str;
 
-use crate::background::{Background, ForegroundColor};
+use crate::{accessibility::{self, AccessibilityLabel, AccessibilityRole}, background::{Background, ForegroundColor}};
 use crate::component::{Metadata, Text, badge::Badge, focu::Focused};
 use waterui_core::id::TaggedView;
 
@@ -222,6 +221,22 @@ pub trait ViewExt: View + Sized {
     /// * `tag` - The tag to associate with this view
     fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
         TaggedView::new(tag, self)
+    }
+
+    /// Sets the accessibility label for this view.
+    ///
+    /// # Arguments
+    /// * `label` - The accessibility label to apply
+    fn a11y_label(self, label: impl Into<Str>) -> IgnorableMetadata<AccessibilityLabel> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    }
+
+    /// Sets the accessibility role for this view.
+    ///
+    /// # Arguments
+    /// * `role` - The accessibility role to apply
+    fn a11y_role(self, role: accessibility::AccessibilityRole) -> IgnorableMetadata<AccessibilityRole> {
+        IgnorableMetadata::new(self, role)
     }
 }
 
