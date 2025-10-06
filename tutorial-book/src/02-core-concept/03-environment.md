@@ -24,7 +24,7 @@ struct Theme {
 }
 
 pub fn entry() -> impl View {
-    home
+    home()
         .with(AppConfig {
         api_url: "https://api.example.com".to_string(),
         timeout_seconds: 30,
@@ -73,6 +73,7 @@ Function views don't directly receive the `env` parameter. Instead, you can comp
 #### In `action`
 ```rust,ignore
 use waterui::prelude::*;
+use waterui::reactive::binding;
 
 #[derive(Debug, Clone)]
 pub struct Message(&'static str);

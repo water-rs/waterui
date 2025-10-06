@@ -50,8 +50,32 @@ raw_view!(Container); // Under the hood the renderer drives the layout trait obj
 /// [`Container::new`]. Callers provide the documentation string so generated
 /// types show up in user-facing docs.
 ///
-/// ```
-/// container!(MyContainer, MyLayout, "Runs `MyLayout` for its children.");
+/// ```no_run
+/// use waterui_layout::{container, core::{Layout, ProposalSize, ChildMetadata, Rect, Size}};
+///
+/// #[derive(Default)]
+/// struct ZeroLayout;
+///
+/// impl Layout for ZeroLayout {
+///     fn propose(&mut self, _parent: ProposalSize, _children: &[ChildMetadata]) -> Vec<ProposalSize> {
+///         Vec::new()
+///     }
+///
+///     fn size(&mut self, _parent: ProposalSize, _children: &[ChildMetadata]) -> Size {
+///         Size::zero()
+///     }
+///
+///     fn place(
+///         &mut self,
+///         _bound: Rect,
+///         _proposal: ProposalSize,
+///         _children: &[ChildMetadata],
+///     ) -> Vec<Rect> {
+///         Vec::new()
+///     }
+/// }
+///
+/// container!(MyContainer, ZeroLayout, "Delegates to ZeroLayout during layout.");
 /// ```
 #[macro_export]
 macro_rules! container {

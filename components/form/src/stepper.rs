@@ -17,7 +17,11 @@ pub struct StepperConfig {
     pub range: RangeInclusive<i32>,
 }
 
-configurable!(Stepper, StepperConfig);
+configurable!(
+    #[doc = "A numeric stepper control for incrementing or decrementing values."]
+    Stepper,
+    StepperConfig
+);
 
 impl Stepper {
     /// Creates a new `Stepper` with the given binding value.
