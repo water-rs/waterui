@@ -1380,6 +1380,16 @@ struct WuiTypeId waterui_progress_id(void);
  * The pointer must be a valid pointer to a properly initialized value
  * of the expected type, and must not be used after this function is called.
  */
+void waterui_drop_watcher_metadata(struct WuiWatcherMetadata *value);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
 void waterui_drop_box_watcher_guard(struct WuiWatcherGuard *value);
 
 /**
@@ -1906,16 +1916,6 @@ void waterui_set_binding_id(struct Binding_Id *binding, struct WuiId value);
  */
 struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *binding,
                                                  struct WuiWatcher_WuiId watcher);
-
-/**
- * Drops the FFI value.
- *
- * # Safety
- *
- * The pointer must be a valid pointer to a properly initialized value
- * of the expected type, and must not be used after this function is called.
- */
-void waterui_drop_watcher_metadata(struct WuiWatcherMetadata *value);
 
 WuiEnv* waterui_init(void);
 

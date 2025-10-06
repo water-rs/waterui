@@ -8,17 +8,17 @@ use crate::Environment;
 /// A trait for types that can be resolved to a value in a given environment.
 ///
 /// This trait enables reactive values that depend on environmental context.
-pub trait Resolvable:Debug+Clone {
+pub trait Resolvable: Debug + Clone {
     /// The type of the resolved value.
     type Resolved;
     /// Resolves this value in the given environment, returning a signal.
     ///
     /// # Arguments
     /// * `env` - The environment to resolve in
-    fn resolve(&self, env: &Environment) -> impl Signal<Output=Self::Resolved>;
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved>;
 }
 
-trait ResolvableImpl<T>:Debug {
+trait ResolvableImpl<T>: Debug {
     fn resolve(&self, env: &Environment) -> Computed<T>;
     fn clone_box(&self) -> Box<dyn ResolvableImpl<T>>;
 }
@@ -41,27 +41,29 @@ pub struct AnyResolvable<T> {
     inner: Box<dyn ResolvableImpl<T>>,
 }
 
-impl <T>Resolvable for AnyResolvable<T> where T: 'static + Debug {
+impl<T> Resolvable for AnyResolvable<T>
+where
+    T: 'static + Debug,
+{
     type Resolved = T;
-    fn resolve(&self, env: &Environment) -> impl Signal<Output=Self::Resolved> {
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         self.inner.resolve(env)
     }
 }
 
-
-impl <T>Clone for AnyResolvable<T> {
+impl<T> Clone for AnyResolvable<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone_box(),
         }
     }
 }
-impl <T>AnyResolvable<T> {
+impl<T> AnyResolvable<T> {
     /// Creates a new type-erased resolvable value.
     ///
     /// # Arguments
     /// * `value` - The resolvable value to wrap
-    pub fn new(value: impl Resolvable<Resolved = T>+'static) -> Self {
+    pub fn new(value: impl Resolvable<Resolved = T> + 'static) -> Self {
         Self {
             inner: Box::new(value),
         }
@@ -79,12 +81,12 @@ impl <T>AnyResolvable<T> {
 
 /// A mapping type that transforms a resolvable value using a function.
 #[derive(Clone)]
-pub struct Map<R,F>{
+pub struct Map<R, F> {
     resolvable: R,
     func: F,
 }
 
-impl <R:Debug,F>Debug for Map<R,F>{
+impl<R: Debug, F> Debug for Map<R, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("With")
             .field("resolvable", &self.resolvable)
@@ -93,27 +95,29 @@ impl <R:Debug,F>Debug for Map<R,F>{
     }
 }
 
-impl <R,F>Map<R,F> {
+impl<R, F> Map<R, F> {
     /// Creates a new mapping that transforms the resolved value using the given function.
     #[must_use]
-    pub const fn new<T,U>(resolvable: R, func: F) -> Self where
-    R: Resolvable<Resolved=T>,
-    F: Fn(T)->U + Clone + 'static,
-    T: 'static,
-    U: 'static,{
+    pub const fn new<T, U>(resolvable: R, func: F) -> Self
+    where
+        R: Resolvable<Resolved = T>,
+        F: Fn(T) -> U + Clone + 'static,
+        T: 'static,
+        U: 'static,
+    {
         Self { resolvable, func }
     }
 }
 
-impl<R,F,T,U> Resolvable for Map<R,F>
+impl<R, F, T, U> Resolvable for Map<R, F>
 where
-    R: Resolvable<Resolved=T>,
-    F: Fn(T)->U + Clone + 'static,
+    R: Resolvable<Resolved = T>,
+    F: Fn(T) -> U + Clone + 'static,
     T: 'static,
     U: 'static,
 {
     type Resolved = U;
-    fn resolve(&self, env: &Environment) -> impl Signal<Output=Self::Resolved> {
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let func = self.func.clone();
         self.resolvable.resolve(env).map(func)
     }
