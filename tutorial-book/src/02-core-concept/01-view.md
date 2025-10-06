@@ -43,6 +43,7 @@ waterui_text::Text::new("Important!")
 ### Control Views
 ```rust,ignore
 use waterui::prelude::*;
+use waterui::reactive::binding;
 // Button
 button("Click me")
     .action(|| println!("Clicked!"))
@@ -109,6 +110,9 @@ Only use the View trait when your component needs to store state, or you prefer 
 
 ```rust,ignore
 // Only needed when the struct holds state
+use waterui::prelude::*;
+use waterui::reactive::binding;
+
 struct CounterWidget {
     initial_value: i32,
     step: i32,
@@ -117,11 +121,11 @@ struct CounterWidget {
 impl View for CounterWidget {
     fn body(self, _env: &Environment) -> impl View {
         let count = binding(self.initial_value);
-        
+
         vstack((
-            text!("Count: {}", count),
+            text!("Count: {count}"),
             button("+")
-                .action_with(&count, move |count| count.update(|n| *n += self.step)),
+                .action_with(&count, move |count| count.increment(self.step)),
         ))
     }
 }
