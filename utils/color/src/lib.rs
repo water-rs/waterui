@@ -508,3 +508,123 @@ fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
         ),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPSILON: f32 = 1e-5;
+    const EPSILON_WIDE: f32 = 1e-3;
+
+    fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    #[test]
+    fn srgb_linear_roundtrip() {
+        let samples = [-0.25_f32, 0.0, 0.001, 0.02, 0.25, 0.5, 1.0, 1.25];
+
+        for value in samples {
+            let linear = srgb_to_linear(value);
+            let recon = linear_to_srgb(linear);
+            assert!(
+                approx_eq(value, recon, EPSILON),
+                "value {value} recon {recon}"
+            );
+        }
+    }
+
+    #[test]
+    fn srgb_to_p3_and_back() {
+        let samples = [
+            Srgb::new(0.0, 0.0, 0.0),
+            Srgb::new(0.25, 0.5, 0.75),
+            Srgb::new(0.9, 0.2, 0.1),
+            Srgb::new(0.6, 0.8, 0.1),
+        ];
+
+        for color in samples {
+            let roundtrip = color.to_p3().to_srgb();
+            assert!(approx_eq(color.red, roundtrip.red, EPSILON_WIDE));
+            assert!(approx_eq(color.green, roundtrip.green, EPSILON_WIDE));
+            assert!(approx_eq(color.blue, roundtrip.blue, EPSILON_WIDE));
+        }
+    }
+
+    #[test]
+    fn p3_to_srgb_and_back() {
+        let samples = [
+            P3::new(0.0, 0.0, 0.0),
+            P3::new(0.3, 0.5, 0.7),
+            P3::new(1.0, 0.0, 0.0),
+            P3::new(0.2, 0.9, 0.3),
+        ];
+
+        for color in samples {
+            let roundtrip = color.to_srgb().to_p3();
+            assert!(approx_eq(color.red, roundtrip.red, EPSILON_WIDE));
+            assert!(approx_eq(color.green, roundtrip.green, EPSILON_WIDE));
+            assert!(approx_eq(color.blue, roundtrip.blue, EPSILON_WIDE));
+        }
+    }
+
+    #[test]
+    fn srgb_resolve_matches_linear_components() {
+        let color = Srgb::from_hex("#4CAF50");
+        let resolved = color.resolve();
+
+        assert!(approx_eq(resolved.red, srgb_to_linear(color.red), EPSILON));
+        assert!(approx_eq(
+            resolved.green,
+            srgb_to_linear(color.green),
+            EPSILON
+        ));
+        assert!(approx_eq(
+            resolved.blue,
+            srgb_to_linear(color.blue),
+            EPSILON
+        ));
+        assert!(approx_eq(resolved.headroom, 0.0, EPSILON));
+        assert!(approx_eq(resolved.opacity, 1.0, EPSILON));
+    }
+
+    #[test]
+    fn color_with_opacity_and_headroom_resolves() {
+        let env = Environment::new();
+        let base = Color::srgb(32, 64, 128)
+            .with_opacity(0.4)
+            .with_headroom(0.6);
+
+        let resolved = base.resolve(&env).get();
+
+        assert!(approx_eq(resolved.opacity, 0.4, EPSILON));
+        assert!(approx_eq(resolved.headroom, 0.6, EPSILON));
+    }
+
+    #[test]
+    fn p3_resolution_matches_conversion() {
+        let env = Environment::new();
+        let color = Color::p3(0.3, 0.6, 0.9);
+        let resolved = color.resolve(&env).get();
+        let srgb = P3::new(0.3, 0.6, 0.9).to_srgb().resolve();
+
+        assert!(approx_eq(resolved.red, srgb.red, EPSILON_WIDE));
+        assert!(approx_eq(resolved.green, srgb.green, EPSILON_WIDE));
+        assert!(approx_eq(resolved.blue, srgb.blue, EPSILON_WIDE));
+    }
+
+    #[test]
+    fn hex_parsing_accepts_prefixes() {
+        let direct = Srgb::from_hex("#1A2B3C");
+        let prefixed = Srgb::from_hex("0x1A2B3C");
+        let bare = Srgb::from_hex("1A2B3C");
+
+        assert!(approx_eq(direct.red, prefixed.red, EPSILON));
+        assert!(approx_eq(direct.green, prefixed.green, EPSILON));
+        assert!(approx_eq(direct.blue, prefixed.blue, EPSILON));
+
+        assert!(approx_eq(direct.red, bare.red, EPSILON));
+        assert!(approx_eq(direct.green, bare.green, EPSILON));
+        assert!(approx_eq(direct.blue, bare.blue, EPSILON));
+    }
+}
