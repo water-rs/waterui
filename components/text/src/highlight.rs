@@ -1,4 +1,4 @@
-use core::{error::Error, fmt::{Display}, str::FromStr};
+use core::{error::Error, fmt::{Debug, Display}, str::FromStr};
 
 use alloc::{string::ToString, vec::Vec};
 use inkjet::{theme::Theme, tree_sitter_highlight::HighlightEvent};
@@ -11,17 +11,27 @@ use crate::styled::{Style, StyledStr, ToStyledStr};
 /// A trait for syntax highlighting implementations.
 pub trait Highlighter: Send + Sync {
     /// Highlights the given text and returns a vector of chunks with colors.
-    fn highlight<'a>(&mut self, language:Language,text: &'a str) -> Vec<HighlightChunk<'a>>;
+    fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>>;
 }
 
 /// Highlights text asynchronously using the given highlighter.
 #[allow(clippy::unused_async)]
-pub async fn highlight_text(language:Language,text: Str,mut highlighter: impl Highlighter) -> StyledStr {
+pub async fn highlight_text(
+    language: Language,
+    text: Str,
+    mut highlighter: impl Highlighter,
+) -> StyledStr {
     // TODO: use async thread pool
-    highlighter.highlight(language,&text).into_iter().fold(
-        StyledStr::empty(),
-        |mut s, chunk| { s.push(chunk.text.to_string(), Style::default().foreground(chunk.color)); s },
-    )
+    highlighter
+        .highlight(language, &text)
+        .into_iter()
+        .fold(StyledStr::empty(), |mut s, chunk| {
+            s.push(
+                chunk.text.to_string(),
+                Style::default().foreground(chunk.color),
+            );
+            s
+        })
 }
 
 macro_rules! languages {
@@ -134,7 +144,7 @@ macro_rules! languages {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 match self {
                     $(
-                        Self::$ident => write!(f, stringify!($ident)),     
+                        Self::$ident => write!(f, stringify!($ident)),
                     )*
                 }
             }
@@ -142,11 +152,90 @@ macro_rules! languages {
     };
 }
 
-languages!(Plaintext,Ada,Asm,Awk,Bash,Bibtex,Bicep,Blueprint,C,Capnp,Clojure,CSharp,Cpp,Css,Cue,D,Dart,Diff,Dockerfile,Eex,Elisp,Elixir,Elm,Erlang,Forth,Fortran,Fish,Gdscript,Gleam,Glsl,Go,Haskell,Hcl,Heex,Html,Ini,Java,Javascript,Json,Jsx,Julia,Kotlin,Latex,Llvm,Lua,Make,Matlab,Meson,Nix,ObjectiveC,Ocaml,OcamlInterface,OpenScad,Pascal,Php,ProtoBuf,Python,R,Racket,Regex,Ruby,Rust,Scala,Scheme,Scss,Sql,Svelte,Swift,Toml,Typescript,Tsx,Vimscript,Wast,Wat,X86asm,Wgsl,Yaml,Zig
+languages!(
+    Plaintext,
+    Ada,
+    Asm,
+    Awk,
+    Bash,
+    Bibtex,
+    Bicep,
+    Blueprint,
+    C,
+    Capnp,
+    Clojure,
+    CSharp,
+    Cpp,
+    Css,
+    Cue,
+    D,
+    Dart,
+    Diff,
+    Dockerfile,
+    Eex,
+    Elisp,
+    Elixir,
+    Elm,
+    Erlang,
+    Forth,
+    Fortran,
+    Fish,
+    Gdscript,
+    Gleam,
+    Glsl,
+    Go,
+    Haskell,
+    Hcl,
+    Heex,
+    Html,
+    Ini,
+    Java,
+    Javascript,
+    Json,
+    Jsx,
+    Julia,
+    Kotlin,
+    Latex,
+    Llvm,
+    Lua,
+    Make,
+    Matlab,
+    Meson,
+    Nix,
+    ObjectiveC,
+    Ocaml,
+    OcamlInterface,
+    OpenScad,
+    Pascal,
+    Php,
+    ProtoBuf,
+    Python,
+    R,
+    Racket,
+    Regex,
+    Ruby,
+    Rust,
+    Scala,
+    Scheme,
+    Scss,
+    Sql,
+    Svelte,
+    Swift,
+    Toml,
+    Typescript,
+    Tsx,
+    Vimscript,
+    Wast,
+    Wat,
+    X86asm,
+    Wgsl,
+    Yaml,
+    Zig
 );
 
 impl_constant!(Language);
 
+/// Error returned when a language token cannot be parsed.
 #[derive(Debug)]
 pub struct ParseLanguageError;
 impl Display for ParseLanguageError {
@@ -156,14 +245,23 @@ impl Display for ParseLanguageError {
 }
 impl Error for ParseLanguageError {}
 
-impl FromStr for Language{
+impl FromStr for Language {
     type Err = ParseLanguageError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        inkjet::Language::from_token(s).ok_or(ParseLanguageError).map(Self::from_inkjet)
+        inkjet::Language::from_token(s)
+            .ok_or(ParseLanguageError)
+            .map(Self::from_inkjet)
     }
 }
 
+/// Default syntax highlighter implementation using the inkjet library.
 pub struct DefaultHighlighter(inkjet::Highlighter);
+
+impl Debug for DefaultHighlighter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DefaultHighlighter").finish()
+    }
+}
 
 impl Default for DefaultHighlighter {
     fn default() -> Self {
@@ -171,19 +269,23 @@ impl Default for DefaultHighlighter {
     }
 }
 
-impl DefaultHighlighter{
-    #[must_use] 
+impl DefaultHighlighter {
+    /// Creates a new highlighter backed by the default inkjet highlighter.
+    #[must_use]
     pub fn new() -> Self {
-        Self( inkjet::Highlighter::new())
+        Self(inkjet::Highlighter::new())
     }
 }
 
 impl Highlighter for DefaultHighlighter {
-    fn highlight<'a>(&mut self, language:Language,text: &'a str) -> Vec<HighlightChunk<'a>> {
-        let iter=self.0
-            .highlight_raw(language.into(), &text).expect("Fail to highlight text");
+    fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>> {
+        let iter = self
+            .0
+            .highlight_raw(language.into(), &text)
+            .expect("Fail to highlight text");
 
-        let theme = Theme::from_helix(inkjet::theme::vendored::ONEDARK).expect("Fail to load theme");
+        let theme =
+            Theme::from_helix(inkjet::theme::vendored::ONEDARK).expect("Fail to load theme");
 
         let mut chunks = Vec::new();
         let mut current_color = Srgb::new_u8(theme.fg.r, theme.fg.g, theme.fg.b);
@@ -198,11 +300,11 @@ impl Highlighter for DefaultHighlighter {
                         text: chunk_text,
                         color: current_color,
                     });
-                },
+                }
                 HighlightEvent::HighlightStart(highlight) => {
                     // Push current color to stack
                     color_stack.push(current_color);
-                    
+
                     // Get the highlight name and style from theme
                     let name = inkjet::constants::HIGHLIGHT_NAMES[highlight.0];
                     if let Some(style) = theme.get_style(name) {
@@ -210,21 +312,19 @@ impl Highlighter for DefaultHighlighter {
                         let color = style.fg.unwrap_or(theme.fg);
                         current_color = Srgb::new_u8(color.r, color.g, color.b);
                     }
-                },
+                }
                 HighlightEvent::HighlightEnd => {
                     // Restore previous color from stack
                     if let Some(color) = color_stack.pop() {
                         current_color = color;
                     }
-                },
+                }
             }
         }
 
         chunks
     }
 }
-
-
 
 /// A chunk of highlighted text with an associated color.
 #[derive(Debug)]

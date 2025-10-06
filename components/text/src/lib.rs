@@ -8,13 +8,13 @@
 
 /// Font utilities and definitions.
 pub mod font;
-/// Styled text support for rich text formatting.
-pub mod styled;
 /// Syntax highlighting support.
 pub mod highlight;
 /// Link components for interactive text.
 pub mod link;
-pub use link::{link,Link};
+/// Styled text support for rich text formatting.
+pub mod styled;
+pub use link::{Link, link};
 /// Localization and formatting utilities.
 pub mod locale;
 /// Macros for convenient text creation.
@@ -23,6 +23,6 @@ pub mod macros;
 extern crate alloc;
 
 mod text;
-pub use text::{Text,TextConfig,text};
+pub use text::{Text, TextConfig, text};
 
 pub use nami as __nami;

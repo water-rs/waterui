@@ -8,14 +8,16 @@
 //!
 //! ```rust
 //! use waterui::prelude::*;
+//! use waterui::widget::condition::when;
+//! use waterui_core::binding;
 //!
 //! let is_visible = binding(true);
 //!
-//! when(is_visible, || text!("This text is visible"))
-//!     .or(|| text!("This text is shown when hidden"));
+//! when(is_visible.clone(), || "This text is visible")
+//!     .or(|| "This text is shown when hidden");
 //!
 //! // Binding implements Not trait - no need to wrap with s!()
-//! when(!is_visible, || text!("This text is hidden"));
+//! when(!is_visible, || "This text is hidden");
 //! ```
 
 use crate::{ViewExt, component::Dynamic, view::ViewBuilder};
@@ -39,20 +41,21 @@ use waterui_core::{
 /// # Examples
 ///
 /// ```rust
-/// use waterui::{when, text};
+/// use waterui::widget::condition::when;
+/// use waterui_text::text;
 /// use nami::binding;
 ///
 /// let show_message = binding(true);
 ///
 /// // Simple conditional rendering
-/// when(show_message, || text!("Hello, World!"));
+/// when(show_message.clone(), || "Hello, World!");
 ///
 /// // Using negation (Binding implements Not)
-/// when(!show_message, || text!("Message is hidden"));
+/// when(!show_message.clone(), || "Message is hidden");
 ///
 /// // With an alternative view
-/// when(show_message, || text!("Logged in"))
-///     .or(|| text!("Please log in"));
+/// when(show_message, || "Logged in")
+///     .or(|| "Please log in");
 /// ```
 #[derive(Debug)]
 pub struct When<Condition, Then> {
@@ -77,14 +80,15 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use waterui::When;
+    /// use waterui::widget::condition::When;
+    /// use waterui_text::text;
     /// use nami::binding;
     ///
     /// let condition = binding(true);
-    /// let when_component = When::new(condition, || text!("Visible"));
+    /// let when_component = When::new(condition.clone(), |_| text("Visible"));
     ///
     /// // Using negation
-    /// let when_not = When::new(!condition, || text!("Hidden"));
+    /// let when_not = When::new(!condition, |_| "Hidden");
     /// ```
     pub const fn new(condition: Condition, then: Then) -> Self {
         Self { condition, then }
@@ -111,25 +115,28 @@ where
 /// # Examples
 ///
 /// ```rust
-/// use waterui::{when, text, vstack, button};
+/// use waterui::widget::condition::when;
+/// use waterui_text::text;
+/// use waterui_layout::stack::vstack;
+/// use waterui::component::button;
 /// use nami::binding;
 ///
 /// let is_logged_in = binding(false);
 ///
 /// // Basic conditional rendering
-/// when(is_logged_in, || {
+/// when(is_logged_in.clone(), || {
 ///     vstack((
-///         text!("Welcome back!"),
-///         button("Logout", || {}),
+///         "Welcome back!",
+///         button("Logout"),
 ///     ))
 /// });
 ///
 /// // Using negation directly (no s!() needed)
-/// when(!is_logged_in, || text!("Please log in"));
+/// when(!is_logged_in.clone(), || "Please log in");
 ///
 /// // With alternative view
-/// when(is_logged_in, || text!("Dashboard"))
-///     .or(|| text!("Please log in"));
+/// when(is_logged_in, || "Dashboard")
+///     .or(|| "Please log in");
 /// ```
 pub const fn when<Condition, P, Then, V>(
     condition: Condition,
@@ -169,17 +176,18 @@ impl<Condition, Then> When<Condition, Then> {
     /// # Examples
     ///
     /// ```rust
-    /// use waterui::{when, text};
+    /// use waterui::widget::condition::when;
+    /// use waterui_text::text;
     /// use nami::binding;
     ///
     /// let has_data = binding(false);
     ///
-    /// when(has_data, || text!("Data loaded"))
-    ///     .or(|| text!("Loading..."));
+    /// when(has_data.clone(), || "Data loaded")
+    ///     .or(|| "Loading...");
     ///
     /// // Equivalent using negation
-    /// when(!has_data, || text!("Loading..."))
-    ///     .or(|| text!("Data loaded"));
+    /// when(!has_data, || "Loading...")
+    ///     .or(|| "Data loaded");
     /// ```
     pub fn or<P, Or, V>(self, or: Or) -> WhenOr<Condition, Then, IntoHandler<Or, P, V>>
     where
@@ -213,19 +221,21 @@ impl<Condition, Then> When<Condition, Then> {
 /// # Examples
 ///
 /// ```rust
-/// use waterui::{when, text, vstack};
+/// use waterui::widget::condition::when;
+/// use waterui_text::text;
+/// use waterui_layout::stack::vstack;
 /// use nami::binding;
 ///
 /// let is_loading = binding(true);
 ///
 /// when(!is_loading, || {
 ///     vstack((
-///         text!("Welcome!"),
-///         text!("Your data is ready."),
+///         "Welcome!",
+///         "Your data is ready.",
 ///     ))
 /// }).or(|| {
 ///     vstack((
-///         text!("Loading..."),
+///         "Loading...",
 ///         // Could include a spinner component here
 ///     ))
 /// });
