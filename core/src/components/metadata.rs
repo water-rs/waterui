@@ -62,6 +62,21 @@ pub struct IgnorableMetadata<T> {
     pub value: T,
 }
 
+impl<T> IgnorableMetadata<T> {
+    /// Creates a new `IgnorableMetadata` instance with the specified content and value.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The view to be wrapped with ignorable metadata.
+    /// * `value` - The metadata value to associate with the content.
+    pub fn new(content: impl View, value: T) -> Self {
+        Self {
+            content: AnyView::new(content),
+            value,
+        }
+    }
+}
+
 impl<T: 'static> View for IgnorableMetadata<T> {
     fn body(self, _env: &Environment) -> impl View {}
 }
