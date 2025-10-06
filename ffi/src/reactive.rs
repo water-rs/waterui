@@ -10,6 +10,7 @@ use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
+ffi_type!(WuiWatcherMetadata, Metadata, waterui_drop_watcher_metadata);
 
 ffi_type!(
     WuiWatcherGuard,
@@ -45,8 +46,8 @@ macro_rules! impl_computed {
             computed: *const Computed<$ty>,
             watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
         ) -> *mut $crate::reactive::WuiWatcherGuard {
-            use $crate::IntoFFI;
             use waterui::Signal;
+            use $crate::IntoFFI;
             unsafe {
                 let guard =
                     (*computed).watch(move |ctx| watcher.call(ctx.value.into_ffi(), ctx.metadata));
@@ -115,7 +116,6 @@ impl_computed!(
     waterui_drop_computed_str
 );
 
-
 impl_computed!(
     AnyView,
     *mut WuiAnyView,
@@ -164,7 +164,6 @@ impl_computed!(
     waterui_watch_computed_picker_items,
     waterui_drop_computed_picker_items
 );
-
 
 impl_computed!(
     Video,
@@ -270,5 +269,3 @@ impl_binding!(
     waterui_watch_binding_id,
     waterui_drop_binding_id
 );
-
-ffi_type!(WuiWatcherMetadata, Metadata, waterui_drop_watcher_metadata);
