@@ -29,7 +29,9 @@ pub struct BadgeConfig {
     pub color: Computed<Color>,
 }
 
-configurable!(Badge, BadgeConfig);
+configurable!(
+    /// A badge component that displays a numeric indicator attached to content.
+    Badge,BadgeConfig);
 
 impl Badge {
     /// Creates a new Badge with the specified value and content

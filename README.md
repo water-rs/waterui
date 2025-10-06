@@ -19,19 +19,24 @@ Create your first reactive counter:
 
 ```rust
 use waterui::prelude::*;
+use waterui_core::binding;
+use waterui_layout::stack::{vstack, hstack};
+use waterui_text::text;
+use waterui::component::button;
+use waterui_core::SignalExt;
 
 pub fn counter() -> impl View {
-    let count = binding(0);
-    let doubled = count.map(|n| *n * 2);
+    let count = binding(&0);
+    let doubled = count.map(|n: &i32| *n * 2);
 
     vstack((
         text!("Count: {count}"),
-        text!("Doubled: {doubled}"),
+        text!("Doubled: {doubled}")),
         hstack((
             button("Increment")
-                .action_with(&count, |count| count.update(|n| *n += 1)),
+                .action_with(&count, |count: &Binding<i32>| (*count).update(|n| *n += 1)),
             button("Reset")
-                .action_with(&count, |count| count.set(0)),
+                .action_with(&count, |count: &Binding<i32>| (*count).set(0)),
         ))
     ))
 }

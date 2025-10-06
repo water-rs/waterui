@@ -2,11 +2,20 @@
 
 WaterUI provides a comprehensive form system that makes creating interactive forms both simple and powerful. The centerpiece of this system is the `FormBuilder` derive macro, which automatically generates form UIs from your data structures.
 
-## Two-binding in WaterUI
+## Two-Way Data Binding
 
-```rust
-[WIP]
-```
+WaterUI's forms are built on a powerful concept called **two-way data binding**. This means that the state of your data model and the state of your UI controls are always kept in sync automatically.
+
+Here's how it works:
+1.  You provide a `Binding` of your data structure (e.g., `Binding<LoginForm>`) to a form control.
+2.  The form control (e.g., a `TextField`) reads the initial value from the binding to display it.
+3.  When the user interacts with the control (e.g., types into the text field), the control **automatically updates the value inside your original `Binding`**.
+
+This creates a seamless, reactive loop:
+-   **Model → View:** If you programmatically change the data in your `Binding`, the UI control will instantly reflect that change.
+-   **View → Model:** If the user changes the value in the UI control, your underlying data `Binding` is immediately updated.
+
+This eliminates a huge amount of boilerplate code. You don't need to write manual event handlers to update your state for every single input field. The binding handles it for you. All form components in WaterUI, whether used individually or through the `FormBuilder`, use this two-way binding mechanism.
 
 ## Quick Start with FormBuilder
 
@@ -29,8 +38,8 @@ pub struct LoginForm {
 }
 
 fn login_view() -> impl View {
-    let form_binding = LoginForm::binding();
-    form(&form_binding)
+    let login_form = LoginForm::binding();
+    form(&login_form)
 }
 ```
 
@@ -85,31 +94,26 @@ struct RegistrationForm {
 
 fn registration_view() -> impl View {
     let form_binding = RegistrationForm::binding();
+
+    // Create a computed signal for the validation message
+    let validation_message = form_binding.map(|data| {
+        if data.full_name.len() < 2 {
+            "Name too short"
+        } else if data.age < 18 {
+            "Must be 18 or older"
+        } else if !data.email.contains('@') {
+            "Invalid email"
+        } else {
+            "Form is valid ✓"
+        }
+    });
     
     vstack((
         "User Registration",
         form(&form_binding),
         // Real-time validation feedback
-        validation_feedback(&form_binding),
+        text(validation_message),
     ))
-}
-
-fn validation_feedback(form: &Binding<RegistrationForm>) -> impl View {
-    text!(
-        validate_registration(&form.get())
-    )
-}
-
-fn validate_registration(data: &RegistrationForm) -> &'static str {
-    if data.full_name.len() < 2 {
-        "Name too short"
-    } else if data.age < 18 {
-        "Must be 18 or older"
-    } else if !data.email.contains('@') {
-        "Invalid email"
-    } else {
-        "Form is valid ✓"
-    }
 }
 ```
 
@@ -191,22 +195,24 @@ struct RegistrationWizard {
 fn registration_wizard() -> impl View {
     let wizard = binding(RegistrationWizard::default());
     
-    vstack((
-        text!(format!("Step {} of 2", wizard.current_step.get() + 1)),
-        
-        match wizard.current_step.get() {
+    let step_display = Dynamic::new(wizard.current_step.map(|step| {
+        match step {
             0 => vstack((
                 "Personal Information",
-                form(&wizard.personal),
-            )),
+                form(wizard.map_project(|w| &w.personal)),
+            )).any(),
             1 => vstack((
                 "Contact Information", 
-                form(&wizard.contact),
-            )),
-            _ => "Registration Complete!",
-        },
-        
-        navigation_buttons(&wizard),
+                form(wizard.map_project(|w| &w.contact)),
+            )).any(),
+            _ => text("Registration Complete!").any(),
+        }
+    }));
+
+    vstack((
+        text(s!("Step {} of 2", wizard.current_step.map(|s| s + 1))),
+        step_display,
+        navigation_buttons(wizard),
     ))
 }
 ```
@@ -264,19 +270,23 @@ fn password_form() -> impl View {
 }
 
 fn password_validation(pwd: &Binding<String>, confirm: &Binding<String>) -> impl View {
-    text!("{}", pwd.zip(confirm).map(|(pwd, confirm)| {
-        if pwd == confirm && !pwd.is_empty() {
+    text(s!("{}", pwd.zip(confirm).map(|(p, c)| {
+        if p == c && !p.is_empty() {
             "Passwords match ✓"
         } else {
-            "Passwords don't match"
+            "Passwords do not match"
         }
-    }))
+    })))
 }
 ```
 
-## Form Validation Best Practices
+# Form Validation Best Practices
 
-### Real-time Validation
+### Real-time Validation with Computed Signals
+
+For more complex forms, it's a good practice to encapsulate your validation logic into a separate struct. This makes your code more organized and reusable.
+
+Let's create a `Validation` struct that holds computed signals for each validation rule.
 
 ```rust
 #[derive(Default, Clone, FormBuilder)]
@@ -286,46 +296,44 @@ struct ValidatedForm {
     age: i32,
 }
 
+struct Validation {
+    is_valid_email: Computed<bool>,
+    is_valid_password: Computed<bool>,
+    is_valid_age: Computed<bool>,
+    is_form_valid: Computed<bool>,
+}
+
+impl Validation {
+    fn new(form: &Binding<ValidatedForm>) -> Self {
+        let is_valid_email = form.map(|f| f.email.contains('@') && f.email.contains('.'));
+        let is_valid_password = form.map(|f| f.password.len() >= 8);
+        let is_valid_age = form.map(|f| f.age >= 18);
+        let is_form_valid = is_valid_email.zip(is_valid_password).zip(is_valid_age).map(|((email, pass), age)| email && pass && age);
+
+        Self {
+            is_valid_email,
+            is_valid_password,
+            is_valid_age,
+            is_form_valid,
+        }
+    }
+}
+
 fn validated_form_view() -> impl View {
-    let form = ValidatedForm::binding();
+    let form = binding(ValidatedForm::default());
+    let validation = Validation::new(&form);
     
     vstack((
-        form(&form),
+        form(form),
         
-        // Email validation
-        text!("{}", form.map(|form| {
-            if form.email.contains('@') && form.email.contains('.') {
-                "✓ Valid email"
-            } else {
-                "✗ Please enter a valid email"
-            }
-        })),
-        
-        // Password validation
-        text!("{}", form.map(|form| {
-            if form.password.len() >= 8 {
-                "✓ Password is strong enough"
-            } else {
-                "✗ Password must be at least 8 characters"
-            }
-        })),
-        
-        // Age validation
-        text!("{}", form.map(|form| {
-            if form.age >= 18 {
-                "✓ Age requirement met"
-            } else {
-                "✗ Must be 18 or older"
-            }
-        })),
+        // Validation messages
+        text(validation.is_valid_email.map(|is_valid| if is_valid { "✓ Valid email" } else { "✗ Please enter a valid email" })),
+        text(validation.is_valid_password.map(|is_valid| if is_valid { "✓ Password is strong enough" } else { "✗ Password must be at least 8 characters" })),
+        text(validation.is_valid_age.map(|is_valid| if is_valid { "✓ Age requirement met" } else { "✗ Must be 18 or older" })),
         
         // Submit button - only enabled when form is valid
         button("Submit")
-            .disabled(form.map(|form| {
-                !form.email.contains('@') ||
-                form.password.len() < 8 ||
-                form.age < 18
-            }))
+            .disabled(!validation.is_form_valid)
             .action(|| {
                 // Handle form submission
                 println!("Form submitted!");
@@ -352,19 +360,17 @@ fn settings_panel() -> impl View {
     let settings = UserSettings::binding();
     
     // Computed values based on form state
-    let has_changes = settings.map(|settings| {
-        settings.name != "Default Name" ||
-        settings.theme != "Light" ||
-        settings.notifications
+    let has_changes = settings.map(|s| {
+        s.name != "Default Name" ||
+        s.theme != "Light" ||
+        s.notifications
     });
     
-    let settings_summary = settings.map(|settings| {
-        format!("User: {} | Theme: {} | Notifications: {}",
-            settings.name,
-            settings.theme, 
-            if settings.notifications { "On" } else { "Off" }
-        )
-    });
+    let settings_summary = s!("User: {} | Theme: {} | Notifications: {}", 
+        settings.map_project(|s| &s.name),
+        settings.map_project(|s| &s.theme),
+        settings.map_project(|s| &s.notifications).map(|n| if n { "On" } else { "Off" })
+    );
     
     vstack((
         "Settings",
@@ -372,16 +378,13 @@ fn settings_panel() -> impl View {
         
         // Live preview
         "Preview:",
-        text!("{}", settings_summary),
+        text(settings_summary),
         
         // Save button
         button("Save Changes")
             .disabled(!has_changes)
-            .action({
-                let settings = settings.clone();
-                move |_| {
-                    save_settings(&settings.get());
-                }
+            .action_with(&settings, |s| {
+                save_settings(s);
             }),
     ))
 }

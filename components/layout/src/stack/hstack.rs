@@ -1,7 +1,7 @@
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::{view::TupleViews, AnyView, View};
+use waterui_core::{AnyView, View, view::TupleViews};
 
 use crate::{
     ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container, stack::VerticalAlignment,
@@ -142,21 +142,24 @@ impl HStack {
     }
 
     /// Sets the vertical alignment for children in the stack.
-    #[must_use] 
+    #[must_use]
     pub const fn alignment(mut self, alignment: VerticalAlignment) -> Self {
         self.layout.alignment = alignment;
         self
     }
 
     /// Sets the spacing between children in the stack.
-    #[must_use] 
+    #[must_use]
     pub const fn spacing(mut self, spacing: f32) -> Self {
         self.layout.spacing = spacing;
         self
     }
 }
 
-impl <V>FromIterator<V> for HStack where V: View {
+impl<V> FromIterator<V> for HStack
+where
+    V: View,
+{
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
         let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
         Self::new(VerticalAlignment::default(), 10.0, contents)

@@ -25,7 +25,7 @@
 //!
 //! // With custom loading view
 //! let view = Suspense::new(fetch_user_data())
-//!     .loading(Text::new("Loading user data..."));
+//!     .loading::<_, Text>("Loading user data...");
 //!
 //! // With default loading view from environment
 //! let view = Suspense::new(fetch_user_data());
@@ -67,7 +67,7 @@ use crate::{
 /// }
 ///
 /// let view = Suspense::new(fetch_data())
-///     .loading(Text::new("Loading data..."));
+///     .loading::<_, Text>(Text::new("Loading data..."));
 /// ```
 ///
 /// ## With Default Loading View
@@ -169,16 +169,10 @@ where
 /// use waterui::widget::suspense::{Suspense, DefaultLoadingView};
 /// use waterui_core::Environment;
 /// use waterui::component::text::Text;
-/// use waterui::view::ViewBuilder;
+/// use waterui::view::AnyViewBuilder;
 ///
-/// // Using ViewBuilder for lazy initialization
-/// let loading_view = ViewBuilder::new(|| Text::new("Loading..."));
-/// let env = Environment::new().with(DefaultLoadingView::new(loading_view.anybuilder()));
-///
-/// // Or using FnOnce directly (also implements View for lazy initialization)
-/// let env = Environment::new().with(DefaultLoadingView::new(
-///     ViewBuilder::new(|| Text::new("Loading...")).anybuilder()
-/// ));
+/// // Using a closure for lazy initialization
+/// let env = Environment::new().with(DefaultLoadingView(AnyViewBuilder::new(|| Text::new("Loading..."))));
 /// ```
 #[derive(Debug)]
 pub struct DefaultLoadingView(AnyViewBuilder);
@@ -203,7 +197,7 @@ pub struct DefaultLoadingView(AnyViewBuilder);
 /// // This will use the default loading view from environment
 /// let view = Suspense::new(async_content());
 /// // Equivalent to:
-/// let view = Suspense::new(async_content()).loading(UseDefaultLoadingView);
+/// let view = Suspense::new(async_content()).loading::<_,()>(UseDefaultLoadingView);
 /// ```
 #[derive(Debug)]
 pub struct UseDefaultLoadingView;
@@ -267,7 +261,7 @@ where
     }
 }
 
-
+/// Creates a [`Suspense`] view with the default loading indicator.
 pub const fn suspense<V: SuspendedView>(content: V) -> Suspense<V, UseDefaultLoadingView> {
     Suspense::new(content)
 }
