@@ -17,6 +17,7 @@ pub mod view;
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
+pub mod accessibility;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.
     //!
