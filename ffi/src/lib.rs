@@ -84,7 +84,7 @@ pub fn __init_executor() {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// impl IntoFFI for MyStruct {
 ///     type FFI = *mut MyStruct;
 ///     fn into_ffi(self) -> Self::FFI {
@@ -138,7 +138,7 @@ pub trait InvalidValue {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// struct MyInternalStruct {
 ///     data: Vec<u32>,
 ///     state: String,
@@ -183,7 +183,7 @@ impl<T: OpaqueType> IntoRust for *mut T {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// impl IntoRust for *mut MyStruct {
 ///     type Rust = MyStruct;
 ///

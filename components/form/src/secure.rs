@@ -59,7 +59,11 @@ pub struct SecureFieldConfig {
     pub value: Binding<Secure>,
 }
 
-configurable!(SecureField, SecureFieldConfig);
+configurable!(
+    #[doc = "A secure text entry field that stores its value in a zeroizing wrapper."]
+    SecureField,
+    SecureFieldConfig
+);
 
 impl SecureField {
     /// Creates a new `SecureField` instance.

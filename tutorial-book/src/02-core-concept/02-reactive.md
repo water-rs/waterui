@@ -2,6 +2,12 @@
 
 Reactive state management is the core of any interactive WaterUI application. When your data changes, the UI should automatically update to reflect it. This chapter teaches you how to master WaterUI's reactive system, powered by the **nami** crate.
 
+> All examples assume the following imports:
+> ```rust,ignore
+> use waterui::prelude::*;
+> use waterui::reactive::binding;
+> ```
+
 ## The `Signal` Trait: A Universal Language
 
 Everything in nami's reactive system implements the `Signal` trait. It represents **any value that can be observed for changes**.
@@ -31,9 +37,9 @@ A `Binding<T>` is the most common way to manage **mutable** reactive state. It h
 ```rust,ignore
 use waterui::prelude::*;
 
-// Create mutable reactive state
+// Create mutable reactive state with automatic type conversion
 let counter = binding(0);
-let name = binding("Alice".to_string());
+let name = binding("Alice");
 
 // Set new values, which triggers UI updates
 counter.set(42);
@@ -47,8 +53,8 @@ A `Computed<T>` is a signal that is **derived** from one or more other signals. 
 ```rust,ignore
 use nami::SignalExt;
 
-let first_name = binding("Alice".to_string());
-let last_name = binding("Smith".to_string());
+let first_name = binding("Alice");
+let last_name = binding("Smith");
 
 // Create a computed signal that updates automatically
 let full_name = first_name.zip(last_name).map(|(first, last)| {
@@ -57,6 +63,27 @@ let full_name = first_name.zip(last_name).map(|(first, last)| {
 
 // `full_name` will re-compute whenever `first_name` or `last_name` changes.
 ```
+
+The `binding(value)` helper is re-exported from WaterUI, giving you a concise way to
+initialize bindings with automatic `Into` conversions (e.g. `binding("hello")` -> `Binding<String>`).
+Once you have a binding, reach for `Binding`'s convenience methods like `.increment()`,
+`.toggle()`, or `.push()` to keep your state updates expressive and ergonomic.
+
+#### When Type Inference Needs Help
+
+Sometimes the compiler can't deduce the target type—especially when starting from `None`,
+`Default::default()`, or other type-agnostic values. In those cases, add an explicit type
+with the turbofish syntax:
+
+```rust,ignore
+// Starts as None, so we spell out the final type.
+let selected_user = binding::<Option<User>>(None);
+
+// Empty collection with an explicit element type.
+let log_messages = binding::<Vec<String>>(Vec::new());
+```
+
+The rest of the ergonomics (methods like `.set`, `.toggle`, `.push`) remain exactly the same.
 
 ### 3. Constants: Signals That Never Change
 
@@ -74,7 +101,7 @@ let literal_string = "Hello World";   // Also a signal!
 Calling `.get()` on a signal extracts a **static, one-time snapshot** of its value. When you do this, you break the reactive chain. The UI will be built with that snapshot and will **never update** when the original signal changes.
 
 ```rust,ignore
-let name = binding("Alice".to_string());
+let name = binding("Alice");
 
 // ❌ WRONG: Using .get() breaks reactivity
 let broken_message = format!("Hello, {}", name.get());
@@ -133,7 +160,7 @@ is_visible.toggle(); // is_visible is now true
 For scoped, complex mutations, `.get_mut()` provides a guard. The binding is marked as changed only when the guard is dropped.
 
 ```rust,ignore
-let data = binding(vec![1, 2, 3]);
+let data = binding::<Vec<i32>>(vec![1, 2, 3]);
 
 // Get a mutable guard. The update is sent when `guard` goes out of scope.
 let mut guard = data.get_mut();
@@ -180,7 +207,7 @@ The `SignalExt` trait provides a rich set of combinators for creating new comput
 use std::time::Duration;
 use nami::SignalExt;
 
-let query = binding("".to_string());
+let query = binding(String::new());
 
 // A debounced signal that only updates 200ms after the user stops typing.
 let debounced_query = query.debounce(Duration::from_millis(200));

@@ -8,7 +8,11 @@ use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_core::configurable;
 
-configurable!(Text, TextConfig);
+configurable!(
+    #[doc = "A configurable text view that renders styled, reactive content."]
+    Text,
+    TextConfig
+);
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]

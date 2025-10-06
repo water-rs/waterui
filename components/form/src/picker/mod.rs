@@ -24,7 +24,11 @@ pub struct PickerConfig {
     pub selection: Binding<Id>,
 }
 
-configurable!(Picker, PickerConfig);
+configurable!(
+    #[doc = "A generic selection picker that binds choices to a reactive identifier."]
+    Picker,
+    PickerConfig
+);
 
 /// A picker item that associates a value of type `T` with a text display.
 pub type PickerItem<T> = TaggedView<T, Text>;

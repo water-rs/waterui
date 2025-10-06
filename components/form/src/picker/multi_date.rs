@@ -20,7 +20,11 @@ pub struct MultiDatePickerConfig {
     pub value: Binding<BTreeSet<Date>>,
 }
 
-configurable!(MultiDatePicker, MultiDatePickerConfig);
+configurable!(
+    #[doc = "A picker for managing selections of multiple calendar dates."]
+    MultiDatePicker,
+    MultiDatePickerConfig
+);
 
 impl MultiDatePicker {
     /// Creates a new `MultiDatePicker` with the given binding for selected dates.

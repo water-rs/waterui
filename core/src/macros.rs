@@ -37,7 +37,8 @@ macro_rules! raw_view {
 /// following the builder pattern commonly used in UI frameworks.
 #[macro_export]
 macro_rules! configurable {
-    (@impl $view:ident, $config:ty) => {
+    (@impl $(#[$meta:meta])*; $view:ident, $config:ty) => {
+        $(#[$meta])*
         #[derive(Debug)]
         pub struct $view($config);
 
@@ -69,8 +70,7 @@ macro_rules! configurable {
     };
 
     ($(#[$meta:meta])* $view:ident, $config:ty) => {
-        $(#[$meta])*
-        $crate::configurable!(@impl $view, $config);
+        $crate::configurable!(@impl $(#[$meta])*; $view, $config);
     };
 
 }

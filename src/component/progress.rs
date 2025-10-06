@@ -57,7 +57,11 @@ pub enum ProgressStyle {
     Linear,
 }
 
-configurable!(Progress, ProgressConfig);
+configurable!(
+    #[doc = "A progress indicator view with customizable labels and styles."]
+    Progress,
+    ProgressConfig
+);
 
 /// A progress indicator with a calculated total.
 ///
