@@ -37,30 +37,22 @@ macro_rules! raw_view {
 /// following the builder pattern commonly used in UI frameworks.
 #[macro_export]
 macro_rules! configurable {
-    ($view:ident,$config:ty,$doc:expr) => {
+    (@impl $view:ident, $config:ty) => {
         #[derive(Debug)]
-        #[doc=$doc]
         pub struct $view($config);
 
         impl $crate::view::ConfigurableView for $view {
             type Config = $config;
-
-            fn config(self) -> Self::Config {
-                self.0
-            }
+            #[inline] fn config(self) -> Self::Config { self.0 }
         }
 
         impl $crate::view::ViewConfiguration for $config {
             type View = $view;
-            fn render(self) -> Self::View {
-                $view(self)
-            }
+            #[inline] fn render(self) -> Self::View { $view(self) }
         }
 
         impl From<$config> for $view {
-            fn from(value: $config) -> Self {
-                Self(value)
-            }
+            #[inline] fn from(value: $config) -> Self { Self(value) }
         }
 
         impl $crate::view::View for $view {
@@ -76,11 +68,12 @@ macro_rules! configurable {
         }
     };
 
-    ($view:ident,$config:ty) => {
-        $crate::configurable!($view, $config, "");
+    ($(#[$meta:meta])* $view:ident, $config:ty) => {
+        $(#[$meta])*
+        $crate::configurable!(@impl $view, $config);
     };
-}
 
+}
 macro_rules! tuples {
     ($macro:ident) => {
         $macro!();

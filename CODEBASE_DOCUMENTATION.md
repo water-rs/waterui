@@ -191,20 +191,20 @@ Provides comprehensive layout capabilities:
 
 ```rust
 pub struct Frame {
-    pub width: f64,
-    pub height: f64,
-    pub min_width: f64,
-    pub max_width: f64,
+    pub width: f32,
+    pub height: f32,
+    pub min_width: f32,
+    pub max_width: f32,
     // ... sizing constraints
     pub margin: Edge,
     pub alignment: Alignment,
 }
 
 pub struct Edge {
-    pub top: f64,
-    pub right: f64,
-    pub bottom: f64,
-    pub left: f64,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
 }
 
 pub enum Alignment {
