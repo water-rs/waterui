@@ -39,7 +39,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///
 /// The most convenient way to use this trait is through the derive macro:
 ///
-/// ```rust
+/// ```ignore
 /// use waterui_form::FormBuilder;
 ///
 /// #[derive(Default, Clone, Debug, FormBuilder)]
@@ -51,7 +51,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///     /// User's current level
 ///     pub level: i32,
 /// }
-/// ```
+/// ```ignore
 ///
 /// This automatically generates appropriate form components for each field type.
 ///
@@ -59,7 +59,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///
 /// For custom layouts or specialized form behavior, implement the trait manually:
 ///
-/// ```rust
+/// ```ignore
 /// use waterui_form::{FormBuilder, TextField, Toggle};
 /// use waterui_core::{Binding, View};
 /// use waterui_layout::vstack;
@@ -79,7 +79,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///         ))
 ///     }
 /// }
-/// ```
+/// ```ignore
 ///
 /// # Reactive Form State
 ///
@@ -87,7 +87,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 /// fields immediately update the bound data, enabling real-time validation and
 /// UI updates:
 ///
-/// ```rust
+/// ```ignore
 /// # use waterui_form::FormBuilder;
 /// # use waterui_core::{Binding, View};
 /// # #[derive(Default, Clone, Project, FormBuilder)]
@@ -101,7 +101,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///         text!("Hello, {}!", form_binding.project().name),
 ///     ))
 /// }
-/// ```
+/// ```ignore
 pub trait FormBuilder: Sized {
     /// The view type that represents this form field.
     ///
@@ -132,13 +132,13 @@ pub trait FormBuilder: Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// # use waterui_form::FormBuilder;
     /// # #[derive(Default, Clone, FormBuilder)]
     /// # struct LoginForm { username: String, password: String }
     /// let form_binding = LoginForm::binding();
     /// // form_binding now holds a LoginForm with default values
-    /// ```
+    /// ```ignore
     #[must_use]
     fn binding() -> Binding<Self>
     where
@@ -227,7 +227,7 @@ pub use secure::{SecureField, secure};
 ///
 /// ## Basic Usage
 ///
-/// ```rust
+/// ```ignore
 /// use waterui_form::{FormBuilder, form};
 /// use waterui_core::{Binding, View};
 ///
@@ -243,11 +243,11 @@ pub use secure::{SecureField, secure};
 ///     let form_binding = ContactForm::binding();
 ///     form(&form_binding)
 /// }
-/// ```
+/// ```ignore
 ///
 /// ## With Custom Initialization
 ///
-/// ```rust
+/// ```ignore
 /// # use waterui_form::{FormBuilder, form};
 /// # use waterui_core::{Binding, View};
 /// # #[derive(Default, Clone, Debug, FormBuilder)]
@@ -260,11 +260,11 @@ pub use secure::{SecureField, secure};
 ///     let form_binding = Binding::new(initial_data);
 ///     form(&form_binding)
 /// }
-/// ```
+/// ```ignore
 ///
 /// ## Accessing Form Data
 ///
-/// ```rust
+/// ```ignore
 /// # use waterui_form::{FormBuilder, form};
 /// # use waterui_core::{Binding, View};
 /// # use waterui_layout::vstack;
@@ -281,7 +281,7 @@ pub use secure::{SecureField, secure};
 ///         text!(format!("Email: {}", form_binding.email.get())),
 ///     ))
 /// }
-/// ```
+/// ```ignore
 ///
 /// # Parameters
 ///

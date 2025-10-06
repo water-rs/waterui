@@ -14,7 +14,11 @@ pub struct ColorPickerConfig {
     pub value: Binding<Color>,
 }
 
-configurable!(ColorPicker, ColorPickerConfig);
+configurable!(
+    #[doc = "A color picker control for selecting colors with live binding updates."]
+    ColorPicker,
+    ColorPickerConfig
+);
 
 impl ColorPicker {
     /// Creates a new `ColorPicker` with the given value.

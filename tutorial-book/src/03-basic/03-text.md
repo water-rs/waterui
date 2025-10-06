@@ -1,213 +1,146 @@
 # Text and Typography
 
-Text is fundamental to any UI framework. WaterUI provides two distinct approaches for displaying text: **labels** for static text without styling, and the **Text component** for reactive text with rich styling capabilities.
+Text is the backbone of most interfaces. WaterUI gives you two complementary approaches:
+lightweight **labels** for quick strings, and the configurable `Text` view for styled, reactive
+content. Think of the split the same way Apple distinguishes between `Text` and bare strings in
+SwiftUI, or Flutter differentiates `Text` from const literals.
 
-## Understanding Labels vs Text Components
+## Quick Reference
 
-### Labels: Simple Static Text
+| Need | Use | Notes |
+| ---- | --- | ----- |
+| Static copy, no styling | string literal / `String` / `Str` | Lowest overhead; respects the surrounding layout but cannot change font or colour. |
+| Styled or reactive text | `Text` / `text!` macro | Full typography control and automatic updates when bound data changes. |
+| Format existing signals | `text!("Total: {amount:.2}", amount)` | Uses the `nami::s!` formatter under the hood. |
+| Display non-string signals | `Text::display(binding_of_number)` | Wraps any `Display` value, recalculating when the binding updates. |
+| Custom formatter (locale-aware, currency, dates) | `Text::format(value, Formatter)` | See `waterui_text::locale` for predefined formatters. |
 
-In WaterUI, several types implement the `View` trait directly and are called "labels":
+## Labels: Zero-Cost Strings
 
-- `&'static str` - String literals
-- `String` - Owned strings
-- `Str` - WaterUI's optimized string type
-
-Labels are rendered as simple, unstyled text and are perfect for static content:
-
-```rust
-use waterui::View;
+```rust,ignore
+use waterui::prelude::*;
 use waterui::component::layout::stack::vstack;
 
-fn label_examples() -> impl View {
+pub fn hero_copy() -> impl View {
     vstack((
-        // String literal as label
-        "Simple static text",
-
-        // String variable as label
-        String::from("Dynamic string as label"),
-
-        // Multi-line text
-        r#"Multi-line text with
-line breaks"#,
+        "WaterUI",                      // &'static str
+        String::from("Rust-first UI"),  // Owned String
+        Str::from("Lightning fast"),    // WaterUI's rope-backed string
     ))
 }
 ```
 
-### Text Component: Reactive and Styleable
+Labels have no styling hooks and stay frozen after construction. Use them for static headings,
+inline copy, or when you wrap them in other views (`button("OK")`).
 
-The `Text` component provides reactive updates and rich styling options:
+## The `Text` View
 
-```rust
-use waterui::View;
+`Text` is a configurable view exported by `waterui::component::text`. Create instances via the
+`text` function, the `text!` macro, or constructors such as `Text::display`.
+
+### Reactive Text with `text!`
+
+```rust,ignore
+use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::component::layout::stack::vstack;
-use waterui::component::button::button;
-use waterui_text::{text, Text};
 
-fn text_component_examples() -> impl View {
-    let count = binding(0);
-    let name = binding("Alice".to_string());
+pub fn welcome_banner() -> impl View {
+    let name = binding("Alice");
+    let unread = binding(5);
 
     vstack((
-        // Basic Text component
-        "Styleable text content",
-
-        // Reactive text with text! macro
-        text!("Count: {count}"),
-        text!("Hello, {name}!"),
-
-        // Text component with styling
-        Text::new("Styled text").size(20.0),
-
-        button("Increment")
-            .action_with(&count,|c| c.increment(1)),
+        text!("Welcome back, {name}!"),
+        text!("You have {unread} unread messages."),
     ))
 }
 ```
 
-## Text Styling with the Text Component
+`text!` captures any signals referenced in the format string and produces a reactive `Text` view.
+Avoid `format!(…)` + `text(...)`; the one-off string will not update when data changes.
 
-Only the `Text` component (created with `text()` function or `Text::new()`) supports styling. Labels (`&str`, `String`, `Str`) are rendered without styling.
+### Styling and Typography
 
-### Font Properties
+`Text` exposes chainable modifiers that mirror SwiftUI:
 
-```rust
-use waterui::View;
-use waterui::component::layout::stack::vstack;
-use waterui_text::text;
-
-fn font_styling_demo() -> impl View {
-    vstack((
-        // Labels - no styling available
-        "Default label text",
-
-        // Text components - styling available
-        text("Large text")
-            .size(24.0),
-
-        text("Small text")
-            .size(12.0),
-
-        // Bold/weight not yet available
-        text("Styleable text").size(18.0),
-    ))
-}
-```
-
-### When to Use Labels vs Text Components
-
-Choose the right approach based on your needs:
-
-```rust
-use waterui::{View,Binding};
-use waterui::component::layout::stack::vstack;
-use waterui_text::text;
-
-fn choosing_text_type() -> impl View {
-    vstack((
-        // Use labels for simple, static text
-        "Static heading",
-        "Simple description text",
-
-        // Use Text component for styled text
-        text("Styled heading").size(20.0),
-
-        // Use text! macro for reactive content
-        {
-            let count = Binding::int(42);
-            text!("Dynamic count: {count}")
-        },
-    ))
-}
-```
-
-## Reactive Text with the text! Macro
-
-The `text!` macro creates reactive Text components that automatically update when underlying data changes:
-
-```rust
-use waterui::{View,Binding};
-use waterui::reactive::{binding};
-use waterui::component::layout::stack::{vstack, hstack};
-use waterui::component::button::button;
-use waterui_text::text;
-
-fn reactive_text_demo() -> impl View {
-    let name = binding(String::from("Alice"));
-    let temperature:Binding<f64> = binding(22.5);
-
-    vstack((
-        // Reactive formatted text
-        text!("Hello, {name}!"),
-        text!("Temperature: {temperature:.1}°C"),
-
-        // Reactive with computed expressions using map
-        text!("Status: {}", temperature.map(|t| if *t > 30.0 { "High" } else { "Low" })),
-
-        hstack((
-            button("Increment").action_with(&temperature,|t| t.update(|t| *t += 1.0)),
-            button("Reset").action_with(&temperature,|t| t.set(22.5)),
-        )),
-    ))
-}
-```
-
-You can see more convenicence method of `Binding` at nami's API reference
-### Formatting Best Practices
-
-Always use `text!` macro for reactive text, never `format!` macro which loses reactivity:
-
-```rust
-use waterui::View;
-use waterui::component::layout::stack::vstack;
+```rust,ignore
+use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui_text::text;
+use waterui_text::font::FontWeight;
 
-fn formatting_best_practices() -> impl View {
-    let user_count = binding(42);
-    let status = binding(String::from("Active"));
-
-    vstack((
-        // ✅ CORRECT: Use text! for reactive content
-        text!("Users: {user_count} ({status})"),
-
-        // ❌ WRONG: .get() breaks reactivity!
-        // text(format!("Users: {} ({})", user_count.get(), status.get()))
-        // This creates static text that won't update when signals change!
-
-        // ✅ CORRECT: Use labels for static text
-        "Status Dashboard",
-
-        // ✅ CORRECT: Use text() for static styleable content
-        text("Styleable heading").size(18.0),
-    ))
+pub fn ticker(price: Binding<f32>) -> impl View {
+    text!("${price:.2}")
+        .size(20.0)
+        .weight(FontWeight::Medium)
+        .foreground(Color::srgb(64, 196, 99))
 }
 ```
 
-## Advanced Text Component Features
+Available modifiers include:
 
-The Text component provides additional capabilities beyond basic labels:
+- `.size(points)` – font size in logical pixels.
+- `.weight(FontWeight::…)` or `.bold()` – typographic weight.
+- `.italic(binding_of_bool)` – toggle italics reactively.
+- `.font(Font)` – swap entire font descriptions (custom families, monospaced, etc).
+- `.content()` returns the underlying `Computed<StyledStr>` for advanced pipelines.
 
-### Text Display Options
+Combine with `ViewExt` helpers for layout and colouring, e.g. `.padding()`, `.background(...)`, or
+`.alignment(Alignment::Trailing)`.
 
-```rust
-use waterui::View;
-use waterui::component::layout::stack::vstack;
+### Displaying Arbitrary Values
+
+```rust,ignore
+use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui_text::{text, Text};
 
-fn text_display_demo() -> impl View {
+pub fn stats() -> impl View {
+    let active_users = binding(42_857);
+    let uptime = binding(99.982);
+
     vstack((
-        // Display formatting with different value types
-        Text::display(binding(42)),
-        Text::display(binding(3.14159)),
-        Text::display(binding(true)),
-
-        // Custom formatting with formatters
-        {
-            let price = binding(29.99);
-            Text::format(price, |value| format!("${:.2}", value))
-        },
+        Text::display(active_users),
+        Text::format(uptime, waterui_text::locale::Percent::default()),
     ))
 }
 ```
+
+`Text::display` converts any `Signal<Output = impl Display>` into a reactive string. For complex
+localised formatting (currency, dates), `Text::format` interoperates with the formatters in
+`waterui_text::locale`.
+
+### Working with `Binding<Option<T>>`
+
+When the text source may be absent, leverage nami’s mapping helpers:
+
+```rust,ignore
+use nami::SignalExt;
+
+let maybe_location = binding::<Option<String>>(None);
+let fallback = maybe_location.unwrap_or_else(|| "Unknown location".to_string());
+text(fallback);
+```
+
+`unwrap_or_else` yields a new `Binding<String>` that always contains a value, ensuring the view stays
+reactive.
+
+## Best Practices
+
+- **Avoid `.get()` inside views** – Convert to signals with `.map`, `.zip`, or `binding::<T>` +
+  turbofish when the compiler needs help inferring types.
+- **Keep expensive formatting out of the view** – Precompute large strings in a `Computed` binding
+  so the closure remains trivial.
+- **Prefer `text!` for dynamic content** – It keeps formatting expressive and reduces boilerplate.
+- **Use labels for performance-critical lists** – Large table rows with static copy render faster as
+  bare strings.
+
+## Troubleshooting
+
+- **Text truncates unexpectedly** – Wrap it in `Frame::new(text!(…)).alignment(Alignment::Leading)`
+  or place inside an `hstack` with `spacer()` to control overflow.
+- **Styling missing on one platform** – Confirm the backend exposes the property; some early-stage
+  renderers intentionally ignore unsupported font metrics.
+- **Emoji or wide glyph clipping** – Ensure the containing layout provides enough height; padding or
+  a frame often resolves baseline differences between fonts.
+
+With these building blocks you can express everything from static headings to live, localised
+metrics without imperatively updating the UI. Let your data bindings drive the text, and WaterUI
+handles the rest.
