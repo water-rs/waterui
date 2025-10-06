@@ -44,7 +44,7 @@ impl GraphicsContext<'_> {
             }
             DrawStyle::Stroke(color, width) => {
                 self.scene.stroke(
-                    &Stroke::new(*width as f64),
+                    &Stroke::new(f64::from(*width)),
                     Affine::IDENTITY,
                     &to_peniko_brush(&color.resolve(self.env).get()),
                     None,

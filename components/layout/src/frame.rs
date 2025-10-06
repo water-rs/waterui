@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Planned layout that clamps a single child's proposal.
-#[derive(Debug, Clone, PartialEq, PartialOrd,Default)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 pub struct FrameLayout {
     min_width: Option<f32>,
     ideal_width: Option<f32>,
@@ -143,7 +143,7 @@ impl Frame {
     ///
     /// # Arguments
     /// * `alignment` - The alignment to apply to the child view
-    #[must_use] 
+    #[must_use]
     pub const fn alignment(mut self, alignment: Alignment) -> Self {
         self.layout.alignment = alignment;
         self
