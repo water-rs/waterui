@@ -13,7 +13,11 @@ pub struct ToggleConfig {
     pub toggle: Binding<bool>,
 }
 
-configurable!(Toggle, ToggleConfig);
+configurable!(
+    #[doc = "A boolean toggle switch backed by a reactive binding."]
+    Toggle,
+    ToggleConfig
+);
 
 impl Toggle {
     #[must_use]

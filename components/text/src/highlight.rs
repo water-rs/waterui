@@ -1,4 +1,8 @@
-use core::{error::Error, fmt::{Debug, Display}, str::FromStr};
+use core::{
+    error::Error,
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
 use alloc::{string::ToString, vec::Vec};
 use inkjet::{theme::Theme, tree_sitter_highlight::HighlightEvent};
