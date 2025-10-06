@@ -9,7 +9,11 @@ pub struct LivePhotoConfig {
     pub source: Computed<LivePhotoSource>,
 }
 
-configurable!(LivePhoto, LivePhotoConfig);
+configurable!(
+    #[doc = "A live photo widget that combines still and motion imagery."]
+    LivePhoto,
+    LivePhotoConfig
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Represents the source URLs for a live photo, including the image and video components.

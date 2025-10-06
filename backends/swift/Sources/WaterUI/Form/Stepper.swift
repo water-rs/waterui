@@ -13,11 +13,12 @@ struct WuiStepper: View,WuiComponent {
     static var id:WuiTypeId{
         waterui_stepper_id()
     }
-    @ObservedObject var step: ComputedInt
-    @ObservedObject var value: BindingInt
+    @ObservedObject var step: WuiComputedInt
+    @ObservedObject var value: WuiBindingInt
+    
     init(stepper: CWaterUI.WuiStepper, env: WuiEnvironment){
-        step = ComputedInt(inner: stepper.step)
-        value = BindingInt(inner: stepper.value)
+        self.step = WuiComputedInt(inner: stepper.step)
+        self.value = WuiBindingInt(inner: stepper.value)
     }
 
     init(anyview: OpaquePointer, env:WuiEnvironment) {
@@ -25,8 +26,8 @@ struct WuiStepper: View,WuiComponent {
     }
 
     var body: some View {
-        SwiftUI.Stepper(value:value.value, step:1, label: {
+        SwiftUI.Stepper(value: value.value, in: 0...100, step: step.value) {
             SwiftUI.Text(value.value.wrappedValue.description)
-        })
+        }
     }
 }

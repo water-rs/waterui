@@ -1,8 +1,8 @@
 //
-//  Binding.swift
+//  WuiBinding.swift
 //
 //
-//  Created by Lexo Liu on 8/1/24.
+//  Created by Gemini on 10/6/25.
 //
 
 import CWaterUI
@@ -11,201 +11,121 @@ import Foundation
 import SwiftUI
 
 @MainActor
-final class BindingStr: ObservableObject {
+@Observable
+final class WuiBinding<T>: ObservableObject {
     private var inner: OpaquePointer
     private var watcher: WatcherGuard!
 
-    var value: Binding<String> {
-        Binding(
-            get: {
-                self.compute()
-            },
-            set: { new in
-                self.set(new)
-            })
-    }
+    private let readFn: (OpaquePointer?) -> T
+    private let watchFn: (OpaquePointer?, @escaping (T, Animation?) -> Void) -> WatcherGuard
+    private let setFn: (OpaquePointer?, T) -> Void
+    private let dropFn: (OpaquePointer?) -> Void
 
-    init(inner: OpaquePointer) {
+    var value: T
+    
+    init(
+        inner: OpaquePointer,
+        read: @escaping (OpaquePointer?) -> T,
+        watch: @escaping (OpaquePointer?, @escaping (T, Animation?) -> Void) -> WatcherGuard,
+        set: @escaping (OpaquePointer?, T) -> Void,
+        drop: @escaping (OpaquePointer?) -> Void
+    ) {
         self.inner = inner
+        self.readFn = read
+        self.watchFn = watch
+        self.setFn = set
+        self.dropFn = drop
+        self.value = read(inner)
 
-        watcher = self.watch { new, animation in
+        self.watcher = self.watch { [weak self] _, animation in
+            guard let self = self else { return }
             useAnimation(animation: animation, publisher: self.objectWillChange)
         }
     }
+    
 
-    func compute() -> String {
-        let wuiStr = WuiStr(waterui_read_binding_str(self.inner))
-        return wuiStr.toString()
+    func compute() -> T {
+        readFn(inner)
     }
 
-    func watch(_ f: @escaping (String, Animation?) -> Void) -> WatcherGuard {
-        let g = waterui_watch_binding_str(
-            self.inner,
-            WuiWatcher_WuiStr({ value, animation in
-                f(value, animation)
-            }))
-        return WatcherGuard(g!)
+    func watch(_ f: @escaping (T, Animation?) -> Void) -> WatcherGuard {
+        watchFn(inner, f)
     }
 
-    func set(_ value: String) {
-        let wuiStr = WuiStr(string:value)
-        waterui_set_binding_str(self.inner, wuiStr.toCWuiStr())
-    }
-
-    deinit {
-
-        weak var this = self
-        Task { @MainActor in
-            if let this = this {
-                waterui_drop_binding_str(this.inner)
-            }
-        }
-
-    }
-}
-
-@MainActor
-class BindingInt: ObservableObject {
-    private var inner: OpaquePointer
-    private var watcher: WatcherGuard!
-
-    var value: Binding<Int32> {
-        Binding(
-            get: {
-                self.compute()
-            },
-            set: { new in
-                self.set(new)
-            })
-    }
-
-    init(inner: OpaquePointer) {
-        self.inner = inner
-        self.watcher = self.watch { new, animation in
-            useAnimation(animation: animation, publisher: self.objectWillChange)
-        }
-    }
-
-    func compute() -> Int32 {
-        waterui_read_binding_int(self.inner)
-    }
-
-    func watch(_ f: @escaping (Int, Animation?) -> Void) -> WatcherGuard {
-        let g = waterui_watch_binding_int(
-            self.inner,
-            WuiWatcher_i32({ value, animation in
-                f(Int(value), animation)
-            }))
-
-        return WatcherGuard(g!)
-    }
-
-    func set(_ value: Int32) {
-        waterui_set_binding_int(self.inner, value)
-
-    }
-
-    deinit {
-
-        weak var this = self
-        Task { @MainActor in
-            if let this = this {
-                waterui_drop_binding_int(this.inner)
-            }
-        }
-
-    }
-}
-
-@MainActor
-class BindingBool: ObservableObject {
-    private var inner: OpaquePointer
-    private var watcher: WatcherGuard!
-
-    var value: Binding<Bool> {
-        Binding(
-            get: {
-                self.compute()
-            },
-            set: { new in
-                self.set(new)
-            })
-    }
-    init(inner: OpaquePointer) {
-        self.inner = inner
-
-        self.watcher = self.watch { new, animation in
-            useAnimation(animation: animation, publisher: self.objectWillChange)
-        }
-    }
-
-    func compute() -> Bool {
-        waterui_read_binding_bool(self.inner)
-    }
-
-    func watch(_ f: @escaping (Bool, Animation?) -> Void) -> WatcherGuard {
-        let g = waterui_watch_binding_bool(
-            self.inner,
-            WuiWatcher_bool({ value, animation in
-                f(value, animation)
-            }))
-        return WatcherGuard(g!)
-    }
-
-    func set(_ value: Bool) {
-        waterui_set_binding_bool(self.inner, value)
-
+    func set(_ value: T) {
+        setFn(inner, value)
     }
 
     @MainActor deinit {
-        waterui_drop_binding_bool(inner)
+        dropFn(inner)
     }
 }
 
-@MainActor
-class BindingDouble: ObservableObject {
-    private var inner: OpaquePointer
-    private var watcher: WatcherGuard!
 
-    var value: Binding<Double> {
-        Binding(
-            get: {
-                self.compute()
+typealias WuiBindingStr = WuiBinding<String>
+typealias WuiBindingInt = WuiBinding<Int32>
+typealias WuiBindingBool = WuiBinding<Bool>
+typealias WuiBindingDouble = WuiBinding<Double>
+
+extension WuiBinding where T == String {
+    convenience init(inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in WuiStr(waterui_read_binding_str(inner)).toString() },
+            watch: { inner, f in
+                let g = waterui_watch_binding_str(inner, WuiWatcher_WuiStr(f))
+                return WatcherGuard(g!)
             },
-            set: { new in
-                self.set(new)
-            })
-    }
-    init(inner: OpaquePointer) {
-        self.inner = inner
-
-        self.watcher = self.watch { new, animation in
-            useAnimation(animation: animation, publisher: self.objectWillChange)
-        }
-    }
-
-    func compute() -> Double {
-        waterui_read_binding_double(self.inner)
-    }
-
-    func watch(_ f: @escaping (Double, Animation?) -> Void) -> WatcherGuard {
-        let g = waterui_watch_binding_double(
-            self.inner,
-            WuiWatcher_f64({ value, animation in
-                f(value, animation)
-            }))
-        return WatcherGuard(g!)
-    }
-
-    func set(_ value: Double) {
-        waterui_set_binding_double(self.inner, value)
-
-    }
-
-    @MainActor  deinit {
-        waterui_drop_binding_double(inner)
-
+            set: { inner, value in
+                let wuiStr = WuiStr(string: value)
+                waterui_set_binding_str(inner, wuiStr.toCWuiStr())
+            },
+            drop: waterui_drop_binding_str
+        )
     }
 }
 
+extension WuiBinding where T == Int32 {
+    convenience init(inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: waterui_read_binding_int,
+            watch: { inner, f in
+                let g = waterui_watch_binding_int(inner, WuiWatcher_i32(f))
+                return WatcherGuard(g!)
+            },
+            set: waterui_set_binding_int,
+            drop: waterui_drop_binding_int
+        )
+    }
+}
 
+extension WuiBinding where T == Bool {
+    convenience init(inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: waterui_read_binding_bool,
+            watch: { inner, f in
+                let g = waterui_watch_binding_bool(inner, WuiWatcher_bool(f))
+                return WatcherGuard(g!)
+            },
+            set: waterui_set_binding_bool,
+            drop: waterui_drop_binding_bool
+        )
+    }
+}
+
+extension WuiBinding where T == Double {
+    convenience init(inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: waterui_read_binding_double,
+            watch: { inner, f in
+                let g = waterui_watch_binding_double(inner, WuiWatcher_f64(f))
+                return WatcherGuard(g!)
+            },
+            set: waterui_set_binding_double,
+            drop: waterui_drop_binding_double
+        )
+    }
+}

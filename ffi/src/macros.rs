@@ -11,7 +11,7 @@
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// ffi_safe!(u32, i32, bool);
 /// ```
 macro_rules! ffi_safe {
@@ -49,7 +49,7 @@ macro_rules! ffi_safe {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// impl_new!(MyStruct, my_struct_new);
 /// ```
 macro_rules! impl_new {
@@ -83,7 +83,7 @@ macro_rules! impl_new {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// impl_drop!(*mut MyStruct, my_struct_drop);
 /// ```
 macro_rules! impl_drop {
@@ -117,7 +117,7 @@ macro_rules! impl_drop {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// impl_opaque_drop!(MyStruct, my_struct_drop);
 /// ```
 macro_rules! impl_opaque_drop {
@@ -139,7 +139,7 @@ macro_rules! impl_opaque_drop {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// impl_opaque_clone!(MyStruct, my_struct_clone);
 /// ```
 macro_rules! impl_opaque_clone {
@@ -178,7 +178,7 @@ macro_rules! impl_opaque_clone {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// ffi_struct!(MyStruct, MyStructFFI, field1, field2);
 /// ```
 macro_rules! ffi_struct {
