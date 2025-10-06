@@ -166,16 +166,28 @@ where
 /// # Example
 ///
 /// ```rust,no_run
-/// use waterui::widget::suspense::{Suspense, DefaultLoadingView};
+/// use waterui::widget::suspense::{DefaultLoadingView, Suspense};
 /// use waterui_core::Environment;
 /// use waterui::component::text::Text;
-/// use waterui::view::AnyViewBuilder;
 ///
 /// // Using a closure for lazy initialization
-/// let env = Environment::new().with(DefaultLoadingView(AnyViewBuilder::new(|| Text::new("Loading..."))));
+/// let env = Environment::new().with(DefaultLoadingView::new(|_| Text::new("Loading...")));
 /// ```
 #[derive(Debug)]
 pub struct DefaultLoadingView(AnyViewBuilder);
+
+impl DefaultLoadingView {
+    /// Creates a new default loading view from any view builder.
+    pub fn new(builder: impl ViewBuilder + 'static) -> Self {
+        Self(AnyViewBuilder::new(builder))
+    }
+
+    /// Wraps an existing `AnyViewBuilder` as a default loading view.
+    #[must_use]
+    pub const fn from_builder(builder: AnyViewBuilder) -> Self {
+        Self(builder)
+    }
+}
 
 /// A view that renders the default loading state from the environment.
 ///

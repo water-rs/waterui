@@ -70,9 +70,9 @@ Let's build a more comprehensive form:
 ```rust
 use waterui_form::{FormBuilder, form};
 use waterui::reactive::Binding;
-use waterui::core::Color;
+use waterui::Color;
 use waterui::component::layout::stack::vstack;
-use waterui_text::{text};
+use waterui_text::text;
 
 #[derive(Default, Clone, Debug, FormBuilder)]
 struct RegistrationForm {
@@ -137,6 +137,7 @@ fn text_field_example() -> impl View {
 
 ```rust
 use waterui_form::{Toggle, toggle};
+use waterui::reactive::binding;
 
 fn toggle_example() -> impl View {
     let enabled = binding(false);
@@ -148,6 +149,7 @@ fn toggle_example() -> impl View {
 
 ```rust
 use waterui_form::{Stepper, stepper};
+use waterui::reactive::binding;
 
 fn stepper_example() -> impl View {
     let count = binding(0);
@@ -159,6 +161,7 @@ fn stepper_example() -> impl View {
 
 ```rust
 use waterui_form::Slider;
+use waterui::reactive::binding;
 
 fn slider_example() -> impl View {
     let volume = binding(0.5);
@@ -171,6 +174,9 @@ fn slider_example() -> impl View {
 ### Multi-Step Forms
 
 ```rust
+use waterui::reactive::binding;
+use waterui::widget::condition::when;
+
 #[derive(Default, Clone, FormBuilder)]
 struct PersonalInfo {
     first_name: String,
@@ -227,6 +233,7 @@ use waterui::{
     core::Binding,
     component::layout::stack::{vstack, hstack},
 };
+use waterui::reactive::binding;
 
 struct CustomForm {
     title: String,
@@ -257,6 +264,7 @@ For sensitive data like passwords:
 
 ```rust
 use waterui_form::{SecureField, secure};
+use waterui::reactive::binding;
 
 fn password_form() -> impl View {
     let password = binding(String::new());
@@ -289,6 +297,8 @@ For more complex forms, it's a good practice to encapsulate your validation logi
 Let's create a `Validation` struct that holds computed signals for each validation rule.
 
 ```rust
+use waterui::reactive::binding;
+
 #[derive(Default, Clone, FormBuilder)]
 struct ValidatedForm {
     email: String,
@@ -332,12 +342,12 @@ fn validated_form_view() -> impl View {
         text(validation.is_valid_age.map(|is_valid| if is_valid { "✓ Age requirement met" } else { "✗ Must be 18 or older" })),
         
         // Submit button - only enabled when form is valid
-        button("Submit")
-            .disabled(!validation.is_form_valid)
-            .action(|| {
-                // Handle form submission
+        when(validation.is_form_valid.clone(), || {
+            button("Submit").action(|| {
                 println!("Form submitted!");
-            }),
+            })
+        })
+        .or(|| text("Fill every requirement to enable submission.")),
     ))
 }
 ```
@@ -348,6 +358,7 @@ Forms integrate seamlessly with WaterUI's reactive state system:
 
 ```rust
 use nami::s;
+use waterui::widget::condition::when;
 
 #[derive(Default, Clone, FormBuilder)]
 struct UserSettings {
@@ -381,11 +392,12 @@ fn settings_panel() -> impl View {
         text(settings_summary),
         
         // Save button
-        button("Save Changes")
-            .disabled(!has_changes)
-            .action_with(&settings, |s| {
+        when(has_changes.clone(), || {
+            button("Save Changes").action_with(&settings, |s| {
                 save_settings(s);
-            }),
+            })
+        })
+        .or(|| text("No changes to save.")),
     ))
 }
 

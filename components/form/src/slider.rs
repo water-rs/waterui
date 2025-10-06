@@ -20,7 +20,11 @@ pub struct SliderConfig {
     pub value: Binding<f64>,
 }
 
-configurable!(Slider, SliderConfig);
+configurable!(
+    #[doc = "A slider control for adjusting numeric values within a range."]
+    Slider,
+    SliderConfig
+);
 
 impl Slider {
     /// Creates a new [`Slider`] widget.

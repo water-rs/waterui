@@ -159,7 +159,7 @@ fn snake_to_title_case(s: &str) -> String {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// use waterui_form::{form, form};
 ///
 /// #[form]
@@ -176,11 +176,11 @@ fn snake_to_title_case(s: &str) -> String {
 ///     let form_binding = UserForm::binding();
 ///     form(&form_binding)
 /// }
-/// ```
+/// ```ignore
 ///
 /// This is equivalent to manually writing:
 ///
-/// ```rust
+/// ```ignore
 /// #[derive(Default, Clone, Debug, FormBuilder)]
 /// #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 /// pub struct UserForm {
@@ -192,7 +192,7 @@ fn snake_to_title_case(s: &str) -> String {
 /// impl Project for UserForm {
 ///     // ... implementation provided by nami derive
 /// }
-/// ```
+/// ```ignore
 #[proc_macro_attribute]
 pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

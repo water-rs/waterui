@@ -11,7 +11,7 @@ keywords = ["string", "text", "utilities", "waterui"]
 categories = ["text-processing", "data-structures"]
 
 [dependencies]
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 nami = { workspace = true }
 
 [features]

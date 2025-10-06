@@ -24,18 +24,19 @@
 //! animation configurations:
 //!
 //! ```rust
-//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
 //!
-//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0))); // Red color
+//! let opacity: nami::Binding<f32> = binding(1.0);
 //!
 //! // Use the .animated() method to apply default animation
-//! let _animated_color = color.animated();
+//! let _animated_opacity = opacity.clone().animated();
 //!
 //! // Or specify a specific animation type
-//! let color2: nami::Binding<Color> = binding(Color::from((0, 255, 0)));
-//! let _custom_animated = color2.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let faded: nami::Binding<f32> = binding(0.0);
+//! let _custom_animated =
+//!     faded.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //! ```
 //!
 //! The system supports various animation types:
@@ -51,24 +52,25 @@
 //! UI components automatically respect animation metadata when rendering:
 //!
 //! ```rust
-//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
 //!
-//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
+//! let scale: nami::Binding<f32> = binding(1.0);
 //!
 //! // Three different ways to animate properties:
 //!
 //! // 1. Default animation (uses system defaults)
-//! let _view1_color = color.animated();
+//! let _view1_scale = scale.clone().animated();
 //!
 //! // 2. Custom animation using convenience methods
-//! let color2: nami::Binding<Color> = binding(Color::from((0, 255, 0)));
-//! let _view2_color = color2.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let expanded: nami::Binding<f32> = binding(2.0);
+//! let _view2_scale =
+//!     expanded.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //!
 //! // 3. Spring animation using the convenience method
-//! let color3: nami::Binding<Color> = binding(Color::from((0, 0, 255)));
-//! let _view3_color = color3.with_animation(Animation::spring(100.0, 10.0));
+//! let bouncing: nami::Binding<f32> = binding(0.5);
+//! let _view3_scale = bouncing.with_animation(Animation::spring(100.0, 10.0));
 //! ```
 //!
 //! ## Animation Pipeline
@@ -86,22 +88,23 @@
 //! Complex animations can be created by coordinating multiple animated values:
 //!
 //! ```rust
-//! use waterui_core::{color::Color, animation::Animation, AnimationExt, SignalExt};
+//! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
 //!
-//! let color: nami::Binding<Color> = binding(Color::from((255, 0, 0)));
-//! let position: nami::Binding<(i32, i32)> = binding((0, 0));
+//! let opacity: nami::Binding<f32> = binding(0.0);
+//! let position: nami::Binding<(f32, f32)> = binding((0.0, 0.0));
 //!
 //! // Create a choreographed animation sequence
-//! let animated_color = color.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let animated_opacity =
+//!     opacity.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
 //!
 //! // Position animates with a spring physics model
 //! let animated_position = position.with_animation(Animation::spring(100.0, 10.0));
 //!
 //! // Both animated values can be used in views
 //! // The UI framework will automatically handle the animation timing
-//! drop((animated_color, animated_position)); // Prevent unused variable warnings
+//! drop((animated_opacity, animated_position));
 //! ```
 //!
 //! ### Composition with Other Reactive Features

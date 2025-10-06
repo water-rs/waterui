@@ -86,10 +86,11 @@ fn counter() -> impl View {
 
 ### Step 3: Adding Reactive State
 
-Now comes the exciting part - let's add reactive state! We'll use the `binding` function for reactive computations and the `text!` macro for reactive text:
+Now comes the exciting part - let's add reactive state! We'll use the re-exported `binding` helper together with `Binding`'s convenience methods and the `text!` macro for reactive text:
 
 ```rust,ignore
 use waterui::prelude::*;
+use waterui::reactive::binding;
 
 fn counter() -> impl View {
     let count = binding(0);
@@ -98,8 +99,8 @@ fn counter() -> impl View {
         // Use text! macro for reactive text
         text!("Count: {count}"),
         hstack((
-            button("- Decrement").action_with(&count, |count| count.update(|n| *n -= 1)),
-            button("+ Increment").action_with(&count, |count| count.update(|n| *n += 1)),
+            button("- Decrement").action_with(&count, |count| count.decrement(1)),
+            button("+ Increment").action_with(&count, |count| count.increment(1)),
         )),
     ))
 }
@@ -132,11 +133,11 @@ text!("Count: {count}")
 ### Event Handling
 
 ```rust,ignore
-button("- Decrement").action_with(&count, |count| count.update(|n| *n -= 1))
+button("- Decrement").action_with(&count, |count| count.decrement(1))
 ```
 
 - `.action_with()` attaches an event handler with captured state
-- `Binding<T>::update(|v| ...)` updates the value and notifies watchers
+- `Binding<i32>::decrement` and `Binding<i32>::increment` provide ergonomic arithmetic updates without manual closures
 
 ### Layout with Stacks
 
