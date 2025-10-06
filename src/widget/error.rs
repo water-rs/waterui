@@ -35,15 +35,18 @@
 //!
 //! ```rust
 //! use waterui::prelude::*;
-//! use waterui::widget::error::{DefaultErrorView, BoxedStdError};
+//! use waterui::widget::error::{BoxedStdError, DefaultErrorView};
+//! use waterui::ViewExt;
+//! use waterui_layout::stack::vstack;
 //!
-//! let env = Environment::new()
-//!     .with(DefaultErrorView::new(|error: BoxedStdError| {
-//!         vstack((
-//!             text!("❌ Error: {}", error),
-//!             text!("Please contact support if this persists.").foreground(Color::srgb(128, 128, 128, 255u8)),
-//!         ))
-//!     }));
+//! let env = Environment::new().with(DefaultErrorView::new(|error: BoxedStdError| {
+//!     let message = error.to_string();
+//!     vstack((
+//!         text!("❌ Error: {}", message.clone()),
+//!         text!("Please contact support if this persists.")
+//!             .foreground(Color::srgb(128, 128, 128)),
+//!     ))
+//! }));
 //! ```
 //!
 //! ## Using Result Extensions
@@ -53,6 +56,7 @@
 //! ```rust
 //! use waterui::prelude::*;
 //! use waterui::widget::error::ResultExt;
+//! use waterui::ViewExt;
 //!
 //! fn load_data() -> Result<String, std::io::Error> {
 //!     // ... some operation that might fail
@@ -60,9 +64,12 @@
 //! }
 //!
 //! fn my_view() -> impl View {
-//!     match load_data().error_view(|err| text!("Failed to load: {}", err)) {
-//!         Ok(data) => text!("{}", data).any_view(),
-//!         Err(error_view) => error_view.any_view(),
+//!     match load_data().error_view(|err| {
+//!         let message = err.to_string();
+//!         text!("Failed to load: {}", message)
+//!     }) {
+//!         Ok(data) => text!("{data}").anyview(),
+//!         Err(error_view) => error_view.anyview(),
 //!     }
 //! }
 //! ```
@@ -98,10 +105,11 @@
 //! ```rust
 //! use waterui::prelude::*;
 //! use waterui::widget::error::Error;
+//! use waterui_layout::stack::vstack;
 //!
 //! let custom_error = Error::from_view(vstack((
-//!     "Something went wrong!",
-//!     "Please try again later.",
+//!     text!("Something went wrong!"),
+//!     text!("Please try again later."),
 //! )));
 //! ```
 //!

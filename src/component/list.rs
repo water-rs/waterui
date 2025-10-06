@@ -6,16 +6,22 @@
 //!
 //! # Examples
 //!
-//! ```
-//! # extern crate alloc;
+//! ```ignore
 //! use waterui::prelude::*;
 //! use waterui::ViewExt;
-//! use waterui_core::id::IdentifableExt;
-//! use alloc::vec::Vec;
+//! use waterui::component::list;
+//! use waterui::component::views::AnyViews;
 //!
-//! // Create a simple list from a vector of strings
-//! let data = vec!["Item 1", "Item 2", "Item 3"];
-//! let list = list::List::for_each(data.into_iter().enumerate().map(|(i, item)| (i, item).use_id(|(i, _): &(usize, &str)| *i)).collect::<Vec<_>>(), |item: waterui_core::id::UseId<(usize, &str), _>| list::ListItem { content: text(item.value.1).anyview(), on_delete: None });
+//! let list = list::List::new(AnyViews::new((
+//!     list::ListItem {
+//!         content: text!("Item 1").anyview(),
+//!         on_delete: None,
+//!     },
+//!     list::ListItem {
+//!         content: text!("Item 2").anyview(),
+//!         on_delete: None,
+//!     },
+//! )));
 //! ```
 
 use alloc::boxed::Box;

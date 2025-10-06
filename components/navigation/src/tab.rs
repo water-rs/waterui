@@ -62,7 +62,11 @@ pub struct TabsConfig {
     pub tabs: Vec<Tab<Id>>,
 }
 
-configurable!(Tabs, TabsConfig);
+configurable!(
+    #[doc = "A tab bar component that manages labeled views with selection state."]
+    Tabs,
+    TabsConfig
+);
 
 impl TabsConfig {
     /// Creates a new tabs configuration with the given selection and tabs.

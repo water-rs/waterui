@@ -35,7 +35,11 @@ pub enum DatePickerType {
     DateHourMinuteAndSecond,
 }
 
-configurable!(DatePicker, DatePickerConfig);
+configurable!(
+    #[doc = "A date selection control supporting multiple calendar granularity options."]
+    DatePicker,
+    DatePickerConfig
+);
 
 impl DatePicker {
     /// Creates a new `DatePicker` with the given date binding.

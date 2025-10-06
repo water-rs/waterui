@@ -1,112 +1,158 @@
 # Media Components
 
-WaterUI provides a set of components for displaying images, videos, and other media in your applications. These components are designed to be flexible, reactive, and easy to use.
+Media surfaces are first-class citizens in WaterUI. The `waterui_media` crate provides declarative
+views for images (`Photo`), video playback (`Video` + `VideoPlayer`), Live Photos, and a unified
+`Media` enum that dynamically chooses the right renderer. This chapter explores the API from basic
+usage through advanced configuration.
 
-## `Photo`
-
-The `Photo` component is used to display static images. You can create a `Photo` from a URL or a local file path.
-
-```rust,ignore
-use waterui::prelude::*;
-use waterui::components::media::Photo;
-
-fn my_image() -> impl View {
-    Photo::new("https://www.example.com/my-image.png")
-}
-```
-
-You can also provide a placeholder view to be displayed while the image is loading.
+## Photos: Static Images with Placeholders
 
 ```rust,ignore
 use waterui::prelude::*;
 use waterui::components::media::Photo;
 
-fn image_with_placeholder() -> impl View {
-    Photo::new("https://www.example.com/my-image.png")
-        .placeholder(text("Loading..."))
+pub fn cover_image() -> impl View {
+    Photo::new("https://assets.waterui.dev/cover.png")
+        .placeholder(text("Loading…"))
 }
 ```
 
-## `Video`
+Key features:
 
-The `Video` component is used to display and control video playback. You can create a `Video` from a URL or a local file path.
+- `Photo::new` accepts anything convertible into `waterui_media::Url` (web URLs, `file://`, etc.).
+- `.placeholder(view)` renders while the backend fetches the asset.
+- `.on_failure(view)` handles network errors gracefully.
+- You can compose standard modifiers (`.padding()`, `.frame(...)`, `.background(...)`) around the
+  `Photo` like any other view.
+
+## Video Playback
+
+`Video` represents a source, while `VideoPlayer` renders controls. Create one `Video` per asset and
+reuse it if multiple players should point at the same file.
 
 ```rust,ignore
 use waterui::prelude::*;
 use waterui::components::media::{Video, VideoPlayer};
+use waterui::reactive::binding;
 
-fn my_video() -> impl View {
-    let video = Video::new("https://www.example.com/my-video.mp4");
-    VideoPlayer::new(video)
-}
-```
-
-You can control the video playback using a `Binding`.
-
-```rust,ignore
-use waterui::prelude::*;
-use waterui::components::media::{Video, VideoPlayer};
-
-fn controllable_video() -> impl View {
-    let video = Video::new("https://www.example.com/my-video.mp4");
+pub fn trailer_player() -> impl View {
+    let video = Video::new("https://media.waterui.dev/trailer.mp4");
     let muted = binding(false);
 
     vstack((
-        VideoPlayer::new(video).muted(muted),
-        button("Toggle Mute", move || {
-            muted.toggle();
-        })
+        VideoPlayer::new(video.clone()).muted(&muted),
+        button("Toggle Mute").action_with(&muted, |state| state.toggle()),
     ))
 }
 ```
 
-## `LivePhoto`
+### Muting Model
 
-The `LivePhoto` component is used to display Apple Live Photos. A Live Photo consists of a still image and a short video clip.
+- `VideoPlayer::muted(&Binding<bool>)` maps a boolean binding onto the player’s internal volume.
+- `VideoPlayer` stores the pre-mute volume so toggling restores the last audible level.
+
+### Styling Considerations
+
+The video chrome (play/pause controls) depends on the backend. SwiftUI renders native controls,
+whereas Web/Gtk4 use their respective toolkit widgets. Keep platform conventions in mind when
+layering overlays or gestures on top.
+
+## Live Photos
+
+Apple’s Live Photos combine a still image and a short video clip. WaterUI packages the pair inside
+`LivePhotoSource`:
 
 ```rust,ignore
 use waterui::prelude::*;
 use waterui::components::media::{LivePhoto, LivePhotoSource};
 
-fn my_live_photo() -> impl View {
+pub fn vacation_memory() -> impl View {
     let source = LivePhotoSource::new(
-        "my-live-photo.jpg".into(),
-        "my-live-photo.mov".into()
+        "IMG_1024.jpg".into(),
+        "IMG_1024.mov".into(),
     );
+
     LivePhoto::new(source)
 }
 ```
 
-## `Media` Enum
+Backends that don’t support Live Photos fall back to the still image.
 
-The `Media` enum is a convenient way to display different types of media. It can hold a `Photo`, a `Video`, or a `LivePhoto`.
+## The `Media` Enum
+
+When the media type is decided at runtime, wrap it in `Media`. Rendering becomes a single view
+binding instead of a large `match` statement.
 
 ```rust,ignore
 use waterui::prelude::*;
 use waterui::components::media::Media;
+use waterui::reactive::binding;
 
-fn my_media() -> impl View {
-    let media = binding(Media::Image("https://www.example.com/my-image.png".into()));
+pub fn dynamic_media() -> impl View {
+    let media = binding(Media::Image("https://example.com/photo.png".into()));
 
-    // ...
+    // Later you can switch to Media::Video or Media::LivePhoto and the UI updates automatically.
+    media
 }
 ```
 
-## `MediaPicker`
+`Media` implements `View`, so you can drop it directly into stacks, grids, or navigation views. To
+switch the content, update the binding—WaterUI rebuilds the appropriate concrete view.
 
-The `MediaPicker` component allows users to select media from their device's library. This feature is only available when the `media-picker` feature is enabled.
+## Media Picker (Feature Flag: `media-picker`)
+
+Enable the crate feature in `Cargo.toml`:
+
+```toml
+[dependencies.waterui]
+features = ["media-picker"]
+```
+
+Then present the picker:
 
 ```rust,ignore
 use waterui::prelude::*;
-use waterui::components::media::picker::{MediaPicker, MediaFilter};
+use waterui::components::media::picker::{MediaFilter, MediaPicker, Selected};
+use waterui::reactive::binding;
 
-fn my_media_picker() -> impl View {
-    let selection = binding(None);
+pub fn choose_photo() -> impl View {
+    let selection = binding::<Selected>(Selected(0));
 
     MediaPicker::new()
         .filter(MediaFilter::Image)
-        .selection(selection)
+        .selection(selection.clone())
 }
 ```
 
-This will present a platform-native media picker that allows the user to select an image. The `selection` binding will be updated with the selected media.
+The `Selected` binding stores an identifier. Use `Selected::load()` asynchronously (via `task`) to
+receive the actual `Media` item and pipe it into your view tree.
+
+```rust,ignore
+use waterui::components::media::Media;
+use waterui::reactive::binding;
+use waterui::task::task;
+
+let gallery = binding(Vec::<Media>::new());
+
+button("Import").action_with(&selection, move |selected| {
+    let gallery = gallery.clone();
+    task(async move {
+        let media = selected.get().load().await;
+        gallery.push(media);
+    });
+});
+```
+
+## Best Practices
+
+- **Defer heavy processing** – Image decoding and video playback happen in the backend. Avoid
+  blocking the UI thread; let the renderer stream data.
+- **Provide fallbacks** – Always set `.placeholder` so the UI communicates status during network
+  hiccups (future versions of the component will expose explicit failure hooks).
+- **Reuse sources** – Clone `Video`/`LivePhotoSource` handles instead of recreating them in every
+  recomposition.
+- **Respect platform capabilities** – Some backends may not implement Live Photos or media pickers
+  yet. Feature-gate your UI or supply alternate paths.
+
+With these components you can build media-heavy experiences—galleries, video players, immersive
+feeds—while keeping the code declarative and reactive.

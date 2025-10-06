@@ -5,7 +5,11 @@ use waterui_core::{AnyView, View};
 
 use waterui_text::Text;
 
-configurable!(TextField, TextFieldConfig);
+configurable!(
+    #[doc = "A text input component wired to a reactive string binding."]
+    TextField,
+    TextFieldConfig
+);
 
 /// Configuration options for a `TextField`.
 #[non_exhaustive]

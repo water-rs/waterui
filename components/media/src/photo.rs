@@ -2,12 +2,12 @@
 //!
 //! # Example
 //!
-//! ```
-//! use waterui_core::*;
-//! use waterui::*;
+//! ```no_run
+//! use waterui_media::Photo;
+//! use waterui_media::url::Url;
 //!
-//! let photo = Photo::new("https://example.com/image.jpg")
-//!     .placeholder(Text::new("Loading..."));
+//! let url = Url::parse("https://example.com/image.jpg").unwrap();
+//! let _photo = Photo::new(url).placeholder(waterui_core::AnyView::new(()));
 //! ```
 use crate::image::Image;
 use waterui_core::{AnyView, configurable};
@@ -23,7 +23,11 @@ pub struct PhotoConfig {
     pub placeholder: AnyView,
 }
 
-configurable!(Photo, PhotoConfig);
+configurable!(
+    #[doc = "A static photo component that displays remote imagery with placeholders."]
+    Photo,
+    PhotoConfig
+);
 
 impl Photo {
     /// Creates a new `Photo` component with the specified image source URL.

@@ -11,13 +11,13 @@ import SwiftUI
 
 @MainActor
 struct Render {
-    var map: [WuiTypeId: WuiComponent.Type]
+    var map: [WuiTypeId: any WuiComponent.Type]
 
     init() {
         self.map = [:]
     }
 
-    init(_ components: [WuiComponent.Type]) {
+    init(_ components: [any WuiComponent.Type]) {
         self.init()
         for component in components {
             self.map[component.id] = component
@@ -32,7 +32,6 @@ struct Render {
             // Stack components will be added here when Rust FFI is implemented:
             WuiTextField.self,
             WuiStepper.self,
-            WuiDivider.self,
             // WaterUI.Spacer.self,
             WuiProgress.self,
             // WaterUI.Toggle.self,
@@ -50,14 +49,14 @@ struct Render {
             //  WaterUI.ForegroundColor.self,
             // WaterUI.Frame.self,
             WuiSlider.self,
-            WuiLabel.self,
+
                 // WaterUI.ColorPicker.self,
                 //WaterUI.Padding.self,
                 // WaterUI.Icon.self
         ])
     }
 
-    mutating func register(_ component: WuiComponent.Type) {
+    mutating func register(_ component: any WuiComponent.Type) {
         self.map[component.id] = component
     }
 

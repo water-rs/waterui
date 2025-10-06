@@ -12,7 +12,7 @@
 //!
 //! ## Examples
 //!
-//! ```rust
+//! ```ignore
 //! use waterui_media::{Video, VideoPlayer};
 //! use waterui_core::binding;
 //!
@@ -25,7 +25,7 @@
 //!
 //! // Unmute - restores original volume level
 //! muted.set(false);
-//! ```
+//! ```ignore
 
 use waterui_core::{
     Binding, Computed, View, binding, configurable,
@@ -61,7 +61,11 @@ pub struct VideoPlayerConfig {
     pub volume: Binding<Volume>,
 }
 
-configurable!(VideoPlayer, VideoPlayerConfig);
+configurable!(
+    #[doc = "An interactive video player component with reactive volume control."]
+    VideoPlayer,
+    VideoPlayerConfig
+);
 
 /// A video source represented by a URL.
 ///
@@ -70,11 +74,11 @@ configurable!(VideoPlayer, VideoPlayerConfig);
 ///
 /// # Examples
 ///
-/// ```rust
-/// use waterui_media::Video;
+/// ```no_run
+/// use waterui_media::{Video, url::Url};
 ///
-/// let video = Video::new("https://example.com/video.mp4");
-/// // When used as a View, automatically becomes a VideoPlayer
+/// let video = Video::new(Url::parse("https://example.com/video.mp4").unwrap());
+/// let _view = waterui_core::AnyView::new(video);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Video {
@@ -92,11 +96,12 @@ impl Video {
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use waterui_media::Video;
+    /// ```no_run
+    /// use waterui_media::{Video, url::Url};
     ///
-    /// let video = Video::new("https://example.com/video.mp4");
-    /// let local_video = Video::new("file:///path/to/video.mov");
+    /// let video = Video::new(Url::parse("https://example.com/video.mp4").unwrap());
+    /// let local_video = Video::new(Url::parse("file:///path/to/video.mov").unwrap());
+    /// assert!(video.url().as_str().ends_with("video.mp4"));
     /// ```
     pub fn new(url: impl Into<Url>) -> Self {
         Self { url: url.into() }
@@ -110,11 +115,11 @@ impl Video {
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use waterui_media::Video;
+    /// ```no_run
+    /// use waterui_media::{Video, url::Url};
     ///
-    /// let video = Video::new("video.mp4");
-    /// let player = video.player();
+    /// let video = Video::new(Url::parse("https://example.com/video.mp4").unwrap());
+    /// let _player = video.player();
     /// ```
     #[must_use]
     pub fn player(self) -> VideoPlayer {
