@@ -12,6 +12,7 @@ struct WuiButton: View, WuiComponent {
     static var id:WuiTypeId{
         waterui_button_id()
     }
+    
     private var label: WuiAnyView
     private var action: Action
 
