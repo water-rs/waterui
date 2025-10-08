@@ -1,4 +1,3 @@
-import CWaterUI
 //
 //  Color.swift
 //  waterui-swift
@@ -6,6 +5,8 @@ import CWaterUI
 //  Created by Lexo Liu on 10/21/24.
 //
 import SwiftUI
+import CWaterUI
+
 
 @MainActor
 class WuiColor {
@@ -21,6 +22,21 @@ class WuiColor {
 
     @MainActor deinit {
         waterui_drop_color(inner)
+    }
+}
+
+struct WuiColorView: WuiComponent,View{
+    var color: WuiComputed<WuiResolvedColor>
+    static var id: WuiTypeId {
+        waterui_color_id()
+    }
+    
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
+        self.color = WuiColor(waterui_force_as_color(anyview)).resolve(in: env)
+    }
+    
+    var body: some View {
+        color.value.toSwiftUI()
     }
 }
 
