@@ -14,10 +14,10 @@ public struct WuiToggle:View,WuiComponent{
     static var id:WuiTypeId{
         waterui_toggle_id()
     }
-    @ObservedObject private var isOn:BindingBool
+    @ObservedObject private var isOn: WuiBinding<Bool>
     var label:WuiAnyView
     init(toggle:CWaterUI.WuiToggle,env:WuiEnvironment){
-        isOn = BindingBool(inner: toggle.toggle)
+        isOn = WuiBinding(toggle.toggle)
         label = WuiAnyView(anyview: toggle.label, env: env)
     }
     
@@ -26,7 +26,7 @@ public struct WuiToggle:View,WuiComponent{
     }
     
     public var body:some View{
-        SwiftUI.Toggle(isOn:isOn.value, label: {
+        SwiftUI.Toggle(isOn:$isOn.value, label: {
             label
         })
     }
