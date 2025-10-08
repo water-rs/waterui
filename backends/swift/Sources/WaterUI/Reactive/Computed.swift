@@ -21,7 +21,11 @@ final class WuiComputed<T>: ObservableObject {
     private let watchFn: (OpaquePointer?, @escaping (T, WuiWatcherMetadata) -> Void) -> WatcherGuard
     private let dropFn: (OpaquePointer?) -> Void
 
-    var value: T
+    var value: T{
+        get{
+            self.compute()
+        }
+    }
 
     init(
         inner: OpaquePointer,
@@ -34,11 +38,10 @@ final class WuiComputed<T>: ObservableObject {
         self.readFn = read
         self.watchFn = watch
         self.dropFn = drop
-        self.value = read(inner)
-
+        
         self.watcher = self.watch { [unowned self] value, metadata in
             useAnimation(metadata) {
-                self.value = value
+                // self.value = value TODO
             }
         }
     }
@@ -150,7 +153,7 @@ extension WuiComputed where T == WuiResolvedColor {
 }
 
 extension WuiComputed where T == WuiStyledStr {
-    convenience init(_ inner: OpaquePointer) {
+    convenience init (_ inner: OpaquePointer) {
         self.init(
             inner: inner,
             read: { inner in

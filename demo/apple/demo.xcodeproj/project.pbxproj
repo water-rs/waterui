@@ -324,7 +324,10 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-ldemo";
+				OTHER_LDFLAGS = (
+					"-ldemo",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = waterui.demo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -379,7 +382,10 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-ldemo";
+				OTHER_LDFLAGS = (
+					"-ldemo",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = waterui.demo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
