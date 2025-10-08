@@ -1,60 +1,86 @@
 import CWaterUI
 import SwiftUI
 
+@MainActor
 struct WuiStyledStr {
-    var chunks: WuiArray<WuiStyledChunk>
+    var chunks: [WuiStyledChunk]
+    
     init(_ inner: CWaterUI.WuiStyledStr) {
-        self.chunks = WuiArray(inner.chunks)
+        self.chunks = []
+        for chunk in WuiArray(inner.chunks).toArray() {
+            chunks.append(WuiStyledChunk(chunk))
+        }
     }
-
-    @MainActor
-    func toAttributedString(env:WuiEnvironment) -> AttributedString {
+    
+    func toAttributedString(env: WuiEnvironment) -> AttributedString {
         var result = AttributedString()
-        
-        for chunk in chunks.toArray() {
+        for chunk in chunks{
             result.append(chunk.toAttributedString(env: env))
         }
+        return result
+    }
+            
+
+}
+
+@MainActor
+struct WuiStyledChunk {
+    var text: WuiStr
+    var style: WuiTextStyle
+    init(_ inner: CWaterUI.WuiStyledChunk) {
+        self.text = WuiStr(inner.text)
+        self.style = WuiTextStyle(inner.style)
+    }
+    
+    func toAttributedString(env: WuiEnvironment) -> AttributedString{
+        var result = AttributedString(text.toString())
+        
+        let font = style.font.resolve(in:env).value.toSwiftUI()
+        
+        if style.underline {
+            result.underlineStyle = .single
+        }
+        
+        if style.strikethrough {
+            result.strikethroughStyle = .single
+        }
+        
+        result.font = font.italic(style.italic)
         
         return result
     }
 
 }
 
-extension WuiStyledChunk {
-    @MainActor
-    func toAttributedString(env:WuiEnvironment) -> AttributedString {
-        var attrStr = AttributedString(WuiStr(self.text).toString())
-        let style = self.style
-        let font = WuiFont(style.font).resolve(in: env).value.toSwiftUI()
-        
-        let foreground = WuiColor(style.foreground).resolve(in: env).value.toSwiftUI()
-        
-        let background = WuiColor(style.background).resolve(in: env).value.toSwiftUI()
-        
-        let underline = style.underline
-        
-        let strikethrough = style.strikethrough
-        
-        let italic = style.italic
-        
-        attrStr.font = font
-        attrStr.foregroundColor = foreground
-        attrStr.backgroundColor = background
-        if underline {
-            attrStr.underlineStyle = .single
+
+@MainActor
+struct WuiTextStyle{
+    var font:WuiFont
+    var foreground:WuiColor?
+    var background:WuiColor?
+    var underline:Bool
+    var strikethrough:Bool
+    var italic:Bool
+    
+    init(_ inner:CWaterUI.WuiTextStyle){
+        self.font = WuiFont(inner.font)
+        if inner.foreground != nil{
+            self.foreground=WuiColor(inner.foreground)
         }
         
-        if strikethrough {
-            attrStr.strikethroughStyle = .single
+        if inner.background != nil{
+            self.background=WuiColor(inner.background)
         }
         
-        if italic {
-            attrStr.font = font.italic()
-        }
+        self.underline = inner.underline
         
-        return attrStr
+        self.strikethrough = inner.strikethrough
+        
+        self.italic = inner.italic
     }
+    
 }
+
 
 extension WuiResolvedFont{
     func toSwiftUI() -> SwiftUI.Font {
@@ -92,7 +118,7 @@ class WuiFont {
     }
 
     func resolve(in env: WuiEnvironment) -> WuiComputed<CWaterUI.WuiResolvedFont> {
-        let computedPtr = waterui_resolve_font(self.inner, env.inner)
+        let computedPtr = waterui_resolve_font(inner, env.inner)
         return WuiComputed<CWaterUI.WuiResolvedFont>(computedPtr!)
     }
 

@@ -73,7 +73,7 @@ cd "$PROJECT_ROOT/demo"
 rustup target add "$RUST_TARGET" 2>/dev/null || true
 
 # Build for the specific target
-cargo build --target "$RUST_TARGET" $CARGO_ARGS
+RUSTFLAGS="-C link-arg=-lc++" cargo build --target "$RUST_TARGET" $CARGO_ARGS
 
 # Create output directory if it doesn't exist
 OUTPUT_DIR="$BUILT_PRODUCTS_DIR"
