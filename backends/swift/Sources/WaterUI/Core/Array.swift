@@ -104,10 +104,13 @@ final class WuiRawArray {
     
     func toArray<T>() -> [T] {
         let slice = (inner!.vtable.slice)(inner!.data)
-        let head = slice.head!.assumingMemoryBound(to: T.self)
         let len = Int(slice.len)
+        guard len > 0, let head = slice.head else {
+            return []
+        }
         
-        let buffer = UnsafeBufferPointer<T>(start: head, count: len)
+        let typedHead = head.assumingMemoryBound(to: T.self)
+        let buffer = UnsafeBufferPointer<T>(start: typedHead, count: len)
         return Array(buffer)
     }
     
@@ -169,7 +172,7 @@ extension WuiArray<OpaquePointer> {
     }
 }
 
-extension WuiArray<WuiStyledChunk> {
+extension WuiArray<CWaterUI.WuiStyledChunk> {
     init(_ inner: CWaterUI.WuiArray_WuiStyledChunk) {
         let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
         self.init(c: raw)

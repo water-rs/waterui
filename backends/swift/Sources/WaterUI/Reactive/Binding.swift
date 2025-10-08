@@ -12,7 +12,7 @@ import SwiftUI
 
 @MainActor
 @Observable
-final class WuiBinding<T>: ObservableObject {
+final class WuiBinding<T> {
     private var inner: OpaquePointer
     private var watcher: WatcherGuard!
 
@@ -20,8 +20,15 @@ final class WuiBinding<T>: ObservableObject {
     private let watchFn: (OpaquePointer?, @escaping (T, WuiWatcherMetadata) -> Void) -> WatcherGuard
     private let setFn: (OpaquePointer?, T) -> Void
     private let dropFn: (OpaquePointer?) -> Void
+    private var cancelTracking: (() -> Void)?
+    private var isSyncingFromRust = false
 
-    var value: T
+    var value: T {
+        didSet {
+            guard !isSyncingFromRust else { return }
+            setFn(inner, value)
+        }
+    }
     
     init(
         inner: OpaquePointer,
@@ -36,13 +43,18 @@ final class WuiBinding<T>: ObservableObject {
         self.watchFn = watch
         self.setFn = set
         self.dropFn = drop
+        self.isSyncingFromRust = true
         self.value = read(inner)
+        self.isSyncingFromRust = false
 
         self.watcher = self.watch { [unowned self] value, metadata in
-            useAnimation(metadata) {
-                self.value = value
+            self.withRustSync {
+                useAnimation(metadata) {
+                    self.value = value
+                }
             }
         }
+
     }
     
 
@@ -55,11 +67,21 @@ final class WuiBinding<T>: ObservableObject {
     }
 
     func set(_ value: T) {
-        setFn(inner, value)
+        self.value = value
     }
 
     @MainActor deinit {
         dropFn(inner)
+    }
+}
+
+@MainActor
+private extension WuiBinding {
+    func withRustSync(_ update: () -> Void) {
+        let wasSyncing = isSyncingFromRust
+        isSyncingFromRust = true
+        update()
+        isSyncingFromRust = wasSyncing
     }
 }
 
