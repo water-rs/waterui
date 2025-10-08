@@ -21,11 +21,7 @@ final class WuiComputed<T>: ObservableObject {
     private let watchFn: (OpaquePointer?, @escaping (T, WuiWatcherMetadata) -> Void) -> WatcherGuard
     private let dropFn: (OpaquePointer?) -> Void
 
-    var value: T{
-        get{
-            self.compute()
-        }
-    }
+    var value: T
 
     init(
         inner: OpaquePointer,
@@ -38,10 +34,11 @@ final class WuiComputed<T>: ObservableObject {
         self.readFn = read
         self.watchFn = watch
         self.dropFn = drop
+        self.value = read(inner)
         
         self.watcher = self.watch { [unowned self] value, metadata in
             useAnimation(metadata) {
-                // self.value = value TODO
+                self.value = value
             }
         }
     }
