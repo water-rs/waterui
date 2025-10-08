@@ -15,6 +15,7 @@ pub mod task;
 pub mod view;
 /// Widget components for building complex UI elements.
 pub mod widget;
+pub mod gesture;
 #[doc(inline)]
 pub use view::View;
 pub mod accessibility;
