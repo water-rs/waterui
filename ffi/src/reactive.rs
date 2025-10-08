@@ -184,7 +184,7 @@ impl_computed!(
 #[repr(C)]
 pub struct WuiWatcher<T> {
     data: *mut (),
-    call: unsafe extern "C" fn(*const (), T, *const Metadata),
+    call: unsafe extern "C" fn(*const (), T, *mut WuiWatcherMetadata),
     drop: unsafe extern "C" fn(*mut ()),
 }
 
@@ -199,13 +199,13 @@ impl<T: 'static> WuiWatcher<T> {
     /// - `drop` is a valid function that can safely free the resources associated with `data`.
     pub unsafe fn new(
         data: *mut (),
-        call: unsafe extern "C" fn(*const (), T, *const Metadata),
+        call: unsafe extern "C" fn(*const (), T, *mut WuiWatcherMetadata),
         drop: unsafe extern "C" fn(*mut ()),
     ) -> Self {
         Self { data, call, drop }
     }
     pub fn call(&self, value: T, metadata: Metadata) {
-        unsafe { (self.call)(self.data, value, (&metadata) as *const Metadata) }
+        unsafe { (self.call)(self.data, value, metadata.into_ffi()) }
     }
 }
 
