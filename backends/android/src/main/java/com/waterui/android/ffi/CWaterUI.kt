@@ -255,7 +255,7 @@ interface CWaterUI : Library {
     open class WuiProgress : Structure(), Structure.ByValue {
         @JvmField var label: Pointer? = null
         @JvmField var value_label: Pointer? = null
-        @JvmField var value: Pointer? = null // Computed_f64*
+        @JvmField var value: Pointer? = null // Computed_f32*
         @JvmField var style: Int = 0
     }
 
@@ -272,8 +272,8 @@ interface CWaterUI : Library {
         @JvmField var label: Pointer? = null
         @JvmField var min_value_label: Pointer? = null
         @JvmField var max_value_label: Pointer? = null
-        @JvmField var range: WuiRange_f64? = null
-        @JvmField var value: Pointer? = null // Binding_f64*
+        @JvmField var range: WuiRange_f32? = null
+        @JvmField var value: Pointer? = null // Binding_f32*
     }
 
     @Structure.FieldOrder("label", "value", "prompt", "keyboard")
@@ -356,7 +356,7 @@ interface CWaterUI : Library {
     }
 
     @Structure.FieldOrder("data", "call", "drop")
-    open class WuiWatcher_f64 : Structure() {
+    open class WuiWatcher_f32 : Structure() {
         @JvmField var data: Pointer? = null
         @JvmField var call: WuiWatcherDoubleCallback? = null
         @JvmField var drop: DropCallback? = null
@@ -436,7 +436,7 @@ interface CWaterUI : Library {
 
     fun waterui_read_computed_double(computed: Pointer): Double
     fun waterui_drop_computed_double(computed: Pointer?)
-    fun waterui_watch_computed_double(computed: Pointer, watcher: WuiWatcher_f64): Pointer // Returns WuiWatcherGuard*
+    fun waterui_watch_computed_double(computed: Pointer, watcher: WuiWatcher_f32): Pointer // Returns WuiWatcherGuard*
 
     fun waterui_read_computed_int(computed: Pointer): Int
     fun waterui_drop_computed_int(computed: Pointer?)
@@ -448,7 +448,7 @@ interface CWaterUI : Library {
 
     fun waterui_read_binding_double(binding: Pointer): Double
     fun waterui_set_binding_double(binding: Pointer, value: Double)
-    fun waterui_watch_binding_double(binding: Pointer, watcher: WuiWatcher_f64): Pointer // Returns WuiWatcherGuard*
+    fun waterui_watch_binding_double(binding: Pointer, watcher: WuiWatcher_f32): Pointer // Returns WuiWatcherGuard*
     fun waterui_drop_binding_double(binding: Pointer?)
 
     fun waterui_read_binding_str(binding: Pointer): WuiStr
