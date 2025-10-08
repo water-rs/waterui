@@ -87,9 +87,9 @@ impl IntoFFI for StyledStr {
 impl_computed!(
     StyledStr,
     WuiStyledStr,
-    waterui_read_computed_attributed_str,
-    waterui_watch_computed_attributed_str,
-    waterui_drop_computed_attributed_str
+    waterui_read_computed_styled_str,
+    waterui_watch_computed_styled_str,
+    waterui_drop_computed_styled_str
 );
 
 /// C representation of Text configuration

@@ -1149,7 +1149,7 @@ void waterui_drop_font(struct WuiFont *value);
  * to a properly initialized value of the expected type, undefined behavior will occur.
  * The pointer must not be used after this function is called.
  */
-void waterui_drop_computed_attributed_str(struct Computed_StyledStr *value);
+void waterui_drop_computed_styled_str(struct Computed_StyledStr *value);
 
 /**
  * Reads the current value from a computed
@@ -1158,7 +1158,7 @@ void waterui_drop_computed_attributed_str(struct Computed_StyledStr *value);
  *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiStyledStr waterui_read_computed_attributed_str(const struct Computed_StyledStr *computed);
+struct WuiStyledStr waterui_read_computed_styled_str(const struct Computed_StyledStr *computed);
 
 /**
  * Watches for changes in a computed
@@ -1168,8 +1168,8 @@ struct WuiStyledStr waterui_read_computed_attributed_str(const struct Computed_S
  * The computed pointer must be valid and point to a properly initialized computed object.
  * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *waterui_watch_computed_attributed_str(const struct Computed_StyledStr *computed,
-                                                              struct WuiWatcher_WuiStyledStr watcher);
+struct WuiWatcherGuard *waterui_watch_computed_styled_str(const struct Computed_StyledStr *computed,
+                                                          struct WuiWatcher_WuiStyledStr watcher);
 
 /**
  * Drops the FFI value.

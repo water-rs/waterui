@@ -15,8 +15,8 @@ public struct WuiTextField: View, WuiComponent {
     }
     
     private var label: WuiAnyView
-    @ObservedObject private var prompt: WuiComputed<CWaterUI.WuiStyledStr>
-    @ObservedObject private var value: WuiBindingStr
+    @State private var prompt: WuiText
+    @State private var value: WuiBinding<WuiStr>
 
     public init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(field: waterui_force_as_text_field(anyview), env: env)
@@ -24,25 +24,20 @@ public struct WuiTextField: View, WuiComponent {
     
     init(field: CWaterUI.WuiTextField, env: WuiEnvironment) {
         self.label = WuiAnyView(anyview: field.label, env: env)
-        self.value = WuiBindingStr(inner: field.value)
-        self.prompt = WuiComputed<CWaterUI.WuiStyledStr>(
-            inner: field.prompt.content,
-            read: waterui_read_computed_attributed_str,
-            watch: { ptr, f in
-                let watcher = CWaterUI.WuiWatcher_WuiStyledStr(f)
-                let guardPtr = waterui_watch_computed_attributed_str(ptr, watcher)
-                return WatcherGuard(guardPtr!)
-            },
-            drop: waterui_drop_computed_attributed_str
-        )
+        self.value = WuiBinding(field.value)
+        self.prompt = WuiText(text: field.prompt, env: env)
+        
     }
 
     public var body: some View {
-        let promptText = plainString(from: prompt.value)
-        
-        SwiftUI.TextField(text: value.value, prompt: SwiftUI.Text(promptText)) {
+        SwiftUI.TextField(text: Binding(get: {
+            value.value.toString()
+        }, set: {
+            value.value = WuiStr(string:$0)
+        }), prompt: prompt.toText(), label: {
             label
-        }
+        })
+        
     }
     
     private func plainString(from styledStr: CWaterUI.WuiStyledStr) -> String {

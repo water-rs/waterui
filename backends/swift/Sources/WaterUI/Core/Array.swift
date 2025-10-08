@@ -135,7 +135,11 @@ struct WuiArray<T> {
     init(array:[T]){
         self.inner = .init(array: array)
     }
-    
+
+    func intoInner() -> CWaterUI.WuiArray {
+        self.inner.intoInner()
+    }
+
     subscript(index:Int) -> T {
         get {
             self.inner[index]
@@ -154,6 +158,20 @@ struct WuiArray<T> {
 extension WuiArray<UInt8>{
     init(_ inner:CWaterUI.WuiArray_u8){
         let raw = unsafeBitCast(inner,to:CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
+extension WuiArray<OpaquePointer> {
+    init(_ inner: CWaterUI.WuiArray_____WuiAnyView) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
+extension WuiArray<WuiStyledChunk> {
+    init(_ inner: CWaterUI.WuiArray_WuiStyledChunk) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
         self.init(c: raw)
     }
 }
@@ -207,9 +225,9 @@ struct WuiStr{
         let bytes = inner.toArray()
         return String(bytes: bytes, encoding: .utf8)!
     }
-    
-    func toCWuiStr() -> CWaterUI.WuiStr{
-        .init(_0: unsafeBitCast(self.inner.inner.intoInner(), to: CWaterUI.WuiArray_u8.self))
+
+    func intoInner() -> CWaterUI.WuiStr {
+        unsafeBitCast(self.inner.intoInner(), to: CWaterUI.WuiStr.self)
     }
-    
+
 }
