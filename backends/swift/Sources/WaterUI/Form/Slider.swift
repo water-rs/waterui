@@ -15,9 +15,9 @@ struct WuiSlider:View,WuiComponent{
     var min_value_label: WuiAnyView
     var max_value_label: WuiAnyView
     var range: WuiRange_f64
-    @ObservedObject var value: BindingDouble
+    @State var value: WuiBinding<Double>
     var body: some View {
-        SwiftUI.Slider(value: value.value, in: range.start...range.end, label: {
+        SwiftUI.Slider(value: $value.value, in: range.start...range.end, label: {
             label
         }, minimumValueLabel: {
             min_value_label
@@ -31,7 +31,7 @@ struct WuiSlider:View,WuiComponent{
         self.min_value_label=WuiAnyView(anyview: slider.min_value_label, env: env)
         self.max_value_label=WuiAnyView(anyview: slider.max_value_label, env: env)
         self.range=slider.range
-        self.value=BindingDouble(inner: slider.value)
+        self.value=WuiBinding(slider.value)
     }
     
     init(anyview: OpaquePointer,env:WuiEnvironment){
