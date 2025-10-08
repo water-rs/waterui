@@ -2,10 +2,10 @@ import CWaterUI
 import SwiftUI
 
 struct WuiProposalSize {
-    var width: Double?
-    var height: Double?
+    var width: Float?
+    var height: Float?
 
-    init(width: Double? = nil, height: Double? = nil) {
+    init(width: Float? = nil, height: Float? = nil) {
         self.width = width
         self.height = height
     }
@@ -16,13 +16,13 @@ struct WuiProposalSize {
     }
 
     init(_ proposal: ProposedViewSize) {
-        self.width = proposal.width.map { Double($0) }
-        self.height = proposal.height.map { Double($0) }
+        self.width = proposal.width.map { Float($0) }
+        self.height = proposal.height.map { Float($0) }
     }
 
     init(size: CGSize) {
-        self.width = size.width.isNaN ? nil : Double(size.width)
-        self.height = size.height.isNaN ? nil : Double(size.height)
+        self.width = size.width.isNaN ? nil : Float(size.width)
+        self.height = size.height.isNaN ? nil : Float(size.height)
     }
 
     func toCStruct() -> CWaterUI.WuiProposalSize {
@@ -41,12 +41,12 @@ struct WuiProposalSize {
 }
 
 struct WuiPoint {
-    var x: Double
-    var y: Double
+    var x: Float
+    var y: Float
 
     init(_ point: CGPoint) {
-        self.x = Double(point.x)
-        self.y = Double(point.y)
+        self.x = Float(point.x)
+        self.y = Float(point.y)
     }
 
     init(_ raw: CWaterUI.WuiPoint) {
@@ -64,17 +64,17 @@ struct WuiPoint {
 }
 
 struct WuiSize {
-    var width: Double
-    var height: Double
+    var width: Float
+    var height: Float
 
-    init(width: Double, height: Double) {
+    init(width: Float, height: Float) {
         self.width = width
         self.height = height
     }
 
     init(_ size: CGSize) {
-        self.width = Double(size.width)
-        self.height = Double(size.height)
+        self.width = Float(size.width)
+        self.height = Float(size.height)
     }
 
     init(_ raw: CWaterUI.WuiSize) {
@@ -227,25 +227,17 @@ struct WuiContainer: WuiComponent, View {
     }
 }
 
-private final class LayoutBox {
-    let layout: WuiLayout
-
-    init(layout: WuiLayout) {
-        self.layout = layout
-    }
-}
-
 private struct ChildDescriptor {
     let typeId: WuiTypeId
     let isSpacer: Bool
 }
 
 private struct RustLayout: @preconcurrency Layout {
-    private var box: LayoutBox
+    private var layout: WuiLayout
     private var descriptors: [ChildDescriptor]
 
     init(layout: WuiLayout, descriptors: [ChildDescriptor]) {
-        self.box = LayoutBox(layout: layout)
+        self.layout = layout
         self.descriptors = descriptors
     }
 
@@ -288,7 +280,7 @@ private struct RustLayout: @preconcurrency Layout {
             )
         }
         
-        let childProposals = box.layout.propose(parent: parentProposal, children: metadata)
+        let childProposals = layout.propose(parent: parentProposal, children: metadata)
 
         // Now, measure children with the proposals from Rust and create the final metadata.
         metadata.removeAll(keepingCapacity: true)
@@ -299,7 +291,7 @@ private struct RustLayout: @preconcurrency Layout {
             let childProposal = childProposals[safe: index] ?? WuiProposalSize()
             let swiftUIProposal = childProposal.toProposedSize()
             
-            var measuredSize = subview.sizeThatFits(swiftUIProposal)
+            let measuredSize = subview.sizeThatFits(swiftUIProposal)
             
 
             // --- THIS IS THE KEY COMMUNICATION ---
@@ -320,7 +312,7 @@ private struct RustLayout: @preconcurrency Layout {
         cache.metadata = metadata
 
         // Ask Rust for the final container size based on the definitive child metadata.
-        let finalSize = box.layout.size(parent: parentProposal, children: metadata)
+        let finalSize = layout.size(parent: parentProposal, children: metadata)
         
   
 
@@ -342,7 +334,7 @@ private struct RustLayout: @preconcurrency Layout {
         let parentProposal = WuiProposalSize(proposal)
         
         // Use the metadata we already computed and cached in `sizeThatFits`.
-        let rects = box.layout.place(
+        let rects = layout.place(
             bound: bounds,
             proposal: parentProposal,
             children: cache.metadata
