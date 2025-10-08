@@ -14,7 +14,7 @@ public struct WuiToggle:View,WuiComponent{
     static var id:WuiTypeId{
         waterui_toggle_id()
     }
-    @ObservedObject private var isOn: WuiBinding<Bool>
+    @State private var isOn: WuiBinding<Bool>
     var label:WuiAnyView
     init(toggle:CWaterUI.WuiToggle,env:WuiEnvironment){
         isOn = WuiBinding(toggle.toggle)

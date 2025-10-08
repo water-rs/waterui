@@ -28,7 +28,9 @@ struct Render {
         .init([
             WuiEmptyView.self,
             WuiText.self,
+            WuiLabel.self,
             WuiButton.self,
+            WuiColorView.self,
             // Stack components will be added here when Rust FFI is implemented:
             WuiTextField.self,
             WuiStepper.self,

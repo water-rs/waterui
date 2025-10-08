@@ -39,11 +39,5 @@ public struct WuiTextField: View, WuiComponent {
         })
         
     }
-    
-    private func plainString(from styledStr: CWaterUI.WuiStyledStr) -> String {
-        let cChunks = styledStr.chunks
-        let slice = cChunks.vtable.slice(cChunks.data)
-        let buffer = UnsafeBufferPointer(start: slice.head, count: Int(slice.len))
-        return buffer.map { WuiStr($0.text).toString() }.joined()
-    }
+
 }

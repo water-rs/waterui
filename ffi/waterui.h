@@ -922,6 +922,15 @@ enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadat
 void waterui_drop_color(struct WuiColor *value);
 
 /**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiColor *waterui_force_as_color(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_color_id(void);
+
+/**
  * Drops the FFI value.
  *
  * # Safety
