@@ -82,7 +82,7 @@ class BindingDouble(private val ptr: Pointer) : Binding<Double>(ptr, CWaterUI.IN
     }
 
     override fun startWatching() {
-        val watcher = CWaterUI.WuiWatcher_f64().apply {
+        val watcher = CWaterUI.WuiWatcher_f32().apply {
             this.call = object : CWaterUI.WuiWatcherDoubleCallback {
                 override fun invoke(data: Pointer?, value: Double, metadata: Pointer?) {
                     updateValue(value)
