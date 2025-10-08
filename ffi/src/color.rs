@@ -22,6 +22,8 @@ pub struct WuiResolvedColor {
 
 ffi_struct!(ResolvedColor, WuiResolvedColor, red, green, blue, opacity);
 
+ffi_view!(Color, *mut WuiColor,waterui_color_id,waterui_force_as_color);
+
 impl_computed!(
     ResolvedColor,
     WuiResolvedColor,
