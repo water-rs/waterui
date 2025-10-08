@@ -25,7 +25,7 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 use waterui_str::Str;
 
-use crate::{accessibility::{self, AccessibilityLabel, AccessibilityRole}, background::{Background, ForegroundColor}};
+use crate::{accessibility::{self, AccessibilityLabel, AccessibilityRole}, background::{Background, ForegroundColor}, gesture::{Gesture, GestureObserver}};
 use crate::component::{Metadata, Text, badge::Badge, focu::Focused};
 use waterui_core::id::TaggedView;
 
@@ -237,6 +237,15 @@ pub trait ViewExt: View + Sized {
     /// * `role` - The accessibility role to apply
     fn a11y_role(self, role: accessibility::AccessibilityRole) -> IgnorableMetadata<AccessibilityRole> {
         IgnorableMetadata::new(self, role)
+    }
+
+    /// Observes a gesture and executes an action when the gesture is recognized.
+    ///
+    /// # Arguments
+    /// * `gesture` - The gesture to observe
+    /// * `action` - The action to execute when the gesture is recognized
+    fn gesture(self, gesture: impl Into<Gesture>, action: impl HandlerFn<(), ()> + 'static) -> Metadata<GestureObserver> {
+        Metadata::new(self, GestureObserver::new(gesture, action))
     }
 }
 
