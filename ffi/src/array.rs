@@ -14,6 +14,7 @@ pub type WuiData = WuiArray<u8>;
 /// `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
 /// or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
 /// For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+/// We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
 #[repr(C)]
 pub struct WuiArray<T: 'static> {
     // Store the original boxed data for proper dropping
@@ -58,9 +59,11 @@ impl<T> WuiArrayVTable<T> {
             unsafe {
                 let slice = &*data.cast::<U2>();
                 let s = slice.as_ref();
+                let len = s.len();
+                let head = s.as_ptr() as *mut T2;
                 WuiArraySlice {
-                    head: s.as_ptr() as *mut T2,
-                    len: s.len(),
+                    head,
+                    len,
                 }
             }
         }
@@ -147,12 +150,6 @@ impl<T> DerefMut for WuiArray<T> {
 impl<T> AsRef<[T]> for WuiArray<T> {
     fn as_ref(&self) -> &[T] {
         self
-    }
-}
-
-impl<T> Drop for WuiArray<T> {
-    fn drop(&mut self) {
-        unsafe { (self.vtable.drop)(self.data.as_ptr()) }
     }
 }
 

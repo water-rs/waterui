@@ -25,11 +25,11 @@ struct WuiText: View, WuiComponent {
     
     init(text:CWaterUI.WuiText, env: WuiEnvironment) {
         self.env = env
-        self.content = WuiComputed<WuiStyledStr>(text.content)
+        self.content = WuiComputed(text.content)
     }
     
     func toText() -> SwiftUI.Text {
-        SwiftUI.Text(content.value.toAttributedString(env:env))
+        SwiftUI.Text(content.value.toAttributedString(env: env))
     }
 
     var body: some View {
