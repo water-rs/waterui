@@ -30,13 +30,13 @@ struct WuiProgress: View, WuiComponent {
         waterui_progress_id()
     }
     var label: WuiAnyView
-    @StateObject var value: ComputedDouble
+    @State var value: WuiComputed<Double>
     var style: WuiProgressStyle
 
     init(progress: CWaterUI.WuiProgress, env: WuiEnvironment) {
         label = WuiAnyView(anyview: progress.label, env: env)
         style = progress.style
-        _value = StateObject(wrappedValue: ComputedDouble(inner: progress.value))
+        value = WuiComputed(progress.value)
     }
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
