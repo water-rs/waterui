@@ -1,7 +1,6 @@
 use waterui::{
     Binding, Environment, View, ViewExt,
     component::{
-        divder::Divider,
         form::{FormBuilder, Slider, form, stepper},
         layout::{
             scroll, spacer,
@@ -9,7 +8,7 @@ use waterui::{
         },
         progress::{loading, progress},
         text::text,
-    },
+    },widget::Divider,
     prelude::layout::padding::EdgeInsets,
     reactive::Project,
 };
@@ -25,7 +24,7 @@ struct UserProfile {
     email: String,
     age: i32,
     notifications: bool,
-    theme_brightness: f32,
+    theme_brightness: f64,
 }
 
 pub fn main() -> impl View {
@@ -38,14 +37,14 @@ pub fn main() -> impl View {
         vstack((
             // App header
             vstack((
-                text("WaterUI Demo").size(24.0),
+                text("WaterUI Demo").size(24.0f32),
                 "Cross-platform Reactive UI Framework",
                 Divider,
             )),
             spacer(),
             // Counter demo with reactive updates
             vstack((
-                text("Interactive Counter").size(18.0),
+                text("Interactive Counter").size(18.0f32),
                 hstack((
                     "Count: ",
                     waterui::text!("{}", counter),
@@ -57,7 +56,7 @@ pub fn main() -> impl View {
             spacer(),
             // User profile form
             vstack((
-                text("User Profile").size(18.0),
+                text("User Profile").size(18.0f32),
                 form(&profile),
                 hstack(("Name: ", waterui::text!("{}", profile.project().name))),
                 hstack(("Email: ", waterui::text!("{}", profile.project().email))),
@@ -65,7 +64,7 @@ pub fn main() -> impl View {
             spacer(),
             // Interactive controls
             vstack((
-                text("Controls").size(18.0),
+                text("Controls").size(18.0f32),
                 Slider::new(0.0..=1.0, &progress_value),
                 progress(progress_value),
                 loading(),
