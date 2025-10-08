@@ -1,3 +1,4 @@
+use nami::SignalExt;
 use waterui::{
     Binding, Environment, View, ViewExt,
     component::{
@@ -37,28 +38,28 @@ pub fn main() -> impl View {
         vstack((
             // App header
             vstack((
-                text("WaterUI Demo").size(24.0f32),
+                text("WaterUI Demo").size(24),
                 "Cross-platform Reactive UI Framework",
                 Divider,
             )),
             spacer(),
             // Counter demo with reactive updates
             vstack((
-                text("Interactive Counter").size(18.0f32),
+                text("Interactive Counter").size(18),
                 hstack((
                     "Count: ",
                     waterui::text!("{}", counter),
                     spacer(),
                     stepper(&counter),
                 )),
-                progress(counter.get() as f32 / 10.0),
+                progress(counter.map(|count| count as f64 / 10.0)),
             )),
             spacer(),
             // User profile form
             vstack((
                 text("User Profile").size(18.0f32),
                 form(&profile),
-                hstack(("Name: ", waterui::text!("{}", profile.project().name))),
+                hstack(("Name: ", waterui::text!("{}", profile.project().name).bold())),
                 hstack(("Email: ", waterui::text!("{}", profile.project().email))),
             )),
             spacer(),
