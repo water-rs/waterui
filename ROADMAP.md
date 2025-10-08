@@ -16,18 +16,18 @@
 - [ ] Gesture support
 - [ ] Hot reload
 - [x] i18n
-- [ ] Styling
-- [ ] Document all completed features in our book
+- [ ] Styling (Theme system)
+- [ ] Document all completed features in our book (👷WIP)
 
 ## 0.3.0 - Practical
 
-- [ ] Media widget
+- [ ] Media widget (👷WIP)
 - [ ] Resource manager
 - [ ] Canvas API (👷WIP)
 - [ ] Persistence
 - [ ] Some platform-specific APIs (notification, camera, etc.)
 - [ ] Faster hot reload
-- [ ] Accessibility
+- [ ] Accessibility (👷WIP)
 
 ## 0.4.0 - Self-Rendering MVP
 
@@ -37,7 +37,7 @@
 
 - [ ] RichText (👷WIP)
 - [ ] RichTextField
-- [ ] Built-in markdown support
+- [ ] Built-in markdown support (👷WIP)
 
 ## 0.6.0 - Self-Rendering Enhancements
 

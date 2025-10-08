@@ -9,6 +9,7 @@ members = [
     "render_utils",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
+    "demo",
     "ffi",
     "cli"]
 resolver = "2"
