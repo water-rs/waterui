@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{container::{FixedContainer}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size};
+use crate::{ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer};
 
 /// Layout that insets its single child by the configured edge values.
 #[derive(Debug, Clone)]
