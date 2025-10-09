@@ -2,12 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{
-    AnyView, View,
-    id::Identifable,
-    view::TupleViews,
-    views::ForEach,
-};
+use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
     ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer,

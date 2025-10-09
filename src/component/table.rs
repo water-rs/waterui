@@ -14,10 +14,10 @@
 //! ```
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use waterui_core::{configurable};
+use waterui_core::configurable;
 use waterui_text::Text;
 
-use crate::views::{{AnyViews, Views}};
+use crate::views::{AnyViews, Views};
 use nami::{Computed, impl_constant, signal::IntoComputed};
 
 /// Configuration for a table component.
@@ -72,7 +72,7 @@ impl TableColumn {
     /// * `contents` - The text content to display in this column.
     pub fn new(contents: impl Views<View = Text> + 'static) -> Self {
         Self {
-            rows: Rc::new( AnyViews::new(contents)),
+            rows: Rc::new(AnyViews::new(contents)),
         }
     }
 }
@@ -82,10 +82,7 @@ where
     T: Into<Text>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let contents = iter
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<Text>>();
+        let contents = iter.into_iter().map(Into::into).collect::<Vec<Text>>();
         Self::new(contents)
     }
 }

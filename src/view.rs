@@ -12,7 +12,10 @@
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
-    components::IgnorableMetadata, env::With, handler::{Handler, HandlerFn, IntoHandler}, AnyView, Environment
+    AnyView, Environment,
+    components::IgnorableMetadata,
+    env::With,
+    handler::{Handler, HandlerFn, IntoHandler},
 };
 
 use alloc::boxed::Box;
@@ -25,8 +28,12 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 use waterui_str::Str;
 
-use crate::{accessibility::{self, AccessibilityLabel, AccessibilityRole}, background::{Background, ForegroundColor}, gesture::{Gesture, GestureObserver}};
 use crate::component::{Metadata, Text, badge::Badge, focu::Focused};
+use crate::{
+    accessibility::{self, AccessibilityLabel, AccessibilityRole},
+    background::{Background, ForegroundColor},
+    gesture::{Gesture, GestureObserver},
+};
 use waterui_core::id::TaggedView;
 
 /// A trait for types that can build views from an environment.
@@ -235,7 +242,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `role` - The accessibility role to apply
-    fn a11y_role(self, role: accessibility::AccessibilityRole) -> IgnorableMetadata<AccessibilityRole> {
+    fn a11y_role(
+        self,
+        role: accessibility::AccessibilityRole,
+    ) -> IgnorableMetadata<AccessibilityRole> {
         IgnorableMetadata::new(self, role)
     }
 
@@ -244,7 +254,11 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture(self, gesture: impl Into<Gesture>, action: impl HandlerFn<(), ()> + 'static) -> Metadata<GestureObserver> {
+    fn gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        action: impl HandlerFn<(), ()> + 'static,
+    ) -> Metadata<GestureObserver> {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
 }

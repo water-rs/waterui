@@ -10,12 +10,12 @@ pub mod component;
 /// Error handling utilities for converting standard errors into renderable views.
 pub mod error;
 pub mod filter;
+pub mod gesture;
 /// Task management utilities and async support.
 pub mod task;
 pub mod view;
 /// Widget components for building complex UI elements.
 pub mod widget;
-pub mod gesture;
 #[doc(inline)]
 pub use view::View;
 pub mod accessibility;
@@ -53,7 +53,7 @@ pub use waterui_color::Color;
 pub use waterui_core::{
     AnyView, animation,
     env::{self, Environment},
-    impl_extractor, raw_view,views
+    impl_extractor, raw_view, views,
 };
 pub use waterui_text::text;
 

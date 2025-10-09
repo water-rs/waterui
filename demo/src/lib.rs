@@ -9,9 +9,10 @@ use waterui::{
         },
         progress::{loading, progress},
         text::text,
-    },widget::Divider,
+    },
     prelude::layout::padding::EdgeInsets,
     reactive::Project,
+    widget::Divider,
 };
 
 pub fn init() -> Environment {
@@ -59,7 +60,10 @@ pub fn main() -> impl View {
             vstack((
                 text("User Profile").size(18.0f32),
                 form(&profile),
-                hstack(("Name: ", waterui::text!("{}", profile.project().name).bold())),
+                hstack((
+                    "Name: ",
+                    waterui::text!("{}", profile.project().name).bold(),
+                )),
                 hstack(("Email: ", waterui::text!("{}", profile.project().email))),
             )),
             spacer(),

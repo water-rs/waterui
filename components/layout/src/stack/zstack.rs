@@ -1,10 +1,12 @@
 //! Overlay stack layout.
 
-use alloc::{vec::{Vec},vec};
+use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{id::Identifable, view::TupleViews, views::{ForEach}, AnyView, View};
+use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
-use crate::{container::{FixedContainer}, stack::Alignment, Container, Layout, Point, ProposalSize, Rect, Size};
+use crate::{
+    Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer, stack::Alignment,
+};
 
 /// A layout implementation for stacking views on top of each other with specified alignment.
 ///
@@ -149,7 +151,7 @@ pub struct ZStack<C> {
     contents: C,
 }
 
-impl <C>ZStack<C> {
+impl<C> ZStack<C> {
     /// Sets the alignment for the `ZStack`.
     #[must_use]
     pub const fn alignment(mut self, alignment: Alignment) -> Self {
@@ -158,19 +160,19 @@ impl <C>ZStack<C> {
     }
 }
 
-impl <C,F,V>ZStack<ForEach<C,F,V>>
+impl<C, F, V> ZStack<ForEach<C, F, V>>
 where
-        C: Collection,
-        C::Item: Identifable,
-        F: 'static + Fn(C::Item) -> V,
-        V:View{
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
+{
     /// Creates a new `ZStack` with views generated from a collection using `ForEach`.
     ///
     /// # Arguments
     /// * `collection` - The collection of items to iterate over
     /// * `generator` - A function that generates a view for each item in the collection
-    pub fn for_each(collection: C, generator: F) -> Self
-    {
+    pub fn for_each(collection: C, generator: F) -> Self {
         Self {
             layout: ZStackLayout::default(),
             contents: ForEach::new(collection, generator),
@@ -178,7 +180,7 @@ where
     }
 }
 
-impl <C:TupleViews> ZStack<(C,)> {
+impl<C: TupleViews> ZStack<(C,)> {
     /// Creates a new `ZStack` with the specified alignment and contents.
     ///
     /// # Arguments
@@ -209,7 +211,6 @@ pub const fn zstack<C: TupleViews>(contents: C) -> ZStack<(C,)> {
     ZStack::new(Alignment::Center, contents)
 }
 
-
 impl<C> View for ZStack<(C,)>
 where
     C: TupleViews + 'static,
@@ -219,14 +220,14 @@ where
     }
 }
 
-impl <C,F,V>View for ZStack<ForEach<C,F,V>>
+impl<C, F, V> View for ZStack<ForEach<C, F, V>>
 where
-        C: Collection,
-        C::Item: Identifable,
-        F: 'static + Fn(C::Item) -> V,
-        V:View{
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
+{
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Container::new(self.layout, self.contents)
     }
 }
-

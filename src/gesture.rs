@@ -10,12 +10,13 @@ use waterui_core::handler::{BoxHandler, HandlerFn, into_handler};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TapGesture {
+    /// The number of consecutive taps required to trigger this gesture.
     pub count: u32,
 }
 
 impl TapGesture {
     /// Creates a tap gesture that fires after `count` consecutive taps.
-    #[must_use] 
+    #[must_use]
     pub const fn new(count: u32) -> Self {
         Self { count }
     }
@@ -25,6 +26,7 @@ impl TapGesture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LongPressGesture {
+    /// The minimum duration (in time units) the press must be held.
     pub duration: u32,
 }
 
@@ -33,7 +35,7 @@ impl LongPressGesture {
     ///
     /// Backends decide how to interpret the unit (for example milliseconds), allowing
     /// platform-specific gesture systems to provide consistent behaviour.
-    #[must_use] 
+    #[must_use]
     pub const fn new(duration: u32) -> Self {
         Self { duration }
     }
@@ -43,6 +45,7 @@ impl LongPressGesture {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct DragGesture {
+    /// The minimum distance the pointer must travel to initiate the drag.
     pub min_distance: f32,
 }
 
@@ -58,12 +61,13 @@ impl DragGesture {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MagnificationGesture {
+    /// The initial scale factor when the gesture begins.
     pub initial_scale: f32,
 }
 
 impl MagnificationGesture {
     /// Creates a magnification gesture beginning at `initial_scale`.
-    #[must_use] 
+    #[must_use]
     pub const fn new(initial_scale: f32) -> Self {
         Self { initial_scale }
     }
@@ -73,12 +77,13 @@ impl MagnificationGesture {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RotationGesture {
+    /// The initial angle (in radians) when the gesture begins.
     pub initial_angle: f32,
 }
 
 impl RotationGesture {
     /// Creates a rotation gesture beginning at `initial_angle` radians.
-    #[must_use] 
+    #[must_use]
     pub const fn new(initial_angle: f32) -> Self {
         Self { initial_angle }
     }
