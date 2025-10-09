@@ -179,7 +179,7 @@ extension WuiArray<CWaterUI.WuiStyledChunk> {
     }
 }
 
-struct WuiAnyViews{
+struct WuiAnyViewArray{
     var inner: WuiArray<OpaquePointer>
     var env: WuiEnvironment
     // WARN: NEED WRAP later
