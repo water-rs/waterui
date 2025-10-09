@@ -85,6 +85,14 @@ pub struct EdgeInsets {
     trailing: f32,
 }
 
+#[allow(clippy::cast_possible_truncation)]
+impl<T: Into<f64>> From<T> for EdgeInsets {
+    fn from(value: T) -> Self {
+        let v = value.into() as f32;
+        Self::all(v)
+    }
+}
+
 impl Default for EdgeInsets {
     fn default() -> Self {
         Self::all(0.0)
