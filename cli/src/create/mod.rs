@@ -28,6 +28,10 @@ pub struct CreateArgs {
     #[arg(long)]
     pub bundle_identifier: Option<String>,
 
+    /// Apple Development Team ID
+    #[arg(long)]
+    pub team_id: Option<String>,
+
     /// Use the development version of WaterUI from GitHub
     #[arg(long)]
     pub dev: bool,
@@ -66,12 +70,17 @@ pub fn run(args: CreateArgs) -> Result<()> {
             .interact_text()?
     };
 
-    let development_team = if args.yes {
-        "".to_string()
-    } else {
-        Input::with_theme(&theme)
-            .with_prompt("Apple Development Team ID (optional, for automatic signing)")
-            .interact_text()?
+    let development_team = match args.team_id {
+        Some(id) => id,
+        None => {
+            if args.yes {
+                "".to_string()
+            } else {
+                Input::with_theme(&theme)
+                    .with_prompt("Apple Development Team ID (optional, for automatic signing)")
+                    .interact_text()?
+            }
+        }
     };
 
     let crate_name = util::kebab_case(&display_name);

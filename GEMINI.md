@@ -88,6 +88,18 @@ The project uses standard Cargo commands, which are orchestrated in the CI workf
 
 To ensure consistency and a clean architecture, all new components should adhere to the following patterns, choosing the appropriate pattern for the component's role.
 
+### Component vs. Widget: A Key Architectural Distinction
+
+A fundamental architectural principle in WaterUI is the separation between "components" and "widgets". Understanding this distinction is crucial for knowing where to add new UI elements.
+
+*   **`components/*` (Primitives):** This directory is for "atomic" or "primitive" UI elements that require direct platform-specific implementation. They often use the `raw_view!` macro and represent the fundamental building blocks that the native backend must know how to render.
+    *   **Examples:** `Button`, `Slider`, `TextField`, `ZStack`. These are primitives that need a corresponding implementation in each backend (e.g., Swift, GTK).
+
+*   **`waterui/src/widget/*` (Composites):** This directory is for "pure" or "composite" UI elements. Widgets are built *entirely* by combining components and other widgets. They are platform-agnostic and do not require any backend-specific code.
+    *   **Examples:** `Code`, `RichText`, `Suspense`. These are constructed using existing primitives like `VStack`, `Text`, and `Dynamic`.
+
+When creating a new UI element, first determine if it can be built by composing existing components. If so, it's a **widget**. If it requires fundamental, platform-level functionality (like a new type of gesture, an OS-level overlay, or a hardware-backed view), it's a **component**.
+
 ### Component Archetypes
 
 WaterUI has two main types of components, and it is crucial to choose the right pattern for the job:

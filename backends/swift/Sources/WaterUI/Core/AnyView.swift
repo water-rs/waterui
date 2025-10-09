@@ -43,6 +43,7 @@ struct Render {
             // WaterUI.NavigationLink.self,
             WuiScrollView.self,
             WuiContainer.self,
+            WuiFixedContainer.self,
             WuiToggle.self,
             WuiSpacer.self,
             //WuiPicker.self,
