@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 use waterui_layout::{
-    ChildMetadata, Container, Layout, Point, Rect, ScrollView, Size, scroll::Axis,
+    container::FixedContainer, scroll::Axis, ChildMetadata, Layout, Point, Rect, ScrollView, Size
 };
 
 use crate::{IntoFFI, IntoRust, WuiAnyView, WuiTypeId, array::WuiArray};
@@ -8,7 +8,7 @@ use crate::{IntoFFI, IntoRust, WuiAnyView, WuiTypeId, array::WuiArray};
 ffi_type!(WuiLayout, Box<dyn Layout>, waterui_drop_layout);
 
 #[repr(C)]
-pub struct WuiContainer {
+pub struct WuiFixedContainer {
     layout: *mut WuiLayout,
     contents: WuiArray<*mut WuiAnyView>,
 }
@@ -19,17 +19,17 @@ pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
 }
 
 ffi_view!(
-    Container,
-    WuiContainer,
-    waterui_container_id,
-    waterui_force_as_container
+    FixedContainer,
+    WuiFixedContainer,
+    waterui_fixed_container_id,
+    waterui_force_as_fixed_container
 );
 
-impl IntoFFI for Container {
-    type FFI = WuiContainer;
+impl IntoFFI for FixedContainer {
+    type FFI = WuiFixedContainer;
     fn into_ffi(self) -> Self::FFI {
         let (layout, contents) = self.into_inner();
-        WuiContainer {
+        WuiFixedContainer {
             layout: layout.into_ffi(),
             contents: contents.into_ffi(),
         }

@@ -1,16 +1,17 @@
 //! Overlay stack layout.
 
-use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, View, view::TupleViews};
+use alloc::{vec::{Vec},vec};
+use nami::collection::Collection;
+use waterui_core::{id::Identifable, view::TupleViews, views::{ForEach}, AnyView, View};
 
-use crate::{Layout, Point, ProposalSize, Rect, Size, container, stack::Alignment};
+use crate::{container::{FixedContainer}, stack::Alignment, Container, Layout, Point, ProposalSize, Rect, Size};
 
 /// A layout implementation for stacking views on top of each other with specified alignment.
 ///
 /// `ZStackLayout` positions all child views within the same bounds, overlaying them
 /// according to the specified alignment. Each child is sized independently and
 /// positioned based on the alignment setting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ZStackLayout {
     /// The alignment used to position children within the `ZStack`
     pub alignment: Alignment,
@@ -141,21 +142,14 @@ impl ZStackLayout {
     }
 }
 
-container!(
-    ZStack,
-    ZStackLayout,
-    "A stack layout that overlays its children on top of each other, aligning them based on the specified alignment."
-);
+/// A view that overlays its children, aligning them according to the specified alignment.
+#[derive(Debug, Clone)]
+pub struct ZStack<C> {
+    layout: ZStackLayout,
+    contents: C,
+}
 
-impl ZStack {
-    /// Creates a new `ZStack` with the specified alignment and contents.
-    pub fn new(alignment: Alignment, contents: impl TupleViews) -> Self {
-        Self {
-            layout: ZStackLayout { alignment },
-            contents: contents.into_views(),
-        }
-    }
-
+impl <C>ZStack<C> {
     /// Sets the alignment for the `ZStack`.
     #[must_use]
     pub const fn alignment(mut self, alignment: Alignment) -> Self {
@@ -164,7 +158,41 @@ impl ZStack {
     }
 }
 
-impl<V> FromIterator<V> for ZStack
+impl <C,F,V>ZStack<ForEach<C,F,V>>
+where
+        C: Collection,
+        C::Item: Identifable,
+        F: 'static + Fn(C::Item) -> V,
+        V:View{
+    /// Creates a new `ZStack` with views generated from a collection using `ForEach`.
+    ///
+    /// # Arguments
+    /// * `collection` - The collection of items to iterate over
+    /// * `generator` - A function that generates a view for each item in the collection
+    pub fn for_each(collection: C, generator: F) -> Self
+    {
+        Self {
+            layout: ZStackLayout::default(),
+            contents: ForEach::new(collection, generator),
+        }
+    }
+}
+
+impl <C:TupleViews> ZStack<(C,)> {
+    /// Creates a new `ZStack` with the specified alignment and contents.
+    ///
+    /// # Arguments
+    /// * `alignment` - The alignment to use for positioning children within the stack
+    /// * `contents` - A collection of views to be stacked
+    pub const fn new(alignment: Alignment, contents: C) -> Self {
+        Self {
+            layout: ZStackLayout { alignment },
+            contents: (contents,),
+        }
+    }
+}
+
+impl<V> FromIterator<V> for ZStack<(Vec<AnyView>,)>
 where
     V: View,
 {
@@ -177,6 +205,28 @@ where
 /// Creates a new `ZStack` with center alignment and the specified contents.
 ///
 /// This is a convenience function that creates a `ZStack` with `Alignment::Center`.
-pub fn zstack(contents: impl TupleViews) -> ZStack {
+pub const fn zstack<C: TupleViews>(contents: C) -> ZStack<(C,)> {
     ZStack::new(Alignment::Center, contents)
 }
+
+
+impl<C> View for ZStack<(C,)>
+where
+    C: TupleViews + 'static,
+{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        FixedContainer::new(self.layout, self.contents.0)
+    }
+}
+
+impl <C,F,V>View for ZStack<ForEach<C,F,V>>
+where
+        C: Collection,
+        C::Item: Identifable,
+        F: 'static + Fn(C::Item) -> V,
+        V:View{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        Container::new(self.layout, self.contents)
+    }
+}
+
