@@ -210,7 +210,7 @@ struct WuiContainer: WuiComponent, View {
         let container = waterui_force_as_container(anyview)
         self.layout = WuiLayout(inner: container.layout!)
 
-        var anyviews = WuiAnyViews(container.contents, env: env)
+        var anyviews = WuiAnyViewArray(container.contents, env: env)
         self.children = anyviews.toArray()
         self.descriptors = children.map { view in
             let id = view.typeId
