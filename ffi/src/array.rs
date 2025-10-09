@@ -120,10 +120,6 @@ impl<T> WuiArray<T> {
             &mut *slice_from_raw_parts_mut(slice.head, slice.len)
         }
     }
-
-    pub fn leak(self) {
-        core::mem::forget(self);
-    }
 }
 
 impl<T: IntoRust + Default> IntoIterator for WuiArray<T> {

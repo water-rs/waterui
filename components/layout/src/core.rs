@@ -5,7 +5,7 @@
 //! the final [`Size`]. This module defines the traits and helper types that are
 //! shared by layout implementations across backends.
 
-use core::fmt::Debug;
+use core::fmt::{Debug};
 
 use alloc::vec::Vec;
 
@@ -61,7 +61,7 @@ impl ChildMetadata {
 }
 
 /// Behaviour shared by all layout containers.
-pub trait Layout {
+pub trait Layout:Debug {
     /// Proposes sizes for each child based on the parent's proposal and the
     /// metadata collected during the previous frame.
     fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize>;
