@@ -117,10 +117,12 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
         }
     };
 
+    let field_types = fields.iter().map(|field| &field.ty);
+
     // Generate the implementation
     let expanded = quote! {
         impl crate::FormBuilder for #name {
-            type View = ::waterui::component::layout::stack::VStack;
+            type View = ::waterui::component::layout::stack::VStack<((#(<#field_types as crate::FormBuilder>::View),*),)>;
 
             fn view(binding: &::waterui::Binding<Self>, _label: ::waterui::AnyView, _placeholder: ::waterui::Str) -> Self::View {
                 #view_body

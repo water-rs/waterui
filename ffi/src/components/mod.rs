@@ -9,6 +9,8 @@ impl<T: IntoFFI> IntoFFI for waterui::component::Native<T> {
     }
 }
 
+pub mod for_each;
+
 pub mod button;
 
 ffi_view!(

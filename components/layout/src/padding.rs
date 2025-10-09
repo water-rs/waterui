@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container};
+use crate::{container::{FixedContainer}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size};
 
 /// Layout that insets its single child by the configured edge values.
 #[derive(Debug, Clone)]
@@ -145,6 +145,6 @@ impl Padding {
 
 impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        container::Container::new(self.layout, vec![self.content])
+        FixedContainer::new(self.layout, vec![self.content])
     }
 }
