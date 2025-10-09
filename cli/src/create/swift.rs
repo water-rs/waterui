@@ -3,12 +3,14 @@ use std::{collections::HashMap, fs, path::Path};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use anyhow::{Context, Result, bail};
-use walkdir::WalkDir;
+use anyhow::{Context, Result};
+use include_dir::{Dir, DirEntry, include_dir};
 
 use crate::util;
 
 use super::template;
+
+static SWIFT_BACKEND_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../backends/swift");
 
 pub fn create_xcode_project(
     project_dir: &Path,
@@ -26,9 +28,10 @@ pub fn create_xcode_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("DEVELOPMENT_TEAM", development_team.to_string());
 
-    let template_dir = util::workspace_root().join("cli/src/templates/apple");
+    let templates = &template::TEMPLATES_DIR;
+    let apple_template_dir = templates.get_dir("apple").unwrap();
 
-    template::process_template_directory(&template_dir, &apple_root, &context)?;
+    template::process_template_directory(apple_template_dir, &apple_root, &context)?;
 
     copy_swift_backend(&apple_root.join("WaterUI"))?;
 
@@ -47,40 +50,27 @@ pub fn create_xcode_project(
 }
 
 fn copy_swift_backend(destination: &Path) -> Result<()> {
-    let source_root = util::workspace_root().join("backends/swift");
-    if !source_root.exists() {
-        bail!(
-            "Swift backend sources not found at {}. Ensure you are running the CLI from the WaterUI workspace.",
-            source_root.display()
-        );
-    }
-
-    if destination.exists() {
-        fs::remove_dir_all(destination)?;
-    }
     util::ensure_directory(destination)?;
+    extract_dir(&SWIFT_BACKEND_DIR, destination)
+}
 
-    for entry in WalkDir::new(&source_root).into_iter() {
-        let entry = entry?;
-        let relative = match entry.path().strip_prefix(&source_root) {
-            Ok(rel) if rel.as_os_str().is_empty() => continue,
-            Ok(rel) => rel,
-            Err(_) => continue,
-        };
-
-        if should_skip(relative) {
-            continue;
-        }
-
-        let target_path = destination.join(relative);
-        if entry.file_type().is_dir() {
-            util::ensure_directory(&target_path)?;
-        } else {
-            if let Some(parent) = target_path.parent() {
-                util::ensure_directory(parent)?;
+fn extract_dir(dir: &Dir, to: &Path) -> Result<()> {
+    for entry in dir.entries() {
+        let path = to.join(entry.path());
+        match entry {
+            DirEntry::File(file) => {
+                if should_skip(file.path()) {
+                    continue;
+                }
+                fs::write(path, file.contents())?;
             }
-            fs::copy(entry.path(), &target_path)
-                .with_context(|| format!("failed to copy {}", entry.path().display()))?;
+            DirEntry::Dir(dir) => {
+                if should_skip(dir.path()) {
+                    continue;
+                }
+                fs::create_dir_all(&path)?;
+                extract_dir(dir, &path)?;
+            }
         }
     }
     Ok(())
