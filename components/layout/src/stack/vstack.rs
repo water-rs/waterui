@@ -1,14 +1,21 @@
 //! Vertical stack layout.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, View, view::TupleViews};
+use nami::collection::Collection;
+use waterui_core::{
+    AnyView, View,
+    id::Identifable,
+    view::TupleViews,
+    views::ForEach,
+};
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container, stack::HorizontalAlignment,
+    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer,
+    stack::HorizontalAlignment,
 };
 
 /// Layout engine shared by the public [`VStack`] view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct VStackLayout {
     /// The horizontal alignment of children within the stack.
     pub alignment: HorizontalAlignment,
@@ -124,30 +131,49 @@ impl Layout for VStackLayout {
         placements
     }
 }
-container!(
-    VStack,
-    VStackLayout,
-    "A vertical stack layout that arranges its children in a vertical line with specified alignment and spacing."
-);
 
-impl VStack {
+/// A vertical stack view that arranges its children in a column.
+#[derive(Debug, Clone)]
+pub struct VStack<C> {
+    layout: VStackLayout,
+    contents: C,
+}
+
+impl<C: TupleViews> VStack<(C,)> {
     /// Creates a vertical stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: HorizontalAlignment, spacing: f32, contents: impl TupleViews) -> Self {
+    pub const fn new(alignment: HorizontalAlignment, spacing: f32, contents: C) -> Self {
         Self {
             layout: VStackLayout { alignment, spacing },
-            contents: contents.into_views(),
+            contents: (contents,),
         }
     }
+}
+impl<C, F, V> VStack<ForEach<C, F, V>>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
+{
+    /// Creates a vertical stack by iterating over a collection and generating views.
+    pub fn for_each(collection: C, generator: F) -> Self {
+        Self {
+            layout: VStackLayout::default(),
+            contents: ForEach::new(collection, generator),
+        }
+    }
+}
 
-    /// Sets the horizontal alignment of children within the stack.
+impl<C> VStack<C> {
+    /// Sets the horizontal alignment for children in the stack.
     #[must_use]
     pub const fn alignment(mut self, alignment: HorizontalAlignment) -> Self {
         self.layout.alignment = alignment;
         self
     }
 
-    /// Adjusts the vertical spacing between child views.
+    /// Sets the spacing between children in the stack.
     #[must_use]
     pub const fn spacing(mut self, spacing: f32) -> Self {
         self.layout.spacing = spacing;
@@ -155,7 +181,7 @@ impl VStack {
     }
 }
 
-impl<V> FromIterator<V> for VStack
+impl<V> FromIterator<V> for VStack<(Vec<AnyView>,)>
 where
     V: View,
 {
@@ -166,6 +192,24 @@ where
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn vstack(contents: impl TupleViews) -> VStack {
+pub const fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
     VStack::new(HorizontalAlignment::Center, 10.0, contents)
+}
+
+impl<C, F, V> View for VStack<ForEach<C, F, V>>
+where
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
+{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        Container::new(self.layout, self.contents)
+    }
+}
+
+impl<C: TupleViews + 'static> View for VStack<(C,)> {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        FixedContainer::new(self.layout, self.contents.0)
+    }
 }
