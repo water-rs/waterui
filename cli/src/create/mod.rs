@@ -197,13 +197,13 @@ pub fn run(args: CreateArgs) -> Result<()> {
         display_path.display()
     ));
 
-    if which::which("git").is_ok() {
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(&project_dir)
-            .output()?;
-        util::info("✅ Git repository initialized");
-    }
+    // if which::which("git").is_ok() {
+    //     std::process::Command::new("git")
+    //         .arg("init")
+    //         .current_dir(&project_dir)
+    //         .output()?;
+    //     util::info("✅ Git repository initialized");
+    // }
 
     Ok(())
 }
