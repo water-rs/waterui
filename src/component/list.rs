@@ -25,7 +25,7 @@
 //! ```
 
 use alloc::boxed::Box;
-use nami::{collection::Collection};
+use nami::collection::Collection;
 
 use crate::views::{AnyViews, ForEach, Views};
 use waterui_core::{AnyView, Environment, View, id::Identifable};
@@ -70,7 +70,6 @@ where
     }
 }
 
-
 /// An item in a list that can be configured with various behaviors.
 pub struct ListItem {
     /// The view content to display for this item.
@@ -79,12 +78,11 @@ pub struct ListItem {
     pub on_delete: Option<OnDelete>,
 }
 
-impl View for ListItem{
+impl View for ListItem {
     fn body(self, _env: &Environment) -> impl View {
         self.content
     }
 }
-
 
 type OnDelete = Box<dyn Fn(&Environment, usize)>;
 
