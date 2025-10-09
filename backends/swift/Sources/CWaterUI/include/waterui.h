@@ -258,17 +258,11 @@ typedef struct Computed_i32 Computed_i32;
  */
 typedef struct Environment Environment;
 
-/**
- * A type-erased container for metadata that can be associated with computation results.
- *
- * `Metadata` allows attaching arbitrary typed information to computation results
- * and passing it through the computation pipeline.
- */
-typedef struct Metadata Metadata;
-
 typedef struct WuiAction WuiAction;
 
 typedef struct WuiAnyView WuiAnyView;
+
+typedef struct WuiAnyViews WuiAnyViews;
 
 typedef struct WuiColor WuiColor;
 
@@ -304,13 +298,13 @@ typedef struct WuiResolvedColor {
 
 typedef struct WuiWatcher_WuiResolvedColor {
   void *data;
-  void (*call)(const void*, struct WuiResolvedColor, const struct Metadata*);
+  void (*call)(const void*, struct WuiResolvedColor, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiResolvedColor;
 
 typedef struct WuiWatcher_____WuiColor {
   void *data;
-  void (*call)(const void*, struct WuiColor*, const struct Metadata*);
+  void (*call)(const void*, struct WuiColor*, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_____WuiColor;
 
@@ -329,6 +323,7 @@ typedef struct WuiArrayVTable_u8 {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_u8 {
   NonNull data;
@@ -354,15 +349,21 @@ typedef struct WuiArrayVTable_____WuiAnyView {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_____WuiAnyView {
   NonNull data;
   struct WuiArrayVTable_____WuiAnyView vtable;
 } WuiArray_____WuiAnyView;
 
-typedef struct WuiContainer {
+typedef struct WuiFixedContainer {
   struct WuiLayout *layout;
   struct WuiArray_____WuiAnyView contents;
+} WuiFixedContainer;
+
+typedef struct WuiContainer {
+  struct WuiLayout *layout;
+  struct WuiAnyViews *contents;
 } WuiContainer;
 
 typedef struct WuiProposalSize {
@@ -385,6 +386,7 @@ typedef struct WuiArrayVTable_WuiProposalSize {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiProposalSize {
   NonNull data;
@@ -412,6 +414,7 @@ typedef struct WuiArrayVTable_WuiChildMetadata {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiChildMetadata {
   NonNull data;
@@ -453,6 +456,7 @@ typedef struct WuiArrayVTable_WuiRect {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiRect {
   NonNull data;
@@ -507,6 +511,7 @@ typedef struct WuiArrayVTable_WuiStyledChunk {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiStyledChunk {
   NonNull data;
@@ -519,13 +524,13 @@ typedef struct WuiStyledStr {
 
 typedef struct WuiWatcher_WuiStyledStr {
   void *data;
-  void (*call)(const void*, struct WuiStyledStr, const struct Metadata*);
+  void (*call)(const void*, struct WuiStyledStr, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiStyledStr;
 
 typedef struct WuiWatcher_____WuiFont {
   void *data;
-  void (*call)(const void*, struct WuiFont*, const struct Metadata*);
+  void (*call)(const void*, struct WuiFont*, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_____WuiFont;
 
@@ -549,7 +554,7 @@ typedef struct WuiResolvedFont {
 
 typedef struct WuiWatcher_WuiResolvedFont {
   void *data;
-  void (*call)(const void*, struct WuiResolvedFont, const struct Metadata*);
+  void (*call)(const void*, struct WuiResolvedFont, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiResolvedFont;
 
@@ -717,7 +722,7 @@ typedef struct WuiLivePhoto {
 
 typedef struct WuiWatcher_____WuiAnyView {
   void *data;
-  void (*call)(const void*, struct WuiAnyView*, const struct Metadata*);
+  void (*call)(const void*, struct WuiAnyView*, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_____WuiAnyView;
 
@@ -730,31 +735,31 @@ typedef struct WuiProgress {
 
 typedef struct WuiWatcher_WuiStr {
   void *data;
-  void (*call)(const void*, struct WuiStr, const struct Metadata*);
+  void (*call)(const void*, struct WuiStr, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiStr;
 
 typedef struct WuiWatcher_i32 {
   void *data;
-  void (*call)(const void*, int32_t, const struct Metadata*);
+  void (*call)(const void*, int32_t, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_i32;
 
 typedef struct WuiWatcher_bool {
   void *data;
-  void (*call)(const void*, bool, const struct Metadata*);
+  void (*call)(const void*, bool, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_bool;
 
 typedef struct WuiWatcher_f32 {
   void *data;
-  void (*call)(const void*, float, const struct Metadata*);
+  void (*call)(const void*, float, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_f32;
 
 typedef struct WuiWatcher_f64 {
   void *data;
-  void (*call)(const void*, double, const struct Metadata*);
+  void (*call)(const void*, double, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_f64;
 
@@ -782,6 +787,7 @@ typedef struct WuiArrayVTable_WuiPickerItem {
  * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
  * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiPickerItem {
   NonNull data;
@@ -790,7 +796,7 @@ typedef struct WuiArray_WuiPickerItem {
 
 typedef struct WuiWatcher_WuiArray_WuiPickerItem {
   void *data;
-  void (*call)(const void*, struct WuiArray_WuiPickerItem, const struct Metadata*);
+  void (*call)(const void*, struct WuiArray_WuiPickerItem, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiArray_WuiPickerItem;
 
@@ -800,7 +806,7 @@ typedef struct WuiVideo {
 
 typedef struct WuiWatcher_WuiVideo {
   void *data;
-  void (*call)(const void*, struct WuiVideo, const struct Metadata*);
+  void (*call)(const void*, struct WuiVideo, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiVideo;
 
@@ -820,13 +826,13 @@ typedef struct WuiLivePhotoSource {
 
 typedef struct WuiWatcher_WuiLivePhotoSource {
   void *data;
-  void (*call)(const void*, struct WuiLivePhotoSource, const struct Metadata*);
+  void (*call)(const void*, struct WuiLivePhotoSource, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiLivePhotoSource;
 
 typedef struct WuiWatcher_WuiId {
   void *data;
-  void (*call)(const void*, struct WuiId, const struct Metadata*);
+  void (*call)(const void*, struct WuiId, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiId;
 
@@ -1065,6 +1071,15 @@ struct WuiTypeId waterui_empty_id(void);
 void waterui_drop_layout(struct WuiLayout *value);
 
 struct WuiTypeId waterui_spacer_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_fixed_container_id(void);
 
 /**
  * # Safety
@@ -1926,7 +1941,30 @@ void waterui_set_binding_id(struct Binding_Id *binding, struct WuiId value);
 struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *binding,
                                                  struct WuiWatcher_WuiId watcher);
 
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_drop_any_views(struct WuiAnyViews *value);
+
+uintptr_t waterui_any_views_len(const struct WuiAnyViews *views);
+
+struct WuiAnyView *waterui_any_views_get_view(const struct WuiAnyViews *views, uintptr_t index);
+
+struct WuiId waterui_any_views_get_id(const struct WuiAnyViews *views, uintptr_t index);
+
+void waterui_drop_any_views_opaque(void *value);
+
+uintptr_t waterui_any_views_len_opaque(const void *views);
+
+struct WuiAnyView *waterui_any_views_get_view_opaque(const void *views, uintptr_t index);
+
+struct WuiId waterui_any_views_get_id_opaque(const void *views, uintptr_t index);
+
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
-

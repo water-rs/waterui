@@ -210,9 +210,44 @@ struct WuiContainer: WuiComponent, View {
         let container = waterui_force_as_container(anyview)
         self.layout = WuiLayout(inner: container.layout!)
 
-        var anyviews = WuiAnyViewArray(container.contents, env: env)
+        let anyviews = WuiAnyViewCollection(UnsafeMutableRawPointer(container.contents), env: env)
         self.children = anyviews.toArray()
         self.descriptors = children.map { view in
+            let id = view.typeId
+            return ChildDescriptor(typeId: id, isSpacer: id == WuiSpacer.id)
+        }
+    }
+
+    var body: some View {
+        RustLayout(layout: layout, descriptors: descriptors) {
+            ForEach(children) { child in
+                child
+            }
+        }
+    }
+}
+
+@MainActor
+struct WuiFixedContainer: WuiComponent, View {
+    static var id: WuiTypeId {
+        waterui_fixed_container_id()
+    }
+
+    private var layout: WuiLayout
+    private var children: [WuiAnyView]
+    private var descriptors: [ChildDescriptor]
+
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
+        let container = waterui_force_as_fixed_container(anyview)
+        self.layout = WuiLayout(inner: container.layout!)
+
+        let pointerArray = WuiArray<OpaquePointer>(container.contents)
+        let resolvedChildren = pointerArray
+            .toArray()
+            .map { WuiAnyView(anyview: $0, env: env) }
+
+        self.children = resolvedChildren
+        self.descriptors = resolvedChildren.map { view in
             let id = view.typeId
             return ChildDescriptor(typeId: id, isSpacer: id == WuiSpacer.id)
         }
