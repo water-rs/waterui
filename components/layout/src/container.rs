@@ -4,7 +4,11 @@
 use core::fmt::Debug;
 
 use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{raw_view, view::TupleViews, views::{AnyViews, Views,ViewsExt}, AnyView, View};
+use waterui_core::{
+    AnyView, View, raw_view,
+    view::TupleViews,
+    views::{AnyViews, Views, ViewsExt},
+};
 
 use crate::Layout;
 
@@ -51,9 +55,12 @@ pub struct Container {
     contents: AnyViews<AnyView>,
 }
 
-impl Container{
+impl Container {
     /// Wraps the supplied layout object and views into a container view.
-    pub fn new<V:View>(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
+    pub fn new<V: View>(
+        layout: impl Layout + 'static,
+        contents: impl Views<View = V> + 'static,
+    ) -> Self {
         Self {
             layout: Box::new(layout),
             contents: AnyViews::new(contents.map(|v| AnyView::new(v))),
