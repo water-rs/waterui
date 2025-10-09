@@ -61,10 +61,7 @@ impl<T> WuiArrayVTable<T> {
                 let s = slice.as_ref();
                 let len = s.len();
                 let head = s.as_ptr() as *mut T2;
-                WuiArraySlice {
-                    head,
-                    len,
-                }
+                WuiArraySlice { head, len }
             }
         }
 

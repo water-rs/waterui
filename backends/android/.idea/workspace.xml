@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="7a441c56-20e8-46a8-a370-89aaa1f99462" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/build.gradle.kts" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/AndroidManifest.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/WaterUI.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Button.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Container.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Divider.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Progress.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/ScrollView.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Slider.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Spacer.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Stepper.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Text.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/TextField.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/components/Toggle.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/core/AnyView.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/core/WuiEnvironment.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/ffi/CWaterUI.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/layout/RustLayoutView.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/reactive/Binding.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/reactive/Computed.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/com/waterui/android/reactive/Watcher.kt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../swift/Sources/WaterUI/Core/Array.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../swift/Sources/WaterUI/Core/Array.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../swift/Sources/WaterUI/Layout/Layout.swift" beforeDir="false" afterPath="$PROJECT_DIR$/../swift/Sources/WaterUI/Layout/Layout.swift" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../../cli/src/templates/apple/AppName/AppNameApp.swift.tpl" beforeDir="false" afterPath="$PROJECT_DIR$/../../cli/src/templates/apple/AppName/AppNameApp.swift.tpl" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/../.." />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 8
+}]]></component>
+  <component name="ProjectId" id="33lTXGjoKqFpZq75TqMye8xU7tI" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "main",
+    "kotlin-language-version-configured": "true",
+    "settings.editor.selected.configurable": "reference.settings.ide.settings.notifications"
+  }
+}]]></component>
+  <component name="RunManager">
+    <configuration default="true" type="JetRunConfigurationType">
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration default="true" type="KotlinStandaloneScriptRunConfigurationType">
+      <option name="filePath" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="7a441c56-20e8-46a8-a370-89aaa1f99462" name="Changes" comment="" />
+      <created>1759890697414</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1759890697414</updated>
+    </task>
+    <servers />
+  </component>
+</project>
