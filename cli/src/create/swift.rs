@@ -15,6 +15,7 @@ pub fn create_xcode_project(
     app_name: &str,
     crate_name: &str,
     bundle_identifier: &str,
+    development_team: &str,
 ) -> Result<()> {
     let apple_root = project_dir.join("apple");
     let lib_name = crate_name.replace('-', "_");
@@ -23,6 +24,7 @@ pub fn create_xcode_project(
     context.insert("APP_NAME", app_name.to_string());
     context.insert("LIB_NAME", lib_name.to_string());
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
+    context.insert("DEVELOPMENT_TEAM", development_team.to_string());
 
     let template_dir = util::workspace_root().join("cli/src/templates/apple");
 
