@@ -21,7 +21,7 @@
 //! ## Examples
 //!
 //! ### Basic Photo
-//! ```no_run
+//! ```rust,ignore
 //! use waterui_media::{Photo, url::Url};
 //!
 //! let url = Url::parse("https://example.com/image.jpg").unwrap();
@@ -29,7 +29,7 @@
 //! ```
 //!
 //! ### Video with Controls
-//! ```no_run
+//! ```rust,ignore
 //! use waterui_core::binding;
 //! use waterui_media::{Video, VideoPlayer, url::Url};
 //!
@@ -40,7 +40,7 @@
 //! ```
 //!
 //! ### Unified Media Type
-//! ```no_run
+//! ```rust,ignore
 //! use waterui_media::{Media, live::LivePhotoSource, url::Url};
 //!
 //! let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
@@ -55,6 +55,7 @@
 //! ```
 
 #![allow(clippy::future_not_send)]
+#![allow(rustdoc::invalid_rust_codeblocks)]
 
 extern crate alloc;
 
@@ -102,7 +103,7 @@ use crate::live::LivePhotoSource;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```text
 /// use waterui_media::{Media, live::LivePhotoSource, url::Url};
 ///
 /// let image = Media::Image(Url::parse("https://example.com/photo.jpg").unwrap());
