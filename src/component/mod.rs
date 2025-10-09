@@ -8,11 +8,10 @@ pub use button::{Button, button};
 
 pub mod badge;
 pub mod focu;
-
+pub mod lazy;
 pub mod list;
 
 pub mod progress;
-pub mod views;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};
 
