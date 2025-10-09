@@ -84,14 +84,18 @@ impl View for RichText {
 }
 
 fn render_list(items: &[RichTextElement], ordered: bool) -> impl View {
-    items.iter().enumerate().map(|(i, item)| {
-        let marker = if ordered {
-            format!("{}. ", i + 1)
-        } else {
-            "• ".to_string()
-        };
-        hstack((text(marker), item.clone()))
-    }).collect::<VStack<_>>()
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let marker = if ordered {
+                format!("{}. ", i + 1)
+            } else {
+                "• ".to_string()
+            };
+            hstack((text(marker), item.clone()))
+        })
+        .collect::<VStack<_>>()
 }
 
 fn quote(content: Vec<RichTextElement>) -> impl View {
