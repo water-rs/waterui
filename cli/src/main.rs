@@ -1,10 +1,14 @@
 mod config;
 mod create;
+mod doctor;
 mod run;
 mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 use util::LogLevel;
 
 #[derive(Parser)]
@@ -26,6 +30,8 @@ enum Commands {
     Create(create::CreateArgs),
     /// Build and run a WaterUI application with SwiftUI hot reload support
     Run(run::RunArgs),
+    /// Check for potential problems with the development environment
+    Doctor(doctor::DoctorArgs),
 }
 
 fn main() -> Result<()> {
@@ -35,5 +41,15 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Create(args) => create::run(args),
         Commands::Run(args) => run::run(args),
+        Commands::Doctor(args) => {
+            let pb = ProgressBar::new_spinner();
+            pb.enable_steady_tick(Duration::from_millis(80));
+            pb.set_style(
+                ProgressStyle::with_template("{spinner:.blue} {msg}")
+                    .unwrap()
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+            );
+            doctor::run(args, pb)
+        }
     }
 }
