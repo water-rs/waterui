@@ -4,7 +4,7 @@
 //! This crate bridges the declarative [`View`](waterui_core::View) system with
 //! the imperative, backend-driven layout pass. It contains:
 //!
-//! - the low-level [`Layout`](crate::Layout) trait and its geometry helpers,
+//! - the low-level [`Layout`] trait and its geometry helpers,
 //! - reusable containers such as [`spacer()`], [`padding::Padding`], and stacks,
 //! - thin wrappers (for example [`scroll()`]) that signal backend-specific
 //!   behaviour.
