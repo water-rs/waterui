@@ -53,7 +53,7 @@ pub use waterui_color::Color;
 pub use waterui_core::{
     AnyView, animation,
     env::{self, Environment},
-    impl_extractor, raw_view,
+    impl_extractor, raw_view,views
 };
 pub use waterui_text::text;
 
