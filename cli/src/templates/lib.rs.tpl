@@ -4,6 +4,7 @@ use waterui::{
     prelude::layout::padding::EdgeInsets,
     Environment,
     View,
+    ViewExt,
 };
 
 pub fn init() -> Environment {
