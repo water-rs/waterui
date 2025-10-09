@@ -8,8 +8,7 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    container::FixedContainer, stack::{Alignment, HorizontalAlignment, VerticalAlignment}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size
 };
 
 /// Planned layout that clamps a single child's proposal.
@@ -195,6 +194,6 @@ impl Frame {
 impl View for Frame {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // The Frame view's body is just a Container with our custom layout and the child content.
-        Container::new(self.layout, vec![self.content])
+        FixedContainer::new(self.layout, vec![self.content])
     }
 }
