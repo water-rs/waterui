@@ -14,7 +14,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::{config::Config, util};
+use crate::{
+    config::{Android, Config, Package, Swift},
+    util,
+};
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
@@ -53,6 +56,7 @@ pub enum Platform {
     Tvos,
     #[clap(alias = "vision")]
     Visionos,
+    Android,
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
@@ -63,8 +67,8 @@ pub fn run(args: RunArgs) -> Result<()> {
     let config = Config::load(&project_dir)?;
 
     util::info(format!(
-        "Running WaterUI app '{}' (Xcode scheme: {})",
-        config.package.display_name, config.swift.scheme
+        "Running WaterUI app '{}'",
+        config.package.display_name
     ));
 
     run_cargo_build(&project_dir, &config.package.name, args.release)?;
@@ -82,23 +86,51 @@ pub fn run(args: RunArgs) -> Result<()> {
     };
 
     match args.platform {
-        Platform::Macos => run_macos(&project_dir, &config, args.release)?,
-        Platform::Ios => run_ios(
-            &project_dir,
-            &config,
-            args.release,
-            Platform::Ios,
-            args.device.clone(),
-        )?,
-        Platform::Ipados => run_ios(
-            &project_dir,
-            &config,
-            args.release,
-            Platform::Ipados,
-            args.device.clone(),
-        )?,
-        Platform::Watchos | Platform::Tvos | Platform::Visionos => {
-            bail!("Platform {:?} is not implemented yet", args.platform)
+        Platform::Macos
+        | Platform::Ios
+        | Platform::Ipados
+        | Platform::Watchos
+        | Platform::Tvos
+        | Platform::Visionos => {
+            if let Some(swift_config) = &config.backends.swift {
+                util::info(format!("(Xcode scheme: {})", swift_config.scheme));
+
+                match args.platform {
+                    Platform::Macos => run_macos(&project_dir, swift_config, args.release)?,
+                    Platform::Ios
+                    | Platform::Ipados
+                    | Platform::Watchos
+                    | Platform::Tvos
+                    | Platform::Visionos => run_apple_simulator(
+                        &project_dir,
+                        &config.package,
+                        swift_config,
+                        args.release,
+                        args.platform,
+                        args.device.clone(),
+                    )?,
+                    _ => unreachable!(),
+                }
+            } else {
+                bail!(
+                    "Swift backend not configured for this project. Add it to waterui.toml or recreate the project with the SwiftUI backend."
+                );
+            }
+        }
+        Platform::Android => {
+            if let Some(android_config) = &config.backends.android {
+                run_android(
+                    &project_dir,
+                    &config.package,
+                    android_config,
+                    args.release,
+                    args.device,
+                )?;
+            } else {
+                bail!(
+                    "Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend."
+                );
+            }
         }
     }
 
@@ -124,7 +156,7 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
     Ok(())
 }
 
-fn run_macos(project_dir: &Path, config: &Config, release: bool) -> Result<()> {
+fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("SwiftUI backend is currently only supported on macOS");
     }
@@ -140,7 +172,7 @@ fn run_macos(project_dir: &Path, config: &Config, release: bool) -> Result<()> {
         }
     }
 
-    let apple_root = project_dir.join(&config.swift.project_path);
+    let apple_root = project_dir.join(&swift_config.project_path);
     if !apple_root.exists() {
         bail!(
             "Xcode project directory not found at {}. Did you run 'water create'?",
@@ -148,7 +180,7 @@ fn run_macos(project_dir: &Path, config: &Config, release: bool) -> Result<()> {
         );
     }
 
-    let scheme = &config.swift.scheme;
+    let scheme = &swift_config.scheme;
     let project_path = apple_root.join(format!("{scheme}.xcodeproj"));
     if !project_path.exists() {
         bail!("Missing Xcode project: {}", project_path.display());
@@ -199,9 +231,10 @@ fn run_macos(project_dir: &Path, config: &Config, release: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_ios(
+fn run_apple_simulator(
     project_dir: &Path,
-    config: &Config,
+    package: &crate::config::Package,
+    swift_config: &crate::config::Swift,
     release: bool,
     platform: Platform,
     device: Option<String>,
@@ -222,7 +255,28 @@ fn run_ios(
         }
     }
 
-    let apple_root = project_dir.join(&config.swift.project_path);
+    let (sim_platform, default_device, products_path) = match platform {
+        Platform::Ios => ("iOS Simulator", "iPhone 15", "iphonesimulator"),
+        Platform::Ipados => (
+            "iOS Simulator",
+            "iPad Pro (11-inch) (4th generation)",
+            "iphonesimulator",
+        ),
+        Platform::Watchos => (
+            "watchOS Simulator",
+            "Apple Watch Series 9 (45mm)",
+            "watchsimulator",
+        ),
+        Platform::Tvos => (
+            "tvOS Simulator",
+            "Apple TV 4K (3rd generation)",
+            "appletvsimulator",
+        ),
+        Platform::Visionos => ("visionOS Simulator", "Apple Vision Pro", "xrsimulator"),
+        _ => bail!("Unsupported platform for simulator: {:?}", platform),
+    };
+
+    let apple_root = project_dir.join(&swift_config.project_path);
     if !apple_root.exists() {
         bail!(
             "Xcode project directory not found at {}. Did you run 'water create'?",
@@ -230,21 +284,19 @@ fn run_ios(
         );
     }
 
-    let scheme = &config.swift.scheme;
+    let scheme = &swift_config.scheme;
     let project_path = apple_root.join(format!("{scheme}.xcodeproj"));
     if !project_path.exists() {
         bail!("Missing Xcode project: {}", project_path.display());
     }
 
-    let default_device = match platform {
-        Platform::Ipados => "iPad Pro (11-inch) (4th generation)",
-        _ => "iPhone 15",
-    };
     let device_name = device.unwrap_or_else(|| default_device.to_string());
     util::info(format!("Building for simulator {device_name}…"));
 
     let derived_root = project_dir.join(".waterui/DerivedData");
     util::ensure_directory(&derived_root)?;
+
+    let configuration = if release { "Release" } else { "Debug" };
 
     let mut build_cmd = Command::new("xcodebuild");
     build_cmd
@@ -253,9 +305,9 @@ fn run_ios(
         .arg("-scheme")
         .arg(scheme)
         .arg("-destination")
-        .arg(format!("platform=iOS Simulator,name={device_name}"))
+        .arg(format!("platform={},name={}", sim_platform, device_name))
         .arg("-configuration")
-        .arg(if release { "Release" } else { "Debug" })
+        .arg(configuration)
         .arg("-derivedDataPath")
         .arg(&derived_root)
         .arg("CODE_SIGNING_ALLOWED=NO")
@@ -267,11 +319,10 @@ fn run_ios(
         bail!("xcodebuild failed with status {status}");
     }
 
-    let products_dir = if release {
-        derived_root.join("Build/Products/Release-iphonesimulator")
-    } else {
-        derived_root.join("Build/Products/Debug-iphonesimulator")
-    };
+    let products_dir = derived_root.join(format!(
+        "Build/Products/{}-{}",
+        configuration, products_path
+    ));
     let app_bundle = products_dir.join(format!("{scheme}.app"));
     if !app_bundle.exists() {
         bail!(
@@ -307,7 +358,7 @@ fn run_ios(
         "launch",
         "--terminate-running-process",
         &device_name,
-        &config.package.bundle_identifier,
+        &package.bundle_identifier,
     ]);
     let status = launch_cmd.status().context("failed to launch app")?;
     if !status.success() {
@@ -316,6 +367,145 @@ fn run_ios(
 
     util::info("Simulator launch complete. Press Ctrl+C to stop.");
     wait_for_interrupt()?;
+    Ok(())
+}
+
+fn run_android(
+    project_dir: &Path,
+    package: &crate::config::Package,
+    android_config: &crate::config::Android,
+    release: bool,
+    device: Option<String>,
+) -> Result<()> {
+    util::info("Running for Android...");
+
+    for tool in ["adb", "emulator"] {
+        if which::which(tool).is_err() {
+            bail!(
+                "{} not found. Make sure the Android SDK platform-tools and emulator are in your PATH.",
+                tool
+            );
+        }
+    }
+
+    let build_rust_script = project_dir.join("build-rust.sh");
+    if build_rust_script.exists() {
+        util::info("Building Rust library for Android...");
+        let mut cmd = Command::new("bash");
+        cmd.arg(&build_rust_script);
+        cmd.current_dir(project_dir);
+        let status = cmd.status().context("failed to run build-rust.sh")?;
+        if !status.success() {
+            bail!("build-rust.sh failed");
+        }
+    }
+
+    util::info("Building Android app with Gradle...");
+    let android_dir = project_dir.join(&android_config.project_path);
+
+    let gradlew_executable = if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "./gradlew"
+    };
+    let mut cmd = Command::new(gradlew_executable);
+
+    let task = if release {
+        "assembleRelease"
+    } else {
+        "assembleDebug"
+    };
+    cmd.arg(task);
+    cmd.current_dir(&android_dir);
+    util::debug(format!("Running command: {:?}", cmd));
+    let status = cmd.status().context("failed to run gradlew")?;
+    if !status.success() {
+        bail!("Gradle build failed");
+    }
+
+    let avd_name = if let Some(device_name) = device {
+        device_name
+    } else {
+        let output = Command::new("emulator")
+            .arg("-list-avds")
+            .output()
+            .context("failed to get list of Android emulators")?;
+        let avds = String::from_utf8(output.stdout)?
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>();
+        if avds.is_empty() {
+            bail!(
+                "No Android emulators found. Please create one using Android Studio's AVD Manager."
+            );
+        }
+        avds[0].clone()
+    };
+
+    util::info(format!("Using emulator: {}", avd_name));
+
+    util::info("Launching emulator...");
+    Command::new("emulator")
+        .arg("-avd")
+        .arg(&avd_name)
+        .spawn()
+        .context("failed to launch emulator")?;
+
+    util::info("Waiting for device to be ready...");
+    let status = Command::new("adb")
+        .arg("wait-for-device")
+        .status()
+        .context("failed to run adb wait-for-device")?;
+    if !status.success() {
+        bail!("'adb wait-for-device' failed. Is the emulator running correctly?");
+    }
+
+    // Wait for boot to complete
+    loop {
+        let output = Command::new("adb")
+            .args(["shell", "getprop", "sys.boot_completed"])
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim() == "1" {
+            break;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    util::info("Installing APK...");
+    let profile = if release { "release" } else { "debug" };
+    let apk_name = if release {
+        format!("app-release.apk")
+    } else {
+        format!("app-debug.apk")
+    };
+    let apk_path = android_dir.join(format!("app/build/outputs/apk/{}/{}", profile, apk_name));
+    if !apk_path.exists() {
+        bail!("APK not found at {}", apk_path.display());
+    }
+
+    let mut install_cmd = Command::new("adb");
+    install_cmd.args(["install", "-r", apk_path.to_str().unwrap()]);
+    util::debug(format!("Running command: {:?}", install_cmd));
+    let status = install_cmd.status().context("failed to install APK")?;
+    if !status.success() {
+        bail!("Failed to install APK");
+    }
+
+    util::info("Launching app...");
+    let activity = format!("{}/.MainActivity", package.bundle_identifier);
+    let mut launch_cmd = Command::new("adb");
+    launch_cmd.args(["shell", "am", "start", "-n", &activity]);
+    util::debug(format!("Running command: {:?}", launch_cmd));
+    let status = launch_cmd.status().context("failed to launch app")?;
+    if !status.success() {
+        bail!("Failed to launch app");
+    }
+
+    util::info("App launched. Press Ctrl+C to stop the watcher.");
+    wait_for_interrupt()?;
+
     Ok(())
 }
 

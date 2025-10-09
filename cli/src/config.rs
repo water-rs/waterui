@@ -9,9 +9,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub package: Package,
-    pub swift: Swift,
+    #[serde(default)]
+    pub backends: Backends,
     #[serde(default)]
     pub hot_reload: HotReload,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Backends {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swift: Option<Swift>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android: Option<Android>,
 }
 
 impl Config {
@@ -44,13 +53,23 @@ pub struct Package {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Swift {
-    #[serde(default = "default_project_path")]
+    #[serde(default = "default_swift_project_path")]
     pub project_path: String,
     pub scheme: String,
 }
 
-fn default_project_path() -> String {
+fn default_swift_project_path() -> String {
     "apple".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Android {
+    #[serde(default = "default_android_project_path")]
+    pub project_path: String,
+}
+
+fn default_android_project_path() -> String {
+    "android".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -61,10 +80,10 @@ pub struct HotReload {
 }
 
 impl Config {
-    pub fn new(package: Package, swift: Swift) -> Self {
+    pub fn new(package: Package) -> Self {
         Self {
             package,
-            swift,
+            backends: Backends::default(),
             hot_reload: HotReload::default(),
         }
     }
