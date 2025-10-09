@@ -12,8 +12,8 @@
 //! - `Mapping`: A bidirectional mapping between values and numeric IDs
 //! - `UseId` and `SelfId`: Wrappers that implement different ID strategies
 
-use core::hash::Hash;
 use core::num::NonZeroI32;
+use core::{hash::Hash, ops::Deref};
 
 use crate::{AnyView, View};
 
@@ -65,6 +65,26 @@ pub struct UseId<T, F> {
     f: F,
 }
 
+impl<T, F> UseId<T, F> {
+    /// Creates a new [`UseId`] instance wrapping the given value and function.
+    pub const fn new(value: T, f: F) -> Self {
+        Self { value, f }
+    }
+
+    /// Consumes the wrapper and returns the inner value.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T, F> Deref for UseId<T, F> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
 impl<T, F, Id> Identifable for UseId<T, F>
 where
     F: Fn(&T) -> Id,
@@ -89,6 +109,10 @@ impl<T> SelfId<T> {
     pub const fn new(value: T) -> Self {
         Self(value)
     }
+    /// Consumes the wrapper and returns the inner value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
 }
 
 impl<T: Hash + Ord + Clone> Identifable for SelfId<T> {
@@ -97,6 +121,14 @@ impl<T: Hash + Ord + Clone> Identifable for SelfId<T> {
     /// Returns a clone of the wrapped value as the identifier.
     fn id(&self) -> Self::Id {
         self.0.clone()
+    }
+}
+
+impl<T> Deref for SelfId<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
