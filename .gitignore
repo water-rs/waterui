@@ -22,3 +22,14 @@
 *.pdb
 /demo/apple/demo.xcodeproj/project.xcworkspace/xcuserdata/*
 all.rs.txt
+.jdks/
+
+# Gradle / Android build artefacts
+/.gradle/
+/.idea/
+/build/
+/*/build/
+/backends/android/.gradle/
+/backends/android/build/
+/backends/android/.cxx/
+local.properties
