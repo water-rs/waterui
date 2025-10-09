@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-SCRIPT_DIR="$( cd "$( dirname "${{BASH_SOURCE[0]}}" )" && pwd )"
-PROJECT_ROOT="$( cd "${{SCRIPT_DIR}}/.." && pwd )"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 
 LIB_NAME="__LIB_NAME__"
 TARGET_DIR="$PROJECT_ROOT/target"
