@@ -8,7 +8,9 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    container::FixedContainer, stack::{Alignment, HorizontalAlignment, VerticalAlignment}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size
+    ChildMetadata, Layout, Point, ProposalSize, Rect, Size,
+    container::FixedContainer,
+    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
 
 /// Planned layout that clamps a single child's proposal.

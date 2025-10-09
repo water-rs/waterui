@@ -2,10 +2,11 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{id::Identifable, view::TupleViews, views::{ForEach}, AnyView, View};
+use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    container::{FixedContainer}, stack::VerticalAlignment, ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size
+    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer,
+    stack::VerticalAlignment,
 };
 
 /// A horizontal stack that arranges its children in a horizontal line.
@@ -133,7 +134,7 @@ impl Layout for HStackLayout {
     }
 }
 
-impl <C>HStack<(C,)> {
+impl<C> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
     pub const fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
@@ -144,8 +145,7 @@ impl <C>HStack<(C,)> {
     }
 }
 
-impl<C>HStack<C>{
-
+impl<C> HStack<C> {
     /// Sets the vertical alignment for children in the stack.
     #[must_use]
     pub const fn alignment(mut self, alignment: VerticalAlignment) -> Self {
@@ -171,26 +171,24 @@ where
     }
 }
 
-
 /// Convenience constructor that centres children and uses the default spacing.
-pub const fn hstack<C>(contents: C) -> HStack<(C,)>{
+pub const fn hstack<C>(contents: C) -> HStack<(C,)> {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }
 
-
-impl<C,F,V>View for HStack<ForEach<C,F,V>>
+impl<C, F, V> View for HStack<ForEach<C, F, V>>
 where
-        C: Collection,
-        C::Item: Identifable,
-        F: 'static + Fn(C::Item) -> V,
-        V:View{
+    C: Collection,
+    C::Item: Identifable,
+    F: 'static + Fn(C::Item) -> V,
+    V: View,
+{
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Container::new(self.layout, self.contents)
     }
 }
 
-impl<C:TupleViews+'static>View for HStack<(C,)>
-{
+impl<C: TupleViews + 'static> View for HStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
     }
