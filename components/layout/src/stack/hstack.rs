@@ -1,11 +1,19 @@
 //! Horizontal stack layout.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, View, view::TupleViews};
+use nami::collection::Collection;
+use waterui_core::{id::Identifable, view::TupleViews, views::{ForEach}, AnyView, View};
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container, stack::VerticalAlignment,
+    container::{FixedContainer}, stack::VerticalAlignment, ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size
 };
+
+/// A horizontal stack that arranges its children in a horizontal line.
+#[derive(Debug, Clone)]
+pub struct HStack<C> {
+    layout: HStackLayout,
+    contents: C,
+}
 
 /// Layout engine shared by the public [`HStack`] view.
 #[derive(Debug, Clone)]
@@ -125,21 +133,18 @@ impl Layout for HStackLayout {
     }
 }
 
-container!(
-    HStack,
-    HStackLayout,
-    "A horizontal stack layout that arranges its children in a horizontal line with specified alignment and spacing."
-);
-
-impl HStack {
+impl <C>HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: VerticalAlignment, spacing: f32, contents: impl TupleViews) -> Self {
+    pub const fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
         Self {
             layout: HStackLayout { alignment, spacing },
-            contents: contents.into_views(),
+            contents: (contents,),
         }
     }
+}
+
+impl<C>HStack<C>{
 
     /// Sets the vertical alignment for children in the stack.
     #[must_use]
@@ -156,16 +161,37 @@ impl HStack {
     }
 }
 
-impl<V> FromIterator<V> for HStack
+impl<V> FromIterator<V> for HStack<(Vec<AnyView>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
+        let contents = iter.into_iter().map(AnyView::new).collect();
         Self::new(VerticalAlignment::default(), 10.0, contents)
     }
 }
+
+
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn hstack(contents: impl TupleViews) -> HStack {
+pub const fn hstack<C>(contents: C) -> HStack<(C,)>{
     HStack::new(VerticalAlignment::Center, 10.0, contents)
+}
+
+
+impl<C,F,V>View for HStack<ForEach<C,F,V>>
+where
+        C: Collection,
+        C::Item: Identifable,
+        F: 'static + Fn(C::Item) -> V,
+        V:View{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        Container::new(self.layout, self.contents)
+    }
+}
+
+impl<C:TupleViews+'static>View for HStack<(C,)>
+{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        FixedContainer::new(self.layout, self.contents.0)
+    }
 }

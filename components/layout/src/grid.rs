@@ -5,8 +5,7 @@ use core::num::NonZeroUsize;
 use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
-    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    container::FixedContainer, stack::{Alignment, HorizontalAlignment, VerticalAlignment}, ChildMetadata, Layout, Point, ProposalSize, Rect, Size
 };
 
 /// The core layout engine for a `Grid`.
@@ -224,7 +223,7 @@ impl View for Grid {
             .flat_map(|row| row.contents)
             .collect::<Vec<AnyView>>();
 
-        Container::new(self.layout, flattened_children)
+        FixedContainer::new(self.layout, flattened_children)
     }
 }
 

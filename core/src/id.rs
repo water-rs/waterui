@@ -103,21 +103,21 @@ impl<T: Hash + Ord + Clone> Identifable for SelfId<T> {
 /// Extension trait that provides convenient methods for making types identifiable.
 pub trait IdentifableExt: Sized {
     /// Wraps the value in a [`UseId`] with the provided identification function.
-    fn use_id<F>(self, f: F) -> UseId<Self, F>;
-
-    /// Wraps the value in a `SelfId`, making the value serve as its own identifier.
-    fn self_id(self) -> SelfId<Self>;
-}
-
-impl<T> IdentifableExt for T {
-    fn use_id<F>(self, f: F) -> UseId<Self, F> {
+    fn use_id<F,Id>(self, f: F) -> UseId<Self, F>
+    where
+        F: Fn(&Self) -> Id,
+        Id: Ord + Hash,
+    {
         UseId { value: self, f }
     }
 
+    /// Wraps the value in a `SelfId`, making the value serve as its own identifier.
     fn self_id(self) -> SelfId<Self> {
         SelfId(self)
     }
 }
+
+impl<T> IdentifableExt for T {}
 
 /// A view that includes an identifying tag of type T.
 ///

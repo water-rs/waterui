@@ -1,7 +1,7 @@
 //! Helpers for customizing accessibility metadata when the built-in
-//! WaterUI defaults are not enough.
+//! `WaterUI` defaults are not enough.
 //!
-//! WaterUI components ship with reasonable accessibility roles, labels, and
+//! `WaterUI` components ship with reasonable accessibility roles, labels, and
 //! states by default. These types let you override the metadata when your
 //! layout diverges from the default semantics (for example, when building a
 //! composite widget or exposing platform-specific affordances). Prefer the
@@ -17,7 +17,7 @@ pub struct AccessibilityLabel(Str);
 
 impl AccessibilityLabel {
     /// Creates a label announced by assistive technologies when the default
-    /// WaterUI text would be misleading or absent.
+    /// `WaterUI` text would be misleading or absent.
     ///
     /// ```
     /// # use waterui::accessibility::AccessibilityLabel;

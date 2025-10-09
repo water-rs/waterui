@@ -4,18 +4,18 @@
 use core::fmt::Debug;
 
 use alloc::{boxed::Box, vec::Vec};
-use waterui_core::{AnyView, raw_view, view::TupleViews};
+use waterui_core::{raw_view, view::TupleViews, views::{AnyViews, Views,ViewsExt}, AnyView, View};
 
 use crate::Layout;
 
 /// A view wrapper that executes an arbitrary [`Layout`]
 /// implementation.
-pub struct Container {
+pub struct FixedContainer {
     layout: Box<dyn Layout>,
     contents: Vec<AnyView>,
 }
 
-impl Debug for Container {
+impl Debug for FixedContainer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Container")
             .field("layout", &"Box<dyn Layout>")
@@ -24,7 +24,7 @@ impl Debug for Container {
     }
 }
 
-impl Container {
+impl FixedContainer {
     /// Wraps the supplied layout object and tuple of child views into a
     /// container view.
     pub fn new(layout: impl Layout + 'static, contents: impl TupleViews) -> Self {
@@ -41,56 +41,29 @@ impl Container {
     }
 }
 
-raw_view!(Container); // Under the hood the renderer drives the layout trait object.
+raw_view!(FixedContainer); // Under the hood the renderer drives the layout trait object.
 
-/// Creates a container view type that forwards to [`Container`].
-///
-/// The macro produces a new view struct with `layout` and `contents` fields and
-/// implements [`View`](waterui_core::View) for it by delegating to
-/// [`Container::new`]. Callers provide the documentation string so generated
-/// types show up in user-facing docs.
-///
-/// ```no_run
-/// use waterui_layout::{container, core::{Layout, ProposalSize, ChildMetadata, Rect, Size}};
-///
-/// #[derive(Default)]
-/// struct ZeroLayout;
-///
-/// impl Layout for ZeroLayout {
-///     fn propose(&mut self, _parent: ProposalSize, _children: &[ChildMetadata]) -> Vec<ProposalSize> {
-///         Vec::new()
-///     }
-///
-///     fn size(&mut self, _parent: ProposalSize, _children: &[ChildMetadata]) -> Size {
-///         Size::zero()
-///     }
-///
-///     fn place(
-///         &mut self,
-///         _bound: Rect,
-///         _proposal: ProposalSize,
-///         _children: &[ChildMetadata],
-///     ) -> Vec<Rect> {
-///         Vec::new()
-///     }
-/// }
-///
-/// container!(MyContainer, ZeroLayout, "Delegates to ZeroLayout during layout.");
-/// ```
-#[macro_export]
-macro_rules! container {
-    ($name:ident,$layout:ty,$doc:expr) => {
-        #[derive(Debug)]
-        #[doc=$doc]
-        pub struct $name {
-            layout: $layout,
-            contents: alloc::vec::Vec<waterui_core::AnyView>,
-        }
-
-        impl waterui_core::View for $name {
-            fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
-                $crate::container::Container::new(self.layout, self.contents)
-            }
-        }
-    };
+/// A view wrapper that executes an arbitrary [`Layout`] implementation
+/// with reconstructable views, which can support lazy layouting.
+#[derive(Debug)]
+pub struct Container {
+    layout: Box<dyn Layout>,
+    contents: AnyViews<AnyView>,
 }
+
+impl Container{
+    /// Wraps the supplied layout object and views into a container view.
+    pub fn new<V:View>(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
+        Self {
+            layout: Box::new(layout),
+            contents: AnyViews::new(contents.map(|v| AnyView::new(v))),
+        }
+    }
+    /// Returns the boxed layout object together with the collected child views.
+    #[must_use]
+    pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {
+        (self.layout, self.contents)
+    }
+}
+
+raw_view!(Container); // Under the hood the renderer drives the layout trait object.

@@ -12,13 +12,12 @@
 //! let table: table::Table = std::iter::empty::<table::TableColumn>().collect();
 //! let _ = table;
 //! ```
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use waterui_core::{configurable, id::IdentifableExt};
+use waterui_core::{configurable};
+use waterui_text::Text;
 
-use crate::component::{
-    Text,
-    views::{AnyViews, Views},
-};
+use crate::views::{{AnyViews, Views}};
 use nami::{Computed, impl_constant, signal::IntoComputed};
 
 /// Configuration for a table component.
@@ -60,7 +59,7 @@ impl_constant!(TableColumn);
 #[derive(Clone)]
 pub struct TableColumn {
     /// The rows of content in this column.
-    pub rows: AnyViews<Text>,
+    pub rows: Rc<AnyViews<Text>>,
 }
 
 impl_debug!(TableColumn);
@@ -73,7 +72,7 @@ impl TableColumn {
     /// * `contents` - The text content to display in this column.
     pub fn new(contents: impl Views<View = Text> + 'static) -> Self {
         Self {
-            rows: AnyViews::new(contents),
+            rows: Rc::new( AnyViews::new(contents)),
         }
     }
 }
@@ -85,11 +84,9 @@ where
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let contents = iter
             .into_iter()
-            .enumerate()
-            .map(|(index, item)| item.into().use_id(index))
-            .collect::<Vec<_>>();
-        let _ = contents;
-        todo!()
+            .map(Into::into)
+            .collect::<Vec<Text>>();
+        Self::new(contents)
     }
 }
 
