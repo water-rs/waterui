@@ -1,8 +1,6 @@
 use anyhow::Result;
 use std::{collections::HashMap, path::Path};
 
-use crate::util;
-
 use super::template;
 
 pub fn create_rust_sources(
@@ -26,22 +24,22 @@ waterui-ffi = "0.1""#
     };
     context.insert("WATERUI_DEPS", waterui_deps.to_string());
 
-    let template_root = util::workspace_root().join("cli/src/templates");
+    let templates = &template::TEMPLATES_DIR;
 
     template::process_template_file(
-        &template_root.join(".gitignore.tpl"),
+        templates.get_file(".gitignore.tpl").unwrap(),
         &project_dir.join(".gitignore"),
         &context,
     )?;
 
     template::process_template_file(
-        &template_root.join("Cargo.toml.tpl"),
+        templates.get_file("Cargo.toml.tpl").unwrap(),
         &project_dir.join("Cargo.toml"),
         &context,
     )?;
 
     template::process_template_file(
-        &template_root.join("lib.rs.tpl"),
+        templates.get_file("lib.rs.tpl").unwrap(),
         &project_dir.join("src/lib.rs"),
         &context,
     )?;
