@@ -17,8 +17,8 @@ pub fn process_template_directory(
         let relative_path = template_path.strip_prefix(template_dir)?;
         let mut dest_path_str = relative_path.to_str().unwrap().to_string();
 
-        for (key, value) in context {
-            dest_path_str = dest_path_str.replace(key, value);
+        if let Some(app_name) = context.get("APP_NAME") {
+            dest_path_str = dest_path_str.replace("AppName", app_name);
         }
 
         let dest_path = output_dir.join(&dest_path_str);
