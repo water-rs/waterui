@@ -1,4 +1,4 @@
-//! Declarative gesture descriptors used by WaterUI components.
+//! Declarative gesture descriptors used by `WaterUI` components.
 //!
 //! This module defines lightweight gesture specifications that can be attached to widgets.
 //! Each gesture type captures the minimum configuration necessary for a backend to register
@@ -15,7 +15,8 @@ pub struct TapGesture {
 
 impl TapGesture {
     /// Creates a tap gesture that fires after `count` consecutive taps.
-    pub fn new(count: u32) -> Self {
+    #[must_use] 
+    pub const fn new(count: u32) -> Self {
         Self { count }
     }
 }
@@ -32,7 +33,8 @@ impl LongPressGesture {
     ///
     /// Backends decide how to interpret the unit (for example milliseconds), allowing
     /// platform-specific gesture systems to provide consistent behaviour.
-    pub fn new(duration: u32) -> Self {
+    #[must_use] 
+    pub const fn new(duration: u32) -> Self {
         Self { duration }
     }
 }
@@ -61,6 +63,7 @@ pub struct MagnificationGesture {
 
 impl MagnificationGesture {
     /// Creates a magnification gesture beginning at `initial_scale`.
+    #[must_use] 
     pub const fn new(initial_scale: f32) -> Self {
         Self { initial_scale }
     }
@@ -75,7 +78,8 @@ pub struct RotationGesture {
 
 impl RotationGesture {
     /// Creates a rotation gesture beginning at `initial_angle` radians.
-    pub fn new(initial_angle: f32) -> Self {
+    #[must_use] 
+    pub const fn new(initial_angle: f32) -> Self {
         Self { initial_angle }
     }
 }
