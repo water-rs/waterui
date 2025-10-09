@@ -51,6 +51,11 @@ internal object NativeBindings {
     external fun waterui_layout_size(layoutPtr: Long, parent: ProposalStruct, children: Array<ChildMetadataStruct>): SizeStruct
     external fun waterui_layout_place(layoutPtr: Long, bounds: RectStruct, proposal: ProposalStruct, children: Array<ChildMetadataStruct>): Array<RectStruct>
 
+    external fun waterui_any_views_len(handle: Long): Int
+    external fun waterui_any_views_get_view(handle: Long, index: Int): Long
+    external fun waterui_any_views_get_id(handle: Long, index: Int): Int
+    external fun waterui_drop_any_views(handle: Long)
+
     // Reactive bindings (skeleton only; full surface to be added incrementally)
     external fun waterui_watch_binding_bool(bindingPtr: Long, watcher: WatcherStruct): Long
     external fun waterui_watch_binding_int(bindingPtr: Long, watcher: WatcherStruct): Long
@@ -98,7 +103,7 @@ internal object NativeBindings {
 
 data class ContainerStruct(
     val layoutPtr: Long,
-    val children: LongArray
+    val childrenPtr: Long
 )
 
 data class ProposalStruct(
