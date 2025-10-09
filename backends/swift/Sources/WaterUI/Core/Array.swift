@@ -179,38 +179,40 @@ extension WuiArray<CWaterUI.WuiStyledChunk> {
     }
 }
 
-struct WuiAnyViewArray{
-    var inner: WuiArray<OpaquePointer>
-    var env: WuiEnvironment
-    // WARN: NEED WRAP later
-    init(_ inner:CWaterUI.WuiArray_____WuiAnyView,env:WuiEnvironment){
-        let raw = unsafeBitCast(inner,to:CWaterUI.WuiArray.self)
-        self.inner = WuiArray(c: raw)
-        self.env = env
+@MainActor
+final class WuiAnyViewCollection {
+    private let handleAddress: UInt?
+    private let environment: WuiEnvironment
+
+    init(_ handle: UnsafeMutableRawPointer?, env: WuiEnvironment) {
+        self.handleAddress = handle.map { UInt(bitPattern: $0) }
+        self.environment = env
     }
 
-    @MainActor
-    mutating func take(index:Int) -> WuiAnyView{
-        let ptr = self.inner[index]
-        self.inner[index] = waterui_empty_anyview()
-        return WuiAnyView(anyview: ptr, env: env)
+    deinit {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        waterui_drop_any_views_opaque(handle)
     }
-    
-    @MainActor
-    mutating func toArray() -> [WuiAnyView]{
-        // Need set original buffer to all empty anyview, preventing double free
-        
-        var result: [WuiAnyView] = []
-        for i in 0..<self.inner.toArray().count{
-            result.append(take(index: i))
-        }
-        
-        return result
-        
+
+    var count: Int {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return 0 }
+        return Int(waterui_any_views_len_opaque(handle))
     }
-    
+
+    func view(at index: Int) -> WuiAnyView? {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return nil }
+        let ptr = waterui_any_views_get_view_opaque(handle, UInt(index))
+        guard let ptr else { return nil }
+        return WuiAnyView(anyview: ptr, env: environment)
+    }
+
+    func toArray() -> [WuiAnyView] {
+        (0..<count).compactMap { view(at: $0) }
+    }
 }
-
 
 struct WuiStr{
     var inner: WuiArray<UInt8>
