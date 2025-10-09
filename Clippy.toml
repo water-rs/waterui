@@ -1,0 +1,12 @@
+# Temporary allowlist while upstream dependencies stabilise on single versions.
+allowed-duplicate-crates = [
+    "bitflags",
+    "getrandom",
+    "hashbrown",
+    "libloading",
+    "syn",
+    "unicode-width",
+    "wasi",
+    "windows-link",
+    "windows_i686_gnullvm",
+]
