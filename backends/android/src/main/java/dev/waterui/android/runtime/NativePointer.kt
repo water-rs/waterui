@@ -40,3 +40,28 @@ inline fun <T : NativePointer, R> T.usePointer(block: (T) -> R): R {
         close()
     }
 }
+
+class NativeAnyViews(handle: Long) : NativePointer(handle) {
+    fun size(): Int = if (isReleased) 0 else NativeBindings.waterui_any_views_len(raw())
+
+    fun viewAt(index: Int): Long {
+        if (isReleased) return 0L
+        return NativeBindings.waterui_any_views_get_view(raw(), index)
+    }
+
+    fun toList(): List<Long> {
+        val result = ArrayList<Long>(size())
+        val count = size()
+        for (i in 0 until count) {
+            val ptr = viewAt(i)
+            if (ptr != 0L) {
+                result += ptr
+            }
+        }
+        return result
+    }
+
+    override fun release(ptr: Long) {
+        NativeBindings.waterui_drop_any_views(ptr)
+    }
+}
