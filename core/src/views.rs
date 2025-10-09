@@ -6,7 +6,7 @@
 
 use crate::View;
 use alloc::fmt::Debug;
-use alloc::{collections::BTreeMap, rc::Rc};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
 use core::any::type_name;
 use core::ops::{Bound, RangeBounds};
 use core::{
