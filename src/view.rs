@@ -28,11 +28,14 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 use waterui_str::Str;
 
-use crate::component::{Metadata, Text, badge::Badge, focu::Focused};
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
     background::{Background, ForegroundColor},
     gesture::{Gesture, GestureObserver},
+};
+use crate::{
+    component::{Metadata, Text, badge::Badge, focu::Focused},
+    prelude::style::Shadow,
 };
 use waterui_core::id::TaggedView;
 
@@ -213,8 +216,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
-    fn padding_with(self, edge: EdgeInsets) -> Padding {
-        Padding::new(edge, self)
+    fn padding_with(self, edge: impl Into<EdgeInsets>) -> Padding {
+        Padding::new(edge.into(), self)
     }
 
     /// Adds default padding to this view.
@@ -260,6 +263,10 @@ pub trait ViewExt: View + Sized {
         action: impl HandlerFn<(), ()> + 'static,
     ) -> Metadata<GestureObserver> {
         Metadata::new(self, GestureObserver::new(gesture, action))
+    }
+
+    fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
+        Metadata::new(self, shadow.into())
     }
 }
 
