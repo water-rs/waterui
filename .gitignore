@@ -20,7 +20,6 @@
 *.exe
 *.dll
 *.pdb
-/demo/apple/demo.xcodeproj/project.xcworkspace/xcuserdata/*
 all.rs.txt
 .jdks/
 
