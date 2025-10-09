@@ -22,11 +22,11 @@ pub mod animation;
 
 pub mod array;
 pub mod closure;
-pub mod views;
 pub mod color;
 pub mod components;
 pub mod reactive;
 mod ty;
+pub mod views;
 use core::ptr::null_mut;
 
 use alloc::boxed::Box;

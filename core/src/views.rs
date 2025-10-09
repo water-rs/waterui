@@ -484,6 +484,10 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     }
 }
 
+/// A view collection that transforms views from a source collection using a mapping function.
+///
+/// `Map` wraps an existing view collection and applies a transformation function to each
+/// view when it is accessed, allowing for lazy transformation of views.
 #[derive(Debug, Clone)]
 pub struct Map<C, F> {
     source: C,
@@ -496,6 +500,14 @@ where
     F: Fn(C::View) -> V,
     V: View,
 {
+    /// Creates a new `Map` that transforms views from the source collection.
+    ///
+    /// # Parameters
+    /// * `source` - The source view collection to map over
+    /// * `f` - The transformation function to apply to each view
+    ///
+    /// # Returns
+    /// A new `Map` instance that will apply the transformation to views
     #[must_use]
     pub const fn new(source: C, f: F) -> Self {
         Self { source, f }
@@ -533,7 +545,18 @@ where
     }
 }
 
+/// Extension trait providing additional utilities for types implementing `Views`.
+///
+/// This trait provides convenient methods for transforming and manipulating view collections,
+/// such as mapping views to different types.
 pub trait ViewsExt: Views {
+    /// Transforms each view in the collection using the provided mapping function.
+    ///
+    /// # Parameters
+    /// * `f` - A function that transforms each view from the source type to a new view type
+    ///
+    /// # Returns
+    /// A new `Map` view collection that applies the transformation to each element
     fn map<F, V>(self, f: F) -> Map<Self, F>
     where
         Self: Sized,
