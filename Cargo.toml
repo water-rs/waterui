@@ -2,10 +2,10 @@
 [workspace]
 members = [
     "core",
-    "kit", 
+    "kit",
     "components/*",
     "utils/*",
-    # "backends/web",
+    "backends/web",
     "render_utils",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
@@ -54,7 +54,7 @@ clippy.cargo = "warn"
 
 [workspace.dependencies]
 executor-core = { version = "0.6.0", features = ["std"]}
-nami = { version = "0.6.1" }
+nami = "0.6.2"
 log = "0.4.28"
 waterui-core = { version = "0.1.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
