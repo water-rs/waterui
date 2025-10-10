@@ -726,6 +726,44 @@ typedef struct WuiWatcher_____WuiAnyView {
   void (*drop)(void*);
 } WuiWatcher_____WuiAnyView;
 
+typedef struct WuiListItem {
+  struct WuiAnyView *content;
+} WuiListItem;
+
+typedef struct WuiList {
+  struct WuiAnyViews *contents;
+} WuiList;
+
+typedef struct WuiTableColumn {
+  struct WuiArray_____WuiAnyView rows;
+} WuiTableColumn;
+
+typedef struct WuiArraySlice_WuiTableColumn {
+  struct WuiTableColumn *head;
+  uintptr_t len;
+} WuiArraySlice_WuiTableColumn;
+
+typedef struct WuiArrayVTable_WuiTableColumn {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiTableColumn (*slice)(const void*);
+} WuiArrayVTable_WuiTableColumn;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiTableColumn {
+  NonNull data;
+  struct WuiArrayVTable_WuiTableColumn vtable;
+} WuiArray_WuiTableColumn;
+
+typedef struct WuiTable {
+  struct WuiArray_WuiTableColumn columns;
+} WuiTable;
+
 typedef struct WuiProgress {
   struct WuiAnyView *label;
   struct WuiAnyView *value_label;
@@ -1392,6 +1430,39 @@ void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_____W
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
+struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_list_item_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiList waterui_force_as_list(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_list_id(void);
+
+void waterui_list_item_call_delete(struct WuiListItem *item,
+                                   const struct WuiEnv *env,
+                                   uintptr_t index);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_table_id(void);
+
+struct WuiTypeId waterui_table_column_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_progress_id(void);
@@ -1968,3 +2039,4 @@ struct WuiId waterui_any_views_get_id_opaque(const void *views, uintptr_t index)
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
+
