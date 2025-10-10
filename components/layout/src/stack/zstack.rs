@@ -1,4 +1,4 @@
-//! Overlay stack layout.
+//! Overlay stack layout for multiple layers.
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
@@ -8,11 +8,13 @@ use crate::{
     Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer, stack::Alignment,
 };
 
-/// A layout implementation for stacking views on top of each other with specified alignment.
+/// Stacks an arbitrary number of children with a shared alignment.
 ///
-/// `ZStackLayout` positions all child views within the same bounds, overlaying them
-/// according to the specified alignment. Each child is sized independently and
-/// positioned based on the alignment setting.
+/// `ZStackLayout` positions every child within the same bounds, overlaying them
+/// according to the specified alignment. Each child is sized independently,
+/// and the container's final width/height are the maxima of the children's
+/// reported sizes. If you instead need the base child to dictate the container
+/// size while layering secondary content, see [`crate::overlay::OverlayLayout`].
 #[derive(Debug, Clone, Default)]
 pub struct ZStackLayout {
     /// The alignment used to position children within the `ZStack`
@@ -145,6 +147,10 @@ impl ZStackLayout {
 }
 
 /// A view that overlays its children, aligning them according to the specified alignment.
+///
+/// Use `ZStack` when every layer should be measured and the container should expand to
+/// fit the largest child. If you only need a decorative layer on top of a base child
+/// without affecting the parent's layout decisions, prefer [`crate::overlay::Overlay`].
 #[derive(Debug, Clone)]
 pub struct ZStack<C> {
     layout: ZStackLayout,
