@@ -44,4 +44,7 @@ pub mod container;
 pub use container::Container;
 
 pub mod grid;
+pub mod overlay;
 pub mod padding;
+
+pub use overlay::{Overlay, OverlayLayout, overlay};
