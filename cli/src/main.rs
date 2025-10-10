@@ -6,7 +6,6 @@ mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 use util::LogLevel;
