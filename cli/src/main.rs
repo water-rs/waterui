@@ -1,15 +1,15 @@
+mod clean;
 mod config;
 mod create;
-mod clean;
+mod devices;
 mod doctor;
 mod run;
 mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
-use util::LogLevel;
+use console::style;
+use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
 
 #[derive(Parser)]
 #[command(name = "water")]
@@ -34,25 +34,73 @@ enum Commands {
     Doctor(doctor::DoctorArgs),
     /// Remove build artifacts and platform caches
     Clean(clean::CleanArgs),
+    /// List available simulators and connected devices
+    Devices(devices::DevicesArgs),
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(err) = run_cli() {
+        let icon = style("✖").red();
+        eprintln!(
+            "{} {}",
+            icon,
+            style("WaterUI CLI encountered an error").red().bold()
+        );
+
+        let error_text = err.to_string();
+        let mut lines = error_text.lines().filter(|line| !line.trim().is_empty());
+        if let Some(first) = lines.next() {
+            eprintln!("  {}", style(first).red());
+        }
+        for line in lines {
+            if line.trim_start().to_ascii_lowercase().starts_with("hint")
+                || line.trim_start().starts_with("If ")
+            {
+                eprintln!(
+                    "  {} {}",
+                    style("Hint:").yellow().bold(),
+                    style(line.trim_start_matches("Hint:").trim()).yellow()
+                );
+            } else {
+                eprintln!("  {}", style(line).dim());
+            }
+        }
+
+        for cause in err.chain().skip(1) {
+            let cause_str = cause.to_string();
+            if cause_str.trim().is_empty() {
+                continue;
+            }
+            eprintln!("  {} {}", style("•").dim(), style(cause_str).dim());
+        }
+
+        std::process::exit(1);
+    }
+}
+
+fn run_cli() -> Result<()> {
     let cli = Cli::parse();
-    util::init_logging(LogLevel::from_count(cli.verbose));
+
+    let level = match cli.verbose {
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    };
+
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(level)
+        .with_span_events(FmtSpan::NONE)
+        .without_time()
+        .with_target(false)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     match cli.command {
         Commands::Create(args) => create::run(args),
         Commands::Run(args) => run::run(args),
-        Commands::Doctor(args) => {
-            let pb = ProgressBar::new_spinner();
-            pb.enable_steady_tick(Duration::from_millis(80));
-            pb.set_style(
-                ProgressStyle::with_template("{spinner:.blue} {msg}")
-                    .unwrap()
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-            );
-            doctor::run(args, pb)
-        }
+        Commands::Doctor(args) => doctor::run(args),
         Commands::Clean(args) => clean::run(args),
+        Commands::Devices(args) => devices::run(args),
     }
 }
