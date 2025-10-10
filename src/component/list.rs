@@ -4,25 +4,6 @@
 //! in the `WaterUI` framework. It includes the `List` component for displaying collections
 //! of data, and `ListItem` for configuring individual items in the list.
 //!
-//! # Examples
-//!
-//! ```ignore
-//! use waterui::prelude::*;
-//! use waterui::ViewExt;
-//! use waterui::component::list;
-//! use waterui::component::views::AnyViews;
-//!
-//! let list = list::List::new(AnyViews::new((
-//!     list::ListItem {
-//!         content: text!("Item 1").anyview(),
-//!         on_delete: None,
-//!     },
-//!     list::ListItem {
-//!         content: text!("Item 2").anyview(),
-//!         on_delete: None,
-//!     },
-//! )));
-//! ```
 
 use alloc::boxed::Box;
 use nami::collection::Collection;

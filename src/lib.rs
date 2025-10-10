@@ -67,3 +67,5 @@ pub use task::task;
 pub use waterui_core as core;
 pub use waterui_str::Str;
 //pub mod hot_reload; Hot reload is tough :cry
+
+mod entry;
