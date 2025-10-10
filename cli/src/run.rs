@@ -15,7 +15,7 @@ use clap::{Args, ValueEnum};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::{
-    config::{Android, Config, Package, Swift},
+    config::Config,
     util,
 };
 
@@ -476,9 +476,9 @@ fn run_android(
     util::info("Installing APK...");
     let profile = if release { "release" } else { "debug" };
     let apk_name = if release {
-        format!("app-release.apk")
+        "app-release.apk".to_string()
     } else {
-        format!("app-debug.apk")
+        "app-debug.apk".to_string()
     };
     let apk_path = android_dir.join(format!("app/build/outputs/apk/{}/{}", profile, apk_name));
     if !apk_path.exists() {
