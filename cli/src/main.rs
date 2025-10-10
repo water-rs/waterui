@@ -1,5 +1,6 @@
 mod config;
 mod create;
+mod clean;
 mod doctor;
 mod run;
 mod util;
@@ -31,6 +32,8 @@ enum Commands {
     Run(run::RunArgs),
     /// Check for potential problems with the development environment
     Doctor(doctor::DoctorArgs),
+    /// Remove build artifacts and platform caches
+    Clean(clean::CleanArgs),
 }
 
 fn main() -> Result<()> {
@@ -50,5 +53,6 @@ fn main() -> Result<()> {
             );
             doctor::run(args, pb)
         }
+        Commands::Clean(args) => clean::run(args),
     }
 }
