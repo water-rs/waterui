@@ -44,6 +44,8 @@ struct Render {
             WuiScrollView.self,
             WuiContainer.self,
             WuiFixedContainer.self,
+            WuiList.self,
+            WuiTable.self,
             WuiToggle.self,
             WuiSpacer.self,
             //WuiPicker.self,
