@@ -10,16 +10,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use dialoguer::{theme::ColorfulTheme, Select};
+use dialoguer::{Select, theme::ColorfulTheme};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, info, warn};
 
 use crate::{
+    apple::{
+        derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
+        require_tool, resolve_xcode_project, xcodebuild_base,
+    },
     config::Config,
     devices::{self, DeviceInfo, DeviceKind},
-    util,
 };
 
 #[derive(Args, Debug)]
@@ -167,59 +170,21 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
 }
 
 fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: bool) -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        bail!("SwiftUI backend is currently only supported on macOS");
-    }
+    ensure_macos_host("SwiftUI backend support")?;
+    require_tool(
+        "xcodebuild",
+        "Install Xcode and command line tools (xcode-select --install)",
+    )?;
 
-    #[cfg(target_os = "macos")]
-    {
-        for tool in ["xcodebuild"] {
-            if which::which(tool).is_err() {
-                bail!(
-                    "{tool} not found. Install Xcode command line tools (xcode-select --install)"
-                );
-            }
-        }
-    }
-
-    let project_root = project_dir.join(&swift_config.project_path);
-    if !project_root.exists() {
-        bail!(
-            "Xcode project directory not found at {}. Did you run 'water create'?",
-            project_root.display()
-        );
-    }
-
-    let scheme = &swift_config.scheme;
-    let project_file = if let Some(file) = &swift_config.project_file {
-        project_root.join(file)
-    } else {
-        project_root.join(format!("{scheme}.xcodeproj"))
-    };
-    if !project_file.exists() {
-        bail!("Missing Xcode project: {}", project_file.display());
-    }
-
-    let derived_root = project_dir.join(".waterui/DerivedData");
-    util::ensure_directory(&derived_root)?;
+    let project = resolve_xcode_project(project_dir, swift_config)?;
+    let derived_root = derived_data_dir(project_dir);
+    prepare_derived_data_dir(&derived_root)?;
 
     let configuration = if release { "Release" } else { "Debug" };
 
-    let mut build_cmd = Command::new("xcodebuild");
-    build_cmd
-        .arg("-project")
-        .arg(&project_file)
-        .arg("-scheme")
-        .arg(scheme)
-        .arg("-configuration")
-        .arg(configuration)
-        .arg("-derivedDataPath")
-        .arg(&derived_root)
-        .arg("-destination")
-        .arg("platform=macOS")
-        .arg("CODE_SIGNING_ALLOWED=NO")
-        .arg("CODE_SIGNING_REQUIRED=NO")
-        .arg("CODE_SIGN_IDENTITY=-");
+    let mut build_cmd = xcodebuild_base(&project, configuration, &derived_root);
+    build_cmd.arg("-destination").arg("platform=macOS");
+    disable_code_signing(&mut build_cmd);
 
     info!("Building macOS app with xcodebuild…");
     debug!("Executing command: {:?}", build_cmd);
@@ -229,7 +194,7 @@ fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: b
     }
 
     let products_dir = derived_root.join(format!("Build/Products/{configuration}"));
-    let app_bundle = products_dir.join(format!("{scheme}.app"));
+    let app_bundle = products_dir.join(format!("{}.app", project.scheme));
     if !app_bundle.exists() {
         bail!("Expected app bundle at {}", app_bundle.display());
     }
@@ -256,20 +221,12 @@ fn run_apple_simulator(
     platform: Platform,
     device: Option<String>,
 ) -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        bail!("Running Apple simulators requires macOS");
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        for tool in ["xcrun", "xcodebuild"] {
-            if which::which(tool).is_err() {
-                bail!(
-                    "{} not found. Install Xcode command line tools (xcode-select --install)",
-                    tool
-                );
-            }
-        }
+    ensure_macos_host("Apple simulators")?;
+    for tool in ["xcrun", "xcodebuild"] {
+        require_tool(
+            tool,
+            "Install Xcode and command line tools (xcode-select --install)",
+        )?;
     }
 
     let (sim_platform, default_device, products_path) = match platform {
@@ -293,44 +250,20 @@ fn run_apple_simulator(
         _ => bail!("Unsupported platform for simulator: {:?}", platform),
     };
 
-    let project_root = project_dir.join(&swift_config.project_path);
-    if !project_root.exists() {
-        bail!(
-            "Xcode project directory not found at {}. Did you run 'water create'?",
-            project_root.display()
-        );
-    }
-
-    let scheme = &swift_config.scheme;
-    let project_file = if let Some(file) = &swift_config.project_file {
-        project_root.join(file)
-    } else {
-        project_root.join(format!("{scheme}.xcodeproj"))
-    };
-    if !project_file.exists() {
-        bail!("Missing Xcode project: {}", project_file.display());
-    }
+    let project = resolve_xcode_project(project_dir, swift_config)?;
 
     let device_name = device.unwrap_or_else(|| default_device.to_string());
     info!("Building for simulator {}…", device_name);
 
-    let derived_root = project_dir.join(".waterui/DerivedData");
-    util::ensure_directory(&derived_root)?;
+    let derived_root = derived_data_dir(project_dir);
+    prepare_derived_data_dir(&derived_root)?;
 
     let configuration = if release { "Release" } else { "Debug" };
 
-    let mut build_cmd = Command::new("xcodebuild");
+    let mut build_cmd = xcodebuild_base(&project, configuration, &derived_root);
     build_cmd
-        .arg("-project")
-        .arg(&project_file)
-        .arg("-scheme")
-        .arg(scheme)
         .arg("-destination")
         .arg(format!("platform={},name={}", sim_platform, device_name))
-        .arg("-configuration")
-        .arg(configuration)
-        .arg("-derivedDataPath")
-        .arg(&derived_root)
         .arg("CODE_SIGNING_ALLOWED=NO")
         .arg("CODE_SIGNING_REQUIRED=NO");
 
@@ -344,7 +277,7 @@ fn run_apple_simulator(
         "Build/Products/{}-{}",
         configuration, products_path
     ));
-    let app_bundle = products_dir.join(format!("{scheme}.app"));
+    let app_bundle = products_dir.join(format!("{}.app", project.scheme));
     if !app_bundle.exists() {
         bail!(
             "Expected app bundle at {}, but it was not created",
