@@ -65,9 +65,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D018675D2E6C7BBB00802E96 /* __APP_NAME__ */ = {
+        D018675D2E6C7BBB00802E96 /* __APP_DISPLAY_NAME__ */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_NAME__" */;
+            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_DISPLAY_NAME__" */;
 			buildPhases = (
 				D0000001000000000000001 /* Build Rust Library */,
 				D018675A2E6C7BBB00802E96 /* Sources */,
@@ -81,18 +81,18 @@
 			fileSystemSynchronizedGroups = (
 				D01867602E6C7BBB00802E96 /* __APP_NAME__ */,
 			);
-			name = __APP_NAME__;
-			packageProductDependencies = (
-				D01867792E6C82CA00802E96 /* WaterUI */,
-			);
-			productName = __APP_NAME__;
-			productReference = D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */;
-			productType = "com.apple.product-type.application";
-		};
+            name = __APP_DISPLAY_NAME__;
+            packageProductDependencies = (
+                D01867792E6C82CA00802E96 /* WaterUI */,
+            );
+            productName = __APP_DISPLAY_NAME__;
+            productReference = D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */;
+            productType = "com.apple.product-type.application";
+        };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		D01867562E6C7BBB00802E96 /* Project object */ = {
+        D01867562E6C7BBB00802E96 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
@@ -104,7 +104,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_NAME__" */;
+            buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_DISPLAY_NAME__" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -114,16 +114,16 @@
 			mainGroup = D01867552E6C7BBB00802E96;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "WaterUI" */,
+__SWIFT_PACKAGE_REFERENCE_ENTRY__
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D018675F2E6C7BBB00802E96 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D018675D2E6C7BBB00802E96 /* __APP_NAME__ */,
-			);
-		};
+                D018675D2E6C7BBB00802E96 /* __APP_DISPLAY_NAME__ */,
+            );
+        };
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -325,7 +325,7 @@
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-l__LIB_NAME__";
+				OTHER_LDFLAGS = "-l__LIB_NAME__ -lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = __BUNDLE_IDENTIFIER__;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -402,7 +402,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_NAME__" */ = {
+        D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "__APP_DISPLAY_NAME__" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D01867682E6C7BBD00802E96 /* Debug */,
@@ -411,7 +411,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_NAME__" */ = {
+        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_DISPLAY_NAME__" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D018676B2E6C7BBD00802E96 /* Debug */,
@@ -422,12 +422,7 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "WaterUI" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = WaterUI;
-		};
-/* End XCLocalSwiftPackageReference section */
+__SWIFT_PACKAGE_REFERENCE_SECTION__
 
 /* Begin XCSwiftPackageProductDependency section */
 		D01867792E6C82CA00802E96 /* WaterUI */ = {

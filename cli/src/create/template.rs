@@ -13,7 +13,12 @@ pub fn process_template_directory(
     context: &HashMap<&str, String>,
 ) -> Result<()> {
     for entry in template_dir.entries() {
-        let mut dest_path_str = entry.path().to_str().unwrap().to_string();
+        let relative_path = entry
+            .path()
+            .strip_prefix(template_dir.path())
+            .unwrap_or(entry.path());
+
+        let mut dest_path_str = relative_path.to_str().unwrap().to_string();
 
         if let Some(app_name) = context.get("APP_NAME") {
             dest_path_str = dest_path_str.replace("AppName", app_name);
