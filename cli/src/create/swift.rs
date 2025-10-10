@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs, path::Path};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use include_dir::{Dir, DirEntry, include_dir};
 
 use crate::util;
