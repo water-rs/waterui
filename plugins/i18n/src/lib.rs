@@ -48,6 +48,20 @@ pub struct I18n {
     map: BTreeMap<Str, BTreeMap<Str, Str>>,
 }
 
+pub struct LocalizedStr{
+    source: I18n,
+    key: Str,
+}
+
+impl LocalizedStr {
+    pub fn new(source: I18n, key: impl Into<Str>) -> Self {
+        Self {
+            source,
+            key: key.into(),
+        }
+    }
+}
+
 impl I18n {
     /// Creates a new, empty `I18n` instance.
     ///

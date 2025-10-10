@@ -2,87 +2,97 @@
 
 use crate::{ViewExt, ext::SignalExt, prelude::*, widget::condition::when};
 use alloc::vec::Vec;
-use waterui_core::view::IntoView;
+use core::hash::Hash;
+use waterui_core::{id::Identifable, view::IntoView};
 use waterui_layout::stack::{VStack, vstack};
 
 /// Represents a single item to be displayed in an `Accordion`.
-///
-/// Each item consists of a header view and a content view.
-#[derive(Debug)]
-pub struct AccordionItem<H: IntoView, C: IntoView> {
+#[derive(Debug, Clone)]
+pub struct AccordionItem<H, C, ID> {
+    /// The unique identifier for this item.
+    pub id: ID,
     /// The view to display as the item's header. Always visible.
     pub header: H,
     /// The view to display as the item's content. Visible only when the item is expanded.
     pub content: C,
 }
 
-/// A widget that displays a list of vertically-stacked, collapsible items.
-///
-/// Only one item can be expanded at a time. The state of which item is
-/// currently selected is managed by the `selection` binding.
-#[derive(Debug)]
-pub struct Accordion<H: IntoView, C: IntoView> {
-    items: Vec<AccordionItem<H, C>>,
-    selection: Binding<Option<usize>>,
+impl<H, C, ID: Clone + Hash + Ord> Identifable for AccordionItem<H, C, ID> {
+    type Id = ID;
+    fn id(&self) -> Self::Id {
+        self.id.clone()
+    }
 }
 
-impl<H: IntoView, C: IntoView> Accordion<H, C> {
+/// A widget that displays a list of vertically-stacked, collapsible items.
+#[derive(Debug)]
+pub struct Accordion<H, C, ID>
+where
+    H: IntoView + Clone + 'static,
+    C: IntoView + Clone + 'static,
+    ID: Clone + Hash + Eq + Ord + 'static,
+{
+    items: Vec<AccordionItem<H, C, ID>>,
+    selection: Binding<Option<ID>>,
+}
+
+impl<H, C, ID> Accordion<H, C, ID>
+where
+    H: IntoView + Clone + 'static,
+    C: IntoView + Clone + 'static,
+    ID: Clone + Hash + Eq + Ord + 'static,
+{
     /// Creates a new Accordion with the given items and selection binding.
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - A vector of `AccordionItem`s to display.
-    /// * `selection` - A `Binding` that holds the index of the currently selected item, or `None`.
-    pub fn new(items: Vec<AccordionItem<H, C>>, selection: Binding<Option<usize>>) -> Self {
+    pub fn new(items: Vec<AccordionItem<H, C, ID>>, selection: Binding<Option<ID>>) -> Self {
         Self { items, selection }
     }
 }
 
-impl<H, C> View for Accordion<H, C>
+impl<H, C, ID> View for Accordion<H, C, ID>
 where
-    // The `Clone` and `'static` bounds are necessary to move the views into the closure for rendering.
     H: IntoView + Clone + 'static,
     C: IntoView + Clone + 'static,
+    ID: Clone + Hash + Eq + Ord + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let items_with_indices = self.items.into_iter().enumerate();
-
         let selection = self.selection;
 
-        // Use `VStack::from_iter` to build a stack from a dynamic collection of views.
-        VStack::from_iter(items_with_indices.map(move |(index, item)| {
+        VStack::from_iter(self.items.into_iter().map(move |item| {
             let env = _env.clone();
             let header = item.header.clone().into_view(&env);
+            let id = item.id();
             let selection_for_action = selection.clone();
 
-            // The header acts as a button to toggle the selection.
-            let header_button = button(header).action(move || {
-                if selection_for_action.get() == Some(index) {
-                    // If clicking the currently open item, close it.
-                    selection_for_action.set(None);
-                } else {
-                    // Otherwise, open the clicked item.
-                    selection_for_action.set(Some(index));
+            let header_button = button(header).action({
+                let id = id.clone();
+                move || {
+                    if selection_for_action.get().as_ref() == Some(&id) {
+                        selection_for_action.set(None);
+                    } else {
+                        selection_for_action.set(Some(id.clone()));
+                    }
                 }
             });
 
-            // The content is only rendered `when` this item is selected.
-            let is_open = selection.clone().map(move |s| s == Some(index));
+            let is_open = selection.clone().map(move |s| s.as_ref() == Some(&id));
 
-            // This closure captures the view "source" and environment, creating the view
-            // on demand. This makes it an `Fn` closure, satisfying `when`'s requirement.
             let content_source = item.content.clone();
             let content_closure = move || content_source.clone().into_view(&env);
 
-            vstack((header_button, when(is_open, content_closure))).anyview() // Erase the complex type for the iterator
+            vstack((header_button, when(is_open, content_closure))).anyview()
         }))
     }
 }
 
 /// Convenience function to create a new `Accordion`.
-pub fn accordion<H: IntoView, C: IntoView>(
-    items: Vec<AccordionItem<H, C>>,
-    selection: Binding<Option<usize>>,
-) -> Accordion<H, C> {
+pub fn accordion<H, C, ID>(
+    items: Vec<AccordionItem<H, C, ID>>,
+    selection: Binding<Option<ID>>,
+) -> Accordion<H, C, ID>
+where
+    H: IntoView + Clone + 'static,
+    C: IntoView + Clone + 'static,
+    ID: Clone + Hash + Eq + Ord + 'static,
+{
     Accordion::new(items, selection)
 }
