@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow};
 use clap::Args;
 use console::style;
+use core::time::Duration;
 use dialoguer::Confirm;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use std::process::Command;
 
@@ -13,7 +14,15 @@ pub struct DoctorArgs {
     pub fix: bool,
 }
 
-pub fn run(args: DoctorArgs, pb: ProgressBar) -> Result<()> {
+pub fn run(args: DoctorArgs) -> Result<()> {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(80));
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.blue} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+
     pb.set_message(style("Preparing environment checks…").dim().to_string());
     pb.tick();
 

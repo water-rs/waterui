@@ -56,6 +56,8 @@ pub struct Swift {
     #[serde(default = "default_swift_project_path")]
     pub project_path: String,
     pub scheme: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_file: Option<String>,
 }
 
 fn default_swift_project_path() -> String {

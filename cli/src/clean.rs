@@ -25,7 +25,10 @@ pub fn run(args: CleanArgs) -> Result<()> {
     }
 
     if !args.yes {
-        println!("{}", style("The following cleanup actions will be performed:").bold());
+        println!(
+            "{}",
+            style("The following cleanup actions will be performed:").bold()
+        );
         for action in &actions {
             println!("  • {}", action.description);
         }
@@ -64,11 +67,7 @@ pub fn run(args: CleanArgs) -> Result<()> {
                 println!("  {} {}", style("[ok]").green(), action.description);
             }
             Err(err) => {
-                println!(
-                    "  {} {}",
-                    style("[err]").red(),
-                    action.description
-                );
+                println!("  {} {}", style("[err]").red(), action.description);
                 errors.push(err);
             }
         }
@@ -121,7 +120,7 @@ fn build_actions(workspace: &Path) -> Result<Vec<Action>> {
     ];
     directories.extend(apple_dirs);
 
-    if let Some(home) = home_dir() {
+    if let Some(home) = home::home_dir() {
         let gradle_dirs = [
             home.join(".gradle/caches"),
             home.join(".gradle/daemon"),
@@ -188,8 +187,7 @@ fn remove_path(path: &Path) -> Result<()> {
     if path.is_file() {
         fs::remove_file(path).with_context(|| format!("Failed to remove {}", path.display()))?;
     } else {
-        fs::remove_dir_all(path)
-            .with_context(|| format!("Failed to remove {}", path.display()))?;
+        fs::remove_dir_all(path).with_context(|| format!("Failed to remove {}", path.display()))?;
     }
     Ok(())
 }
@@ -201,11 +199,7 @@ fn format_detail(base: &str, detail: Option<&str>) -> String {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-}
+
 
 struct Action {
     description: String,
@@ -213,7 +207,12 @@ struct Action {
 }
 
 impl Action {
-    fn command(description: String, program: &str, args: Vec<String>, workdir: Option<PathBuf>) -> Self {
+    fn command(
+        description: String,
+        program: &str,
+        args: Vec<String>,
+        workdir: Option<PathBuf>,
+    ) -> Self {
         Self {
             description,
             kind: ActionKind::Command {
