@@ -1,3 +1,4 @@
+mod apple;
 mod clean;
 mod config;
 mod create;
