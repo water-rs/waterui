@@ -10,15 +10,37 @@ protocol WuiComponent: View {
 
 
 @MainActor
-public struct App: View {
-    var env: WuiEnvironment
-    public init() {
-        self.env = WuiEnvironment(waterui_init())
+final class WuiRootContext: ObservableObject {
+    let env: WuiEnvironment
+    let rootView: WuiAnyView
+
+    init() {
+        let environment = WuiEnvironment(waterui_init())
+        self.env = environment
+        guard let mainView = waterui_main() else {
+            fatalError("waterui_main() returned nil")
+        }
+        self.rootView = WuiAnyView(anyview: mainView, env: environment)
     }
 
+    deinit {
+        // `WuiAnyView` owns the underlying pointer and will drop it on deinit.
+    }
+}
+
+public struct App: View {
+    @StateObject private var context = WuiRootContext()
+
+    public init() {}
+
     public var body: some View {
-        VStack {
-            WuiAnyView(anyview: waterui_main(), env: env)
+        GeometryReader { proxy in
+            context.rootView
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height,
+                    alignment: .topLeading
+                )
         }
     }
 }
