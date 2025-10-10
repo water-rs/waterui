@@ -199,8 +199,6 @@ fn format_detail(base: &str, detail: Option<&str>) -> String {
     }
 }
 
-
-
 struct Action {
     description: String,
     kind: ActionKind,
