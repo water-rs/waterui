@@ -1,0 +1,40 @@
+[package]
+name = "waterui-web"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Web/WASM backend for the WaterUI framework"
+rust-version.workspace = true
+keywords = ["ui", "wasm", "web", "framework"]
+categories = ["gui", "wasm", "web-programming"]
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-render-utils.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlHeadElement",
+    "HtmlButtonElement",
+    "HtmlElement",
+    "Node",
+    "Window"
+] }
+js-sys = "0.3"
+
+[features]
+default = []
+
+[lints]
+workspace = true
