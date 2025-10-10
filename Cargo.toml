@@ -2,10 +2,10 @@
 [workspace]
 members = [
     "core",
-    "kit", 
+    "kit",
     "components/*",
     "utils/*",
-    # "backends/web",
+    "backends/web",
     "render_utils",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
