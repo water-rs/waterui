@@ -1,0 +1,78 @@
+:root {
+    color-scheme: light dark;
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #f5f7fb;
+    color: #101828;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(180deg, rgba(15, 76, 129, 0.08) 0%, rgba(15, 76, 129, 0.02) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.waterui-root {
+    width: 100%;
+    max-width: 960px;
+    padding: 48px;
+    box-sizing: border-box;
+}
+
+.waterui-surface,
+.waterui-demo {
+    background-color: rgba(255, 255, 255, 0.85);
+    border-radius: 24px;
+    box-shadow: 0 24px 48px rgba(15, 76, 129, 0.12);
+    padding: 40px;
+    backdrop-filter: blur(12px);
+}
+
+.waterui-heading,
+.waterui-demo__title {
+    margin: 0 0 16px;
+    font-size: 2.25rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.waterui-body,
+.waterui-demo__description {
+    margin: 0 0 24px;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: rgba(16, 24, 40, 0.72);
+}
+
+.waterui-button {
+    appearance: none;
+    border: none;
+    border-radius: 999px;
+    padding: 14px 28px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: white;
+    background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.waterui-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 18px 32px rgba(37, 99, 235, 0.3);
+}
+
+.waterui-button:active {
+    transform: translateY(0);
+    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.2);
+}
+
+.waterui-demo__status {
+    display: inline-block;
+    margin-left: 16px;
+    font-size: 0.95rem;
+    color: rgba(16, 24, 40, 0.7);
+}
