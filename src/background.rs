@@ -1,7 +1,7 @@
 //! This module provides types for defining background and foreground colors in a UI.
 
 use nami::signal::IntoComputed;
-use waterui_color::Color;
+use waterui_color::{Color, Srgb};
 use waterui_core::Computed;
 use waterui_str::Str;
 
@@ -12,6 +12,18 @@ pub enum Background {
     Color(Computed<Color>),
     /// An image background.
     Image(Computed<Str>),
+}
+
+impl From<Color> for Background {
+    fn from(color: Color) -> Self {
+        Self::Color(Computed::new(color))
+    }
+}
+
+impl From<Srgb> for Background {
+    fn from(color: Srgb) -> Self {
+        Self::from(Color::from(color))
+    }
 }
 
 impl Background {
