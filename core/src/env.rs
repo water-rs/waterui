@@ -228,13 +228,36 @@ impl<V, T> With<V, T> {
     }
 }
 
+/// A view that overrides the environment for its children.
+///
+/// `WithEnv` wraps a child view and provides a completely replaced environment
+/// instead of extending the existing one.
+#[derive(Debug)]
+pub struct WithEnv<V> {
+    content: V,
+    env: Environment,
+}
+
+impl<V: View> WithEnv<V> {
+    /// Creates a new `WithEnv` view that wraps the provided content and replaces
+    /// the environment with the given environment for all child views.
+    pub const fn new(content: V, env: Environment) -> Self {
+        Self { content, env }
+    }
+}
+
+impl<V: View> View for WithEnv<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        Metadata::new(self.content, self.env)
+    }
+}
+
 impl<V, T> View for With<V, T>
 where
     V: View,
     T: 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let env = env.clone().with(self.value);
-        Metadata::new(self.content, env)
+        WithEnv::new(self.content, env.clone().with(self.value))
     }
 }

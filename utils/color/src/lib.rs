@@ -221,6 +221,10 @@ impl Srgb {
     const BROWN: Self = Self::from_hex("#795548");
     const GREY: Self = Self::from_hex("#9E9E9E");
     const BLUE_GREY: Self = Self::from_hex("#607D8B");
+    /// Black color.
+    pub const BLACK: Self = Self::from_hex("#000000");
+    /// White color.
+    pub const WHITE: Self = Self::from_hex("#FFFFFF");
 
     /// Creates a new sRGB color from red, green, and blue components.
     ///
