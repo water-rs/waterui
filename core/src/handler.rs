@@ -10,7 +10,7 @@
 //! The module also provides utility functions to convert regular functions into handlers
 //! with automatic parameter extraction from environments.
 
-use crate::extract::Extractor;
+use crate::{AnyView, View, extract::Extractor};
 use alloc::boxed::Box;
 use core::{fmt::Debug, marker::PhantomData};
 
@@ -379,4 +379,135 @@ where
     T: 'static,
 {
     IntoHandlerOnce::new(h)
+}
+
+/// Trait for functions that build views from extracted parameters.
+///
+/// This trait is implemented for functions that extract parameters from an environment
+/// and construct a view from them.
+pub trait ViewBuilderFn<P>: 'static {
+    /// The type of view produced by this builder.
+    type Output: View;
+    /// Builds a view by extracting parameters from the environment.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The environment containing request data and context
+    fn build_inner(&self, env: &Environment) -> Self::Output;
+}
+
+/// A wrapper that converts a function into a view builder.
+#[derive(Debug, Clone)]
+pub struct IntoViewBuilder<P: 'static, F> {
+    f: F,
+    _phantom: core::marker::PhantomData<P>,
+}
+
+impl<P: 'static, F> IntoViewBuilder<P, F>
+where
+    F: ViewBuilderFn<P>,
+{
+    /// Creates a new view builder from the given function.
+    #[must_use]
+    pub const fn new(f: F) -> Self {
+        Self {
+            f,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+macro_rules! impl_view_builder_fn {
+    ($($param:ident),*) => {
+        #[allow(non_snake_case)]
+        #[allow(unused_variables)]
+        impl<V, F, $($param:Extractor),*> ViewBuilderFn<($($param,)*)> for F
+        where
+            V: View,
+            F: Fn($($param,)*) -> V + 'static,
+        {
+            type Output = V;
+            fn build_inner(&self, env: &Environment) -> Self::Output {
+                $(
+                    let $param:$param=Extractor::extract(env).unwrap();
+                )*
+                (self)($($param,)*)
+            }
+        }
+    };
+}
+
+tuples!(impl_view_builder_fn);
+
+/// Trait for types that can repeatedly build views from an environment.
+///
+/// Implementors can be invoked multiple times to construct new view instances,
+/// extracting necessary data from the environment on each invocation.
+pub trait ViewBuilder: 'static {
+    /// The type of view produced by this builder.
+    type Output: View;
+    /// Builds a view from the environment.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The environment containing request data and context
+    fn build(&self, env: &Environment) -> Self::Output;
+}
+
+impl<P: 'static, F> ViewBuilder for IntoViewBuilder<P, F>
+where
+    F: ViewBuilderFn<P>,
+{
+    type Output = F::Output;
+    fn build(&self, env: &Environment) -> Self::Output {
+        self.f.build_inner(env)
+    }
+}
+
+/// Converts a function into a view builder.
+#[must_use]
+pub const fn into_view_builder<P: 'static, F>(f: F) -> IntoViewBuilder<P, F>
+where
+    F: ViewBuilderFn<P>,
+{
+    IntoViewBuilder::new(f)
+}
+
+/// A builder for creating views from handler functions.
+///
+/// This struct wraps a boxed handler that produces `AnyView` instances.
+pub struct AnyViewBuilder(BoxHandler<AnyView>);
+
+impl Debug for AnyViewBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ViewBuilder(..)")
+    }
+}
+
+impl<P, F> Handler<AnyView> for IntoViewBuilder<P, F>
+where
+    F: ViewBuilderFn<P>,
+{
+    fn handle(&self, env: &Environment) -> AnyView {
+        AnyView::new(self.build(env))
+    }
+}
+
+impl AnyViewBuilder {
+    /// Creates a new `ViewBuilder` from a handler function.
+    /// # Arguments
+    /// * `handler` - The function that builds a view from extracted parameters
+    #[must_use]
+    pub fn new<H: 'static>(handler: impl ViewBuilderFn<H>) -> Self {
+        Self(Box::new(into_view_builder(handler)))
+    }
+
+    /// Builds a view by invoking the underlying handler with the given environment.
+    /// # Arguments
+    /// * `env` - The environment to pass to the handler
+    /// # Returns
+    /// An `AnyView` produced by the handler
+    pub fn build(&self, env: &Environment) -> AnyView {
+        (self.0).handle(env)
+    }
 }

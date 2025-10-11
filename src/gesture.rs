@@ -15,10 +15,22 @@ pub struct TapGesture {
 }
 
 impl TapGesture {
-    /// Creates a tap gesture that fires after `count` consecutive taps.
+    /// Creates a tap gesture that requires `count` consecutive taps to activate.
     #[must_use]
-    pub const fn new(count: u32) -> Self {
+    pub const fn repeat(count: u32) -> Self {
         Self { count }
+    }
+
+    /// Creates a tap gesture that requires a single tap to activate.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { count: 1 }
+    }
+}
+
+impl Default for TapGesture {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
