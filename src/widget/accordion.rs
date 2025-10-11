@@ -1,98 +1,90 @@
-//! An accordion is a vertically stacked set of collapsible items.
+//! Accordion component with a header and expandable content.
 
-use crate::{ViewExt, ext::SignalExt, prelude::*, widget::condition::when};
-use alloc::vec::Vec;
-use core::hash::Hash;
-use waterui_core::{id::Identifable, view::IntoView};
-use waterui_layout::stack::{VStack, vstack};
+use crate::ViewExt;
+use nami::Binding;
+use waterui_core::{
+    Environment, View,
+    components::Dynamic,
+    handler::{IntoViewBuilder, ViewBuilder, ViewBuilderFn, into_view_builder},
+};
+use waterui_layout::stack::vstack;
 
-/// Represents a single item to be displayed in an `Accordion`.
+/// An accordion component with a header and expandable content.
+/// Content will be rendered lazily when the accordion is expanded. Its state may not be preserved when collapsed.
+/// # Examples
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::widget::accordion;
+/// accordion(
+///     "Tap to Expand",
+///     || "This is the expanded content"
+/// );
+/// ```
 #[derive(Debug, Clone)]
-pub struct AccordionItem<H, C, ID> {
-    /// The unique identifier for this item.
-    pub id: ID,
-    /// The view to display as the item's header. Always visible.
-    pub header: H,
-    /// The view to display as the item's content. Visible only when the item is expanded.
-    pub content: C,
+pub struct Accordion<H, V> {
+    toggle: Binding<bool>,
+    header: H,
+    content: V,
 }
 
-impl<H, C, ID: Clone + Hash + Ord> Identifable for AccordionItem<H, C, ID> {
-    type Id = ID;
-    fn id(&self) -> Self::Id {
-        self.id.clone()
+impl<H, P, F> Accordion<H, IntoViewBuilder<P, F>>
+where
+    H: View,
+    F: ViewBuilderFn<P>,
+{
+    /// Creates a new accordion with the specified header and content.
+    ///
+    /// # Arguments
+    /// * `header` - The view to display as the accordion header.
+    /// * `content` - A function that generates the content view when the accordion is expanded.
+    pub fn new(header: H, content: F) -> Self {
+        Self::with_toggle(&Binding::bool(false), header, content)
+    }
+
+    /// Creates a new accordion with a custom toggle binding.
+    /// This allows external control of the accordion's expanded/collapsed state.
+    ///
+    /// # Arguments
+    /// * `toggle` - A binding that controls whether the accordion is expanded (true) or collapsed (false).
+    /// * `header` - The view to display as the accordion header.
+    /// * `content` - A function that generates the content view when the accordion
+    pub fn with_toggle(toggle: &Binding<bool>, header: H, content: F) -> Self {
+        Self {
+            toggle: toggle.clone(),
+            header,
+            content: into_view_builder(content),
+        }
     }
 }
 
-/// A widget that displays a list of vertically-stacked, collapsible items.
-#[derive(Debug)]
-pub struct Accordion<H, C, ID>
+/// Creates an accordion component with a header and expandable content.
+pub fn accordion<H, P: 'static, F>(header: H, content: F) -> Accordion<H, IntoViewBuilder<P, F>>
 where
-    H: IntoView + Clone + 'static,
-    C: IntoView + Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
+    H: View,
+    F: ViewBuilderFn<P>,
 {
-    items: Vec<AccordionItem<H, C, ID>>,
-    selection: Binding<Option<ID>>,
+    Accordion::new(header, content)
 }
 
-impl<H, C, ID> Accordion<H, C, ID>
+impl<H, V> View for Accordion<H, V>
 where
-    H: IntoView + Clone + 'static,
-    C: IntoView + Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
+    H: View,
+    V::Output: 'static + View,
+    V: ViewBuilder,
 {
-    /// Creates a new Accordion with the given items and selection binding.
-    pub fn new(items: Vec<AccordionItem<H, C, ID>>, selection: Binding<Option<ID>>) -> Self {
-        Self { items, selection }
-    }
-}
-
-impl<H, C, ID> View for Accordion<H, C, ID>
-where
-    H: IntoView + Clone + 'static,
-    C: IntoView + Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
-{
-    fn body(self, _env: &Environment) -> impl View {
-        let selection = self.selection;
-
-        VStack::from_iter(self.items.into_iter().map(move |item| {
-            let env = _env.clone();
-            let header = item.header.clone().into_view(&env);
-            let id = item.id();
-            let selection_for_action = selection.clone();
-
-            let header_button = button(header).action({
-                let id = id.clone();
-                move || {
-                    if selection_for_action.get().as_ref() == Some(&id) {
-                        selection_for_action.set(None);
-                    } else {
-                        selection_for_action.set(Some(id.clone()));
-                    }
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        let (handler, dynamic) = Dynamic::new();
+        let toggle = self.toggle;
+        vstack((
+            self.header.on_tap(move |env: Environment| {
+                toggle.toggle();
+                if toggle.get() {
+                    handler.set(self.content.build(&env));
+                } else {
+                    handler.set(());
                 }
-            });
-
-            let is_open = selection.clone().map(move |s| s.as_ref() == Some(&id));
-
-            let content_source = item.content.clone();
-            let content_closure = move || content_source.clone().into_view(&env);
-
-            vstack((header_button, when(is_open, content_closure))).anyview()
-        }))
+            }),
+            dynamic,
+        ))
     }
-}
-
-/// Convenience function to create a new `Accordion`.
-pub fn accordion<H, C, ID>(
-    items: Vec<AccordionItem<H, C, ID>>,
-    selection: Binding<Option<ID>>,
-) -> Accordion<H, C, ID>
-where
-    H: IntoView + Clone + 'static,
-    C: IntoView + Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
-{
-    Accordion::new(items, selection)
 }

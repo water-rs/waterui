@@ -426,7 +426,7 @@ fn latest_swift_backend_version() -> Result<String> {
         if let Some(tag) = reference.strip_prefix("refs/tags/") {
             if let Some(version_str) = tag.strip_prefix(SWIFT_TAG_PREFIX) {
                 if let Ok(version) = Version::parse(version_str) {
-                    if best.as_ref().map_or(true, |(best_v, _)| &version > best_v) {
+                    if best.as_ref().is_none_or(|(best_v, _)| &version > best_v) {
                         best = Some((version, version_str.to_string()));
                     }
                 }
