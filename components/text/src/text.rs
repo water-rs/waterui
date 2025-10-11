@@ -91,7 +91,8 @@ impl Text {
     /// This allows customizing the typography, including size, weight,
     /// style, and other font properties.
     #[must_use]
-    pub fn font(mut self, font: impl Signal<Output = Font>) -> Self {
+    pub fn font(mut self, font: impl IntoSignal<Font>) -> Self {
+        let font = font.into_signal();
         self.0.content = self
             .0
             .content
@@ -118,7 +119,8 @@ impl Text {
 
     /// Sets the font weight.
     #[must_use]
-    pub fn weight(mut self, weight: impl Signal<Output = FontWeight>) -> Self {
+    pub fn weight(mut self, weight: impl IntoSignal<FontWeight>) -> Self {
+        let weight = weight.into_signal();
         self.0.content = self
             .0
             .content
@@ -147,6 +149,28 @@ impl Text {
     }
 }
 
+macro_rules! impl_text_font {
+    ($(($name:ident, $value:expr)),+) => {
+        $(
+            impl Text {
+                #[doc = concat!("Sets the font to ", stringify!($name), " style.")]
+                #[must_use]
+                pub fn $name(self) -> Self {
+                    self.font($value)
+                }
+            }
+        )+
+    };
+}
+
+impl_text_font!(
+    (body, crate::font::Body),
+    (title, crate::font::Title),
+    (headline, crate::font::Headline),
+    (subheadline, crate::font::Subheadline),
+    (caption, crate::font::Caption),
+    (footnote, crate::font::Footnote)
+);
 /// Creates a new text component with the given content.
 ///
 /// This is a convenience function equivalent to `Text::new(text)`.

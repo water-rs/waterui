@@ -14,8 +14,8 @@ pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment,
     components::IgnorableMetadata,
-    env::With,
-    handler::{Handler, HandlerFn, IntoHandler},
+    env::{With, WithEnv},
+    handler::{BoxHandler, Handler, HandlerFn, IntoHandler, into_handler},
 };
 
 use alloc::boxed::Box;
@@ -31,68 +31,13 @@ use waterui_str::Str;
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
     background::{Background, ForegroundColor},
-    gesture::{Gesture, GestureObserver},
+    gesture::{Gesture, GestureObserver, TapGesture},
 };
 use crate::{
     component::{Metadata, Text, badge::Badge, focu::Focused},
     prelude::style::Shadow,
 };
 use waterui_core::id::TaggedView;
-
-/// A trait for types that can build views from an environment.
-pub trait ViewBuilder: 'static {
-    /// Creates a view using the provided environment.
-    ///
-    /// # Arguments
-    /// * `env` - The environment to use for building the view
-    fn view(&self, env: &Environment) -> impl View;
-}
-
-impl<F, V> ViewBuilder for F
-where
-    F: Fn(Environment) -> V + 'static,
-    V: View,
-{
-    fn view(&self, env: &Environment) -> impl View {
-        (self)(env.clone())
-    }
-}
-
-impl ViewBuilder for () {
-    fn view(&self, _env: &Environment) -> impl View {}
-}
-
-impl<H, P, V> ViewBuilder for IntoHandler<H, P, V>
-where
-    H: HandlerFn<P, V>,
-    P: 'static,
-    V: View,
-{
-    fn view(&self, env: &Environment) -> impl View {
-        self.handle(env)
-    }
-}
-
-/// A boxed view builder that can store any view-building function.
-pub struct AnyViewBuilder(Box<dyn Fn(Environment) -> AnyView>);
-
-impl_debug!(AnyViewBuilder);
-
-impl AnyViewBuilder {
-    /// Creates a new boxed view builder from any view builder implementation.
-    ///
-    /// # Arguments
-    /// * `builder` - The builder to box
-    pub fn new(builder: impl ViewBuilder + 'static) -> Self {
-        Self(Box::new(move |env| builder.view(&env).anyview()))
-    }
-}
-
-impl ViewBuilder for AnyViewBuilder {
-    fn view(&self, env: &Environment) -> impl View {
-        (self.0)(env.clone())
-    }
-}
 
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
@@ -110,6 +55,13 @@ pub trait ViewExt: View + Sized {
     /// * `value` - The value to associate with this view
     fn with<T: 'static>(self, value: T) -> With<Self, T> {
         With::new(self, value)
+    }
+
+    /// Replaces the environment for this view and its children.
+    /// # Arguments
+    /// * `env` - The new environment to use
+    fn with_env(self, env: Environment) -> WithEnv<Self> {
+        WithEnv::new(self, env)
     }
 
     /// Sets this view as the content of a navigation view with the specified title.
@@ -257,14 +209,22 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture(
+    fn gesture<P: 'static>(
         self,
         gesture: impl Into<Gesture>,
-        action: impl HandlerFn<(), ()> + 'static,
+        action: impl HandlerFn<P, ()> + 'static,
     ) -> Metadata<GestureObserver> {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
+    fn on_tap<P: 'static>(
+        self,
+        action: impl HandlerFn<P, ()> + 'static,
+    ) -> Metadata<GestureObserver> {
+        self.gesture(TapGesture::new(), action)
+    }
+
+    /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
     }
