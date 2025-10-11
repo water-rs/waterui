@@ -20,11 +20,11 @@
 //! when(!is_visible, || "This text is hidden");
 //! ```
 
-use crate::{ViewExt, component::Dynamic, view::ViewBuilder};
+use crate::{ViewExt, component::Dynamic};
 use nami::signal::IntoComputed;
 use waterui_core::{
     Environment, View,
-    handler::{HandlerFn, IntoHandler},
+    handler::{IntoViewBuilder, ViewBuilder, ViewBuilderFn, into_view_builder},
 };
 
 /// A component that conditionally renders a view based on a reactive boolean condition.
@@ -63,10 +63,9 @@ pub struct When<Condition, Then> {
     then: Then,
 }
 
-impl<Condition, Then> When<Condition, Then>
+impl<P, Condition, Then> When<Condition, IntoViewBuilder<P, Then>>
 where
     Condition: IntoComputed<bool>,
-    Then: ViewBuilder,
 {
     /// Creates a new `When` component with the given condition and view builder.
     ///
@@ -90,8 +89,14 @@ where
     /// // Using negation
     /// let when_not = When::new(!condition, |_| "Hidden");
     /// ```
-    pub const fn new(condition: Condition, then: Then) -> Self {
-        Self { condition, then }
+    pub const fn new(condition: Condition, then: Then) -> Self
+    where
+        Then: ViewBuilderFn<P>,
+    {
+        Self {
+            condition,
+            then: into_view_builder(then),
+        }
     }
 }
 
@@ -138,17 +143,16 @@ where
 /// when(is_logged_in, || "Dashboard")
 ///     .or(|| "Please log in");
 /// ```
-pub const fn when<Condition, P, Then, V>(
+pub const fn when<Condition, P, Then>(
     condition: Condition,
     then: Then,
-) -> When<Condition, IntoHandler<Then, P, V>>
+) -> When<Condition, IntoViewBuilder<P, Then>>
 where
     Condition: IntoComputed<bool>,
-    Then: HandlerFn<P, V>,
-    V: View,
+    Then: ViewBuilderFn<P>,
     P: 'static,
 {
-    When::new(condition, IntoHandler::new(then))
+    When::new(condition, then)
 }
 
 impl<Condition, Then> View for When<Condition, Then>
@@ -189,16 +193,15 @@ impl<Condition, Then> When<Condition, Then> {
     /// when(!has_data, || "Loading...")
     ///     .or(|| "Data loaded");
     /// ```
-    pub fn or<P, Or, V>(self, or: Or) -> WhenOr<Condition, Then, IntoHandler<Or, P, V>>
+    pub fn or<P, Or>(self, or: Or) -> WhenOr<Condition, Then, IntoViewBuilder<P, Or>>
     where
         Condition: IntoComputed<bool>,
-        Or: HandlerFn<P, V>,
-        V: View,
+        Or: ViewBuilderFn<P>,
     {
         WhenOr {
             condition: self.condition,
             then: self.then,
-            or: IntoHandler::new(or),
+            or: into_view_builder(or),
         }
     }
 }
@@ -257,9 +260,9 @@ where
         let env = env.clone();
         Dynamic::watch(self.condition.into_signal(), move |condition| {
             if condition {
-                (self.then).view(&env).anyview()
+                (self.then).build(&env).anyview()
             } else {
-                (self.or).view(&env).anyview()
+                (self.or).build(&env).anyview()
             }
         })
     }
