@@ -24,6 +24,7 @@ pub mod array;
 pub mod closure;
 pub mod color;
 pub mod components;
+pub mod gesture;
 pub mod reactive;
 mod ty;
 pub mod views;
