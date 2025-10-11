@@ -271,6 +271,11 @@ fn check_rust() -> SectionOutcome {
         }
     }
 
+    outcome.push_outcome(check_sccache_tool());
+    if let Some(mold) = check_mold_tool() {
+        outcome.push_outcome(mold);
+    }
+
     outcome
 }
 
@@ -355,6 +360,138 @@ fn check_command(name: &str, help: &str) -> Row {
         Ok(path) => Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
         Err(_) => Row::fail(format!("`{name}` not found")).with_detail(help),
     }
+}
+
+fn check_sccache_tool() -> RowOutcome {
+    match which::which("sccache") {
+        Ok(path) => RowOutcome::new(
+            Row::pass("`sccache` build cache available")
+                .with_indent(1)
+                .with_detail(path.display().to_string()),
+        ),
+        Err(_) => {
+            let detail =
+                "Install sccache to cache Rust compilation outputs. Run `cargo install sccache`.";
+            let row = Row::warn("`sccache` not installed")
+                .with_indent(1)
+                .with_detail(detail);
+            RowOutcome::with_fix(
+                row,
+                FixSuggestion::new(
+                    "tool-sccache".into(),
+                    "Install sccache build cache".into(),
+                    vec!["cargo".into(), "install".into(), "sccache".into()],
+                ),
+            )
+        }
+    }
+}
+
+fn check_mold_tool() -> Option<RowOutcome> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+
+    match which::which("mold") {
+        Ok(path) => Some(RowOutcome::new(
+            Row::pass("`mold` linker available")
+                .with_indent(1)
+                .with_detail(path.display().to_string()),
+        )),
+        Err(_) => {
+            let mut detail = String::from("Install mold to speed up Rust linking on Linux.");
+            if let Some((fix, hint)) = mold_fix_suggestion() {
+                if !hint.is_empty() {
+                    detail.push(' ');
+                    detail.push_str(&hint);
+                }
+                Some(RowOutcome::with_fix(
+                    Row::warn("`mold` linker not installed")
+                        .with_indent(1)
+                        .with_detail(detail),
+                    fix,
+                ))
+            } else {
+                detail
+                    .push_str(" See https://github.com/rui314/mold for installation instructions.");
+                Some(RowOutcome::new(
+                    Row::warn("`mold` linker not installed")
+                        .with_indent(1)
+                        .with_detail(detail),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
+    if which::which("apt-get").is_ok() {
+        let mut command = Vec::new();
+        if which::which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["apt-get", "install", "-y", "mold"]
+                .into_iter()
+                .map(String::from),
+        );
+        let preview = command.join(" ");
+        let description = "Install mold linker via apt".to_string();
+        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        return Some((fix, format!("Try `{preview}`.")));
+    }
+
+    if which::which("dnf").is_ok() {
+        let mut command = Vec::new();
+        if which::which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["dnf", "install", "-y", "mold"]
+                .into_iter()
+                .map(String::from),
+        );
+        let preview = command.join(" ");
+        let description = "Install mold linker via dnf".to_string();
+        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        return Some((fix, format!("Try `{preview}`.")));
+    }
+
+    if which::which("pacman").is_ok() {
+        let mut command = Vec::new();
+        if which::which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["pacman", "-S", "--noconfirm", "mold"]
+                .into_iter()
+                .map(String::from),
+        );
+        let preview = command.join(" ");
+        let description = "Install mold linker via pacman".to_string();
+        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        return Some((fix, format!("Try `{preview}`.")));
+    }
+
+    if which::which("brew").is_ok() {
+        let mut command = Vec::new();
+        if which::which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(["brew", "install", "mold"].into_iter().map(String::from));
+        let preview = command.join(" ");
+        let description = "Install mold linker via Homebrew".to_string();
+        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        return Some((fix, format!("Try `{preview}`.")));
+    }
+
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
+    None
 }
 
 fn check_env_var(name: &str, help: &str) -> Row {
