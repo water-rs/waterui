@@ -1,4 +1,5 @@
 use std::{
+    env,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -15,6 +16,7 @@ use clap::{Args, ValueEnum};
 use dialoguer::{Select, theme::ColorfulTheme};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, info, warn};
+use which::which;
 
 use crate::{
     apple::{
@@ -159,6 +161,7 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
         cmd.arg("--release");
     }
     cmd.current_dir(project_dir);
+    apply_build_speedups(&mut cmd);
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
@@ -167,6 +170,57 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
         bail!("cargo build failed");
     }
     Ok(())
+}
+
+fn apply_build_speedups(cmd: &mut Command) {
+    configure_sccache(cmd);
+    #[cfg(target_os = "linux")]
+    configure_mold(cmd);
+}
+
+fn configure_sccache(cmd: &mut Command) {
+    if env::var_os("RUSTC_WRAPPER").is_some() {
+        debug!("RUSTC_WRAPPER already set; not overriding with sccache");
+        return;
+    }
+
+    match which("sccache") {
+        Ok(path) => {
+            debug!("Enabling sccache for cargo builds");
+            cmd.env("RUSTC_WRAPPER", path);
+        }
+        Err(_) => {
+            warn!("`sccache` not found on PATH; proceeding without build cache");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_mold(cmd: &mut Command) {
+    const MOLD_FLAG: &str = "-C link-arg=-fuse-ld=mold";
+
+    if env::var("RUSTFLAGS")
+        .map(|flags| flags.split_whitespace().any(|flag| flag == MOLD_FLAG))
+        .unwrap_or(false)
+    {
+        debug!("mold linker already enabled via RUSTFLAGS");
+        return;
+    }
+
+    match which("mold") {
+        Ok(_) => {
+            let mut flags = env::var("RUSTFLAGS").unwrap_or_default();
+            if !flags.trim().is_empty() {
+                flags.push(' ');
+            }
+            flags.push_str(MOLD_FLAG);
+            debug!("Using mold linker for faster linking");
+            cmd.env("RUSTFLAGS", flags);
+        }
+        Err(_) => {
+            warn!("`mold` linker not found; using system default linker");
+        }
+    }
 }
 
 fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: bool) -> Result<()> {
