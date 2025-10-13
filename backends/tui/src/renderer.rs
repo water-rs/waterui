@@ -30,12 +30,18 @@ pub struct RenderFrame {
 
 impl RenderFrame {
     /// Pushes a new line with the provided indentation level.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a line cannot be retrieved after insertion, which should be
+    /// impossible unless the internal storage becomes inconsistent.
     pub fn push_line(&mut self, indent: usize) -> &mut RenderLine {
         self.lines.push(RenderLine::new(indent));
         self.lines.last_mut().unwrap()
     }
 
     /// Returns the set of lines recorded in this frame.
+    #[must_use]
     pub fn lines(&self) -> &[RenderLine] {
         &self.lines
     }
@@ -119,12 +125,17 @@ impl Renderer {
     }
 
     /// Renders a view into a [`RenderFrame`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if rendering the view tree fails for any reason.
     pub fn render<V: View>(&mut self, env: &Environment, view: V) -> Result<RenderFrame, TuiError> {
         let mut frame = RenderFrame::default();
         self.render_any(env, &mut frame, 0, AnyView::new(view))?;
         Ok(frame)
     }
 
+    #[allow(clippy::manual_let_else, clippy::too_many_lines)]
     fn render_any(
         &mut self,
         env: &Environment,
@@ -134,7 +145,7 @@ impl Renderer {
     ) -> Result<(), TuiError> {
         let view = match view.downcast::<Str>() {
             Ok(text) => {
-                self.render_str(frame, indent, &text);
+                Self::render_str(frame, indent, &text);
                 return Ok(());
             }
             Err(view) => view,
@@ -147,7 +158,7 @@ impl Renderer {
 
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(native) => {
-                self.render_text(env, frame, indent, native.0)?;
+                Self::render_text(env, frame, indent, &native.0);
                 return Ok(());
             }
             Err(view) => view,
@@ -254,18 +265,12 @@ impl Renderer {
         self.render_any(env, frame, indent, AnyView::new(next))
     }
 
-    fn render_str(&self, frame: &mut RenderFrame, indent: usize, text: &Str) {
+    fn render_str(frame: &mut RenderFrame, indent: usize, text: &Str) {
         let line = frame.push_line(indent);
         line.push(RenderSegment::plain(text.to_string()));
     }
 
-    fn render_text(
-        &mut self,
-        env: &Environment,
-        frame: &mut RenderFrame,
-        indent: usize,
-        config: TextConfig,
-    ) -> Result<(), TuiError> {
+    fn render_text(env: &Environment, frame: &mut RenderFrame, indent: usize, config: &TextConfig) {
         let content = config.content.get();
         let line = frame.push_line(indent);
         let mut chunks = content.into_chunks();
@@ -273,10 +278,9 @@ impl Renderer {
             chunks.push((Str::from(""), TextStyle::default()));
         }
         for (chunk, style) in chunks {
-            let style = self.content_style_from_text_style(env, &style);
+            let style = Self::content_style_from_text_style(env, &style);
             line.push(RenderSegment::styled(chunk.to_string(), style));
         }
-        Ok(())
     }
 
     fn render_link(
@@ -334,7 +338,7 @@ impl Renderer {
     ) -> Result<(), TuiError> {
         let (axis, content) = scroll.into_inner();
         let line = frame.push_line(indent);
-        line.push(RenderSegment::plain(format!("[scroll {:?}]", axis)));
+        line.push(RenderSegment::plain(format!("[scroll {axis:?}]")));
         self.render_any(env, frame, indent + 1, content)?;
         Ok(())
     }
@@ -353,15 +357,15 @@ impl Renderer {
         Ok(())
     }
 
-    fn content_style_from_text_style(&self, env: &Environment, style: &TextStyle) -> ContentStyle {
+    fn content_style_from_text_style(env: &Environment, style: &TextStyle) -> ContentStyle {
         let mut content_style = ContentStyle::new();
 
         if let Some(color) = style.foreground.clone() {
-            content_style.foreground_color = Some(color_to_terminal(env, color));
+            content_style.foreground_color = Some(color_to_terminal(env, &color));
         }
 
         if let Some(color) = style.background.clone() {
-            content_style.background_color = Some(color_to_terminal(env, color));
+            content_style.background_color = Some(color_to_terminal(env, &color));
         }
 
         let mut attributes = Attributes::default();
@@ -388,15 +392,14 @@ trait FontWeightExt {
 
 impl FontWeightExt for waterui_text::font::FontWeight {
     fn into_bold_attribute(self) -> Option<Attribute> {
-        use waterui_text::font::FontWeight::*;
         match self {
-            Bold | SemiBold | UltraBold | Black => Some(Attribute::Bold),
+            Self::Bold | Self::SemiBold | Self::UltraBold | Self::Black => Some(Attribute::Bold),
             _ => None,
         }
     }
 }
 
-fn color_to_terminal(env: &Environment, color: UiColor) -> TermColor {
+fn color_to_terminal(env: &Environment, color: &UiColor) -> TermColor {
     let resolved = color.resolve(env).get();
     TermColor::Rgb {
         r: clamp_color_component(resolved.red),
@@ -406,8 +409,11 @@ fn color_to_terminal(env: &Environment, color: UiColor) -> TermColor {
 }
 
 fn clamp_color_component(value: f32) -> u8 {
-    let value = value.max(0.0).min(1.0);
-    (value * 255.0).round() as u8
+    let value = value.clamp(0.0, 1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (value * 255.0).round() as u8
+    }
 }
 
 #[cfg(test)]

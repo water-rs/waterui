@@ -6,7 +6,7 @@ use crate::{
     terminal::Terminal,
 };
 
-/// Entry point for running WaterUI applications in the terminal.
+/// Entry point for running `WaterUI` applications in the terminal.
 #[derive(Debug)]
 pub struct TuiApp {
     terminal: Terminal,
@@ -16,43 +16,62 @@ pub struct TuiApp {
 
 impl TuiApp {
     /// Renders a view and flushes it to the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when rendering the view tree fails or when the
+    /// terminal cannot be written to.
     pub fn render<V: View>(&mut self, view: V) -> Result<(), TuiError> {
         let frame = self.renderer.render(&self.environment, view)?;
         self.terminal.render(&frame)
     }
 
     /// Renders a view tree to a frame without drawing it to the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Propagates failures from the renderer when the view tree cannot be
+    /// transformed into a terminal frame.
     pub fn render_to_frame<V: View>(&mut self, view: V) -> Result<RenderFrame, TuiError> {
         self.renderer.render(&self.environment, view)
     }
 
     /// Provides mutable access to the renderer.
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         &mut self.renderer
     }
 
     /// Provides immutable access to the renderer.
-    pub fn renderer(&self) -> &Renderer {
+    #[must_use]
+    pub const fn renderer(&self) -> &Renderer {
         &self.renderer
     }
 
     /// Provides mutable access to the underlying environment.
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn environment_mut(&mut self) -> &mut Environment {
         &mut self.environment
     }
 
     /// Provides immutable access to the environment.
-    pub fn environment(&self) -> &Environment {
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
         &self.environment
     }
 
     /// Provides mutable access to the terminal handle.
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn terminal_mut(&mut self) -> &mut Terminal {
         &mut self.terminal
     }
 
     /// Provides immutable access to the terminal handle.
-    pub fn terminal(&self) -> &Terminal {
+    #[must_use]
+    pub const fn terminal(&self) -> &Terminal {
         &self.terminal
     }
 }
@@ -67,6 +86,7 @@ pub struct TuiAppBuilder {
 impl TuiAppBuilder {
     /// Creates a new builder with default configuration.
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn new() -> Self {
         Self {
             terminal: None,
@@ -89,6 +109,10 @@ impl TuiAppBuilder {
     }
 
     /// Consumes the builder and produces a [`TuiApp`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal cannot be initialised.
     pub fn build(self) -> Result<TuiApp, TuiError> {
         let terminal = match self.terminal {
             Some(terminal) => terminal,

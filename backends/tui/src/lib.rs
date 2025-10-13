@@ -1,4 +1,6 @@
-//! Terminal backend entry point for WaterUI.
+#![allow(clippy::multiple_crate_versions)]
+
+//! Terminal backend entry point for `WaterUI`.
 
 pub use crate::app::{TuiApp, TuiAppBuilder};
 pub use crate::renderer::{RenderFrame, Renderer};
