@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
 use crates_index::Index;
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
+use indicatif::{ProgressBar, ProgressStyle};
 use semver::Version;
 use tracing::{info, warn};
 
@@ -174,20 +175,6 @@ pub fn run(args: CreateArgs) -> Result<()> {
         args.backends.clone()
     };
 
-    let mut development_team = args.team_id.clone().unwrap_or_default();
-
-    if selected_backends.contains(&BackendChoice::Swiftui) && development_team.is_empty() {
-        if args.yes {
-            development_team = fetch_team_ids()?
-                .into_iter()
-                .next()
-                .map(|id| id.team_id)
-                .unwrap_or_default();
-        } else {
-            development_team = prompt_team_id(&theme)?;
-        }
-    }
-
     info!("Application: {}", display_name);
     info!("Author: {}", author);
     info!("Crate name: {}", crate_name);
@@ -214,7 +201,20 @@ pub fn run(args: CreateArgs) -> Result<()> {
         }
     }
 
+    // Create progress indicator
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    spinner.set_message("Creating project structure...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
     prepare_directory(&project_dir)?;
+
+    spinner.set_message("Generating Rust sources...");
     rust::create_rust_sources(&project_dir, &crate_name, &author, &display_name, &deps)?;
 
     let mut config = Config::new(Package {
@@ -224,36 +224,43 @@ pub fn run(args: CreateArgs) -> Result<()> {
     });
 
     let mut web_enabled = false;
-    for backend in selected_backends {
+    let total_backends = selected_backends.len();
+    for (idx, backend) in selected_backends.iter().enumerate() {
+        let progress = format!("[{}/{}]", idx + 1, total_backends);
         match backend {
             BackendChoice::Web => {
+                spinner.set_message(format!("{} Creating Web backend...", progress));
                 web::create_web_assets(&project_dir, &display_name)?;
+                spinner.set_message(format!("{} Web backend created ✓", progress));
                 config.backends.web = Some(Web {
                     project_path: "web".to_string(),
                 });
                 web_enabled = true;
             }
             BackendChoice::Android => {
+                spinner.set_message(format!("{} Creating Android backend...", progress));
                 android::create_android_project(
                     &project_dir,
                     &app_name,
                     &crate_name,
                     &bundle_identifier,
                 )?;
+                spinner.set_message(format!("{} Android backend created ✓", progress));
                 config.backends.android = Some(Android {
                     project_path: "android".to_string(),
                 });
             }
             BackendChoice::Swiftui => {
+                spinner.set_message(format!("{} Creating SwiftUI backend...", progress));
                 swift::create_xcode_project(
                     &project_dir,
                     &app_name,
                     &display_name,
                     &crate_name,
                     &bundle_identifier,
-                    &development_team,
                     &deps.swift,
                 )?;
+                spinner.set_message(format!("{} SwiftUI backend created ✓", progress));
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
                     scheme: app_name.clone(),
@@ -267,8 +274,11 @@ pub fn run(args: CreateArgs) -> Result<()> {
         config.hot_reload.watch.push("web".to_string());
     }
 
+    spinner.set_message("Saving configuration...");
     config.save(&project_dir)?;
 
+    spinner.finish_with_message("Project created successfully!");
+    spinner.finish_and_clear();
     info!("✅ Project created");
     let current_dir = std::env::current_dir()?;
     let display_path = project_dir
@@ -285,43 +295,6 @@ pub fn run(args: CreateArgs) -> Result<()> {
     // }
 
     Ok(())
-}
-
-fn prompt_team_id(theme: &ColorfulTheme) -> Result<String> {
-    let identities = fetch_team_ids()?;
-
-    if identities.is_empty() {
-        let value = Input::with_theme(theme)
-            .with_prompt("Apple Development Team ID (optional, for automatic signing)")
-            .allow_empty(true)
-            .interact_text()?;
-        return Ok(value);
-    }
-
-    let mut options: Vec<String> = identities
-        .iter()
-        .map(|identity| format!("{} – {}", identity.team_id, identity.description))
-        .collect();
-    options.push("Enter team ID manually…".to_string());
-    options.push("Skip (configure later)".to_string());
-
-    let selection = Select::with_theme(theme)
-        .with_prompt("Select an Apple Development Team ID")
-        .items(&options)
-        .default(0)
-        .interact()?;
-
-    if selection == options.len() - 2 {
-        let value = Input::with_theme(theme)
-            .with_prompt("Apple Development Team ID")
-            .allow_empty(false)
-            .interact_text()?;
-        Ok(value)
-    } else if selection == options.len() - 1 {
-        Ok(String::new())
-    } else {
-        Ok(identities[selection].team_id.clone())
-    }
 }
 
 #[derive(Clone, Debug)]
