@@ -81,11 +81,11 @@
 			fileSystemSynchronizedGroups = (
 				D01867602E6C7BBB00802E96 /* __APP_NAME__ */,
 			);
-            name = __APP_DISPLAY_NAME__;
+            name = "__APP_DISPLAY_NAME__";
             packageProductDependencies = (
                 D01867792E6C82CA00802E96 /* WaterUI */,
             );
-            productName = __APP_DISPLAY_NAME__;
+            productName = "__APP_DISPLAY_NAME__";
             productReference = D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */;
             productType = "com.apple.product-type.application";
         };
