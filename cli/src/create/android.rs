@@ -1,6 +1,10 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use super::template;
 use crate::util;
@@ -20,16 +24,22 @@ pub fn create_android_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
 
     let templates = &template::TEMPLATES_DIR;
-    let android_tpl_dir = templates.get_dir("android").expect("android template directory should exist");
 
     // Process root-level templates
     template::process_template_file(
-        android_tpl_dir.get_file("build.gradle.kts.tpl").expect("build.gradle.kts.tpl should exist"),
+        templates.get_file("android/build.gradle.kts.tpl").unwrap(),
         &android_dir.join("build.gradle.kts"),
         &context,
     )?;
     template::process_template_file(
-        android_tpl_dir.get_file("settings.gradle.kts.tpl").expect("settings.gradle.kts.tpl should exist"),
+        templates.get_file("android/gradle.properties.tpl").unwrap(),
+        &android_dir.join("gradle.properties"),
+        &context,
+    )?;
+    template::process_template_file(
+        templates
+            .get_file("android/settings.gradle.kts.tpl")
+            .unwrap(),
         &android_dir.join("settings.gradle.kts"),
         &context,
     )?;
@@ -37,18 +47,25 @@ pub fn create_android_project(
     // Process app-level templates
     let app_dir = android_dir.join("app");
     template::process_template_file(
-        android_tpl_dir
-            .get_file("app/build.gradle.kts.tpl")
-            .expect("app/build.gradle.kts.tpl should exist"),
+        templates
+            .get_file("android/app/build.gradle.kts.tpl")
+            .unwrap(),
         &app_dir.join("build.gradle.kts"),
         &context,
+    )?;
+    fs::write(
+        app_dir.join("proguard-rules.pro"),
+        templates
+            .get_file("android/app/proguard-rules.pro")
+            .unwrap()
+            .contents(),
     )?;
 
     let main_dir = app_dir.join("src/main");
     template::process_template_file(
-        android_tpl_dir
-            .get_file("app/src/main/AndroidManifest.xml.tpl")
-            .expect("app/src/main/AndroidManifest.xml.tpl should exist"),
+        templates
+            .get_file("android/app/src/main/AndroidManifest.xml.tpl")
+            .unwrap(),
         &main_dir.join("AndroidManifest.xml"),
         &context,
     )?;
@@ -56,17 +73,49 @@ pub fn create_android_project(
     // Process res templates
     let values_dir = main_dir.join("res/values");
     template::process_template_file(
-        android_tpl_dir
-            .get_file("app/src/main/res/values/strings.xml.tpl")
-            .expect("app/src/main/res/values/strings.xml.tpl should exist"),
+        templates
+            .get_file("android/app/src/main/res/values/strings.xml.tpl")
+            .unwrap(),
         &values_dir.join("strings.xml"),
         &context,
     )?;
     template::process_template_file(
-        android_tpl_dir
-            .get_file("app/src/main/res/values/themes.xml.tpl")
-            .expect("app/src/main/res/values/themes.xml.tpl should exist"),
+        templates
+            .get_file("android/app/src/main/res/values/themes.xml.tpl")
+            .unwrap(),
         &values_dir.join("themes.xml"),
+        &context,
+    )?;
+    template::process_template_file(
+        templates
+            .get_file("android/app/src/main/res/values/colors.xml.tpl")
+            .unwrap(),
+        &values_dir.join("colors.xml"),
+        &context,
+    )?;
+
+    let drawable_dir = main_dir.join("res/drawable");
+    template::process_template_file(
+        templates
+            .get_file("android/app/src/main/res/drawable/ic_launcher_foreground.xml.tpl")
+            .unwrap(),
+        &drawable_dir.join("ic_launcher_foreground.xml"),
+        &context,
+    )?;
+
+    let mipmap_anydpi_dir = main_dir.join("res/mipmap-anydpi-v26");
+    template::process_template_file(
+        templates
+            .get_file("android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml.tpl")
+            .unwrap(),
+        &mipmap_anydpi_dir.join("ic_launcher.xml"),
+        &context,
+    )?;
+    template::process_template_file(
+        templates
+            .get_file("android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml.tpl")
+            .unwrap(),
+        &mipmap_anydpi_dir.join("ic_launcher_round.xml"),
         &context,
     )?;
 
@@ -74,21 +123,59 @@ pub fn create_android_project(
     let package_path = bundle_identifier.replace('.', "/");
     let java_dir = main_dir.join(format!("java/{}", package_path));
     template::process_template_file(
-        android_tpl_dir
-            .get_file("app/src/main/java/MainActivity.kt.tpl")
-            .expect("app/src/main/java/MainActivity.kt.tpl should exist"),
+        templates
+            .get_file("android/app/src/main/java/MainActivity.kt.tpl")
+            .unwrap(),
         &java_dir.join("MainActivity.kt"),
         &context,
     )?;
 
     // Process root build script
     template::process_template_file(
-        android_tpl_dir.get_file("build-rust.sh.tpl").expect("build-rust.sh.tpl should exist"),
+        templates.get_file("android/build-rust.sh.tpl").unwrap(),
         &project_dir.join("build-rust.sh"),
         &context,
     )?;
 
-    // Make it executable
+    // Copy Gradle wrapper scripts and configuration
+    let gradlew_path = android_dir.join("gradlew");
+    fs::write(
+        &gradlew_path,
+        templates.get_file("android/gradlew").unwrap().contents(),
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&gradlew_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&gradlew_path, perms)?;
+    }
+
+    fs::write(
+        android_dir.join("gradlew.bat"),
+        templates
+            .get_file("android/gradlew.bat")
+            .unwrap()
+            .contents(),
+    )?;
+
+    let gradle_wrapper_dir = android_dir.join("gradle/wrapper");
+    util::ensure_directory(&gradle_wrapper_dir)?;
+    fs::write(
+        gradle_wrapper_dir.join("gradle-wrapper.jar"),
+        templates
+            .get_file("android/gradle/wrapper/gradle-wrapper.jar")
+            .unwrap()
+            .contents(),
+    )?;
+    fs::write(
+        gradle_wrapper_dir.join("gradle-wrapper.properties"),
+        templates
+            .get_file("android/gradle/wrapper/gradle-wrapper.properties")
+            .unwrap()
+            .contents(),
+    )?;
+
+    // Make scripts executable
     std::process::Command::new("chmod")
         .arg("+x")
         .arg(project_dir.join("build-rust.sh"))
