@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use kurbo::{BezPath, Point};
 use waterui_color::Color;
 

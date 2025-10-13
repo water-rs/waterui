@@ -58,6 +58,10 @@ typedef enum WuiProgressStyle {
   WuiProgressStyle_Circular,
 } WuiProgressStyle;
 
+typedef enum WuiRendererBufferFormat {
+  WuiRendererBufferFormat_Rgba8888,
+} WuiRendererBufferFormat;
+
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
  *
@@ -274,6 +278,8 @@ typedef struct WuiEnv WuiEnv;
 typedef struct WuiFont WuiFont;
 
 typedef struct WuiLayout WuiLayout;
+
+typedef struct WuiRendererView WuiRendererView;
 
 typedef struct WuiTabContent WuiTabContent;
 typedef struct WuiTableColumns WuiTableColumns;
@@ -1568,6 +1574,31 @@ struct WuiId waterui_table_columns_get_id(const struct WuiTableColumns *columns,
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_progress_id(void);
+
+void waterui_drop_renderer_view(struct WuiRendererView *value);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiRendererView *waterui_force_as_renderer_view(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_renderer_view_id(void);
+
+float waterui_renderer_view_width(const struct WuiRendererView *view);
+
+float waterui_renderer_view_height(const struct WuiRendererView *view);
+
+enum WuiRendererBufferFormat
+waterui_renderer_view_preferred_format(const struct WuiRendererView *view);
+
+bool waterui_renderer_view_render_cpu(struct WuiRendererView *view,
+                                      uint8_t *pixels,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      uintptr_t stride,
+                                      enum WuiRendererBufferFormat format);
 
 /**
  * Drops the FFI value.

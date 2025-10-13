@@ -132,14 +132,14 @@ For components requiring complex, scoped operations (like drawing), use a `Conte
 *   **Closure-based API:** The component takes a closure in its constructor (e.g., `Canvas::new(move |ctx| { ... })`).
 *   **Scoped `Context` Object:** A temporary `Context` (e.g., `&mut GraphicsContext`) is passed to the closure, providing a safe, specialized API (`ctx.fill()`, `ctx.stroke()`).
 
-### 4. The Rendering Bridge Pattern (`WgpuView`)
+### 4. The Rendering Bridge Pattern (`RendererView`)
 
-For any component that needs to perform custom rendering on the GPU (2D, 3D, shaders), the `WgpuView` primitive is the foundation.
+For any component that needs to perform custom rendering (CPU or GPU), the `RendererView` primitive is the foundation.
 
-*   **The `WgpuView` Primitive:** This is a `raw_view!` component that acts as a bridge between WaterUI and the WGPU rendering context. Its sole responsibility is to provide a drawing closure (`on_draw`) with a `wgpu::Device`, `wgpu::Queue`, and a `wgpu::TextureView` to render into.
-*   **Backend Responsibility:** The native backend is responsible for creating a shareable texture, executing the `on_draw` closure to let Rust render into it, and then displaying this texture.
-*   **High-Level Components as Users:** High-level components like `Canvas` are *users* of `WgpuView`. The `Canvas` view's `body()` method returns a `WgpuView`, and inside the `on_draw` closure, it implements its Vello-based rendering logic.
-*   **Extensibility:** This pattern is highly extensible. Anyone can create a new component that uses `WgpuView` to render with custom WGPU logic, without needing to change the backend.
+*   **The `RendererView` Primitive:** This `raw_view!` component exposes a minimal renderer surface enum. Backends can hand out CPU-accessible pixel buffers or GPU targets (when the `wgpu` feature is enabled) and let Rust render into them however it chooses.
+*   **Backend Responsibility:** The native backend is responsible for creating the surface (pixel buffer or GPU texture), invoking the `on_render` closure so Rust can draw into it, and then presenting the result.
+*   **High-Level Components as Users:** High-level components like `Canvas` return a `RendererView` from `body()`. The canvas implementation renders using `tiny-skia` when it receives a CPU buffer, remaining agnostic of the GPU stack.
+*   **Extensibility:** This pattern stays extensible. Components such as the optional `Shader` view can react to the GPU surface variant and drive advanced `wgpu` pipelines without changing the backend contracts.
 
 ### 5. The Backend Abstraction Principle
 
