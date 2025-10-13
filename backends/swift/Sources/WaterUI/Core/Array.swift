@@ -196,6 +196,14 @@ final class WuiAnyViewCollection {
         self.environment = env
     }
 
+    private func resolveHandle(_ function: StaticString = #function) -> UnsafeMutableRawPointer {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else {
+            preconditionFailure("\(function): WuiAnyViewCollection handle is no longer valid")
+        }
+        return handle
+    }
+
     deinit {
         guard let address = handleAddress,
               let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
@@ -203,21 +211,113 @@ final class WuiAnyViewCollection {
     }
 
     var count: Int {
-        guard let address = handleAddress,
-              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return 0 }
-        return Int(waterui_any_views_len_opaque(handle))
+        Int(waterui_any_views_len_opaque(resolveHandle()))
     }
 
-    func view(at index: Int) -> WuiAnyView? {
-        guard let address = handleAddress,
-              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return nil }
+    func view(at index: Int) -> WuiAnyView {
+        let handle = resolveHandle()
         let ptr = waterui_any_views_get_view_opaque(handle, UInt(index))
-        guard let ptr else { return nil }
+        guard let ptr else {
+            preconditionFailure("WuiAnyViewCollection.view(at:): null view pointer for index \(index)")
+        }
         return WuiAnyView(anyview: ptr, env: environment)
     }
 
     func toArray() -> [WuiAnyView] {
-        (0..<count).compactMap { view(at: $0) }
+        (0..<count).map { view(at: $0) }
+    }
+}
+
+final class WuiSharedAnyViewCollection {
+    private let handleAddress: UInt?
+    private let environment: WuiEnvironment
+
+    init(_ handle: UnsafeMutableRawPointer?, env: WuiEnvironment) {
+        self.handleAddress = handle.map { UInt(bitPattern: $0) }
+        self.environment = env
+    }
+
+    private func resolveHandle(_ function: StaticString = #function) -> UnsafeMutableRawPointer {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else {
+            preconditionFailure("\(function): WuiSharedAnyViewCollection handle is no longer valid")
+        }
+        return handle
+    }
+
+    deinit {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        waterui_drop_shared_any_views(handle.assumingMemoryBound(to: WuiSharedAnyViews.self))
+    }
+
+    var count: Int {
+        Int(waterui_shared_any_views_len_opaque(resolveHandle()))
+    }
+
+    func view(at index: Int) -> WuiAnyView {
+        let handle = resolveHandle()
+        let ptr = waterui_shared_any_views_get_view_opaque(handle, UInt(index))
+        guard let ptr else {
+            preconditionFailure("WuiSharedAnyViewCollection.view(at:): null view pointer for index \(index)")
+        }
+        return WuiAnyView(anyview: ptr, env: environment)
+    }
+
+    func toArray() -> [WuiAnyView] {
+        (0..<count).map { view(at: $0) }
+    }
+}
+
+struct WuiTableColumnSnapshot {
+    let id: Int
+    let rows: [WuiAnyView]
+}
+
+final class WuiTableColumnCollection {
+    private let handleAddress: UInt?
+    private let environment: WuiEnvironment
+
+    init(_ handle: UnsafeMutableRawPointer?, env: WuiEnvironment) {
+        self.handleAddress = handle.map { UInt(bitPattern: $0) }
+        self.environment = env
+    }
+
+    private func resolveHandle(_ function: StaticString = #function) -> UnsafeMutablePointer<WuiTableColumns> {
+        guard let address = handleAddress,
+              let rawHandle = UnsafeMutableRawPointer(bitPattern: address) else {
+            preconditionFailure("\(function): WuiTableColumnCollection handle is no longer valid")
+        }
+        return rawHandle.assumingMemoryBound(to: WuiTableColumns.self)
+    }
+
+    deinit {
+        guard let address = handleAddress,
+              let handle = UnsafeMutableRawPointer(bitPattern: address) else { return }
+        waterui_drop_table_columns(handle.assumingMemoryBound(to: WuiTableColumns.self))
+    }
+
+    var count: Int {
+        Int(waterui_table_columns_len(resolveHandle()))
+    }
+
+    private func columnId(at index: Int, handle: UnsafeMutablePointer<WuiTableColumns>) -> Int {
+        let rawId = waterui_table_columns_get_id(handle, UInt(index))
+        return Int(rawId.inner)
+    }
+
+    func snapshot(at index: Int) -> WuiTableColumnSnapshot {
+        let handle = resolveHandle()
+        let column = waterui_table_columns_get_column(handle, UInt(index))
+        guard let rowsHandle = column.rows else {
+            preconditionFailure("WuiTableColumnCollection.snapshot(at:): missing row collection for index \(index)")
+        }
+        let rows = WuiSharedAnyViewCollection(UnsafeMutableRawPointer(rowsHandle), env: environment)
+        return WuiTableColumnSnapshot(id: columnId(at: index, handle: handle), rows: rows.toArray())
+    }
+
+    func toArray() -> [WuiTableColumnSnapshot] {
+        (0..<count).map { snapshot(at: $0) }
     }
 }
 
