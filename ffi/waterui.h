@@ -263,6 +263,7 @@ typedef struct WuiAction WuiAction;
 typedef struct WuiAnyView WuiAnyView;
 
 typedef struct WuiAnyViews WuiAnyViews;
+typedef struct WuiSharedAnyViews WuiSharedAnyViews;
 
 typedef struct WuiColor WuiColor;
 
@@ -275,6 +276,7 @@ typedef struct WuiFont WuiFont;
 typedef struct WuiLayout WuiLayout;
 
 typedef struct WuiTabContent WuiTabContent;
+typedef struct WuiTableColumns WuiTableColumns;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
@@ -817,33 +819,11 @@ typedef struct WuiList {
 } WuiList;
 
 typedef struct WuiTableColumn {
-  struct WuiArray_____WuiAnyView rows;
+  struct WuiSharedAnyViews *rows;
 } WuiTableColumn;
 
-typedef struct WuiArraySlice_WuiTableColumn {
-  struct WuiTableColumn *head;
-  uintptr_t len;
-} WuiArraySlice_WuiTableColumn;
-
-typedef struct WuiArrayVTable_WuiTableColumn {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiTableColumn (*slice)(const void*);
-} WuiArrayVTable_WuiTableColumn;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiTableColumn {
-  NonNull data;
-  struct WuiArrayVTable_WuiTableColumn vtable;
-} WuiArray_WuiTableColumn;
-
 typedef struct WuiTable {
-  struct WuiArray_WuiTableColumn columns;
+  struct WuiTableColumns *columns;
 } WuiTable;
 
 typedef struct WuiProgress {
@@ -1571,6 +1551,15 @@ struct WuiTypeId waterui_table_id(void);
 
 struct WuiTypeId waterui_table_column_id(void);
 
+void waterui_drop_table_columns(struct WuiTableColumns *value);
+
+uintptr_t waterui_table_columns_len(const struct WuiTableColumns *columns);
+
+struct WuiTableColumn waterui_table_columns_get_column(const struct WuiTableColumns *columns,
+                                                       uintptr_t index);
+
+struct WuiId waterui_table_columns_get_id(const struct WuiTableColumns *columns, uintptr_t index);
+
 /**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
@@ -2148,6 +2137,20 @@ uintptr_t waterui_any_views_len_opaque(const void *views);
 struct WuiAnyView *waterui_any_views_get_view_opaque(const void *views, uintptr_t index);
 
 struct WuiId waterui_any_views_get_id_opaque(const void *views, uintptr_t index);
+
+void waterui_drop_shared_any_views(struct WuiSharedAnyViews *value);
+
+uintptr_t waterui_shared_any_views_len(const struct WuiSharedAnyViews *views);
+
+struct WuiAnyView *waterui_shared_any_views_get_view(const struct WuiSharedAnyViews *views, uintptr_t index);
+
+struct WuiId waterui_shared_any_views_get_id(const struct WuiSharedAnyViews *views, uintptr_t index);
+
+uintptr_t waterui_shared_any_views_len_opaque(const void *views);
+
+struct WuiAnyView *waterui_shared_any_views_get_view_opaque(const void *views, uintptr_t index);
+
+struct WuiId waterui_shared_any_views_get_id_opaque(const void *views, uintptr_t index);
 
 WuiEnv* waterui_init(void);
 

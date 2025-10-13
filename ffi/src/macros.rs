@@ -200,6 +200,7 @@ macro_rules! ffi_struct {
 macro_rules! ffi_enum {
     ($ty:ty,$ffi:ident,$($param:ident),*) => {
         #[repr(C)]
+        #[derive(Debug)]
         pub enum $ffi{
             $(
                 $param,

@@ -14,11 +14,9 @@ struct WuiTable: WuiComponent, View {
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         let table = waterui_force_as_table(anyview)
-        let columnArray = WuiArray<CWaterUI.WuiTableColumn>(table.columns)
-        self.columns = columnArray.toArray().enumerated().map { index, column in
-            let pointerArray = WuiArray<OpaquePointer>(column.rows)
-            let rows = pointerArray.toArray().map { WuiAnyView(anyview: $0, env: env) }
-            return Column(id: index, rows: rows)
+        let collection = WuiTableColumnCollection(UnsafeMutableRawPointer(table.columns), env: env)
+        self.columns = collection.toArray().map { snapshot in
+            Column(id: snapshot.id, rows: snapshot.rows)
         }
     }
 

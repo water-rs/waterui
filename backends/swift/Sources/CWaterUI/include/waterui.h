@@ -280,6 +280,88 @@ typedef struct WuiWatcherGuard WuiWatcherGuard;
 
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
 
+typedef enum WuiGestureKind {
+  WuiGestureKind_Tap,
+  WuiGestureKind_LongPress,
+  WuiGestureKind_Drag,
+  WuiGestureKind_Magnification,
+  WuiGestureKind_Rotation,
+  WuiGestureKind_Then,
+} WuiGestureKind;
+
+typedef struct WuiTapGesture {
+  uint32_t count;
+} WuiTapGesture;
+
+typedef struct WuiLongPressGesture {
+  uint32_t duration;
+} WuiLongPressGesture;
+
+typedef struct WuiDragGesture {
+  float min_distance;
+} WuiDragGesture;
+
+typedef struct WuiMagnificationGesture {
+  float initial_scale;
+} WuiMagnificationGesture;
+
+typedef struct WuiRotationGesture {
+  float initial_angle;
+} WuiRotationGesture;
+
+typedef struct WuiGesture {
+  enum WuiGestureKind kind;
+  struct WuiTapGesture tap;
+  struct WuiLongPressGesture long_press;
+  struct WuiDragGesture drag;
+  struct WuiMagnificationGesture magnification;
+  struct WuiRotationGesture rotation;
+  struct WuiGesture *first;
+  struct WuiGesture *then;
+} WuiGesture;
+
+typedef struct WuiGestureObserverValue {
+  struct WuiGesture *gesture;
+  struct WuiAction *action;
+} WuiGestureObserverValue;
+
+typedef struct WuiGestureMetadata {
+  struct WuiAnyView *view;
+  struct WuiGesture *gesture;
+  struct WuiAction *action;
+} WuiGestureMetadata;
+
+typedef enum WuiGesturePhase {
+  WuiGesturePhase_Started,
+  WuiGesturePhase_Updated,
+  WuiGesturePhase_Ended,
+  WuiGesturePhase_Cancelled,
+} WuiGesturePhase;
+
+typedef struct WuiGesturePoint {
+  float x;
+  float y;
+} WuiGesturePoint;
+
+typedef enum WuiGestureEventKind {
+  WuiGestureEventKind_Tap,
+  WuiGestureEventKind_LongPress,
+  WuiGestureEventKind_Drag,
+  WuiGestureEventKind_Magnification,
+} WuiGestureEventKind;
+
+typedef struct WuiGestureEvent {
+  enum WuiGestureEventKind kind;
+  enum WuiGesturePhase phase;
+  struct WuiGesturePoint location;
+  struct WuiGesturePoint translation;
+  struct WuiGesturePoint velocity;
+  float scale;
+  float velocity_scalar;
+  uint32_t count;
+  float duration;
+} WuiGestureEvent;
+
 /**
  * A C-compatible representation of Rust's `core::any::TypeId`.
  *
@@ -952,6 +1034,37 @@ void waterui_drop_action(struct WuiAction *value);
  * * `env` must be a valid pointer to a `waterui_env` struct.
  */
 void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
+void waterui_drop_gesture(struct WuiGesture *value);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiGestureMetadata waterui_force_as_gesture(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_gesture_id(void);
+
+/**
+ * Calls a gesture action with the provided event payload.
+ *
+ * # Safety
+ *
+ * * `action` must be a valid pointer to an existing `WuiAction`.
+ * * `env` must be a valid pointer to an existing `WuiEnv`.
+ */
+void waterui_call_gesture_action(struct WuiAction *action,
+                                 const struct WuiEnv *env,
+                                 struct WuiGestureEvent event);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
