@@ -9,8 +9,6 @@ impl<T: IntoFFI> IntoFFI for waterui::component::Native<T> {
     }
 }
 
-pub mod for_each;
-
 pub mod button;
 
 ffi_view!(
@@ -19,6 +17,7 @@ ffi_view!(
     waterui_label_id,
     waterui_force_as_label
 );
+pub mod lazy;
 
 pub mod link;
 
