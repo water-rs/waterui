@@ -17,7 +17,6 @@ pub fn create_xcode_project(
     app_display_name: &str,
     crate_name: &str,
     bundle_identifier: &str,
-    development_team: &str,
     swift_dependency: &SwiftDependency,
 ) -> Result<()> {
     let apple_root = project_dir.join("apple");
@@ -28,7 +27,6 @@ pub fn create_xcode_project(
     context.insert("APP_DISPLAY_NAME", app_display_name.to_string());
     context.insert("LIB_NAME", lib_name.to_string());
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
-    context.insert("DEVELOPMENT_TEAM", development_team.to_string());
 
     match swift_dependency {
         SwiftDependency::Remote { requirement } => {
@@ -81,7 +79,9 @@ pub fn create_xcode_project(
     }
 
     let templates = &template::TEMPLATES_DIR;
-    let apple_template_dir = templates.get_dir("apple").expect("apple template directory should exist");
+    let apple_template_dir = templates
+        .get_dir("apple")
+        .expect("apple template directory should exist");
 
     template::process_template_directory(apple_template_dir, &apple_root, &context)?;
 
