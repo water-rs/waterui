@@ -38,6 +38,7 @@ internal object NativeBindings {
     external fun waterui_spacer_id(): LongArray
     external fun waterui_toggle_id(): LongArray
     external fun waterui_slider_id(): LongArray
+    external fun waterui_renderer_view_id(): LongArray
 
     external fun waterui_env_clone(envPtr: Long): Long
     external fun waterui_env_drop(envPtr: Long)
@@ -97,9 +98,25 @@ internal object NativeBindings {
     external fun waterui_force_as_scroll(anyViewPtr: Long): ScrollStruct
     external fun waterui_force_as_dynamic(anyViewPtr: Long): DynamicStruct
     external fun waterui_force_as_spacer(anyViewPtr: Long): SpacerStruct
+    external fun waterui_force_as_renderer_view(anyViewPtr: Long): Long
+
+    external fun waterui_renderer_view_width(handle: Long): Float
+    external fun waterui_renderer_view_height(handle: Long): Float
+    external fun waterui_renderer_view_preferred_format(handle: Long): Int
+    external fun waterui_renderer_view_render_cpu(
+        handle: Long,
+        pixels: ByteArray,
+        width: Int,
+        height: Int,
+        stride: Int,
+        format: Int,
+    ): Boolean
+    external fun waterui_drop_renderer_view(handle: Long)
 }
 
 // --- Native struct mirrors (data-only skeletons) ---
+
+const val RENDERER_BUFFER_FORMAT_RGBA8888: Int = 0
 
 data class ContainerStruct(
     val layoutPtr: Long,
