@@ -21,6 +21,8 @@ pub struct Backends {
     pub swift: Option<Swift>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub android: Option<Android>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<Web>,
 }
 
 impl Config {
@@ -72,6 +74,16 @@ pub struct Android {
 
 fn default_android_project_path() -> String {
     "android".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Web {
+    #[serde(default = "default_web_project_path")]
+    pub project_path: String,
+}
+
+fn default_web_project_path() -> String {
+    "web".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
