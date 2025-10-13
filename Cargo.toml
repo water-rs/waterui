@@ -30,7 +30,7 @@ categories = ["gui"]
 [workspace.package]
 edition = "2024"
 authors = ["Lexo Liu"]
-rust-version = "1.85"
+rust-version = "1.87"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/water-rs/waterui"
