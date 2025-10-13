@@ -151,7 +151,7 @@ Before we start building with WaterUI, let's set up a proper development environ
 
 ## Installing Rust
 
-WaterUI requires Rust 1.85 or later. The easiest way to install Rust is through rustup:
+WaterUI requires Rust 1.87 or later. The easiest way to install Rust is through rustup:
 
 ### On macOS, Linux, or WSL
 
@@ -171,7 +171,7 @@ rustc --version
 cargo --version
 ```
 
-You should see version 1.85 or later.
+You should see version 1.87 or later.
 
 ## Editor Setup
 
