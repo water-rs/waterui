@@ -209,7 +209,7 @@ pub trait IntoRust {
     unsafe fn into_rust(self) -> Self::Rust;
 }
 
-ffi_safe!(u8, i32, f32, f64, bool);
+ffi_safe!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
 ffi_type!(WuiEnv, waterui::Environment, waterui_drop_env);
 
