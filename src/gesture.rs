@@ -219,13 +219,13 @@ pub struct Then {
 impl Then {
     /// Returns a reference to the first gesture in the sequence.
     #[must_use]
-    pub fn first(&self) -> &Gesture {
+    pub const fn first(&self) -> &Gesture {
         &self.first
     }
 
     /// Returns a reference to the gesture that should run after the first one completes.
     #[must_use]
-    pub fn then(&self) -> &Gesture {
+    pub const fn then(&self) -> &Gesture {
         &self.then
     }
 }
