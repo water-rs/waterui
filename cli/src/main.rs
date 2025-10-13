@@ -4,6 +4,7 @@ mod config;
 mod create;
 mod devices;
 mod doctor;
+mod package;
 mod run;
 mod util;
 
@@ -37,6 +38,8 @@ enum Commands {
     Clean(clean::CleanArgs),
     /// List available simulators and connected devices
     Devices(devices::DevicesArgs),
+    /// Build distributable artifacts without launching them
+    Package(package::PackageArgs),
 }
 
 fn main() {
@@ -103,5 +106,6 @@ fn run_cli() -> Result<()> {
         Commands::Doctor(args) => doctor::run(args),
         Commands::Clean(args) => clean::run(args),
         Commands::Devices(args) => devices::run(args),
+        Commands::Package(args) => package::run(args),
     }
 }

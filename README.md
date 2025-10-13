@@ -47,6 +47,56 @@ pub fn counter() -> impl View {
 }
 ```
 
+## 📱 Android CLI Workflow
+
+WaterUI ships a CLI that can scaffold and package Android applications without
+opening Android Studio. To try it end-to-end:
+
+1. **Install the Android command-line tools** (example for Linux):
+
+   ```bash
+   mkdir -p "$HOME/android-sdk" && cd "$HOME/android-sdk"
+   curl -O https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+   unzip commandlinetools-linux-11076708_latest.zip
+   mkdir -p cmdline-tools/latest
+   mv cmdline-tools/* cmdline-tools/latest/
+   ```
+
+2. **Install the required SDK components**:
+
+   ```bash
+   cmdline-tools/latest/bin/sdkmanager \
+     --sdk_root="$HOME/android-sdk" \
+     "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+   yes | cmdline-tools/latest/bin/sdkmanager --sdk_root="$HOME/android-sdk" --licenses
+   ```
+
+3. **Expose the SDK to the CLI**:
+
+   ```bash
+   export ANDROID_SDK_ROOT="$HOME/android-sdk"
+   export ANDROID_HOME="$HOME/android-sdk"
+   ```
+
+4. **Create and package a project**:
+
+   ```bash
+   cargo run -p waterui-cli -- create \
+     --name "Android Demo" \
+     --directory android-demo \
+     --bundle-identifier com.example.androiddemo \
+     --backend android \
+     --yes --dev
+
+   TERM=dumb cargo run -p waterui-cli -- package \
+     --platform android \
+     --project android-demo \
+     --skip-native
+   ```
+
+Gradle will output a ready-to-install APK at
+`android-demo/android/app/build/outputs/apk/debug/app-debug.apk`.
+
 ## 📝 Rich Text & Markdown
 
 `WaterUI` includes native support for styled text and Markdown rendering. Use

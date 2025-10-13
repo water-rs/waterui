@@ -171,10 +171,11 @@ impl StyledStr {
                         }
                         pending_block_break = false;
                         if let CodeBlockKind::Fenced(info) = kind
-                            && !info.is_empty() {
-                                builder.push_text(info.as_ref());
-                                builder.push_text(":\n");
-                            }
+                            && !info.is_empty()
+                        {
+                            builder.push_text(info.as_ref());
+                            builder.push_text(":\n");
+                        }
                     }
                     Tag::List(_) | Tag::Item => {
                         if pending_block_break || !builder.is_empty() {

@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use crates_index::Index;
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use semver::Version;
@@ -49,6 +49,30 @@ pub struct CreateArgs {
     /// Accept defaults without confirmation
     #[arg(short, long)]
     pub yes: bool,
+
+    /// Backends to include (android, web, swiftui). Can be provided multiple times or as a comma-separated list.
+    #[arg(long = "backend", value_enum, value_delimiter = ',', num_args = 1..)]
+    pub backends: Vec<BackendChoice>,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum BackendChoice {
+    #[clap(name = "web")]
+    Web,
+    #[clap(name = "swiftui")]
+    Swiftui,
+    #[clap(name = "android")]
+    Android,
+}
+
+impl BackendChoice {
+    fn label(&self) -> &'static str {
+        match self {
+            BackendChoice::Web => "Web",
+            BackendChoice::Swiftui => "SwiftUI",
+            BackendChoice::Android => "Android",
+        }
+    }
 }
 
 pub fn run(args: CreateArgs) -> Result<()> {
@@ -115,28 +139,44 @@ pub fn run(args: CreateArgs) -> Result<()> {
         }
     };
 
-    let backends = &["Web", "SwiftUI", "Android"];
-    let defaults = vec![true; backends.len()];
-    let selected_indices = if args.yes {
-        (0..backends.len()).collect()
+    let selected_backends: Vec<BackendChoice> = if args.backends.is_empty() {
+        let available_backends = [
+            BackendChoice::Web,
+            BackendChoice::Swiftui,
+            BackendChoice::Android,
+        ];
+        let defaults = vec![true; available_backends.len()];
+        let labels: Vec<String> = available_backends
+            .iter()
+            .map(BackendChoice::label)
+            .map(str::to_string)
+            .collect();
+        let selected_indices = if args.yes {
+            (0..available_backends.len()).collect()
+        } else {
+            MultiSelect::with_theme(&theme)
+                .with_prompt("Choose project backends (space to select, enter to confirm)")
+                .items(&labels)
+                .defaults(&defaults)
+                .interact()?
+        };
+
+        if selected_indices.is_empty() {
+            warn!("No backends selected, aborting.");
+            return Ok(());
+        }
+
+        selected_indices
+            .iter()
+            .map(|&index| available_backends[index])
+            .collect()
     } else {
-        MultiSelect::with_theme(&theme)
-            .with_prompt("Choose project backends (space to select, enter to confirm)")
-            .items(backends)
-            .defaults(&defaults)
-            .interact()?
+        args.backends.clone()
     };
-
-    if selected_indices.is_empty() {
-        warn!("No backends selected, aborting.");
-        return Ok(());
-    }
-
-    let selected_backends: Vec<&str> = selected_indices.iter().map(|&i| backends[i]).collect();
 
     let mut development_team = args.team_id.clone().unwrap_or_default();
 
-    if selected_backends.contains(&"SwiftUI") && development_team.is_empty() {
+    if selected_backends.contains(&BackendChoice::Swiftui) && development_team.is_empty() {
         if args.yes {
             development_team = fetch_team_ids()?
                 .into_iter()
@@ -151,11 +191,16 @@ pub fn run(args: CreateArgs) -> Result<()> {
     info!("Application: {}", display_name);
     info!("Author: {}", author);
     info!("Crate name: {}", crate_name);
-    if selected_backends.contains(&"SwiftUI") {
+    if selected_backends.contains(&BackendChoice::Swiftui) {
         info!("Xcode scheme: {}", app_name);
     }
     info!("Bundle ID: {}", bundle_identifier);
-    info!("Backends: {}", selected_backends.join(", "));
+    let backend_list = selected_backends
+        .iter()
+        .map(BackendChoice::label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!("Backends: {}", backend_list);
     info!("Location: {}", project_dir.display());
 
     if !args.yes {
@@ -181,14 +226,14 @@ pub fn run(args: CreateArgs) -> Result<()> {
     let mut web_enabled = false;
     for backend in selected_backends {
         match backend {
-            "Web" => {
+            BackendChoice::Web => {
                 web::create_web_assets(&project_dir, &display_name)?;
                 config.backends.web = Some(Web {
                     project_path: "web".to_string(),
                 });
                 web_enabled = true;
             }
-            "Android" => {
+            BackendChoice::Android => {
                 android::create_android_project(
                     &project_dir,
                     &app_name,
@@ -199,7 +244,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     project_path: "android".to_string(),
                 });
             }
-            "SwiftUI" => {
+            BackendChoice::Swiftui => {
                 swift::create_xcode_project(
                     &project_dir,
                     &app_name,
@@ -215,7 +260,6 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     project_file: Some(format!("{}.xcodeproj", app_name)),
                 });
             }
-            _ => unreachable!(),
         }
     }
 
