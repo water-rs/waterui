@@ -8,7 +8,9 @@
 use alloc::boxed::Box;
 use nami::collection::Collection;
 
+use crate::component::Native;
 use crate::views::{AnyViews, ForEach, Views};
+use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View, id::Identifable};
 
 /// Configuration for a list component.
@@ -20,16 +22,13 @@ pub struct ListConfig {
 
 /// A component that displays items in a list format.
 #[derive(Debug)]
-pub struct List<V: Views<View = ListItem>>(V);
+pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>>(V);
 
 impl<V> List<V>
 where
     V: Views<View = ListItem>,
 {
     /// Creates a new list with the specified contents.
-    ///
-    /// # Arguments
-    /// * `contents` - A collection of items to display in the list.
     pub const fn new(contents: V) -> Self {
         Self(contents)
     }
@@ -42,12 +41,49 @@ where
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a new list by iterating over a collection and generating items.
-    ///
-    /// # Arguments
-    /// * `data` - The collection to iterate over
-    /// * `generator` - A function that converts each collection item into a `ListItem`
     pub fn for_each(data: C, generator: F) -> Self {
         Self(ForEach::new(data, generator))
+    }
+}
+
+impl<V> ConfigurableView for List<V>
+where
+    V: Views<View = ListItem> + 'static,
+{
+    type Config = ListConfig;
+
+    fn config(self) -> Self::Config {
+        ListConfig {
+            contents: AnyViews::new(self.0),
+        }
+    }
+}
+
+impl ViewConfiguration for ListConfig {
+    type View = List<AnyViews<ListItem>>;
+
+    fn render(self) -> Self::View {
+        List::new(self.contents)
+    }
+}
+
+impl From<ListConfig> for List<AnyViews<ListItem>> {
+    fn from(value: ListConfig) -> Self {
+        value.render()
+    }
+}
+
+impl<V> View for List<V>
+where
+    V: Views<View = ListItem> + 'static,
+{
+    fn body(self, env: &Environment) -> impl View {
+        let config = ConfigurableView::config(self);
+        if let Some(hook) = env.get::<Hook<ListConfig>>() {
+            AnyView::new(hook.apply(env, config))
+        } else {
+            AnyView::new(Native(config))
+        }
     }
 }
 
