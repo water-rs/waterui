@@ -46,4 +46,4 @@ pub extern "C" fn waterui_empty_id() -> WuiTypeId {
 
 pub mod progress;
 
-pub mod wgpu_view;
+pub mod graphics;
