@@ -16,9 +16,6 @@ members = [
     "cli"]
 resolver = "2"
 
-[patch.crates-io]
-native-executor = { path = "vendor/native-executor" }
-
 [package]
 name = "waterui"
 version = "0.1.0"
