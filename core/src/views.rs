@@ -4,15 +4,16 @@
 //! and efficient manner. It includes utilities for type erasure, transformation, and identity
 //! tracking of view collections.
 
-use crate::View;
+use crate::id::Id as RawId;
+use crate::{AnyView, View};
 use alloc::fmt::Debug;
 use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
 use core::any::type_name;
+use core::num::NonZeroI32;
 use core::ops::{Bound, RangeBounds};
 use core::{
     cell::{Cell, RefCell},
     hash::Hash,
-    num::NonZeroUsize,
 };
 use nami::collection::Collection;
 use nami::watcher::{BoxWatcher, BoxWatcherGuard, Context, WatcherGuard};
@@ -24,7 +25,7 @@ use crate::id::{Identifable, SelfId};
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
 /// Tip: the `get` method of `Collection` should return a unique identifier for each item.
-pub trait Views {
+pub trait Views: Clone {
     /// The type of unique identifier for items in the collection.
     /// Must implement `Hash` and `Ord` to ensure uniqueness and ordering.
     type Id: 'static + Hash + Ord;
@@ -72,37 +73,40 @@ trait AnyViewsImpl {
     type View;
 
     fn get_view(&self, index: usize) -> Option<Self::View>;
-    fn get_id(&self, index: usize) -> Option<NonZeroUsize>;
+    fn get_id(&self, index: usize) -> Option<RawId>;
     fn len(&self) -> usize;
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: BoxWatcher<Vec<NonZeroUsize>>,
+        watcher: BoxWatcher<Vec<RawId>>,
     ) -> BoxWatcherGuard;
+
+    fn cloned(&self) -> Box<dyn AnyViewsImpl<View = Self::View>>;
 }
 
 #[derive(Debug)]
 struct IdGenerator<Id> {
-    map: RefCell<BTreeMap<Id, NonZeroUsize>>,
-    counter: Cell<NonZeroUsize>,
+    map: RefCell<BTreeMap<Id, i32>>,
+    counter: Cell<i32>,
 }
 
 impl<Id: Hash + Ord> IdGenerator<Id> {
     pub fn new() -> Self {
         Self {
             map: RefCell::default(),
-            counter: Cell::new(NonZeroUsize::MIN),
+            counter: Cell::new(i32::MIN),
         }
     }
-    pub fn to_id(&self, value: Id) -> NonZeroUsize {
+    pub fn to_id(&self, value: Id) -> RawId {
         let mut this = self.map.borrow_mut();
         if let Some(&id) = this.get(&value) {
-            return id;
+            return RawId::from(unsafe { NonZeroI32::new_unchecked(id) });
         }
         let id = self.counter.get();
-        self.counter.set(id.checked_add(1).expect("id counter should not overflow"));
+        self.counter
+            .set(id.checked_add(1).expect("id counter should not overflow"));
         this.insert(value, id);
-        id
+        RawId::from(unsafe { NonZeroI32::new_unchecked(id) })
     }
 }
 
@@ -116,7 +120,7 @@ where
 
 impl<V> AnyViewsImpl for IntoAnyViews<V>
 where
-    V: Views,
+    V: Views + 'static + Clone,
 {
     type View = V::View;
 
@@ -124,7 +128,7 @@ where
         self.contents.get_view(index)
     }
 
-    fn get_id(&self, index: usize) -> Option<NonZeroUsize> {
+    fn get_id(&self, index: usize) -> Option<RawId> {
         self.contents.get_id(index).map(|item| self.id.to_id(item))
     }
 
@@ -135,7 +139,7 @@ where
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: BoxWatcher<Vec<NonZeroUsize>>,
+        watcher: BoxWatcher<Vec<RawId>>,
     ) -> BoxWatcherGuard {
         let id = self.id.clone();
         Box::new(self.contents.watch(range, move |ctx| {
@@ -143,6 +147,13 @@ where
             let values: Vec<_> = ctx.value.into_iter().map(|data| id.to_id(data)).collect();
             watcher(Context::new(values, metadata));
         }))
+    }
+
+    fn cloned(&self) -> Box<dyn AnyViewsImpl<View = Self::View>> {
+        Box::new(Self {
+            contents: self.contents.clone(),
+            id: self.id.clone(),
+        })
     }
 }
 impl<V> AnyViews<V>
@@ -170,11 +181,17 @@ where
     }
 }
 
+impl<V> Clone for AnyViews<V> {
+    fn clone(&self) -> Self {
+        Self(self.0.cloned())
+    }
+}
+
 impl<V> Views for AnyViews<V>
 where
     V: View,
 {
-    type Id = SelfId<NonZeroUsize>;
+    type Id = SelfId<RawId>;
     type Guard = BoxWatcherGuard;
     type View = V;
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -517,7 +534,7 @@ where
 impl<C, F, V> Views for Map<C, F>
 where
     C: Views,
-    F: Fn(C::View) -> V,
+    F: Clone + Fn(C::View) -> V,
     V: View,
 {
     type Id = C::Id;
@@ -564,6 +581,13 @@ pub trait ViewsExt: Views {
         V: View,
     {
         Map::new(self, f)
+    }
+
+    fn erase(self) -> AnyViews<AnyView>
+    where
+        Self: 'static,
+    {
+        AnyViews::new(self.map(AnyView::new))
     }
 }
 
