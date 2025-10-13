@@ -277,9 +277,8 @@ private struct GestureSequenceContainer<Content: View>: View {
 }
 
 // MARK: - Size Reader
-
 private struct SizePreferenceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
+    static let defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         let next = nextValue()
         if next != .zero {
@@ -439,7 +438,7 @@ final class GestureAction {
         waterui_call_gesture_action(inner, env.inner, event)
     }
 
-    deinit {
+    @MainActor deinit {
         if let inner {
             waterui_drop_action(inner)
         }
@@ -516,7 +515,10 @@ private enum GestureDescriptor {
             case (nil, nil):
                 self = .tap(TapGestureDescriptor(count: 1))
             }
+            default:
+                fatalError("Unknown gesture kind: \(gesture.kind.rawValue)")
         }
+       
     }
 
     func flattened() -> [BaseGestureDescriptor] {
