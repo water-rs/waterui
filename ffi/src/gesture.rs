@@ -133,6 +133,7 @@ fn gesture_to_ffi_struct(gesture: Gesture) -> WuiGesture {
             ffi.then = sequence.then().clone().into_ffi();
             ffi
         }
+        _ => unreachable!("Unsupported gesture type"),
     }
 }
 
@@ -254,7 +255,7 @@ pub enum WuiGestureEventKind {
 
 /// FFI-safe gesture event payload sent from the backend.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug)]
 pub struct WuiGestureEvent {
     pub kind: WuiGestureEventKind,
     pub phase: WuiGesturePhase,
