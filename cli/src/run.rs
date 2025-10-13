@@ -1,5 +1,8 @@
 use std::{
-    env,
+    collections::HashSet,
+    env, fs,
+    io::{ErrorKind, Read, Write},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -11,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 use dialoguer::{Select, theme::ColorfulTheme};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -30,7 +33,7 @@ use crate::{
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Target platform to run
-    #[arg(long, default_value = "macos", value_enum)]
+    #[arg(long, default_value = "web", value_enum)]
     pub platform: Platform,
 
     /// Project directory (defaults to current working directory)
@@ -52,6 +55,7 @@ pub struct RunArgs {
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum Platform {
+    Web,
     #[clap(alias = "mac")]
     Macos,
     #[clap(alias = "iphone")]
@@ -76,18 +80,29 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     info!("Running WaterUI app '{}'", config.package.display_name);
 
+    if args.platform == Platform::Web {
+        run_web(&project_dir, &config, args.release, args.no_watch)?;
+        return Ok(());
+    }
+
     run_cargo_build(&project_dir, &config.package.name, args.release)?;
+
+    let mut watch_paths = vec![project_dir.join("src")];
+    for path in &config.hot_reload.watch {
+        watch_paths.push(project_dir.join(path));
+    }
+
+    let build_callback = {
+        let project_dir = project_dir.clone();
+        let package = config.package.name.clone();
+        Arc::new(move || run_cargo_build(&project_dir, &package, args.release))
+    };
 
     let watcher = if args.no_watch {
         info!("CLI hot reload watcher disabled (--no-watch)");
         None
     } else {
-        Some(RebuildWatcher::new(
-            &project_dir,
-            &config.package.name,
-            args.release,
-            &config.hot_reload.watch,
-        )?)
+        Some(RebuildWatcher::new(watch_paths, build_callback)?)
     };
 
     match args.platform {
@@ -147,6 +162,7 @@ pub fn run(args: RunArgs) -> Result<()> {
                 );
             }
         }
+        Platform::Web => unreachable!(),
     }
 
     drop(watcher);
@@ -170,6 +186,302 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
         bail!("cargo build failed");
     }
     Ok(())
+}
+
+fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
+    let web_config = config.backends.web.as_ref().ok_or_else(|| {
+        anyhow!(
+            "Web backend not configured for this project. Add it to waterui.toml or recreate the project with the web backend."
+        )
+    })?;
+
+    let wasm_pack = which("wasm-pack").with_context(|| {
+        "`wasm-pack` not found on PATH. Install it from https://rustwasm.github.io/wasm-pack/ and try again."
+    })?;
+
+    let web_dir = project_dir.join(&web_config.project_path);
+    if !web_dir.exists() {
+        bail!(
+            "Web assets directory '{}' does not exist. Ensure the project was created with the web backend.",
+            web_dir.display()
+        );
+    }
+
+    info!("Compiling WebAssembly bundle...");
+    build_web_app(
+        project_dir,
+        &config.package.name,
+        &web_dir,
+        release,
+        &wasm_pack,
+    )?;
+
+    let mut watch_paths = vec![project_dir.join("src"), web_dir.clone()];
+    for path in &config.hot_reload.watch {
+        watch_paths.push(project_dir.join(path));
+    }
+
+    let project_dir_buf = project_dir.to_path_buf();
+    let package_name = config.package.name.clone();
+    let web_dir_buf = web_dir.clone();
+    let wasm_pack_path = wasm_pack.clone();
+    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+        build_web_app(
+            project_dir_buf.as_path(),
+            &package_name,
+            web_dir_buf.as_path(),
+            release,
+            wasm_pack_path.as_path(),
+        )
+    });
+
+    let watcher = if no_watch {
+        info!("CLI hot reload watcher disabled (--no-watch)");
+        None
+    } else {
+        Some(RebuildWatcher::new(watch_paths, build_callback.clone())?)
+    };
+
+    let server = WebDevServer::start(web_dir.clone())?;
+    let address = server.address();
+    let url = format!("http://{address}/");
+    info!("Serving web app at {url}");
+    match webbrowser::open(&url) {
+        Ok(_) => info!("Opened default browser"),
+        Err(err) => warn!("Failed to open browser automatically: {err}"),
+    }
+    info!("Press Ctrl+C to stop the server.");
+
+    wait_for_interrupt()?;
+
+    drop(watcher);
+    drop(server);
+
+    Ok(())
+}
+
+fn build_web_app(
+    project_dir: &Path,
+    package: &str,
+    web_dir: &Path,
+    release: bool,
+    wasm_pack: &Path,
+) -> Result<()> {
+    let mut cmd = Command::new(wasm_pack);
+    cmd.arg("build")
+        .arg("--target")
+        .arg("web")
+        .arg("--out-dir")
+        .arg(web_dir.join("pkg"))
+        .arg("--out-name")
+        .arg("app");
+    if release {
+        cmd.arg("--release");
+    } else {
+        cmd.arg("--dev");
+    }
+    cmd.current_dir(project_dir);
+
+    debug!("Running command: {:?}", cmd);
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to run wasm-pack build for {package}"))?;
+    if !status.success() {
+        bail!("wasm-pack build failed with status {status}");
+    }
+
+    Ok(())
+}
+
+struct WebDevServer {
+    _listener: Arc<TcpListener>,
+    shutdown: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    address: SocketAddr,
+}
+
+impl WebDevServer {
+    fn start(root: PathBuf) -> Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .context("failed to bind local development server")?;
+        listener
+            .set_nonblocking(true)
+            .context("failed to configure web server socket")?;
+        let address = listener
+            .local_addr()
+            .context("failed to read web server socket address")?;
+
+        let listener = Arc::new(listener);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_listener = Arc::clone(&listener);
+        let thread_shutdown = Arc::clone(&shutdown);
+        let root_dir = Arc::new(root);
+        let thread_root = Arc::clone(&root_dir);
+
+        let handle = thread::spawn(move || {
+            while !thread_shutdown.load(Ordering::Relaxed) {
+                match thread_listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if let Err(err) =
+                            handle_http_connection(&mut stream, thread_root.as_ref().as_path())
+                        {
+                            warn!("Web server connection error: {err}");
+                        }
+                    }
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(err) => {
+                        warn!("Web server accept error: {err}");
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            _listener: listener,
+            shutdown,
+            thread: Some(handle),
+            address,
+        })
+    }
+
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
+impl Drop for WebDevServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        // Trigger the accept loop to notice the shutdown flag.
+        if let Ok(stream) = TcpStream::connect(self.address) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn handle_http_connection(stream: &mut TcpStream, root: &Path) -> std::io::Result<()> {
+    let mut buffer = [0u8; 8192];
+    let mut request = Vec::new();
+
+    loop {
+        let read_bytes = stream.read(&mut buffer)?;
+        if read_bytes == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read_bytes]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if request.len() > 16 * 1024 {
+            break;
+        }
+    }
+
+    let request_str = String::from_utf8_lossy(&request);
+    let mut lines = request_str.lines();
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path_part = parts.next().unwrap_or("/");
+    let path_only = path_part.split('?').next().unwrap_or("/");
+
+    let (status_line, body, content_type, send_body) = match method {
+        "GET" | "HEAD" => {
+            if let Some(mut file_path) = resolve_requested_path(root, path_only) {
+                if file_path.is_dir() {
+                    file_path.push("index.html");
+                }
+                match fs::read(&file_path) {
+                    Ok(bytes) => (
+                        "200 OK",
+                        bytes,
+                        content_type_for_path(&file_path),
+                        method == "GET",
+                    ),
+                    Err(_) => (
+                        "404 Not Found",
+                        format!("File not found: {}", path_only).into_bytes(),
+                        "text/plain; charset=utf-8",
+                        method == "GET",
+                    ),
+                }
+            } else {
+                (
+                    "404 Not Found",
+                    format!("Not found: {}", path_only).into_bytes(),
+                    "text/plain; charset=utf-8",
+                    method == "GET",
+                )
+            }
+        }
+        _ => (
+            "405 Method Not Allowed",
+            b"Method Not Allowed".to_vec(),
+            "text/plain; charset=utf-8",
+            false,
+        ),
+    };
+
+    let content_length = body.len();
+    write!(stream, "HTTP/1.1 {status_line}\r\n")?;
+    write!(stream, "Content-Length: {content_length}\r\n")?;
+    write!(stream, "Content-Type: {content_type}\r\n")?;
+    write!(
+        stream,
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+    )?;
+    write!(stream, "Pragma: no-cache\r\n")?;
+    write!(stream, "Expires: 0\r\n")?;
+    write!(stream, "Connection: close\r\n\r\n")?;
+    if send_body {
+        stream.write_all(&body)?;
+    }
+    stream.flush()?;
+
+    Ok(())
+}
+
+fn resolve_requested_path(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let trimmed = request_path.trim_start_matches('/');
+    let mut parts: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty()).collect();
+
+    if request_path.ends_with('/') || parts.is_empty() {
+        parts.push("index.html");
+    }
+
+    let mut path = PathBuf::from(root);
+    for part in parts {
+        if part == ".."
+            || part.contains("..")
+            || part.contains('\r')
+            || part.contains('\n')
+            || part.contains('\\')
+        {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "wasm" => "application/wasm",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => "application/octet-stream",
+    }
 }
 
 fn apply_build_speedups(cmd: &mut Command) {
@@ -664,7 +976,7 @@ fn apple_simulator_platform_id(platform: Platform) -> &'static str {
         Platform::Watchos => "com.apple.platform.watchsimulator",
         Platform::Tvos => "com.apple.platform.appletvsimulator",
         Platform::Visionos => "com.apple.platform.visionossimulator",
-        Platform::Macos | Platform::Android => "",
+        Platform::Macos | Platform::Android | Platform::Web => "",
     }
 }
 
@@ -708,10 +1020,8 @@ struct RebuildWatcher {
 
 impl RebuildWatcher {
     fn new(
-        project_dir: &Path,
-        package: &str,
-        release: bool,
-        extra_paths: &[String],
+        watch_paths: Vec<PathBuf>,
+        build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync>,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
         let mut watcher: RecommendedWatcher =
@@ -726,18 +1036,21 @@ impl RebuildWatcher {
                 }
             })?;
 
-        watcher.watch(&project_dir.join("src"), RecursiveMode::Recursive)?;
-        for path in extra_paths {
-            let watch_path = project_dir.join(path);
-            if watch_path.exists() {
-                watcher.watch(&watch_path, RecursiveMode::Recursive)?;
+        let mut seen = HashSet::new();
+        for path in watch_paths {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            if path.exists() {
+                watcher.watch(&path, RecursiveMode::Recursive)?;
+            } else {
+                debug!("Skipping hot reload path (not found): {}", path.display());
             }
         }
 
-        let project_dir = project_dir.to_path_buf();
-        let package = package.to_string();
         let signal = Arc::new(AtomicBool::new(false));
         let shutdown_flag = signal.clone();
+        let build = build_callback.clone();
 
         let handle = thread::spawn(move || {
             info!("Hot reload watcher started (CLI)");
@@ -748,8 +1061,8 @@ impl RebuildWatcher {
                         if last_run.elapsed() < Duration::from_millis(250) {
                             continue;
                         }
-                        if let Err(err) = run_cargo_build(&project_dir, &package, release) {
-                            warn!("Rebuild failed: {}", err);
+                        if let Err(err) = build() {
+                            warn!("Rebuild failed: {err}");
                         }
                         last_run = Instant::now();
                     }
