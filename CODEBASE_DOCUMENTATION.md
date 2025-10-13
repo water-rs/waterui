@@ -436,9 +436,9 @@ resolver = "2"
 
 #### Workspace-wide Settings:
 
-- **Edition**: 2024 (requires Rust 1.85+)
+- **Edition**: 2024 (requires Rust 1.87+)
 - **License**: MIT
-- **Rust Version**: Minimum 1.85
+- **Rust Version**: Minimum 1.87
 
 ### Core Dependencies
 
@@ -553,7 +553,7 @@ cargo +nightly miri test -p waterui-str
 #### Rust Edition and Version:
 
 - **Edition**: 2024
-- **MSRV**: 1.85 (minimum supported Rust version)
+- **MSRV**: 1.87 (minimum supported Rust version)
 - **Features**: Leverages latest stable Rust features
 
 #### Naming Conventions:
