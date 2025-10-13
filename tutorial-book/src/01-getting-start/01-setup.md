@@ -4,7 +4,7 @@ Before we dive into building applications with WaterUI, let's set up a proper de
 
 ## Installing Rust
 
-WaterUI requires Rust 1.85 or later with the 2024 edition. The easiest way to install Rust is through rustup.
+WaterUI requires Rust 1.87 or later with the 2024 edition. The easiest way to install Rust is through rustup.
 
 ### On macOS, Linux, or WSL
 
@@ -31,11 +31,11 @@ cargo --version
 
 You should see output like:
 ```text
-rustc 1.85.0 (a28077b28 2024-02-28)
-cargo 1.85.0 (1e91b550c 2024-02-27)
+rustc 1.87.0 (a28077b28 2024-02-28)
+cargo 1.87.0 (1e91b550c 2024-02-27)
 ```
 
-> **Note**: WaterUI requires Rust 1.85 or later. If you have an older version, update with `rustup update`.
+> **Note**: WaterUI requires Rust 1.87 or later. If you have an older version, update with `rustup update`.
 
 ## Editor Setup
 
@@ -146,7 +146,7 @@ If everything is set up correctly, you should see a window with "Hello, WaterUI!
 
 ### Rust Version Too Old
 
-**Error**: `error: package requires Rust version 1.85`
+**Error**: `error: package requires Rust version 1.87`
 
 **Solution**: Update Rust:
 ```bash,ignore
