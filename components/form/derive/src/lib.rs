@@ -57,7 +57,7 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
 
     // Collect field information
     let field_views = fields.iter().map(|field| {
-        let field_name = field.ident.as_ref().unwrap();
+        let field_name = field.ident.as_ref().expect("field should have an identifier");
         let field_type = &field.ty;
 
         // Convert field name from snake_case to "Title Case" for label
