@@ -49,6 +49,7 @@ struct Render {
             WuiTable.self,
             WuiToggle.self,
             WuiSpacer.self,
+            WuiRendererView.self,
             //WuiPicker.self,
             //WaterUI.BackgroundColor.self,
             //WaterUI.Rectangle.self,

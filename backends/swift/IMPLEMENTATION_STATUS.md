@@ -66,7 +66,7 @@ This document tracks how the Swift backend maps onto the APIs exported by the co
 | --- | --- | --- |
 | Static colour view (`waterui_color`) | ⚠️ partial | `Color.swift` resolves computed colours but lacks shared colour binding support. |
 | Image / video / live photo | ❌ missing | No Swift implementations yet. |
-| Canvas / graphics contexts | ❌ missing | Requires mapping of `components/graphics` crate. |
+| Canvas / graphics contexts | ⚠️ partial | `Graphics/RendererView.swift` renders CPU surfaces; GPU path pending. |
 
 ## Miscellaneous
 
