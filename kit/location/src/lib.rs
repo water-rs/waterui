@@ -401,7 +401,7 @@ impl LocationManager {
     }
 
     /// Access the underlying backend.
-    #[must_use] 
+    #[must_use]
     pub fn backend(&self) -> &Arc<dyn LocationBackend> {
         &self.backend
     }
