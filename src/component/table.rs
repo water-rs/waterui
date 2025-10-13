@@ -12,9 +12,8 @@
 //! let table: table::Table = std::iter::empty::<table::TableColumn>().collect();
 //! let _ = table;
 //! ```
-use alloc::rc::Rc;
 use alloc::vec::Vec;
-use nami::impl_constant;
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_text::Text;
 
@@ -28,53 +27,53 @@ use crate::{
 #[derive(Debug)]
 pub struct TableConfig {
     /// Columns that make up the table.
-    pub columns: AnyViews<TableColumn>,
+    pub columns: Computed<Vec<TableColumn>>,
 }
 
 /// A tabular layout component composed of reactive text columns.
 #[derive(Debug)]
-pub struct Table<C: Views<View = TableColumn> = AnyViews<TableColumn>>(C);
+pub struct Table<Col> {
+    columns: Col,
+}
 
-impl<C> Table<C>
+impl<Col> Table<Col>
 where
-    C: Views<View = TableColumn>,
+    Col: Signal<Output = Vec<TableColumn>>,
 {
     /// Creates a new table with the specified columns.
-    pub const fn new(columns: C) -> Self {
-        Self(columns)
+    ///
+    /// # Arguments
+    ///
+    /// * `columns` - A collection of `TableColumn` views to be displayed in the table.
+    pub const fn new(columns: Col) -> Self {
+        Self { columns }
     }
 }
 
-impl<C> ConfigurableView for Table<C>
+impl<Col> ConfigurableView for Table<Col>
 where
-    C: Views<View = TableColumn> + 'static,
+    Col: Signal<Output = Vec<TableColumn>> + 'static,
 {
     type Config = TableConfig;
 
     fn config(self) -> Self::Config {
-        TableConfig {
-            columns: AnyViews::new(self.0),
+        Self::Config {
+            columns: self.columns.computed(),
         }
     }
 }
 
 impl ViewConfiguration for TableConfig {
-    type View = Table<AnyViews<TableColumn>>;
+    type View = Table<Computed<Vec<TableColumn>>>;
 
     fn render(self) -> Self::View {
-        Table::new(self.columns)
+        Table::new(Computed::new(self.columns))
     }
 }
 
-impl From<TableConfig> for Table<AnyViews<TableColumn>> {
-    fn from(value: TableConfig) -> Self {
-        value.render()
-    }
-}
-
-impl<C> View for Table<C>
+impl<Col> View for Table<Col>
 where
-    C: Views<View = TableColumn> + 'static,
+    Col: Signal<Output = Vec<TableColumn>> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         let config = ConfigurableView::config(self);
@@ -83,13 +82,6 @@ where
         } else {
             AnyView::new(Native(config))
         }
-    }
-}
-
-impl FromIterator<TableColumn> for Table {
-    fn from_iter<T: IntoIterator<Item = TableColumn>>(iter: T) -> Self {
-        let columns = AnyViews::new(iter.into_iter().collect::<Vec<_>>());
-        TableConfig { columns }.into()
     }
 }
 
@@ -106,7 +98,7 @@ impl_constant!(TableColumn);
 #[derive(Clone)]
 pub struct TableColumn {
     /// The rows of content in this column.
-    rows: Rc<AnyViews<Text>>,
+    rows: AnyViews<Text>,
 }
 
 impl_debug!(TableColumn);
@@ -120,16 +112,15 @@ impl TableColumn {
     ///
     /// * `contents` - The text content to display in this column.
     pub fn new(contents: impl Views<View = Text> + 'static) -> Self {
-        let rows = AnyViews::new(contents);
         Self {
-            rows: Rc::new(rows),
+            rows: AnyViews::new(contents),
         }
     }
 
-    /// Consumes the column and returns the underlying row collection.
+    /// Returns the rows of content in this column.
     #[must_use]
-    pub fn into_rows(self) -> Rc<AnyViews<Text>> {
-        self.rows
+    pub fn rows(&self) -> AnyViews<Text> {
+        self.rows.clone()
     }
 }
 
@@ -144,11 +135,11 @@ where
 }
 
 /// Convenience constructor for building a `Table` from column data.
-pub const fn table<C>(columns: C) -> Table<C>
+pub fn table<C>(columns: C) -> Table<C::Signal>
 where
-    C: Views<View = TableColumn>,
+    C: IntoSignal<Vec<TableColumn>>,
 {
-    Table::new(columns)
+    Table::new(columns.into_signal())
 }
 
 /// Convenience constructor for creating a single table column.
