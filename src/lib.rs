@@ -69,3 +69,4 @@ pub use waterui_str::Str;
 //pub mod hot_reload; Hot reload is tough :cry
 
 mod entry;
+pub use entry::entry;
