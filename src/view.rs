@@ -9,6 +9,7 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use nami::{Binding, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -18,7 +19,6 @@ use waterui_core::{
     handler::HandlerFn,
 };
 
-use nami::{Binding, signal::IntoComputed};
 use waterui_layout::{
     frame::Frame,
     padding::{EdgeInsets, Padding},

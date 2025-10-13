@@ -47,6 +47,26 @@ pub fn counter() -> impl View {
 }
 ```
 
+## 📝 Rich Text & Markdown
+
+`WaterUI` includes native support for styled text and Markdown rendering. Use
+`StyledStr::from_markdown` for inline formatting, or render full documents with
+`RichText::from_markdown`:
+
+```rust
+use waterui::widget::RichText;
+
+pub fn release_notes() -> impl View {
+    RichText::from_markdown(
+        r"# What's new
+
+- **Rich text** rendering
+- Inline _emphasis_
+- Tables and images
+",)
+}
+```
+
 ## ✨ Features
 
 - **🎯 True Native Rendering** - Uses `SwiftUI` on Apple platforms (macOS, iOS, visionOS, watchOS, widgets!)

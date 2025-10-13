@@ -4,9 +4,10 @@ use crate::{
     font::{Font, FontWeight},
     text,
 };
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 use core::ops::AddAssign;
 use nami::impl_constant;
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use waterui_color::Color;
 use waterui_core::{Str, View};
 
@@ -133,10 +134,94 @@ impl StyledStr {
         Self { chunks: Vec::new() }
     }
 
-    /// Creates a styled string from markdown text. Not yet implemented.
+    /// Creates a styled string from a subset of Markdown.
+    ///
+    /// Supported features include headings, bold, and italic text. Other
+    /// Markdown constructs are preserved as plain text.
     #[must_use]
-    pub fn from_markdown(_markdown: &str) -> Self {
-        todo!("Markdown parsing is not implemented yet");
+    pub fn from_markdown(markdown: &str) -> Self {
+        let options =
+            Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH;
+        let parser = Parser::new_ext(markdown, options);
+
+        let mut builder = MarkdownInlineBuilder::new();
+        let mut pending_block_break = false;
+
+        for event in parser {
+            match event {
+                Event::Start(tag) => match tag {
+                    Tag::Heading(level, ..) => {
+                        if pending_block_break || !builder.is_empty() {
+                            builder.push_text("\n\n");
+                        }
+                        pending_block_break = false;
+                        builder.enter_with(move |_| heading_style(level));
+                    }
+                    Tag::Paragraph => {
+                        if pending_block_break || !builder.is_empty() {
+                            builder.push_text("\n\n");
+                        }
+                        pending_block_break = false;
+                    }
+                    Tag::Emphasis => builder.enter_emphasis(),
+                    Tag::Strong => builder.enter_strong(),
+                    Tag::CodeBlock(kind) => {
+                        if pending_block_break || !builder.is_empty() {
+                            builder.push_text("\n\n");
+                        }
+                        pending_block_break = false;
+                        if let CodeBlockKind::Fenced(info) = kind
+                            && !info.is_empty() {
+                                builder.push_text(info.as_ref());
+                                builder.push_text(":\n");
+                            }
+                    }
+                    Tag::List(_) | Tag::Item => {
+                        if pending_block_break || !builder.is_empty() {
+                            builder.push_text("\n");
+                        }
+                        pending_block_break = false;
+                    }
+                    _ => {}
+                },
+                Event::End(tag) => match tag {
+                    Tag::Heading(..) => {
+                        builder.exit();
+                        pending_block_break = true;
+                    }
+                    Tag::Paragraph | Tag::CodeBlock(_) | Tag::List(_) => {
+                        pending_block_break = true;
+                    }
+                    Tag::Emphasis | Tag::Strong => builder.exit(),
+                    _ => {}
+                },
+                Event::Text(text)
+                | Event::Code(text)
+                | Event::Html(text)
+                | Event::FootnoteReference(text) => {
+                    if pending_block_break && !builder.is_empty() {
+                        builder.push_text("\n\n");
+                        pending_block_break = false;
+                    }
+                    builder.push_text(text.as_ref());
+                }
+                Event::SoftBreak => builder.push_soft_break(),
+                Event::HardBreak => builder.push_hard_break(),
+                Event::Rule => {
+                    builder.push_text("\n\n——\n\n");
+                    pending_block_break = false;
+                }
+                Event::TaskListMarker(checked) => {
+                    if pending_block_break && !builder.is_empty() {
+                        builder.push_text("\n");
+                        pending_block_break = false;
+                    }
+                    builder.push_text(if checked { "[x] " } else { "[ ] " });
+                }
+            }
+        }
+
+        builder.finish()
     }
 
     /// Creates a plain attributed string with a single unstyled chunk.
@@ -265,6 +350,153 @@ impl StyledStr {
     }
 }
 
+/// Utility builder that incrementally constructs a [`StyledStr`] from Markdown
+/// events. The builder keeps track of the active style stack and merges
+/// contiguous text runs that share the same styling.
+#[derive(Debug, Clone)]
+pub struct MarkdownInlineBuilder {
+    base_style: Style,
+    stack: Vec<Style>,
+    buffer: String,
+    result: StyledStr,
+}
+
+impl Default for MarkdownInlineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MarkdownInlineBuilder {
+    /// Creates a new builder using the default style.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_base_style(Style::default())
+    }
+
+    /// Creates a new builder with a custom base style.
+    #[must_use]
+    pub fn with_base_style(style: Style) -> Self {
+        Self {
+            base_style: style.clone(),
+            stack: vec![style],
+            buffer: String::new(),
+            result: StyledStr::empty(),
+        }
+    }
+
+    fn current_style(&self) -> Style {
+        self.stack.last().cloned().unwrap_or_else(Style::default)
+    }
+
+    fn flush(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+
+        let text = take(&mut self.buffer);
+        self.result.push(text, self.current_style());
+    }
+
+    /// Appends raw text to the builder.
+    pub fn push_text(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.buffer.push_str(text);
+        }
+    }
+
+    /// Appends a soft break (space) to the builder.
+    pub fn push_soft_break(&mut self) {
+        self.buffer.push(' ');
+    }
+
+    /// Appends a hard break (newline) to the builder.
+    pub fn push_hard_break(&mut self) {
+        self.buffer.push('\n');
+    }
+
+    /// Starts a new styled span using the closure to derive the child style.
+    pub fn enter_with(&mut self, f: impl FnOnce(Style) -> Style) {
+        self.flush();
+        let style = self.current_style();
+        self.stack.push(f(style));
+    }
+
+    /// Exits the most recently entered styled span.
+    pub fn exit(&mut self) {
+        self.flush();
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        }
+    }
+
+    /// Enters an italic styled span.
+    pub fn enter_emphasis(&mut self) {
+        self.enter_with(Style::italic);
+    }
+
+    /// Enters a bold styled span.
+    pub fn enter_strong(&mut self) {
+        self.enter_with(Style::bold);
+    }
+
+    /// Returns `true` if the builder has emitted no content yet.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.result.is_empty() && self.buffer.is_empty()
+    }
+
+    /// Returns the base style used by the builder.
+    #[must_use]
+    pub fn base_style(&self) -> Style {
+        self.base_style.clone()
+    }
+
+    /// Takes the currently buffered content, resetting the builder to the base
+    /// style. If no content has been emitted, `None` is returned.
+    #[must_use]
+    pub fn take(&mut self) -> Option<StyledStr> {
+        self.flush();
+
+        if self.result.is_empty() {
+            return None;
+        }
+
+        let mut output = StyledStr::empty();
+        core::mem::swap(&mut output, &mut self.result);
+        self.stack.truncate(1);
+        if let Some(first) = self.stack.first_mut() {
+            *first = self.base_style.clone();
+        }
+
+        Some(output)
+    }
+
+    /// Consumes the builder and returns the final `StyledStr`.
+    #[must_use]
+    pub fn finish(mut self) -> StyledStr {
+        self.flush();
+        self.result
+    }
+}
+
+/// Returns the default style applied to Markdown headings.
+#[must_use]
+pub fn heading_style(level: HeadingLevel) -> Style {
+    use crate::font::{Body, Caption, Footnote, Headline, Subheadline, Title};
+
+    let font = match level {
+        HeadingLevel::H1 => Headline.into(),
+        HeadingLevel::H2 => Title.into(),
+        HeadingLevel::H3 => Subheadline.into(),
+        HeadingLevel::H4 => Body.into(),
+        HeadingLevel::H5 => Caption.into(),
+        HeadingLevel::H6 => Footnote.into(),
+    };
+
+    Style::default().font(font).bold()
+}
+
 impl View for StyledStr {
     fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
         text(self)
@@ -373,3 +605,27 @@ impl<T: Into<Str>> ToStyledStr for T {
 }
 
 impl_constant!(Style, StyledStr);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_emphasis_markdown() {
+        let styled = StyledStr::from_markdown("Hello *world*!");
+        let chunks = styled.into_chunks();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0.as_str(), "Hello ");
+        assert_eq!(chunks[1].0.as_str(), "world");
+        assert!(chunks[1].1.italic);
+        assert_eq!(chunks[2].0.as_str(), "!");
+    }
+
+    #[test]
+    fn parses_heading_markdown() {
+        let styled = StyledStr::from_markdown("# Title");
+        let chunks = styled.into_chunks();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].0.as_str(), "Title");
+    }
+}
