@@ -456,7 +456,7 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
 fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().unwrap(),
+        1 => elements.pop().expect("elements should have one item"),
         _ => RichTextElement::Group {
             elements,
             inline: true,
@@ -467,7 +467,7 @@ fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
 fn collapse_block(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().unwrap(),
+        1 => elements.pop().expect("elements should have one item"),
         _ => RichTextElement::Group {
             elements,
             inline: false,

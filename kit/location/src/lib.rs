@@ -1,4 +1,4 @@
-//! Cross-platform abstractions for location services used throughout WaterKit.
+//! Cross-platform abstractions for location services used throughout `WaterKit`.
 
 #![deny(missing_debug_implementations)]
 
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+/// Reactive location manager for working with location services.
 pub mod reactive;
 pub use reactive::{LocationSignals, ReactiveLocationManager};
 
@@ -103,7 +104,7 @@ impl Default for StandardUpdateConfig {
 }
 
 /// Configuration describing significant change monitoring.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignificantUpdateConfig {
     /// Desired accuracy for the significant change monitor.
     pub accuracy: LocationAccuracy,
@@ -158,7 +159,7 @@ pub struct RegionEvent {
 }
 
 /// Constraint used to range iBeacons.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BeaconConstraint {
     /// Beacon UUID.
     pub uuid: String,
@@ -191,7 +192,7 @@ pub struct BeaconReading {
     pub proximity: BeaconProximity,
     /// Accuracy estimate in meters.
     pub accuracy: Option<f64>,
-    /// RSSI strength reported by CoreLocation.
+    /// RSSI strength reported by `CoreLocation`.
     pub rssi: Option<i16>,
     /// Timestamp for when the reading was captured.
     #[serde(with = "serde_time")]
@@ -254,21 +255,39 @@ pub struct Heading {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LocationEvent {
     /// Standard location update.
-    StandardUpdate { sample: LocationSample },
+    StandardUpdate {
+        /// The location sample.
+        sample: LocationSample,
+    },
     /// Significant change in location was detected.
-    SignificantUpdate { sample: LocationSample },
+    SignificantUpdate {
+        /// The location sample.
+        sample: LocationSample,
+    },
     /// Region entry event.
-    RegionEvent { event: RegionEvent },
+    RegionEvent {
+        /// The region event.
+        event: RegionEvent,
+    },
     /// Beacon ranging event.
-    BeaconEvent { event: BeaconEvent },
+    BeaconEvent {
+        /// The beacon event.
+        event: BeaconEvent,
+    },
     /// Updated heading sample.
-    Heading { heading: Heading },
+    Heading {
+        /// The heading information.
+        heading: Heading,
+    },
     /// Backend error surfaced to the delegate.
-    Error { error: LocationError },
+    Error {
+        /// The error that occurred.
+        error: LocationError,
+    },
 }
 
 /// Errors produced by backends and exposed to consumers.
-#[derive(Debug, Clone, Serialize, Deserialize, Error, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Error, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LocationError {
     /// Delegate has not been set on the backend.
@@ -279,15 +298,21 @@ pub enum LocationError {
     BackendUnavailable,
     /// Serialization/deserialization failure.
     #[error("serialization error: {message}")]
-    Serialization { message: String },
+    Serialization {
+        /// The error message.
+        message: String,
+    },
     /// Underlying platform reported an error.
     #[error("platform error: {message}")]
-    Platform { message: String },
+    Platform {
+        /// The error message.
+        message: String,
+    },
 }
 
 impl From<serde_json::Error> for LocationError {
     fn from(err: serde_json::Error) -> Self {
-        LocationError::Serialization {
+        Self::Serialization {
             message: err.to_string(),
         }
     }
@@ -304,28 +329,60 @@ pub trait LocationBackend: Send + Sync + 'static {
     /// Register the delegate that should receive events.
     fn set_delegate(&self, delegate: Arc<dyn LocationDelegate>);
     /// Configure standard location updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     fn configure_standard_updates(&self, config: StandardUpdateConfig) -> LocationResult<()>;
     /// Start delivering standard updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     fn start_standard_updates(&self) -> LocationResult<()>;
     /// Stop delivering standard updates.
     fn stop_standard_updates(&self);
     /// Configure significant location updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     fn configure_significant_updates(&self, config: SignificantUpdateConfig) -> LocationResult<()>;
     /// Start significant location updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     fn start_significant_updates(&self) -> LocationResult<()>;
     /// Stop significant location updates.
     fn stop_significant_updates(&self);
     /// Begin monitoring a set of regions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start monitoring.
     fn monitor_regions(&self, regions: Vec<Region>) -> LocationResult<()>;
     /// Stop monitoring all regions.
     fn stop_monitoring_regions(&self);
     /// Begin ranging beacons that satisfy the provided constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start ranging.
     fn range_beacons(&self, constraints: Vec<BeaconConstraint>) -> LocationResult<()>;
     /// Stop ranging beacons.
     fn stop_ranging_beacons(&self);
     /// Configure heading updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     fn configure_heading_updates(&self, config: HeadingConfig) -> LocationResult<()>;
     /// Start heading updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     fn start_heading_updates(&self) -> LocationResult<()>;
     /// Stop heading updates.
     fn stop_heading_updates(&self);
@@ -344,6 +401,7 @@ impl LocationManager {
     }
 
     /// Access the underlying backend.
+    #[must_use] 
     pub fn backend(&self) -> &Arc<dyn LocationBackend> {
         &self.backend
     }
@@ -354,11 +412,19 @@ impl LocationManager {
     }
 
     /// Configure standard updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     pub fn configure_standard_updates(&self, config: StandardUpdateConfig) -> LocationResult<()> {
         self.backend.configure_standard_updates(config)
     }
 
     /// Start standard updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     pub fn start_standard_updates(&self) -> LocationResult<()> {
         self.backend.start_standard_updates()
     }
@@ -369,6 +435,10 @@ impl LocationManager {
     }
 
     /// Configure significant updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     pub fn configure_significant_updates(
         &self,
         config: SignificantUpdateConfig,
@@ -377,6 +447,10 @@ impl LocationManager {
     }
 
     /// Start significant updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     pub fn start_significant_updates(&self) -> LocationResult<()> {
         self.backend.start_significant_updates()
     }
@@ -387,6 +461,10 @@ impl LocationManager {
     }
 
     /// Monitor regions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start monitoring.
     pub fn monitor_regions(&self, regions: Vec<Region>) -> LocationResult<()> {
         self.backend.monitor_regions(regions)
     }
@@ -397,6 +475,10 @@ impl LocationManager {
     }
 
     /// Start ranging beacons.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start ranging.
     pub fn range_beacons(&self, constraints: Vec<BeaconConstraint>) -> LocationResult<()> {
         self.backend.range_beacons(constraints)
     }
@@ -407,11 +489,19 @@ impl LocationManager {
     }
 
     /// Configure heading updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to configure updates.
     pub fn configure_heading_updates(&self, config: HeadingConfig) -> LocationResult<()> {
         self.backend.configure_heading_updates(config)
     }
 
     /// Start heading updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend fails to start updates.
     pub fn start_heading_updates(&self) -> LocationResult<()> {
         self.backend.start_heading_updates()
     }
@@ -429,11 +519,12 @@ impl fmt::Debug for LocationManager {
 }
 
 mod serde_time {
-    use super::*;
+    use super::{Deserialize, Duration, SystemTime, UNIX_EPOCH};
     use serde::{Deserializer, Serializer};
 
     const MICROS_PER_SECOND: i128 = 1_000_000;
 
+    #[allow(clippy::cast_possible_wrap)]
     pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -456,10 +547,11 @@ mod serde_time {
         }
     }
 
-    fn micros_to_duration(micros: i128) -> Duration {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    const fn micros_to_duration(micros: i128) -> Duration {
         let seconds = (micros / MICROS_PER_SECOND) as u64;
-        let remainder = (micros % MICROS_PER_SECOND) as i128;
-        let nanos = (remainder.abs() as u32) * 1_000;
+        let remainder = micros % MICROS_PER_SECOND;
+        let nanos = (remainder.unsigned_abs() as u32) * 1_000;
         Duration::new(seconds, nanos)
     }
 }
