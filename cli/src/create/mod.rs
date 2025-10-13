@@ -11,7 +11,7 @@ use semver::Version;
 use tracing::{info, warn};
 
 use crate::{
-    config::{Android, Config, Package, Swift},
+    config::{Android, Config, Package, Swift, Web},
     util,
 };
 
@@ -19,6 +19,7 @@ pub mod android;
 pub mod rust;
 pub mod swift;
 pub mod template;
+pub mod web;
 
 pub(crate) const WATERUI_GIT_URL: &str = "https://github.com/water-rs/waterui.git";
 const SWIFT_TAG_PREFIX: &str = "swift-backend-v";
@@ -114,7 +115,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
         }
     };
 
-    let backends = &["SwiftUI", "Android"];
+    let backends = &["Web", "SwiftUI", "Android"];
     let defaults = vec![true; backends.len()];
     let selected_indices = if args.yes {
         (0..backends.len()).collect()
@@ -177,8 +178,16 @@ pub fn run(args: CreateArgs) -> Result<()> {
         bundle_identifier: bundle_identifier.clone(),
     });
 
+    let mut web_enabled = false;
     for backend in selected_backends {
         match backend {
+            "Web" => {
+                web::create_web_assets(&project_dir, &display_name)?;
+                config.backends.web = Some(Web {
+                    project_path: "web".to_string(),
+                });
+                web_enabled = true;
+            }
             "Android" => {
                 android::create_android_project(
                     &project_dir,
@@ -208,6 +217,10 @@ pub fn run(args: CreateArgs) -> Result<()> {
             }
             _ => unreachable!(),
         }
+    }
+
+    if web_enabled && !config.hot_reload.watch.iter().any(|path| path == "web") {
+        config.hot_reload.watch.push("web".to_string());
     }
 
     config.save(&project_dir)?;
