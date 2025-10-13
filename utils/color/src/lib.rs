@@ -1,11 +1,16 @@
 //! # Color Module
 //!
 //! This module provides types for working with colors in different color spaces.
-//! It supports both sRGB and P3 color spaces, with utilities for conversion and
-//! manipulation of color values.
+//! It supports sRGB, Display P3, and OKLCH color spaces, with utilities for
+//! conversion and manipulation of color values.
 //!
-//! The primary type is `Color`, which can represent colors in either sRGB or P3
-//! color spaces, with conversion methods from various tuple formats.
+//! The OKLCH color space is perceptually uniform and is therefore recommended
+//! for most user interface work. By expressing colors in OKLCH you can adjust
+//! lightness, chroma, and hue independently while maintaining predictable
+//! contrast relationships across themes.
+//!
+//! The primary type is `Color`, which can represent colors in sRGB, Display P3,
+//! or OKLCH color spaces, with conversion methods from various tuple formats.
 
 use core::{
     fmt::Debug,
@@ -22,7 +27,7 @@ use waterui_core::{
 /// A color value that can be resolved in different color spaces.
 ///
 /// This is the main color type that wraps a resolvable color value.
-/// Colors can be created from sRGB, P3, or custom color spaces.
+/// Colors can be created from sRGB, P3, OKLCH, or custom color spaces.
 #[derive(Debug, Clone)]
 pub struct Color(AnyResolvable<ResolvedColor>);
 
@@ -100,6 +105,61 @@ impl Resolvable for P3 {
 impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
     fn from(value: T) -> Self {
         Self::new(value)
+    }
+}
+
+/// Represents a color in the perceptually-uniform OKLCH color space.
+///
+/// Lightness is expressed in the range 0.0 to 1.0, chroma controls the color
+/// intensity, and hue is measured in degrees.
+#[derive(Debug, Clone, Copy)]
+pub struct Oklch {
+    /// Perceptual lightness component (0.0 to 1.0).
+    pub lightness: f32,
+    /// Perceptual chroma component.
+    pub chroma: f32,
+    /// Hue angle in degrees.
+    pub hue: f32,
+}
+
+impl Oklch {
+    /// Creates a new OKLCH color from its lightness, chroma, and hue
+    /// components.
+    #[must_use]
+    pub const fn new(lightness: f32, chroma: f32, hue: f32) -> Self {
+        Self {
+            lightness,
+            chroma,
+            hue,
+        }
+    }
+
+    /// Converts this OKLCH color into the sRGB color space.
+    #[must_use]
+    pub fn to_srgb(&self) -> Srgb {
+        let [red, green, blue] = oklch_to_linear_srgb(self.lightness, self.chroma, self.hue);
+
+        Srgb::new(
+            linear_to_srgb(red),
+            linear_to_srgb(green),
+            linear_to_srgb(blue),
+        )
+    }
+}
+
+impl Resolvable for Oklch {
+    type Resolved = ResolvedColor;
+
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let [red, green, blue] = oklch_to_linear_srgb(self.lightness, self.chroma, self.hue);
+
+        ResolvedColor {
+            red,
+            green,
+            blue,
+            headroom: 0.0,
+            opacity: 1.0,
+        }
     }
 }
 
@@ -341,6 +401,8 @@ pub enum Colorspace {
     Srgb,
     /// Display P3 color space with extended color gamut, using floating-point values 0.0-1.0.
     P3,
+    /// Perceptually uniform OKLCH color space (recommended for UI work).
+    Oklch,
 }
 
 impl_constant!(Color);
@@ -389,6 +451,15 @@ impl Color {
     #[must_use]
     pub fn p3(red: f32, green: f32, blue: f32) -> Self {
         Self::new(P3::new(red, green, blue))
+    }
+
+    /// Creates an OKLCH color from perceptual lightness, chroma, and hue values.
+    ///
+    /// OKLCH is recommended for authoring UI colors due to its perceptual
+    /// uniformity.
+    #[must_use]
+    pub fn oklch(lightness: f32, chroma: f32, hue: f32) -> Self {
+        Self::new(Oklch::new(lightness, chroma, hue))
     }
 
     /// Creates a new color with the specified opacity applied.
@@ -513,6 +584,27 @@ fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [f32; 3] {
+    let hue_radians = hue_degrees.to_radians();
+    let (sin_hue, cos_hue) = hue_radians.sin_cos();
+    let a = chroma * cos_hue;
+    let b = chroma * sin_hue;
+
+    let l_ = lightness + 0.396_337_777_4_f32.mul_add(a, 0.215_803_757_3 * b);
+    let m_ = lightness - 0.105_561_345_8_f32.mul_add(a, 0.063_854_172_8 * b);
+    let s_ = lightness - 0.089_484_177_5_f32.mul_add(a, 1.291_485_548 * b);
+
+    let l = l_.powf(3.0);
+    let m = m_.powf(3.0);
+    let s = s_.powf(3.0);
+
+    [
+        4.076_741_662_1_f32.mul_add(l, (-3.307_711_591_3_f32).mul_add(m, 0.230_969_929_2 * s)),
+        (-1.268_438_004_6_f32).mul_add(l, 2.609_757_401_1_f32.mul_add(m, -0.341_319_396_5 * s)),
+        (-0.004_196_086_3_f32).mul_add(l, (-0.703_418_614_7_f32).mul_add(m, 1.707_614_701 * s)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,6 +707,37 @@ mod tests {
         assert!(approx_eq(resolved.red, srgb.red, EPSILON_WIDE));
         assert!(approx_eq(resolved.green, srgb.green, EPSILON_WIDE));
         assert!(approx_eq(resolved.blue, srgb.blue, EPSILON_WIDE));
+    }
+
+    #[test]
+    fn oklch_resolves_consistently() {
+        let env = Environment::new();
+        let samples = [
+            Oklch::new(0.5, 0.1, 45.0),
+            Oklch::new(0.75, 0.2, 200.0),
+            Oklch::new(0.65, 0.05, 320.0),
+        ];
+
+        for sample in samples {
+            let resolved_oklch = Color::from(sample).resolve(&env).get();
+            let resolved_srgb = sample.to_srgb().resolve();
+
+            assert!(approx_eq(
+                resolved_oklch.red,
+                resolved_srgb.red,
+                EPSILON_WIDE
+            ));
+            assert!(approx_eq(
+                resolved_oklch.green,
+                resolved_srgb.green,
+                EPSILON_WIDE
+            ));
+            assert!(approx_eq(
+                resolved_oklch.blue,
+                resolved_srgb.blue,
+                EPSILON_WIDE
+            ));
+        }
     }
 
     #[test]

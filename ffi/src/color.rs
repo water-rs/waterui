@@ -9,6 +9,7 @@ ffi_type!(WuiColor, Color, waterui_drop_color);
 pub enum WuiColorspace {
     Srgb,
     DisplayP3,
+    Oklch,
 }
 
 // colorspace: extended srgb
