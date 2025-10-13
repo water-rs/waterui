@@ -6,6 +6,7 @@ members = [
     "components/*",
     "utils/*",
     "backends/web",
+    "backends/tui",
     "render_utils",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
@@ -70,6 +71,7 @@ waterui-layout = { version = "0.1.0", path = "components/layout" }
 waterui-navigation = { version = "0.1.0", path = "components/navigation" }
 waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
 waterui-web = { version = "0.1.0", path = "backends/web" }
+waterui-tui = { version = "0.1.0", path = "backends/tui" }
 waterui-render-utils = { version = "0.1.0", path = "render_utils" }
 waterui = { version = "0.1.0", path = "." }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }

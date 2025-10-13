@@ -1,0 +1,31 @@
+[package]
+name = "waterui-tui"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal UI backend for the WaterUI framework"
+rust-version.workspace = true
+keywords = ["ui", "terminal", "tui", "framework"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-render-utils.workspace = true
+log.workspace = true
+waterui.workspace = true
+waterui-text.workspace = true
+waterui-layout.workspace = true
+waterui-navigation.workspace = true
+unicode-width = "0.1"
+crossterm = "0.27"
+
+[features]
+default = []
+
+# Enables placeholder renderer implementations until full renderers are shipped.
+placeholders = []
+
+[lints]
+workspace = true
