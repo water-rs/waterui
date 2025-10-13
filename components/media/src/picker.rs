@@ -93,7 +93,7 @@ impl<T> Continuation<T> {
     pub fn finish(self, value: T) {
         let mut state = self.state.borrow_mut();
         state.value = Some(value);
-        state.waker.take().unwrap().wake();
+        state.waker.take().expect("waker should be set").wake();
     }
 }
 

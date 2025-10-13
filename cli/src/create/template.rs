@@ -18,7 +18,7 @@ pub fn process_template_directory(
             .strip_prefix(template_dir.path())
             .unwrap_or(entry.path());
 
-        let mut dest_path_str = relative_path.to_str().unwrap().to_string();
+        let mut dest_path_str = relative_path.to_str().expect("path should be valid UTF-8").to_string();
 
         if let Some(app_name) = context.get("APP_NAME") {
             dest_path_str = dest_path_str.replace("AppName", app_name);
@@ -69,7 +69,7 @@ pub fn process_template_file(
     output_path: &Path,
     context: &HashMap<&str, String>,
 ) -> Result<()> {
-    let mut content = template_file.contents_utf8().unwrap().to_string();
+    let mut content = template_file.contents_utf8().expect("template file should be valid UTF-8").to_string();
 
     for (key, value) in context {
         content = content.replace(&format!("__{}__", key), value);

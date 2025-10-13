@@ -100,7 +100,7 @@ impl<Id: Hash + Ord> IdGenerator<Id> {
             return id;
         }
         let id = self.counter.get();
-        self.counter.set(id.checked_add(1).unwrap());
+        self.counter.set(id.checked_add(1).expect("id counter should not overflow"));
         this.insert(value, id);
         id
     }

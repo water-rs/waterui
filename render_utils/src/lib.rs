@@ -57,7 +57,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             TypeId::of::<V>(),
             Box::new({
                 move |state, context, view: AnyView, env| {
-                    let v = view.downcast::<V>().unwrap();
+                    let v = view.downcast::<V>().expect("failed to downcast view");
                     handler(state, context, *v, env)
                 }
             }),
