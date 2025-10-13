@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*-v-*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  determine-product:
+    name: Determine product
+    runs-on: ubuntu-latest
+    outputs:
+      product: ${{ steps.parse.outputs.product }}
+      version: ${{ steps.parse.outputs.version }}
+      product-type: ${{ steps.parse.outputs.product_type }}
+    steps:
+      - name: Extract product information
+        id: parse
+        shell: python
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          import os
+
+          tag = os.environ["TAG"]
+          if "-v-" not in tag:
+              raise SystemExit(f"Tag '{tag}' does not follow the <product>-v-<version> convention.")
+
+          product, version = tag.rsplit("-v-", 1)
+          if not product or not version:
+              raise SystemExit(f"Unable to extract product/version from tag '{tag}'.")
+
+          product_type = "unknown"
+          if product == "waterui-cli":
+              product_type = "cli"
+          elif product.startswith("waterui"):
+              product_type = "rust"
+          elif product in {"swift", "swift-backend", "backends-swift", "waterui-swift"}:
+              product_type = "swift"
+          elif product in {"android", "kotlin-backend", "backends-android", "waterui-android"}:
+              product_type = "android"
+          else:
+              raise SystemExit(f"Unsupported product '{product}' in release tag '{tag}'.")
+
+          print(f"Detected {product_type} product '{product}' for version '{version}'")
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as fh:
+              fh.write(f"product={product}\n")
+              fh.write(f"version={version}\n")
+              fh.write(f"product_type={product_type}\n")
+
+  release-rust:
+    name: Release Rust crate
+    needs: determine-product
+    if: needs.determine-product.outputs.product-type == 'rust'
+    runs-on: ubuntu-latest
+    env:
+      PRODUCT: ${{ needs.determine-product.outputs.product }}
+      VERSION: ${{ needs.determine-product.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish -p ${PRODUCT}
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
+          generate_release_notes: true
+
+  release-cli:
+    name: Release CLI
+    needs: determine-product
+    if: needs.determine-product.outputs.product-type == 'cli'
+    runs-on: ubuntu-latest
+    env:
+      PRODUCT: ${{ needs.determine-product.outputs.product }}
+      VERSION: ${{ needs.determine-product.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+      - name: Publish CLI to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish -p ${PRODUCT}
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
+          generate_release_notes: true
+
+  release-swift:
+    name: Release Swift backend
+    needs: determine-product
+    if: needs.determine-product.outputs.product-type == 'swift'
+    runs-on: macos-latest
+    env:
+      PRODUCT: ${{ needs.determine-product.outputs.product }}
+      VERSION: ${{ needs.determine-product.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Swift backend
+        run: swift build --package-path backends/swift --configuration release
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
+          generate_release_notes: true
+
+  release-android:
+    name: Release Android backend
+    needs: determine-product
+    if: needs.determine-product.outputs.product-type == 'android'
+    runs-on: ubuntu-latest
+    env:
+      PRODUCT: ${{ needs.determine-product.outputs.product }}
+      VERSION: ${{ needs.determine-product.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Build Kotlin backend
+        run: ./gradlew :backends:android:build
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
+          generate_release_notes: true
