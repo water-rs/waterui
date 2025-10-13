@@ -522,7 +522,7 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
 
-    String::from_utf8(result).unwrap()
+    String::from_utf8(result).expect("base64 encoding should produce valid utf8")
 }
 
 #[cfg(test)]
