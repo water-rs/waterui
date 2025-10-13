@@ -1,15 +1,62 @@
+use std::{mem, str::FromStr};
+
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_color::Blue;
 use waterui_core::{Environment, View};
-use waterui_layout::stack::{VStack, hstack};
+use waterui_layout::stack::{HStack, VStack, hstack};
+use waterui_media::{Url, photo::photo as media_photo};
 use waterui_str::Str;
-use waterui_text::{highlight::Language, link, styled::StyledStr, text};
+use waterui_text::{
+    highlight::Language,
+    link,
+    styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
+    text,
+};
 
 use crate::{ViewExt, widget};
 
 /// Rich text widget for displaying formatted content.
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub struct RichText {
     elements: Vec<RichTextElement>,
+}
+
+impl RichText {
+    /// Creates a new [`RichText`] widget from the provided elements.
+    #[must_use]
+    pub fn new(elements: impl Into<Vec<RichTextElement>>) -> Self {
+        Self {
+            elements: elements.into(),
+        }
+    }
+
+    /// Parses a Markdown document into a [`RichText`] tree.
+    #[must_use]
+    pub fn from_markdown(markdown: &str) -> Self {
+        Self {
+            elements: parse_markdown(markdown),
+        }
+    }
+
+    /// Returns the rich text elements for inspection or testing.
+    #[must_use]
+    pub fn elements(&self) -> &[RichTextElement] {
+        &self.elements
+    }
+}
+
+impl FromIterator<RichTextElement> for RichText {
+    fn from_iter<T: IntoIterator<Item = RichTextElement>>(iter: T) -> Self {
+        Self {
+            elements: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// Convenience constructor for creating a [`RichText`] view inline.
+#[must_use]
+pub fn rich_text(elements: impl Into<Vec<RichTextElement>>) -> RichText {
+    RichText::new(elements)
 }
 
 /// Represents different types of rich text elements.
@@ -58,6 +105,14 @@ pub enum RichTextElement {
         /// The quoted content.
         content: Vec<RichTextElement>,
     },
+    /// A group of elements arranged either inline (horizontally) or stacked
+    /// vertically.
+    Group {
+        /// Child elements.
+        elements: Vec<RichTextElement>,
+        /// When `true`, children are rendered in a horizontal stack.
+        inline: bool,
+    },
 }
 
 impl View for RichTextElement {
@@ -65,14 +120,31 @@ impl View for RichTextElement {
         match self {
             Self::Text(s) => text(s).anyview(),
             Self::Link { label, url } => link(label, url).anyview(),
-            Self::Image { src: _, alt: _ } => todo!(),
-            Self::Table {
-                headers: _,
-                rows: _,
-            } => todo!(),
+            Self::Image { src, alt } => match Url::parse(&*src) {
+                Some(url) => media_photo(url).placeholder(text(alt).anyview()).anyview(),
+                None => text(alt).anyview(),
+            },
+            Self::Table { headers, rows } => {
+                let mut table_rows = Vec::new();
+                if !headers.is_empty() {
+                    table_rows.push(headers.into_iter().collect::<HStack<_>>());
+                }
+                for row in rows {
+                    table_rows.push(row.into_iter().collect::<HStack<_>>());
+                }
+
+                table_rows.into_iter().collect::<VStack<_>>().anyview()
+            }
             Self::List { items, ordered } => render_list(items.as_slice(), ordered).anyview(),
             Self::Code { code, language } => widget::code(language, code).anyview(),
             Self::Quote { content } => quote(content).anyview(),
+            Self::Group { elements, inline } => {
+                if inline {
+                    elements.into_iter().collect::<HStack<_>>().anyview()
+                } else {
+                    VStack::from_iter(elements).anyview()
+                }
+            }
         }
     }
 }
@@ -99,8 +171,551 @@ fn render_list(items: &[RichTextElement], ordered: bool) -> impl View {
 }
 
 fn quote(content: Vec<RichTextElement>) -> impl View {
-    // Render as blockquote
-    // blue marker
     let quote_marker = Blue.width(4.0).height(f32::INFINITY);
     hstack((quote_marker, VStack::from_iter(content)))
+}
+
+fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    let parser = Parser::new_ext(markdown, options);
+
+    let mut stack = vec![Container::Root(Vec::new())];
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Paragraph => {
+                    flush_list_item_inline(&mut stack);
+                    stack.push(Container::Paragraph(InlineGroup::default()));
+                }
+                Tag::Heading(level, ..) => {
+                    flush_list_item_inline(&mut stack);
+                    stack.push(Container::Heading(InlineGroup::with_style(heading_style(
+                        level,
+                    ))));
+                }
+                Tag::BlockQuote => {
+                    flush_list_item_inline(&mut stack);
+                    stack.push(Container::BlockQuote(Vec::new()));
+                }
+                Tag::List(start) => {
+                    flush_list_item_inline(&mut stack);
+                    stack.push(Container::List {
+                        ordered: start.is_some(),
+                        items: Vec::new(),
+                    });
+                }
+                Tag::Item => stack.push(Container::ListItem {
+                    blocks: Vec::new(),
+                    inline: InlineGroup::default(),
+                }),
+                Tag::CodeBlock(kind) => {
+                    flush_list_item_inline(&mut stack);
+                    let language = language_from_kind(&kind);
+                    stack.push(Container::CodeBlock {
+                        language,
+                        code: String::new(),
+                    });
+                }
+                Tag::Table(_) => {
+                    flush_list_item_inline(&mut stack);
+                    stack.push(Container::Table {
+                        headers: Vec::new(),
+                        rows: Vec::new(),
+                        in_head: false,
+                    });
+                }
+                Tag::TableHead => {
+                    if let Some(idx) = current_table_index(&stack)
+                        && let Container::Table { in_head, .. } = &mut stack[idx]
+                    {
+                        *in_head = true;
+                    }
+                }
+                Tag::TableRow => stack.push(Container::TableRow { cells: Vec::new() }),
+                Tag::TableCell => {
+                    let header_cell = current_table_index(&stack)
+                        .and_then(|idx| match &stack[idx] {
+                            Container::Table { in_head, .. } => Some(*in_head),
+                            _ => None,
+                        })
+                        .unwrap_or(false);
+
+                    let style = if header_cell {
+                        Style::default().bold()
+                    } else {
+                        Style::default()
+                    };
+
+                    stack.push(Container::TableCell(InlineGroup::with_style(style)));
+                }
+                Tag::Emphasis => {
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.enter_emphasis();
+                    }
+                }
+                Tag::Strong => {
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.enter_strong();
+                    }
+                }
+                Tag::Link(_, url, _) => {
+                    stack.push(Container::InlineLink {
+                        url: Str::from(url.into_string()),
+                        label: MarkdownInlineBuilder::new(),
+                    });
+                }
+                Tag::Image(_, url, _) => {
+                    stack.push(Container::InlineImage {
+                        url: Str::from(url.into_string()),
+                        alt: MarkdownInlineBuilder::new(),
+                    });
+                }
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                Tag::Paragraph => {
+                    if let Some(Container::Paragraph(group)) = stack.pop() {
+                        let element = collapse_inline(group.finish());
+                        push_to_parent(&mut stack, element);
+                    }
+                }
+                Tag::Heading(..) => {
+                    if let Some(Container::Heading(group)) = stack.pop() {
+                        let element = collapse_inline(group.finish());
+                        push_to_parent(&mut stack, element);
+                    }
+                }
+                Tag::BlockQuote => {
+                    if let Some(Container::BlockQuote(content)) = stack.pop() {
+                        push_to_parent(&mut stack, RichTextElement::Quote { content });
+                    }
+                }
+                Tag::List(_) => {
+                    if let Some(Container::List { ordered, items }) = stack.pop() {
+                        push_to_parent(&mut stack, RichTextElement::List { items, ordered });
+                    }
+                }
+                Tag::Item => {
+                    if let Some(Container::ListItem {
+                        mut blocks,
+                        mut inline,
+                    }) = stack.pop()
+                    {
+                        if let Some(segments) = inline.take() {
+                            blocks.push(collapse_inline(segments));
+                        }
+
+                        let element = collapse_block(blocks);
+                        if let Some(Container::List { items, .. }) = stack.last_mut() {
+                            items.push(element);
+                        }
+                    }
+                }
+                Tag::CodeBlock(_) => {
+                    if let Some(Container::CodeBlock { language, code }) = stack.pop() {
+                        push_to_parent(
+                            &mut stack,
+                            RichTextElement::Code {
+                                language,
+                                code: code.into(),
+                            },
+                        );
+                    }
+                }
+                Tag::Table(_) => {
+                    if let Some(Container::Table { headers, rows, .. }) = stack.pop() {
+                        push_to_parent(&mut stack, RichTextElement::Table { headers, rows });
+                    }
+                }
+                Tag::TableHead => {
+                    if let Some(idx) = current_table_index(&stack)
+                        && let Container::Table { in_head, .. } = &mut stack[idx]
+                    {
+                        *in_head = false;
+                    }
+                }
+                Tag::TableRow => {
+                    if let Some(Container::TableRow { cells }) = stack.pop()
+                        && let Some(idx) = current_table_index(&stack)
+                        && let Container::Table {
+                            headers,
+                            rows,
+                            in_head,
+                        } = &mut stack[idx]
+                    {
+                        if *in_head && headers.is_empty() {
+                            *headers = cells;
+                        } else {
+                            rows.push(cells);
+                        }
+                    }
+                }
+                Tag::TableCell => {
+                    if let Some(Container::TableCell(group)) = stack.pop() {
+                        let cell = collapse_inline(group.finish());
+                        if let Some(Container::TableRow { cells }) = stack.last_mut() {
+                            cells.push(cell);
+                        }
+                    }
+                }
+                Tag::Link(..) => {
+                    if let Some(Container::InlineLink { url, label }) = stack.pop() {
+                        let element = RichTextElement::Link {
+                            label: label.finish(),
+                            url,
+                        };
+                        push_inline_element(&mut stack, element);
+                    }
+                }
+                Tag::Image(..) => {
+                    if let Some(Container::InlineImage { url, alt }) = stack.pop() {
+                        let alt_text = alt.finish().to_plain();
+                        let element = RichTextElement::Image {
+                            src: url,
+                            alt: alt_text,
+                        };
+                        push_inline_element(&mut stack, element);
+                    }
+                }
+                Tag::Emphasis | Tag::Strong => {
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.exit();
+                    }
+                }
+                _ => {}
+            },
+            Event::Text(text) => match stack.last_mut() {
+                Some(Container::CodeBlock { code, .. }) => code.push_str(text.as_ref()),
+                _ => {
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.push_text(text.as_ref());
+                    } else {
+                        push_to_parent(
+                            &mut stack,
+                            RichTextElement::Text(StyledStr::plain(text.as_ref().to_string())),
+                        );
+                    }
+                }
+            },
+            Event::Code(text) | Event::Html(text) | Event::FootnoteReference(text) => {
+                if let Some(mut sink) = current_inline_sink(&mut stack) {
+                    sink.push_text(text.as_ref());
+                } else {
+                    push_to_parent(
+                        &mut stack,
+                        RichTextElement::Text(StyledStr::plain(text.as_ref().to_string())),
+                    );
+                }
+            }
+            Event::SoftBreak => {
+                if let Some(Container::CodeBlock { code, .. }) = stack.last_mut() {
+                    code.push('\n');
+                } else if let Some(mut sink) = current_inline_sink(&mut stack) {
+                    sink.soft_break();
+                }
+            }
+            Event::HardBreak => {
+                if let Some(Container::CodeBlock { code, .. }) = stack.last_mut() {
+                    code.push('\n');
+                } else if let Some(mut sink) = current_inline_sink(&mut stack) {
+                    sink.hard_break();
+                }
+            }
+            Event::Rule => {
+                push_to_parent(&mut stack, RichTextElement::Text(StyledStr::plain("——")));
+            }
+            Event::TaskListMarker(checked) => {
+                if let Some(mut sink) = current_inline_sink(&mut stack) {
+                    sink.push_text(if checked { "[x] " } else { "[ ] " });
+                }
+            }
+        }
+    }
+
+    match stack.pop() {
+        Some(Container::Root(elements)) => elements,
+        _ => Vec::new(),
+    }
+}
+
+fn language_from_kind(kind: &CodeBlockKind) -> Language {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split_whitespace()
+            .next()
+            .and_then(|token| Language::from_str(token).ok())
+            .unwrap_or(Language::Plaintext),
+        CodeBlockKind::Indented => Language::Plaintext,
+    }
+}
+
+fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
+    match elements.len() {
+        0 => RichTextElement::Text(StyledStr::empty()),
+        1 => elements.pop().unwrap(),
+        _ => RichTextElement::Group {
+            elements,
+            inline: true,
+        },
+    }
+}
+
+fn collapse_block(mut elements: Vec<RichTextElement>) -> RichTextElement {
+    match elements.len() {
+        0 => RichTextElement::Text(StyledStr::empty()),
+        1 => elements.pop().unwrap(),
+        _ => RichTextElement::Group {
+            elements,
+            inline: false,
+        },
+    }
+}
+
+fn current_table_index(stack: &[Container]) -> Option<usize> {
+    stack
+        .iter()
+        .rposition(|container| matches!(container, Container::Table { .. }))
+}
+
+fn push_to_parent(stack: &mut [Container], element: RichTextElement) {
+    if let Some(parent) = stack.last_mut() {
+        match parent {
+            Container::Root(elements) | Container::BlockQuote(elements) => {
+                elements.push(element);
+            }
+            Container::List { items, .. } => items.push(element),
+            Container::ListItem { blocks, .. } => blocks.push(element),
+            Container::TableRow { cells } => cells.push(element),
+            _ => {}
+        }
+    }
+}
+
+fn push_inline_element(stack: &mut [Container], element: RichTextElement) {
+    for container in stack.iter_mut().rev() {
+        match container {
+            Container::Paragraph(group)
+            | Container::Heading(group)
+            | Container::TableCell(group)
+            | Container::ListItem { inline: group, .. } => {
+                group.push_element(element);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    push_to_parent(stack, element);
+}
+
+fn flush_list_item_inline(stack: &mut [Container]) {
+    if let Some(Container::ListItem { inline, blocks }) = stack.last_mut()
+        && let Some(segments) = inline.take()
+    {
+        blocks.push(collapse_inline(segments));
+    }
+}
+
+enum InlineSinkMut<'a> {
+    Group(&'a mut InlineGroup),
+    Builder(&'a mut MarkdownInlineBuilder),
+}
+
+impl InlineSinkMut<'_> {
+    fn push_text(&mut self, text: &str) {
+        match self {
+            Self::Group(group) => group.push_text(text),
+            Self::Builder(builder) => builder.push_text(text),
+        }
+    }
+
+    fn soft_break(&mut self) {
+        match self {
+            Self::Group(group) => group.soft_break(),
+            Self::Builder(builder) => builder.push_soft_break(),
+        }
+    }
+
+    fn hard_break(&mut self) {
+        match self {
+            Self::Group(group) => group.hard_break(),
+            Self::Builder(builder) => builder.push_hard_break(),
+        }
+    }
+
+    fn enter_emphasis(&mut self) {
+        match self {
+            Self::Group(group) => group.enter_emphasis(),
+            Self::Builder(builder) => builder.enter_emphasis(),
+        }
+    }
+
+    fn enter_strong(&mut self) {
+        match self {
+            Self::Group(group) => group.enter_strong(),
+            Self::Builder(builder) => builder.enter_strong(),
+        }
+    }
+
+    fn exit(&mut self) {
+        match self {
+            Self::Group(group) => group.exit_style(),
+            Self::Builder(builder) => builder.exit(),
+        }
+    }
+}
+
+fn current_inline_sink(stack: &mut [Container]) -> Option<InlineSinkMut<'_>> {
+    for container in stack.iter_mut().rev() {
+        match container {
+            Container::InlineLink { label, .. } => return Some(InlineSinkMut::Builder(label)),
+            Container::InlineImage { alt, .. } => return Some(InlineSinkMut::Builder(alt)),
+            Container::Paragraph(group)
+            | Container::Heading(group)
+            | Container::TableCell(group)
+            | Container::ListItem { inline: group, .. } => {
+                return Some(InlineSinkMut::Group(group));
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+#[derive(Debug)]
+enum Container {
+    Root(Vec<RichTextElement>),
+    Paragraph(InlineGroup),
+    Heading(InlineGroup),
+    BlockQuote(Vec<RichTextElement>),
+    List {
+        ordered: bool,
+        items: Vec<RichTextElement>,
+    },
+    ListItem {
+        blocks: Vec<RichTextElement>,
+        inline: InlineGroup,
+    },
+    InlineLink {
+        url: Str,
+        label: MarkdownInlineBuilder,
+    },
+    InlineImage {
+        url: Str,
+        alt: MarkdownInlineBuilder,
+    },
+    CodeBlock {
+        language: Language,
+        code: String,
+    },
+    Table {
+        headers: Vec<RichTextElement>,
+        rows: Vec<Vec<RichTextElement>>,
+        in_head: bool,
+    },
+    TableRow {
+        cells: Vec<RichTextElement>,
+    },
+    TableCell(InlineGroup),
+}
+
+#[derive(Debug)]
+struct InlineGroup {
+    builder: MarkdownInlineBuilder,
+    segments: Vec<RichTextElement>,
+}
+
+impl InlineGroup {
+    fn with_style(style: Style) -> Self {
+        Self {
+            builder: MarkdownInlineBuilder::with_base_style(style),
+            segments: Vec::new(),
+        }
+    }
+
+    fn push_text(&mut self, text: &str) {
+        self.builder.push_text(text);
+    }
+
+    fn soft_break(&mut self) {
+        self.builder.push_soft_break();
+    }
+
+    fn hard_break(&mut self) {
+        self.builder.push_hard_break();
+    }
+
+    fn enter_emphasis(&mut self) {
+        self.builder.enter_emphasis();
+    }
+
+    fn enter_strong(&mut self) {
+        self.builder.enter_strong();
+    }
+
+    fn exit_style(&mut self) {
+        self.builder.exit();
+    }
+
+    fn push_element(&mut self, element: RichTextElement) {
+        if let Some(text) = self.builder.take() {
+            self.segments.push(RichTextElement::Text(text));
+        }
+        self.segments.push(element);
+    }
+
+    fn take(&mut self) -> Option<Vec<RichTextElement>> {
+        if let Some(text) = self.builder.take() {
+            self.segments.push(RichTextElement::Text(text));
+        }
+
+        if self.segments.is_empty() {
+            return None;
+        }
+
+        let mut segments = Vec::new();
+        mem::swap(&mut segments, &mut self.segments);
+        self.builder = MarkdownInlineBuilder::with_base_style(self.builder.base_style());
+        Some(segments)
+    }
+
+    fn finish(mut self) -> Vec<RichTextElement> {
+        if let Some(text) = self.builder.take() {
+            self.segments.push(RichTextElement::Text(text));
+        }
+        self.segments
+    }
+}
+
+impl Default for InlineGroup {
+    fn default() -> Self {
+        Self {
+            builder: MarkdownInlineBuilder::new(),
+            segments: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_markdown_into_rich_text() {
+        let markdown = "# Heading\n\nA paragraph with **bold** and [link](https://example.com).\n\n- Item 1\n- Item 2\n\n| Col A | Col B |\n| ----- | ----- |\n| 1 | 2 |\n";
+
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+        assert!(!elements.is_empty());
+
+        assert!(matches!(elements[0], RichTextElement::Text(_)));
+        assert!(matches!(elements[1], RichTextElement::Group { .. }));
+        assert!(matches!(elements[2], RichTextElement::List { .. }));
+        assert!(matches!(elements[3], RichTextElement::Table { .. }));
+    }
 }
