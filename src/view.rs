@@ -15,10 +15,9 @@ use waterui_core::{
     AnyView, Environment,
     components::IgnorableMetadata,
     env::{With, WithEnv},
-    handler::{BoxHandler, Handler, HandlerFn, IntoHandler, into_handler},
+    handler::HandlerFn,
 };
 
-use alloc::boxed::Box;
 use nami::{Binding, signal::IntoComputed};
 use waterui_layout::{
     frame::Frame,
@@ -217,6 +216,10 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
+    /// Adds a tap gesture recognizer to this view that triggers the specified action.
+    ///
+    /// # Arguments
+    /// * `action` - The action to execute when the tap gesture is recognized
     fn on_tap<P: 'static>(
         self,
         action: impl HandlerFn<P, ()> + 'static,
