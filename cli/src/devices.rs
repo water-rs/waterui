@@ -300,7 +300,7 @@ fn print_table(devices: &[DeviceInfo]) {
         }
         println!("{}", style(platform).bold().underlined());
 
-        let mut items: Vec<&DeviceInfo> = list.iter().copied().collect();
+        let mut items: Vec<&DeviceInfo> = list.to_vec();
         items.sort_by(|a, b| {
             let kind_rank = |kind: &DeviceKind| match kind {
                 DeviceKind::Device => 0,
