@@ -20,16 +20,16 @@ pub fn create_android_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
 
     let templates = &template::TEMPLATES_DIR;
-    let android_tpl_dir = templates.get_dir("android").unwrap();
+    let android_tpl_dir = templates.get_dir("android").expect("android template directory should exist");
 
     // Process root-level templates
     template::process_template_file(
-        android_tpl_dir.get_file("build.gradle.kts.tpl").unwrap(),
+        android_tpl_dir.get_file("build.gradle.kts.tpl").expect("build.gradle.kts.tpl should exist"),
         &android_dir.join("build.gradle.kts"),
         &context,
     )?;
     template::process_template_file(
-        android_tpl_dir.get_file("settings.gradle.kts.tpl").unwrap(),
+        android_tpl_dir.get_file("settings.gradle.kts.tpl").expect("settings.gradle.kts.tpl should exist"),
         &android_dir.join("settings.gradle.kts"),
         &context,
     )?;
@@ -39,7 +39,7 @@ pub fn create_android_project(
     template::process_template_file(
         android_tpl_dir
             .get_file("app/build.gradle.kts.tpl")
-            .unwrap(),
+            .expect("app/build.gradle.kts.tpl should exist"),
         &app_dir.join("build.gradle.kts"),
         &context,
     )?;
@@ -48,7 +48,7 @@ pub fn create_android_project(
     template::process_template_file(
         android_tpl_dir
             .get_file("app/src/main/AndroidManifest.xml.tpl")
-            .unwrap(),
+            .expect("app/src/main/AndroidManifest.xml.tpl should exist"),
         &main_dir.join("AndroidManifest.xml"),
         &context,
     )?;
@@ -58,14 +58,14 @@ pub fn create_android_project(
     template::process_template_file(
         android_tpl_dir
             .get_file("app/src/main/res/values/strings.xml.tpl")
-            .unwrap(),
+            .expect("app/src/main/res/values/strings.xml.tpl should exist"),
         &values_dir.join("strings.xml"),
         &context,
     )?;
     template::process_template_file(
         android_tpl_dir
             .get_file("app/src/main/res/values/themes.xml.tpl")
-            .unwrap(),
+            .expect("app/src/main/res/values/themes.xml.tpl should exist"),
         &values_dir.join("themes.xml"),
         &context,
     )?;
@@ -76,14 +76,14 @@ pub fn create_android_project(
     template::process_template_file(
         android_tpl_dir
             .get_file("app/src/main/java/MainActivity.kt.tpl")
-            .unwrap(),
+            .expect("app/src/main/java/MainActivity.kt.tpl should exist"),
         &java_dir.join("MainActivity.kt"),
         &context,
     )?;
 
     // Process root build script
     template::process_template_file(
-        android_tpl_dir.get_file("build-rust.sh.tpl").unwrap(),
+        android_tpl_dir.get_file("build-rust.sh.tpl").expect("build-rust.sh.tpl should exist"),
         &project_dir.join("build-rust.sh"),
         &context,
     )?;

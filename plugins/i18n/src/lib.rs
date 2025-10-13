@@ -40,7 +40,7 @@ use waterui_text::{__nami::signal::IntoComputed, Text, TextConfig, locale::Local
 /// env.insert(Locale("fr".into()));
 ///
 /// // Retrieve the underlying I18n instance and get a translation.
-/// let i18n_from_env = env.get::<I18n>().unwrap();
+/// let i18n_from_env = env.get::<I18n>().expect("I18n plugin should be installed");
 /// assert_eq!(i18n_from_env.get("fr", "greeting"), "Bonjour le monde!");
 /// ```
 #[derive(Debug, Default, Clone)]

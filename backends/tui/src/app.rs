@@ -154,9 +154,9 @@ mod tests {
         let mut app = TuiAppBuilder::new()
             .with_terminal(terminal)
             .build()
-            .unwrap();
-        app.render(text("Hello TUI")).unwrap();
+            .expect("building app should succeed");
+        app.render(text("Hello TUI")).expect("rendering should succeed");
         let snapshot = app.terminal().snapshot().expect("buffered terminal");
-        assert!(std::str::from_utf8(snapshot).unwrap().contains("Hello TUI"));
+        assert!(std::str::from_utf8(snapshot).expect("snapshot should be valid utf8").contains("Hello TUI"));
     }
 }

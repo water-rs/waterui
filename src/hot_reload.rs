@@ -34,10 +34,10 @@ unsafe fn load_new_version(
             "Loading dynamic library from {}",
             current_dylib_path(target_dir, crate_name).display()
         );
-        let lib = libloading::Library::new(current_dylib_path(target_dir, crate_name)).unwrap();
+        let lib = libloading::Library::new(current_dylib_path(target_dir, crate_name)).expect("failed to load dynamic library");
 
         // Get a symbol from the library
-        let func: libloading::Symbol<ReloadableView> = lib.get(function_name.as_bytes()).unwrap();
+        let func: libloading::Symbol<ReloadableView> = lib.get(function_name.as_bytes()).expect("failed to load symbol");
         let boxed: Box<AnyView> = Box::from_raw(func().cast::<AnyView>());
         *boxed
     }
@@ -107,9 +107,9 @@ fn observe_directory_changes(dir: &Path) -> Receiver<()> {
 
         let (tx, rx) = channel();
 
-        let mut watcher: RecommendedWatcher = Watcher::new(tx, notify::Config::default()).unwrap();
+        let mut watcher: RecommendedWatcher = Watcher::new(tx, notify::Config::default()).expect("failed to create watcher");
 
-        watcher.watch(&dir, RecursiveMode::Recursive).unwrap();
+        watcher.watch(&dir, RecursiveMode::Recursive).expect("failed to watch directory");
 
         for res in rx {
             match res {
@@ -137,8 +137,8 @@ fn recompile(dir: &Path) {
             "PATH",
             format!(
                 "{}/.cargo/bin:{}",
-                std::env::var("HOME").unwrap(),
-                std::env::var("PATH").unwrap()
+                std::env::var("HOME").expect("HOME environment variable should be set"),
+                std::env::var("PATH").expect("PATH environment variable should be set")
             ),
         )
         .status()
@@ -179,7 +179,7 @@ macro_rules! hot_reload {
         let crate_name = env!("CARGO_PKG_NAME");
         let target_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .expect("failed to get parent directory")
             .join("target");
         $crate::hot_reload::Hotreload::new($function_name, dir, target_dir, crate_name)
     }};

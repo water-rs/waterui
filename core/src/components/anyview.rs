@@ -56,7 +56,7 @@ impl AnyView {
         #[allow(clippy::missing_panics_doc)]
         if TypeId::of::<V>() == TypeId::of::<Self>() {
             let any = &mut Some(view) as &mut dyn Any;
-            return any.downcast_mut::<Option<Self>>().unwrap().take().unwrap(); // TODO: use downcast_mut_unchecked when it's stable
+            return any.downcast_mut::<Option<Self>>().expect("downcast to option should succeed").take().expect("option should contain a value"); // TODO: use downcast_mut_unchecked when it's stable
         }
 
         Self(Box::new(view))

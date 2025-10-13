@@ -662,7 +662,7 @@ fn run_apple_simulator(
         "simctl",
         "install",
         &device_name,
-        app_bundle.to_str().unwrap(),
+        app_bundle.to_str().expect("path should be valid UTF-8"),
     ]);
     let status = install_cmd
         .status()
@@ -805,7 +805,7 @@ fn run_android(
     }
 
     let mut install_cmd = adb_command(&adb_path, target_identifier.as_deref());
-    install_cmd.args(["install", "-r", apk_path.to_str().unwrap()]);
+    install_cmd.args(["install", "-r", apk_path.to_str().expect("path should be valid UTF-8")]);
     debug!("Running command: {:?}", install_cmd);
     let status = install_cmd.status().context("failed to install APK")?;
     if !status.success() {
