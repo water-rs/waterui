@@ -162,7 +162,7 @@ impl Environment {
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
-            .map(|v| v.downcast_ref::<T>().unwrap())
+            .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
 }
 
