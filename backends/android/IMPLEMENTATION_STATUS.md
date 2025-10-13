@@ -60,7 +60,7 @@ This document compares the Jetpack Compose backend with the functionality export
 | Navigation view/link/search | ❌ missing | No Compose implementation yet. |
 | Lists/Lazy collections (`for_each`) | ❌ missing | Container provides raw child list but no higher-level list abstractions. |
 | Media components (image, video, live photo) | ❌ missing | Placeholders not yet added. |
-| Graphics/canvas APIs | ❌ missing | Awaiting future mapping. |
+| Graphics/canvas APIs | ⚠️ partial | `components/RendererViewComponent.kt` renders CPU buffers; GPU path TODO. |
 
 ## Tooling & Build
 

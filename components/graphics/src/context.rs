@@ -1,60 +1,58 @@
-use core::fmt::Debug;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug};
+
+use waterui_color::Color;
+use waterui_core::Environment;
 
 use crate::shape::{DrawStyle, Path};
-use kurbo::Affine;
-use vello::{
-    Scene,
-    peniko::{self, kurbo::Stroke},
-};
-use waterui_color::{Color, ResolvedColor};
-use waterui_core::{Environment, Signal};
+
+/// A recorded drawing command issued by the [`GraphicsContext`].
+#[derive(Debug, Clone)]
+pub(crate) struct DrawCommand {
+    pub(crate) path: Path,
+    pub(crate) style: DrawStyle,
+}
 
 /// A context for issuing 2D drawing commands.
 ///
-/// This acts as a public-facing API that wraps an internal Vello scene,
-/// allowing users to draw without needing to know about the backend.
+/// User code interacts with the `GraphicsContext` to describe shapes in a backend
+/// agnostic fashion. The recorded commands are later consumed by the renderer
+/// implementation (for example, the CPU renderer based on `tiny-skia`).
 pub struct GraphicsContext<'a> {
-    pub(crate) scene: &'a mut Scene,
-    pub(crate) env: &'a Environment,
+    env: &'a Environment,
+    commands: Vec<DrawCommand>,
 }
 
 impl Debug for GraphicsContext<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphicsContext")
-            .field("scene", &"Scene { ... }")
-            .field("env", &self.env)
+            .field("command_count", &self.commands.len())
             .finish()
     }
 }
 
-impl GraphicsContext<'_> {
-    /// Draws a path with a given style (fill or stroke).
-    pub fn draw(&mut self, path: &Path, style: &DrawStyle) {
-        let kurbo_path = path.to_kurbo();
-
-        match style {
-            DrawStyle::Fill(color) => {
-                self.scene.fill(
-                    peniko::Fill::NonZero,
-                    Affine::IDENTITY,
-                    &to_peniko_brush(&color.resolve(self.env).get()),
-                    None,
-                    &kurbo_path,
-                );
-            }
-            DrawStyle::Stroke(color, width) => {
-                self.scene.stroke(
-                    &Stroke::new(f64::from(*width)),
-                    Affine::IDENTITY,
-                    &to_peniko_brush(&color.resolve(self.env).get()),
-                    None,
-                    &kurbo_path,
-                );
-            }
+impl<'a> GraphicsContext<'a> {
+    /// Creates a new graphics context bound to the provided environment.
+    pub(crate) fn new(env: &'a Environment) -> Self {
+        Self {
+            env,
+            commands: Vec::new(),
         }
     }
 
-    // Convenience methods
+    /// Returns the environment associated with this context.
+    #[must_use]
+    pub fn environment(&self) -> &Environment {
+        self.env
+    }
+
+    /// Draws a path with a given style (fill or stroke).
+    pub fn draw(&mut self, path: &Path, style: &DrawStyle) {
+        self.commands.push(DrawCommand {
+            path: path.clone(),
+            style: style.clone(),
+        });
+    }
 
     /// Fills a path with a solid color.
     pub fn fill(&mut self, path: &Path, color: &Color) {
@@ -65,14 +63,11 @@ impl GraphicsContext<'_> {
     pub fn stroke(&mut self, path: &Path, color: &Color, width: f32) {
         self.draw(path, &DrawStyle::Stroke(color.clone(), width));
     }
+
+    /// Consumes the context, returning the recorded drawing commands.
+    pub(crate) fn into_commands(self) -> Vec<DrawCommand> {
+        self.commands
+    }
 }
 
-/// Internal utility to convert `WaterUI` resolved color to Vello brush.
-fn to_peniko_brush(color: &ResolvedColor) -> peniko::Brush {
-    peniko::Brush::Solid(peniko::Color::rgba(
-        f64::from(color.red),
-        f64::from(color.green),
-        f64::from(color.blue),
-        f64::from(color.opacity),
-    ))
-}
+pub(crate) use DrawCommand as RecordedCommand;
