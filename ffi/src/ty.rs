@@ -27,7 +27,7 @@ impl IntoFFI for waterui_core::id::Id {
 impl IntoRust for WuiId {
     type Rust = waterui_core::id::Id;
     unsafe fn into_rust(self) -> Self::Rust {
-        waterui_core::id::Id::try_from(self.inner).unwrap()
+        waterui_core::id::Id::try_from(self.inner).expect("failed to convert id")
     }
 }
 

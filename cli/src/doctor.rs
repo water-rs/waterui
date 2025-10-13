@@ -19,7 +19,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     pb.enable_steady_tick(Duration::from_millis(80));
     pb.set_style(
         ProgressStyle::with_template("{spinner:.blue} {msg}")
-            .unwrap()
+            .expect("template should be valid")
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
     );
 

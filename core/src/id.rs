@@ -228,10 +228,10 @@ impl<T: Ord + Clone> MappingInner<T> {
 
     /// Registers a new value in the mapping and returns its assigned ID.
     pub fn register(&mut self, value: T) -> Id {
-        let id = Id(NonZeroI32::new(self.counter).unwrap());
+        let id = Id(NonZeroI32::new(self.counter).expect("counter should not be zero"));
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
-        self.counter = self.counter.checked_add(1).unwrap();
+        self.counter = self.counter.checked_add(1).expect("counter should not overflow");
         id
     }
 

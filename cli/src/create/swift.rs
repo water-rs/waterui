@@ -81,7 +81,7 @@ pub fn create_xcode_project(
     }
 
     let templates = &template::TEMPLATES_DIR;
-    let apple_template_dir = templates.get_dir("apple").unwrap();
+    let apple_template_dir = templates.get_dir("apple").expect("apple template directory should exist");
 
     template::process_template_directory(apple_template_dir, &apple_root, &context)?;
 
