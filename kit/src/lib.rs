@@ -19,7 +19,7 @@ use std::path::PathBuf;
 pub fn bundle_path() -> PathBuf {
     let bundle = CFBundle::main_bundle();
 
-    bundle.bundle_resources_url().unwrap().to_path().unwrap()
+    bundle.bundle_resources_url().expect("bundle resources url should be available").to_path().expect("url should be a valid path")
 }
 
 /// Returns the path to the assets directory within the main bundle.
