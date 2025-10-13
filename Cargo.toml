@@ -3,6 +3,7 @@
 members = [
     "core",
     "kit",
+    "kit/location",
     "components/*",
     "utils/*",
     "backends/web",
@@ -74,6 +75,7 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-tui = { version = "0.1.0", path = "backends/tui" }
 waterui-render-utils = { version = "0.1.0", path = "render_utils" }
 waterui = { version = "0.1.0", path = "." }
+waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "0.19"
 time = "0.3"
