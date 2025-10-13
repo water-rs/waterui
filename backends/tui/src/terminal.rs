@@ -1,4 +1,7 @@
-use std::io::{self, Stdout, Write};
+use std::{
+    convert::TryFrom,
+    io::{self, Stdout, Write},
+};
 
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -37,7 +40,7 @@ impl TerminalTarget {
         })
     }
 
-    fn buffered() -> Self {
+    const fn buffered() -> Self {
         Self::Buffer(Vec::new())
     }
 
@@ -47,7 +50,10 @@ impl TerminalTarget {
                 queue!(handle, MoveTo(0, 0), Clear(ClearType::All))?;
                 for (row, line) in frame.lines().iter().enumerate() {
                     if row > 0 {
-                        queue!(handle, MoveTo(0, row as u16))?;
+                        let row = u16::try_from(row).map_err(|_| {
+                            TuiError::Render("frame exceeds terminal height".into())
+                        })?;
+                        queue!(handle, MoveTo(0, row))?;
                     }
                     write_line_stdout(handle, line)?;
                 }
@@ -60,7 +66,7 @@ impl TerminalTarget {
                     if row > 0 {
                         buffer.extend_from_slice(b"\n");
                     }
-                    write_line_buffer(buffer, line)?;
+                    write_line_buffer(buffer, line);
                 }
                 Ok(())
             }
@@ -70,7 +76,7 @@ impl TerminalTarget {
 
 impl Drop for TerminalTarget {
     fn drop(&mut self) {
-        if let TerminalTarget::Stdout {
+        if let Self::Stdout {
             handle,
             raw_mode,
             alternate_screen,
@@ -99,11 +105,10 @@ fn write_line_stdout(handle: &mut Stdout, line: &RenderLine) -> Result<(), TuiEr
     Ok(())
 }
 
-fn write_line_buffer(buffer: &mut Vec<u8>, line: &RenderLine) -> Result<(), TuiError> {
+fn write_line_buffer(buffer: &mut Vec<u8>, line: &RenderLine) {
     for segment in line.segments() {
         buffer.extend_from_slice(segment.content().as_bytes());
     }
-    Ok(())
 }
 
 /// Thin wrapper around the concrete terminal output target.
@@ -115,6 +120,11 @@ pub struct Terminal {
 impl Terminal {
     /// Creates a terminal bound to the process `stdout` handle, enabling raw mode
     /// and entering the alternate screen buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal cannot be initialised or if manipulating
+    /// the TTY fails.
     pub fn stdout() -> Result<Self, TuiError> {
         Ok(Self {
             target: TerminalTarget::stdout()?,
@@ -123,25 +133,34 @@ impl Terminal {
 
     /// Creates a buffered terminal useful for tests.
     #[must_use]
-    pub fn buffered() -> Self {
+    pub const fn buffered() -> Self {
         Self {
             target: TerminalTarget::buffered(),
         }
     }
 
     /// Returns the current terminal size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when querying the terminal size fails.
     pub fn size(&self) -> Result<(u16, u16), TuiError> {
         let size = terminal::size()?;
         Ok(size)
     }
 
     /// Renders a frame to the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal cannot be updated.
     pub fn render(&mut self, frame: &RenderFrame) -> Result<(), TuiError> {
         self.target.write_frame(frame)
     }
 
     /// Returns the buffered contents when the terminal was created via [`Self::buffered`].
-    pub fn snapshot(&self) -> Option<&[u8]> {
+    #[must_use]
+    pub const fn snapshot(&self) -> Option<&[u8]> {
         match &self.target {
             TerminalTarget::Buffer(buffer) => Some(buffer.as_slice()),
             TerminalTarget::Stdout { .. } => None,
