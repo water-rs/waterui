@@ -139,7 +139,7 @@ macro_rules! impl_handle_fn {
             fn handle_inner(&self, env: &Environment) -> R {
 
                 $(
-                    let $ty:$ty=Extractor::extract(env).unwrap();
+                    let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
                 )*
 
                 self($($ty,)*)
@@ -159,7 +159,7 @@ macro_rules! impl_handle_fn_with_state {
             fn handle_inner(&self, state:S, env: &Environment) -> R {
 
                 $(
-                    let $ty:$ty=Extractor::extract(env).unwrap();
+                    let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
                 )*
 
                 self(state,$($ty,)*)
@@ -181,7 +181,7 @@ macro_rules! impl_handle_fn_mut {
             fn handle_inner(&mut self, env: &Environment) -> R {
 
                 $(
-                    let $ty:$ty=Extractor::extract(env).unwrap();
+                    let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
                 )*
 
                 self($($ty,)*)
@@ -205,7 +205,7 @@ macro_rules! impl_handle_fn_once {
             fn handle_inner(self, env: &Environment) -> R {
 
                 $(
-                    let $ty:$ty=Extractor::extract(env).unwrap();
+                    let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
                 )*
 
                 self($($ty,)*)
@@ -429,7 +429,7 @@ macro_rules! impl_view_builder_fn {
             type Output = V;
             fn build_inner(&self, env: &Environment) -> Self::Output {
                 $(
-                    let $param:$param=Extractor::extract(env).unwrap();
+                    let $param:$param=Extractor::extract(env).expect("failed to extract value from environment");
                 )*
                 (self)($($param,)*)
             }
