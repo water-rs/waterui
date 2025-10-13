@@ -59,7 +59,7 @@ This is a Cargo workspace with members across multiple directories. The main cra
 The workspace enforces strict linting via `workspace.lints` in `Cargo.toml`:
 - Missing documentation warnings
 - Comprehensive Clippy checks across all categories
-- Rust edition 2024 with minimum version 1.85
+- Rust edition 2024 with minimum version 1.87
 
 ## No-std Support
 
