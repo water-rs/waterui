@@ -12,8 +12,15 @@
 //! The primary type is `Color`, which can represent colors in sRGB, Display P3,
 //! or OKLCH color spaces, with conversion methods from various tuple formats.
 
+mod oklch;
+pub use oklch::Oklch;
+mod p3;
+pub use p3::P3;
+mod srgb;
+pub use srgb::Srgb;
+
 use core::{
-    fmt::Debug,
+    fmt::{self, Debug, Display},
     ops::{Deref, DerefMut},
 };
 
@@ -37,144 +44,12 @@ impl Default for Color {
     }
 }
 
-/// Represents a color in the Display P3 color space.
-///
-/// P3 is a wider color gamut than sRGB, commonly used in modern displays.
-/// Component values are in the range 0.0 to 1.0.
-#[derive(Debug, Clone, Copy)]
-pub struct P3 {
-    /// Red component (0.0 to 1.0)
-    pub red: f32,
-    /// Green component (0.0 to 1.0)
-    pub green: f32,
-    /// Blue component (0.0 to 1.0)
-    pub blue: f32,
-}
-
-impl P3 {
-    /// Creates a new P3 color from red, green, and blue components.
-    ///
-    /// # Arguments
-    /// * `red` - Red component (0.0 to 1.0)
-    /// * `green` - Green component (0.0 to 1.0)
-    /// * `blue` - Blue component (0.0 to 1.0)
-    #[must_use]
-    pub const fn new(red: f32, green: f32, blue: f32) -> Self {
-        Self { red, green, blue }
-    }
-
-    /// Converts this P3 color to the sRGB color space.
-    #[must_use]
-    pub fn to_srgb(&self) -> Srgb {
-        // convert p3 to srgb color space
-        let linear = [
-            srgb_to_linear(self.red),
-            srgb_to_linear(self.green),
-            srgb_to_linear(self.blue),
-        ];
-        let srgb_linear = p3_to_linear_srgb(linear);
-        Srgb::new(
-            linear_to_srgb(srgb_linear[0]),
-            linear_to_srgb(srgb_linear[1]),
-            linear_to_srgb(srgb_linear[2]),
-        )
-    }
-}
-
 impl_constant!(ResolvedColor);
-
-impl Resolvable for P3 {
-    type Resolved = ResolvedColor;
-    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let linear_p3 = [
-            srgb_to_linear(self.red),
-            srgb_to_linear(self.green),
-            srgb_to_linear(self.blue),
-        ];
-        let linear_srgb = p3_to_linear_srgb(linear_p3);
-        ResolvedColor {
-            red: linear_srgb[0],
-            green: linear_srgb[1],
-            blue: linear_srgb[2],
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
 
 impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
     fn from(value: T) -> Self {
         Self::new(value)
     }
-}
-
-/// Represents a color in the perceptually-uniform OKLCH color space.
-///
-/// Lightness is expressed in the range 0.0 to 1.0, chroma controls the color
-/// intensity, and hue is measured in degrees.
-#[derive(Debug, Clone, Copy)]
-pub struct Oklch {
-    /// Perceptual lightness component (0.0 to 1.0).
-    pub lightness: f32,
-    /// Perceptual chroma component.
-    pub chroma: f32,
-    /// Hue angle in degrees.
-    pub hue: f32,
-}
-
-impl Oklch {
-    /// Creates a new OKLCH color from its lightness, chroma, and hue
-    /// components.
-    #[must_use]
-    pub const fn new(lightness: f32, chroma: f32, hue: f32) -> Self {
-        Self {
-            lightness,
-            chroma,
-            hue,
-        }
-    }
-
-    /// Converts this OKLCH color into the sRGB color space.
-    #[must_use]
-    pub fn to_srgb(&self) -> Srgb {
-        let [red, green, blue] = oklch_to_linear_srgb(self.lightness, self.chroma, self.hue);
-
-        Srgb::new(
-            linear_to_srgb(red),
-            linear_to_srgb(green),
-            linear_to_srgb(blue),
-        )
-    }
-}
-
-impl Resolvable for Oklch {
-    type Resolved = ResolvedColor;
-
-    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let [red, green, blue] = oklch_to_linear_srgb(self.lightness, self.chroma, self.hue);
-
-        ResolvedColor {
-            red,
-            green,
-            blue,
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
-/// Represents a color in the sRGB color space.
-///
-/// sRGB is the standard RGB color space used in most displays and web content.
-/// Component values are in the range 0.0 to 1.0.
-#[derive(Debug, Clone, Copy)]
-pub struct Srgb {
-    /// Red component (0.0 to 1.0)
-    pub red: f32,
-    /// Green component (0.0 to 1.0)
-    pub green: f32,
-    /// Blue component (0.0 to 1.0)
-    pub blue: f32,
 }
 
 /// Represents a color with an opacity/alpha value applied.
@@ -225,154 +100,27 @@ impl<T> DerefMut for WithOpacity<T> {
     }
 }
 
-mod parse {
-    const fn hex_digit(b: u8) -> u8 {
-        match b {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'f' => b - b'a' + 10,
-            b'A'..=b'F' => b - b'A' + 10,
-            _ => panic!("invalid hex digit"),
-        }
-    }
+/// Errors that can occur when parsing hexadecimal color strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HexColorError {
+    /// The provided string does not have the expected 6 hexadecimal digits.
+    InvalidLength,
+    /// A non-hexadecimal character was encountered at the provided index.
+    InvalidDigit(usize),
+}
 
-    const fn from_hex_byte(s: &[u8], i: usize) -> u8 {
-        (hex_digit(s[i]) << 4) | hex_digit(s[i + 1])
-    }
-
-    pub const fn parse_hex_color(s: &str) -> (u8, u8, u8) {
-        let bytes = s.as_bytes();
-        let mut i = 0;
-
-        if !bytes.is_empty() && bytes[0] == b'#' {
-            i = 1;
-        } else if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] == b'x' || bytes[1] == b'X') {
-            i = 2;
-        }
-
-        if bytes.len() - i == 6 {
-            (
-                from_hex_byte(bytes, i),
-                from_hex_byte(bytes, i + 2),
-                from_hex_byte(bytes, i + 4),
-            )
-        } else {
-            panic!("expected 6 hex digits");
+impl Display for HexColorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLength => f.write_str("expected exactly 6 hexadecimal digits"),
+            Self::InvalidDigit(index) => {
+                write!(f, "invalid hexadecimal digit at byte index {index}")
+            }
         }
     }
 }
 
-impl Srgb {
-    const RED: Self = Self::from_hex("#F44336");
-    const PINK: Self = Self::from_hex("#E91E63");
-    const PURPLE: Self = Self::from_hex("#9C27B0");
-    const DEEP_PURPLE: Self = Self::from_hex("#673AB7");
-    const INDIGO: Self = Self::from_hex("#3F51B5");
-    const BLUE: Self = Self::from_hex("#2196F3");
-    const LIGHT_BLUE: Self = Self::from_hex("#03A9F4");
-    const CYAN: Self = Self::from_hex("#00BCD4");
-    const TEAL: Self = Self::from_hex("#009688");
-    const GREEN: Self = Self::from_hex("#4CAF50");
-    const LIGHT_GREEN: Self = Self::from_hex("#8BC34A");
-    const LIME: Self = Self::from_hex("#CDDC39");
-    const YELLOW: Self = Self::from_hex("#FFEB3B");
-    const AMBER: Self = Self::from_hex("#FFC107");
-    const ORANGE: Self = Self::from_hex("#FF9800");
-    const DEEP_ORANGE: Self = Self::from_hex("#FF5722");
-    const BROWN: Self = Self::from_hex("#795548");
-    const GREY: Self = Self::from_hex("#9E9E9E");
-    const BLUE_GREY: Self = Self::from_hex("#607D8B");
-    /// Black color.
-    pub const BLACK: Self = Self::from_hex("#000000");
-    /// White color.
-    pub const WHITE: Self = Self::from_hex("#FFFFFF");
-
-    /// Creates a new sRGB color from red, green, and blue components.
-    ///
-    /// # Arguments
-    /// * `red` - Red component (0.0 to 1.0)
-    /// * `green` - Green component (0.0 to 1.0)
-    /// * `blue` - Blue component (0.0 to 1.0)
-    #[must_use]
-    pub const fn new(red: f32, green: f32, blue: f32) -> Self {
-        Self { red, green, blue }
-    }
-
-    /// Creates a new sRGB color from 8-bit red, green, and blue components.
-    ///
-    /// # Arguments
-    /// * `red` - Red component (0-255)
-    /// * `green` - Green component (0-255)
-    /// * `blue` - Blue component (0-255)
-    #[must_use]
-    pub const fn new_u8(red: u8, green: u8, blue: u8) -> Self {
-        Self {
-            red: red as f32 / 255.0,
-            green: green as f32 / 255.0,
-            blue: blue as f32 / 255.0,
-        }
-    }
-
-    /// Creates a new sRGB color from a hexadecimal color string.
-    ///
-    /// # Arguments
-    /// * `hex` - Hex color string (e.g., "#FF5722" or "0xFF5722")
-    #[must_use]
-    pub const fn from_hex(hex: &str) -> Self {
-        let (red, green, blue) = parse::parse_hex_color(hex);
-        Self::new_u8(red, green, blue)
-    }
-
-    /// Converts this sRGB color to the P3 color space.
-    #[must_use]
-    pub fn to_p3(&self) -> P3 {
-        // convert srgb to p3 color space
-        let linear = [
-            srgb_to_linear(self.red),
-            srgb_to_linear(self.green),
-            srgb_to_linear(self.blue),
-        ];
-        let p3_linear = linear_srgb_to_p3(linear);
-        P3::new(
-            linear_to_srgb(p3_linear[0]),
-            linear_to_srgb(p3_linear[1]),
-            linear_to_srgb(p3_linear[2]),
-        )
-    }
-
-    /// Creates a color with the specified opacity applied.
-    ///
-    /// # Arguments
-    /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
-    #[must_use]
-    pub const fn with_opacity(self, opacity: f32) -> WithOpacity<Self> {
-        WithOpacity::new(self, opacity)
-    }
-
-    /// Resolves this sRGB color to a `ResolvedColor` in linear RGB color space.
-    #[must_use]
-    pub fn resolve(&self) -> ResolvedColor {
-        ResolvedColor {
-            red: srgb_to_linear(self.red),
-            green: srgb_to_linear(self.green),
-            blue: srgb_to_linear(self.blue),
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
-impl Resolvable for Srgb {
-    type Resolved = ResolvedColor;
-    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        ResolvedColor {
-            red: srgb_to_linear(self.red),
-            green: srgb_to_linear(self.green),
-            blue: srgb_to_linear(self.blue),
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
+mod parse;
 
 /// Represents a resolved color in linear sRGB color space with extended range support.
 ///
@@ -390,6 +138,70 @@ pub struct ResolvedColor {
     pub headroom: f32,
     /// Opacity/alpha channel (0.0 = transparent, 1.0 = opaque)
     pub opacity: f32,
+}
+
+impl ResolvedColor {
+    /// Creates a resolved color from an sRGB color with default metadata.
+    #[must_use]
+    pub fn from_srgb(color: Srgb) -> Self {
+        color.resolve()
+    }
+
+    /// Converts this resolved color back into sRGB space (with gamma correction).
+    #[must_use]
+    pub fn to_srgb(&self) -> Srgb {
+        Srgb::new(
+            linear_to_srgb(self.red),
+            linear_to_srgb(self.green),
+            linear_to_srgb(self.blue),
+        )
+    }
+
+    /// Converts this resolved color into the OKLCH color space.
+    #[must_use]
+    pub fn to_oklch(&self) -> Oklch {
+        linear_srgb_to_oklch(self.red, self.green, self.blue)
+    }
+
+    /// Creates a resolved color from an OKLCH color with the provided metadata.
+    #[must_use]
+    pub fn from_oklch(oklch: Oklch, headroom: f32, opacity: f32) -> Self {
+        let [red, green, blue] = oklch_to_linear_srgb(oklch.lightness, oklch.chroma, oklch.hue);
+        Self {
+            red,
+            green,
+            blue,
+            headroom,
+            opacity,
+        }
+    }
+
+    /// Returns a copy of this color with the provided opacity.
+    #[must_use]
+    pub const fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    /// Returns a copy of this color with the provided headroom value.
+    #[must_use]
+    pub const fn with_headroom(mut self, headroom: f32) -> Self {
+        self.headroom = headroom;
+        self
+    }
+
+    /// Linearly interpolates between this color and another color.
+    #[must_use]
+    pub fn lerp(self, other: Self, factor: f32) -> Self {
+        let t = factor.clamp(0.0, 1.0);
+        Self {
+            red: lerp(self.red, other.red, t),
+            green: lerp(self.green, other.green, t),
+            blue: lerp(self.blue, other.blue, t),
+            headroom: lerp(self.headroom, other.headroom, t),
+            opacity: lerp(self.opacity, other.opacity, t),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd, Hash, Eq, Ord)]
@@ -414,6 +226,49 @@ impl Color {
     /// * `custom` - A resolvable color implementation
     pub fn new(custom: impl Resolvable<Resolved = ResolvedColor> + 'static) -> Self {
         Self(AnyResolvable::new(custom))
+    }
+
+    fn map_resolved(self, func: impl Fn(ResolvedColor) -> ResolvedColor + Clone + 'static) -> Self {
+        Self::new(resolve::Map::new(self.0, func))
+    }
+
+    fn map_oklch(self, func: impl Fn(Oklch) -> Oklch + Clone + 'static) -> Self {
+        self.map_resolved(move |resolved| {
+            let base = resolved.to_oklch();
+            let mut mapped = func(base);
+
+            if !mapped.lightness.is_finite() {
+                mapped.lightness = base.lightness;
+            }
+            mapped.lightness = clamp_unit(mapped.lightness);
+
+            if !mapped.chroma.is_finite() {
+                mapped.chroma = base.chroma;
+            }
+            mapped.chroma = clamp_non_negative(mapped.chroma);
+
+            if !mapped.hue.is_finite() {
+                mapped.hue = base.hue;
+            }
+            mapped.hue = normalize_hue(mapped.hue);
+
+            ResolvedColor::from_oklch(mapped, resolved.headroom, resolved.opacity)
+        })
+    }
+
+    fn adjust_lightness(self, delta: f32) -> Self {
+        self.map_oklch(move |mut color| {
+            color.lightness = clamp_unit(color.lightness + delta);
+            color
+        })
+    }
+
+    fn adjust_chroma(self, scale: f32) -> Self {
+        self.map_oklch(move |mut color| {
+            let factor = scale.max(0.0);
+            color.chroma = clamp_non_negative(color.chroma * factor);
+            color
+        })
     }
 
     /// Creates an sRGB color from 8-bit color components.
@@ -462,16 +317,50 @@ impl Color {
         Self::new(Oklch::new(lightness, chroma, hue))
     }
 
+    /// Creates an sRGB color from a hexadecimal color string.
+    ///
+    /// Panics if the string does not contain exactly six hexadecimal digits.
+    #[must_use]
+    pub fn srgb_hex(hex: &str) -> Self {
+        Self::new(Srgb::from_hex(hex))
+    }
+
+    /// Tries to create an sRGB color from a hexadecimal color string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HexColorError`] if the provided string is not a valid six-digit
+    /// hexadecimal color.
+    pub fn try_srgb_hex(hex: &str) -> Result<Self, HexColorError> {
+        Srgb::try_from_hex(hex).map(Self::from)
+    }
+
+    /// Creates an sRGB color from a packed 0xRRGGBB value.
+    #[must_use]
+    pub fn srgb_u32(rgb: u32) -> Self {
+        Self::from(Srgb::from_u32(rgb))
+    }
+
+    /// Returns a fully transparent color.
+    #[must_use]
+    pub fn transparent() -> Self {
+        Self::srgb(0, 0, 0).with_opacity(0.0)
+    }
+
     /// Creates a new color with the specified opacity applied.
     ///
     /// # Arguments
     /// * `opacity` - Opacity value (0.0 = transparent, 1.0 = opaque)
     #[must_use]
     pub fn with_opacity(self, opacity: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut resolved| {
-            resolved.opacity = opacity;
-            resolved
-        }))
+        let clamped = clamp_unit(opacity);
+        self.map_resolved(move |resolved| resolved.with_opacity(clamped))
+    }
+
+    /// Alias for [`with_opacity`].
+    #[must_use]
+    pub fn with_alpha(self, opacity: f32) -> Self {
+        self.with_opacity(opacity)
     }
 
     /// Creates a new color with extended headroom for HDR content.
@@ -480,10 +369,52 @@ impl Color {
     /// * `headroom` - Additional headroom value for extended range
     #[must_use]
     pub fn with_headroom(self, headroom: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut resolved| {
-            resolved.headroom = headroom;
-            resolved
-        }))
+        let clamped = clamp_non_negative(headroom);
+        self.map_resolved(move |resolved| resolved.with_headroom(clamped))
+    }
+
+    /// Lightens the color by increasing its OKLCH lightness component.
+    #[must_use]
+    pub fn lighten(self, amount: f32) -> Self {
+        self.adjust_lightness(clamp_unit(amount.max(0.0)))
+    }
+
+    /// Darkens the color by decreasing its OKLCH lightness component.
+    #[must_use]
+    pub fn darken(self, amount: f32) -> Self {
+        self.adjust_lightness(-clamp_unit(amount.max(0.0)))
+    }
+
+    /// Adjusts the color saturation by scaling the OKLCH chroma component.
+    #[must_use]
+    pub fn saturate(self, amount: f32) -> Self {
+        self.adjust_chroma(1.0 + amount)
+    }
+
+    /// Decreases the color saturation by scaling the OKLCH chroma component down.
+    #[must_use]
+    pub fn desaturate(self, amount: f32) -> Self {
+        self.adjust_chroma(1.0 - clamp_unit(amount.max(0.0)))
+    }
+
+    /// Rotates the color's hue by the provided number of degrees.
+    #[must_use]
+    pub fn hue_rotate(self, degrees: f32) -> Self {
+        self.map_oklch(move |mut color| {
+            color.hue = normalize_hue(color.hue + degrees);
+            color
+        })
+    }
+
+    /// Mixes this color with another color using linear interpolation.
+    #[must_use]
+    pub fn mix(self, other: impl Into<Self>, factor: f32) -> Self {
+        let other = other.into();
+        Self::new(Mix {
+            first: self.0,
+            second: other.0,
+            factor: clamp_unit(factor),
+        })
     }
 
     /// Resolves this color to a concrete color value in the given environment.
@@ -493,6 +424,25 @@ impl Color {
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> Computed<ResolvedColor> {
         self.0.resolve(env)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Mix {
+    first: AnyResolvable<ResolvedColor>,
+    second: AnyResolvable<ResolvedColor>,
+    factor: f32,
+}
+
+impl Resolvable for Mix {
+    type Resolved = ResolvedColor;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let factor = self.factor;
+        self.first
+            .resolve(env)
+            .zip(self.second.resolve(env))
+            .map(move |(a, b)| a.lerp(b, factor))
     }
 }
 
@@ -584,6 +534,68 @@ fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+#[allow(
+    clippy::excessive_precision,
+    clippy::many_single_char_names,
+    clippy::suboptimal_flops
+)]
+fn linear_srgb_to_oklab(red: f32, green: f32, blue: f32) -> [f32; 3] {
+    let l = 0.412_221_470_8_f32.mul_add(red, 0.536_332_536_3 * green) + 0.051_445_992_9 * blue;
+    let m = 0.211_903_498_2_f32.mul_add(red, 0.680_699_545_1 * green) + 0.107_396_956_6 * blue;
+    let s = 0.088_302_461_9_f32.mul_add(red, 0.281_718_837_6 * green) + 0.629_978_700_5 * blue;
+
+    let l_ = l.cbrt();
+    let m_ = m.cbrt();
+    let s_ = s.cbrt();
+
+    [
+        0.210_454_255_3_f32.mul_add(l_, 0.793_617_785 * m_) - 0.004_072_046_8 * s_,
+        1.977_998_495_1_f32.mul_add(l_, (-2.428_592_205_f32).mul_add(m_, 0.450_593_709_9 * s_)),
+        0.025_904_037_1_f32.mul_add(l_, 0.782_771_766_2 * m_) - 0.808_675_766 * s_,
+    ]
+}
+
+#[allow(
+    clippy::excessive_precision,
+    clippy::many_single_char_names,
+    clippy::suboptimal_flops
+)]
+fn linear_srgb_to_oklch(red: f32, green: f32, blue: f32) -> Oklch {
+    let [lightness, a, b] = linear_srgb_to_oklab(red, green, blue);
+    let chroma = a.hypot(b);
+    let mut hue = b.atan2(a).to_degrees();
+    if hue < 0.0 {
+        hue += 360.0;
+    }
+
+    Oklch::new(lightness, chroma, hue)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    (b - a).mul_add(t, a)
+}
+
+const fn clamp_unit(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
+}
+
+const fn clamp_non_negative(value: f32) -> f32 {
+    value.max(0.0)
+}
+
+fn normalize_hue(mut hue: f32) -> f32 {
+    hue %= 360.0;
+    if hue < 0.0 {
+        hue += 360.0;
+    }
+    hue
+}
+
+#[allow(
+    clippy::excessive_precision,
+    clippy::many_single_char_names,
+    clippy::suboptimal_flops
+)]
 fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [f32; 3] {
     let hue_radians = hue_degrees.to_radians();
     let (sin_hue, cos_hue) = hue_radians.sin_cos();
@@ -594,9 +606,9 @@ fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [f32; 
     let m_ = lightness - 0.105_561_345_8_f32.mul_add(a, 0.063_854_172_8 * b);
     let s_ = lightness - 0.089_484_177_5_f32.mul_add(a, 1.291_485_548 * b);
 
-    let l = l_.powf(3.0);
-    let m = m_.powf(3.0);
-    let s = s_.powf(3.0);
+    let l = l_.powi(3);
+    let m = m_.powi(3);
+    let s = s_.powi(3);
 
     [
         4.076_741_662_1_f32.mul_add(l, (-3.307_711_591_3_f32).mul_add(m, 0.230_969_929_2 * s)),
@@ -753,5 +765,73 @@ mod tests {
         assert!(approx_eq(direct.red, bare.red, EPSILON));
         assert!(approx_eq(direct.green, bare.green, EPSILON));
         assert!(approx_eq(direct.blue, bare.blue, EPSILON));
+    }
+
+    #[test]
+    fn try_hex_reports_errors() {
+        assert!(matches!(
+            Srgb::try_from_hex("#GGGGGG"),
+            Err(HexColorError::InvalidDigit(1))
+        ));
+
+        assert!(matches!(
+            Srgb::try_from_hex("#123"),
+            Err(HexColorError::InvalidLength)
+        ));
+    }
+
+    #[test]
+    fn transparent_color_has_zero_opacity() {
+        let env = Environment::new();
+        let transparent = Color::transparent().resolve(&env).get();
+        assert!(approx_eq(transparent.opacity, 0.0, EPSILON));
+    }
+
+    #[test]
+    fn lighten_and_darken_adjust_lightness() {
+        let env = Environment::new();
+        let base = Color::oklch(0.4, 0.12, 90.0);
+        let base_lch = base.resolve(&env).get().to_oklch();
+        let lighter = base.clone().lighten(0.2).resolve(&env).get().to_oklch();
+        let darker = base.darken(0.2).resolve(&env).get().to_oklch();
+
+        assert!(lighter.lightness > base_lch.lightness);
+        assert!(darker.lightness < base_lch.lightness);
+    }
+
+    #[test]
+    fn saturate_and_desaturate_adjust_chroma() {
+        let env = Environment::new();
+        let base = Color::oklch(0.5, 0.2, 45.0);
+        let base_chroma = base.resolve(&env).get().to_oklch().chroma;
+        let saturated = base.clone().saturate(0.5).resolve(&env).get().to_oklch();
+        let desaturated = base.desaturate(0.5).resolve(&env).get().to_oklch();
+
+        assert!(saturated.chroma > base_chroma);
+        assert!(desaturated.chroma < base_chroma);
+    }
+
+    #[test]
+    fn hue_rotation_wraps_within_range() {
+        let env = Environment::new();
+        let rotated = Color::oklch(0.6, 0.18, 350.0)
+            .hue_rotate(40.0)
+            .resolve(&env)
+            .get()
+            .to_oklch();
+
+        assert!(approx_eq(rotated.hue, 30.0, EPSILON_WIDE));
+    }
+
+    #[test]
+    fn color_mixing_linearly_interpolates() {
+        let env = Environment::new();
+        let black = Color::srgb(0, 0, 0);
+        let white = Color::srgb(255, 255, 255);
+        let mid = black.mix(white, 0.5).resolve(&env).get();
+
+        assert!(approx_eq(mid.red, 0.5, EPSILON));
+        assert!(approx_eq(mid.green, 0.5, EPSILON));
+        assert!(approx_eq(mid.blue, 0.5, EPSILON));
     }
 }
