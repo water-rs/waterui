@@ -4,7 +4,7 @@ use waterui::component::{
     Native,
     list::{ListConfig, ListItem},
 };
-use waterui::views::{AnyViews, ViewsExt};
+use waterui::views::ViewsExt;
 
 #[repr(C)]
 pub struct WuiListItem {
@@ -29,9 +29,8 @@ impl IntoFFI for ListConfig {
     type FFI = WuiList;
 
     fn into_ffi(self) -> Self::FFI {
-        let mapped: AnyViews<_> = AnyViews::new(self.contents.map(|item| item.content));
         WuiList {
-            contents: mapped.into_ffi(),
+            contents: self.contents.erase().into_ffi(),
         }
     }
 }

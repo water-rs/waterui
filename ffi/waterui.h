@@ -44,6 +44,35 @@ typedef enum WuiFontWeight {
   WuiFontWeight_Black,
 } WuiFontWeight;
 
+/**
+ * Gesture event kind.
+ */
+typedef enum WuiGestureEventKind {
+  WuiGestureEventKind_Tap,
+  WuiGestureEventKind_LongPress,
+  WuiGestureEventKind_Drag,
+  WuiGestureEventKind_Magnification,
+} WuiGestureEventKind;
+
+/**
+ * Describes the kind of gesture attached to a metadata entry.
+ */
+typedef enum WuiGestureKind {
+  WuiGestureKind_Tap,
+  WuiGestureKind_LongPress,
+  WuiGestureKind_Drag,
+  WuiGestureKind_Magnification,
+  WuiGestureKind_Rotation,
+  WuiGestureKind_Then,
+} WuiGestureKind;
+
+typedef enum WuiGesturePhase {
+  WuiGesturePhase_Started,
+  WuiGesturePhase_Updated,
+  WuiGesturePhase_Ended,
+  WuiGesturePhase_Cancelled,
+} WuiGesturePhase;
+
 typedef enum WuiKeyboardType {
   WuiKeyboardType_Text,
   WuiKeyboardType_Secure,
@@ -58,8 +87,14 @@ typedef enum WuiProgressStyle {
   WuiProgressStyle_Circular,
 } WuiProgressStyle;
 
+/**
+ * Pixel formats supported by the renderer bridge FFI.
+ */
 typedef enum WuiRendererBufferFormat {
-  WuiRendererBufferFormat_Rgba8888,
+  /**
+   * 8-bit per channel RGBA pixels in native byte order.
+   */
+  WuiRendererBufferFormat_Rgba8888 = 0,
 } WuiRendererBufferFormat;
 
 /**
@@ -204,6 +239,14 @@ typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Vec_TableColumn Computed_Vec_TableColumn;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Video Computed_Video;
 
 /**
@@ -267,7 +310,6 @@ typedef struct WuiAction WuiAction;
 typedef struct WuiAnyView WuiAnyView;
 
 typedef struct WuiAnyViews WuiAnyViews;
-typedef struct WuiSharedAnyViews WuiSharedAnyViews;
 
 typedef struct WuiColor WuiColor;
 
@@ -282,93 +324,10 @@ typedef struct WuiLayout WuiLayout;
 typedef struct WuiRendererView WuiRendererView;
 
 typedef struct WuiTabContent WuiTabContent;
-typedef struct WuiTableColumns WuiTableColumns;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
-
-typedef enum WuiGestureKind {
-  WuiGestureKind_Tap,
-  WuiGestureKind_LongPress,
-  WuiGestureKind_Drag,
-  WuiGestureKind_Magnification,
-  WuiGestureKind_Rotation,
-  WuiGestureKind_Then,
-} WuiGestureKind;
-
-typedef struct WuiTapGesture {
-  uint32_t count;
-} WuiTapGesture;
-
-typedef struct WuiLongPressGesture {
-  uint32_t duration;
-} WuiLongPressGesture;
-
-typedef struct WuiDragGesture {
-  float min_distance;
-} WuiDragGesture;
-
-typedef struct WuiMagnificationGesture {
-  float initial_scale;
-} WuiMagnificationGesture;
-
-typedef struct WuiRotationGesture {
-  float initial_angle;
-} WuiRotationGesture;
-
-typedef struct WuiGesture {
-  enum WuiGestureKind kind;
-  struct WuiTapGesture tap;
-  struct WuiLongPressGesture long_press;
-  struct WuiDragGesture drag;
-  struct WuiMagnificationGesture magnification;
-  struct WuiRotationGesture rotation;
-  struct WuiGesture *first;
-  struct WuiGesture *then;
-} WuiGesture;
-
-typedef struct WuiGestureObserverValue {
-  struct WuiGesture *gesture;
-  struct WuiAction *action;
-} WuiGestureObserverValue;
-
-typedef struct WuiGestureMetadata {
-  struct WuiAnyView *view;
-  struct WuiGesture *gesture;
-  struct WuiAction *action;
-} WuiGestureMetadata;
-
-typedef enum WuiGesturePhase {
-  WuiGesturePhase_Started,
-  WuiGesturePhase_Updated,
-  WuiGesturePhase_Ended,
-  WuiGesturePhase_Cancelled,
-} WuiGesturePhase;
-
-typedef struct WuiGesturePoint {
-  float x;
-  float y;
-} WuiGesturePoint;
-
-typedef enum WuiGestureEventKind {
-  WuiGestureEventKind_Tap,
-  WuiGestureEventKind_LongPress,
-  WuiGestureEventKind_Drag,
-  WuiGestureEventKind_Magnification,
-} WuiGestureEventKind;
-
-typedef struct WuiGestureEvent {
-  enum WuiGestureEventKind kind;
-  enum WuiGesturePhase phase;
-  struct WuiGesturePoint location;
-  struct WuiGesturePoint translation;
-  struct WuiGesturePoint velocity;
-  float scale;
-  float velocity_scalar;
-  uint32_t count;
-  float duration;
-} WuiGestureEvent;
 
 /**
  * A C-compatible representation of Rust's `core::any::TypeId`.
@@ -566,6 +525,10 @@ typedef struct WuiButton {
    */
   struct WuiAction *action;
 } WuiButton;
+
+typedef struct WuiLazy {
+  struct WuiAnyViews *contents;
+} WuiLazy;
 
 typedef struct WuiLink {
   struct WuiAnyView *label;
@@ -824,12 +787,36 @@ typedef struct WuiList {
   struct WuiAnyViews *contents;
 } WuiList;
 
-typedef struct WuiTableColumn {
-  struct WuiSharedAnyViews *rows;
-} WuiTableColumn;
+typedef struct WuiArraySlice_____WuiAnyViews {
+  struct WuiAnyViews **head;
+  uintptr_t len;
+} WuiArraySlice_____WuiAnyViews;
+
+typedef struct WuiArrayVTable_____WuiAnyViews {
+  void (*drop)(void*);
+  struct WuiArraySlice_____WuiAnyViews (*slice)(const void*);
+} WuiArrayVTable_____WuiAnyViews;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_____WuiAnyViews {
+  NonNull data;
+  struct WuiArrayVTable_____WuiAnyViews vtable;
+} WuiArray_____WuiAnyViews;
+
+typedef struct WuiWatcher_WuiArray_____WuiAnyViews {
+  void *data;
+  void (*call)(const void*, struct WuiArray_____WuiAnyViews, struct WuiWatcherMetadata*);
+  void (*drop)(void*);
+} WuiWatcher_WuiArray_____WuiAnyViews;
 
 typedef struct WuiTable {
-  struct WuiTableColumns *columns;
+  struct Computed_Vec_TableColumn *columns;
 } WuiTable;
 
 typedef struct WuiProgress {
@@ -838,6 +825,66 @@ typedef struct WuiProgress {
   struct Computed_f64 *value;
   enum WuiProgressStyle style;
 } WuiProgress;
+
+typedef struct WuiTapGesture {
+  uint32_t count;
+} WuiTapGesture;
+
+typedef struct WuiLongPressGesture {
+  uint32_t duration;
+} WuiLongPressGesture;
+
+typedef struct WuiDragGesture {
+  float min_distance;
+} WuiDragGesture;
+
+typedef struct WuiMagnificationGesture {
+  float initial_scale;
+} WuiMagnificationGesture;
+
+typedef struct WuiRotationGesture {
+  float initial_angle;
+} WuiRotationGesture;
+
+typedef struct WuiGesture {
+  enum WuiGestureKind kind;
+  struct WuiTapGesture tap;
+  struct WuiLongPressGesture long_press;
+  struct WuiDragGesture drag;
+  struct WuiMagnificationGesture magnification;
+  struct WuiRotationGesture rotation;
+  struct WuiGesture *first;
+  struct WuiGesture *then;
+} WuiGesture;
+
+typedef struct WuiGestureMetadata {
+  struct WuiAnyView *view;
+  struct WuiGesture *gesture;
+  struct WuiAction *action;
+} WuiGestureMetadata;
+
+/**
+ * FFI-safe two-dimensional point used in gesture payloads.
+ */
+typedef struct WuiGesturePoint {
+  float x;
+  float y;
+} WuiGesturePoint;
+
+/**
+ * FFI-safe gesture event payload sent from the backend.
+ */
+typedef struct WuiGestureEvent {
+  enum WuiGestureEventKind kind;
+  enum WuiGesturePhase phase;
+  struct WuiGesturePoint location;
+  struct WuiGesturePoint translation;
+  struct WuiGesturePoint velocity;
+  float scale;
+  float velocity_scalar;
+  uint32_t count;
+  float duration;
+} WuiGestureEvent;
 
 typedef struct WuiWatcher_WuiStr {
   void *data;
@@ -1020,37 +1067,6 @@ void waterui_drop_action(struct WuiAction *value);
  * * `env` must be a valid pointer to a `waterui_env` struct.
  */
 void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
-
-/**
- * Drops the FFI value.
- *
- * # Safety
- *
- * The pointer must be a valid pointer to a properly initialized value
- * of the expected type, and must not be used after this function is called.
- */
-void waterui_drop_gesture(struct WuiGesture *value);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiGestureMetadata waterui_force_as_gesture(struct WuiAnyView *view);
-
-struct WuiTypeId waterui_gesture_id(void);
-
-/**
- * Calls a gesture action with the provided event payload.
- *
- * # Safety
- *
- * * `action` must be a valid pointer to an existing `WuiAction`.
- * * `env` must be a valid pointer to an existing `WuiEnv`.
- */
-void waterui_call_gesture_action(struct WuiAction *action,
-                                 const struct WuiEnv *env,
-                                 struct WuiGestureEvent event);
 
 enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
@@ -1281,6 +1297,15 @@ struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_button_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiLazy waterui_force_as_lazy(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_lazy_id(void);
 
 /**
  * # Safety
@@ -1547,6 +1572,37 @@ void waterui_list_item_call_delete(struct WuiListItem *item,
                                    uintptr_t index);
 
 /**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * If `value` is NULL, this function does nothing. If `value` is not a valid pointer
+ * to a properly initialized value of the expected type, undefined behavior will occur.
+ * The pointer must not be used after this function is called.
+ */
+void waterui_drop_computed_table_cols(struct Computed_Vec_TableColumn *value);
+
+/**
+ * Reads the current value from a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiArray_____WuiAnyViews waterui_read_computed_table_cols(const struct Computed_Vec_TableColumn *computed);
+
+/**
+ * Watches for changes in a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_Vec_TableColumn *computed,
+                                                          struct WuiWatcher_WuiArray_____WuiAnyViews watcher);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1554,17 +1610,6 @@ void waterui_list_item_call_delete(struct WuiListItem *item,
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_table_id(void);
-
-struct WuiTypeId waterui_table_column_id(void);
-
-void waterui_drop_table_columns(struct WuiTableColumns *value);
-
-uintptr_t waterui_table_columns_len(const struct WuiTableColumns *columns);
-
-struct WuiTableColumn waterui_table_columns_get_column(const struct WuiTableColumns *columns,
-                                                       uintptr_t index);
-
-struct WuiId waterui_table_columns_get_id(const struct WuiTableColumns *columns, uintptr_t index);
 
 /**
  * # Safety
@@ -1575,6 +1620,14 @@ struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_progress_id(void);
 
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * The pointer must be a valid pointer to a properly initialized value
+ * of the expected type, and must not be used after this function is called.
+ */
 void waterui_drop_renderer_view(struct WuiRendererView *value);
 
 /**
@@ -1590,8 +1643,7 @@ float waterui_renderer_view_width(const struct WuiRendererView *view);
 
 float waterui_renderer_view_height(const struct WuiRendererView *view);
 
-enum WuiRendererBufferFormat
-waterui_renderer_view_preferred_format(const struct WuiRendererView *view);
+enum WuiRendererBufferFormat waterui_renderer_view_preferred_format(const struct WuiRendererView *_view);
 
 bool waterui_renderer_view_render_cpu(struct WuiRendererView *view,
                                       uint8_t *pixels,
@@ -1599,6 +1651,37 @@ bool waterui_renderer_view_render_cpu(struct WuiRendererView *view,
                                       uint32_t height,
                                       uintptr_t stride,
                                       enum WuiRendererBufferFormat format);
+
+/**
+ * Releases a gesture descriptor tree allocated by Rust.
+ *
+ * # Safety
+ *
+ * The pointer must either be null or point to a gesture obtained through
+ * `waterui_force_as_gesture` or any conversion that returns a `WuiGesture` pointer.
+ */
+void waterui_drop_gesture(struct WuiGesture *value);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiGestureMetadata waterui_force_as_gesture(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_gesture_id(void);
+
+/**
+ * Calls a gesture action with the provided event payload.
+ *
+ * # Safety
+ *
+ * * `action` must be a valid pointer to an existing `WuiAction`.
+ * * `env` must be a valid pointer to an existing `WuiEnv`.
+ */
+void waterui_call_gesture_action(struct WuiAction *action,
+                                 const struct WuiEnv *env,
+                                 struct WuiGestureEvent event);
 
 /**
  * Drops the FFI value.
@@ -2153,35 +2236,13 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *bindin
  * The pointer must be a valid pointer to a properly initialized value
  * of the expected type, and must not be used after this function is called.
  */
-void waterui_drop_any_views(struct WuiAnyViews *value);
+void waterui_drop_anyviews(struct WuiAnyViews *value);
 
-uintptr_t waterui_any_views_len(const struct WuiAnyViews *views);
+struct WuiId waterui_anyviews_get_id(const struct WuiAnyViews *anyviews, uintptr_t index);
 
-struct WuiAnyView *waterui_any_views_get_view(const struct WuiAnyViews *views, uintptr_t index);
+struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, uintptr_t index);
 
-struct WuiId waterui_any_views_get_id(const struct WuiAnyViews *views, uintptr_t index);
-
-void waterui_drop_any_views_opaque(void *value);
-
-uintptr_t waterui_any_views_len_opaque(const void *views);
-
-struct WuiAnyView *waterui_any_views_get_view_opaque(const void *views, uintptr_t index);
-
-struct WuiId waterui_any_views_get_id_opaque(const void *views, uintptr_t index);
-
-void waterui_drop_shared_any_views(struct WuiSharedAnyViews *value);
-
-uintptr_t waterui_shared_any_views_len(const struct WuiSharedAnyViews *views);
-
-struct WuiAnyView *waterui_shared_any_views_get_view(const struct WuiSharedAnyViews *views, uintptr_t index);
-
-struct WuiId waterui_shared_any_views_get_id(const struct WuiSharedAnyViews *views, uintptr_t index);
-
-uintptr_t waterui_shared_any_views_len_opaque(const void *views);
-
-struct WuiAnyView *waterui_shared_any_views_get_view_opaque(const void *views, uintptr_t index);
-
-struct WuiId waterui_shared_any_views_get_id_opaque(const void *views, uintptr_t index);
+uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
 
 WuiEnv* waterui_init(void);
 
