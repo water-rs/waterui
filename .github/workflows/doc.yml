@@ -1,0 +1,80 @@
+name: Deploy WaterUI Docs to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: cf-pages-docs
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs"
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION=${GITHUB_REF_NAME}
+          else
+            VERSION=main
+          fi
+
+          echo "Building docs for version: $VERSION"
+          cargo doc --workspace --no-deps
+          mkdir -p deploy/$VERSION
+          cp -r target/doc/* deploy/$VERSION/
+
+      - name: Determine latest stable tag
+        id: stable
+        run: |
+          TAGS=$(git tag -l "v*" | sort -Vr)
+          STABLE_TAG=$(echo "$TAGS" | head -n 1)
+
+          if [ -z "$STABLE_TAG" ]; then
+            echo "No stable tag found, fallback to main"
+            echo "stable=main" >> $GITHUB_OUTPUT
+          else
+            echo "Latest stable version: $STABLE_TAG"
+            echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate redirect index.html
+        run: |
+          mkdir -p deploy
+          echo "Redirecting / → /${{ steps.stable.outputs.stable }}/"
+          cat > deploy/index.html <<EOF
+          <!DOCTYPE html>
+          <html lang="en">
+            <head>
+              <meta http-equiv="refresh" content="0; url=${{ steps.stable.outputs.stable }}/">
+              <script>window.location.href = "${{ steps.stable.outputs.stable }}/";</script>
+              <title>Redirecting to WaterUI Docs (${{ steps.stable.outputs.stable }})</title>
+            </head>
+            <body>
+              <p>Redirecting to <a href="${{ steps.stable.outputs.stable }}/">WaterUI docs (${{ steps.stable.outputs.stable }})</a>...</p>
+            </body>
+          </html>
+          EOF
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy deploy --project-name=waterui-docs
