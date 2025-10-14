@@ -3,8 +3,7 @@ name: Deploy WaterUI Docs to Cloudflare Pages
 on:
   push:
     branches: [main]
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -20,35 +19,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # === 1. Checkout with tags ===
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # === 2. Setup Rust ===
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@nightly
 
-      # === 3. Build rustdoc directly into deploy/$VERSION ===
-      - name: Build rustdoc
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            deploy/cache
+          key: ${{ runner.os }}-cargo-doc-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-doc-
+
+      - name: Build rustdoc (into cache, then copy to version)
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION=${GITHUB_REF_NAME}
+            VERSION="${GITHUB_REF_NAME}"
           else
-            VERSION=main
+            VERSION="main"
+          fi
+          echo "📘 Building WaterUI docs for version: $VERSION"
+
+          mkdir -p deploy/cache
+          # Build docs (adjust -p if your crate name differs)
+          cargo doc -p waterui --no-deps --target-dir deploy/cache
+
+          mkdir -p "deploy/$VERSION"
+          cp -r deploy/cache/doc/* "deploy/$VERSION/"
+
+      - name: Sanity check: crate docs exist
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="main"
+          fi
+          # CHANGE 'waterui' if your crate directory is different
+          if [[ ! -f "deploy/$VERSION/waterui/index.html" ]]; then
+            echo "::error::Expected docs at deploy/$VERSION/waterui/index.html but not found."
+            echo "Contents of deploy/$VERSION:"
+            ls -la "deploy/$VERSION" || true
+            exit 1
           fi
 
-          echo "📘 Building WaterUI docs for version: $VERSION"
-          cargo doc -p waterui --no-deps --target-dir deploy/$VERSION
-
-          # The docs will now be in deploy/$VERSION/doc/
-          # Move them one level up for cleaner URL structure
-          mv deploy/$VERSION/doc/* deploy/$VERSION/
-          rm -rf deploy/$VERSION/doc
-
-      # === 4. Determine latest stable tag ===
       - name: Determine latest stable tag
         id: stable
         run: |
@@ -56,36 +77,47 @@ jobs:
           STABLE_TAG=$(echo "$TAGS" | head -n 1)
           if [ -z "$STABLE_TAG" ]; then
             echo "stable=main" >> $GITHUB_OUTPUT
+            echo "➡️ Stable version: main"
           else
             echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
+            echo "➡️ Stable version: $STABLE_TAG"
           fi
-          echo "➡️ Stable version: $STABLE_TAG"
 
-      # === 5. Generate root redirect index.html ===
-      - name: Generate redirect index.html
-        if: ${{ github.ref_type == 'tag' || (github.ref_name == 'main' && steps.stable.outputs.stable == 'main') }}
+      # Make each version's index an absolute redirect to its crate docs,
+      # avoiding rustdoc's relative redirect surprises.
+      - name: Write version index redirect
         run: |
-          mkdir -p deploy
-          TARGET="${{ steps.stable.outputs.stable }}"
-          echo "🔁 Regenerating root index redirect → /$TARGET/"
-          cat > deploy/index.html <<EOF
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="main"
+          fi
+          mkdir -p "deploy/$VERSION"
+          cat > "deploy/$VERSION/index.html" <<EOF
           <!DOCTYPE html>
-          <html lang="en">
-            <head>
-              <meta http-equiv="refresh" content="0; url=/$TARGET/">
-              <script>window.location.href = "/$TARGET/";</script>
-              <title>Redirecting to WaterUI Docs ($TARGET)</title>
-            </head>
-            <body>
-              <p>Redirecting to <a href="/$TARGET/">WaterUI docs ($TARGET)</a>...</p>
-            </body>
-          </html>
+          <meta http-equiv="refresh" content="0; url=/${VERSION}/waterui/">
+          <script>location.replace("/${VERSION}/waterui/");</script>
           EOF
 
-      # === 6. Publish to Cloudflare Pages ===
-      - name: Publish to Cloudflare Pages
+      # Use CF Pages _redirects to send "/" to the latest stable (or main).
+      - name: Write root redirects and 404 (disable SPA fallback)
+        run: |
+          TARGET="${{ steps.stable.outputs.stable }}"
+          mkdir -p deploy
+          # Root redirect as HTTP 302 via _redirects:
+          # (prevents any HTML-based loops)
+          echo "/  /$TARGET/ 302" > deploy/_redirects
+          # Add a simple 404 to DISABLE SPA fallback (critical!)
+          # Without this, CF Pages serves "/" on 404, which can cause loops.
+          cat > deploy/404.html <<'EOF'
+          <!DOCTYPE html>
+          <html><head><meta charset="utf-8"><title>404 Not Found</title></head>
+          <body><h1>404</h1><p>Not found.</p></body></html>
+          EOF
+
+      - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages publish ./deploy --project-name=waterui-docs
+          command: pages deploy ./deploy --project-name=waterui-docs --commit-dirty=true
