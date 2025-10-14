@@ -43,7 +43,7 @@ jobs:
 
   swift-backend:
     name: Build Swift backend
-    runs-on: macos-latest
+    runs-on: macos-26-arm64
     steps:
       - uses: actions/checkout@v4
 
