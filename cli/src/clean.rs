@@ -1,6 +1,6 @@
 use crate::util;
-use anyhow::{Context, Result};
 use clap::Args;
+use color_eyre::eyre::{Context, Result, eyre};
 use console::style;
 use dialoguer::Confirm;
 use std::collections::HashSet;
@@ -89,7 +89,7 @@ pub fn run(args: CleanArgs) -> Result<()> {
         for err in errors {
             eprintln!("    - {err}");
         }
-        Err(anyhow::anyhow!("One or more cleanup steps failed"))
+        Err(eyre!("One or more cleanup steps failed"))
     }
 }
 
@@ -162,7 +162,7 @@ fn execute_action(action: &Action) -> Result<ActionResult> {
             if status.success() {
                 Ok(ActionResult::Done)
             } else {
-                Err(anyhow::anyhow!(format!(
+                Err(eyre!(format!(
                     "`{}` exited with status {}",
                     program,
                     status

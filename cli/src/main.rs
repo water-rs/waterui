@@ -8,10 +8,15 @@ mod package;
 mod run;
 mod util;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
-use console::style;
+use color_eyre::{config::HookBuilder, eyre::Result};
 use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
+
+//pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
+//pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_SWIFT_BACKEND_VERSION");
+
+pub const WATERUI_VERSION: &str = "";
+pub const WATERUI_SWIFT_BACKEND_VERSION: &str = "";
 
 #[derive(Parser)]
 #[command(name = "water")]
@@ -44,46 +49,18 @@ enum Commands {
 
 fn main() {
     if let Err(err) = run_cli() {
-        let icon = style("✖").red();
-        eprintln!(
-            "{} {}",
-            icon,
-            style("WaterUI CLI encountered an error").red().bold()
-        );
-
-        let error_text = err.to_string();
-        let mut lines = error_text.lines().filter(|line| !line.trim().is_empty());
-        if let Some(first) = lines.next() {
-            eprintln!("  {}", style(first).red());
-        }
-        for line in lines {
-            if line.trim_start().to_ascii_lowercase().starts_with("hint")
-                || line.trim_start().starts_with("If ")
-            {
-                eprintln!(
-                    "  {} {}",
-                    style("Hint:").yellow().bold(),
-                    style(line.trim_start_matches("Hint:").trim()).yellow()
-                );
-            } else {
-                eprintln!("  {}", style(line).dim());
-            }
-        }
-
-        for cause in err.chain().skip(1) {
-            let cause_str = cause.to_string();
-            if cause_str.trim().is_empty() {
-                continue;
-            }
-            eprintln!("  {} {}", style("•").dim(), style(cause_str).dim());
-        }
-
-        std::process::exit(1);
+        util::print_error(err, None);
     }
 }
 
 fn run_cli() -> Result<()> {
     let cli = Cli::parse();
+
+    HookBuilder::default()
+        .display_env_section(false)
+        .issue_url("https://github.com/water-rs/waterui/issues/new")
+        .panic_section("It looks like WaterUI CLI encountered a bug")
+        .install()?;
 
     let level = match cli.verbose {
         0 => LevelFilter::INFO,

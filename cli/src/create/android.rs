@@ -1,4 +1,4 @@
-use anyhow::Result;
+use color_eyre::eyre::Result;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;

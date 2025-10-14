@@ -1,5 +1,5 @@
-use anyhow::{Result, anyhow};
 use clap::Args;
+use color_eyre::eyre::{Result, eyre};
 use console::style;
 use core::time::Duration;
 use dialoguer::Confirm;
@@ -803,7 +803,7 @@ fn apply_fixes(fixes: Vec<FixSuggestion>) -> Result<()> {
             .default(true)
             .interact()
             .map_err(|err| {
-                anyhow!(
+                eyre!(
                     "Unable to prompt for confirmation (is this running in an interactive terminal?): {err}"
                 )
             })?;
