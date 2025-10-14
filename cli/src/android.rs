@@ -96,8 +96,7 @@ pub fn build_android_apk(
             );
         }
 
-        let escaped = sdk_path.to_string_lossy().replace('\\', "\\");
-        let contents = format!("sdk.dir={}\n", escaped);
+        let contents = format!("sdk.dir={}\n", sdk_path.to_string_lossy());
         fs::write(&local_properties, contents).context("failed to write local.properties")?;
         info!(
             "Wrote Android SDK location {} to {}",
