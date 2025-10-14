@@ -12,6 +12,8 @@
 //! let table: table::Table = std::iter::empty::<table::TableColumn>().collect();
 //! let _ = table;
 //! ```
+use core::any::type_name;
+
 use alloc::vec::Vec;
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
@@ -97,7 +99,7 @@ impl_constant!(TableColumn);
 /// Represents a column in a table.
 #[derive(Clone)]
 pub struct TableColumn {
-    /// The rows of content in this column.
+    label: Text,
     rows: AnyViews<Text>,
 }
 
@@ -111,8 +113,9 @@ impl TableColumn {
     /// # Arguments
     ///
     /// * `contents` - The text content to display in this column.
-    pub fn new(contents: impl Views<View = Text> + 'static) -> Self {
+    pub fn new(label: impl Into<Text>, contents: impl Views<View = Text> + 'static) -> Self {
         Self {
+            label: label.into(),
             rows: AnyViews::new(contents),
         }
     }
@@ -122,6 +125,12 @@ impl TableColumn {
     pub fn rows(&self) -> AnyViews<Text> {
         self.rows.clone()
     }
+
+    /// Returns the label of this column.
+    #[must_use]
+    pub fn label(&self) -> Text {
+        self.label.clone()
+    }
 }
 
 impl<T> FromIterator<T> for TableColumn
@@ -130,7 +139,7 @@ where
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let contents = iter.into_iter().map(Into::into).collect::<Vec<Text>>();
-        Self::new(contents)
+        Self::new(type_name::<T>(), contents)
     }
 }
 
@@ -143,6 +152,6 @@ where
 }
 
 /// Convenience constructor for creating a single table column.
-pub fn col(rows: impl Views<View = Text> + 'static) -> TableColumn {
-    TableColumn::new(rows)
+pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> TableColumn {
+    TableColumn::new(label, rows)
 }
