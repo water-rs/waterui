@@ -20,13 +20,7 @@ pub fn ensure_macos_host(feature: &str) -> Result<()> {
     }
 }
 
-pub fn require_tool(tool: &str, hint: &str) -> Result<()> {
-    if which::which(tool).is_ok() {
-        Ok(())
-    } else {
-        bail!("{tool} not found. {hint}")
-    }
-}
+
 
 pub fn resolve_xcode_project<'a>(
     project_dir: &Path,
