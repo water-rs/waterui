@@ -57,18 +57,18 @@ jobs:
         if: ${{ github.ref_type == 'tag' || (github.ref_name == 'main' && steps.stable.outputs.stable == 'main') }}
         run: |
           mkdir -p deploy
-          TARGET=${{ steps.stable.outputs.stable }}
+          TARGET="${{ steps.stable.outputs.stable }}"
           echo "🔁 Regenerating index redirect → /$TARGET/"
           cat > deploy/index.html <<EOF
           <!DOCTYPE html>
           <html lang="en">
             <head>
-              <meta http-equiv="refresh" content="0; url=$TARGET/">
-              <script>window.location.href = "$TARGET/";</script>
+              <meta http-equiv="refresh" content="0; url=/$TARGET/">
+              <script>window.location.href = "/$TARGET/";</script>
               <title>Redirecting to WaterUI Docs ($TARGET)</title>
             </head>
             <body>
-              <p>Redirecting to <a href="$TARGET/">WaterUI docs ($TARGET)</a>...</p>
+              <p>Redirecting to <a href="/$TARGET/">WaterUI docs ($TARGET)</a>...</p>
             </body>
           </html>
           EOF
