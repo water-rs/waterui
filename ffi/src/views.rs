@@ -3,7 +3,7 @@ use waterui::{
     views::{AnyViews, Views},
 };
 
-use crate::{IntoFFI, WuiAnyView, WuiId};
+use crate::{IntoFFI, WuiAnyView, WuiId, impl_computed};
 
 ffi_type!(WuiAnyViews, AnyViews<AnyView>, waterui_drop_anyviews);
 
@@ -33,3 +33,11 @@ pub unsafe extern "C" fn waterui_anyviews_get_view(
 pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> usize {
     unsafe { (&*anyviews).len() }
 }
+
+impl_computed!(
+    AnyViews<AnyView>,
+    *mut WuiAnyViews,
+    waterui_read_computed_views,
+    waterui_watch_computed_views,
+    waterui_drop_computed_views
+);
