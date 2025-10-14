@@ -2,7 +2,6 @@
 #![allow(clippy::multiple_crate_versions)]
 
 extern crate alloc;
-
 #[macro_use]
 mod macros;
 pub mod background;
@@ -37,38 +36,45 @@ pub mod prelude {
     //!     // Your view implementation here
     //! }
     //! ```
-    pub use crate::{Str, background, component::*, filter, task, view::View, widget};
-    pub use nami::{Binding, Computed, Project, Signal, signal};
-    pub use waterui_color::Color;
-    pub use waterui_core::{
-        AnyView, animation,
-        env::{self, Environment},
-        impl_extractor, raw_view,
-    };
-    pub use waterui_text::text;
+    pub use super::*;
+    pub use color::*;
+
+    pub use component::*;
+    pub use form::*;
+    pub use layout::*;
+    pub use media::*;
+    pub use navigation::*;
+    pub use padding::*;
+    pub use style::*;
+    pub use text::*;
+    pub use widget::{Card, Divider, card, suspense};
 }
+pub use color::Color;
 #[doc(inline)]
 pub use view::ViewExt;
 pub use waterui_color as color;
-pub use waterui_color::Color;
+pub use waterui_form as form;
+pub use waterui_layout as layout;
+pub use waterui_media as media;
+pub use waterui_navigation as navigation;
+pub use waterui_text as text;
+pub mod style;
+
+pub use text::text;
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, animation,
+    AnyView, Str, animation,
     env::{self, Environment},
     impl_extractor, raw_view, views,
 };
-pub use waterui_text::text;
 
-#[doc(inline)]
-pub use nami::{Binding, Computed, Signal, signal};
 mod ext;
 pub use ext::SignalExt;
 pub use nami as reactive;
-pub use nami::Project;
-pub use task::task;
 #[doc(inline)]
-pub use waterui_core as core;
-pub use waterui_str::Str;
+pub use reactive::{Binding, Computed, Signal, signal};
+pub use task::task;
+
 //pub mod hot_reload; Hot reload is tough :cry
 
 mod entry;
