@@ -1,4 +1,4 @@
-use waterui::core::handler::BoxHandler;
+use waterui_core::handler::BoxHandler;
 
 use crate::WuiEnv;
 

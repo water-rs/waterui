@@ -1,12 +1,10 @@
 use alloc::vec::Vec;
 use nami::Computed;
 use waterui::{
-    prelude::{
-        Native,
-        table::{TableColumn, TableConfig},
-    },
+    prelude::table::{TableColumn, TableConfig},
     views::ViewsExt,
 };
+use waterui_core::Native;
 
 use crate::{
     IntoFFI, array::WuiArray, components::text::WuiText, impl_computed, views::WuiAnyViews,

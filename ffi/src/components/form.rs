@@ -1,8 +1,8 @@
 use crate::components::text::WuiText;
 use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view};
 use alloc::vec::Vec;
-use waterui::component::Native;
 use waterui::{Binding, Color, Computed, Str};
+use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::{PickerConfig, PickerItem};
