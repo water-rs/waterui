@@ -3,10 +3,10 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
+use color_eyre::eyre::{Context, Error, Result, bail, eyre};
 use crates_index::Index;
-use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use semver::Version;
 use tracing::{info, warn};
@@ -297,12 +297,6 @@ pub fn run(args: CreateArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-struct AppleIdentity {
-    description: String,
-    team_id: String,
-}
-
 pub struct ProjectDependencies {
     rust_toml: String,
     swift: SwiftDependency,
@@ -311,67 +305,6 @@ pub struct ProjectDependencies {
 pub enum SwiftDependency {
     Remote { requirement: String },
     Dev,
-}
-
-fn fetch_team_ids() -> Result<Vec<AppleIdentity>> {
-    if cfg!(not(target_os = "macos")) {
-        return Ok(Vec::new());
-    }
-
-    let output = Command::new("security")
-        .args(["find-identity", "-v", "-p", "codesigning"])
-        .output();
-
-    let output = match output {
-        Ok(output) => output,
-        Err(_) => return Ok(Vec::new()),
-    };
-
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut identities = Vec::new();
-
-    for line in stdout.lines() {
-        if let Some(identity) = parse_identity_line(line) {
-            let duplicate = identities
-                .iter()
-                .any(|existing: &AppleIdentity| existing.team_id == identity.team_id);
-            if !duplicate {
-                identities.push(identity);
-            }
-        }
-    }
-
-    Ok(identities)
-}
-
-fn parse_identity_line(line: &str) -> Option<AppleIdentity> {
-    let trimmed = line.trim();
-    let start = trimmed.find('"')?;
-    let end = trimmed.rfind('"')?;
-    if end <= start {
-        return None;
-    }
-
-    let label = &trimmed[start + 1..end];
-    let open = label.rfind('(')?;
-    let close = label.rfind(')')?;
-    if close <= open {
-        return None;
-    }
-
-    let team_id = label[open + 1..close].trim().to_string();
-    if team_id.is_empty() {
-        return None;
-    }
-
-    Some(AppleIdentity {
-        description: label.trim().to_string(),
-        team_id,
-    })
 }
 
 fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
@@ -465,10 +398,10 @@ fn latest_swift_backend_version() -> Result<String> {
     }
 
     best.map(|(_, version)| version)
-        .ok_or_else(|| anyhow::anyhow!("No Swift backend release tags found"))
+        .ok_or_else(|| eyre!("No Swift backend release tags found"))
 }
 
-fn human_dependency_error<E: std::fmt::Display>(err: E, action: Option<&str>) -> anyhow::Error {
+fn human_dependency_error<E: std::fmt::Display>(err: E, action: Option<&str>) -> Error {
     let err_str = err.to_string();
     let mut message = String::new();
     if let Some(action) = action {
@@ -487,11 +420,11 @@ fn human_dependency_error<E: std::fmt::Display>(err: E, action: Option<&str>) ->
         "\n\nHint: If you prefer to use the latest development version of WaterUI, rerun with `--dev`.",
     );
 
-    anyhow::anyhow!(message)
+    eyre!(message)
 }
 
-fn missing_crate_error(name: &str) -> anyhow::Error {
-    anyhow::anyhow!(
+fn missing_crate_error(name: &str) -> Error {
+    eyre!(
         "No crates.io release of `{name}` found.\n\nHint: If you prefer to use the latest development version of WaterUI, rerun with `--dev`."
     )
 }

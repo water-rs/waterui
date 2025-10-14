@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use clap::Args;
+use color_eyre::eyre::{Context, Result};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;

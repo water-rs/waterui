@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
 use clap::{Args, ValueEnum};
+use color_eyre::eyre::{Result, eyre};
 use tracing::info;
 
 use crate::{config::Config, run::build_android_apk};
@@ -40,7 +40,7 @@ pub fn run(args: PackageArgs) -> Result<()> {
     match args.platform {
         PackagePlatform::Android => {
             let android_config = config.backends.android.as_ref().ok_or_else(|| {
-                anyhow!(
+                eyre!(
                     "Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend."
                 )
             })?;

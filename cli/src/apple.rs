@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Result, bail};
+use color_eyre::{eyre::Result, eyre::bail};
 
 use crate::{config::Swift, util};
 
@@ -16,7 +16,7 @@ pub fn ensure_macos_host(feature: &str) -> Result<()> {
     if cfg!(target_os = "macos") {
         Ok(())
     } else {
-        bail!("{feature} requires macOS");
+        bail!("{feature} requires macOS")
     }
 }
 
@@ -77,7 +77,9 @@ pub fn xcodebuild_base<'a>(
         .arg("-configuration")
         .arg(configuration)
         .arg("-derivedDataPath")
-        .arg(derived_root);
+        .arg(derived_root)
+        .arg("-allowProvisioningUpdates")
+        .arg("-allowProvisioningDeviceRegistration");
     cmd
 }
 
