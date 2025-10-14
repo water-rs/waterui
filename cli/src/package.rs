@@ -4,7 +4,7 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Result, eyre};
 use tracing::info;
 
-use crate::{config::Config, run::build_android_apk};
+use crate::{android, config::Config};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -45,7 +45,7 @@ pub fn run(args: PackageArgs) -> Result<()> {
                 )
             })?;
             let apk_path =
-                build_android_apk(&project_dir, android_config, args.release, args.skip_native)?;
+                android::build_android_apk(&project_dir, android_config, args.release, args.skip_native)?;
             info!("Android package ready: {}", apk_path.display());
         }
     }
