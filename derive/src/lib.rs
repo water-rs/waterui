@@ -103,14 +103,14 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
             let projected = <Self as ::waterui::reactive::project::Project>::project(binding);
 
             // Create a vstack with all form fields
-            ::waterui::component::layout::stack::vstack((
+            ::waterui::component::stack::vstack((
                 #(#field_views,)*
             ))
         }
     } else {
         // Empty struct case
         quote! {
-            ::waterui::component::layout::stack::vstack(())
+            ::waterui::component::stack::vstack(())
         }
     };
 
@@ -119,7 +119,7 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     // Generate the implementation
     let expanded = quote! {
         impl crate::FormBuilder for #name {
-            type View = ::waterui::component::layout::stack::VStack<((#(<#field_types as crate::FormBuilder>::View),*),)>;
+            type View = ::waterui::component::stack::VStack<((#(<#field_types as crate::FormBuilder>::View),*),)>;
 
             fn view(binding: &::waterui::Binding<Self>, _label: ::waterui::AnyView, _placeholder: ::waterui::Str) -> Self::View {
                 #view_body
@@ -221,68 +221,9 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    // Create the projected struct name for waterui::reactive Project trait
-    let projected_struct_name = syn::Ident::new(&format!("{name}Projected"), name.span());
-
-    // Generate fields for the projected struct
-    let projected_fields = fields.named.iter().map(|field| {
-        let field_name = &field.ident;
-        let field_type = &field.ty;
-        quote! {
-            pub #field_name: ::waterui::reactive::Binding<#field_type>
-        }
-    });
-
-    // Generate the projection logic
-    let field_projections = fields.named.iter().map(|field| {
-        let field_name = &field.ident;
-        quote! {
-            #field_name: {
-                let source = source.clone();
-                ::waterui::reactive::Binding::mapping(
-                    &source,
-                    |value| value.#field_name.clone(),
-                    move |binding, value| {
-                        binding.get_mut().#field_name = value;
-                    },
-                )
-            }
-        }
-    });
-
-    // Add lifetime bounds to generic parameters for Project trait
-    let mut generics_with_static = input.generics.clone();
-    for param in &mut generics_with_static.params {
-        if let syn::GenericParam::Type(type_param) = param {
-            type_param.bounds.push(syn::parse_quote!('static));
-        }
-    }
-    let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
-
     let expanded = quote! {
-        // Original struct with conditional serde derives
-        #[derive(Default, Clone, Debug, FormBuilder)]
-        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-        #[allow(missing_docs)] // Allow missing docs for generated structs
+        #[derive(Default, Clone, Debug, ::waterui::FormBuilder, ::waterui::Project)]
         #input
-
-        // Projected struct for waterui::reactive Project trait
-        #[derive(Debug)]
-        #[allow(missing_docs)] // Allow missing docs for generated structs
-        pub struct #projected_struct_name #ty_generics #where_clause {
-            #(#projected_fields,)*
-        }
-
-        // Project trait implementation
-        impl #impl_generics_with_static ::waterui::reactive::project::Project for #name #ty_generics #where_clause {
-            type Projected = #projected_struct_name #ty_generics;
-
-            fn project(source: &::waterui::reactive::Binding<Self>) -> Self::Projected {
-                #projected_struct_name {
-                    #(#field_projections,)*
-                }
-            }
-        }
     };
 
     TokenStream::from(expanded)

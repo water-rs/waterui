@@ -15,7 +15,7 @@ macro_rules! text {
         {
             use $crate::__nami as nami;
             #[allow(unused_parens)]
-            $crate::Text::new(nami::s!($($arg)*))
+            $crate::Text::new($crate::__nami::s!($($arg)*))
         }
     };
 }
