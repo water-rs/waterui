@@ -1,51 +1,80 @@
----
 name: CI
 
-'on':
+on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.png'
+      - '**/*.jpg'
+      - ' tutorial-book/**'
   pull_request:
     branches: [main]
-
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.png'
+      - '**/*.jpg'
+      - ' tutorial-book/**'
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   rust-checks:
-    name: Rust checks
+    name: Rust Lint & Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: |
-          cargo clippy --all-targets --all-features --workspace -- -D warnings
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
-  swift-backend:
-    name: Build Swift backend
-    runs-on: macos-26-arm64
+  rust-test:
+    name: Rust Tests
+    needs: rust-checks
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test --all --all-features --workspace
 
+  swift-backend:
+    name: Build Swift Backend (macOS)
+    needs: [rust-test]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Swift build
+        uses: actions/cache@v4
+        with:
+          path: backends/swift/.build
+          key: ${{ runner.os }}-swift-${{ hashFiles('backends/swift/Package.resolved') }}
       - name: Build Swift package
         run: swift build --package-path backends/swift --configuration release
