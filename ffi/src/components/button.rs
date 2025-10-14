@@ -1,7 +1,7 @@
 use crate::action::WuiAction;
 use crate::{WuiAnyView, ffi_struct, ffi_view};
-use waterui::component::Native;
 use waterui::component::button::ButtonConfig;
+use waterui_core::Native;
 
 /// C representation of a WaterUI button for FFI purposes.
 #[derive(Debug)]

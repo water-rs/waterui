@@ -89,8 +89,9 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
-pub mod components;
-pub use components::anyview::AnyView;
+mod components;
+pub use anyview::AnyView;
+pub use components::*;
 pub mod env;
 pub mod view;
 pub mod views;

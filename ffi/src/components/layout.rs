@@ -18,7 +18,7 @@ pub struct WuiFixedContainer {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
-    core::any::TypeId::of::<waterui::component::layout::spacer::Spacer>().into_ffi()
+    core::any::TypeId::of::<waterui::component::spacer::Spacer>().into_ffi()
 }
 
 ffi_view!(
