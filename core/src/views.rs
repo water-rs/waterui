@@ -583,6 +583,7 @@ pub trait ViewsExt: Views {
         Map::new(self, f)
     }
 
+    /// Erases the specific type of the view collection, returning a type-erased `AnyViews`.
     fn erase(self) -> AnyViews<AnyView>
     where
         Self: 'static,

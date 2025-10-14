@@ -19,6 +19,8 @@ pub mod widget;
 #[doc(inline)]
 pub use view::View;
 pub mod accessibility;
+#[doc(inline)]
+pub use waterui_derive::*;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.
     //!
@@ -36,7 +38,7 @@ pub mod prelude {
     //! }
     //! ```
     pub use crate::{Str, background, component::*, filter, task, view::View, widget};
-    pub use nami::{Binding, Computed, Signal, signal};
+    pub use nami::{Binding, Computed, Project, Signal, signal};
     pub use waterui_color::Color;
     pub use waterui_core::{
         AnyView, animation,
@@ -62,6 +64,7 @@ pub use nami::{Binding, Computed, Signal, signal};
 mod ext;
 pub use ext::SignalExt;
 pub use nami as reactive;
+pub use nami::Project;
 pub use task::task;
 #[doc(inline)]
 pub use waterui_core as core;
