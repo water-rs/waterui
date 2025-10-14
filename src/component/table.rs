@@ -155,3 +155,5 @@ where
 pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> TableColumn {
     TableColumn::new(label, rows)
 }
+
+// note: may table could be a widget, based on lazy
