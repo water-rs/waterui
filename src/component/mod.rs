@@ -15,11 +15,10 @@ pub mod progress;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};
 
-pub mod style;
 pub mod table;
 
 #[doc(inline)]
-pub use waterui_core::components::*;
+pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 
 pub use media::*;
 pub use text::{Text, text};
@@ -27,7 +26,11 @@ pub use text::{Text, text};
 #[doc(inline)]
 pub use waterui_form as form;
 #[doc(inline)]
-pub use waterui_layout as layout;
+pub use waterui_layout::{
+    scroll::{self, ScrollView, scroll},
+    spacer::{self, Spacer, spacer, spacer_min},
+    stack::{self, HStack, VStack, ZStack, hstack, vstack, zstack},
+};
 #[doc(inline)]
 pub use waterui_media as media;
 #[doc(inline)]

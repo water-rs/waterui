@@ -19,13 +19,12 @@
 use core::fmt::Debug;
 
 use alloc::boxed::Box;
-use waterui_core::Environment;
-use waterui_core::components::Native;
 use waterui_core::handler::{
     ActionObject, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
     into_handler, into_handler_with_state,
 };
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::{Environment, Native};
 
 use crate::View;
 use crate::{AnyView, ViewExt};
