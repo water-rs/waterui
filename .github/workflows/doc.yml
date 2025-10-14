@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build-deploy:
-    runs-on: macos-latests
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           fi
 
           echo "Building docs for version: $VERSION"
-          cargo doc --workspace --no-deps
+          cargo doc -p waterui --no-deps
           mkdir -p deploy/$VERSION
           cp -r target/doc/* deploy/$VERSION/
 
