@@ -175,6 +175,7 @@ fn quote(content: Vec<RichTextElement>) -> impl View {
     hstack((quote_marker, VStack::from_iter(content)))
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES

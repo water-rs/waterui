@@ -301,6 +301,7 @@ pub enum SwiftDependency {
     Git { version: Option<String> },
 }
 
+#[allow(clippy::const_is_empty)]
 fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
         let rust_toml = r#"waterui = { git = "https://github.com/water-rs/waterui" }
