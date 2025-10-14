@@ -231,7 +231,10 @@ impl<T: Ord + Clone> MappingInner<T> {
         let id = Id(NonZeroI32::new(self.counter).expect("counter should not be zero"));
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
-        self.counter = self.counter.checked_add(1).expect("counter should not overflow");
+        self.counter = self
+            .counter
+            .checked_add(1)
+            .expect("counter should not overflow");
         id
     }
 
