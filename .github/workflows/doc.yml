@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # need tags
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@nightly
@@ -37,7 +37,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-doc-
 
-      - name: Build rustdoc (into cache, then copy to version)
+      - name: Build rustdoc (cache → version dir)
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: |
@@ -49,24 +49,18 @@ jobs:
           echo "📘 Building WaterUI docs for version: $VERSION"
 
           mkdir -p deploy/cache
-          # Build docs (adjust -p if your crate name differs)
           cargo doc -p waterui --no-deps --target-dir deploy/cache
 
           mkdir -p "deploy/$VERSION"
           cp -r deploy/cache/doc/* "deploy/$VERSION/"
 
-      - name: Sanity check: crate docs exist
+      - name: Sanity check - crate docs exist
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="main"
-          fi
-          # CHANGE 'waterui' if your crate directory is different
-          if [[ ! -f "deploy/$VERSION/waterui/index.html" ]]; then
-            echo "::error::Expected docs at deploy/$VERSION/waterui/index.html but not found."
-            echo "Contents of deploy/$VERSION:"
-            ls -la "deploy/$VERSION" || true
+          V="${GITHUB_REF_TYPE == 'tag' && GITHUB_REF_NAME || 'main'}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then V="${GITHUB_REF_NAME}"; else V="main"; fi
+          if [[ ! -f "deploy/$V/waterui/index.html" ]]; then
+            echo "::error::Expected deploy/$V/waterui/index.html but not found."
+            echo "deploy/$V contents:"; ls -la "deploy/$V" || true
             exit 1
           fi
 
@@ -82,37 +76,30 @@ jobs:
             echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
             echo "➡️ Stable version: $STABLE_TAG"
           fi
+          # also export all tags (for redirects)
+          # write newline-separated list to a file we'll reuse
+          echo "$TAGS" > all_tags.txt
 
-      # Make each version's index an absolute redirect to its crate docs,
-      # avoiding rustdoc's relative redirect surprises.
-      - name: Write version index redirect
+      - name: Write _redirects and 404 (server-side)
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="main"
-          fi
-          mkdir -p "deploy/$VERSION"
-          cat > "deploy/$VERSION/index.html" <<EOF
-          <!DOCTYPE html>
-          <meta http-equiv="refresh" content="0; url=/${VERSION}/waterui/">
-          <script>location.replace("/${VERSION}/waterui/");</script>
-          EOF
-
-      # Use CF Pages _redirects to send "/" to the latest stable (or main).
-      - name: Write root redirects and 404 (disable SPA fallback)
-        run: |
-          TARGET="${{ steps.stable.outputs.stable }}"
           mkdir -p deploy
-          # Root redirect as HTTP 302 via _redirects:
-          # (prevents any HTML-based loops)
+          TARGET="${{ steps.stable.outputs.stable }}"
+          # Root → latest stable
           echo "/  /$TARGET/ 302" > deploy/_redirects
-          # Add a simple 404 to DISABLE SPA fallback (critical!)
-          # Without this, CF Pages serves "/" on 404, which can cause loops.
+          # Make /main land where the crate actually lives (ONE redirect, no loops)
+          echo "/main  /main/waterui/ 302" >> deploy/_redirects
+          # For each tag, make /vX.Y.Z land at that crate root too
+          while read -r t; do
+            [ -z "$t" ] && continue
+            echo "/$t  /$t/waterui/ 302" >> deploy/_redirects
+          done < all_tags.txt
+
+          # Disable SPA fallback: serve a real 404 so CF doesn't bounce to "/"
           cat > deploy/404.html <<'EOF'
           <!DOCTYPE html>
-          <html><head><meta charset="utf-8"><title>404 Not Found</title></head>
-          <body><h1>404</h1><p>Not found.</p></body></html>
+          <meta charset="utf-8">
+          <title>404 Not Found</title>
+          <h1>404</h1><p>Not found.</p>
           EOF
 
       - name: Deploy to Cloudflare Pages
