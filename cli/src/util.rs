@@ -1,8 +1,9 @@
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{bail, Result};
 use console::style;
 use core::fmt::Display;
 use heck::{AsKebabCase, AsPascalCase};
 use std::path::{Path, PathBuf};
+use which::which;
 
 pub fn print_error(error: impl Display, hint: Option<&str>) {
     let icon = style("✖").red();
@@ -47,4 +48,12 @@ pub fn ensure_directory(path: &Path) -> Result<()> {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+pub fn require_tool(tool: &str, hint: &str) -> Result<()> {
+    if which(tool).is_ok() {
+        Ok(())
+    } else {
+        bail!("{tool} not found. {hint}")
+    }
 }
