@@ -22,12 +22,14 @@ use tracing::{debug, info, warn};
 use which::which;
 
 use crate::{
+    android,
     apple::{
         derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
-        require_tool, resolve_xcode_project, xcodebuild_base,
+        resolve_xcode_project, xcodebuild_base,
     },
     config::Config,
     devices::{self, DeviceInfo, DeviceKind},
+    util,
 };
 
 #[derive(Args, Debug)]
@@ -195,9 +197,11 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         )
     })?;
 
-    let wasm_pack = which("wasm-pack").with_context(|| {
-        "`wasm-pack` not found on PATH. Install it from https://rustwasm.github.io/wasm-pack/ and try again."
-    })?;
+    util::require_tool(
+        "wasm-pack",
+        "Install it from https://rustwasm.github.io/wasm-pack/ and try again.",
+    )?;
+    let wasm_pack = which("wasm-pack").unwrap();
 
     let web_dir = project_dir.join(&web_config.project_path);
     if !web_dir.exists() {
@@ -537,7 +541,7 @@ fn configure_mold(cmd: &mut Command) {
 
 fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: bool) -> Result<()> {
     ensure_macos_host("SwiftUI backend support")?;
-    require_tool(
+    util::require_tool(
         "xcodebuild",
         "Install Xcode and command line tools (xcode-select --install)",
     )?;
@@ -589,7 +593,7 @@ fn run_apple_simulator(
 ) -> Result<()> {
     ensure_macos_host("Apple simulators")?;
     for tool in ["xcrun", "xcodebuild"] {
-        require_tool(
+        util::require_tool(
             tool,
             "Install Xcode and command line tools (xcode-select --install)",
         )?;
@@ -690,119 +694,6 @@ fn run_apple_simulator(
     Ok(())
 }
 
-fn ensure_jvm_flag(existing: Option<String>, flag: &str) -> String {
-    if let Some(current) = existing {
-        let trimmed = current.trim();
-        if trimmed.split_whitespace().any(|token| token == flag) {
-            trimmed.to_string()
-        } else if trimmed.is_empty() {
-            flag.to_string()
-        } else {
-            format!("{trimmed} {flag}")
-        }
-    } else {
-        flag.to_string()
-    }
-}
-
-pub(crate) fn build_android_apk(
-    project_dir: &Path,
-    android_config: &crate::config::Android,
-    release: bool,
-    skip_native: bool,
-) -> Result<PathBuf> {
-    let build_rust_script = project_dir.join("build-rust.sh");
-    if build_rust_script.exists() {
-        if skip_native {
-            info!("Skipping Android native build (requested via --skip-native)");
-        } else {
-            info!("Building Rust library for Android...");
-            let mut cmd = Command::new("bash");
-            cmd.arg(&build_rust_script);
-            cmd.current_dir(project_dir);
-            let status = cmd.status().context("failed to run build-rust.sh")?;
-            if !status.success() {
-                bail!("build-rust.sh failed");
-            }
-        }
-    } else if !skip_native {
-        info!("No build-rust.sh script found. Skipping native build.");
-    }
-
-    info!("Building Android app with Gradle...");
-    let android_dir = project_dir.join(&android_config.project_path);
-
-    let local_properties = android_dir.join("local.properties");
-    if !local_properties.exists() {
-        let sdk_path = env::var("ANDROID_SDK_ROOT")
-            .or_else(|_| env::var("ANDROID_HOME"))
-            .map(PathBuf::from)
-            .map_err(|_| {
-                eyre!(
-                    "Android SDK not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or create {} with an sdk.dir entry pointing to your SDK.",
-                    local_properties.display()
-                )
-            })?;
-
-        if !sdk_path.exists() {
-            bail!(
-                "Android SDK directory '{}' does not exist. Update ANDROID_HOME/ANDROID_SDK_ROOT or create {} manually with a valid sdk.dir entry.",
-                sdk_path.display(),
-                local_properties.display()
-            );
-        }
-
-        let escaped = sdk_path.to_string_lossy().replace('\\', "\\\\");
-        let contents = format!("sdk.dir={escaped}\n");
-        fs::write(&local_properties, contents).context("failed to write local.properties")?;
-        info!(
-            "Wrote Android SDK location {} to {}",
-            sdk_path.display(),
-            local_properties.display()
-        );
-    }
-
-    let gradlew_executable = if cfg!(windows) {
-        "gradlew.bat"
-    } else {
-        "./gradlew"
-    };
-    let mut cmd = Command::new(gradlew_executable);
-
-    let ipv4_flag = "-Djava.net.preferIPv4Stack=true";
-    let gradle_opts = ensure_jvm_flag(env::var("GRADLE_OPTS").ok(), ipv4_flag);
-    cmd.env("GRADLE_OPTS", &gradle_opts);
-    let java_tool_options = ensure_jvm_flag(env::var("JAVA_TOOL_OPTIONS").ok(), ipv4_flag);
-    cmd.env("JAVA_TOOL_OPTIONS", &java_tool_options);
-
-    let task = if release {
-        "assembleRelease"
-    } else {
-        "assembleDebug"
-    };
-    cmd.arg(task);
-    cmd.current_dir(&android_dir);
-    debug!("Running command: {:?}", cmd);
-    let status = cmd.status().context("failed to run gradlew")?;
-    if !status.success() {
-        bail!("Gradle build failed");
-    }
-
-    let profile = if release { "release" } else { "debug" };
-    let apk_name = if release {
-        "app-release.apk"
-    } else {
-        "app-debug.apk"
-    };
-    let apk_path = android_dir.join(format!("app/build/outputs/apk/{}/{}", profile, apk_name));
-    if !apk_path.exists() {
-        bail!("APK not found at {}", apk_path.display());
-    }
-
-    info!("Generated {} APK at {}", profile, apk_path.display());
-    Ok(apk_path)
-}
-
 fn run_android(
     project_dir: &Path,
     package: &crate::config::Package,
@@ -812,14 +703,14 @@ fn run_android(
 ) -> Result<()> {
     info!("Running for Android...");
 
-    let apk_path = build_android_apk(project_dir, android_config, release, false)?;
+    let apk_path = android::build_android_apk(project_dir, android_config, release, false)?;
 
-    let adb_path = devices::find_android_tool("adb").ok_or_else(|| {
+    let adb_path = android::find_android_tool("adb").ok_or_else(|| {
         eyre!(
             "`adb` not found. Install the Android SDK platform-tools and ensure they are on your PATH or ANDROID_HOME."
         )
     })?;
-    let emulator_path = devices::find_android_tool("emulator");
+    let emulator_path = android::find_android_tool("emulator");
 
     let selection = if let Some(selection) = selection {
         selection
@@ -870,10 +761,10 @@ fn run_android(
     };
 
     info!("Waiting for device to be ready...");
-    wait_for_android_device(&adb_path, target_identifier.as_deref())?;
+    android::wait_for_android_device(&adb_path, target_identifier.as_deref())?;
 
     info!("Installing APK...");
-    let mut install_cmd = adb_command(&adb_path, target_identifier.as_deref());
+    let mut install_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
     install_cmd.args([
         "install",
         "-r",
@@ -887,7 +778,7 @@ fn run_android(
 
     info!("Launching app...");
     let activity = format!("{}/.MainActivity", package.bundle_identifier);
-    let mut launch_cmd = adb_command(&adb_path, target_identifier.as_deref());
+    let mut launch_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
     launch_cmd.args(["shell", "am", "start", "-n", &activity]);
     debug!("Running command: {:?}", launch_cmd);
     let status = launch_cmd.status().context("failed to launch app")?;
@@ -1051,38 +942,6 @@ fn apple_simulator_platform_id(platform: Platform) -> &'static str {
         Platform::Visionos => "com.apple.platform.visionossimulator",
         Platform::Macos | Platform::Android | Platform::Web => "",
     }
-}
-
-fn wait_for_android_device(adb_path: &Path, identifier: Option<&str>) -> Result<()> {
-    let mut wait_cmd = adb_command(adb_path, identifier);
-    wait_cmd.arg("wait-for-device");
-    let status = wait_cmd
-        .status()
-        .context("failed to run adb wait-for-device")?;
-    if !status.success() {
-        bail!("'adb wait-for-device' failed. Is the device/emulator running correctly?");
-    }
-
-    // Wait for Android to finish booting (best effort)
-    loop {
-        let output = adb_command(adb_path, identifier)
-            .args(["shell", "getprop", "sys.boot_completed"])
-            .output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim() == "1" {
-            break;
-        }
-        thread::sleep(Duration::from_secs(1));
-    }
-    Ok(())
-}
-
-fn adb_command(adb_path: &Path, identifier: Option<&str>) -> Command {
-    let mut cmd = Command::new(adb_path);
-    if let Some(id) = identifier {
-        cmd.arg("-s").arg(id);
-    }
-    cmd
 }
 
 struct RebuildWatcher {
