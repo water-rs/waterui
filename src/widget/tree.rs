@@ -155,6 +155,7 @@ where
     }
 }
 
+#[allow(clippy::implicit_hasher)]
 /// Convenience function to create a new `TreeView`.
 pub const fn tree_view<T, ID, F>(
     nodes: Vec<TreeNode<T, ID>>,
