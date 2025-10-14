@@ -1,4 +1,4 @@
-use anyhow::Result;
+use color_eyre::eyre::Result;
 use std::{collections::HashMap, path::Path};
 
 use super::{ProjectDependencies, template};
@@ -20,19 +20,25 @@ pub fn create_rust_sources(
     let templates = &template::TEMPLATES_DIR;
 
     template::process_template_file(
-        templates.get_file(".gitignore.tpl").expect(".gitignore.tpl should exist"),
+        templates
+            .get_file(".gitignore.tpl")
+            .expect(".gitignore.tpl should exist"),
         &project_dir.join(".gitignore"),
         &context,
     )?;
 
     template::process_template_file(
-        templates.get_file("Cargo.toml.tpl").expect("Cargo.toml.tpl should exist"),
+        templates
+            .get_file("Cargo.toml.tpl")
+            .expect("Cargo.toml.tpl should exist"),
         &project_dir.join("Cargo.toml"),
         &context,
     )?;
 
     template::process_template_file(
-        templates.get_file("lib.rs.tpl").expect("lib.rs.tpl should exist"),
+        templates
+            .get_file("lib.rs.tpl")
+            .expect("lib.rs.tpl should exist"),
         &project_dir.join("src/lib.rs"),
         &context,
     )?;
