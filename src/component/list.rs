@@ -8,8 +8,8 @@
 use alloc::boxed::Box;
 use nami::collection::Collection;
 
-use crate::component::Native;
 use crate::views::{AnyViews, ForEach, Views};
+use waterui_core::Native;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, View, id::Identifable};
 

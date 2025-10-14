@@ -1,24 +1,11 @@
-use waterui::{
-    Binding, Environment, FormBuilder, Project, View, ViewExt,
-    component::{
-        form::{FormBuilder, Slider, form, stepper},
-        layout::{
-            scroll, spacer,
-            stack::{hstack, vstack},
-        },
-        progress::{loading, progress},
-        text::text,
-    },
-    prelude::layout::padding::EdgeInsets,
-    widget::Divider,
-};
+use waterui::prelude::*;
 
 pub fn init() -> Environment {
     Environment::new()
 }
 
 // Demo form data structure
-#[derive(Default, Clone, Debug, FormBuilder, Project)]
+#[form]
 struct UserProfile {
     name: String,
     email: String,

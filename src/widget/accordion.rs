@@ -1,10 +1,9 @@
 //! Accordion component with a header and expandable content.
 
-use crate::ViewExt;
+use crate::{ViewExt, component::Dynamic};
 use nami::Binding;
 use waterui_core::{
     Environment, View,
-    components::Dynamic,
     handler::{IntoViewBuilder, ViewBuilder, ViewBuilderFn, into_view_builder},
 };
 use waterui_layout::stack::vstack;

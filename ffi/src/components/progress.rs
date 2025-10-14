@@ -1,8 +1,6 @@
 use nami::Computed;
-use waterui::component::{
-    Native,
-    progress::{ProgressConfig, ProgressStyle},
-};
+use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui_core::Native;
 
 use crate::{IntoFFI, WuiAnyView};
 

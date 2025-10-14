@@ -1,10 +1,8 @@
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
-use waterui::component::{
-    Native,
-    list::{ListConfig, ListItem},
-};
+use waterui::component::list::{ListConfig, ListItem};
 use waterui::views::ViewsExt;
+use waterui_core::Native;
 
 #[repr(C)]
 pub struct WuiListItem {
