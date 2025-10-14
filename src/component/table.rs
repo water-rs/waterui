@@ -21,9 +21,10 @@ use waterui_text::Text;
 
 use crate::{
     AnyView, Environment, View,
-    component::Native,
     views::{AnyViews, Views},
 };
+
+use waterui_core::Native;
 
 /// Configuration for a table component.
 #[derive(Debug)]
