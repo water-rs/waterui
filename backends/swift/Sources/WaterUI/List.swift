@@ -1,25 +1,43 @@
-import SwiftUI
 import CWaterUI
+import SwiftUI
 
 @MainActor
 struct WuiList: WuiComponent, View {
     static var id: WuiTypeId { waterui_list_id() }
 
-    private var items: [WuiAnyView]
+    let views: WuiAnyViews
+    let env: WuiEnvironment
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
-        let list = waterui_force_as_list(anyview)
-        let pointer = list.contents.map { UnsafeMutableRawPointer($0) }
-        let collection = WuiAnyViewCollection(pointer, env: env)
-        self.items = collection.toArray()
+        self.init(list: waterui_force_as_list(anyview), env: env)
+    }
+
+    init(list: CWaterUI.WuiList, env: WuiEnvironment) {
+        self.views = WuiAnyViews(list.contents)
+        self.env = env
     }
 
     var body: some View {
         List {
-            ForEach(items) { item in
-                item
-            }
+            views.intoForEach(env: env)
         }
-        .listStyle(.plain)
+    }
+}
+
+struct WuiListItem: WuiComponent, View {
+    static var id: WuiTypeId { waterui_list_item_id() }
+
+    let content: WuiAnyView
+
+    init(anyview: OpaquePointer, env: WuiEnvironment) {
+        self.content = WuiAnyView(anyview: waterui_force_as_list_item(anyview).content, env: env)
+    }
+
+    init(content: WuiAnyView) {
+        self.content = content
+    }
+
+    var body: some View {
+        content
     }
 }

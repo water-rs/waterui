@@ -53,7 +53,7 @@ pub trait Views: Clone {
     ) -> Self::Guard;
 
     /// Returns the view at the specified index, or `None` if the index is out of bounds.
-    fn get_view(&self, index: usize) -> Option<Self::View>;
+    fn get_view(&self, id: usize) -> Option<Self::View>;
 }
 
 /// A type-erased container for `Views` collections.

@@ -54,11 +54,12 @@ struct Render {
             //WaterUI.BackgroundColor.self,
             //WaterUI.Rectangle.self,
             //  WaterUI.ForegroundColor.self,
-            // WaterUI.Frame.self,
             WuiSlider.self,
+            WuiLazy.self,
+            WuiList.self,
+            WuiListItem.self,
 
                 // WaterUI.ColorPicker.self,
-                //WaterUI.Padding.self,
                 // WaterUI.Icon.self
         ])
     }

@@ -1,4 +1,5 @@
 import CWaterUI
+import SwiftUI
 import Synchronization
 
 // since swift require an isloated collection to do random access, but waterui run on main thread
@@ -48,16 +49,25 @@ final class WuiAnyViewCollection: RandomAccessCollection, Sendable {
 
     }
 
+    @MainActor
+    func intoForEach(env: WuiEnvironment)
+        -> SwiftUI.ForEach<EnumeratedSequence<WuiAnyViewCollection>, WuiId, some View>
+    {
+        return SwiftUI.ForEach(WuiAnyViewCollection(views).enumerated(), id: \.element) {
+            index, id in
+            self.views.getView(at: index, env: env).id(id)
+        }
+    }
+
 }
 
 @MainActor
 final class WuiAnyViews {
+    let id = UUID()
     private let inner: OpaquePointer
-    private let environment: WuiEnvironment
 
-    init(_ inner: OpaquePointer, env: WuiEnvironment) {
+    init(_ inner: OpaquePointer) {
         self.inner = inner
-        self.environment = env
     }
 
     @MainActor deinit {
@@ -73,9 +83,35 @@ final class WuiAnyViews {
         return id
     }
 
-    func getView(at index: Int) -> WuiAnyView {
+    func getView(at index: Int, env: WuiEnvironment) -> WuiAnyView {
         let ptr = waterui_anyviews_get_view(inner, UInt(index))
-        return WuiAnyView(anyview: ptr!, env: environment)
+        return WuiAnyView(anyview: ptr!, env: env)
     }
 
+    func intoForEach(env: WuiEnvironment)
+        -> SwiftUI.ForEach<EnumeratedSequence<WuiAnyViewCollection>, WuiId, some View>
+    {
+        WuiAnyViewCollection(self).intoForEach(env: env)
+    }
+
+}
+
+extension WuiWatcher_____WuiAnyViews: Watcher {
+    typealias Output = WuiAnyViews
+
+    init(_ f: @escaping (Self.Output, WuiWatcherMetadata) -> Void) {
+        let data = wrap(f)
+
+        let call: @convention(c) (UnsafeRawPointer?, OpaquePointer?, OpaquePointer?) -> Void =
+            {
+                data, value, metadata in
+                callWrapper(data, WuiAnyViews(value!), metadata)
+            }
+
+        let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+            dropWrapper($0, Self.Output.self)
+        }
+
+        self.init(data: data, call: call, drop: drop)
+    }
 }

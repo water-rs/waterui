@@ -6,8 +6,8 @@
 //
 
 import CWaterUI
-import SwiftUI
 import Foundation
+import SwiftUI
 
 // MARK: - Text View
 
@@ -18,16 +18,21 @@ struct WuiText: View, WuiComponent {
 
     @State private var content: WuiComputed<WuiStyledStr>
     private var env: WuiEnvironment
-    
+
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.init(text: waterui_force_as_text(anyview), env: env)
     }
-    
-    init(text:CWaterUI.WuiText, env: WuiEnvironment) {
+
+    init(text: CWaterUI.WuiText, env: WuiEnvironment) {
         self.env = env
         self.content = WuiComputed(text.content)
     }
-    
+
+    init(styledStr: WuiComputed<WuiStyledStr>, env: WuiEnvironment) {
+        self.env = env
+        self.content = styledStr
+    }
+
     func toText() -> SwiftUI.Text {
         SwiftUI.Text(content.value.toAttributedString(env: env))
     }
@@ -36,6 +41,4 @@ struct WuiText: View, WuiComponent {
         toText()
     }
 
-   
 }
-
