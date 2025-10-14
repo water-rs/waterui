@@ -14,8 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, info, warn};
@@ -190,7 +190,7 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
 
 fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
-        anyhow!(
+        eyre!(
             "Web backend not configured for this project. Add it to waterui.toml or recreate the project with the web backend."
         )
     })?;
@@ -738,7 +738,7 @@ pub(crate) fn build_android_apk(
             .or_else(|_| env::var("ANDROID_HOME"))
             .map(PathBuf::from)
             .map_err(|_| {
-                anyhow!(
+                eyre!(
                     "Android SDK not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or create {} with an sdk.dir entry pointing to your SDK.",
                     local_properties.display()
                 )
@@ -815,7 +815,7 @@ fn run_android(
     let apk_path = build_android_apk(project_dir, android_config, release, false)?;
 
     let adb_path = devices::find_android_tool("adb").ok_or_else(|| {
-        anyhow::anyhow!(
+        eyre!(
             "`adb` not found. Install the Android SDK platform-tools and ensure they are on your PATH or ANDROID_HOME."
         )
     })?;
@@ -825,7 +825,7 @@ fn run_android(
         selection
     } else {
         let emulator = emulator_path.clone().ok_or_else(|| {
-            anyhow::anyhow!(
+            eyre!(
                 "No Android emulator available. Install the Android SDK emulator tools or specify a connected device."
             )
         })?;
@@ -855,7 +855,7 @@ fn run_android(
         Some(selection.identifier.clone())
     } else {
         let emulator = emulator_path.ok_or_else(|| {
-            anyhow::anyhow!(
+            eyre!(
                 "`emulator` not found. Install the Android SDK emulator tools or add them to PATH."
             )
         })?;
@@ -874,7 +874,11 @@ fn run_android(
 
     info!("Installing APK...");
     let mut install_cmd = adb_command(&adb_path, target_identifier.as_deref());
-    install_cmd.args(["install", "-r", apk_path.to_str().expect("path should be valid UTF-8")]);
+    install_cmd.args([
+        "install",
+        "-r",
+        apk_path.to_str().expect("path should be valid UTF-8"),
+    ]);
     debug!("Running command: {:?}", install_cmd);
     let status = install_cmd.status().context("failed to install APK")?;
     if !status.success() {
