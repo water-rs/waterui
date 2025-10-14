@@ -46,7 +46,7 @@ impl core::fmt::Debug for RendererCpuSurface<'_> {
 impl<'a> RendererCpuSurface<'a> {
     /// Creates a new CPU surface wrapper around an existing pixel buffer.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         data: &'a mut [u8],
         width: u32,
         height: u32,
@@ -64,13 +64,13 @@ impl<'a> RendererCpuSurface<'a> {
 
     /// Returns the mutable pixel slice backing this surface.
     #[must_use]
-    pub fn pixels_mut(&mut self) -> &mut [u8] {
+    pub const fn pixels_mut(&mut self) -> &mut [u8] {
         self.data
     }
 
     /// Returns `true` if the surface is tightly packed (no padding between rows).
     #[must_use]
-    pub fn is_tightly_packed(&self) -> bool {
+    pub const fn is_tightly_packed(&self) -> bool {
         (self.width as usize) * self.format.bytes_per_pixel() == self.stride
     }
 }

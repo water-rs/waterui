@@ -49,7 +49,7 @@ pub fn counter() -> impl View {
 
 ## 📱 Android CLI Workflow
 
-WaterUI ships a CLI that can scaffold and package Android applications without
+`WaterUI` ships a CLI that can scaffold and package Android applications without
 opening Android Studio. To try it end-to-end:
 
 1. **Install the Android command-line tools** (example for Linux):

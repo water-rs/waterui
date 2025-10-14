@@ -7,8 +7,6 @@
 extern crate alloc;
 
 use waterui_color::Color;
-#[doc(inline)]
-pub use waterui_form_derive::{FormBuilder, form};
 
 /// Text field form component module.
 pub mod text_field;
@@ -78,28 +76,6 @@ use waterui_core::{AnyView, Binding, Str, View};
 ///             Toggle::new(&binding.enabled),
 ///         ))
 ///     }
-/// }
-/// ```
-///
-/// # Reactive Form State
-///
-/// Forms created with `FormBuilder` are automatically reactive. Changes to form
-/// fields immediately update the bound data, enabling real-time validation and
-/// UI updates:
-///
-/// ```text
-/// # use waterui_form::FormBuilder;
-/// # use waterui_core::{Binding, View};
-/// # #[derive(Default, Clone, Project, FormBuilder)]
-/// # struct MyForm { name: String }
-/// fn reactive_example() -> impl View {
-///     let form_binding = MyForm::binding();
-///     
-///     // Form updates are immediately reflected in the binding
-///     vstack((
-///         form(&form_binding),
-///         text!("Hello, {}!", form_binding.project().name),
-///     ))
 /// }
 /// ```
 pub trait FormBuilder: Sized {
