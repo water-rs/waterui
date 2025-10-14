@@ -4,8 +4,8 @@ use crate::components::media::{WuiLivePhotoSource, WuiVideo};
 use crate::{IntoFFI, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
 use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
+use waterui::reactive::watcher::Metadata;
 use waterui::{AnyView, Str};
-use waterui::{Computed, reactive::watcher::Metadata};
 use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
@@ -21,8 +21,8 @@ ffi_type!(
 #[macro_export]
 macro_rules! impl_computed {
     ($ty:ty,$ffi_ty:ty,$read:ident,$watch:ident,$drop:ident) => {
-        impl $crate::OpaqueType for Computed<$ty> {}
-        impl_opaque_drop!(Computed<$ty>, $drop);
+        impl $crate::OpaqueType for waterui_core::Computed<$ty> {}
+        impl_opaque_drop!(waterui_core::Computed<$ty>, $drop);
 
         #[unsafe(no_mangle)]
         /// Reads the current value from a computed
@@ -30,7 +30,7 @@ macro_rules! impl_computed {
         /// # Safety
         ///
         /// The computed pointer must be valid and point to a properly initialized computed object.
-        pub unsafe extern "C" fn $read(computed: *const Computed<$ty>) -> $ffi_ty {
+        pub unsafe extern "C" fn $read(computed: *const waterui_core::Computed<$ty>) -> $ffi_ty {
             use waterui::Signal;
             unsafe { (*computed).get().into_ffi() }
         }
@@ -43,7 +43,7 @@ macro_rules! impl_computed {
         /// The watcher must be a valid callback function.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $watch(
-            computed: *const Computed<$ty>,
+            computed: *const waterui_core::Computed<$ty>,
             watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
         ) -> *mut $crate::reactive::WuiWatcherGuard {
             use waterui::Signal;
