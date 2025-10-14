@@ -175,6 +175,14 @@ typedef struct Computed_AnyView Computed_AnyView;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_AnyViews_AnyView Computed_AnyViews_AnyView;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Color Computed_Color;
 
 /**
@@ -787,15 +795,20 @@ typedef struct WuiList {
   struct WuiAnyViews *contents;
 } WuiList;
 
-typedef struct WuiArraySlice_____WuiAnyViews {
-  struct WuiAnyViews **head;
-  uintptr_t len;
-} WuiArraySlice_____WuiAnyViews;
+typedef struct WuiTableColumn {
+  struct WuiText label;
+  struct WuiAnyViews *rows;
+} WuiTableColumn;
 
-typedef struct WuiArrayVTable_____WuiAnyViews {
+typedef struct WuiArraySlice_WuiTableColumn {
+  struct WuiTableColumn *head;
+  uintptr_t len;
+} WuiArraySlice_WuiTableColumn;
+
+typedef struct WuiArrayVTable_WuiTableColumn {
   void (*drop)(void*);
-  struct WuiArraySlice_____WuiAnyViews (*slice)(const void*);
-} WuiArrayVTable_____WuiAnyViews;
+  struct WuiArraySlice_WuiTableColumn (*slice)(const void*);
+} WuiArrayVTable_WuiTableColumn;
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
@@ -804,16 +817,16 @@ typedef struct WuiArrayVTable_____WuiAnyViews {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
-typedef struct WuiArray_____WuiAnyViews {
+typedef struct WuiArray_WuiTableColumn {
   NonNull data;
-  struct WuiArrayVTable_____WuiAnyViews vtable;
-} WuiArray_____WuiAnyViews;
+  struct WuiArrayVTable_WuiTableColumn vtable;
+} WuiArray_WuiTableColumn;
 
-typedef struct WuiWatcher_WuiArray_____WuiAnyViews {
+typedef struct WuiWatcher_WuiArray_WuiTableColumn {
   void *data;
-  void (*call)(const void*, struct WuiArray_____WuiAnyViews, struct WuiWatcherMetadata*);
+  void (*call)(const void*, struct WuiArray_WuiTableColumn, struct WuiWatcherMetadata*);
   void (*drop)(void*);
-} WuiWatcher_WuiArray_____WuiAnyViews;
+} WuiWatcher_WuiArray_WuiTableColumn;
 
 typedef struct WuiTable {
   struct Computed_Vec_TableColumn *columns;
@@ -988,6 +1001,12 @@ typedef struct WuiWatcher_WuiId {
   void (*call)(const void*, struct WuiId, struct WuiWatcherMetadata*);
   void (*drop)(void*);
 } WuiWatcher_WuiId;
+
+typedef struct WuiWatcher_____WuiAnyViews {
+  void *data;
+  void (*call)(const void*, struct WuiAnyViews*, struct WuiWatcherMetadata*);
+  void (*drop)(void*);
+} WuiWatcher_____WuiAnyViews;
 
 /**
  * Drops the FFI value.
@@ -1589,7 +1608,7 @@ void waterui_drop_computed_table_cols(struct Computed_Vec_TableColumn *value);
  *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiArray_____WuiAnyViews waterui_read_computed_table_cols(const struct Computed_Vec_TableColumn *computed);
+struct WuiArray_WuiTableColumn waterui_read_computed_table_cols(const struct Computed_Vec_TableColumn *computed);
 
 /**
  * Watches for changes in a computed
@@ -1600,7 +1619,7 @@ struct WuiArray_____WuiAnyViews waterui_read_computed_table_cols(const struct Co
  * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_Vec_TableColumn *computed,
-                                                          struct WuiWatcher_WuiArray_____WuiAnyViews watcher);
+                                                          struct WuiWatcher_WuiArray_WuiTableColumn watcher);
 
 /**
  * # Safety
@@ -1610,6 +1629,15 @@ struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_table_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
+
+struct WuiTypeId waterui_table_column_id(void);
 
 /**
  * # Safety
@@ -2243,6 +2271,37 @@ struct WuiId waterui_anyviews_get_id(const struct WuiAnyViews *anyviews, uintptr
 struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, uintptr_t index);
 
 uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
+
+/**
+ * Drops the FFI value.
+ *
+ * # Safety
+ *
+ * If `value` is NULL, this function does nothing. If `value` is not a valid pointer
+ * to a properly initialized value of the expected type, undefined behavior will occur.
+ * The pointer must not be used after this function is called.
+ */
+void waterui_drop_computed_views(struct Computed_AnyViews_AnyView *value);
+
+/**
+ * Reads the current value from a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiAnyViews *waterui_read_computed_views(const struct Computed_AnyViews_AnyView *computed);
+
+/**
+ * Watches for changes in a computed
+ *
+ * # Safety
+ *
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_views(const struct Computed_AnyViews_AnyView *computed,
+                                                     struct WuiWatcher_____WuiAnyViews watcher);
 
 WuiEnv* waterui_init(void);
 
