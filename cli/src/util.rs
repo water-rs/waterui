@@ -1,6 +1,21 @@
-use anyhow::Result;
+use color_eyre::eyre::Result;
+use console::style;
+use core::fmt::Display;
 use heck::{AsKebabCase, AsPascalCase};
 use std::path::{Path, PathBuf};
+
+pub fn print_error(error: impl Display, hint: Option<&str>) {
+    let icon = style("✖").red();
+    eprintln!("{} {}", icon, style("Error").red().bold());
+    eprintln!("  {}", style(error.to_string()).red());
+    if let Some(hint) = hint {
+        eprintln!(
+            "  {} {}",
+            style("Hint:").yellow().bold(),
+            style(hint).yellow()
+        );
+    }
+}
 
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
