@@ -1,6 +1,5 @@
-use nami::SignalExt;
 use waterui::{
-    Binding, Environment, View, ViewExt,
+    Binding, Environment, FormBuilder, Project, View, ViewExt,
     component::{
         form::{FormBuilder, Slider, form, stepper},
         layout::{
@@ -11,7 +10,6 @@ use waterui::{
         text::text,
     },
     prelude::layout::padding::EdgeInsets,
-    reactive::Project,
     widget::Divider,
 };
 

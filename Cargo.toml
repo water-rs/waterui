@@ -13,6 +13,7 @@ members = [
     "window",
     "demo",
     "ffi",
+    "derive",
     "cli"]
 resolver = "2"
 
@@ -75,6 +76,7 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-tui = { version = "0.1.0", path = "backends/tui" }
 waterui-render-utils = { version = "0.1.0", path = "render_utils" }
 waterui = { version = "0.1.0", path = "." }
+waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "0.19"
@@ -94,6 +96,7 @@ executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 log.workspace = true
 pulldown-cmark = "0.9"
+waterui-derive.workspace = true
 
 [features]
 default = []
