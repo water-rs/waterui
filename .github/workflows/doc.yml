@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # need tags
+          fetch-depth: 0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@nightly
@@ -37,17 +37,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-doc-
 
-      - name: Build rustdoc (cache → version dir)
+      - name: Build rustdoc
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: |
+          set -euxo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME}"
           else
             VERSION="main"
           fi
-          echo "📘 Building WaterUI docs for version: $VERSION"
 
+          echo "📘 Building WaterUI docs for version: $VERSION"
           mkdir -p deploy/cache
           cargo doc -p waterui --no-deps --target-dir deploy/cache
 
@@ -56,8 +57,12 @@ jobs:
 
       - name: Sanity check - crate docs exist
         run: |
-          V="${GITHUB_REF_TYPE == 'tag' && GITHUB_REF_NAME || 'main'}"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then V="${GITHUB_REF_NAME}"; else V="main"; fi
+          set -euxo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME}"
+          else
+            V="main"
+          fi
           if [[ ! -f "deploy/$V/waterui/index.html" ]]; then
             echo "::error::Expected deploy/$V/waterui/index.html but not found."
             echo "deploy/$V contents:"; ls -la "deploy/$V" || true
@@ -67,6 +72,7 @@ jobs:
       - name: Determine latest stable tag
         id: stable
         run: |
+          set -e
           TAGS=$(git tag -l "v*" | sort -Vr)
           STABLE_TAG=$(echo "$TAGS" | head -n 1)
           if [ -z "$STABLE_TAG" ]; then
@@ -76,30 +82,16 @@ jobs:
             echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
             echo "➡️ Stable version: $STABLE_TAG"
           fi
-          # also export all tags (for redirects)
-          # write newline-separated list to a file we'll reuse
-          echo "$TAGS" > all_tags.txt
 
-      - name: Write _redirects and 404 (server-side)
+      - name: Write root redirects and 404
         run: |
+          set -e
           mkdir -p deploy
           TARGET="${{ steps.stable.outputs.stable }}"
-          # Root → latest stable
           echo "/  /$TARGET/ 302" > deploy/_redirects
-          # Make /main land where the crate actually lives (ONE redirect, no loops)
-          echo "/main  /main/waterui/ 302" >> deploy/_redirects
-          # For each tag, make /vX.Y.Z land at that crate root too
-          while read -r t; do
-            [ -z "$t" ] && continue
-            echo "/$t  /$t/waterui/ 302" >> deploy/_redirects
-          done < all_tags.txt
-
-          # Disable SPA fallback: serve a real 404 so CF doesn't bounce to "/"
           cat > deploy/404.html <<'EOF'
-          <!DOCTYPE html>
-          <meta charset="utf-8">
-          <title>404 Not Found</title>
-          <h1>404</h1><p>Not found.</p>
+          <!DOCTYPE html><meta charset="utf-8">
+          <title>404 Not Found</title><h1>404</h1><p>Not found.</p>
           EOF
 
       - name: Deploy to Cloudflare Pages
