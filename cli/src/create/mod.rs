@@ -1,14 +1,9 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
-use color_eyre::eyre::{Context, Error, Result, bail, eyre};
-use crates_index::Index;
+use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
-use semver::Version;
 use tracing::{info, warn};
 
 use crate::{
@@ -179,7 +174,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
     info!("Author: {}", author);
     info!("Crate name: {}", crate_name);
     if selected_backends.contains(&BackendChoice::Swiftui) {
-        info!("Xcode scheme: {}", app_name);
+        info!("Xcode scheme: {}", crate_name);
     }
     info!("Bundle ID: {}", bundle_identifier);
     let backend_list = selected_backends
@@ -263,7 +258,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
                 spinner.set_message(format!("{} SwiftUI backend created ✓", progress));
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
-                    scheme: app_name.clone(),
+                    scheme: crate_name.clone(),
                     project_file: Some(format!("{}.xcodeproj", app_name)),
                 });
             }
@@ -303,8 +298,7 @@ pub struct ProjectDependencies {
 }
 
 pub enum SwiftDependency {
-    Remote { requirement: String },
-    Dev,
+    Git { version: Option<String> },
 }
 
 fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
@@ -314,119 +308,32 @@ waterui-ffi = { git = "https://github.com/water-rs/waterui" }"#
             .to_string();
         return Ok(ProjectDependencies {
             rust_toml,
-            swift: SwiftDependency::Dev,
+            swift: SwiftDependency::Git { version: None },
         });
     }
 
-    let mut index = Index::new_cargo_default().map_err(|err| human_dependency_error(err, None))?;
-    index
-        .update()
-        .map_err(|err| human_dependency_error(err, Some("updating the crates.io index")))?;
-
-    let waterui_version = latest_crates_io_version(&index, "waterui")
-        .ok_or_else(|| missing_crate_error("waterui"))?;
-    let waterui_ffi_version = latest_crates_io_version(&index, "waterui-ffi")
-        .ok_or_else(|| missing_crate_error("waterui-ffi"))?;
+    let waterui_version = crate::WATERUI_VERSION;
+    if waterui_version.is_empty() {
+        bail!("WATERUI_VERSION is not set. This should be set at build time.");
+    }
 
     let rust_toml = format!(
         r#"waterui = "{}"
 waterui-ffi = "{}""#,
-        waterui_version, waterui_ffi_version
+        waterui_version, waterui_version
     );
 
-    let swift_version = latest_swift_backend_version().map_err(|err| {
-        human_dependency_error(
-            err,
-            Some("discovering Swift backend releases (tags prefixed with swift-backend-v*)"),
-        )
-    })?;
+    let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
+    if swift_backend_version.is_empty() {
+        bail!("WATERUI_SWIFT_BACKEND_VERSION is not set. This should be set at build time.");
+    }
 
     Ok(ProjectDependencies {
         rust_toml,
-        swift: SwiftDependency::Remote {
-            requirement: format!(
-                "\t\t\tkind = exactVersion;\n\t\t\tversion = \"{}\";",
-                swift_version
-            ),
+        swift: SwiftDependency::Git {
+            version: Some(swift_backend_version.to_string()),
         },
     })
-}
-
-fn latest_crates_io_version(index: &Index, name: &str) -> Option<Version> {
-    let krate = index.crate_(name)?;
-    krate
-        .versions()
-        .iter()
-        .filter(|v| !v.is_yanked())
-        .filter_map(|v| Version::parse(v.version()).ok())
-        .max()
-}
-
-fn latest_swift_backend_version() -> Result<String> {
-    let pattern = format!("refs/tags/{}*", SWIFT_TAG_PREFIX);
-
-    let output = Command::new("git")
-        .args(["ls-remote", "--tags", WATERUI_GIT_URL, pattern.as_str()])
-        .output()
-        .context("Failed to query Swift backend tags with git")?;
-
-    if !output.status.success() {
-        bail!("`git ls-remote` returned a non-zero status");
-    }
-
-    let mut best: Option<(Version, String)> = None;
-
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.split_ascii_whitespace();
-        let _hash = parts.next();
-        let reference = match parts.next() {
-            Some(r) => r,
-            None => continue,
-        };
-        if reference.ends_with("^{}") {
-            continue;
-        }
-        if let Some(tag) = reference.strip_prefix("refs/tags/") {
-            if let Some(version_str) = tag.strip_prefix(SWIFT_TAG_PREFIX) {
-                if let Ok(version) = Version::parse(version_str) {
-                    if best.as_ref().is_none_or(|(best_v, _)| &version > best_v) {
-                        best = Some((version, version_str.to_string()));
-                    }
-                }
-            }
-        }
-    }
-
-    best.map(|(_, version)| version)
-        .ok_or_else(|| eyre!("No Swift backend release tags found"))
-}
-
-fn human_dependency_error<E: std::fmt::Display>(err: E, action: Option<&str>) -> Error {
-    let err_str = err.to_string();
-    let mut message = String::new();
-    if let Some(action) = action {
-        message.push_str(&format!("Problem while {action}:\n"));
-    }
-    message.push_str(&err_str);
-
-    if err_str.contains("refs/heads/master") {
-        message.push_str(
-            "\n\nHint: Your local crates.io index still points to `master`. Remove \
-~/.cargo/registry/index/github.com-1ecc6299db9ec823 or update HEAD to `main`, then retry.",
-        );
-    }
-
-    message.push_str(
-        "\n\nHint: If you prefer to use the latest development version of WaterUI, rerun with `--dev`.",
-    );
-
-    eyre!(message)
-}
-
-fn missing_crate_error(name: &str) -> Error {
-    eyre!(
-        "No crates.io release of `{name}` found.\n\nHint: If you prefer to use the latest development version of WaterUI, rerun with `--dev`."
-    )
 }
 
 fn prepare_directory(project_dir: &Path) -> Result<()> {
