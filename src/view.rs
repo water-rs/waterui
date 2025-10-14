@@ -13,8 +13,7 @@ use nami::{Binding, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment,
-    components::IgnorableMetadata,
+    AnyView, Environment, IgnorableMetadata,
     env::{With, WithEnv},
     handler::HandlerFn,
 };
@@ -33,9 +32,10 @@ use crate::{
     gesture::{Gesture, GestureObserver, TapGesture},
 };
 use crate::{
-    component::{Metadata, Text, badge::Badge, focu::Focused},
-    prelude::style::Shadow,
+    component::{Text, badge::Badge, focu::Focused},
+    prelude::Shadow,
 };
+use waterui_core::Metadata;
 use waterui_core::id::TaggedView;
 
 /// Extension trait for views, adding common styling and configuration methods.

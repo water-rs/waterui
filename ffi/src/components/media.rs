@@ -1,6 +1,6 @@
 use crate::WuiStr;
 use crate::{IntoFFI, WuiAnyView, ffi_struct, ffi_view};
-use waterui::component::Native;
+use waterui_core::Native;
 use waterui::{Binding, Computed};
 use waterui_media::{
     Video,
