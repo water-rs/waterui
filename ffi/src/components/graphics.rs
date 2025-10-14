@@ -90,7 +90,7 @@ pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     }
 
     let buffer = unsafe { slice::from_raw_parts_mut(pixels, expected) };
-    let mut surface = RendererCpuSurface::new(buffer, width, height, stride, format);
+    let surface = RendererCpuSurface::new(buffer, width, height, stride, format);
 
     let view = unsafe { &mut *view };
     let callback = &mut view.on_render;
