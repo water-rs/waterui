@@ -33,7 +33,7 @@ impl Debug for GraphicsContext<'_> {
 
 impl<'a> GraphicsContext<'a> {
     /// Creates a new graphics context bound to the provided environment.
-    pub(crate) fn new(env: &'a Environment) -> Self {
+    pub(crate) const fn new(env: &'a Environment) -> Self {
         Self {
             env,
             commands: Vec::new(),
@@ -42,7 +42,7 @@ impl<'a> GraphicsContext<'a> {
 
     /// Returns the environment associated with this context.
     #[must_use]
-    pub fn environment(&self) -> &Environment {
+    pub const fn environment(&self) -> &Environment {
         self.env
     }
 

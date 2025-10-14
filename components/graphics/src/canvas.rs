@@ -66,7 +66,7 @@ pub fn canvas(content: impl Fn(&mut GraphicsContext) + Send + Sync + 'static) ->
 
 impl View for Canvas {
     fn body(self, env: &Environment) -> impl View {
-        let Canvas {
+        let Self {
             content,
             width,
             height,

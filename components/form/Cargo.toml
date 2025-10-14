@@ -9,7 +9,6 @@ repository.workspace = true
 description = "Form components for WaterUI (inputs, buttons, validation)"
 keywords = ["form", "input", "validation", "ui", "components"]
 categories = ["gui"]
-exclude = ["examples/*"]
 
 
 [dependencies]
@@ -18,7 +17,6 @@ waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
-waterui-form-derive = { version = "0.1.0", path = "derive" }
 waterui-color.workspace = true
 zeroize = { version = "1.8.1", default-features = false }
 bcrypt = "0.17.1"

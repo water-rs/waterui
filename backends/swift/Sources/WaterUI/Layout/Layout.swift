@@ -210,8 +210,14 @@ struct WuiContainer: WuiComponent, View {
         let container = waterui_force_as_container(anyview)
         self.layout = WuiLayout(inner: container.layout!)
 
-        let anyviews = WuiAnyViewCollection(UnsafeMutableRawPointer(container.contents), env: env)
-        self.children = anyviews.toArray()
+        let anyViews = WuiAnyViews(container.contents)
+        var children: [WuiAnyView] = []
+        children.reserveCapacity(anyViews.count)
+        for i in 0..<anyViews.count {
+            children.append(anyViews.getView(at: i, env: env))
+        }
+        self.children = children
+
         self.descriptors = children.map { view in
             let id = view.typeId
             return ChildDescriptor(typeId: id, isSpacer: id == WuiSpacer.id)

@@ -172,7 +172,7 @@ pub fn run(args: RunArgs) -> Result<()> {
 }
 
 fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<()> {
-    info!("Compiling Rust dynamic library...");
+    info!("Compiling Rust library...");
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("--package").arg(package);
     if release {

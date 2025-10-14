@@ -1,13 +1,13 @@
 [package]
-name = "waterui-form-derive"
+name = "waterui-derive"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-description = "Derive macro for FormBuilder trait"
-keywords = ["macro", "derive", "form", "ui"]
+description = "Macro for WaterUI"
+keywords = ["macro", "derive", "ui"]
 categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]

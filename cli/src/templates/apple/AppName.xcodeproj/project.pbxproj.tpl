@@ -65,9 +65,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-        D018675D2E6C7BBB00802E96 /* __APP_DISPLAY_NAME__ */ = {
+        D018675D2E6C7BBB00802E96 /* __CRATE_NAME__ */ = {
 			isa = PBXNativeTarget;
-            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_DISPLAY_NAME__" */;
+            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__CRATE_NAME__" */;
 			buildPhases = (
 				D0000001000000000000001 /* Build Rust Library */,
 				D018675A2E6C7BBB00802E96 /* Sources */,
@@ -81,11 +81,11 @@
 			fileSystemSynchronizedGroups = (
 				D01867602E6C7BBB00802E96 /* __APP_NAME__ */,
 			);
-            name = "__APP_DISPLAY_NAME__";
+            name = "__CRATE_NAME__";
             packageProductDependencies = (
                 D01867792E6C82CA00802E96 /* WaterUI */,
             );
-            productName = "__APP_DISPLAY_NAME__";
+            productName = "__APP_NAME__";
             productReference = D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */;
             productType = "com.apple.product-type.application";
         };
@@ -121,7 +121,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-                D018675D2E6C7BBB00802E96 /* __APP_DISPLAY_NAME__ */,
+                D018675D2E6C7BBB00802E96 /* __CRATE_NAME__ */,
             );
         };
 /* End PBXProject section */
@@ -411,7 +411,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__APP_DISPLAY_NAME__" */ = {
+        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "__CRATE_NAME__" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D018676B2E6C7BBD00802E96 /* Debug */,
