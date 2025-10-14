@@ -72,7 +72,7 @@ pub mod photo;
 
 #[cfg(feature = "media-picker")]
 /// Media picker functionality for platform-native media selection.
-pub mod picker;
+pub mod media_picker;
 /// Video components and types.
 ///
 /// This module provides [`Video`] sources and [`VideoPlayer`] components

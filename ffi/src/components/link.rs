@@ -1,6 +1,7 @@
 use crate::{WuiAnyView, ffi_struct, ffi_view};
 use waterui::component::link::LinkConfig;
-use waterui::{Computed, Str, component::Native};
+use waterui::{Computed, Str};
+use waterui_core::Native;
 
 #[repr(C)]
 pub struct WuiLink {
