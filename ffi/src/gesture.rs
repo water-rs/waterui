@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use waterui_core::Metadata;
 
 use crate::{IntoFFI, WuiAnyView, WuiEnv, action::WuiAction, ffi_enum, ffi_struct, ffi_view};
 
@@ -6,7 +7,6 @@ use core::ptr::null_mut;
 
 use waterui::{
     Environment,
-    component::Metadata,
     gesture::{
         DragEvent, DragGesture, Gesture, GestureObserver, GesturePhase, GesturePoint,
         LongPressEvent, LongPressGesture, MagnificationEvent, MagnificationGesture,
