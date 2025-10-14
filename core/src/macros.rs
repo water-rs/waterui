@@ -61,9 +61,9 @@ macro_rules! configurable {
                 use $crate::view::ConfigurableView;
                 let config = self.config();
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
-                    $crate::components::AnyView::new(hook.apply(env, config))
+                    $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::components::AnyView::new($crate::components::Native(config))
+                    $crate::AnyView::new($crate::Native(config))
                 }
             }
         }
