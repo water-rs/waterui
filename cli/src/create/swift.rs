@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs, path::Path};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use color_eyre::eyre::{Result};
+use color_eyre::eyre::Result;
 
 use super::{SwiftDependency, WATERUI_GIT_URL, template};
 
@@ -37,21 +37,21 @@ pub fn create_xcode_project(
 
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_ENTRY",
-        "D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference \"waterui-swift\" */,".to_string(),
+        r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */,"#
+            .to_string(),
     );
 
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_SECTION",
         format!(
             r#"/* Begin XCRemoteSwiftPackageReference section */
-        D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference \"waterui-swift\" */ = {{
+        D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */ = {{
             isa = XCRemoteSwiftPackageReference;
-            repositoryURL = \"{}\";
+            repositoryURL = "{}";
             {}
         }};
 /* End XCRemoteSwiftPackageReference section */"#,
-            WATERUI_GIT_URL,
-            requirement
+            WATERUI_GIT_URL, requirement
         ),
     );
 
