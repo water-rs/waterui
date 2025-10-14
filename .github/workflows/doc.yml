@@ -17,13 +17,13 @@ concurrency:
 
 jobs:
   build-deploy:
-    runs-on: ubuntu-latest
+    runs-on: macos-latests
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly # Nightly is faster to compile docs
 
       - name: Build rustdoc
         env:
@@ -77,4 +77,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy deploy --project-name=waterui-docs
+          command: pages publish ./deploy --project-name=waterui-docs
