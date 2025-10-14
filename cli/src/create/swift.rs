@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs, path::Path, process::Command};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use anyhow::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 
 use super::{SwiftDependency, WATERUI_GIT_URL, template};
 use crate::util;
