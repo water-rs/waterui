@@ -63,11 +63,29 @@ jobs:
           else
             V="main"
           fi
+          # 🔁 If your crate directory isn't 'waterui', change it here:
           if [[ ! -f "deploy/$V/waterui/index.html" ]]; then
             echo "::error::Expected deploy/$V/waterui/index.html but not found."
             echo "deploy/$V contents:"; ls -la "deploy/$V" || true
             exit 1
           fi
+
+      # ✅ NEW: ensure /$VERSION/ resolves (single absolute redirect, no loops)
+      - name: Write version index (/$VERSION → /$VERSION/waterui/)
+        run: |
+          set -euxo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME}"
+          else
+            V="main"
+          fi
+          mkdir -p "deploy/$V"
+          # 🔁 If your crate directory isn't 'waterui', change it here too:
+          cat > "deploy/$V/index.html" <<EOF
+          <!DOCTYPE html>
+          <meta http-equiv="refresh" content="0; url=/$V/waterui/">
+          <script>location.replace("/$V/waterui/");</script>
+          EOF
 
       - name: Determine latest stable tag
         id: stable
