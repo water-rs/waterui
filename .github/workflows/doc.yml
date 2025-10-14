@@ -21,9 +21,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@nightly # Nightly is faster to compile docs
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Build rustdoc
         env:
@@ -35,7 +37,7 @@ jobs:
             VERSION=main
           fi
 
-          echo "Building docs for version: $VERSION"
+          echo "📘 Building docs for version: $VERSION"
           cargo doc -p waterui --no-deps
           mkdir -p deploy/$VERSION
           cp -r target/doc/* deploy/$VERSION/
@@ -45,34 +47,33 @@ jobs:
         run: |
           TAGS=$(git tag -l "v*" | sort -Vr)
           STABLE_TAG=$(echo "$TAGS" | head -n 1)
-
           if [ -z "$STABLE_TAG" ]; then
-            echo "No stable tag found, fallback to main"
             echo "stable=main" >> $GITHUB_OUTPUT
           else
-            echo "Latest stable version: $STABLE_TAG"
             echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate redirect index.html
+        if: ${{ github.ref_type == 'tag' || (github.ref_name == 'main' && steps.stable.outputs.stable == 'main') }}
         run: |
           mkdir -p deploy
-          echo "Redirecting / → /${{ steps.stable.outputs.stable }}/"
+          TARGET=${{ steps.stable.outputs.stable }}
+          echo "🔁 Regenerating index redirect → /$TARGET/"
           cat > deploy/index.html <<EOF
           <!DOCTYPE html>
           <html lang="en">
             <head>
-              <meta http-equiv="refresh" content="0; url=${{ steps.stable.outputs.stable }}/">
-              <script>window.location.href = "${{ steps.stable.outputs.stable }}/";</script>
-              <title>Redirecting to WaterUI Docs (${{ steps.stable.outputs.stable }})</title>
+              <meta http-equiv="refresh" content="0; url=$TARGET/">
+              <script>window.location.href = "$TARGET/";</script>
+              <title>Redirecting to WaterUI Docs ($TARGET)</title>
             </head>
             <body>
-              <p>Redirecting to <a href="${{ steps.stable.outputs.stable }}/">WaterUI docs (${{ steps.stable.outputs.stable }})</a>...</p>
+              <p>Redirecting to <a href="$TARGET/">WaterUI docs ($TARGET)</a>...</p>
             </body>
           </html>
           EOF
 
-      - name: Deploy to Cloudflare Pages
+      - name: Publish to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
