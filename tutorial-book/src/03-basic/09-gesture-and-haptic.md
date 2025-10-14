@@ -1,3 +1,0 @@
-# Gesture and haptic
-
-[WIP]
