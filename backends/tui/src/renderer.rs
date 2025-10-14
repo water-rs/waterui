@@ -3,14 +3,12 @@ use waterui::{
     Color as UiColor,
     background::{Background, ForegroundColor},
     component::focu::Focused,
-    component::style::Shadow,
     gesture::GestureObserver,
+    style::Shadow,
     view::ViewExt,
 };
 use waterui_core::{
-    AnyView, Environment, Signal, Str, View,
-    components::{IgnorableMetadata, Metadata, Native},
-    views::Views,
+    AnyView, Environment, IgnorableMetadata, Metadata, Native, Signal, Str, View, views::Views,
 };
 use waterui_layout::{
     container::{Container as LayoutContainer, FixedContainer},
@@ -37,7 +35,9 @@ impl RenderFrame {
     /// impossible unless the internal storage becomes inconsistent.
     pub fn push_line(&mut self, indent: usize) -> &mut RenderLine {
         self.lines.push(RenderLine::new(indent));
-        self.lines.last_mut().expect("line should be available after insertion")
+        self.lines
+            .last_mut()
+            .expect("line should be available after insertion")
     }
 
     /// Returns the set of lines recorded in this frame.
