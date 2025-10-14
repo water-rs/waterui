@@ -3,9 +3,8 @@ use color_eyre::eyre::{Context, Result};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;
+use crate::android;
 use std::collections::BTreeMap;
-use std::env;
-use std::path::PathBuf;
 use std::process::Command;
 use which::which;
 
@@ -42,29 +41,6 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>> {
     devices.extend(apple_devices()?);
     devices.extend(android_devices()?);
     Ok(devices)
-}
-
-pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
-    if let Ok(path) = which(tool) {
-        return Some(path);
-    }
-
-    let suffixes: &[&str] = match tool {
-        "adb" => &["platform-tools/adb", "platform-tools/adb.exe"],
-        "emulator" => &["emulator/emulator", "emulator/emulator.exe"],
-        _ => &[],
-    };
-
-    for root in android_sdk_roots() {
-        for suffix in suffixes {
-            let candidate = root.join(suffix);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
 }
 
 pub fn run(args: DevicesArgs) -> Result<()> {
@@ -192,7 +168,7 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
 fn android_devices() -> Result<Vec<DeviceInfo>> {
     let mut results = Vec::new();
 
-    if let Some(adb) = find_android_tool("adb") {
+    if let Some(adb) = android::find_android_tool("adb") {
         let output = Command::new(&adb)
             .args(["devices", "-l"])
             .output()
@@ -241,7 +217,7 @@ fn android_devices() -> Result<Vec<DeviceInfo>> {
         }
     }
 
-    if let Some(emulator) = find_android_tool("emulator") {
+    if let Some(emulator) = android::find_android_tool("emulator") {
         let output = Command::new(&emulator)
             .arg("-list-avds")
             .output()
@@ -346,20 +322,4 @@ fn print_table(devices: &[DeviceInfo]) {
             }
         }
     }
-}
-
-fn android_sdk_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(path) = env::var("ANDROID_HOME") {
-        roots.push(PathBuf::from(path));
-    }
-    if let Ok(path) = env::var("ANDROID_SDK_ROOT") {
-        roots.push(PathBuf::from(path));
-    }
-    if let Ok(home) = env::var("HOME") {
-        let home_path = PathBuf::from(home);
-        roots.push(home_path.join("Library/Android/sdk"));
-        roots.push(home_path.join("Android/Sdk"));
-    }
-    roots.into_iter().filter(|p| p.exists()).collect()
 }
