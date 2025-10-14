@@ -20,13 +20,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # === 1. Checkout with tags ===
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # === 2. Setup Rust ===
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@nightly
 
+      # === 3. Build rustdoc directly into deploy/$VERSION ===
       - name: Build rustdoc
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
@@ -37,11 +40,15 @@ jobs:
             VERSION=main
           fi
 
-          echo "📘 Building docs for version: $VERSION"
-          cargo doc -p waterui --no-deps
-          mkdir -p deploy/$VERSION
-          cp -r target/doc/* deploy/$VERSION/
+          echo "📘 Building WaterUI docs for version: $VERSION"
+          cargo doc -p waterui --no-deps --target-dir deploy/$VERSION
 
+          # The docs will now be in deploy/$VERSION/doc/
+          # Move them one level up for cleaner URL structure
+          mv deploy/$VERSION/doc/* deploy/$VERSION/
+          rm -rf deploy/$VERSION/doc
+
+      # === 4. Determine latest stable tag ===
       - name: Determine latest stable tag
         id: stable
         run: |
@@ -52,13 +59,15 @@ jobs:
           else
             echo "stable=$STABLE_TAG" >> $GITHUB_OUTPUT
           fi
+          echo "➡️ Stable version: $STABLE_TAG"
 
+      # === 5. Generate root redirect index.html ===
       - name: Generate redirect index.html
         if: ${{ github.ref_type == 'tag' || (github.ref_name == 'main' && steps.stable.outputs.stable == 'main') }}
         run: |
           mkdir -p deploy
           TARGET="${{ steps.stable.outputs.stable }}"
-          echo "🔁 Regenerating index redirect → /$TARGET/"
+          echo "🔁 Regenerating root index redirect → /$TARGET/"
           cat > deploy/index.html <<EOF
           <!DOCTYPE html>
           <html lang="en">
@@ -73,6 +82,7 @@ jobs:
           </html>
           EOF
 
+      # === 6. Publish to Cloudflare Pages ===
       - name: Publish to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
