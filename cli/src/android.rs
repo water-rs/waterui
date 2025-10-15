@@ -600,6 +600,11 @@ pub fn build_android_apk(
             info!("Building Rust library for Android...");
             let mut cmd = Command::new("bash");
             cmd.arg(&build_rust_script);
+            if release {
+                cmd.arg("release");
+            } else {
+                cmd.arg("debug");
+            }
             cmd.current_dir(project_dir);
             let ndk_env = env::var("ANDROID_NDK_HOME")
                 .ok()
