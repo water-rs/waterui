@@ -8,6 +8,11 @@ set -e
 # You also need to install the Rust targets:
 # rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
+if [ -z "$ANDROID_NDK_HOME" ]; then
+    echo "Error: ANDROID_NDK_HOME is not set. Please set it to the path of your Android NDK installation."
+    exit 1
+fi
+
 CRATE_NAME=__CRATE_NAME__
 
 # Build for all Android targets
