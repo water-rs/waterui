@@ -29,7 +29,7 @@ use crate::{
     },
     config::Config,
     devices::{self, DeviceInfo, DeviceKind},
-    util,
+    doctor, util,
 };
 
 #[derive(Args, Debug)]
@@ -81,6 +81,8 @@ pub fn run(args: RunArgs) -> Result<()> {
     let config = Config::load(&project_dir)?;
 
     info!("Running WaterUI app '{}'", config.package.display_name);
+
+    ensure_toolchains(args.platform)?;
 
     if args.platform == Platform::Web {
         run_web(&project_dir, &config, args.release, args.no_watch)?;
@@ -169,6 +171,45 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     drop(watcher);
     Ok(())
+}
+
+fn ensure_toolchains(platform: Platform) -> Result<()> {
+    if platform == Platform::Web {
+        return Ok(());
+    }
+
+    let include_swift = cfg!(target_os = "macos")
+        && matches!(
+            platform,
+            Platform::Macos
+                | Platform::Ios
+                | Platform::Ipados
+                | Platform::Watchos
+                | Platform::Tvos
+                | Platform::Visionos
+        );
+
+    let report = doctor::run_checks(include_swift, |_, _, _| {});
+
+    if !report.has_failures() {
+        return Ok(());
+    }
+
+    doctor::print_report(&report);
+
+    if doctor::prompt_for_doctor_fix()? {
+        doctor::run_doctor_fix_subcommand()?;
+        let post_report = doctor::run_checks(include_swift, |_, _, _| {});
+        if post_report.has_failures() {
+            doctor::print_report(&post_report);
+            bail!("Required toolchain checks still failing after running `water doctor --fix`.");
+        }
+        return Ok(());
+    }
+
+    bail!(
+        "`water run` requires a healthy toolchain. Resolve the reported issues or run `water doctor --fix`."
+    );
 }
 
 fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<()> {

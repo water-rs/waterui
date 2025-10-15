@@ -1,7 +1,9 @@
 use std::{
-    env, fs,
+    env,
+    fs::{self, File},
+    io::{Write, copy},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     thread,
     time::Duration,
 };
@@ -9,6 +11,8 @@ use std::{
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use tracing::{debug, info};
 use which::which;
+
+use zip::ZipArchive;
 
 pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
     if let Ok(path) = which(tool) {
@@ -47,6 +51,251 @@ pub fn android_sdk_roots() -> Vec<PathBuf> {
         roots.push(home_path.join("Android/Sdk"));
     }
     roots.into_iter().filter(|p| p.exists()).collect()
+}
+
+const CMDLINE_TOOLS_VERSION: &str = "11076708";
+const REQUIRED_SDK_COMPONENTS: &[&str] = &[
+    "platform-tools",
+    "platforms;android-34",
+    "build-tools;34.0.0",
+    "ndk;26.2.11394342",
+];
+
+pub fn install_android_toolchain() -> Result<()> {
+    println!("Preparing Android SDK installation…");
+
+    let home_dir = home::home_dir().ok_or_else(|| eyre!("Unable to determine home directory"))?;
+    let android_dir = home_dir.join(".waterui").join("android");
+    fs::create_dir_all(&android_dir).context("failed to create WaterUI Android directory")?;
+
+    let sdk_root = android_dir.join("sdk");
+    fs::create_dir_all(&sdk_root).context("failed to create Android SDK directory")?;
+
+    let sdkmanager_path = ensure_command_line_tools(&sdk_root)?;
+    install_sdk_components(&sdkmanager_path, &sdk_root)?;
+    accept_sdk_licenses(&sdkmanager_path, &sdk_root)?;
+
+    let ndk_path = find_installed_ndk(&sdk_root)?;
+
+    println!("Android SDK installed at {}", sdk_root.display());
+    println!("Android NDK installed at {}", ndk_path.display());
+    println!("Update your environment variables to complete setup:");
+    println!("  export ANDROID_HOME=\"{}\"", sdk_root.display());
+    println!("  export ANDROID_SDK_ROOT=\"{}\"", sdk_root.display());
+    println!("  export ANDROID_NDK_HOME=\"{}\"", ndk_path.display());
+
+    Ok(())
+}
+
+fn ensure_command_line_tools(sdk_root: &Path) -> Result<PathBuf> {
+    let cmdline_root = sdk_root.join("cmdline-tools");
+    let latest_dir = cmdline_root.join("latest");
+    let sdkmanager_path = sdkmanager_executable(&latest_dir);
+
+    if sdkmanager_path.exists() {
+        return Ok(sdkmanager_path);
+    }
+
+    if latest_dir.exists() {
+        bail!(
+            "Android command-line tools directory {} exists without sdkmanager executable. Remove it before reinstalling.",
+            latest_dir.display()
+        );
+    }
+
+    download_command_line_tools(&cmdline_root, &latest_dir)?;
+    Ok(sdkmanager_path)
+}
+
+fn download_command_line_tools(cmdline_root: &Path, latest_dir: &Path) -> Result<()> {
+    fs::create_dir_all(cmdline_root).context("failed to create cmdline-tools directory")?;
+
+    let url = command_line_tools_url()?;
+    println!("Downloading Android command-line tools from {url}…");
+
+    let mut response = reqwest::blocking::get(&url)
+        .wrap_err_with(|| format!("failed to download Android command-line tools from {url}"))?;
+    if !response.status().is_success() {
+        bail!(
+            "Android command-line tools download failed with status {}",
+            response.status()
+        );
+    }
+
+    let archive_path = cmdline_root.join("commandlinetools.zip");
+    {
+        let mut file = File::create(&archive_path)
+            .context("failed to create temporary command-line tools archive")?;
+        copy(&mut response, &mut file)
+            .context("failed to write Android command-line tools archive")?;
+    }
+
+    let file = File::open(&archive_path).context("failed to reopen downloaded archive")?;
+    let mut archive =
+        ZipArchive::new(file).context("invalid Android command-line tools archive")?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .context("failed to read archive entry")?;
+        let entry_path = entry
+            .enclosed_name()
+            .ok_or_else(|| eyre!("archive entry contains invalid path"))?;
+
+        let mut components = entry_path.components();
+        let root = components
+            .next()
+            .ok_or_else(|| eyre!("archive entry missing root directory"))?;
+        if root.as_os_str() != "cmdline-tools" {
+            bail!(
+                "unexpected entry '{}' in Android command-line tools archive",
+                entry_path.display()
+            );
+        }
+
+        let mut relative = PathBuf::new();
+        for component in components {
+            relative.push(component);
+        }
+
+        let out_path = latest_dir.join(relative);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path).with_context(|| {
+                format!(
+                    "failed to create directory {} in command-line tools",
+                    out_path.display()
+                )
+            })?;
+            continue;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create parent directory {}", parent.display())
+            })?;
+        }
+
+        let mut outfile = File::create(&out_path).with_context(|| {
+            format!(
+                "failed to create file {} in command-line tools",
+                out_path.display()
+            )
+        })?;
+        copy(&mut entry, &mut outfile)
+            .with_context(|| format!("failed to extract {}", out_path.display()))?;
+
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = fs::Permissions::from_mode(mode);
+            fs::set_permissions(&out_path, permissions)
+                .with_context(|| format!("failed to set permissions on {}", out_path.display()))?;
+        }
+    }
+
+    fs::remove_file(&archive_path).context("failed to remove temporary archive")?;
+    println!(
+        "Installed Android command-line tools to {}",
+        latest_dir.display()
+    );
+    Ok(())
+}
+
+fn command_line_tools_url() -> Result<String> {
+    let platform = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "mac",
+        "windows" => "win",
+        other => bail!("Android SDK installation is not supported on {other}"),
+    };
+
+    Ok(format!(
+        "https://dl.google.com/android/repository/commandlinetools-{platform}-{version}_latest.zip",
+        platform = platform,
+        version = CMDLINE_TOOLS_VERSION
+    ))
+}
+
+fn install_sdk_components(sdkmanager_path: &Path, sdk_root: &Path) -> Result<()> {
+    println!("Installing Android SDK components…");
+
+    let mut command = Command::new(sdkmanager_path);
+    command.arg(format!("--sdk_root={}", sdk_root.display()));
+    command.args(REQUIRED_SDK_COMPONENTS);
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+
+    let status = command
+        .status()
+        .context("failed to execute sdkmanager to install SDK components")?;
+
+    if !status.success() {
+        bail!("sdkmanager exited with status {status}");
+    }
+
+    Ok(())
+}
+
+fn accept_sdk_licenses(sdkmanager_path: &Path, sdk_root: &Path) -> Result<()> {
+    println!("Accepting Android SDK licenses…");
+
+    let mut child = Command::new(sdkmanager_path)
+        .arg(format!("--sdk_root={}", sdk_root.display()))
+        .arg("--licenses")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to execute sdkmanager --licenses")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        thread::spawn(move || {
+            for _ in 0..64 {
+                if stdin.write_all(b"y\n").is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    let status = child
+        .wait()
+        .context("sdkmanager --licenses command failed to complete")?;
+
+    if !status.success() {
+        bail!("sdkmanager --licenses exited with status {status}");
+    }
+
+    Ok(())
+}
+
+fn find_installed_ndk(sdk_root: &Path) -> Result<PathBuf> {
+    let ndk_root = sdk_root.join("ndk");
+    let entries = fs::read_dir(&ndk_root)
+        .with_context(|| format!("Android NDK directory {} missing", ndk_root.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            return Ok(entry.path());
+        }
+    }
+
+    bail!(
+        "Android NDK installation incomplete: no directories found in {}",
+        ndk_root.display()
+    );
+}
+
+fn sdkmanager_executable(latest_dir: &Path) -> PathBuf {
+    let bin_dir = latest_dir.join("bin");
+    if cfg!(windows) {
+        bin_dir.join("sdkmanager.bat")
+    } else {
+        bin_dir.join("sdkmanager")
+    }
 }
 
 pub fn build_android_apk(

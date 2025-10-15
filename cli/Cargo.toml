@@ -32,6 +32,8 @@ crates-index = "0.19.1"
 semver = "1.0.22"
 webbrowser = "0.8.15"
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
+reqwest = { version = "0.12.7", default-features = false, features = ["blocking", "rustls-tls"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 which = "6.0.2"

@@ -1,10 +1,11 @@
 use clap::Args;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use console::style;
 use core::time::Duration;
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
+use std::env;
 use std::process::Command;
 
 #[derive(Args, Debug, Default)]
@@ -12,6 +13,131 @@ pub struct DoctorArgs {
     /// Attempt to fix required issues after running checks
     #[arg(long)]
     pub fix: bool,
+}
+
+pub struct CheckReport {
+    sections: Vec<Section>,
+    fixes: Vec<FixSuggestion>,
+}
+
+impl CheckReport {
+    pub fn has_failures(&self) -> bool {
+        self.sections.iter().any(Section::has_failure)
+    }
+
+    fn into_fix_suggestions(self) -> Vec<FixSuggestion> {
+        self.fixes
+    }
+}
+
+pub struct StepOutcome {
+    pub label: &'static str,
+    pub summary_line: String,
+}
+
+pub fn run_checks<F>(include_swift: bool, mut on_step: F) -> CheckReport
+where
+    F: FnMut(usize, usize, StepOutcome),
+{
+    let total = 2 + usize::from(include_swift);
+    let mut sections = Vec::new();
+    let mut fixes = Vec::new();
+    let mut step = 1;
+
+    let rust = check_rust();
+    on_step(
+        step,
+        total,
+        StepOutcome {
+            label: "Rust toolchain",
+            summary_line: rust.section().summary_line(),
+        },
+    );
+    let (rust_section, mut rust_fixes) = rust.into_parts();
+    sections.push(rust_section);
+    fixes.append(&mut rust_fixes);
+    step += 1;
+
+    if include_swift {
+        if let Some(swift) = check_swift() {
+            on_step(
+                step,
+                total,
+                StepOutcome {
+                    label: "Swift toolchain",
+                    summary_line: swift.section().summary_line(),
+                },
+            );
+            let (swift_section, mut swift_fixes) = swift.into_parts();
+            sections.push(swift_section);
+            fixes.append(&mut swift_fixes);
+        }
+        step += 1;
+    }
+
+    let android = check_android();
+    on_step(
+        step,
+        total,
+        StepOutcome {
+            label: "Android tooling",
+            summary_line: android.section().summary_line(),
+        },
+    );
+    let (android_section, mut android_fixes) = android.into_parts();
+    sections.push(android_section);
+    fixes.append(&mut android_fixes);
+
+    CheckReport { sections, fixes }
+}
+
+pub fn print_report(report: &CheckReport) {
+    println!("{}", style("WaterUI doctor report").bold().underlined());
+    for (index, section) in report.sections.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        for line in section.render() {
+            println!("{line}");
+        }
+    }
+    println!();
+    println!("{}", style("Doctor check complete.").green());
+    println!(
+        "{}",
+        style("Resolve ⚠ or ✘ entries to keep your toolchain healthy.").dim()
+    );
+}
+
+pub fn prompt_for_doctor_fix() -> Result<bool> {
+    Confirm::new()
+        .with_prompt("Run `water doctor --fix` to attempt automatic repairs?")
+        .default(true)
+        .interact()
+        .map_err(|err| {
+            eyre!(
+                "Unable to prompt for confirmation (is this running in an interactive terminal?): {err}"
+            )
+        })
+}
+
+pub fn run_doctor_fix_subcommand() -> Result<()> {
+    let exe = env::current_exe()
+        .map_err(|err| eyre!("Unable to determine current executable path: {err}"))?;
+    let status = Command::new(exe)
+        .arg("doctor")
+        .arg("--fix")
+        .status()
+        .map_err(|err| eyre!("Failed to launch `water doctor --fix`: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        let code = status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        bail!("`water doctor --fix` exited with status {code}");
+    }
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
@@ -27,80 +153,41 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     pb.tick();
 
     let include_swift = cfg!(target_os = "macos");
-    let total = 2 + usize::from(include_swift);
-    let mut sections = Vec::new();
-    let mut fixes = Vec::new();
-    let mut step = 1;
-
-    pb.set_message(progress_label(step, total, "Rust toolchain"));
-    pb.tick();
-    let rust = check_rust();
-    announce_section(&pb, step, total, rust.section());
-    let (rust_section, mut rust_fixes) = rust.into_parts();
-    sections.push(rust_section);
-    fixes.append(&mut rust_fixes);
-    step += 1;
-
-    if include_swift {
-        pb.set_message(progress_label(step, total, "Swift toolchain"));
+    let report = run_checks(include_swift, |step, total, outcome| {
+        pb.set_message(progress_label(step, total, outcome.label));
         pb.tick();
-        if let Some(swift) = check_swift() {
-            announce_section(&pb, step, total, swift.section());
-            let (swift_section, mut swift_fixes) = swift.into_parts();
-            sections.push(swift_section);
-            fixes.append(&mut swift_fixes);
-        }
-        step += 1;
-    }
-
-    pb.set_message(progress_label(step, total, "Android tooling"));
-    pb.tick();
-    let android = check_android();
-    announce_section(&pb, step, total, android.section());
-    let (android_section, mut android_fixes) = android.into_parts();
-    sections.push(android_section);
-    fixes.append(&mut android_fixes);
+        announce_section(&pb, step, total, &outcome.summary_line);
+    });
 
     pb.finish_and_clear();
 
-    let has_failures = sections.iter().any(|section| section.has_failure());
+    print_report(&report);
 
-    println!("{}", style("WaterUI doctor report").bold().underlined());
-    for (index, section) in sections.iter().enumerate() {
-        if index > 0 {
-            println!();
-        }
-        for line in section.render() {
-            println!("{line}");
-        }
-    }
-
-    println!();
-    println!("{}", style("Doctor check complete.").green());
-    println!(
-        "{}",
-        style("Resolve ⚠ or ✘ entries to keep your toolchain healthy.").dim()
-    );
+    let has_failures = report.has_failures();
 
     if has_failures && !args.fix {
-        println!(
-            "{}",
-            style("Tip: run `water doctor --fix` to attempt automatic repairs.").yellow()
-        );
+        if prompt_for_doctor_fix()? {
+            run_doctor_fix_subcommand()?;
+        } else {
+            println!(
+                "{}",
+                style("Tip: run `water doctor --fix` to attempt automatic repairs.").yellow()
+            );
+        }
     }
 
     if args.fix {
-        apply_fixes(fixes)?;
+        apply_fixes(report.into_fix_suggestions())?;
     }
 
     Ok(())
 }
 
-fn announce_section(pb: &ProgressBar, step: usize, total: usize, section: &Section) {
+fn announce_section(pb: &ProgressBar, step: usize, total: usize, summary_line: &str) {
     let line = format!(
         "{} {}",
         style(format!("[{step}/{total}]")).dim(),
-        section.summary_line()
+        summary_line
     );
     pb.suspend(|| println!("{line}"));
 }
@@ -298,19 +385,19 @@ fn check_swift() -> Option<SectionOutcome> {
 
 fn check_android() -> SectionOutcome {
     let mut outcome = SectionOutcome::new("Android tooling");
-    outcome.push(check_command(
+    outcome.push_outcome(check_android_tool(
         "adb",
         "Install Android SDK Platform-Tools and add to PATH.",
     ));
-    outcome.push(check_command(
+    outcome.push_outcome(check_android_tool(
         "emulator",
         "Install Android SDK command-line tools and add to PATH.",
     ));
-    outcome.push(check_env_var(
+    outcome.push_outcome(check_android_env_var(
         "ANDROID_HOME",
         "Set ANDROID_HOME to your Android SDK path.",
     ));
-    outcome.push(check_env_var(
+    outcome.push_outcome(check_android_env_var(
         "ANDROID_NDK_HOME",
         "Set ANDROID_NDK_HOME to your Android NDK path.",
     ));
@@ -353,6 +440,38 @@ fn check_android() -> SectionOutcome {
     }
 
     outcome
+}
+
+fn check_android_tool(tool: &str, help: &str) -> RowOutcome {
+    match crate::android::find_android_tool(tool) {
+        Some(path) => RowOutcome::new(
+            Row::pass(format!("Found `{tool}`")).with_detail(path.display().to_string()),
+        ),
+        None => RowOutcome::with_fix(
+            Row::fail(format!("`{tool}` not found")).with_detail(help),
+            android_toolchain_fix(),
+        ),
+    }
+}
+
+fn check_android_env_var(name: &str, help: &str) -> RowOutcome {
+    match std::env::var(name) {
+        Ok(value) => {
+            RowOutcome::new(Row::pass(format!("Environment `{name}` set")).with_detail(value))
+        }
+        Err(_) => RowOutcome::with_fix(
+            Row::fail(format!("Environment `{name}` missing")).with_detail(help),
+            android_toolchain_fix(),
+        ),
+    }
+}
+
+fn android_toolchain_fix() -> FixSuggestion {
+    FixSuggestion::internal(
+        "android-toolchain".into(),
+        "Install Android SDK and NDK".into(),
+        crate::android::install_android_toolchain,
+    )
 }
 
 fn check_command(name: &str, help: &str) -> Row {
@@ -754,10 +873,16 @@ impl SectionOutcome {
 }
 
 #[derive(Clone)]
+enum FixAction {
+    Command(Vec<String>),
+    Callback(std::sync::Arc<dyn Fn() -> Result<()> + Send + Sync>),
+}
+
+#[derive(Clone)]
 struct FixSuggestion {
     id: String,
     description: String,
-    command: Vec<String>,
+    action: FixAction,
 }
 
 impl FixSuggestion {
@@ -765,12 +890,26 @@ impl FixSuggestion {
         Self {
             id,
             description,
-            command,
+            action: FixAction::Command(command),
+        }
+    }
+
+    fn internal<F>(id: String, description: String, action: F) -> Self
+    where
+        F: Fn() -> Result<()> + Send + Sync + 'static,
+    {
+        Self {
+            id,
+            description,
+            action: FixAction::Callback(std::sync::Arc::new(action)),
         }
     }
 
     fn command_preview(&self) -> String {
-        self.command.join(" ")
+        match &self.action {
+            FixAction::Command(command) => command.join(" "),
+            FixAction::Callback(_) => format!("<internal:{}>", self.id),
+        }
     }
 }
 
@@ -813,39 +952,51 @@ fn apply_fixes(fixes: Vec<FixSuggestion>) -> Result<()> {
             continue;
         }
 
-        if fix.command.is_empty() {
-            println!(
-                "    {}",
-                style("No command associated with this fix. Skipping.").yellow()
-            );
-            continue;
-        }
+        match fix.action {
+            FixAction::Command(command) => {
+                if command.is_empty() {
+                    println!(
+                        "    {}",
+                        style("No command associated with this fix. Skipping.").yellow()
+                    );
+                    continue;
+                }
 
-        let mut command = Command::new(&fix.command[0]);
-        if fix.command.len() > 1 {
-            command.args(&fix.command[1..]);
-        }
+                let mut process = Command::new(&command[0]);
+                if command.len() > 1 {
+                    process.args(&command[1..]);
+                }
 
-        match command.status() {
-            Ok(status) if status.success() => {
-                println!("    {}", style("Completed successfully.").green());
+                match process.status() {
+                    Ok(status) if status.success() => {
+                        println!("    {}", style("Completed successfully.").green());
+                    }
+                    Ok(status) => {
+                        let code = status
+                            .code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".to_string());
+                        println!(
+                            "    {}",
+                            style(format!("Command exited with status {code}.")).red()
+                        );
+                    }
+                    Err(err) => {
+                        println!(
+                            "    {}",
+                            style(format!("Failed to execute command: {err}")).red()
+                        );
+                    }
+                }
             }
-            Ok(status) => {
-                let code = status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string());
-                println!(
-                    "    {}",
-                    style(format!("Command exited with status {code}.")).red()
-                );
-            }
-            Err(err) => {
-                println!(
-                    "    {}",
-                    style(format!("Failed to execute command: {err}")).red()
-                );
-            }
+            FixAction::Callback(callback) => match callback() {
+                Ok(()) => {
+                    println!("    {}", style("Completed successfully.").green());
+                }
+                Err(err) => {
+                    println!("    {}", style(format!("Fix failed: {err}")).red());
+                }
+            },
         }
     }
 
