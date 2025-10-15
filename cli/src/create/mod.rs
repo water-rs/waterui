@@ -294,7 +294,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
 
 pub struct ProjectDependencies {
     rust_toml: String,
-    swift: SwiftDependency,
+    pub swift: SwiftDependency,
 }
 
 pub enum SwiftDependency {
