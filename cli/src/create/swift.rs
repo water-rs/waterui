@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use color_eyre::eyre::Result;
 
-use super::{SwiftDependency, WATERUI_GIT_URL, template};
+use super::{SWIFT_BACKEND_GIT_URL, SwiftDependency, template};
 
 pub fn create_xcode_project(
     project_dir: &Path,
@@ -51,7 +51,7 @@ pub fn create_xcode_project(
             {}
         }};
 /* End XCRemoteSwiftPackageReference section */"#,
-            WATERUI_GIT_URL, requirement
+            SWIFT_BACKEND_GIT_URL, requirement
         ),
     );
 
