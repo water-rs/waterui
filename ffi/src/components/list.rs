@@ -40,6 +40,10 @@ ffi_view!(
     waterui_force_as_list
 );
 
+/// Calls the delete callback for a list item.
+///
+/// # Safety
+/// The caller must ensure that `item` and `env` are valid pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_list_item_call_delete(
     item: *mut WuiListItem,
