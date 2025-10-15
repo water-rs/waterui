@@ -55,7 +55,8 @@ impl Image {
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub async fn encode(&self, mime: Mime) -> Vec<u8> {
-        let format = ImageFormat::from_mime_type(mime.essence_str()).expect("Unsupported MIME type");
+        let format =
+            ImageFormat::from_mime_type(mime.essence_str()).expect("Unsupported MIME type");
         let image = self.image.clone();
         unblock(move || {
             let mut buf = std::io::Cursor::new(Vec::new());
