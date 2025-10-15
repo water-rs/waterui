@@ -42,7 +42,7 @@ impl Config {
     }
 
     pub fn path(root: &Path) -> PathBuf {
-        root.join("waterui.toml")
+        root.join("Water.toml")
     }
 }
 
