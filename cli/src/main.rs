@@ -8,6 +8,7 @@ mod doctor;
 mod package;
 mod run;
 mod util;
+mod add_backend;
 
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
@@ -46,6 +47,8 @@ enum Commands {
     Devices(devices::DevicesArgs),
     /// Build distributable artifacts without launching them
     Package(package::PackageArgs),
+    /// Add a new backend to an existing project
+    AddBackend(add_backend::AddBackendArgs),
 }
 
 fn main() {
@@ -85,5 +88,6 @@ fn run_cli() -> Result<()> {
         Commands::Clean(args) => clean::run(args),
         Commands::Devices(args) => devices::run(args),
         Commands::Package(args) => package::run(args),
+        Commands::AddBackend(args) => add_backend::run(args),
     }
 }
