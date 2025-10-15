@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::doctor;
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
@@ -276,6 +277,22 @@ fn run_platform(
             }
         }
         Platform::Android => {
+            let android_prerequisites = doctor::check_android_prerequisites()?;
+            let mut has_failures = false;
+            for outcome in &android_prerequisites {
+                for line in outcome.row.render() {
+                    eprintln!("{}", line);
+                }
+                if matches!(outcome.row.status, doctor::Status::Fail) {
+                    has_failures = true;
+                }
+            }
+            if has_failures {
+                bail!(
+                    "Android environment is not set up correctly. Run `water doctor --fix` to resolve issues."
+                );
+            }
+
             if let Some(android_config) = &config.backends.android {
                 let selection = match device {
                     Some(name) => Some(resolve_android_device(&name)?),
