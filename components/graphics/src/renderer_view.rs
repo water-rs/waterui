@@ -93,10 +93,21 @@ pub struct RendererWgpuSurface<'a> {
 }
 
 #[cfg(feature = "wgpu")]
+impl core::fmt::Debug for RendererWgpuSurface<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RendererWgpuSurface")
+            .field("format", &self.format)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl<'a> RendererWgpuSurface<'a> {
     /// Creates a new GPU surface wrapper.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         device: &'a wgpu::Device,
         queue: &'a wgpu::Queue,
         target: &'a wgpu::TextureView,
