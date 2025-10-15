@@ -47,7 +47,7 @@ kotlin {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.05.00") // TODO: Centralise dependency versions
+    val composeBom = platform("androidx.compose:compose-bom:2024.09.00") // TODO: Centralise dependency versions
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
