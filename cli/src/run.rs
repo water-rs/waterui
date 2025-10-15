@@ -599,6 +599,13 @@ fn run_apple_simulator(
         )?;
     }
 
+    info!("Opening Simulator app...");
+    Command::new("open")
+        .arg("-a")
+        .arg("Simulator")
+        .status()
+        .context("failed to open Simulator app")?;
+
     let (sim_platform, default_device, products_path) = match platform {
         Platform::Ios => ("iOS Simulator", "iPhone 15", "iphonesimulator"),
         Platform::Ipados => (
