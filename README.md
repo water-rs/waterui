@@ -89,7 +89,7 @@ opening Android Studio. To try it end-to-end:
      --yes --dev
 
    TERM=dumb cargo run -p waterui-cli -- package \
-     --platform android \
+     android \
      --project android-demo \
      --skip-native
    ```
