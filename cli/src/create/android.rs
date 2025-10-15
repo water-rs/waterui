@@ -23,6 +23,7 @@ pub fn create_android_project(
     let mut context = HashMap::new();
     context.insert("APP_NAME", display_name.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
+    context.insert("CRATE_NAME_SANITIZED", crate_name.replace('-', "_"));
     context.insert("BUNDLE_IDENTIFIER", android_package.clone());
 
     let templates = &template::TEMPLATES_DIR;
