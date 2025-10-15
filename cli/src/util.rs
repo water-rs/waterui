@@ -1,4 +1,4 @@
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
 use console::style;
 use core::fmt::Display;
 use heck::{AsKebabCase, AsPascalCase};

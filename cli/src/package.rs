@@ -44,8 +44,12 @@ pub fn run(args: PackageArgs) -> Result<()> {
                     "Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend."
                 )
             })?;
-            let apk_path =
-                android::build_android_apk(&project_dir, android_config, args.release, args.skip_native)?;
+            let apk_path = android::build_android_apk(
+                &project_dir,
+                android_config,
+                args.release,
+                args.skip_native,
+            )?;
             info!("Android package ready: {}", apk_path.display());
         }
     }
