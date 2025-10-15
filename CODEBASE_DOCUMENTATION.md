@@ -1,669 +1,190 @@
-# WaterUI Framework - Comprehensive Codebase Documentation
+# WaterUI Codebase Documentation
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Core System](#core-system)
-4. [Component Libraries](#component-libraries)
-5. [Backend Implementations](#backend-implementations)
+2. [Workspace Layout](#workspace-layout)
+3. [Build & Verification Commands](#build--verification-commands)
+4. [Architectural Foundations](#architectural-foundations)
+   1. [Declarative View System](#declarative-view-system)
+   2. [Environment & Plugin Pipeline](#environment--plugin-pipeline)
+   3. [Reactive State Management](#reactive-state-management)
+   4. [Configurable & Raw Views](#configurable--raw-views)
+5. [Component Libraries](#component-libraries)
+   1. [Layout](#layout)
+   2. [Text](#text)
+   3. [Form](#form)
+   4. [Media](#media)
+   5. [Navigation](#navigation)
+   6. [Graphics](#graphics)
 6. [Utility Libraries](#utility-libraries)
-7. [Build System & Dependencies](#build-system--dependencies)
-8. [Development Workflow](#development-workflow)
-9. [Code Quality Standards](#code-quality-standards)
+7. [Backend Implementations](#backend-implementations)
+8. [FFI Interface](#ffi-interface)
+9. [Development Workflow & Standards](#development-workflow--standards)
+10. [Roadmap & Future Work](#roadmap--future-work)
 
 ---
 
 ## Overview
 
-WaterUI is a modern, experimental UI framework written in Rust that enables cross-platform application development using a single codebase. The framework is designed to run on desktop, mobile, web, and embedded environments, with special support for `no-std` environments.
+WaterUI is a modern, cross-platform UI framework implemented in Rust. Applications declare their UI using the `waterui` crate and render through platform backends without touching the DOM or a virtual tree. The framework focuses on:
 
-### Key Characteristics
+- **Declarative Composition:** Views implement the [`View`](core/src/view.rs) trait and compose recursively.
+- **Fine-grained Reactivity:** Integration with the [`nami`](https://docs.rs/nami) library powers bindings (`Binding`) and derived values (`Computed`).
+- **Native Rendering:** Each platform backend consumes FFI-friendly view descriptions and renders with native toolkits.
+- **`no_std` Compatibility:** Crates such as `waterui-core`, `waterui-str`, and `ffi` operate without the Rust standard library unless the `std` feature is explicitly enabled.
 
-- **Declarative**: UI components are described declaratively using the View trait
-- **Reactive**: State changes automatically propagate through the UI hierarchy
-- **Type-safe**: Leverages Rust's type system for compile-time correctness
-- **Cross-platform**: Single codebase deploys to multiple platforms
-- **Memory-efficient**: Optimized for both resource-rich and constrained environments
+---
 
-### Project Structure
+## Workspace Layout
 
-```
+The repository is a Cargo workspace anchored at `waterui/Cargo.toml`.
+
+```text
 waterui/
-├── core/                    # Core framework functionality
-├── components/              # UI component libraries
-│   ├── canvas/             # Canvas and drawing components
-│   ├── form/               # Form controls and inputs
-│   ├── layout/             # Layout containers and utilities
-│   ├── media/              # Media components (image, video)
-│   ├── navigation/         # Navigation and routing
-│   └── text/               # Text rendering and typography
-├── backends/               # Platform-specific implementations
-│   ├── gtk4/              # GTK4 desktop backend
-│   └── web/               # Web/WASM backend
-├── utils/                 # Utility libraries
-│   └── str/               # Optimized string utilities
-├── plugins/               # Optional plugins
-│   ├── icon/              # Icon support
-│   └── i18n/              # Internationalization
-├── kit/                   # Platform-specific utilities
-├── window/                # Window management
-├── render_utils/          # Shared rendering utilities
+├── Cargo.toml           # Workspace configuration and lint settings
+├── core/                # `waterui-core` crate (core traits, env, plugins)
+├── components/          # Feature-specific UI primitives
+│   ├── form/            # Input controls and derive helper
+│   ├── graphics/        # Canvas, renderer bridge, drawing context
+│   ├── layout/          # Layout containers, spacing, scrolling
+│   ├── media/           # Image and media views
+│   ├── navigation/      # Navigation views built on `raw_view!`
+│   └── text/            # Text primitives and macros
+├── utils/               # Shared utilities (`str`, `color`, `url`)
+├── backends/            # Platform renderers (android, swift, tui, web)
+├── render_utils/        # Shared renderer helpers
+├── window/              # Window system abstractions
+├── ffi/                 # Cross-language interface definitions
+├── derive/              # Procedural macros for component derive impls
+├── cli/                 # Developer tooling
+└── demo/                # Example application wiring a backend
 ```
+
+Workspace membership and shared lint settings are defined in [`Cargo.toml`](Cargo.toml). The workspace uses Rust edition 2024 with a minimum supported Rust version (MSRV) of 1.87.
 
 ---
 
-## Architecture
+## Build & Verification Commands
 
-### Core Design Principles
+WaterUI enforces a strict "tests and linters first" workflow. Common tasks can be run from the repository root:
 
-The WaterUI framework is built around three fundamental architectural concepts:
+```bash
+# Format checks
+cargo fmt --all -- --check
 
-#### 1. View System (`waterui-core::view`)
+# Clippy linting across every crate
+cargo clippy --all-targets --all-features --workspace -- -D warnings
 
-The View trait is the foundation of the component model:
+# Build and test the entire workspace
+cargo build --all-features --workspace
+cargo test --all-features --workspace
 
-```rust
-pub trait View: 'static {
-    fn body(self, env: &Environment) -> impl View;
-}
+# Generate documentation
+cargo doc --all-features --no-deps --workspace
+
+# Memory safety validation for `waterui-str`
+cargo +nightly miri test -p waterui-str
 ```
 
-This recursive definition enables:
-
-- **Composability**: Complex interfaces built from simple components
-- **Type Safety**: Compile-time verification of component hierarchy
-- **Performance**: Zero-cost abstractions with monomorphization
-
-#### 2. Environment System (`waterui-core::env`)
-
-Type-based dependency injection system that propagates context:
-
-```rust
-#[derive(Debug, Clone, Default)]
-pub struct Environment {
-    map: BTreeMap<TypeId, Rc<dyn Any>>,
-}
-```
-
-Features:
-
-- Type-safe context passing
-- Plugin system integration
-- Configuration inheritance
-- Modifier system support
-
-#### 3. Reactive State (`nami` integration)
-
-Seamless integration with the Nami reactive state management library:
-
-```rust
-// Reactive binding
-let counter = binding(0);
-
-// Automatically updating UI
-text(counter.display())
-```
-
-### Component Categories
-
-1. **Platform Components**: Native UI elements optimized for each platform
-2. **Reactive Components**: Views that automatically update with state changes
-3. **Metadata Components**: Elements carrying rendering instructions
-4. **Composite Components**: Higher-order components built from primitives
+These commands align with the scripts referenced in `GEMINI.md` and `CLAUDE.md` and match the workspace configuration.
 
 ---
 
-## Core System
+## Architectural Foundations
 
-### `waterui-core` (Core Framework)
+### Declarative View System
 
-The core crate provides essential building blocks:
-
-#### Key Modules:
-
-- **`view`**: Core View trait and component system
-- **`env`**: Environment and context management
-- **`components`**: Basic component implementations including AnyView
-- **`color`**: Color management and representations
-- **`shape`**: Geometric primitives and shapes
-- **`animation`**: Animation system foundations
-- **`handler`**: Event handling abstractions
-- **`plugin`**: Plugin system interface
-
-#### Critical Types:
-
-**View Trait**
+The `waterui-core` crate defines the [`View`](core/src/view.rs) trait, which every composable UI element implements:
 
 ```rust
 pub trait View: 'static {
-    fn body(self, env: &Environment) -> impl View;
+    fn body(self, _env: &Environment) -> impl View;
 }
 ```
 
-**AnyView (Type Erasure)**
+Any type returning another `View` can be treated as a view (e.g., functions, `Result`, and `Option` implement `View`). `AnyView` performs type erasure, enabling heterogeneous collections without sacrificing ergonomics.
 
-```rust
-pub struct AnyView {
-    // Internal representation for heterogeneous view collections
-}
-```
+### Environment & Plugin Pipeline
 
-**Environment (Context System)**
+The [`Environment`](core/src/env.rs) acts as a type-indexed map shared down the view tree. It supports chained insertion via `with`, plugin installation via `install`, and hook registration (`insert_hook`) to intercept [`ViewConfiguration`](core/src/view.rs) rendering. Plugins implement [`Plugin`](core/src/plugin.rs) and can provision global resources, theming, or hooks without modifying downstream code.
 
-```rust
-impl Environment {
-    pub fn with<T: 'static>(mut self, value: T) -> Self;
-    pub fn get<T: 'static>(&self) -> Option<&T>;
-    pub fn install(mut self, plugin: impl Plugin) -> Self;
-}
-```
+### Reactive State Management
 
-**ConfigurableView & Modifier System**
+WaterUI re-exports `Binding`, `Computed`, and related traits from `nami` (`waterui::reactive`). Bindings propagate changes through the view tree, and helper components such as [`Dynamic`](core/src/components/dynamic.rs) and macros like [`text!`](components/text/src/macros.rs) translate reactive data into views. The `text!` macro produces a `Text` view backed by a `nami::s!` signal, ensuring updates remain reactive.
 
-```rust
-pub trait ConfigurableView: View {
-    type Config: 'static;
-    fn config(self) -> Self::Config;
-}
+### Configurable & Raw Views
 
-pub struct Modifier<V: ConfigurableView>(
-    Box<dyn Fn(Environment, V::Config) -> AnyView>
-);
-```
+Many components follow the **Configurable View** pattern: a public builder struct exposes a fluent API and converts into a configuration object that implements [`ViewConfiguration`](core/src/view.rs). Configuration structs are trivially serializable into the FFI layer.
 
-#### Features:
-
-- **No-std Support**: Can operate without standard library
-- **Type Safety**: Leverages Rust's type system extensively
-- **Zero-cost Abstractions**: Performance-optimized trait implementations
-- **Plugin Architecture**: Extensible through plugins
+Primitive elements that require backend cooperation use the [`raw_view!`](core/src/macros.rs) macro. Raw views expose metadata to the renderer; examples include `FixedContainer`, `ScrollView`, `Spacer`, and backend bridge types such as [`RendererView`](components/graphics/src/renderer_view.rs).
 
 ---
 
 ## Component Libraries
 
-### `waterui-layout` (Layout System)
+### Layout
 
-Provides comprehensive layout capabilities:
+The `waterui-layout` crate covers containers, stacks, scrolling, and sizing. Components such as [`Frame`](components/layout/src/frame.rs) offer a fluent builder API for constraints (`width`, `height`, `min_width`, etc.) and render through layout-aware raw views (`FixedContainer`). Other layout primitives include stacks (`VStack`, `HStack`, `ZStack`), `Spacer`, and `ScrollView`.
 
-#### Core Types:
+### Text
 
-```rust
-pub struct Frame {
-    pub width: f32,
-    pub height: f32,
-    pub min_width: f32,
-    pub max_width: f32,
-    // ... sizing constraints
-    pub margin: Edge,
-    pub alignment: Alignment,
-}
+`waterui-text` provides the `Text` view, attributed string support, typography helpers, and the `text!` macro for reactive formatting. `Text::new`, `Text::display`, and builder methods like `font` and `size` configure typography while keeping data reactive.
 
-pub struct Edge {
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-    pub left: f32,
-}
+### Form
 
-pub enum Alignment {
-    Default,
-    Leading,
-    Center,
-    Trailing,
-}
-```
+`waterui-form` contains input controls such as `TextField`, `Toggle`, `Slider`, `Stepper`, and picker views. The crate exposes builder APIs and relies on bindings for two-way data flow. A companion `waterui-form-derive` crate lives in `components/form/derive` for declarative form bindings.
 
-#### Components:
+### Media
 
-- **Stack Layouts**: VStack, HStack, ZStack for linear and layered arrangements
-- **Grid System**: Two-dimensional layout containers
-- **Scroll Views**: Scrollable content containers
-- **Spacers**: Flexible spacing components
-- **Overlays**: Layered content system
+`waterui-media` exposes image and video primitives. Components such as `Image` and `AsyncImage` translate media metadata into backend requests while maintaining reactive updates.
 
-### `waterui-text` (Typography System)
+### Navigation
 
-Comprehensive text rendering and formatting:
+`waterui-navigation` implements navigation containers (`NavigationLink`, tab-style views, etc.) using `raw_view!` to bridge routing metadata to backends. Navigation views manage destination payloads and rely on environment state for navigation stacks.
 
-#### Key Features:
+### Graphics
 
-```rust
-configurable!(Text, TextConfig);
-
-pub struct TextConfig {
-    pub content: Computed<AttributedStr>,
-    pub font: Computed<Font>,
-}
-
-impl Text {
-    pub fn new(content: impl IntoComputed<Str>) -> Self;
-    pub fn attributed(content: impl IntoComputed<AttributedStr>) -> Self;
-    pub fn display<T: Display>(source: impl IntoComputed<T>) -> Self;
-    pub fn format<T>(value: impl IntoComputed<T>, formatter: impl Formatter<T>) -> Self;
-    pub fn font(mut self, font: impl Signal<Output = Font>) -> Self;
-    pub fn size(mut self, size: impl IntoComputed<f64>) -> Self;
-}
-```
-
-#### Modules:
-
-- **`font`**: Font utilities and definitions
-- **`attributed`**: Rich text formatting support
-- **`link`**: Interactive text components
-- **`locale`**: Localization and formatting utilities
-- **`macros`**: Convenient text creation macros
-
-### `waterui-form` (Form Controls)
-
-Interactive form elements and controls:
-
-#### Components:
-
-- **TextField**: Text input controls
-- **Toggle**: Boolean toggle switches
-- **Slider**: Range input controls
-- **Stepper**: Numeric increment/decrement controls
-- **Pickers**: Date, color, and multi-selection pickers
-- **SecureField**: Password input controls
-
-#### Features:
-
-- Reactive data binding
-- Validation support
-- Custom formatting
-- Platform-optimized rendering
-
-### `waterui-media` (Media Components)
-
-Media rendering and display:
-
-#### Components:
-
-- **Image**: Static image display
-- **Video**: Video playback controls
-- **LivePhoto**: Live photo support (iOS)
-- **AsyncImage**: Async image loading
-
-### `waterui-navigation` (Navigation System)
-
-Navigation and routing components:
-
-#### Components:
-
-- **NavigationView**: Navigation container
-- **TabView**: Tab-based navigation
-- **Link**: Navigation links
-- **Route handling**: URL-based routing
-
-### `waterui-canvas` (Canvas System)
-
-Drawing and graphics primitives:
-
-#### Features:
-
-- Custom drawing operations
-- Path-based graphics
-- Vector graphics support
-- Animation integration
-
----
-
-## Backend Implementations
-
-### `waterui-gtk4` (GTK4 Desktop Backend)
-
-Native desktop implementation using GTK4:
-
-#### Architecture:
-
-```rust
-pub mod app;      // Application lifecycle
-pub mod events;   // Event handling
-pub mod layout;   // Layout management
-pub mod renderer; // Widget rendering
-pub mod widgets;  // GTK4 widget implementations
-```
-
-#### Key Components:
-
-- **Gtk4App**: Application entry point and lifecycle management
-- **Renderer**: Converts WaterUI components to GTK4 widgets
-- **Event System**: Maps GTK4 events to WaterUI handlers
-- **Widget Implementations**: Platform-specific widget rendering
-
-#### Supported Platforms:
-
-- Linux (primary)
-- Windows (via GTK4 for Windows)
-- macOS (via GTK4 for macOS)
-
-#### Dependencies:
-
-- `gtk4`: GTK4 Rust bindings
-- `gdk4`: Graphics toolkit
-- `pango`: Text rendering
-- `vello`: 2D graphics rendering
-- `time`: Time utilities
-
-### `waterui-web` (Web/WASM Backend)
-
-Web deployment via WebAssembly:
-
-#### Features:
-
-- WebAssembly compilation target
-- DOM manipulation
-- Browser API integration
-- Event handling via web-sys
-
-#### Dependencies:
-
-- `wasm-bindgen`: Rust-WASM bindings
-- `web-sys`: Web API bindings
-- `js-sys`: JavaScript API bindings
-- `console_error_panic_hook`: Error handling
-- `serde`/`serde_json`: Data serialization
+`waterui-graphics` offers custom drawing primitives. [`Canvas`](components/graphics/src/canvas.rs) and [`GraphicsContext`](components/graphics/src/context.rs) let Rust code draw using CPU buffers provided by [`RendererView`](components/graphics/src/renderer_view.rs). Optional WGPU support extends the renderer surface for GPU-backed workflows.
 
 ---
 
 ## Utility Libraries
 
-### `waterui-str` (Optimized String Library)
-
-Memory-efficient string type supporting both static and owned strings:
-
-#### Core Design:
-
-```rust
-#[repr(C)]
-pub struct Str {
-    ptr: NonNull<()>,
-    len: isize,  // Positive for static, negative for shared
-}
-```
-
-#### Features:
-
-- **Dual Mode**: Static references and reference-counted owned strings
-- **Zero-cost Cloning**: For static strings
-- **Reference Counting**: For owned strings with atomic operations
-- **Memory Safety**: Comprehensive Miri testing for memory correctness
-- **No-std Support**: Works in embedded environments
-
-#### Key Operations:
-
-```rust
-impl Str {
-    pub const fn from_static(s: &'static str) -> Self;
-    pub fn from_utf8(bytes: Vec<u8>) -> Result<Self, FromUtf8Error>;
-    pub fn as_str(&self) -> &str;
-    // intentionally not exposed: reference counts are private
-    pub fn into_string(self) -> String;
-    pub fn append(&mut self, s: impl AsRef<str>);
-}
-```
-
-#### Memory Safety:
-
-- Extensive test suite with 970+ lines of memory safety tests
-- Miri validation for undefined behavior detection
-- Reference counting correctness verification
-- Thread safety considerations
+- **`waterui-str`** (`utils/str`): Implements the [`Str`](utils/str/src/lib.rs) type, which stores either static strings or reference-counted owned data. It supports `no_std`, efficient cloning, and comprehensive conversion APIs.
+- **`waterui-color`** (`utils/color`): Provides color manipulation utilities and exposes a `Color` raw view for declarative color descriptions.
+- **`waterui-url`** (`utils/url`): Supplies URL parsing and handling tailored for UI navigation contexts.
 
 ---
 
-## Build System & Dependencies
+## Backend Implementations
 
-### Cargo Workspace Configuration
+Backend crates receive FFI structs and render native widgets:
 
-The project uses a Cargo workspace with the following structure:
+- **`backends/android`**: Android shell integrating with Gradle; documentation and status live in `PLAN.md` and `IMPLEMENTATION_STATUS.md`.
+- **`backends/swift`**: Placeholder for Apple platforms (structure reserved for SwiftUI integration).
+- **`backends/tui`**: Terminal UI backend scaffolding (`Cargo.toml`, roadmap `PLAN.md`).
+- **`backends/web`**: WebAssembly backend using `wasm-bindgen`, `web-sys`, and `js-sys` for DOM interaction.
 
-```toml
-[workspace]
-members = [
-    "core",
-    "kit",
-    "components/*",
-    "utils/str",
-    "backends/*",
-    "render_utils",
-    "window"
-]
-resolver = "2"
-```
-
-#### Workspace-wide Settings:
-
-- **Edition**: 2024 (requires Rust 1.87+)
-- **License**: MIT
-- **Rust Version**: Minimum 1.87
-
-### Core Dependencies
-
-#### Framework Dependencies:
-
-- **`nami`**: Reactive state management (local dependency)
-- **`native-executor`**: Async task execution
-- **`typeshare`**: Cross-language type sharing
-- **`paste`**: Macro utilities
-- **`anyhow`**: Error handling
-- **`smol`**: Async runtime components
-
-#### Optional Dependencies:
-
-- **`serde`**: Serialization support (feature-gated)
-
-### Linting Configuration
-
-Comprehensive linting setup enforcing code quality:
-
-```toml
-[workspace.lints]
-rust.missing_docs = "warn"
-rust.missing_debug_implementations = "warn"
-clippy.all = "warn"
-clippy.style = "warn"
-clippy.correctness = "warn"
-clippy.complexity = "warn"
-clippy.suspicious = "warn"
-clippy.perf = "warn"
-clippy.pedantic = "warn"
-clippy.nursery = "warn"
-clippy.cargo = "warn"
-```
+Each backend consumes the shared renderer utilities in `render_utils` and platform-agnostic window abstractions in `window`.
 
 ---
 
-## Development Workflow
+## FFI Interface
 
-### Build Commands
-
-#### Standard Operations:
-
-```bash
-# Build all crates with features
-cargo build --all-features --workspace
-
-# Run all tests
-cargo test --all-features --workspace
-
-# Linting
-cargo clippy --all-targets --all-features --workspace -- -D warnings
-
-# Code formatting
-cargo fmt --all -- --check
-
-# Documentation generation
-cargo doc --all-features --no-deps --workspace
-```
-
-#### Memory Safety Testing:
-
-```bash
-# Run Miri memory safety checks
-cargo +nightly miri test -p waterui-str
-
-# Uses configuration in utils/str/miri.toml
-```
-
-### Testing Strategy
-
-#### Unit Testing:
-
-- Comprehensive unit tests for all major components
-- Memory safety tests (970+ lines in waterui-str)
-- Property-based testing where applicable
-
-#### Integration Testing:
-
-- Cross-component integration tests
-- Backend-specific testing
-- Example-based testing
-
-#### Memory Safety:
-
-- Miri testing for undefined behavior detection
-- Reference counting correctness verification
-- Memory leak detection
-
-### Documentation Standards
-
-#### Code Documentation:
-
-- All public APIs must have documentation
-- Examples in documentation where applicable
-- Architecture documentation in module headers
-- README files for major components
-
-#### API Documentation:
-
-- Comprehensive rustdoc comments
-- Usage examples
-- Safety requirements for unsafe code
-- Performance characteristics
+The [`ffi`](ffi/src/lib.rs) crate defines traits such as `IntoFFI`, `IntoRust`, and `OpaqueType` for bridging Rust types into stable C ABI representations. The exported `waterui_init`/`waterui_main` functions bootstrap the runtime, initialize executors, and convert Rust views (`AnyView`) into opaque pointers that native shells consume. This crate is `no_std`, enabling integration with restricted environments.
 
 ---
 
-## Code Quality Standards
+## Development Workflow & Standards
 
-### Code Style Guidelines
-
-#### Rust Edition and Version:
-
-- **Edition**: 2024
-- **MSRV**: 1.87 (minimum supported Rust version)
-- **Features**: Leverages latest stable Rust features
-
-#### Naming Conventions:
-
-- **Types**: PascalCase (e.g., `TextView`, `Environment`)
-- **Functions**: snake_case (e.g., `into_view`, `get_value`)
-- **Constants**: SCREAMING_SNAKE_CASE
-- **Modules**: snake_case
-
-#### Code Organization:
-
-- Logical module separation
-- Clear public API boundaries
-- Consistent error handling patterns
-- Comprehensive trait implementations
-
-### Performance Considerations
-
-#### Memory Management:
-
-- Reference counting for shared data (waterui-str)
-- Zero-cost abstractions where possible
-- Minimal allocations in hot paths
-- Copy-on-write semantics where beneficial
-
-#### Compilation Performance:
-
-- Incremental compilation support
-- Optimized debug builds
-- Efficient generic instantiation
-- Minimal dependency trees
-
-#### Runtime Performance:
-
-- Platform-optimized rendering
-- Efficient event handling
-- Lazy evaluation where possible
-- Memory-conscious data structures
-
-### Safety and Security
-
-#### Memory Safety:
-
-- Extensive unsafe code documentation
-- Miri testing for undefined behavior
-- Reference counting correctness
-- No data races in concurrent contexts
-
-#### Type Safety:
-
-- Comprehensive type system usage
-- Trait bounds for correctness
-- Compile-time verification
-- Minimal runtime type checking
-
-#### API Safety:
-
-- Clear error handling
-- Panic documentation
-- Safe defaults
-- Defensive programming practices
-
-### Testing Requirements
-
-#### Coverage Requirements:
-
-- Unit tests for all public APIs
-- Integration tests for major features
-- Memory safety tests for unsafe code
-- Performance regression tests
-
-#### Quality Gates:
-
-- All tests must pass
-- Linting must pass with zero warnings
-- Documentation must be complete
-- Memory safety must be verified
-
-### Contribution Guidelines
-
-#### Code Review Process:
-
-- All changes require code review
-- Memory safety review for unsafe code
-- Performance impact assessment
-- Documentation completeness check
-
-#### Testing Requirements:
-
-- New code must include tests
-- Memory safety tests for unsafe code
-- Integration tests for new features
-- Benchmark tests for performance-critical code
+- **Lint Policy:** Workspace-wide lint levels are declared in [`Cargo.toml`](Cargo.toml) under `[workspace.lints]`, promoting documentation completeness and strict Clippy checks.
+- **Testing Strategy:** `cargo test --all-features --workspace` exercises unit and integration tests across crates. `waterui-str` includes extensive runtime and memory-safety coverage validated with `cargo +nightly miri test -p waterui-str`.
+- **Formatting:** Rustfmt is enforced via CI and local `cargo fmt --all -- --check` runs.
+- **Contribution Practices:** Prefer builder-style APIs for configurable views, use `text!` rather than `format!` for reactive strings, and choose between composite widgets and primitive components based on whether backend cooperation is required. Components should fail fast on invalid input and rely on unit tests to enforce invariants.
 
 ---
 
-## Future Roadmap
+## Roadmap & Future Work
 
-### Planned Features
-
-- Better error handling without std
-- Hot reloading support
-- CLI tools for project management
-- Multi-window support
-- Enhanced async support
-- Additional backend implementations
-
-### Architecture Evolution
-
-- Plugin system expansion
-- Enhanced type safety
-- Performance optimizations
-- API stabilization
+Planned efforts focus on completing backend implementations (Android, Swift, TUI), enhancing async support through executor integration, expanding the plugin system, and stabilizing APIs for broader adoption. See per-backend `PLAN.md` files and `ROADMAP.md` for the latest milestones.
