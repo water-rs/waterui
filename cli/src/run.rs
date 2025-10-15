@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env, fmt, fs,
     io::{ErrorKind, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -12,7 +12,6 @@ use std::{
     },
     thread,
     time::{Duration, Instant},
-    fmt,
 };
 
 use clap::{Args, ValueEnum};
@@ -106,11 +105,20 @@ pub fn run(args: RunArgs) -> Result<()> {
     info!("Running WaterUI app '{}'", config.package.display_name);
 
     if let Some(platform) = args.platform {
-        run_platform(platform, args.device.clone(), &project_dir, &config, args.release, args.no_watch)?;
+        run_platform(
+            platform,
+            args.device.clone(),
+            &project_dir,
+            &config,
+            args.release,
+            args.no_watch,
+        )?;
     } else {
         let targets = discover_runnable_targets(&config)?;
         if targets.is_empty() {
-            bail!("No runnable targets found. Please connect a device, start a simulator, or enable a backend in your waterui.toml.");
+            bail!(
+                "No runnable targets found. Please connect a device, start a simulator, or enable a backend in your Water.toml."
+            );
         }
 
         let selection = Select::with_theme(&ColorfulTheme::default())
@@ -121,11 +129,25 @@ pub fn run(args: RunArgs) -> Result<()> {
 
         match &targets[selection] {
             RunnableTarget::Web => {
-                run_platform(Platform::Web, None, &project_dir, &config, args.release, args.no_watch)?;
+                run_platform(
+                    Platform::Web,
+                    None,
+                    &project_dir,
+                    &config,
+                    args.release,
+                    args.no_watch,
+                )?;
             }
             RunnableTarget::Device(device) => {
                 let platform = platform_from_device(device)?;
-                run_platform(platform, Some(device.identifier.clone()), &project_dir, &config, args.release, args.no_watch)?;
+                run_platform(
+                    platform,
+                    Some(device.identifier.clone()),
+                    &project_dir,
+                    &config,
+                    args.release,
+                    args.no_watch,
+                )?;
             }
         }
     }
@@ -144,7 +166,12 @@ fn discover_runnable_targets(config: &Config) -> Result<Vec<RunnableTarget>> {
 
     if config.backends.swift.is_some() {
         let apple_devices = all_devices.iter().filter(|d| {
-            let is_apple = d.platform.starts_with("iOS") || d.platform.starts_with("iPadOS") || d.platform.starts_with("watchOS") || d.platform.starts_with("tvOS") || d.platform.starts_with("visionOS") || d.platform == "macOS";
+            let is_apple = d.platform.starts_with("iOS")
+                || d.platform.starts_with("iPadOS")
+                || d.platform.starts_with("watchOS")
+                || d.platform.starts_with("tvOS")
+                || d.platform.starts_with("visionOS")
+                || d.platform == "macOS";
             let is_available = d.state.as_deref().unwrap_or("") != "unavailable";
             is_apple && is_available
         });
@@ -177,10 +204,17 @@ fn platform_from_device(device: &DeviceInfo) -> Result<Platform> {
     }
 }
 
-fn run_platform(platform: Platform, device: Option<String>, project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
+fn run_platform(
+    platform: Platform,
+    device: Option<String>,
+    project_dir: &Path,
+    config: &Config,
+    release: bool,
+    no_watch: bool,
+) -> Result<()> {
     if platform == Platform::Web {
         run_web(project_dir, config, release, no_watch)?;
-        return Ok(())
+        return Ok(());
     }
 
     run_cargo_build(project_dir, &config.package.name, release)?;
@@ -236,7 +270,9 @@ fn run_platform(platform: Platform, device: Option<String>, project_dir: &Path, 
                     _ => unreachable!(),
                 }
             } else {
-                bail!("Swift backend not configured for this project. Add it to waterui.toml or recreate the project with the SwiftUI backend.");
+                bail!(
+                    "Swift backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
+                );
             }
         }
         Platform::Android => {
@@ -253,7 +289,9 @@ fn run_platform(platform: Platform, device: Option<String>, project_dir: &Path, 
                     selection,
                 )?;
             } else {
-                bail!("Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend.");
+                bail!(
+                    "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend."
+                );
             }
         }
         Platform::Web => unreachable!(),
@@ -284,7 +322,7 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
 
 fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
-        eyre!("Web backend not configured for this project. Add it to waterui.toml or recreate the project with the web backend.")
+        eyre!("Web backend not configured for this project. Add it to Water.toml or recreate the project with the web backend.")
     })?;
 
     util::require_tool(
@@ -295,7 +333,10 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
 
     let web_dir = project_dir.join(&web_config.project_path);
     if !web_dir.exists() {
-        bail!("Web assets directory '{}' does not exist. Ensure the project was created with the web backend.", web_dir.display());
+        bail!(
+            "Web assets directory '{}' does not exist. Ensure the project was created with the web backend.",
+            web_dir.display()
+        );
     }
 
     info!("Compiling WebAssembly bundle...");
@@ -520,12 +561,24 @@ fn handle_http_connection(stream: &mut TcpStream, root: &Path) -> std::io::Resul
     };
 
     let content_length = body.len();
-    write!(stream, "HTTP/1.1 {}
-", status_line)?;
-    write!(stream, "Content-Length: {}
-", content_length)?;
-    write!(stream, "Content-Type: {}
-", content_type)?;
+    write!(
+        stream,
+        "HTTP/1.1 {}
+",
+        status_line
+    )?;
+    write!(
+        stream,
+        "Content-Length: {}
+",
+        content_length
+    )?;
+    write!(
+        stream,
+        "Content-Type: {}
+",
+        content_type
+    )?;
     write!(
         stream,
         "Cache-Control: no-cache, no-store, must-revalidate\r\n"
@@ -742,12 +795,14 @@ fn run_apple_simulator(
 
     let products_dir = derived_root.join(format!(
         "Build/Products/{}-{}",
-        configuration,
-        products_path
+        configuration, products_path
     ));
     let app_bundle = products_dir.join(format!("{}.app", project.scheme));
     if !app_bundle.exists() {
-        bail!("Expected app bundle at {}, but it was not created", app_bundle.display());
+        bail!(
+            "Expected app bundle at {}, but it was not created",
+            app_bundle.display()
+        );
     }
 
     info!("Booting simulator…");
@@ -821,7 +876,9 @@ fn run_android(
             .filter(|s| !s.is_empty())
             .collect::<Vec<String>>();
         if avds.is_empty() {
-            bail!("No Android emulators found. Please create one using Android Studio's AVD Manager or connect a device.");
+            bail!(
+                "No Android emulators found. Please create one using Android Studio's AVD Manager or connect a device."
+            );
         }
         AndroidSelection {
             name: avds[0].clone(),
@@ -835,7 +892,9 @@ fn run_android(
         Some(selection.identifier.clone())
     } else {
         let emulator = emulator_path.ok_or_else(|| {
-            eyre!("`emulator` not found. Install the Android SDK emulator tools or add them to PATH.")
+            eyre!(
+                "`emulator` not found. Install the Android SDK emulator tools or add them to PATH."
+            )
         })?;
         info!("Using emulator: {}", selection.name);
         info!("Launching emulator...");
@@ -907,7 +966,8 @@ fn prompt_for_apple_device(platform: Platform) -> Result<String> {
         .collect();
 
     if candidates.is_empty() {
-        bail!("No simulators found for {}. Install one using Xcode's Devices window.",
+        bail!(
+            "No simulators found for {}. Install one using Xcode's Devices window.",
             match platform {
                 Platform::Ios => "iOS",
                 Platform::Ipados => "iPadOS",
@@ -1015,7 +1075,10 @@ fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
             kind: device.kind.clone(),
         });
     }
-    bail!("Android device or emulator '{}' not found. Run `water devices` to list available targets.", name);
+    bail!(
+        "Android device or emulator '{}' not found. Run `water devices` to list available targets.",
+        name
+    );
 }
 
 fn apple_simulator_platform_id(platform: Platform) -> &'static str {
@@ -1040,7 +1103,7 @@ impl RebuildWatcher {
         build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync>,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let mut watcher: RecommendedWatcher = 
+        let mut watcher: RecommendedWatcher =
             notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     if matches!(
