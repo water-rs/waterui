@@ -1,8 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fmt, fs,
-    io::{ErrorKind, Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    convert::Infallible,
+    env, fmt,
+    net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -18,7 +18,17 @@ use crate::doctor;
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
+use hyper::{
+    Request, Response,
+    body::Incoming,
+    header::{CACHE_CONTROL, EXPIRES, HeaderValue, PRAGMA},
+    http::StatusCode,
+    server::conn::http1,
+    service::service_fn,
+};
+use hyper_util::rt::TokioIo;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::{runtime::Builder, sync::oneshot, time::sleep};
 use tracing::{debug, info, warn};
 use which::which;
 
@@ -346,7 +356,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         "wasm-pack",
         "Install it from https://rustwasm.github.io/wasm-pack/ and try again.",
     )?;
-    let wasm_pack = which("wasm-pack").unwrap();
+    let wasm_pack = which("wasm-pack").context("failed to locate wasm-pack on PATH")?;
 
     let web_dir = project_dir.join(&web_config.project_path);
     if !web_dir.exists() {
@@ -443,14 +453,15 @@ fn build_web_app(
 }
 
 struct WebDevServer {
-    _listener: Arc<TcpListener>,
-    shutdown: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
+    shutdown: Option<oneshot::Sender<()>>,
     address: SocketAddr,
 }
 
 impl WebDevServer {
     fn start(root: PathBuf) -> Result<Self> {
+        use hyper_staticfile::{Body as StaticBody, Static};
+
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .context("failed to bind local development server")?;
         listener
@@ -460,38 +471,81 @@ impl WebDevServer {
             .local_addr()
             .context("failed to read web server socket address")?;
 
-        let listener = Arc::new(listener);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let thread_listener = Arc::clone(&listener);
-        let thread_shutdown = Arc::clone(&shutdown);
-        let root_dir = Arc::new(root);
-        let thread_root = Arc::clone(&root_dir);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (startup_tx, startup_rx) = mpsc::channel();
 
-        let handle = thread::spawn(move || {
-            while !thread_shutdown.load(Ordering::Relaxed) {
-                match thread_listener.accept() {
-                    Ok((mut stream, _)) => {
-                        if let Err(err) =
-                            handle_http_connection(&mut stream, thread_root.as_ref().as_path())
-                        {
-                            warn!("Web server connection error: {}", err);
+        let thread = thread::spawn(move || {
+            let runtime = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to construct tokio runtime for web dev server");
+
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener)
+                    .expect("failed to convert listener to tokio listener");
+                let static_files = Static::new(root);
+                let mut shutdown_rx = shutdown_rx;
+
+                if startup_tx.send(()).is_err() {
+                    warn!("web dev server startup receiver dropped");
+                    return;
+                }
+
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => {
+                            break;
+                        }
+                        accept_result = listener.accept() => {
+                            match accept_result {
+                                Ok((stream, _)) => {
+                                    let handler = static_files.clone();
+                                    tokio::spawn(async move {
+                                        let service = service_fn(move |request: Request<Incoming>| {
+                                            let handler = handler.clone();
+                                            async move {
+                                                let result = handler.serve(request).await;
+                                                let mut response = match result {
+                                                    Ok(response) => response,
+                                                    Err(error) => {
+                                                        warn!("web dev server static file error: {}", error);
+                                                        Response::builder()
+                                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                                            .body(StaticBody::Empty)
+                                                            .unwrap()
+                                                    }
+                                                };
+                                                apply_dev_cache_headers(&mut response);
+                                                Ok::<Response<StaticBody>, Infallible>(response)
+                                            }
+                                        });
+
+                                        if let Err(err) = http1::Builder::new()
+                                            .serve_connection(TokioIo::new(stream), service)
+                                            .await
+                                        {
+                                            warn!("web dev server connection error: {}", err);
+                                        }
+                                    });
+                                }
+                                Err(err) => {
+                                    warn!("web dev server accept error: {}", err);
+                                    sleep(Duration::from_millis(200)).await;
+                                }
+                            }
                         }
                     }
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(err) => {
-                        warn!("Web server accept error: {}", err);
-                        thread::sleep(Duration::from_millis(200));
-                    }
                 }
-            }
+            });
         });
 
+        startup_rx
+            .recv()
+            .context("failed to receive web dev server startup confirmation")?;
+
         Ok(Self {
-            _listener: listener,
-            shutdown,
-            thread: Some(handle),
+            thread: Some(thread),
+            shutdown: Some(shutdown_tx),
             address,
         })
     }
@@ -503,134 +557,25 @@ impl WebDevServer {
 
 impl Drop for WebDevServer {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        // Trigger the accept loop to notice the shutdown flag.
-        if let Ok(stream) = TcpStream::connect(self.address) {
-            let _ = stream.shutdown(Shutdown::Both);
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-fn handle_http_connection(stream: &mut TcpStream, root: &Path) -> std::io::Result<()> {
-    let mut buffer = [0u8; 8192];
-    let mut request = Vec::new();
-
-    loop {
-        let read_bytes = stream.read(&mut buffer)?;
-        if read_bytes == 0 {
-            break;
-        }
-        request.extend_from_slice(&buffer[..read_bytes]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
-        }
-        if request.len() > 16 * 1024 {
-            break;
-        }
-    }
-
-    let request_str = String::from_utf8_lossy(&request);
-    let mut lines = request_str.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path_part = parts.next().unwrap_or("/");
-    let path_only = path_part.split('?').next().unwrap_or("/");
-
-    let (status_line, body, content_type, send_body) = match method {
-        "GET" | "HEAD" => {
-            if let Some(mut file_path) = resolve_requested_path(root, path_only) {
-                if file_path.is_dir() {
-                    file_path.push("index.html");
-                }
-                match fs::read(&file_path) {
-                    Ok(bytes) => (
-                        "200 OK",
-                        bytes,
-                        content_type_for_path(&file_path),
-                        method == "GET",
-                    ),
-                    Err(_) => (
-                        "404 Not Found",
-                        format!("File not found: {}", path_only).into_bytes(),
-                        "text/plain; charset=utf-8",
-                        method == "GET",
-                    ),
-                }
-            } else {
-                (
-                    "404 Not Found",
-                    format!("Not found: {}", path_only).into_bytes(),
-                    "text/plain; charset=utf-8",
-                    method == "GET",
-                )
+            if let Err(err) = handle.join() {
+                warn!("web dev server thread panicked: {:?}", err);
             }
         }
-        _ => (
-            "405 Method Not Allowed",
-            b"Method Not Allowed".to_vec(),
-            "text/plain; charset=utf-8",
-            false,
-        ),
-    };
-
-    let content_length = body.len();
-    writeln!(stream, "HTTP/1.1 {}", status_line)?;
-    writeln!(stream, "Content-Length: {}", content_length)?;
-    writeln!(stream, "Content-Type: {}", content_type)?;
-    write!(
-        stream,
-        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-    )?;
-    write!(stream, "Pragma: no-cache\r\n")?;
-    write!(stream, "Expires: 0\r\n")?;
-    write!(stream, "Connection: close\r\n\r\n")?;
-    if send_body {
-        stream.write_all(&body)?;
     }
-    stream.flush()?;
-
-    Ok(())
 }
 
-fn resolve_requested_path(root: &Path, request_path: &str) -> Option<PathBuf> {
-    let trimmed = request_path.trim_start_matches('/');
-    let mut parts: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty()).collect();
-
-    if request_path.ends_with('/') || parts.is_empty() {
-        parts.push("index.html");
-    }
-
-    let mut path = PathBuf::from(root);
-    for part in parts {
-        if part == ".."
-            || part.contains("..")
-            || part.contains('\r')
-            || part.contains('\n')
-            || part.contains('\\')
-        {
-            return None;
-        }
-        path.push(part);
-    }
-    Some(path)
-}
-
-fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
-        "html" => "text/html; charset=utf-8",
-        "js" => "application/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "wasm" => "application/wasm",
-        "json" => "application/json; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        _ => "application/octet-stream",
-    }
+fn apply_dev_cache_headers(response: &mut Response<hyper_staticfile::Body>) {
+    let headers = response.headers_mut();
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(EXPIRES, HeaderValue::from_static("0"));
 }
 
 fn apply_build_speedups(cmd: &mut Command) {
