@@ -1,4 +1,7 @@
-use crate::android;
+use crate::{
+    android,
+    output::{self, OutputFormat},
+};
 use clap::Args;
 use color_eyre::eyre::{Context, Result};
 use console::style;
@@ -51,10 +54,17 @@ pub fn run(args: DevicesArgs) -> Result<()> {
         return Ok(());
     }
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&devices)?);
+    match if args.json {
+        OutputFormat::Json
     } else {
-        print_table(&devices);
+        output::global_output_format()
+    } {
+        OutputFormat::Json => {
+            output::emit_json(&devices)?;
+        }
+        OutputFormat::Human => {
+            print_table(&devices);
+        }
     }
 
     Ok(())
