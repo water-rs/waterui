@@ -12,13 +12,13 @@ categories = ["gui"]
 
 
 [dependencies]
-time = "0.3.43"
+time = "0.3.44"
 waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
 waterui-color.workspace = true
-zeroize = { version = "1.8.1", default-features = false }
+zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
 serde = { workspace = true, features = ["derive"], optional = true }
 
