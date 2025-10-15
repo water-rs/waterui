@@ -14,6 +14,7 @@ use crate::{
 
 #[cfg(feature = "wgpu")]
 #[derive(Clone)]
+/// A view that renders WGSL shader content via WGPU.
 pub struct Shader {
     source: Arc<str>,
     vertex_entry: Arc<str>,
@@ -81,7 +82,7 @@ impl Shader {
 #[cfg(feature = "wgpu")]
 impl View for Shader {
     fn body(self, _env: &Environment) -> impl View {
-        let Shader {
+        let Self {
             source,
             vertex_entry,
             fragment_entry,
@@ -91,13 +92,13 @@ impl View for Shader {
 
         let pipeline_cache = RefCell::new(None::<PipelineState>);
 
-        RendererView::new(move |mut surface| match surface {
+        RendererView::new(move |surface| match surface {
             RendererSurface::Cpu(mut cpu_surface) => {
                 cpu_surface.pixels_mut().fill(0);
             }
-            RendererSurface::Wgpu(mut gpu_surface) => {
+            RendererSurface::Wgpu(gpu_surface) => {
                 render_shader(
-                    &mut gpu_surface,
+                    &gpu_surface,
                     &source,
                     &vertex_entry,
                     &fragment_entry,
@@ -118,7 +119,7 @@ struct PipelineState {
 
 #[cfg(feature = "wgpu")]
 fn render_shader(
-    surface: &mut RendererWgpuSurface<'_>,
+    surface: &RendererWgpuSurface<'_>,
     source: &Arc<str>,
     vertex_entry: &Arc<str>,
     fragment_entry: &Arc<str>,
@@ -127,7 +128,7 @@ fn render_shader(
     let mut cache_mut = cache.borrow_mut();
     if cache_mut
         .as_ref()
-        .map_or(true, |state| state.format != surface.format)
+        .is_none_or(|state| state.format != surface.format)
     {
         let pipeline = build_pipeline(
             surface.device,
@@ -156,10 +157,11 @@ fn render_shader(
             label: Some("waterui-shader-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: surface.target,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
@@ -182,7 +184,7 @@ fn build_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("waterui-shader-module"),
-        source: wgpu::ShaderSource::Wgsl(source.clone().into()),
+        source: wgpu::ShaderSource::Wgsl(source.as_ref().into()),
     });
 
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -196,7 +198,7 @@ fn build_pipeline(
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader_module,
-            entry_point: vertex_entry.as_ref(),
+            entry_point: Some(vertex_entry.as_ref()),
             buffers: &[],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
@@ -205,7 +207,7 @@ fn build_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: &shader_module,
-            entry_point: fragment_entry.as_ref(),
+            entry_point: Some(fragment_entry.as_ref()),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -214,6 +216,7 @@ fn build_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         multiview: None,
+        cache: None,
     })
 }
 
