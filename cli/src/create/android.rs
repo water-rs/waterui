@@ -18,10 +18,12 @@ pub fn create_android_project(
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
 
+    let android_package = crate::android::sanitize_package_name(bundle_identifier);
+
     let mut context = HashMap::new();
     context.insert("APP_NAME", display_name.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
-    context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
+    context.insert("BUNDLE_IDENTIFIER", android_package.clone());
 
     let templates = &template::TEMPLATES_DIR;
 
@@ -120,7 +122,7 @@ pub fn create_android_project(
     )?;
 
     // Process Java/Kotlin source with dynamic path
-    let package_path = bundle_identifier.replace('.', "/");
+    let package_path = android_package.replace('.', "/");
     let java_dir = main_dir.join(format!("java/{}", package_path));
     template::process_template_file(
         templates

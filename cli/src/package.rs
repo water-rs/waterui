@@ -99,6 +99,7 @@ pub fn run(args: PackageArgs) -> Result<()> {
                     android_config,
                     args.release,
                     args.skip_native,
+                    &config.package.bundle_identifier,
                 )?;
                 info!("Android package ready: {}", apk_path.display());
             }
