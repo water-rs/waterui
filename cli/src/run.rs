@@ -1,8 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fs,
-    io::{ErrorKind, Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    convert::Infallible,
+    env, fmt,
+    net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -14,10 +14,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::doctor;
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
+use hyper::{
+    Request, Response,
+    body::Incoming,
+    header::{CACHE_CONTROL, EXPIRES, HeaderValue, PRAGMA},
+    http::StatusCode,
+    server::conn::http1,
+    service::service_fn,
+};
+use hyper_util::rt::TokioIo;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::{runtime::Builder, sync::oneshot, time::sleep};
 use tracing::{debug, info, warn};
 use which::which;
 
@@ -35,8 +46,8 @@ use crate::{
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Target platform to run
-    #[arg(long, default_value = "web", value_enum)]
-    pub platform: Platform,
+    #[arg(long, value_enum)]
+    pub platform: Option<Platform>,
 
     /// Project directory (defaults to current working directory)
     #[arg(long)]
@@ -73,6 +84,28 @@ pub enum Platform {
     Android,
 }
 
+#[derive(Debug)]
+enum RunnableTarget {
+    Web,
+    Device(DeviceInfo),
+}
+
+impl fmt::Display for RunnableTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunnableTarget::Web => write!(f, "Web Browser"),
+            RunnableTarget::Device(device) => {
+                let kind = match device.kind {
+                    DeviceKind::Device => "device",
+                    DeviceKind::Simulator => "simulator",
+                    DeviceKind::Emulator => "emulator",
+                };
+                write!(f, "{} ({}, {})", device.name, device.platform, kind)
+            }
+        }
+    }
+}
+
 pub fn run(args: RunArgs) -> Result<()> {
     let project_dir = args
         .project
@@ -99,7 +132,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         return Ok(());
     }
 
-    run_cargo_build(&project_dir, &config.package.name, args.release)?;
+    run_cargo_build(project_dir, &config.package.name, release)?;
 
     let mut watch_paths = vec![project_dir.join("src")];
     for path in &config.hot_reload.watch {
@@ -107,19 +140,19 @@ pub fn run(args: RunArgs) -> Result<()> {
     }
 
     let build_callback = {
-        let project_dir = project_dir.clone();
+        let project_dir = project_dir.to_path_buf();
         let package = config.package.name.clone();
-        Arc::new(move || run_cargo_build(&project_dir, &package, args.release))
+        Arc::new(move || run_cargo_build(&project_dir, &package, release))
     };
 
-    let watcher = if args.no_watch {
+    let watcher = if no_watch {
         info!("CLI hot reload watcher disabled (--no-watch)");
         None
     } else {
         Some(RebuildWatcher::new(watch_paths, build_callback)?)
     };
 
-    match args.platform {
+    match platform {
         Platform::Macos
         | Platform::Ios
         | Platform::Ipados
@@ -129,23 +162,23 @@ pub fn run(args: RunArgs) -> Result<()> {
             if let Some(swift_config) = &config.backends.swift {
                 info!("(Xcode scheme: {})", swift_config.scheme);
 
-                match args.platform {
-                    Platform::Macos => run_macos(&project_dir, swift_config, args.release)?,
+                match platform {
+                    Platform::Macos => run_macos(project_dir, swift_config, release)?,
                     Platform::Ios
                     | Platform::Ipados
                     | Platform::Watchos
                     | Platform::Tvos
                     | Platform::Visionos => {
-                        let device_name = match args.device.clone() {
+                        let device_name = match device {
                             Some(name) => name,
-                            None => prompt_for_apple_device(args.platform)?,
+                            None => prompt_for_apple_device(platform)?,
                         };
                         run_apple_simulator(
-                            &project_dir,
+                            project_dir,
                             &config.package,
                             swift_config,
-                            args.release,
-                            args.platform,
+                            release,
+                            platform,
                             Some(device_name),
                         )?
                     }
@@ -153,26 +186,42 @@ pub fn run(args: RunArgs) -> Result<()> {
                 }
             } else {
                 bail!(
-                    "Swift backend not configured for this project. Add it to waterui.toml or recreate the project with the SwiftUI backend."
+                    "Swift backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
                 );
             }
         }
         Platform::Android => {
+            let android_prerequisites = doctor::check_android_prerequisites()?;
+            let mut has_failures = false;
+            for outcome in &android_prerequisites {
+                for line in outcome.row.render() {
+                    eprintln!("{}", line);
+                }
+                if matches!(outcome.row.status, doctor::Status::Fail) {
+                    has_failures = true;
+                }
+            }
+            if has_failures {
+                bail!(
+                    "Android environment is not set up correctly. Run `water doctor --fix` to resolve issues."
+                );
+            }
+
             if let Some(android_config) = &config.backends.android {
-                let selection = match args.device.clone() {
+                let selection = match device {
                     Some(name) => Some(resolve_android_device(&name)?),
                     None => Some(prompt_for_android_device()?),
                 };
                 run_android(
-                    &project_dir,
+                    project_dir,
                     &config.package,
                     android_config,
-                    args.release,
+                    release,
                     selection,
                 )?;
             } else {
                 bail!(
-                    "Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend."
+                    "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend."
                 );
             }
         }
@@ -204,16 +253,14 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
 
 fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
-        eyre!(
-            "Web backend not configured for this project. Add it to waterui.toml or recreate the project with the web backend."
-        )
+        eyre!("Web backend not configured for this project. Add it to Water.toml or recreate the project with the web backend.")
     })?;
 
     util::require_tool(
         "wasm-pack",
         "Install it from https://rustwasm.github.io/wasm-pack/ and try again.",
     )?;
-    let wasm_pack = which("wasm-pack").unwrap();
+    let wasm_pack = which("wasm-pack").context("failed to locate wasm-pack on PATH")?;
 
     let web_dir = project_dir.join(&web_config.project_path);
     if !web_dir.exists() {
@@ -260,11 +307,11 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
 
     let server = WebDevServer::start(web_dir.clone())?;
     let address = server.address();
-    let url = format!("http://{address}/");
-    info!("Serving web app at {url}");
+    let url = format!("http://{}/", address);
+    info!("Serving web app at {}", url);
     match webbrowser::open(&url) {
         Ok(_) => info!("Opened default browser"),
-        Err(err) => warn!("Failed to open browser automatically: {err}"),
+        Err(err) => warn!("Failed to open browser automatically: {}", err),
     }
     info!("Press Ctrl+C to stop the server.");
 
@@ -301,23 +348,24 @@ fn build_web_app(
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
-        .with_context(|| format!("failed to run wasm-pack build for {package}"))?;
+        .with_context(|| format!("failed to run wasm-pack build for {}", package))?;
     if !status.success() {
-        bail!("wasm-pack build failed with status {status}");
+        bail!("wasm-pack build failed with status {}", status);
     }
 
     Ok(())
 }
 
 struct WebDevServer {
-    _listener: Arc<TcpListener>,
-    shutdown: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
+    shutdown: Option<oneshot::Sender<()>>,
     address: SocketAddr,
 }
 
 impl WebDevServer {
     fn start(root: PathBuf) -> Result<Self> {
+        use hyper_staticfile::{Body as StaticBody, Static};
+
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .context("failed to bind local development server")?;
         listener
@@ -327,38 +375,81 @@ impl WebDevServer {
             .local_addr()
             .context("failed to read web server socket address")?;
 
-        let listener = Arc::new(listener);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let thread_listener = Arc::clone(&listener);
-        let thread_shutdown = Arc::clone(&shutdown);
-        let root_dir = Arc::new(root);
-        let thread_root = Arc::clone(&root_dir);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (startup_tx, startup_rx) = mpsc::channel();
 
-        let handle = thread::spawn(move || {
-            while !thread_shutdown.load(Ordering::Relaxed) {
-                match thread_listener.accept() {
-                    Ok((mut stream, _)) => {
-                        if let Err(err) =
-                            handle_http_connection(&mut stream, thread_root.as_ref().as_path())
-                        {
-                            warn!("Web server connection error: {err}");
+        let thread = thread::spawn(move || {
+            let runtime = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to construct tokio runtime for web dev server");
+
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener)
+                    .expect("failed to convert listener to tokio listener");
+                let static_files = Static::new(root);
+                let mut shutdown_rx = shutdown_rx;
+
+                if startup_tx.send(()).is_err() {
+                    warn!("web dev server startup receiver dropped");
+                    return;
+                }
+
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => {
+                            break;
+                        }
+                        accept_result = listener.accept() => {
+                            match accept_result {
+                                Ok((stream, _)) => {
+                                    let handler = static_files.clone();
+                                    tokio::spawn(async move {
+                                        let service = service_fn(move |request: Request<Incoming>| {
+                                            let handler = handler.clone();
+                                            async move {
+                                                let result = handler.serve(request).await;
+                                                let mut response = match result {
+                                                    Ok(response) => response,
+                                                    Err(error) => {
+                                                        warn!("web dev server static file error: {}", error);
+                                                        Response::builder()
+                                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                                            .body(StaticBody::Empty)
+                                                            .unwrap()
+                                                    }
+                                                };
+                                                apply_dev_cache_headers(&mut response);
+                                                Ok::<Response<StaticBody>, Infallible>(response)
+                                            }
+                                        });
+
+                                        if let Err(err) = http1::Builder::new()
+                                            .serve_connection(TokioIo::new(stream), service)
+                                            .await
+                                        {
+                                            warn!("web dev server connection error: {}", err);
+                                        }
+                                    });
+                                }
+                                Err(err) => {
+                                    warn!("web dev server accept error: {}", err);
+                                    sleep(Duration::from_millis(200)).await;
+                                }
+                            }
                         }
                     }
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(err) => {
-                        warn!("Web server accept error: {err}");
-                        thread::sleep(Duration::from_millis(200));
-                    }
                 }
-            }
+            });
         });
 
+        startup_rx
+            .recv()
+            .context("failed to receive web dev server startup confirmation")?;
+
         Ok(Self {
-            _listener: listener,
-            shutdown,
-            thread: Some(handle),
+            thread: Some(thread),
+            shutdown: Some(shutdown_tx),
             address,
         })
     }
@@ -370,134 +461,25 @@ impl WebDevServer {
 
 impl Drop for WebDevServer {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        // Trigger the accept loop to notice the shutdown flag.
-        if let Ok(stream) = TcpStream::connect(self.address) {
-            let _ = stream.shutdown(Shutdown::Both);
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-fn handle_http_connection(stream: &mut TcpStream, root: &Path) -> std::io::Result<()> {
-    let mut buffer = [0u8; 8192];
-    let mut request = Vec::new();
-
-    loop {
-        let read_bytes = stream.read(&mut buffer)?;
-        if read_bytes == 0 {
-            break;
-        }
-        request.extend_from_slice(&buffer[..read_bytes]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
-        }
-        if request.len() > 16 * 1024 {
-            break;
-        }
-    }
-
-    let request_str = String::from_utf8_lossy(&request);
-    let mut lines = request_str.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path_part = parts.next().unwrap_or("/");
-    let path_only = path_part.split('?').next().unwrap_or("/");
-
-    let (status_line, body, content_type, send_body) = match method {
-        "GET" | "HEAD" => {
-            if let Some(mut file_path) = resolve_requested_path(root, path_only) {
-                if file_path.is_dir() {
-                    file_path.push("index.html");
-                }
-                match fs::read(&file_path) {
-                    Ok(bytes) => (
-                        "200 OK",
-                        bytes,
-                        content_type_for_path(&file_path),
-                        method == "GET",
-                    ),
-                    Err(_) => (
-                        "404 Not Found",
-                        format!("File not found: {}", path_only).into_bytes(),
-                        "text/plain; charset=utf-8",
-                        method == "GET",
-                    ),
-                }
-            } else {
-                (
-                    "404 Not Found",
-                    format!("Not found: {}", path_only).into_bytes(),
-                    "text/plain; charset=utf-8",
-                    method == "GET",
-                )
+            if let Err(err) = handle.join() {
+                warn!("web dev server thread panicked: {:?}", err);
             }
         }
-        _ => (
-            "405 Method Not Allowed",
-            b"Method Not Allowed".to_vec(),
-            "text/plain; charset=utf-8",
-            false,
-        ),
-    };
-
-    let content_length = body.len();
-    write!(stream, "HTTP/1.1 {status_line}\r\n")?;
-    write!(stream, "Content-Length: {content_length}\r\n")?;
-    write!(stream, "Content-Type: {content_type}\r\n")?;
-    write!(
-        stream,
-        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-    )?;
-    write!(stream, "Pragma: no-cache\r\n")?;
-    write!(stream, "Expires: 0\r\n")?;
-    write!(stream, "Connection: close\r\n\r\n")?;
-    if send_body {
-        stream.write_all(&body)?;
     }
-    stream.flush()?;
-
-    Ok(())
 }
 
-fn resolve_requested_path(root: &Path, request_path: &str) -> Option<PathBuf> {
-    let trimmed = request_path.trim_start_matches('/');
-    let mut parts: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty()).collect();
-
-    if request_path.ends_with('/') || parts.is_empty() {
-        parts.push("index.html");
-    }
-
-    let mut path = PathBuf::from(root);
-    for part in parts {
-        if part == ".."
-            || part.contains("..")
-            || part.contains('\r')
-            || part.contains('\n')
-            || part.contains('\\')
-        {
-            return None;
-        }
-        path.push(part);
-    }
-    Some(path)
-}
-
-fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
-        "html" => "text/html; charset=utf-8",
-        "js" => "application/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "wasm" => "application/wasm",
-        "json" => "application/json; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        _ => "application/octet-stream",
-    }
+fn apply_dev_cache_headers(response: &mut Response<hyper_staticfile::Body>) {
+    let headers = response.headers_mut();
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(EXPIRES, HeaderValue::from_static("0"));
 }
 
 fn apply_build_speedups(cmd: &mut Command) {
@@ -572,10 +554,10 @@ fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: b
     debug!("Executing command: {:?}", build_cmd);
     let status = build_cmd.status().context("failed to invoke xcodebuild")?;
     if !status.success() {
-        bail!("xcodebuild failed with status {status}");
+        bail!("xcodebuild failed with status {}", status);
     }
 
-    let products_dir = derived_root.join(format!("Build/Products/{configuration}"));
+    let products_dir = derived_root.join(format!("Build/Products/{}", configuration));
     let app_bundle = products_dir.join(format!("{}.app", project.scheme));
     if !app_bundle.exists() {
         bail!("Expected app bundle at {}", app_bundle.display());
@@ -610,6 +592,13 @@ fn run_apple_simulator(
             "Install Xcode and command line tools (xcode-select --install)",
         )?;
     }
+
+    info!("Opening Simulator app...");
+    Command::new("open")
+        .arg("-a")
+        .arg("Simulator")
+        .status()
+        .context("failed to open Simulator app")?;
 
     let (sim_platform, default_device, products_path) = match platform {
         Platform::Ios => ("iOS Simulator", "iPhone 15", "iphonesimulator"),
@@ -652,7 +641,7 @@ fn run_apple_simulator(
     debug!("Executing command: {:?}", build_cmd);
     let status = build_cmd.status().context("failed to invoke xcodebuild")?;
     if !status.success() {
-        bail!("xcodebuild failed with status {status}");
+        bail!("xcodebuild failed with status {}", status);
     }
 
     let products_dir = derived_root.join(format!(
@@ -684,7 +673,7 @@ fn run_apple_simulator(
         .status()
         .context("failed to install app on simulator")?;
     if !status.success() {
-        bail!("Failed to install app on simulator {device_name}");
+        bail!("Failed to install app on simulator {}", device_name);
     }
 
     info!("Launching app…");
@@ -698,7 +687,7 @@ fn run_apple_simulator(
     ]);
     let status = launch_cmd.status().context("failed to launch app")?;
     if !status.success() {
-        bail!("Failed to launch app on simulator {device_name}");
+        bail!("Failed to launch app on simulator {}", device_name);
     }
 
     info!("Simulator launch complete. Press Ctrl+C to stop.");
@@ -718,9 +707,7 @@ fn run_android(
     let apk_path = android::build_android_apk(project_dir, android_config, release, false)?;
 
     let adb_path = android::find_android_tool("adb").ok_or_else(|| {
-        eyre!(
-            "`adb` not found. Install the Android SDK platform-tools and ensure they are on your PATH or ANDROID_HOME."
-        )
+        eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are on your PATH or ANDROID_HOME.")
     })?;
     let emulator_path = android::find_android_tool("emulator");
 
@@ -728,9 +715,7 @@ fn run_android(
         selection
     } else {
         let emulator = emulator_path.clone().ok_or_else(|| {
-            eyre!(
-                "No Android emulator available. Install the Android SDK emulator tools or specify a connected device."
-            )
+            eyre!("No Android emulator available. Install the Android SDK emulator tools or specify a connected device.")
         })?;
         let output = Command::new(&emulator)
             .arg("-list-avds")
@@ -942,7 +927,8 @@ fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
         });
     }
     bail!(
-        "Android device or emulator '{name}' not found. Run `water devices` to list available targets."
+        "Android device or emulator '{}' not found. Run `water devices` to list available targets.",
+        name
     );
 }
 
@@ -1006,7 +992,7 @@ impl RebuildWatcher {
                             continue;
                         }
                         if let Err(err) = build() {
-                            warn!("Rebuild failed: {err}");
+                            warn!("Rebuild failed: {}", err);
                         }
                         last_run = Instant::now();
                     }

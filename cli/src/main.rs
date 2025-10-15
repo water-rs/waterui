@@ -1,16 +1,20 @@
-mod apple;
+mod add_backend;
 mod android;
+mod apple;
 mod clean;
 mod config;
 mod create;
 mod devices;
 mod doctor;
+mod output;
 mod package;
 mod run;
 mod util;
 
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
+use output::OutputFormat;
+use std::process::ExitCode;
 use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
 
 //pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
@@ -27,6 +31,10 @@ struct Cli {
     /// Increase output verbosity (-v, -vv)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
+
+    /// Control the command output style
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
+    format: OutputFormat,
 
     #[command(subcommand)]
     command: Commands,
@@ -46,11 +54,17 @@ enum Commands {
     Devices(devices::DevicesArgs),
     /// Build distributable artifacts without launching them
     Package(package::PackageArgs),
+    /// Add a new backend to an existing project
+    AddBackend(add_backend::AddBackendArgs),
 }
 
-fn main() {
-    if let Err(err) = run_cli() {
-        util::print_error(err, None);
+fn main() -> ExitCode {
+    match run_cli() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            util::print_error(err, None);
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -62,6 +76,8 @@ fn run_cli() -> Result<()> {
         .issue_url("https://github.com/water-rs/waterui/issues/new")
         .panic_section("It looks like WaterUI CLI encountered a bug")
         .install()?;
+
+    output::set_global_output_format(cli.format);
 
     let level = match cli.verbose {
         0 => LevelFilter::INFO,
@@ -85,5 +101,6 @@ fn run_cli() -> Result<()> {
         Commands::Clean(args) => clean::run(args),
         Commands::Devices(args) => devices::run(args),
         Commands::Package(args) => package::run(args),
+        Commands::AddBackend(args) => add_backend::run(args),
     }
 }
