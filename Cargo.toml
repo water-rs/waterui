@@ -2,8 +2,6 @@
 [workspace]
 members = [
     "core",
-    "kit",
-    "kit/location",
     "components/*",
     "utils/*",
     "backends/web",
