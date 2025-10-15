@@ -3,6 +3,16 @@ set -e
 
 # This script builds the Rust library for all Android targets.
 
+BUILD_PROFILE=${1:-debug}
+
+if [ "$BUILD_PROFILE" = "release" ]; then
+    CARGO_ARGS="--release"
+    PROFILE="release"
+else
+    CARGO_ARGS=""
+    PROFILE="debug"
+fi
+
 # Auto-detect the Android NDK path when ANDROID_NDK_HOME is not provided.
 detect_ndk_home() {
     local -a search_roots=()
@@ -104,10 +114,30 @@ else
     echo "Warning: Unable to determine NDK toolchain host tag; compiler binaries may be missing from PATH."
 fi
 
+# 🧩 Automatically fix missing *-android24-clang (NDK r29+)
+ensure_clang_symlink() {
+    local bin_prefix="$1"
+    local api="$2"
+    local clang_api="$toolchain_bin/${bin_prefix}${api}-clang"
+    local clang_base="$toolchain_bin/${bin_prefix}-clang"
+    if [ ! -f "$clang_api" ] && [ -f "$clang_base" ]; then
+        ln -sf "$clang_base" "$clang_api"
+        echo "→ Created symlink: $(basename "$clang_api") → $(basename "$clang_base")"
+    fi
+    local clangpp_api="$toolchain_bin/${bin_prefix}${api}-clang++"
+    local clangpp_base="$toolchain_bin/${bin_prefix}-clang++"
+    if [ ! -f "$clangpp_api" ] && [ -f "$clangpp_base" ]; then
+        ln -sf "$clangpp_base" "$clangpp_api"
+        echo "→ Created symlink: $(basename "$clangpp_api") → $(basename "$clangpp_base")"
+    fi
+}
+
 configure_toolchain_env() {
     local triple="$1"
     local bin_prefix="$2"
     local api="$3"
+
+    ensure_clang_symlink "$bin_prefix" "$api"
 
     local clang="$toolchain_bin/${bin_prefix}${api}-clang"
     if [ ! -x "$clang" ]; then
@@ -130,37 +160,25 @@ configure_toolchain_env() {
     local upper_triple
     upper_triple=$(printf '%s' "$env_triple" | tr '[:lower:]' '[:upper:]')
 
-    local cc_var="CC_${env_triple}"
-    local cxx_var="CXX_${env_triple}"
-    local linker_var="CARGO_TARGET_${upper_triple}_LINKER"
+    export "CC_${env_triple}=$clang"
+    export "CXX_${env_triple}=$clang_pp"
+    export "CARGO_TARGET_${upper_triple}_LINKER=$clang"
 
-    printf -v "$cc_var" '%s' "$clang"
-    printf -v "$cxx_var" '%s' "$clang_pp"
-    printf -v "$linker_var" '%s' "$clang"
-    export "$cc_var" "$cxx_var" "$linker_var"
-
-    local ar_path="$toolchain_bin/llvm-ar"
-    if [ -x "$ar_path" ]; then
-        local ar_var="AR_${env_triple}"
-        local cargo_ar_var="CARGO_TARGET_${upper_triple}_AR"
-        printf -v "$ar_var" '%s' "$ar_path"
-        printf -v "$cargo_ar_var" '%s' "$ar_path"
-        export "$ar_var" "$cargo_ar_var"
+    if [ -x "$toolchain_bin/llvm-ar" ]; then
+        export "AR_${env_triple}=$toolchain_bin/llvm-ar"
+        export "CARGO_TARGET_${upper_triple}_AR=$toolchain_bin/llvm-ar"
     fi
 
-    local ranlib_path="$toolchain_bin/llvm-ranlib"
-    if [ -x "$ranlib_path" ]; then
-        local ranlib_var="RANLIB_${env_triple}"
-        printf -v "$ranlib_var" '%s' "$ranlib_path"
-        export "$ranlib_var"
+    if [ -x "$toolchain_bin/llvm-ranlib" ]; then
+        export "RANLIB_${env_triple}=$toolchain_bin/llvm-ranlib"
     fi
 
     return 0
 }
 
 ANDROID_TARGET_SPECS=(
-    "aarch64-linux-android:arm64-v8a:21:aarch64-linux-android"
-    "x86_64-linux-android:x86_64:21:x86_64-linux-android"
+    "aarch64-linux-android:arm64-v8a:24:aarch64-linux-android"
+    "x86_64-linux-android:x86_64:24:x86_64-linux-android"
     "armv7-linux-androideabi:armeabi-v7a:19:armv7a-linux-androideabi"
     "i686-linux-android:x86:19:i686-linux-android"
 )
@@ -174,9 +192,9 @@ fi
 target_installed() {
     local triple="$1"
     if [ -z "$installed_targets" ]; then
-        return 0
+        return 1
     fi
-    printf '%s\n' "$installed_targets" | grep -qx "$triple"
+    echo "$installed_targets" | grep -qx "$triple"
 }
 
 parse_requested_targets() {
@@ -230,17 +248,12 @@ if [ ${#selected_specs[@]} -eq 0 ]; then
     exit 1
 fi
 
-echo "Building Rust targets: ${requested_targets[*]}"
+echo "Building Rust targets: ${requested_targets[*]} ($PROFILE)"
 
 declare -a built_specs=()
-
-# Install the Rust targets if needed:
-# rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-
 CRATE_NAME=__CRATE_NAME__
 CRATE_FILE_BASENAME="${CRATE_NAME//-/_}"
 
-# Build for selected Android targets
 for spec in "${selected_specs[@]}"; do
     IFS=: read -r triple abi api bin_prefix <<< "$spec"
     echo "Configuring toolchain for $triple..."
@@ -249,7 +262,7 @@ for spec in "${selected_specs[@]}"; do
         continue
     fi
     echo "Building target $triple..."
-    cargo build --target "$triple" --release --package "$CRATE_NAME"
+    cargo build --target "$triple" $CARGO_ARGS --package "$CRATE_NAME"
     built_specs+=("$spec")
 done
 
@@ -258,13 +271,12 @@ if [ ${#built_specs[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Copy the libraries to the jniLibs directory
 JNI_DIR="android/app/src/main/jniLibs"
 
 for spec in "${built_specs[@]}"; do
     IFS=: read -r triple abi _ _ <<< "$spec"
     mkdir -p "$JNI_DIR/$abi"
-    cp "target/$triple/release/lib${CRATE_FILE_BASENAME}.so" "$JNI_DIR/$abi/"
+    cp "target/$triple/$PROFILE/lib${CRATE_FILE_BASENAME}.so" "$JNI_DIR/$abi/"
 done
 
 echo "Rust libraries copied to $JNI_DIR"

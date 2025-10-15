@@ -19,7 +19,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.10" // TODO: Pin to project-wide Compose compiler version
+        kotlinCompilerExtensionVersion = "1.5.13" // TODO: Pin to project-wide Compose compiler version
     }
 
     kotlinOptions {
