@@ -17,7 +17,7 @@ pub mod swift;
 pub mod template;
 pub mod web;
 
-pub(crate) const WATERUI_GIT_URL: &str = "https://github.com/water-rs/waterui.git";
+pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/swift-backend.git";
 const SWIFT_TAG_PREFIX: &str = "swift-backend-v";
 
 #[derive(Args, Debug, Default)]
@@ -294,7 +294,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
 
 pub struct ProjectDependencies {
     rust_toml: String,
-    swift: SwiftDependency,
+    pub swift: SwiftDependency,
 }
 
 pub enum SwiftDependency {
@@ -302,7 +302,7 @@ pub enum SwiftDependency {
 }
 
 #[allow(clippy::const_is_empty)]
-fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
+pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
         let rust_toml = r#"waterui = { git = "https://github.com/water-rs/waterui" }
 waterui-ffi = { git = "https://github.com/water-rs/waterui" }"#
@@ -325,14 +325,19 @@ waterui-ffi = "{}""#,
     );
 
     let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
-    if swift_backend_version.is_empty() {
-        bail!("WATERUI_SWIFT_BACKEND_VERSION is not set. This should be set at build time.");
-    }
+    let swift_version = if swift_backend_version.is_empty() {
+        warn!(
+            "WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Swift backend."
+        );
+        None
+    } else {
+        Some(swift_backend_version.to_string())
+    };
 
     Ok(ProjectDependencies {
         rust_toml,
         swift: SwiftDependency::Git {
-            version: Some(swift_backend_version.to_string()),
+            version: swift_version,
         },
     })
 }

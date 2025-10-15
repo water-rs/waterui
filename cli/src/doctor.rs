@@ -116,11 +116,11 @@ fn progress_label(step: usize, total: usize, message: &str) -> String {
 fn check_rust() -> SectionOutcome {
     let mut outcome = SectionOutcome::new("Rust toolchain");
 
-    outcome.push(check_command(
+    outcome.push_outcome(check_command(
         "cargo",
         "Install Rust from https://rustup.rs",
     ));
-    outcome.push(check_command(
+    outcome.push_outcome(check_command(
         "rustup",
         "Install Rust from https://rustup.rs",
     ));
@@ -279,46 +279,36 @@ fn check_rust() -> SectionOutcome {
     outcome
 }
 
-fn check_swift() -> Option<SectionOutcome> {
-    if cfg!(not(target_os = "macos")) {
-        return None;
-    }
+pub fn check_android_prerequisites() -> Result<Vec<RowOutcome>> {
+    let mut outcomes = Vec::new();
 
-    let mut outcome = SectionOutcome::new("Swift (macOS)");
-    outcome.push(check_command(
-        "xcodebuild",
-        "Install Xcode and command line tools (xcode-select --install)",
-    ));
-    outcome.push(check_command(
-        "xcrun",
-        "Install Xcode and command line tools (xcode-select --install)",
-    ));
-    Some(outcome)
-}
-
-fn check_android() -> SectionOutcome {
-    let mut outcome = SectionOutcome::new("Android tooling");
-    outcome.push(check_command(
+    // Check for adb
+    outcomes.push(check_command(
         "adb",
         "Install Android SDK Platform-Tools and add to PATH.",
     ));
-    outcome.push(check_command(
+
+    // Check for emulator
+    outcomes.push(check_command(
         "emulator",
         "Install Android SDK command-line tools and add to PATH.",
     ));
-    outcome.push(check_env_var(
+
+    // Check environment variables
+    outcomes.push(check_env_var(
         "ANDROID_HOME",
         "Set ANDROID_HOME to your Android SDK path.",
     ));
-    outcome.push(check_env_var(
+    outcomes.push(check_env_var(
         "ANDROID_NDK_HOME",
         "Set ANDROID_NDK_HOME to your Android NDK path.",
     ));
-    outcome.push(check_env_var(
+    outcomes.push(check_env_var(
         "JAVA_HOME",
         "Set JAVA_HOME to your JDK path (Java 17 or newer recommended).",
     ));
 
+    // Check Java version (this part is a bit more complex as it involves running a command)
     let java_version_cmd = if let Ok(java_home) = std::env::var("JAVA_HOME") {
         let java_exe = std::path::Path::new(&java_home).join("bin/java");
         if java_exe.exists() {
@@ -338,27 +328,94 @@ fn check_android() -> SectionOutcome {
             Ok(output) => {
                 let version_info = String::from_utf8_lossy(&output.stderr);
                 if let Some(line) = version_info.lines().next() {
-                    outcome.push(Row::pass("Java detected").with_detail(line.trim().to_string()));
+                    outcomes.push(RowOutcome::new(
+                        Row::pass("Java detected").with_detail(line.trim().to_string()),
+                    ));
                 } else {
-                    outcome.push(Row::warn("Could not determine Java version"));
+                    outcomes.push(RowOutcome::new(Row::warn(
+                        "Could not determine Java version",
+                    )));
                 }
             }
-            Err(err) => outcome.push(
+            Err(err) => outcomes.push(RowOutcome::new(
                 Row::warn("Failed to read Java version")
                     .with_detail(format!("java -version failed: {err}")),
-            ),
+            )),
         }
     } else {
-        outcome.push(Row::fail("Java not found in JAVA_HOME or PATH"));
+        outcomes.push(RowOutcome::new(Row::fail(
+            "Java not found in JAVA_HOME or PATH",
+        )));
+    }
+
+    // Check for aarch64-linux-android target if on aarch64 host
+    if which::which("rustup").is_ok() {
+        let output = Command::new("rustup")
+            .args(["target", "list", "--installed"])
+            .output()?; // Use ? here to propagate errors from rustup command
+
+        let installed_targets = String::from_utf8_lossy(&output.stdout);
+
+        if cfg!(target_arch = "aarch64") {
+            outcomes.push(target_row(
+                &installed_targets,
+                "aarch64-linux-android",
+                TargetKind::Required {
+                    note: Some("Required for Android emulator on Apple Silicon"),
+                },
+            ));
+        }
+    } else {
+        outcomes.push(RowOutcome::new(Row::warn(
+            "rustup not found, cannot check Rust targets.",
+        )));
+    }
+
+    Ok(outcomes)
+}
+
+fn check_swift() -> Option<SectionOutcome> {
+    if cfg!(not(target_os = "macos")) {
+        return None;
+    }
+
+    let mut outcome = SectionOutcome::new("Swift (macOS)");
+    outcome.push_outcome(check_command(
+        "xcodebuild",
+        "Install Xcode and command line tools (xcode-select --install)",
+    ));
+    outcome.push_outcome(check_command(
+        "xcrun",
+        "Install Xcode and command line tools (xcode-select --install)",
+    ));
+    Some(outcome)
+}
+
+fn check_android() -> SectionOutcome {
+    let mut outcome = SectionOutcome::new("Android tooling");
+    let prerequisites = match check_android_prerequisites() {
+        Ok(outcomes) => outcomes,
+        Err(err) => {
+            outcome.push(
+                Row::fail("Failed to run Android prerequisites check").with_detail(err.to_string()),
+            );
+            return outcome;
+        }
+    };
+
+    for row_outcome in prerequisites {
+        outcome.push_outcome(row_outcome);
     }
 
     outcome
 }
 
-fn check_command(name: &str, help: &str) -> Row {
+fn check_command(name: &str, help: &str) -> RowOutcome {
     match which::which(name) {
-        Ok(path) => Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
-        Err(_) => Row::fail(format!("`{name}` not found")).with_detail(help),
+        Ok(path) => RowOutcome::new(
+            Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
+        ),
+        Err(_) => RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help)),
     }
 }
 
@@ -424,8 +481,10 @@ fn check_mold_tool() -> Option<RowOutcome> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
+    if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
+        return None;
+    }
     if which::which("apt-get").is_ok() {
         let mut command = Vec::new();
         if which::which("sudo").is_ok() {
@@ -489,15 +548,20 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
     None
 }
 
-#[cfg(not(target_os = "linux"))]
-fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
-    None
-}
-
-fn check_env_var(name: &str, help: &str) -> Row {
+fn check_env_var(name: &str, help: &str) -> RowOutcome {
     match std::env::var(name) {
-        Ok(value) => Row::pass(format!("Environment `{name}` set")).with_detail(value),
-        Err(_) => Row::fail(format!("Environment `{name}` missing")).with_detail(help),
+        Ok(value) => {
+            RowOutcome::new(Row::pass(format!("Environment `{name}` set")).with_detail(value))
+        }
+        Err(_) => {
+            let row = Row::fail(format!("Environment `{name}` missing")).with_detail(help);
+            let fix = FixSuggestion::new(
+                format!("env-var-{}", name.to_lowercase()),
+                format!("Set {} environment variable", name),
+                vec![format!("export {}=\"/path/to/your/android-ndk\"", name)], // Placeholder command
+            );
+            RowOutcome::with_fix(row, fix)
+        }
     }
 }
 
@@ -559,22 +623,22 @@ enum TargetKind {
 }
 
 #[derive(Clone, Copy)]
-enum Status {
+pub enum Status {
     Pass,
     Warn,
     Fail,
     Info,
 }
 
-struct Row {
-    status: Status,
+pub struct Row {
+    pub status: Status,
     message: String,
     detail: Option<String>,
     indent: usize,
 }
 
-struct RowOutcome {
-    row: Row,
+pub struct RowOutcome {
+    pub row: Row,
     fix: Option<FixSuggestion>,
 }
 
@@ -627,7 +691,7 @@ impl Row {
         self
     }
 
-    fn render(&self) -> Vec<String> {
+    pub fn render(&self) -> Vec<String> {
         let mut lines = Vec::new();
         let indent = "  ".repeat(self.indent + 1);
         let icon = match self.status {
