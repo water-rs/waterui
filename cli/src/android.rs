@@ -7,7 +7,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use which::which;
 
 pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
@@ -35,18 +35,93 @@ pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
 
 pub fn android_sdk_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    let mut push_root = |path: PathBuf| {
+        if path.exists() && !roots.contains(&path) {
+            roots.push(path);
+        }
+    };
+
     if let Ok(path) = env::var("ANDROID_HOME") {
-        roots.push(PathBuf::from(path));
+        push_root(PathBuf::from(path));
     }
     if let Ok(path) = env::var("ANDROID_SDK_ROOT") {
-        roots.push(PathBuf::from(path));
+        push_root(PathBuf::from(path));
     }
     if let Ok(home) = env::var("HOME") {
         let home_path = PathBuf::from(home);
-        roots.push(home_path.join("Library/Android/sdk"));
-        roots.push(home_path.join("Android/Sdk"));
+        push_root(home_path.join("Library/Android/sdk"));
+        push_root(home_path.join("Android/Sdk"));
     }
-    roots.into_iter().filter(|p| p.exists()).collect()
+    roots
+}
+
+pub fn resolve_android_sdk_path() -> Option<PathBuf> {
+    android_sdk_roots().into_iter().next()
+}
+
+pub fn resolve_android_ndk_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("ANDROID_NDK_HOME") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    for sdk_root in android_sdk_roots() {
+        let ndk_bundle = sdk_root.join("ndk-bundle");
+        if ndk_bundle.exists() {
+            return Some(ndk_bundle);
+        }
+
+        let ndk_dir = sdk_root.join("ndk");
+        if let Ok(entries) = fs::read_dir(&ndk_dir) {
+            let mut candidates: Vec<PathBuf> = entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect();
+            candidates.sort_by(|a, b| b.cmp(a));
+            if let Some(candidate) = candidates.into_iter().next() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn ndk_toolchain_bin(ndk_root: &Path) -> Option<PathBuf> {
+    let host_tags: &[&str] = if cfg!(target_os = "macos") {
+        &["darwin-arm64", "darwin-aarch64", "darwin-x86_64"]
+    } else if cfg!(target_os = "linux") {
+        &["linux-aarch64", "linux-x86_64"]
+    } else if cfg!(target_os = "windows") {
+        &["windows-x86_64"]
+    } else {
+        &[]
+    };
+
+    for tag in host_tags {
+        let candidate = ndk_root
+            .join("toolchains/llvm/prebuilt")
+            .join(tag)
+            .join("bin");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let prebuilt_dir = ndk_root.join("toolchains/llvm/prebuilt");
+    if let Ok(entries) = fs::read_dir(&prebuilt_dir) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("bin");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 pub fn build_android_apk(
@@ -64,6 +139,38 @@ pub fn build_android_apk(
             let mut cmd = Command::new("bash");
             cmd.arg(&build_rust_script);
             cmd.current_dir(project_dir);
+            let ndk_env = env::var("ANDROID_NDK_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|path| path.exists());
+            let ndk_path = ndk_env.clone().or_else(resolve_android_ndk_path);
+            if let Some(ndk_path) = ndk_path {
+                if ndk_env.is_none() {
+                    info!(
+                        "ANDROID_NDK_HOME not set; using auto-detected NDK at {}",
+                        ndk_path.display()
+                    );
+                }
+                cmd.env("ANDROID_NDK_HOME", &ndk_path);
+                if let Some(toolchain_bin) = ndk_toolchain_bin(&ndk_path) {
+                    let mut new_path = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    new_path.insert(0, toolchain_bin);
+                    let merged = env::join_paths(new_path).expect("failed to join PATH entries");
+                    cmd.env("PATH", merged);
+                } else {
+                    warn!(
+                        "Unable to locate NDK toolchain binaries under {}. \
+                         Ensure the llvm toolchain is installed.",
+                        ndk_path.display()
+                    );
+                }
+            } else {
+                warn!(
+                    "ANDROID_NDK_HOME not set and NDK could not be auto-detected. \
+                     build-rust.sh may fail if it requires the NDK."
+                );
+            }
             let status = cmd.status().context("failed to run build-rust.sh")?;
             if !status.success() {
                 bail!("build-rust.sh failed");
@@ -78,23 +185,12 @@ pub fn build_android_apk(
 
     let local_properties = android_dir.join("local.properties");
     if !local_properties.exists() {
-        let sdk_path = env::var("ANDROID_SDK_ROOT")
-            .or_else(|_| env::var("ANDROID_HOME"))
-            .map(PathBuf::from)
-            .map_err(|_| {
-                eyre!(
-                    "Android SDK not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or create {}",
-                    local_properties.display()
-                )
-            })?;
-
-        if !sdk_path.exists() {
-            bail!(
-                "Android SDK directory '{}' does not exist. Update ANDROID_HOME/ANDROID_SDK_ROOT or create {} manually with a valid sdk.dir entry.",
-                sdk_path.display(),
+        let sdk_path = resolve_android_sdk_path().ok_or_else(|| {
+            eyre!(
+                "Android SDK not found. Install it via Android Studio, place it under ~/Library/Android/sdk (macOS) or ~/Android/Sdk, or set ANDROID_HOME/ANDROID_SDK_ROOT; alternatively create {} manually.",
                 local_properties.display()
-            );
-        }
+            )
+        })?;
 
         let contents = format!("sdk.dir={}\n", sdk_path.to_string_lossy());
         fs::write(&local_properties, contents).context("failed to write local.properties")?;
