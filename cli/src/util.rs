@@ -1,11 +1,27 @@
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::Result;
+use color_eyre::eyre::bail;
 use console::style;
 use core::fmt::Display;
 use heck::{AsKebabCase, AsPascalCase};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use which::which;
 
+use crate::output;
+
 pub fn print_error(error: impl Display, hint: Option<&str>) {
+    if output::global_output_format().is_json() {
+        let mut value = json!({
+            "reason": "error",
+            "message": error.to_string(),
+        });
+        if let Some(hint) = hint {
+            value["hint"] = json!(hint);
+        }
+        println!("{}", value);
+        return;
+    }
+
     let icon = style("✖").red();
     eprintln!("{} {}", icon, style("Error").red().bold());
     eprintln!("  {}", style(error.to_string()).red());

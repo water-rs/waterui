@@ -1,16 +1,19 @@
-mod apple;
 mod android;
+mod apple;
 mod clean;
 mod config;
 mod create;
 mod devices;
 mod doctor;
+mod output;
 mod package;
 mod run;
 mod util;
 
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
+use output::OutputFormat;
+use std::process::ExitCode;
 use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
 
 //pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
@@ -27,6 +30,10 @@ struct Cli {
     /// Increase output verbosity (-v, -vv)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
+
+    /// Control the command output style
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
+    format: OutputFormat,
 
     #[command(subcommand)]
     command: Commands,
@@ -48,9 +55,13 @@ enum Commands {
     Package(package::PackageArgs),
 }
 
-fn main() {
-    if let Err(err) = run_cli() {
-        util::print_error(err, None);
+fn main() -> ExitCode {
+    match run_cli() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            util::print_error(err, None);
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -62,6 +73,8 @@ fn run_cli() -> Result<()> {
         .issue_url("https://github.com/water-rs/waterui/issues/new")
         .panic_section("It looks like WaterUI CLI encountered a bug")
         .install()?;
+
+    output::set_global_output_format(cli.format);
 
     let level = match cli.verbose {
         0 => LevelFilter::INFO,
@@ -78,12 +91,18 @@ fn run_cli() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    match cli.command {
-        Commands::Create(args) => create::run(args),
-        Commands::Run(args) => run::run(args),
-        Commands::Doctor(args) => doctor::run(args),
-        Commands::Clean(args) => clean::run(args),
-        Commands::Devices(args) => devices::run(args),
-        Commands::Package(args) => package::run(args),
+    cli.command.execute()
+}
+
+impl Commands {
+    fn execute(self) -> Result<()> {
+        match self {
+            Commands::Create(args) => create::run(args),
+            Commands::Run(args) => run::run(args),
+            Commands::Doctor(args) => doctor::run(args),
+            Commands::Clean(args) => clean::run(args),
+            Commands::Devices(args) => devices::run(args),
+            Commands::Package(args) => package::run(args),
+        }
     }
 }
