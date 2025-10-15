@@ -50,6 +50,7 @@ clippy.perf = "warn"
 clippy.pedantic = "warn"
 clippy.nursery = "warn"
 clippy.cargo = "warn"
+clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 
