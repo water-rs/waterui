@@ -326,7 +326,9 @@ waterui-ffi = "{}""#,
 
     let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
     let swift_version = if swift_backend_version.is_empty() {
-        warn!("WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Swift backend.");
+        warn!(
+            "WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Swift backend."
+        );
         None
     } else {
         Some(swift_backend_version.to_string())

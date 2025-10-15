@@ -155,8 +155,13 @@ mod tests {
             .with_terminal(terminal)
             .build()
             .expect("building app should succeed");
-        app.render(text("Hello TUI")).expect("rendering should succeed");
+        app.render(text("Hello TUI"))
+            .expect("rendering should succeed");
         let snapshot = app.terminal().snapshot().expect("buffered terminal");
-        assert!(std::str::from_utf8(snapshot).expect("snapshot should be valid utf8").contains("Hello TUI"));
+        assert!(
+            std::str::from_utf8(snapshot)
+                .expect("snapshot should be valid utf8")
+                .contains("Hello TUI")
+        );
     }
 }
