@@ -9,6 +9,7 @@ mod output;
 mod package;
 mod run;
 mod util;
+mod add_backend;
 
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
@@ -53,6 +54,8 @@ enum Commands {
     Devices(devices::DevicesArgs),
     /// Build distributable artifacts without launching them
     Package(package::PackageArgs),
+    /// Add a new backend to an existing project
+    AddBackend(add_backend::AddBackendArgs),
 }
 
 fn main() -> ExitCode {
@@ -91,18 +94,13 @@ fn run_cli() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    cli.command.execute()
-}
-
-impl Commands {
-    fn execute(self) -> Result<()> {
-        match self {
-            Commands::Create(args) => create::run(args),
-            Commands::Run(args) => run::run(args),
-            Commands::Doctor(args) => doctor::run(args),
-            Commands::Clean(args) => clean::run(args),
-            Commands::Devices(args) => devices::run(args),
-            Commands::Package(args) => package::run(args),
-        }
+    match cli.command {
+        Commands::Create(args) => create::run(args),
+        Commands::Run(args) => run::run(args),
+        Commands::Doctor(args) => doctor::run(args),
+        Commands::Clean(args) => clean::run(args),
+        Commands::Devices(args) => devices::run(args),
+        Commands::Package(args) => package::run(args),
+        Commands::AddBackend(args) => add_backend::run(args),
     }
 }
