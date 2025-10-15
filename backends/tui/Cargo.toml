@@ -18,8 +18,8 @@ waterui.workspace = true
 waterui-text.workspace = true
 waterui-layout.workspace = true
 waterui-navigation.workspace = true
-unicode-width = "0.1"
-crossterm = "0.27"
+unicode-width = "0.2"
+crossterm = "0.29"
 
 [features]
 default = []

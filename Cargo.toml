@@ -79,7 +79,7 @@ waterui = { version = "0.1.0", path = "." }
 waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
-wgpu = "0.19"
+wgpu = "27.0"
 time = "0.3"
 
 [dependencies]
@@ -95,7 +95,7 @@ waterui-form.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 log.workspace = true
-pulldown-cmark = "0.9"
+pulldown-cmark = "0.13"
 waterui-derive.workspace = true
 
 [features]

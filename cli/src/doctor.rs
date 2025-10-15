@@ -280,19 +280,18 @@ fn check_rust() -> SectionOutcome {
 }
 
 pub fn check_android_prerequisites() -> Result<Vec<RowOutcome>> {
-    let mut outcomes = Vec::new();
-
-    // Check for adb
-    outcomes.push(check_command(
-        "adb",
-        "Install Android SDK Platform-Tools and add to PATH.",
-    ));
-
-    // Check for emulator
-    outcomes.push(check_command(
-        "emulator",
-        "Install Android SDK command-line tools and add to PATH.",
-    ));
+    let mut outcomes = vec![
+        // Check for adb
+        check_command(
+            "adb",
+            "Install Android SDK Platform-Tools and add to PATH.",
+        ),
+        // Check for emulator
+        check_command(
+            "emulator",
+            "Install Android SDK command-line tools and add to PATH.",
+        ),
+    ];
 
     // Check environment variables
     outcomes.push(check_env_var(
