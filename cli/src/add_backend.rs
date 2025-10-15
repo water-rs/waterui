@@ -90,7 +90,7 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
     }
 
     config.save(&project_dir)?;
-    info!("Updated waterui.toml.");
+    info!("Updated Water.toml.");
 
     Ok(())
 }
