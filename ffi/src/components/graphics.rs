@@ -36,6 +36,10 @@ ffi_view!(
     waterui_force_as_renderer_view
 );
 
+/// Gets the width of the renderer view.
+///
+/// # Safety
+/// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererView) -> f32 {
     assert!(
@@ -45,6 +49,10 @@ pub unsafe extern "C" fn waterui_renderer_view_width(view: *const WuiRendererVie
     unsafe { (&(*view)).width }
 }
 
+/// Gets the height of the renderer view.
+///
+/// # Safety
+/// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_height(view: *const WuiRendererView) -> f32 {
     assert!(
@@ -54,6 +62,10 @@ pub unsafe extern "C" fn waterui_renderer_view_height(view: *const WuiRendererVi
     unsafe { (&(*view)).height }
 }
 
+/// Gets the preferred buffer format for the renderer view.
+///
+/// # Safety
+/// The caller must ensure that `view` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_preferred_format(
     _view: *const WuiRendererView,
@@ -61,6 +73,11 @@ pub unsafe extern "C" fn waterui_renderer_view_preferred_format(
     WuiRendererBufferFormat::Rgba8888
 }
 
+/// Renders the view to a CPU buffer.
+///
+/// # Safety
+/// The caller must ensure that `view` and `pixels` are valid pointers, and that the
+/// pixel buffer has sufficient capacity for the given dimensions and stride.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     view: *mut WuiRendererView,
