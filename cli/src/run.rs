@@ -36,7 +36,7 @@ use crate::{
     android,
     apple::{
         derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
-        resolve_xcode_project, xcodebuild_base,
+        resolve_xcode_project, run_xcodebuild_with_progress, xcodebuild_base,
     },
     config::Config,
     devices::{self, DeviceInfo, DeviceKind},
@@ -289,6 +289,9 @@ fn run_platform(
                     | Platform::Watchos
                     | Platform::Tvos
                     | Platform::Visionos => {
+                        if platform == Platform::Watchos {
+                            ensure_rust_target_installed("aarch64-apple-watchos-sim")?;
+                        }
                         let device_name = match device {
                             Some(name) => name,
                             None => prompt_for_apple_device(platform)?,
@@ -656,10 +659,12 @@ fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: b
 
     info!("Building macOS app with xcodebuild…");
     debug!("Executing command: {:?}", build_cmd);
-    let status = build_cmd.status().context("failed to invoke xcodebuild")?;
-    if !status.success() {
-        bail!("xcodebuild failed with status {}", status);
-    }
+    let log_dir = project_dir.join(".waterui/logs");
+    run_xcodebuild_with_progress(
+        build_cmd,
+        &format!("Building {} ({configuration})", project.scheme),
+        &log_dir,
+    )?;
 
     let products_dir = derived_root.join(format!("Build/Products/{}", configuration));
     let app_bundle = products_dir.join(format!("{}.app", project.scheme));
@@ -679,6 +684,43 @@ fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: b
     info!("App launched. Press Ctrl+C to stop the watcher.");
     wait_for_interrupt()?;
     Ok(())
+}
+
+fn ensure_rust_target_installed(target: &str) -> Result<()> {
+    if which("rustup").is_err() {
+        bail!(
+            "Rust target `{target}` is required for watchOS builds, but `rustup` was not found. \
+            Install Rust from https://rustup.rs and try again."
+        );
+    }
+
+    let output = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .context("failed to query installed Rust targets via rustup")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to query installed Rust targets (status {}). \
+             Run `rustup target list --installed` manually for more details.",
+            output.status
+        );
+    }
+
+    let installed = String::from_utf8_lossy(&output.stdout);
+    let has_target = installed
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|line| line == target);
+
+    if has_target {
+        Ok(())
+    } else {
+        bail!(
+            "Rust target `{target}` is required for watchOS simulator builds. \
+            Install it with `rustup target add {target}` and try again."
+        );
+    }
 }
 
 fn run_apple_simulator(
@@ -704,30 +746,20 @@ fn run_apple_simulator(
         .status()
         .context("failed to open Simulator app")?;
 
-    let (sim_platform, default_device, products_path) = match platform {
-        Platform::Ios => ("iOS Simulator", "iPhone 15", "iphonesimulator"),
-        Platform::Ipados => (
-            "iOS Simulator",
-            "iPad Pro (11-inch) (4th generation)",
-            "iphonesimulator",
-        ),
-        Platform::Watchos => (
-            "watchOS Simulator",
-            "Apple Watch Series 9 (45mm)",
-            "watchsimulator",
-        ),
-        Platform::Tvos => (
-            "tvOS Simulator",
-            "Apple TV 4K (3rd generation)",
-            "appletvsimulator",
-        ),
-        Platform::Visionos => ("visionOS Simulator", "Apple Vision Pro", "xrsimulator"),
+    let (sim_platform, products_path) = match platform {
+        Platform::Ios | Platform::Ipados => ("iOS Simulator", "iphonesimulator"),
+        Platform::Watchos => ("watchOS Simulator", "watchsimulator"),
+        Platform::Tvos => ("tvOS Simulator", "appletvsimulator"),
+        Platform::Visionos => ("visionOS Simulator", "xrsimulator"),
         _ => bail!("Unsupported platform for simulator: {:?}", platform),
     };
 
     let project = resolve_xcode_project(project_dir, swift_config)?;
 
-    let device_name = device.unwrap_or_else(|| default_device.to_string());
+    let device_name = match device {
+        Some(name) => name,
+        None => default_apple_simulator(platform)?,
+    };
     info!("Building for simulator {}…", device_name);
 
     let derived_root = derived_data_dir(project_dir);
@@ -743,10 +775,15 @@ fn run_apple_simulator(
         .arg("CODE_SIGNING_REQUIRED=NO");
 
     debug!("Executing command: {:?}", build_cmd);
-    let status = build_cmd.status().context("failed to invoke xcodebuild")?;
-    if !status.success() {
-        bail!("xcodebuild failed with status {}", status);
-    }
+    let log_dir = project_dir.join(".waterui/logs");
+    run_xcodebuild_with_progress(
+        build_cmd,
+        &format!(
+            "Building {} for {device_name} ({configuration})",
+            project.scheme
+        ),
+        &log_dir,
+    )?;
 
     let products_dir = derived_root.join(format!(
         "Build/Products/{}-{}",
@@ -811,7 +848,7 @@ fn run_android(
     let apk_path = android::build_android_apk(project_dir, android_config, release, false)?;
 
     let adb_path = android::find_android_tool("adb").ok_or_else(|| {
-        eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are on your PATH or ANDROID_HOME.")
+        eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are available in your Android SDK directory (e.g. ~/Library/Android/sdk) or on your PATH.")
     })?;
     let emulator_path = android::find_android_tool("emulator");
 
@@ -911,10 +948,24 @@ fn wait_for_interrupt() -> Result<()> {
     Ok(())
 }
 
-fn prompt_for_apple_device(platform: Platform) -> Result<String> {
+fn apple_platform_display_name(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Ios => "iOS",
+        Platform::Ipados => "iPadOS",
+        Platform::Watchos => "watchOS",
+        Platform::Tvos => "tvOS",
+        Platform::Visionos => "visionOS",
+        _ => "Apple",
+    }
+}
+
+fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
     let raw_platform = apple_simulator_platform_id(platform);
-    let devices = devices::list_devices()?;
-    let mut candidates: Vec<DeviceInfo> = devices
+    if raw_platform.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates: Vec<DeviceInfo> = devices::list_devices()?
         .into_iter()
         .filter(|d| d.kind == DeviceKind::Simulator)
         .filter(|d| d.raw_platform.as_deref() == Some(raw_platform))
@@ -923,18 +974,25 @@ fn prompt_for_apple_device(platform: Platform) -> Result<String> {
     if candidates.is_empty() {
         bail!(
             "No simulators found for {}. Install one using Xcode's Devices window.",
-            match platform {
-                Platform::Ios => "iOS",
-                Platform::Ipados => "iPadOS",
-                Platform::Watchos => "watchOS",
-                Platform::Tvos => "tvOS",
-                Platform::Visionos => "visionOS",
-                _ => "Apple",
-            }
+            apple_platform_display_name(platform)
         );
     }
 
     candidates.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(candidates)
+}
+
+fn default_apple_simulator(platform: Platform) -> Result<String> {
+    let candidates = apple_simulator_candidates(platform)?;
+    let preferred = candidates
+        .iter()
+        .find(|d| d.state.as_deref() != Some("unavailable"))
+        .unwrap_or(&candidates[0]);
+    Ok(preferred.name.clone())
+}
+
+fn prompt_for_apple_device(platform: Platform) -> Result<String> {
+    let candidates = apple_simulator_candidates(platform)?;
     let theme = ColorfulTheme::default();
     let options: Vec<String> = candidates
         .iter()
