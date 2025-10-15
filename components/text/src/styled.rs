@@ -150,7 +150,7 @@ impl StyledStr {
         for event in parser {
             match event {
                 Event::Start(tag) => match tag {
-                    Tag::Heading(level, ..) => {
+                    Tag::Heading { level, .. } => {
                         if pending_block_break || !builder.is_empty() {
                             builder.push_text("\n\n");
                         }
@@ -186,20 +186,27 @@ impl StyledStr {
                     _ => {}
                 },
                 Event::End(tag) => match tag {
-                    Tag::Heading(..) => {
+                    pulldown_cmark::TagEnd::Heading(_) => {
                         builder.exit();
                         pending_block_break = true;
                     }
-                    Tag::Paragraph | Tag::CodeBlock(_) | Tag::List(_) => {
+                    pulldown_cmark::TagEnd::Paragraph
+                    | pulldown_cmark::TagEnd::CodeBlock
+                    | pulldown_cmark::TagEnd::List(_) => {
                         pending_block_break = true;
                     }
-                    Tag::Emphasis | Tag::Strong => builder.exit(),
+                    pulldown_cmark::TagEnd::Emphasis | pulldown_cmark::TagEnd::Strong => {
+                        builder.exit();
+                    }
                     _ => {}
                 },
                 Event::Text(text)
                 | Event::Code(text)
                 | Event::Html(text)
-                | Event::FootnoteReference(text) => {
+                | Event::FootnoteReference(text)
+                | Event::InlineMath(text)
+                | Event::DisplayMath(text)
+                | Event::InlineHtml(text) => {
                     if pending_block_break && !builder.is_empty() {
                         builder.push_text("\n\n");
                         pending_block_break = false;

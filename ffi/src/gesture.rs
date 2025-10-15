@@ -96,43 +96,37 @@ impl Default for WuiGesture {
 
 fn gesture_to_ffi_struct(gesture: Gesture) -> WuiGesture {
     match gesture {
-        Gesture::Tap(gesture) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::Tap;
-            ffi.tap = gesture.into_ffi();
-            ffi
-        }
-        Gesture::LongPress(gesture) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::LongPress;
-            ffi.long_press = gesture.into_ffi();
-            ffi
-        }
-        Gesture::Drag(gesture) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::Drag;
-            ffi.drag = gesture.into_ffi();
-            ffi
-        }
-        Gesture::Magnification(gesture) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::Magnification;
-            ffi.magnification = gesture.into_ffi();
-            ffi
-        }
-        Gesture::Rotation(gesture) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::Rotation;
-            ffi.rotation = gesture.into_ffi();
-            ffi
-        }
-        Gesture::Then(sequence) => {
-            let mut ffi = WuiGesture::default();
-            ffi.kind = WuiGestureKind::Then;
-            ffi.first = sequence.first().clone().into_ffi();
-            ffi.then = sequence.then().clone().into_ffi();
-            ffi
-        }
+        Gesture::Tap(gesture) => WuiGesture {
+            kind: WuiGestureKind::Tap,
+            tap: gesture.into_ffi(),
+            ..WuiGesture::default()
+        },
+        Gesture::LongPress(gesture) => WuiGesture {
+            kind: WuiGestureKind::LongPress,
+            long_press: gesture.into_ffi(),
+            ..WuiGesture::default()
+        },
+        Gesture::Drag(gesture) => WuiGesture {
+            kind: WuiGestureKind::Drag,
+            drag: gesture.into_ffi(),
+            ..WuiGesture::default()
+        },
+        Gesture::Magnification(gesture) => WuiGesture {
+            kind: WuiGestureKind::Magnification,
+            magnification: gesture.into_ffi(),
+            ..WuiGesture::default()
+        },
+        Gesture::Rotation(gesture) => WuiGesture {
+            kind: WuiGestureKind::Rotation,
+            rotation: gesture.into_ffi(),
+            ..WuiGesture::default()
+        },
+        Gesture::Then(sequence) => WuiGesture {
+            kind: WuiGestureKind::Then,
+            first: sequence.first().clone().into_ffi(),
+            then: sequence.then().clone().into_ffi(),
+            ..WuiGesture::default()
+        },
         _ => unreachable!("Unsupported gesture type"),
     }
 }
@@ -208,7 +202,7 @@ ffi_view!(
     waterui_force_as_gesture
 );
 
-/// FFI-safe representation of a gesture phase.
+// FFI-safe representation of a gesture phase.
 ffi_enum!(
     GesturePhase,
     WuiGesturePhase,

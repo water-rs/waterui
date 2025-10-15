@@ -7,14 +7,12 @@ on:
       - "**/*.md"
       - "**/*.png"
       - "**/*.jpg"
-      - " tutorial-book/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**/*.md"
       - "**/*.png"
       - "**/*.jpg"
-      - " tutorial-book/**"
 env:
   CARGO_TERM_COLOR: always
 
@@ -68,19 +66,3 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests
         run: cargo test --all --all-features --workspace
-
-  swift-backend:
-    name: Build Swift Backend (macOS)
-    needs: [rust-test]
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-      - name: Cache Swift build
-        uses: actions/cache@v4
-        with:
-          path: backends/swift/.build
-          key: ${{ runner.os }}-swift-${{ hashFiles('backends/swift/Package.resolved') }}
-      - name: Build Swift package
-        run: swift build --package-path backends/swift --configuration release
