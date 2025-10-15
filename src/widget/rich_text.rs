@@ -192,13 +192,13 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     flush_list_item_inline(&mut stack);
                     stack.push(Container::Paragraph(InlineGroup::default()));
                 }
-                Tag::Heading(level, ..) => {
+                Tag::Heading { level, .. } => {
                     flush_list_item_inline(&mut stack);
                     stack.push(Container::Heading(InlineGroup::with_style(heading_style(
                         level,
                     ))));
                 }
-                Tag::BlockQuote => {
+                Tag::BlockQuote(_) => {
                     flush_list_item_inline(&mut stack);
                     stack.push(Container::BlockQuote(Vec::new()));
                 }
@@ -263,44 +263,44 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         sink.enter_strong();
                     }
                 }
-                Tag::Link(_, url, _) => {
+                Tag::Link { dest_url, .. } => {
                     stack.push(Container::InlineLink {
-                        url: Str::from(url.into_string()),
+                        url: Str::from(dest_url.into_string()),
                         label: MarkdownInlineBuilder::new(),
                     });
                 }
-                Tag::Image(_, url, _) => {
+                Tag::Image { dest_url, .. } => {
                     stack.push(Container::InlineImage {
-                        url: Str::from(url.into_string()),
+                        url: Str::from(dest_url.into_string()),
                         alt: MarkdownInlineBuilder::new(),
                     });
                 }
                 _ => {}
             },
             Event::End(tag) => match tag {
-                Tag::Paragraph => {
+                pulldown_cmark::TagEnd::Paragraph => {
                     if let Some(Container::Paragraph(group)) = stack.pop() {
                         let element = collapse_inline(group.finish());
                         push_to_parent(&mut stack, element);
                     }
                 }
-                Tag::Heading(..) => {
+                pulldown_cmark::TagEnd::Heading(_) => {
                     if let Some(Container::Heading(group)) = stack.pop() {
                         let element = collapse_inline(group.finish());
                         push_to_parent(&mut stack, element);
                     }
                 }
-                Tag::BlockQuote => {
+                pulldown_cmark::TagEnd::BlockQuote(_) => {
                     if let Some(Container::BlockQuote(content)) = stack.pop() {
                         push_to_parent(&mut stack, RichTextElement::Quote { content });
                     }
                 }
-                Tag::List(_) => {
+                pulldown_cmark::TagEnd::List(_) => {
                     if let Some(Container::List { ordered, items }) = stack.pop() {
                         push_to_parent(&mut stack, RichTextElement::List { items, ordered });
                     }
                 }
-                Tag::Item => {
+                pulldown_cmark::TagEnd::Item => {
                     if let Some(Container::ListItem {
                         mut blocks,
                         mut inline,
@@ -316,7 +316,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         }
                     }
                 }
-                Tag::CodeBlock(_) => {
+                pulldown_cmark::TagEnd::CodeBlock => {
                     if let Some(Container::CodeBlock { language, code }) = stack.pop() {
                         push_to_parent(
                             &mut stack,
@@ -327,19 +327,19 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         );
                     }
                 }
-                Tag::Table(_) => {
+                pulldown_cmark::TagEnd::Table => {
                     if let Some(Container::Table { headers, rows, .. }) = stack.pop() {
                         push_to_parent(&mut stack, RichTextElement::Table { headers, rows });
                     }
                 }
-                Tag::TableHead => {
+                pulldown_cmark::TagEnd::TableHead => {
                     if let Some(idx) = current_table_index(&stack)
                         && let Container::Table { in_head, .. } = &mut stack[idx]
                     {
                         *in_head = false;
                     }
                 }
-                Tag::TableRow => {
+                pulldown_cmark::TagEnd::TableRow => {
                     if let Some(Container::TableRow { cells }) = stack.pop()
                         && let Some(idx) = current_table_index(&stack)
                         && let Container::Table {
@@ -355,7 +355,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         }
                     }
                 }
-                Tag::TableCell => {
+                pulldown_cmark::TagEnd::TableCell => {
                     if let Some(Container::TableCell(group)) = stack.pop() {
                         let cell = collapse_inline(group.finish());
                         if let Some(Container::TableRow { cells }) = stack.last_mut() {
@@ -363,7 +363,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         }
                     }
                 }
-                Tag::Link(..) => {
+                pulldown_cmark::TagEnd::Link => {
                     if let Some(Container::InlineLink { url, label }) = stack.pop() {
                         let element = RichTextElement::Link {
                             label: label.finish(),
@@ -372,7 +372,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         push_inline_element(&mut stack, element);
                     }
                 }
-                Tag::Image(..) => {
+                pulldown_cmark::TagEnd::Image => {
                     if let Some(Container::InlineImage { url, alt }) = stack.pop() {
                         let alt_text = alt.finish().to_plain();
                         let element = RichTextElement::Image {
@@ -382,7 +382,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         push_inline_element(&mut stack, element);
                     }
                 }
-                Tag::Emphasis | Tag::Strong => {
+                pulldown_cmark::TagEnd::Emphasis | pulldown_cmark::TagEnd::Strong => {
                     if let Some(mut sink) = current_inline_sink(&mut stack) {
                         sink.exit();
                     }
@@ -402,7 +402,12 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
             },
-            Event::Code(text) | Event::Html(text) | Event::FootnoteReference(text) => {
+            Event::Code(text)
+            | Event::Html(text)
+            | Event::FootnoteReference(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text)
+            | Event::InlineHtml(text) => {
                 if let Some(mut sink) = current_inline_sink(&mut stack) {
                     sink.push_text(text.as_ref());
                 } else {

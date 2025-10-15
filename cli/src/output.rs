@@ -5,16 +5,13 @@ use std::sync::OnceLock;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum OutputFormat {
+    #[default]
     Human,
     Json,
 }
 
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Human
-    }
-}
 
 impl OutputFormat {
     pub fn is_json(self) -> bool {
