@@ -1,3 +1,8 @@
+//! Procedural macros for `WaterUI` framework.
+//!
+//! This crate provides derive macros and procedural macros for the `WaterUI` framework,
+//! including form generation, reactive signal formatting, and view builder patterns.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Meta, parse_macro_input};
@@ -153,7 +158,7 @@ fn snake_to_title_case(s: &str) -> String {
 /// - `Clone`
 /// - `Debug`
 /// - `FormBuilder`
-/// - `Project` (from waterui::reactive for reactive state management)
+/// - `Project` (from `waterui::reactive` for reactive state management)
 /// - `Serialize` and `Deserialize` (from serde, if available)
 ///
 /// # Example
@@ -195,11 +200,11 @@ fn snake_to_title_case(s: &str) -> String {
 #[proc_macro_attribute]
 pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let _name = &input.ident;
+    let (_impl_generics, _ty_generics, _where_clause) = input.generics.split_for_impl();
 
     // Check if it's a struct with named fields
-    let fields = match &input.data {
+    let _fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Named(fields) => fields,
             _ => {
@@ -290,7 +295,7 @@ fn derive_project_struct(input: &DeriveInput, fields: &syn::FieldsNamed) -> Toke
 
     // Create the projected struct type
     let projected_struct_name =
-        syn::Ident::new(&format!("{}Projected", struct_name), struct_name.span());
+        syn::Ident::new(&format!("{struct_name}Projected"), struct_name.span());
 
     // Generate fields for the projected struct
     let projected_fields = fields.named.iter().map(|field| {
@@ -440,14 +445,14 @@ struct SInput {
 impl Parse for SInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let format_str: LitStr = input.parse()?;
-        let mut args = Punctuated::new();
-
-        if input.peek(Token![,]) {
+        let args = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
-            args = Punctuated::parse_terminated(input)?;
-        }
+            Punctuated::parse_terminated(input)?
+        } else {
+            Punctuated::new()
+        };
 
-        Ok(SInput { format_str, args })
+        Ok(Self { format_str, args })
     }
 }
 
@@ -470,7 +475,7 @@ impl Parse for SInput {
 /// let msg2 = s!("Hello {}, you are {}", name, age);
 /// ```
 #[proc_macro]
-#[allow(clippy::similar_names)]
+#[allow(clippy::similar_names, clippy::too_many_lines)]
 pub fn s(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as SInput);
     let format_str = input.format_str;
@@ -589,9 +594,8 @@ pub fn s(input: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             &format_str,
             format!(
-                "Format string has {} positional placeholder(s) {{}} but no arguments provided. \
-                Either provide arguments or use named placeholders like {{variable}} for automatic capture.",
-                positional_count
+                "Format string has {positional_count} positional placeholder(s) {{}} but no arguments provided. \
+                Either provide arguments or use named placeholders like {{variable}} for automatic capture."
             )
         )
         .to_compile_error()
@@ -700,7 +704,6 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
         if c == '{' && chars.peek() == Some(&'{') {
             // Skip escaped braces
             chars.next();
-            continue;
         } else if c == '{' {
             let mut content = String::new();
             let mut has_content = false;
@@ -720,10 +723,9 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
                         chars.next();
                     }
                     break;
-                } else {
-                    content.push(chars.next().unwrap());
-                    has_content = true;
                 }
+                content.push(chars.next().unwrap());
+                has_content = true;
             }
 
             // Analyze the content

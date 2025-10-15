@@ -138,8 +138,10 @@ fn render_cpu(
                 DrawStyle::Stroke(color, width) => {
                     let mut paint = Paint::default();
                     paint.set_color(resolve_color(env, color));
-                    let mut stroke = Stroke::default();
-                    stroke.width = *width;
+                    let stroke = Stroke {
+                        width: *width,
+                        ..Stroke::default()
+                    };
                     pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
                 }
             }
