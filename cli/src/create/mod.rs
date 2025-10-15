@@ -18,7 +18,6 @@ pub mod template;
 pub mod web;
 
 pub(crate) const WATERUI_GIT_URL: &str = "https://github.com/water-rs/waterui.git";
-const SWIFT_TAG_PREFIX: &str = "swift-backend-v";
 
 #[derive(Args, Debug, Default)]
 pub struct CreateArgs {
@@ -304,6 +303,25 @@ pub enum SwiftDependency {
 #[allow(clippy::const_is_empty)]
 fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
+        if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+            let workspace_root = workspace_root
+                .canonicalize()
+                .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+            if workspace_root.join("Cargo.toml").exists() {
+                let rust_toml = format!(
+                    "waterui = {{ path = \"{}\" }}\nwaterui-ffi = {{ path = \"{}\" }}",
+                    workspace_root.display(),
+                    workspace_root.join("ffi").display()
+                );
+
+                return Ok(ProjectDependencies {
+                    rust_toml,
+                    swift: SwiftDependency::Git { version: None },
+                });
+            }
+        }
+
         let rust_toml = r#"waterui = { git = "https://github.com/water-rs/waterui" }
 waterui-ffi = { git = "https://github.com/water-rs/waterui" }"#
             .to_string();

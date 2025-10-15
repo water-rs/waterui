@@ -1,0 +1,10 @@
+[package]
+name = "web-demo"
+display_name = "Web Demo"
+bundle_identifier = "com.waterui.web-demo"
+
+[backends.web]
+project_path = "web"
+
+[hot_reload]
+watch = ["web"]

@@ -195,13 +195,9 @@ fn snake_to_title_case(s: &str) -> String {
 #[proc_macro_attribute]
 pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    // Check if it's a struct with named fields
-    let fields = match &input.data {
+    match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => fields,
+            Fields::Named(_) => {}
             _ => {
                 return syn::Error::new_spanned(
                     input,
@@ -219,7 +215,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
         }
-    };
+    }
 
     let expanded = quote! {
         #[derive(Default, Clone, Debug, ::waterui::FormBuilder, ::waterui::Project)]
@@ -240,9 +236,8 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 ///
 /// ```rust
 /// use waterui::reactive::{Binding, binding};
-/// use waterui::reactive_derive::Project;
 ///
-/// #[derive(Project)]
+/// #[derive(Clone, waterui::Project)]
 /// struct Person {
 ///     name: String,
 ///     age: u32,
@@ -255,7 +250,7 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 ///
 /// let projected = person_binding.project();
 /// projected.name.set("Bob".to_string());
-/// projected.age.set(25);
+/// projected.age.set(25u32);
 ///
 /// let person = person_binding.get();
 /// assert_eq!(person.name, "Bob");
@@ -459,6 +454,7 @@ impl Parse for SInput {
 ///
 /// ```rust
 /// use waterui::reactive::*;
+/// use waterui::s;
 ///
 /// let name = constant("Alice");
 /// let age = constant(25);

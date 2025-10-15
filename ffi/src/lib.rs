@@ -15,6 +15,12 @@
 
 #![no_std]
 extern crate alloc;
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+extern crate std;
 #[macro_use]
 mod macros;
 pub mod action;
@@ -73,9 +79,145 @@ macro_rules! export {
 }
 
 #[doc(hidden)]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos"),
+))]
 pub fn __init_executor() {
     init_global_executor(native_executor::NativeExecutor);
     init_local_executor(native_executor::NativeExecutor);
+}
+
+#[doc(hidden)]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+pub fn __init_executor() {
+    use alloc::sync::Arc;
+    use futures_lite::future;
+    use std::{sync::OnceLock, thread};
+
+    static EXECUTOR_INIT: OnceLock<()> = OnceLock::new();
+
+    EXECUTOR_INIT.get_or_init(|| {
+        let global = Arc::new(async_executor::Executor::new());
+        let global_runner = Arc::clone(&global);
+        thread::spawn(move || {
+            futures_lite::future::block_on(global_runner.run(future::pending::<()>()))
+        });
+
+        init_global_executor(global);
+        init_local_executor(ImmediateLocalExecutor::new());
+    });
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+#[derive(Clone, Copy, Debug, Default)]
+struct ImmediateLocalExecutor;
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl ImmediateLocalExecutor {
+    const fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+struct ImmediateTask<T> {
+    result: Option<T>,
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl<T> ImmediateTask<T> {
+    fn from_value(value: T) -> Self {
+        Self {
+            result: Some(value),
+        }
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl<T> core::fmt::Debug for ImmediateTask<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ImmediateTask").finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl<T> core::future::Future for ImmediateTask<T> {
+    type Output = T;
+
+    fn poll(self: core::pin::Pin<&mut Self>, _cx: &mut core::task::Context<'_>) -> core::task::Poll<T> {
+        let this = unsafe { self.get_unchecked_mut() };
+        core::task::Poll::Ready(
+            this.result
+                .take()
+                .expect("ImmediateTask polled after completion"),
+        )
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl<T: 'static> executor_core::Task<T> for ImmediateTask<T> {
+    fn poll_result(
+        self: core::pin::Pin<&mut Self>,
+        _cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<T, alloc::boxed::Box<dyn core::any::Any + Send>>> {
+        let this = unsafe { self.get_unchecked_mut() };
+        core::task::Poll::Ready(Ok(
+            this.result
+                .take()
+                .expect("ImmediateTask polled after completion"),
+        ))
+    }
+
+    fn poll_cancel(self: core::pin::Pin<&mut Self>, _cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
+        core::task::Poll::Ready(())
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")),
+))]
+impl executor_core::LocalExecutor for ImmediateLocalExecutor {
+    type Task<T: 'static> = ImmediateTask<T>;
+
+    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+    where
+        Fut: core::future::Future + 'static,
+    {
+        ImmediateTask::from_value(futures_lite::future::block_on(fut))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn __init_executor() {
+    let executor = wasm_executor::WasmExecutor::new();
+    init_global_executor(executor);
+    init_local_executor(executor);
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
@@ -129,6 +271,93 @@ impl<T: IntoNullableFFI> IntoFFI for T {
 
 pub trait InvalidValue {
     fn invalid() -> Self;
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_executor {
+    use alloc::boxed::Box;
+    use core::{
+        future::Future,
+        marker::PhantomData,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use executor_core::{Executor, LocalExecutor, Task};
+    use wasm_bindgen_futures::spawn_local;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct WasmExecutor;
+
+    impl WasmExecutor {
+        pub const fn new() -> Self {
+            Self
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct WasmTask<T> {
+        _marker: PhantomData<T>,
+    }
+
+    impl<T> WasmTask<T> {
+        pub const fn new() -> Self {
+            Self {
+                _marker: PhantomData,
+            }
+        }
+    }
+
+    impl<T> Future for WasmTask<T> {
+        type Output = T;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl<T: 'static> Task<T> for WasmTask<T> {
+        fn poll_result(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<T, Box<dyn core::any::Any + Send>>> {
+            Poll::Pending
+        }
+
+        fn poll_cancel(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            Poll::Ready(())
+        }
+    }
+
+    impl LocalExecutor for WasmExecutor {
+        type Task<T: 'static> = WasmTask<T>;
+
+        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+        where
+            Fut: Future + 'static,
+        {
+            spawn_local(async move {
+                let _ = fut.await;
+            });
+
+            WasmTask::new()
+        }
+    }
+
+    impl Executor for WasmExecutor {
+        type Task<T: Send + 'static> = WasmTask<T>;
+
+        fn spawn<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+        where
+            Fut: Future<Output: Send> + Send + 'static,
+        {
+            spawn_local(async move {
+                let _ = fut.await;
+            });
+
+            WasmTask::new()
+        }
+    }
 }
 
 /// Defines a marker trait for types that should be treated as opaque when crossing FFI boundaries.

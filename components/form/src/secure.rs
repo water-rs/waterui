@@ -10,6 +10,9 @@ use nami::Binding;
 use waterui_core::{AnyView, View, configurable};
 use zeroize::Zeroize;
 
+#[cfg(not(target_arch = "wasm32"))]
+use bcrypt;
+
 /// A wrapper type for securely handling sensitive string data.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Secure(String);
@@ -36,10 +39,22 @@ impl Secure {
     /// # Returns
     ///
     /// A bcrypt hash of the inner string data.
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::missing_panics_doc)] // bcrypt::hash never panics
     #[must_use]
     pub fn hash(&self) -> String {
         bcrypt::hash(self.expose(), bcrypt::DEFAULT_COST).expect("Failed to hash password")
+    }
+
+    /// Hashes the secure string.
+    ///
+    /// # Panics
+    ///
+    /// Always panics because bcrypt hashing is not supported on WebAssembly builds.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub fn hash(&self) -> String {
+        panic!("Secure::hash is not supported on wasm32 targets")
     }
 }
 

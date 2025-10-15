@@ -14,6 +14,7 @@
 
 # Build artifacts
 /demo/apple/build/
+artifacts/
 *.o
 *.a
 *.so

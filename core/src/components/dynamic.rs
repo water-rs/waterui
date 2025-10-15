@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use waterui_core::{components::dynamic::{Dynamic,watch},Binding};
+//! use waterui_core::{binding, Binding, Dynamic};
 //!
 //! // Create a dynamic view with a handler
 //! let (handler, view) = Dynamic::new();
@@ -17,7 +17,8 @@
 //!
 //! // Create a view that watches a reactive value
 //! let count = Binding::container(0);
-//! let counter_view = watch(count, |value| format!("Count: {}", value));
+//! let counter_view = Dynamic::watch(count, |value| format!("Count: {}", value));
+//! ```
 use crate::components::With;
 use crate::{AnyView, View, raw_view};
 use alloc::boxed::Box;

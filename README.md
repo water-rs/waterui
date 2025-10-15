@@ -97,6 +97,46 @@ opening Android Studio. To try it end-to-end:
 Gradle will output a ready-to-install APK at
 `android-demo/android/app/build/outputs/apk/debug/app-debug.apk`.
 
+## 🌐 Web Backend CLI Workflow
+
+The CLI can also scaffold an end-to-end web experience that compiles to
+WebAssembly and serves assets with a lightweight development server.
+
+1. **Install the tooling dependencies**:
+
+   ```bash
+   cargo install wasm-pack
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. **Create a web-first project**:
+
+   ```bash
+   cargo run -p waterui-cli -- create \\
+     --name "Web Demo" \\
+     --directory web-demo \\
+     --bundle-identifier com.example.webdemo \\
+     --backend web \\
+     --yes --dev
+   ```
+
+3. **Serve it like a Vite dev server**:
+
+   ```bash
+   cargo run -p waterui-cli -- run \\
+     --platform web \\
+     --project web-demo
+   ```
+
+   The command compiles the Wasm bundle with `wasm-pack`, launches a local HTTP
+   server, and watches your Rust + web assets for rebuilds.
+
+4. **Capture previews without committing binaries**:
+
+   Screenshots or other artifacts from the web preview should be placed in an
+   `artifacts/` directory (ignored by git) so that large binary assets stay out
+   of the repository.
+
 ## 📝 Rich Text & Markdown
 
 `WaterUI` includes native support for styled text and Markdown rendering. Use
@@ -105,6 +145,7 @@ Gradle will output a ready-to-install APK at
 
 ```rust
 use waterui::widget::RichText;
+use waterui::View;
 
 pub fn release_notes() -> impl View {
     RichText::from_markdown(

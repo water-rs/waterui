@@ -165,12 +165,13 @@ where
 /// # Example
 ///
 /// ```rust,no_run
+/// use waterui::View;
+/// use waterui::component::Text;
 /// use waterui::widget::suspense::{DefaultLoadingView, Suspense};
 /// use waterui_core::Environment;
-/// use waterui::component::text::Text;
 ///
 /// // Using a closure for lazy initialization
-/// let env = Environment::new().with(DefaultLoadingView::new(|_| Text::new("Loading...")));
+/// let env = Environment::new().with(DefaultLoadingView::new(|_env: Environment| Text::new("Loading...")));
 /// ```
 #[derive(Debug)]
 pub struct DefaultLoadingView(AnyViewBuilder);
@@ -198,8 +199,8 @@ impl DefaultLoadingView {
 /// # Example
 ///
 /// ```rust,no_run
+/// use waterui::View;
 /// use waterui::widget::suspense::{Suspense, UseDefaultLoadingView};
-/// use waterui_core::View;
 ///
 /// async fn async_content() -> impl View {
 ///     waterui::component::text::Text::new("Content loaded")

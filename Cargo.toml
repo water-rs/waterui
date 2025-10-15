@@ -56,7 +56,7 @@ clippy.cargo = "warn"
 
 
 [workspace.dependencies]
-executor-core = { version = "0.6.0", features = ["std"]}
+executor-core = { version = "0.6.0", features = ["std", "async-executor"]}
 nami = "0.6.2"
 log = "0.4.28"
 waterui-core = { version = "0.1.0", path = "core" }

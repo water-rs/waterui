@@ -78,16 +78,18 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
-    /// use waterui::widget::condition::When;
+/// ```rust
+/// use waterui::Environment;
+/// use waterui::View;
+/// use waterui::widget::condition::When;
     /// use waterui_text::text;
     /// use nami::binding;
     ///
     /// let condition = binding(true);
-    /// let when_component = When::new(condition.clone(), |_| text("Visible"));
+/// let when_component = When::new(condition.clone(), |_env: Environment| text("Visible"));
     ///
     /// // Using negation
-    /// let when_not = When::new(!condition, |_| "Hidden");
+/// let when_not = When::new(!condition, |_env: Environment| "Hidden");
     /// ```
     pub const fn new(condition: Condition, then: Then) -> Self
     where
@@ -120,6 +122,8 @@ where
 /// # Examples
 ///
 /// ```rust
+/// use waterui::Environment;
+/// use waterui::View;
 /// use waterui::widget::condition::when;
 /// use waterui_text::text;
 /// use waterui_layout::stack::vstack;
@@ -224,6 +228,7 @@ impl<Condition, Then> When<Condition, Then> {
 /// # Examples
 ///
 /// ```rust
+/// use waterui::View;
 /// use waterui::widget::condition::when;
 /// use waterui_text::text;
 /// use waterui_layout::stack::vstack;

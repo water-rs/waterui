@@ -16,9 +16,11 @@ waterui-color.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 time.workspace = true
-inkjet = "0.11.1"
 async-oneshot = "0.5"
 pulldown-cmark = "0.9"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+inkjet = "0.11.1"
 
 [lints]
 workspace = true
