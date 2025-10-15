@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use std::env;
 use std::process::Command;
 
+use crate::android;
+
 #[derive(Args, Debug, Default)]
 pub struct DoctorArgs {
     /// Attempt to fix required issues after running checks
@@ -35,11 +37,18 @@ pub struct StepOutcome {
     pub summary_line: String,
 }
 
-pub fn run_checks<F>(include_swift: bool, mut on_step: F) -> CheckReport
+pub fn run_checks<F>(include_swift: bool, include_android: bool, mut on_step: F) -> CheckReport
 where
     F: FnMut(usize, usize, StepOutcome),
 {
-    let total = 2 + usize::from(include_swift);
+    let swift = if include_swift { check_swift() } else { None };
+    let mut total = 1; // Rust is always required
+    if swift.is_some() {
+        total += 1;
+    }
+    if include_android {
+        total += 1;
+    }
     let mut sections = Vec::new();
     let mut fixes = Vec::new();
     let mut step = 1;
@@ -58,35 +67,35 @@ where
     fixes.append(&mut rust_fixes);
     step += 1;
 
-    if include_swift {
-        if let Some(swift) = check_swift() {
-            on_step(
-                step,
-                total,
-                StepOutcome {
-                    label: "Swift toolchain",
-                    summary_line: swift.section().summary_line(),
-                },
-            );
-            let (swift_section, mut swift_fixes) = swift.into_parts();
-            sections.push(swift_section);
-            fixes.append(&mut swift_fixes);
-        }
+    if let Some(swift) = swift {
+        on_step(
+            step,
+            total,
+            StepOutcome {
+                label: "Swift toolchain",
+                summary_line: swift.section().summary_line(),
+            },
+        );
+        let (swift_section, mut swift_fixes) = swift.into_parts();
+        sections.push(swift_section);
+        fixes.append(&mut swift_fixes);
         step += 1;
     }
 
-    let android = check_android();
-    on_step(
-        step,
-        total,
-        StepOutcome {
-            label: "Android tooling",
-            summary_line: android.section().summary_line(),
-        },
-    );
-    let (android_section, mut android_fixes) = android.into_parts();
-    sections.push(android_section);
-    fixes.append(&mut android_fixes);
+    if include_android {
+        let android = check_android();
+        on_step(
+            step,
+            total,
+            StepOutcome {
+                label: "Android tooling",
+                summary_line: android.section().summary_line(),
+            },
+        );
+        let (android_section, mut android_fixes) = android.into_parts();
+        sections.push(android_section);
+        fixes.append(&mut android_fixes);
+    }
 
     CheckReport { sections, fixes }
 }
@@ -122,7 +131,7 @@ pub fn prompt_for_doctor_fix() -> Result<bool> {
 }
 
 pub fn run_doctor_fix_subcommand() -> Result<()> {
-    let exe = env::current_exe()
+    let exe = std::env::current_exe()
         .map_err(|err| eyre!("Unable to determine current executable path: {err}"))?;
     let status = Command::new(exe)
         .arg("doctor")
@@ -140,6 +149,48 @@ pub fn run_doctor_fix_subcommand() -> Result<()> {
     }
 }
 
+pub fn ensure_toolchains_ready(
+    command_name: &str,
+    include_swift: bool,
+    include_android: bool,
+) -> Result<()> {
+    let mut attempted_fix = false;
+    loop {
+        println!(
+            "{}",
+            style("Checking developer toolchains before proceeding…").dim()
+        );
+        let report = run_checks(include_swift, include_android, |_, _, _| {});
+        if !report.has_failures() {
+            return Ok(());
+        }
+
+        print_report(&report);
+        println!(
+            "{}",
+            style(format!(
+                "Blocking toolchain issues detected. `{command_name}` cannot continue until they are resolved."
+            ))
+            .red()
+        );
+
+        if attempted_fix {
+            bail!(
+                "Toolchain requirements remain unsatisfied after attempting automatic fixes. Please resolve the issues above manually."
+            );
+        }
+
+        if prompt_for_doctor_fix()? {
+            run_doctor_fix_subcommand()?;
+            attempted_fix = true;
+        } else {
+            bail!(format!(
+                "Aborting {command_name} because required toolchains are missing."
+            ));
+        }
+    }
+}
+
 pub fn run(args: DoctorArgs) -> Result<()> {
     let pb = ProgressBar::new_spinner();
     pb.enable_steady_tick(Duration::from_millis(80));
@@ -153,7 +204,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     pb.tick();
 
     let include_swift = cfg!(target_os = "macos");
-    let report = run_checks(include_swift, |step, total, outcome| {
+    let report = run_checks(include_swift, true, |step, total, outcome| {
         pb.set_message(progress_label(step, total, outcome.label));
         pb.tick();
         announce_section(&pb, step, total, &outcome.summary_line);
@@ -383,21 +434,43 @@ fn check_swift() -> Option<SectionOutcome> {
     Some(outcome)
 }
 
+fn android_toolchain_fix_suggestion() -> FixSuggestion {
+    FixSuggestion::callback(
+        "android-toolchain-install".into(),
+        "Install Android SDK + NDK via Google's sdkmanager".into(),
+        android_toolchain_fix,
+    )
+}
+
+fn android_toolchain_fix() -> Result<()> {
+    android::install_android_toolchain().map(|_| ())
+}
+
 fn check_android() -> SectionOutcome {
     let mut outcome = SectionOutcome::new("Android tooling");
-    outcome.push_outcome(check_android_tool(
-        "adb",
-        "Install Android SDK Platform-Tools and add to PATH.",
-    ));
-    outcome.push_outcome(check_android_tool(
+    let mut needs_sdk_repair = false;
+    let mut fix_added = false;
+
+    let adb_row = check_command("adb", "Install Android SDK Platform-Tools and add to PATH.");
+    if matches!(adb_row.status(), Status::Fail) {
+        needs_sdk_repair = true;
+    }
+    outcome.push(adb_row);
+
+    let emulator_row = check_command(
         "emulator",
         "Install Android SDK command-line tools and add to PATH.",
-    ));
-    outcome.push_outcome(check_android_env_var(
+    );
+    if matches!(emulator_row.status(), Status::Fail) {
+        needs_sdk_repair = true;
+    }
+    outcome.push(emulator_row);
+
+    outcome.push(check_env_var(
         "ANDROID_HOME",
         "Set ANDROID_HOME to your Android SDK path.",
     ));
-    outcome.push_outcome(check_android_env_var(
+    outcome.push(check_env_var(
         "ANDROID_NDK_HOME",
         "Set ANDROID_NDK_HOME to your Android NDK path.",
     ));
@@ -406,7 +479,39 @@ fn check_android() -> SectionOutcome {
         "Set JAVA_HOME to your JDK path (Java 17 or newer recommended).",
     ));
 
-    let java_version_cmd = if let Ok(java_home) = std::env::var("JAVA_HOME") {
+    match android::detect_android_toolchain() {
+        Some(paths) => {
+            outcome.push(
+                Row::pass("Detected Android SDK").with_detail(paths.sdk_root.display().to_string()),
+            );
+            outcome.push(
+                Row::pass("Detected Android NDK")
+                    .with_indent(1)
+                    .with_detail(paths.ndk_root.display().to_string()),
+            );
+        }
+        None => {
+            let row = Row::fail("Android SDK & NDK not detected")
+                .with_detail("Use `water doctor --fix` to install them via Google's sdkmanager.");
+            outcome.push_outcome(RowOutcome::with_fix(
+                row,
+                android_toolchain_fix_suggestion(),
+            ));
+            fix_added = true;
+            needs_sdk_repair = true;
+        }
+    }
+
+    if needs_sdk_repair && !fix_added {
+        let row = Row::warn("Android SDK components missing")
+            .with_detail("Run `water doctor --fix` to install platform tools, emulator, build tools, and the NDK via Google's sdkmanager.");
+        outcome.push_outcome(RowOutcome::with_fix(
+            row,
+            android_toolchain_fix_suggestion(),
+        ));
+    }
+
+    let java_version_cmd = if let Ok(java_home) = env::var("JAVA_HOME") {
         let java_exe = std::path::Path::new(&java_home).join("bin/java");
         if java_exe.exists() {
             Some(Command::new(java_exe))
@@ -442,38 +547,6 @@ fn check_android() -> SectionOutcome {
     outcome
 }
 
-fn check_android_tool(tool: &str, help: &str) -> RowOutcome {
-    match crate::android::find_android_tool(tool) {
-        Some(path) => RowOutcome::new(
-            Row::pass(format!("Found `{tool}`")).with_detail(path.display().to_string()),
-        ),
-        None => RowOutcome::with_fix(
-            Row::fail(format!("`{tool}` not found")).with_detail(help),
-            android_toolchain_fix(),
-        ),
-    }
-}
-
-fn check_android_env_var(name: &str, help: &str) -> RowOutcome {
-    match std::env::var(name) {
-        Ok(value) => {
-            RowOutcome::new(Row::pass(format!("Environment `{name}` set")).with_detail(value))
-        }
-        Err(_) => RowOutcome::with_fix(
-            Row::fail(format!("Environment `{name}` missing")).with_detail(help),
-            android_toolchain_fix(),
-        ),
-    }
-}
-
-fn android_toolchain_fix() -> FixSuggestion {
-    FixSuggestion::internal(
-        "android-toolchain".into(),
-        "Install Android SDK and NDK".into(),
-        crate::android::install_android_toolchain,
-    )
-}
-
 fn check_command(name: &str, help: &str) -> Row {
     match which::which(name) {
         Ok(path) => Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
@@ -496,7 +569,7 @@ fn check_sccache_tool() -> RowOutcome {
                 .with_detail(detail);
             RowOutcome::with_fix(
                 row,
-                FixSuggestion::new(
+                FixSuggestion::command(
                     "tool-sccache".into(),
                     "Install sccache build cache".into(),
                     vec!["cargo".into(), "install".into(), "sccache".into()],
@@ -557,7 +630,7 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
         );
         let preview = command.join(" ");
         let description = "Install mold linker via apt".to_string();
-        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        let fix = FixSuggestion::command("tool-mold".into(), description, command);
         return Some((fix, format!("Try `{preview}`.")));
     }
 
@@ -573,7 +646,7 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
         );
         let preview = command.join(" ");
         let description = "Install mold linker via dnf".to_string();
-        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        let fix = FixSuggestion::command("tool-mold".into(), description, command);
         return Some((fix, format!("Try `{preview}`.")));
     }
 
@@ -589,7 +662,7 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
         );
         let preview = command.join(" ");
         let description = "Install mold linker via pacman".to_string();
-        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        let fix = FixSuggestion::command("tool-mold".into(), description, command);
         return Some((fix, format!("Try `{preview}`.")));
     }
 
@@ -601,7 +674,7 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
         command.extend(["brew", "install", "mold"].into_iter().map(String::from));
         let preview = command.join(" ");
         let description = "Install mold linker via Homebrew".to_string();
-        let fix = FixSuggestion::new("tool-mold".into(), description, command);
+        let fix = FixSuggestion::command("tool-mold".into(), description, command);
         return Some((fix, format!("Try `{preview}`.")));
     }
 
@@ -639,7 +712,7 @@ fn target_row(installed: &str, target: &str, kind: TargetKind) -> RowOutcome {
                     .with_indent(2);
                 RowOutcome::with_fix(
                     row,
-                    FixSuggestion::new(
+                    FixSuggestion::command(
                         format!("rust-target-{target}"),
                         description,
                         vec![
@@ -875,7 +948,7 @@ impl SectionOutcome {
 #[derive(Clone)]
 enum FixAction {
     Command(Vec<String>),
-    Callback(std::sync::Arc<dyn Fn() -> Result<()> + Send + Sync>),
+    Callback(fn() -> Result<()>),
 }
 
 #[derive(Clone)]
@@ -886,7 +959,7 @@ struct FixSuggestion {
 }
 
 impl FixSuggestion {
-    fn new(id: String, description: String, command: Vec<String>) -> Self {
+    fn command(id: String, description: String, command: Vec<String>) -> Self {
         Self {
             id,
             description,
@@ -894,21 +967,18 @@ impl FixSuggestion {
         }
     }
 
-    fn internal<F>(id: String, description: String, action: F) -> Self
-    where
-        F: Fn() -> Result<()> + Send + Sync + 'static,
-    {
+    fn callback(id: String, description: String, callback: fn() -> Result<()>) -> Self {
         Self {
             id,
             description,
-            action: FixAction::Callback(std::sync::Arc::new(action)),
+            action: FixAction::Callback(callback),
         }
     }
 
-    fn command_preview(&self) -> String {
+    fn command_preview(&self) -> Option<String> {
         match &self.action {
-            FixAction::Command(command) => command.join(" "),
-            FixAction::Callback(_) => format!("<internal:{}>", self.id),
+            FixAction::Command(command) => Some(command.join(" ")),
+            FixAction::Callback(_) => None,
         }
     }
 }
@@ -935,7 +1005,14 @@ fn apply_fixes(fixes: Vec<FixSuggestion>) -> Result<()> {
 
     for fix in unique {
         println!("\n{} {}", style("•").cyan(), style(&fix.description).bold());
-        println!("    {}", style(fix.command_preview()).dim());
+        if let Some(preview) = fix.command_preview() {
+            println!("    {}", style(preview).dim());
+        } else {
+            println!(
+                "    {}",
+                style("Runs internal WaterUI automation (no external command to display).").dim()
+            );
+        }
 
         let apply = Confirm::new()
             .with_prompt("Apply this fix?")
@@ -962,12 +1039,12 @@ fn apply_fixes(fixes: Vec<FixSuggestion>) -> Result<()> {
                     continue;
                 }
 
-                let mut process = Command::new(&command[0]);
+                let mut cmd = Command::new(&command[0]);
                 if command.len() > 1 {
-                    process.args(&command[1..]);
+                    cmd.args(&command[1..]);
                 }
 
-                match process.status() {
+                match cmd.status() {
                     Ok(status) if status.success() => {
                         println!("    {}", style("Completed successfully.").green());
                     }

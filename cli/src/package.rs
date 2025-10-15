@@ -4,7 +4,7 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Result, eyre};
 use tracing::info;
 
-use crate::{android, config::Config};
+use crate::{android, config::Config, doctor};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -37,6 +37,8 @@ pub fn run(args: PackageArgs) -> Result<()> {
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let config = Config::load(&project_dir)?;
 
+    doctor::ensure_toolchains_ready("water package", false, true)?;
+
     match args.platform {
         PackagePlatform::Android => {
             let android_config = config.backends.android.as_ref().ok_or_else(|| {
@@ -44,8 +46,12 @@ pub fn run(args: PackageArgs) -> Result<()> {
                     "Android backend not configured for this project. Add it to waterui.toml or recreate the project with the Android backend."
                 )
             })?;
-            let apk_path =
-                android::build_android_apk(&project_dir, android_config, args.release, args.skip_native)?;
+            let apk_path = android::build_android_apk(
+                &project_dir,
+                android_config,
+                args.release,
+                args.skip_native,
+            )?;
             info!("Android package ready: {}", apk_path.display());
         }
     }
