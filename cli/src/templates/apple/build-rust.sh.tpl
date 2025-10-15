@@ -29,6 +29,10 @@ elif [ "$PLATFORM_NAME" = "xrsimulator" ]; then
     RUST_TARGET="aarch64-apple-ios-sim"
 elif [ "$PLATFORM_NAME" = "xros" ]; then
     RUST_TARGET="aarch64-apple-ios"
+elif [ "$PLATFORM_NAME" = "watchsimulator" ]; then
+    RUST_TARGET="aarch64-apple-watchos-sim"
+elif [ "$PLATFORM_NAME" = "watchos" ]; then
+    RUST_TARGET="aarch64-apple-watchos"
 else
     if [ "$(uname -m)" = "x86_64" ]; then
         RUST_TARGET="x86_64-apple-darwin"
