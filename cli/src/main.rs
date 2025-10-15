@@ -1,5 +1,5 @@
-mod apple;
 mod android;
+mod apple;
 mod clean;
 mod config;
 mod create;
