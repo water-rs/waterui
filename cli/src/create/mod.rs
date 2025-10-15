@@ -18,6 +18,7 @@ pub mod template;
 pub mod web;
 
 pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/swift-backend.git";
+#[allow(dead_code)]
 const SWIFT_TAG_PREFIX: &str = "swift-backend-v";
 
 #[derive(Args, Debug, Default)]
