@@ -67,6 +67,7 @@ waterui-media = { version = "0.1.0", path = "components/media" }
 waterui-form = { version = "0.1.0", path = "components/form" }
 waterui-form-derive = { version = "0.1.0", path = "components/form/derive" }
 waterui-graphics = { version = "0.1.0", path = "components/graphics" }
+waterui-chart = { version = "0.1.0", path = "components/chart" }
 waterui-ffi = { version = "0.1.0", path = "ffi" }
 waterui-layout = { version = "0.1.0", path = "components/layout" }
 waterui-navigation = { version = "0.1.0", path = "components/navigation" }
@@ -91,6 +92,7 @@ waterui-media.workspace = true
 waterui-navigation.workspace = true
 waterui-color.workspace = true
 waterui-form.workspace = true
+waterui-chart.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 log.workspace = true

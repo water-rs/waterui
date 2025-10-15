@@ -39,6 +39,7 @@ pub mod prelude {
     pub use super::*;
     pub use color::*;
 
+    pub use chart::*;
     pub use component::*;
     pub use form::*;
     pub use layout::*;
@@ -52,6 +53,7 @@ pub mod prelude {
 pub use color::Color;
 #[doc(inline)]
 pub use view::ViewExt;
+pub use waterui_chart as chart;
 pub use waterui_color as color;
 pub use waterui_form as form;
 pub use waterui_layout as layout;
