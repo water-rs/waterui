@@ -83,11 +83,11 @@ impl View for Canvas {
                     render_cpu(&mut cpu_surface, &env, &commands);
                 }
                 #[cfg(feature = "wgpu")]
-                RendererSurface::Wgpu(mut gpu_surface) => {
+                RendererSurface::Wgpu(gpu_surface) => {
                     // Canvas is a CPU renderer. If the backend only provides a GPU surface
                     // we simply clear it to transparent so the caller receives predictable
                     // output.
-                    clear_gpu_surface(&mut gpu_surface);
+                    clear_gpu_surface(&gpu_surface);
                 }
             }
         })
@@ -150,7 +150,7 @@ fn render_cpu(
 }
 
 #[cfg(feature = "wgpu")]
-fn clear_gpu_surface(surface: &mut crate::renderer_view::RendererWgpuSurface<'_>) {
+fn clear_gpu_surface(surface: &crate::renderer_view::RendererWgpuSurface<'_>) {
     use wgpu::LoadOp;
 
     let mut encoder = surface
@@ -163,10 +163,11 @@ fn clear_gpu_surface(surface: &mut crate::renderer_view::RendererWgpuSurface<'_>
             label: Some("waterui-canvas-gpu-clear-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: surface.target,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: None,
