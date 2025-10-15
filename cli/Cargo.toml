@@ -32,7 +32,6 @@ crates-index = "0.19.1"
 semver = "1.0.22"
 webbrowser = "0.8.15"
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
-cargo_metadata = "0.18.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 which = "6.0.2"
