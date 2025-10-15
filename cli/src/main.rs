@@ -9,6 +9,7 @@ mod doctor;
 mod output;
 mod package;
 mod run;
+mod toolchain;
 mod util;
 
 use clap::{Parser, Subcommand};
