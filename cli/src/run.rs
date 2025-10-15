@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     convert::Infallible,
-    env, fmt,
+    env,
     net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
     process::Command,
@@ -84,28 +84,6 @@ pub enum Platform {
     Android,
 }
 
-#[derive(Debug)]
-enum RunnableTarget {
-    Web,
-    Device(DeviceInfo),
-}
-
-impl fmt::Display for RunnableTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RunnableTarget::Web => write!(f, "Web Browser"),
-            RunnableTarget::Device(device) => {
-                let kind = match device.kind {
-                    DeviceKind::Device => "device",
-                    DeviceKind::Simulator => "simulator",
-                    DeviceKind::Emulator => "emulator",
-                };
-                write!(f, "{} ({}, {})", device.name, device.platform, kind)
-            }
-        }
-    }
-}
-
 pub fn run(args: RunArgs) -> Result<()> {
     let project_dir = args
         .project
@@ -115,90 +93,114 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     info!("Running WaterUI app '{}'", config.package.display_name);
 
-    if let Some(platform) = args.platform {
-        run_platform(
-            platform,
-            args.device.clone(),
-            &project_dir,
-            &config,
-            args.release,
-            args.no_watch,
-        )?;
-    } else {
-        let targets = discover_runnable_targets(&config)?;
-        if targets.is_empty() {
-            bail!(
-                "No runnable targets found. Please connect a device, start a simulator, or enable a backend in your Water.toml."
-            );
-        }
+    let mut platform = args.platform;
+    let device = args.device.clone();
 
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Select a target to run")
-            .items(&targets)
-            .default(0)
-            .interact()?;
-
-        match &targets[selection] {
-            RunnableTarget::Web => {
-                run_platform(
-                    Platform::Web,
-                    None,
-                    &project_dir,
-                    &config,
-                    args.release,
-                    args.no_watch,
-                )?;
-            }
-            RunnableTarget::Device(device) => {
-                let platform = platform_from_device(device)?;
-                run_platform(
-                    platform,
-                    Some(device.identifier.clone()),
-                    &project_dir,
-                    &config,
-                    args.release,
-                    args.no_watch,
-                )?;
-            }
+    if platform.is_none() {
+        let available_devices = devices::list_devices()?;
+        if let Some(device_name) = &device {
+            let selected_device =
+                find_device(&available_devices, device_name).ok_or_else(|| {
+                    eyre!(
+                        "Device '{}' not found. Run `water devices` to list available targets.",
+                        device_name
+                    )
+                })?;
+            platform = Some(platform_from_device(selected_device)?);
+        } else {
+            platform = Some(prompt_for_platform(&config, &available_devices)?);
         }
     }
+
+    let platform = platform.ok_or_else(|| eyre!("No platform selected"))?;
+
+    run_platform(
+        platform,
+        device,
+        &project_dir,
+        &config,
+        args.release,
+        args.no_watch,
+    )?;
 
     Ok(())
 }
 
-fn discover_runnable_targets(config: &Config) -> Result<Vec<RunnableTarget>> {
-    let mut targets = Vec::new();
+fn prompt_for_platform(config: &Config, devices: &[DeviceInfo]) -> Result<Platform> {
+    let mut options: Vec<(Platform, String)> = Vec::new();
 
     if config.backends.web.is_some() {
-        targets.push(RunnableTarget::Web);
+        options.push((Platform::Web, "Web Browser".to_string()));
     }
 
-    let all_devices = devices::list_devices()?;
-
     if config.backends.swift.is_some() {
-        let apple_devices = all_devices.iter().filter(|d| {
-            let is_apple = d.platform.starts_with("iOS")
-                || d.platform.starts_with("iPadOS")
-                || d.platform.starts_with("watchOS")
-                || d.platform.starts_with("tvOS")
-                || d.platform.starts_with("visionOS")
-                || d.platform == "macOS";
-            let is_available = d.state.as_deref().unwrap_or("") != "unavailable";
-            is_apple && is_available
-        });
-        targets.extend(apple_devices.map(|d| RunnableTarget::Device(d.clone())));
+        options.push((Platform::Macos, "Apple: macOS".to_string()));
+
+        let mut has_ios = false;
+        let mut has_ipados = false;
+        let mut has_watchos = false;
+        let mut has_tvos = false;
+        let mut has_visionos = false;
+
+        for device in devices {
+            if let Ok(platform) = platform_from_device(device) {
+                match platform {
+                    Platform::Ios => has_ios = true,
+                    Platform::Ipados => has_ipados = true,
+                    Platform::Watchos => has_watchos = true,
+                    Platform::Tvos => has_tvos = true,
+                    Platform::Visionos => has_visionos = true,
+                    _ => {}
+                }
+            }
+        }
+
+        if has_ios {
+            options.push((Platform::Ios, "Apple: iOS".to_string()));
+        }
+        if has_ipados {
+            options.push((Platform::Ipados, "Apple: iPadOS".to_string()));
+        }
+        if has_watchos {
+            options.push((Platform::Watchos, "Apple: watchOS".to_string()));
+        }
+        if has_tvos {
+            options.push((Platform::Tvos, "Apple: tvOS".to_string()));
+        }
+        if has_visionos {
+            options.push((Platform::Visionos, "Apple: visionOS".to_string()));
+        }
     }
 
     if config.backends.android.is_some() {
-        let android_devices = all_devices.iter().filter(|d| {
-            let is_android = d.platform == "Android";
-            let is_available = d.state.as_deref().unwrap_or("") != "offline";
-            is_android && is_available
-        });
-        targets.extend(android_devices.map(|d| RunnableTarget::Device(d.clone())));
+        let has_android = devices
+            .iter()
+            .any(|device| matches!(platform_from_device(device), Ok(Platform::Android)));
+        if has_android {
+            options.push((Platform::Android, "Android".to_string()));
+        }
     }
 
-    Ok(targets)
+    if options.is_empty() {
+        bail!(
+            "No runnable targets found. Please connect a device, start a simulator, or enable a backend in your Water.toml."
+        );
+    }
+
+    let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a backend to run")
+        .items(&labels)
+        .default(0)
+        .interact()?;
+
+    Ok(options[selection].0)
+}
+
+fn find_device<'a>(devices: &'a [DeviceInfo], query: &str) -> Option<&'a DeviceInfo> {
+    devices
+        .iter()
+        .find(|device| device.identifier == query || device.name == query)
 }
 
 fn platform_from_device(device: &DeviceInfo) -> Result<Platform> {
