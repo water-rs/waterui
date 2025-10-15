@@ -1,3 +1,4 @@
+mod add_backend;
 mod android;
 mod apple;
 mod clean;
@@ -9,7 +10,6 @@ mod output;
 mod package;
 mod run;
 mod util;
-mod add_backend;
 
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
