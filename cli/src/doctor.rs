@@ -282,10 +282,7 @@ fn check_rust() -> SectionOutcome {
 pub fn check_android_prerequisites() -> Result<Vec<RowOutcome>> {
     let mut outcomes = vec![
         // Check for adb
-        check_command(
-            "adb",
-            "Install Android SDK Platform-Tools and add to PATH.",
-        ),
+        check_command("adb", "Install Android SDK Platform-Tools and add to PATH."),
         // Check for emulator
         check_command(
             "emulator",
