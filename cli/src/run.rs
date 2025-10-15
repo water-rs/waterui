@@ -244,8 +244,20 @@ fn run_platform(
     release: bool,
     no_watch: bool,
 ) -> Result<()> {
-    toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
-        .with_context(|| format!("Toolchain not ready for {:?}", platform))?;
+    if let Err(report) =
+        toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
+    {
+        let details = report.to_string();
+        let mut message = format!("Toolchain not ready for {:?}", platform);
+        let trimmed = details.trim();
+        if !trimmed.is_empty() {
+            message.push_str(":\n\n");
+            message.push_str(&indent_lines(trimmed, "  "));
+        } else {
+            message.push('.');
+        }
+        return Err(eyre!(message));
+    }
 
     if platform == Platform::Web {
         run_web(project_dir, config, release, no_watch)?;
@@ -356,6 +368,13 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
         bail!("cargo build failed");
     }
     Ok(())
+}
+
+fn indent_lines(text: &str, indent: &str) -> String {
+    text.lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
@@ -845,8 +864,6 @@ fn run_android(
 ) -> Result<()> {
     info!("Running for Android...");
 
-    let apk_path = android::build_android_apk(project_dir, android_config, release, false)?;
-
     let adb_path = android::find_android_tool("adb").ok_or_else(|| {
         eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are available in your Android SDK directory (e.g. ~/Library/Android/sdk) or on your PATH.")
     })?;
@@ -901,6 +918,20 @@ fn run_android(
     info!("Waiting for device to be ready...");
     android::wait_for_android_device(&adb_path, target_identifier.as_deref())?;
 
+    let desired_targets =
+        android::device_preferred_targets(&adb_path, target_identifier.as_deref())
+            .context("Failed to determine device CPU architecture")?;
+    android::configure_rust_android_linker_env(&desired_targets)
+        .context("Failed to configure Android NDK toolchain for Rust builds")?;
+
+    let apk_path = android::build_android_apk(
+        project_dir,
+        android_config,
+        release,
+        false,
+        &package.bundle_identifier,
+    )?;
+
     info!("Installing APK...");
     let mut install_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
     install_cmd.args([
@@ -915,7 +946,8 @@ fn run_android(
     }
 
     info!("Launching app...");
-    let activity = format!("{}/.MainActivity", package.bundle_identifier);
+    let sanitized_package = android::sanitize_package_name(&package.bundle_identifier);
+    let activity = format!("{sanitized_package}/.MainActivity");
     let mut launch_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
     launch_cmd.args(["shell", "am", "start", "-n", &activity]);
     debug!("Running command: {:?}", launch_cmd);

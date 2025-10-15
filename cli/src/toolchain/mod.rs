@@ -4,6 +4,7 @@ use std::{
     process::Command,
 };
 
+use crate::android;
 use color_eyre::eyre::{Context, Result, eyre};
 use console::style;
 use indexmap::IndexSet;
@@ -734,10 +735,13 @@ fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
 
 fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
     let mut outcomes = vec![
-        check_command("adb", "Install Android SDK Platform-Tools and add to PATH."),
-        check_command(
+        check_android_tool(
+            "adb",
+            "Install Android SDK Platform-Tools and ensure they are in your Android SDK or PATH.",
+        ),
+        check_android_tool(
             "emulator",
-            "Install Android SDK command-line tools and add to PATH.",
+            "Install Android SDK command-line tools and ensure they are in your Android SDK or PATH.",
         ),
     ];
 
@@ -808,7 +812,31 @@ fn check_java_environment() -> RowOutcome {
             ),
         }
     } else {
-        RowOutcome::new(Row::fail("Java not found in JAVA_HOME or PATH"))
+        let detail = if cfg!(target_os = "macos") {
+            "Install a Java Development Kit (JDK 17 or newer). Try `brew install --cask temurin@17`."
+        } else if cfg!(target_os = "linux") {
+            "Install a Java Development Kit (JDK 17 or newer) using your distribution's package manager."
+        } else if cfg!(target_os = "windows") {
+            "Install a Java Development Kit (JDK 17 or newer) and ensure `JAVA_HOME` is set."
+        } else {
+            "Install a Java Development Kit (JDK 17 or newer) and ensure it is on PATH."
+        };
+        let row = Row::fail("Java not found in JAVA_HOME or PATH").with_detail(detail.to_string());
+        if let Some(fix) = java_install_fix() {
+            RowOutcome::with_fix(row, fix)
+        } else {
+            RowOutcome::new(row)
+        }
+    }
+}
+
+fn check_android_tool(name: &str, help: &str) -> RowOutcome {
+    if let Some(path) = android::find_android_tool(name) {
+        RowOutcome::new(
+            Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
+        )
+    } else {
+        RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help))
     }
 }
 
@@ -851,33 +879,130 @@ fn check_env_path(
     required: bool,
     help: &str,
 ) -> Option<PathBuf> {
-    match env::var(name) {
-        Ok(value) if !value.trim().is_empty() => {
-            let path = PathBuf::from(&value);
+    if let Ok(value) = env::var(name) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
             if path.exists() {
                 rows.push(RowOutcome::new(
-                    Row::pass(format!("Environment `{name}` set")).with_detail(value.clone()),
+                    Row::pass(format!("Environment `{name}` set")).with_detail(trimmed.to_string()),
                 ));
-                Some(path)
-            } else {
-                rows.push(RowOutcome::new(
-                    Row::fail(format!("Environment `{name}` points to a missing path"))
-                        .with_detail(format!("{} does not exist", value)),
-                ));
-                None
+                return Some(path);
             }
-        }
-        _ => {
-            let row = if required {
-                Row::fail(format!("Environment `{name}` missing"))
-            } else {
-                Row::warn(format!("Environment `{name}` missing"))
-            }
-            .with_detail(help);
-            rows.push(RowOutcome::new(row));
-            None
+
+            rows.push(RowOutcome::new(
+                Row::fail(format!("Environment `{name}` points to a missing path"))
+                    .with_detail(format!("{trimmed} does not exist")),
+            ));
+            return None;
         }
     }
+
+    if let Some(fallback) = auto_detect_android_path(name) {
+        rows.push(RowOutcome::new(
+            Row::pass(format!("Environment `{name}` auto-detected"))
+                .with_detail(fallback.display().to_string()),
+        ));
+        return Some(fallback);
+    }
+
+    let row = if required {
+        Row::fail(format!("Environment `{name}` missing"))
+    } else {
+        Row::warn(format!("Environment `{name}` missing"))
+    }
+    .with_detail(help);
+    rows.push(RowOutcome::new(row));
+    None
+}
+
+fn auto_detect_android_path(name: &str) -> Option<PathBuf> {
+    match name {
+        "ANDROID_SDK_ROOT" | "ANDROID_HOME" => android::resolve_android_sdk_path(),
+        "ANDROID_NDK_HOME" => android::resolve_android_ndk_path(),
+        _ => None,
+    }
+}
+
+fn java_install_fix() -> Option<FixSuggestion> {
+    if cfg!(target_os = "macos") && which("brew").is_ok() {
+        return Some(FixSuggestion::new(
+            "java-install-brew".into(),
+            "Install Temurin JDK 17 via Homebrew".into(),
+            vec![
+                "brew".into(),
+                "install".into(),
+                "--cask".into(),
+                "temurin@17".into(),
+            ],
+        ));
+    }
+
+    if which("apt-get").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["apt-get", "install", "-y", "openjdk-17-jdk"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "java-install-apt".into(),
+            "Install OpenJDK 17 via apt".into(),
+            command,
+        ));
+    }
+
+    if which("dnf").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["dnf", "install", "-y", "java-17-openjdk-devel"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "java-install-dnf".into(),
+            "Install OpenJDK 17 via dnf".into(),
+            command,
+        ));
+    }
+
+    if which("pacman").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["pacman", "-S", "--noconfirm", "jdk-openjdk"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "java-install-pacman".into(),
+            "Install OpenJDK via pacman".into(),
+            command,
+        ));
+    }
+
+    if cfg!(target_os = "windows") && which("choco").is_ok() {
+        return Some(FixSuggestion::new(
+            "java-install-choco".into(),
+            "Install Temurin JDK 17 via Chocolatey".into(),
+            vec![
+                "choco".into(),
+                "install".into(),
+                "temurin17jdk".into(),
+                "-y".into(),
+            ],
+        ));
+    }
+
+    None
 }
 
 struct AndroidSdk {
