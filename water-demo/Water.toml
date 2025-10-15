@@ -1,0 +1,4 @@
+[package]
+name = "waterui-demo"
+display_name = "WaterUI Demo"
+bundle_identifier = "com.waterui.demo"
