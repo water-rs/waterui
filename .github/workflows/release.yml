@@ -60,13 +60,10 @@ jobs:
   release-rust:
     name: Release Rust crate
     needs: determine-product
-    if: needs.determine-product.outputs.product-type == 'rust'
-    runs-on: ubuntu-latest
-    env:
-      PRODUCT: ${{ needs.determine-product.outputs.product }}
-      VERSION: ${{ needs.determine-product.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -119,6 +116,8 @@ jobs:
       VERSION: ${{ needs.determine-product.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -168,6 +167,8 @@ jobs:
       VERSION: ${{ needs.determine-product.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Build Swift backend
         run: swift build --package-path backends/swift --configuration release
@@ -189,6 +190,8 @@ jobs:
       VERSION: ${{ needs.determine-product.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Set up Java
         uses: actions/setup-java@v4
