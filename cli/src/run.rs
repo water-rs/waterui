@@ -578,24 +578,9 @@ fn handle_http_connection(stream: &mut TcpStream, root: &Path) -> std::io::Resul
     };
 
     let content_length = body.len();
-    write!(
-        stream,
-        "HTTP/1.1 {}
-",
-        status_line
-    )?;
-    write!(
-        stream,
-        "Content-Length: {}
-",
-        content_length
-    )?;
-    write!(
-        stream,
-        "Content-Type: {}
-",
-        content_type
-    )?;
+    writeln!(stream, "HTTP/1.1 {}", status_line)?;
+    writeln!(stream, "Content-Length: {}", content_length)?;
+    writeln!(stream, "Content-Type: {}", content_type)?;
     write!(
         stream,
         "Cache-Control: no-cache, no-store, must-revalidate\r\n"
