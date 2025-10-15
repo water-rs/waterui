@@ -342,9 +342,9 @@ waterui-ffi = "{}""#,
         waterui_version, waterui_version
     );
 
-    let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
+    let swift_backend_version = crate::WATERUI_BACKEND_SWIFT_VERSION;
     if swift_backend_version.is_empty() {
-        bail!("WATERUI_SWIFT_BACKEND_VERSION is not set. This should be set at build time.");
+        bail!("WATERUI_BACKEND_SWIFT_VERSION is not set. This should be set at build time.");
     }
 
     Ok(ProjectDependencies {
