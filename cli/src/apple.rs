@@ -20,8 +20,6 @@ pub fn ensure_macos_host(feature: &str) -> Result<()> {
     }
 }
 
-
-
 pub fn resolve_xcode_project<'a>(
     project_dir: &Path,
     swift_config: &'a Swift,
