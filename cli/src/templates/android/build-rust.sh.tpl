@@ -268,3 +268,19 @@ for spec in "${built_specs[@]}"; do
 done
 
 echo "Rust libraries copied to $JNI_DIR"
+
+echo "Copying libc++_shared.so..."
+for spec in "${built_specs[@]}"; do
+    IFS=: read -r triple abi _ _ <<< "$spec"
+
+    libcxx_src="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host_tag/sysroot/usr/lib/$triple/libc++_shared.so"
+    libcxx_dst="$JNI_DIR/$abi/libc++_shared.so"
+
+    if [ -f "$libcxx_src" ]; then
+        mkdir -p "$JNI_DIR/$abi"
+        cp "$libcxx_src" "$libcxx_dst"
+        echo "  → Copied libc++_shared.so for $abi"
+    else
+        echo "  ⚠️  libc++_shared.so not found for $abi ($libcxx_src)"
+    fi
+done
