@@ -25,11 +25,15 @@ pub fn create_xcode_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
 
-    let SwiftDependency::Git { version } = swift_dependency;
+    let SwiftDependency::Git { version, branch } = swift_dependency;
 
     let requirement = if let Some(version) = version {
         format!(
             "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
+        )
+    } else if let Some(branch) = branch {
+        format!(
+            "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
         )
     } else {
         "requirement = {\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"main\";\n\t\t\t};".to_string()

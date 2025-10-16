@@ -299,18 +299,25 @@ pub struct ProjectDependencies {
 }
 
 pub enum SwiftDependency {
-    Git { version: Option<String> },
+    Git {
+        version: Option<String>,
+        branch: Option<String>,
+    },
 }
 
 #[allow(clippy::const_is_empty)]
 pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
-        let rust_toml = r#"waterui = { git = "https://github.com/water-rs/waterui" }
-waterui-ffi = { git = "https://github.com/water-rs/waterui" }"#
-            .to_string();
+        let rust_toml =
+            r#"waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
+                .to_string();
         return Ok(ProjectDependencies {
             rust_toml,
-            swift: SwiftDependency::Git { version: None },
+            swift: SwiftDependency::Git {
+                version: None,
+                branch: Some("dev".to_string()),
+            },
         });
     }
 
@@ -339,6 +346,7 @@ waterui-ffi = "{}""#,
         rust_toml,
         swift: SwiftDependency::Git {
             version: swift_version,
+            branch: None,
         },
     })
 }
