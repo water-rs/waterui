@@ -1586,6 +1586,12 @@ struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_list_id(void);
 
+/**
+ * Calls the delete callback for a list item.
+ *
+ * # Safety
+ * The caller must ensure that `item` and `env` are valid pointers.
+ */
 void waterui_list_item_call_delete(struct WuiListItem *item,
                                    const struct WuiEnv *env,
                                    uintptr_t index);
@@ -1667,12 +1673,37 @@ struct WuiRendererView *waterui_force_as_renderer_view(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_renderer_view_id(void);
 
+/**
+ * Gets the width of the renderer view.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer.
+ */
 float waterui_renderer_view_width(const struct WuiRendererView *view);
 
+/**
+ * Gets the height of the renderer view.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer.
+ */
 float waterui_renderer_view_height(const struct WuiRendererView *view);
 
+/**
+ * Gets the preferred buffer format for the renderer view.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer.
+ */
 enum WuiRendererBufferFormat waterui_renderer_view_preferred_format(const struct WuiRendererView *_view);
 
+/**
+ * Renders the view to a CPU buffer.
+ *
+ * # Safety
+ * The caller must ensure that `view` and `pixels` are valid pointers, and that the
+ * pixel buffer has sufficient capacity for the given dimensions and stride.
+ */
 bool waterui_renderer_view_render_cpu(struct WuiRendererView *view,
                                       uint8_t *pixels,
                                       uint32_t width,
@@ -2266,10 +2297,28 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *bindin
  */
 void waterui_drop_anyviews(struct WuiAnyViews *value);
 
+/**
+ * Gets the ID of a view at the specified index.
+ *
+ * # Safety
+ * The caller must ensure that `anyviews` is a valid pointer and `index` is within bounds.
+ */
 struct WuiId waterui_anyviews_get_id(const struct WuiAnyViews *anyviews, uintptr_t index);
 
+/**
+ * Gets a view at the specified index.
+ *
+ * # Safety
+ * The caller must ensure that `anyview` is a valid pointer and `index` is within bounds.
+ */
 struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, uintptr_t index);
 
+/**
+ * Gets the number of views in the collection.
+ *
+ * # Safety
+ * The caller must ensure that `anyviews` is a valid pointer.
+ */
 uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
 
 /**
