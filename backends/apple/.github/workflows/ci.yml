@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build Apple backend
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - name: Checkout apple-backend repository
         uses: actions/checkout@v4
@@ -28,12 +28,11 @@ jobs:
           path: waterui
           ref: ${{ steps.get_waterui_branch.outputs.branch }}
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Generate C header
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Copy C header
         run: |
-          cd waterui/ffi
-          cargo run --bin generate_header --features cbindgen
-          cp waterui.h ../../Sources/CWaterUI/include/waterui.h
+          mkdir -p Sources/CWaterUI/include
+          cp waterui/ffi/waterui.h Sources/CWaterUI/include/waterui.h
       - name: Build Swift package
         run: swift build --configuration release
 
@@ -59,7 +58,7 @@ jobs:
           path: waterui
           ref: ${{ steps.get_waterui_branch.outputs.branch }}
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
       - name: Install waterui-cli
         run: cargo install --path waterui/cli
       - name: Create test app
