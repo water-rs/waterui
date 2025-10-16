@@ -1,3 +1,6 @@
 [submodule "backends/android"]
 	path = backends/android
 	url = https://github.com/water-rs/android-backend.git
+[submodule "backends/apple"]
+	path = backends/apple
+	url = https://github.com/water-rs/apple-backend.git
