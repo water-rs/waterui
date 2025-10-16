@@ -3,7 +3,7 @@
 /target
 /*/target
 /*/Cargo.lock
-/backends/swift/build
+/backends/apple/build
 /.build
 /water-demo
 # Tutorial book build output

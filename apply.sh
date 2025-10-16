@@ -56,8 +56,8 @@ index dc17cd73504a730255e353c0663de90c70c65bd7..fe193991712af03948c3e81a93458f04
  
 -      - name: Check documentation
 -        run: cargo doc --all-features --no-deps --workspace
-+  swift-backend:
-+    name: Build Swift backend
++  apple-backend:
++    name: Build Apple backend
 +    runs-on: macos-latest
 +    steps:
 +      - uses: actions/checkout@v4
@@ -68,7 +68,7 @@ index dc17cd73504a730255e353c0663de90c70c65bd7..fe193991712af03948c3e81a93458f04
 -          cargo package -p waterui-core --allow-dirty
 -          cargo package -p waterui-cli --allow-dirty
 +      - name: Build Swift package
-+        run: swift build --package-path backends/swift --configuration release
++        run: swift build --package-path backends/apple --configuration release
  
 EOF
 )
