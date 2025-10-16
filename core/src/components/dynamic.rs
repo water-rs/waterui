@@ -9,7 +9,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use waterui_core::{components::dynamic::{Dynamic,watch},Binding};
+//! use waterui_core::{dynamic::{Dynamic,watch},Binding};
 //!
 //! // Create a dynamic view with a handler
 //! let (handler, view) = Dynamic::new();
