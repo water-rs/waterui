@@ -52,7 +52,7 @@ waterui/
 │   ├── navigation/      # Navigation views built on `raw_view!`
 │   └── text/            # Text primitives and macros
 ├── utils/               # Shared utilities (`str`, `color`, `url`)
-├── backends/            # Platform renderers (android, swift, tui, web)
+├── backends/            # Platform renderers (android, apple, tui, web)
 ├── render_utils/        # Shared renderer helpers
 ├── window/              # Window system abstractions
 ├── ffi/                 # Cross-language interface definitions
@@ -162,7 +162,7 @@ The `waterui-layout` crate covers containers, stacks, scrolling, and sizing. Com
 Backend crates receive FFI structs and render native widgets:
 
 - **`backends/android`**: Android shell integrating with Gradle; documentation and status live in `PLAN.md` and `IMPLEMENTATION_STATUS.md`.
-- **`backends/swift`**: Placeholder for Apple platforms (structure reserved for SwiftUI integration).
+- **`backends/apple`**: Placeholder for Apple platforms (structure reserved for SwiftUI integration).
 - **`backends/tui`**: Terminal UI backend scaffolding (`Cargo.toml`, roadmap `PLAN.md`).
 - **`backends/web`**: WebAssembly backend using `wasm-bindgen`, `web-sys`, and `js-sys` for DOM interaction.
 
