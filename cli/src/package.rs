@@ -106,7 +106,7 @@ pub fn run(args: PackageArgs) -> Result<()> {
             PackagePlatform::Ios => {
                 let swift_config = config.backends.swift.as_ref().ok_or_else(|| {
                     eyre!(
-                        "Swift backend not configured for this project. Add it to Water.toml or recreate the project with the Swift backend.",
+                        "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Apple backend.",
                     )
                 })?;
                 let app_bundle = package_ios(&project_dir, swift_config, args.release)?;
