@@ -321,7 +321,7 @@ fn run_platform(
                 }
             } else {
                 bail!(
-                    "Swift backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
+                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
                 );
             }
         }

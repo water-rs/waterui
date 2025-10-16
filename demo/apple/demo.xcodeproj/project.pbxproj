@@ -114,7 +114,7 @@
 			mainGroup = D01867552E6C7BBB00802E96;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/swift" */,
+				D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/apple" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D018675F2E6C7BBB00802E96 /* Products */;
@@ -428,9 +428,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/swift" */ = {
+		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/apple" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../backends/swift;
+			relativePath = ../../backends/apple;
 		};
 /* End XCLocalSwiftPackageReference section */
 

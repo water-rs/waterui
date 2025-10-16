@@ -2,13 +2,13 @@ name: Update Backends Submodules
 
 on:
   repository_dispatch:
-    types: [update-swift-backend, update-android-backend]
+    types: [update-apple-backend, update-android-backend]
   workflow_dispatch:
     inputs:
       backend:
-        description: 'Backend to update (swift, android, or all)'
+        description: "Backend to update (apple, android, or all)"
         required: true
-        default: 'all'
+        default: "all"
 
 jobs:
   update-submodules:
@@ -17,22 +17,22 @@ jobs:
       - name: Checkout waterui dev branch
         uses: actions/checkout@v4
         with:
-          ref: 'dev'
-          submodules: 'recursive'
+          ref: "dev"
+          submodules: "recursive"
           token: ${{ secrets.SUBMODULE_UPDATE_PAT }}
 
       - name: Determine submodule path
         id: get_submodule
         run: |
-          if [ "${{ github.event.action }}" = "update-swift-backend" ] || [ "${{ github.event.inputs.backend }}" = "swift" ]; then
-            echo "paths=backends/swift" >> $GITHUB_OUTPUT
-            echo "names=Swift" >> $GITHUB_OUTPUT
+          if [ "${{ github.event.action }}" = "update-apple-backend" ] || [ "${{ github.event.inputs.backend }}" = "apple" ]; then
+            echo "paths=backends/apple" >> $GITHUB_OUTPUT
+            echo "names=Apple" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "update-android-backend" ] || [ "${{ github.event.inputs.backend }}" = "android" ]; then
             echo "paths=backends/android" >> $GITHUB_OUTPUT
             echo "names=Android" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.backend }}" = "all" ]; then
-            echo "paths=backends/swift backends/android" >> $GITHUB_OUTPUT
-            echo "names=Swift and Android" >> $GITHUB_OUTPUT
+            echo "paths=backends/apple backends/android" >> $GITHUB_OUTPUT
+            echo "names=Apple and Android" >> $GITHUB_OUTPUT
           else
             echo "Unknown backend: ${{ github.event.action }} / ${{ github.event.inputs.backend }}"
             exit 1
