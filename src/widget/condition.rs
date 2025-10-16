@@ -84,10 +84,10 @@ where
     /// use nami::binding;
     ///
     /// let condition = binding(true);
-    /// let when_component = When::new(condition.clone(), |_| text("Visible"));
+    /// let when_component = When::new(condition.clone(), || text("Visible"));
     ///
     /// // Using negation
-    /// let when_not = When::new(!condition, |_| "Hidden");
+    /// let when_not = When::new(!condition, || "Hidden");
     /// ```
     pub const fn new(condition: Condition, then: Then) -> Self
     where
