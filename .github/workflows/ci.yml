@@ -43,6 +43,11 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
+      - name: Verify C header
+        run: |
+          cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+          git diff --exit-code ffi/waterui.h
+
   rust-test:
     name: Rust Tests
     needs: rust-checks
