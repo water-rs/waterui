@@ -7,7 +7,7 @@ The current implementation focuses on scaffolding:
 - ✅ Rust crate configured for `wasm32-unknown-unknown`
 - ✅ DOM bootstrapping with automatic stylesheet injection
 - ✅ Pretty default styling using standard web components (buttons, headings, paragraphs)
-- ✅ `WebApp` entry point mirrored after the Swift backend's modular design
+- ✅ `WebApp` entry point mirrored after the Apple backend's modular design
 - 🔄 TODO: dispatcher registrations that translate `AnyView` nodes into DOM elements (current handlers end with `todo!()`)
 - 🔄 TODO: event propagation and reactive state reconciliation
 
