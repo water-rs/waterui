@@ -42,10 +42,6 @@ jobs:
               product_type = "cli"
           elif product.startswith("waterui"):
               product_type = "rust"
-          elif product in {"swift", "swift-backend", "backends-swift", "waterui-swift"}:
-              product_type = "swift"
-          elif product in {"android", "kotlin-backend", "backends-android", "waterui-android"}:
-              product_type = "android"
           else:
               raise SystemExit(f"Unsupported product '{product}' in release tag '{tag}'.")
 
@@ -60,6 +56,7 @@ jobs:
   release-rust:
     name: Release Rust crate
     needs: determine-product
+    if: needs.determine-product.outputs.product-type == 'rust'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -98,13 +95,13 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: cargo publish -p ${PRODUCT}
+        run: cargo publish -p ${{ needs.determine-product.outputs.product }}
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
+          name: "${{ needs.determine-product.outputs.product }} v${{ needs.determine-product.outputs.version }}"
           generate_release_notes: true
 
   release-cli:
@@ -150,66 +147,6 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: cargo publish -p ${PRODUCT}
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
-          generate_release_notes: true
-
-  release-swift:
-    name: Release Swift backend
-    needs: determine-product
-    if: needs.determine-product.outputs.product-type == 'swift'
-    runs-on: macos-latest
-    env:
-      PRODUCT: ${{ needs.determine-product.outputs.product }}
-      VERSION: ${{ needs.determine-product.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-
-      - name: Build Swift backend
-        run: swift build --package-path backends/swift --configuration release
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: "${{ env.PRODUCT }} v${{ env.VERSION }}"
-          generate_release_notes: true
-
-  release-android:
-    name: Release Android backend
-    needs: determine-product
-    if: needs.determine-product.outputs.product-type == 'android'
-    runs-on: ubuntu-latest
-    env:
-      PRODUCT: ${{ needs.determine-product.outputs.product }}
-      VERSION: ${{ needs.determine-product.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-
-      - name: Build Kotlin backend
-        run: ./gradlew :backends:android:build
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
