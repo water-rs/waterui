@@ -42,8 +42,8 @@ internal fun MutableMap<WuiTypeId, WuiRenderer>.registerWuiRendererView() {
 
 @Composable
 private fun RendererView(node: WuiNode, env: WuiEnvironment) {
-    val handle = remember(node.raw()) {
-        NativeBindings.waterui_force_as_renderer_view(node.raw())
+    val handle = remember(node.rawPtr) {
+        NativeBindings.waterui_force_as_renderer_view(node.rawPtr)
     }
 
     DisposableEffect(handle) {
