@@ -244,8 +244,8 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// # Examples
 ///
 /// ```rust
-/// use waterui::reactive::{Binding, binding};
-/// use waterui::reactive_derive::Project;
+/// use waterui_core::reactive::{Binding, binding};
+/// use waterui_derive::Project;
 ///
 /// #[derive(Project)]
 /// struct Person {
@@ -463,7 +463,8 @@ impl Parse for SInput {
 /// # Examples
 ///
 /// ```rust
-/// use waterui::reactive::*;
+/// use waterui_core::reactive::*;
+/// use waterui_derive::s;
 ///
 /// let name = constant("Alice");
 /// let age = constant(25);
