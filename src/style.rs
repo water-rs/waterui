@@ -4,7 +4,7 @@
 //!
 //! ```
 //! use waterui::prelude::*;
-//! use waterui::component::style;
+//! use waterui::style;
 //! use waterui_color::Color;
 //!
 //! fn shadow_example() {

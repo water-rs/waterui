@@ -170,7 +170,7 @@ where
 /// use waterui::component::text::Text;
 ///
 /// // Using a closure for lazy initialization
-/// let env = Environment::new().with(DefaultLoadingView::new(|_| Text::new("Loading...")));
+/// let env = Environment::new().with(DefaultLoadingView::new(|| Text::new("Loading...")));
 /// ```
 #[derive(Debug)]
 pub struct DefaultLoadingView(AnyViewBuilder);
