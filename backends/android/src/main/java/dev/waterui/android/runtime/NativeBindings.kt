@@ -1,24 +1,10 @@
 package dev.waterui.android.runtime
 
-import android.util.Log
-
 /**
  * Centralised access to native WaterUI FFI functions. Actual JNI bindings live in the
  * native Rust/C layer; this object exposes type-safe Kotlin entry points.
  */
 internal object NativeBindings {
-
-    private const val TAG = "WaterUINative"
-
-    init {
-        try {
-            // TODO: Load the correct shared library name once the cargo build is wired up.
-            System.loadLibrary("waterui_ffi")
-        } catch (throwable: Throwable) {
-            Log.w(TAG, "Failed to load waterui_ffi, JNI calls will crash until configured", throwable)
-        }
-    }
-
     external fun waterui_init(): Long
     external fun waterui_main(envPtr: Long): Long
     external fun waterui_view_id(anyViewPtr: Long): LongArray
