@@ -105,6 +105,7 @@ Gradle will output a ready-to-install APK at
 
 ```rust
 use waterui::widget::RichText;
+use waterui::View;
 
 pub fn release_notes() -> impl View {
     RichText::from_markdown(

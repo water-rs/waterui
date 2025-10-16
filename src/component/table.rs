@@ -9,7 +9,7 @@
 //! ```no_run
 //! use waterui::component::table;
 //!
-//! let table: table::Table = std::iter::empty::<table::TableColumn>().collect();
+//! let table: table::Table<Vec<table::TableColumn>> = std::iter::empty::<table::TableColumn>().collect();
 //! let _ = table;
 //! ```
 use core::any::type_name;
