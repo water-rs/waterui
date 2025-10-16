@@ -1,3 +1,6 @@
 [submodule "backends/swift"]
 	path = backends/swift
 	url = https://github.com/water-rs/swift-backend.git
+[submodule "backends/android"]
+	path = backends/android
+	url = https://github.com/water-rs/android-backend.git
