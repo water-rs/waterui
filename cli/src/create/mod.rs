@@ -17,9 +17,9 @@ pub mod swift;
 pub mod template;
 pub mod web;
 
-pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/swift-backend.git";
+pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
 #[allow(dead_code)]
-const SWIFT_TAG_PREFIX: &str = "swift-backend-v";
+const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
 
 #[derive(Args, Debug, Default)]
 pub struct CreateArgs {
@@ -328,7 +328,7 @@ waterui-ffi = "{}""#,
     let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
     let swift_version = if swift_backend_version.is_empty() {
         warn!(
-            "WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Swift backend."
+            "WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Apple backend."
         );
         None
     } else {
