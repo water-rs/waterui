@@ -56,7 +56,7 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use waterui_core::{components::Dynamic,binding,Binding};
+//! use waterui_core::{Dynamic,binding,Binding};
 //!
 //! // Create a reactive state container
 //! let counter: Binding<i32> = binding(0);
