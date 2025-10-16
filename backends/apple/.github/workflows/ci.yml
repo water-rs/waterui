@@ -1,0 +1,83 @@
+name: Apple backend CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build:
+    name: Build Apple backend
+    runs-on: macos-latest
+    steps:
+      - name: Checkout apple-backend repository
+        uses: actions/checkout@v4
+      - name: Determine waterui branch
+        id: get_waterui_branch
+        run: |
+          if [ "${{ github.ref_name }}" = "dev" ] || [ "${{ github.base_ref }}" = "dev" ]; then
+            echo "branch=dev" >> $GITHUB_OUTPUT
+          else
+            echo "branch=main" >> $GITHUB_OUTPUT
+          fi
+      - name: Checkout waterui repository
+        uses: actions/checkout@v4
+        with:
+          repository: water-rs/waterui
+          path: waterui
+          ref: ${{ steps.get_waterui_branch.outputs.branch }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Generate C header
+        run: |
+          cd waterui/ffi
+          cargo run --bin generate_header --features cbindgen
+          cp waterui.h ../../Sources/CWaterUI/include/waterui.h
+      - name: Build Swift package
+        run: swift build --configuration release
+
+  e2e-test:
+    name: End-to-end Test
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout apple-backend repository
+        uses: actions/checkout@v4
+      - name: Determine waterui branch
+        id: get_waterui_branch
+        run: |
+          if [ "${{ github.ref_name }}" = "dev" ] || [ "${{ github.base_ref }}" = "dev" ]; then
+            echo "branch=dev" >> $GITHUB_OUTPUT
+          else
+            echo "branch=main" >> $GITHUB_OUTPUT
+          fi
+      - name: Checkout waterui repository
+        uses: actions/checkout@v4
+        with:
+          repository: water-rs/waterui
+          path: waterui
+          ref: ${{ steps.get_waterui_branch.outputs.branch }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install waterui-cli
+        run: cargo install --path waterui/cli
+      - name: Create test app
+        env:
+          WATERUI_SWIFT_BACKEND_URL: "file://${{ github.workspace }}"
+        run: water create --name "E2E Test" --directory e2e-test-app --bundle-identifier com.waterui.e2etest --yes --backend swiftui --dev
+      - name: Package iOS app
+        run: water package --platform ios --project e2e-test-app
+
+  notify-waterui:
+    name: Notify waterui repo
+    runs-on: ubuntu-latest
+    needs: e2e-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Send repository_dispatch to waterui
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.SUBMODULE_UPDATE_PAT }}
+          repository: water-rs/waterui
+          event-type: update-apple-backend

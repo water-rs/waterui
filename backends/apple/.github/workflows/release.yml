@@ -1,0 +1,36 @@
+name: Release Apple backend
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release Apple backend
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build Apple backend
+        run: swift build --configuration release
+
+      - name: Create Swift Package Archive
+        run: swift package archive-source
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Apple backend ${{ steps.get_version.outputs.VERSION }}"
+          generate_release_notes: true
+          files: ./*.zip
