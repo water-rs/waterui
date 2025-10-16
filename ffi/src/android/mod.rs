@@ -1,16 +1,15 @@
 use core::{mem, ptr};
 
 use jni::{
+    JNIEnv,
     objects::{JClass, JObject, JValue},
     sys::{jbyteArray, jint, jlong, jlongArray, jobject, jobjectArray},
-    JNIEnv,
 };
 
 use crate::{
-    components,
+    IntoFFI, IntoRust, WuiAnyView, WuiEnv, WuiTypeId, components,
     components::layout::{WuiChildMetadata, WuiProposalSize, WuiRect, WuiSize},
     reactive::WatcherStruct,
-    IntoFFI, IntoRust, WuiAnyView, WuiEnv, WuiTypeId,
 };
 
 type Result<T> = core::result::Result<T, jni::errors::Error>;
@@ -94,19 +93,17 @@ fn proposal_from_java(env: &JNIEnv, obj: JObject) -> Result<waterui_layout::Prop
 
 fn child_metadata_from_java(env: &JNIEnv, obj: JObject) -> Result<WuiChildMetadata> {
     let proposal_obj = env
-        .call_method(&obj, "getProposal", "()Ldev/waterui/android/runtime/ProposalStruct;", &[])?
+        .call_method(
+            &obj,
+            "getProposal",
+            "()Ldev/waterui/android/runtime/ProposalStruct;",
+            &[],
+        )?
         .l()?;
     let proposal = proposal_from_java(env, proposal_obj)?;
-    let priority = env
-        .call_method(&obj, "getPriority", "()I", &[])?
-        .i()?;
-    let stretch = env
-        .call_method(&obj, "getStretch", "()Z", &[])?
-        .z()?;
-    Ok(
-        waterui_layout::ChildMetadata::new(proposal, priority as u8, stretch)
-            .into_ffi(),
-    )
+    let priority = env.call_method(&obj, "getPriority", "()I", &[])?.i()?;
+    let stretch = env.call_method(&obj, "getStretch", "()Z", &[])?.z()?;
+    Ok(waterui_layout::ChildMetadata::new(proposal, priority as u8, stretch).into_ffi())
 }
 
 fn proposal_to_java(env: &JNIEnv, proposal: WuiProposalSize) -> jobject {
@@ -151,7 +148,11 @@ fn rect_to_java(env: &JNIEnv, rect: WuiRect) -> jobject {
     )
 }
 
-fn make_object_array(env: &JNIEnv, class: &str, values: impl IntoIterator<Item = jobject>) -> jobjectArray {
+fn make_object_array(
+    env: &JNIEnv,
+    class: &str,
+    values: impl IntoIterator<Item = jobject>,
+) -> jobjectArray {
     let cls = match env.find_class(class) {
         Ok(cls) => cls,
         Err(err) => {
@@ -170,9 +171,9 @@ fn make_object_array(env: &JNIEnv, class: &str, values: impl IntoIterator<Item =
     };
 
     for (idx, value) in values.into_iter().enumerate() {
-        if let Err(err) = env.set_object_array_element(&array, idx as jint, unsafe {
-            JObject::from_raw(value)
-        }) {
+        if let Err(err) =
+            env.set_object_array_element(&array, idx as jint, unsafe { JObject::from_raw(value) })
+        {
             throw(env, err);
             return ptr::null_mut();
         }
@@ -236,7 +237,11 @@ pub extern "system" fn Java_dev_waterui_android_runtime_NativeBindings_waterui_1
     _class: JClass,
     env_ptr: jlong,
 ) -> jlong {
-    unsafe { ptr_to_jlong(crate::waterui_clone_env(jlong_to_ptr::<WuiEnv>(env_ptr) as *const WuiEnv)) }
+    unsafe {
+        ptr_to_jlong(crate::waterui_clone_env(
+            jlong_to_ptr::<WuiEnv>(env_ptr) as *const WuiEnv
+        ))
+    }
 }
 
 #[no_mangle]
