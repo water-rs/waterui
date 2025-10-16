@@ -41,6 +41,9 @@ pub fn create_xcode_project(
             .to_string(),
     );
 
+    let repo_url = std::env::var("WATERUI_SWIFT_BACKEND_URL")
+        .unwrap_or_else(|_| SWIFT_BACKEND_GIT_URL.to_string());
+
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_SECTION",
         format!(
@@ -51,7 +54,7 @@ pub fn create_xcode_project(
             {}
         }};
 /* End XCRemoteSwiftPackageReference section */"#,
-            SWIFT_BACKEND_GIT_URL, requirement
+            repo_url, requirement
         ),
     );
 
