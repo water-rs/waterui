@@ -19,7 +19,7 @@
 //! let count = Binding::container(0);
 //! let counter_view = watch(count, |value| format!("Count: {}", value));
 use crate::components::With;
-use crate::{AnyView, View, raw_view};
+use crate::{AnyView, View};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
