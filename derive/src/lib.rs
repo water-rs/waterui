@@ -260,7 +260,7 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 ///
 /// let projected = person_binding.project();
 /// projected.name.set("Bob".to_string());
-/// projected.age.set(25);
+/// projected.age.set(25u32);
 ///
 /// let person = person_binding.get();
 /// assert_eq!(person.name, "Bob");
