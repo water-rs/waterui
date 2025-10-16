@@ -18,9 +18,5 @@ dependencyResolutionManagement {
 rootProject.name = "__APP_NAME__"
 include(":app")
 
-// --- New fix: explicitly include Android backend ---
-include(":backends:android")
-project(":backends:android").projectDir = file("../../backends/android")
-
 // Keep composite build for plugin and dependency resolution
 includeBuild("../../")
