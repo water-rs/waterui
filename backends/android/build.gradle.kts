@@ -1,6 +1,14 @@
 plugins {
-    id("com.android.library")
-    kotlin("android")
+    id("com.android.library") version "8.7.1"
+    id("org.jetbrains.kotlin.android") version "1.9.25"
+}
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
 }
 
 android {
@@ -19,7 +27,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.13" // TODO: Pin to project-wide Compose compiler version
+        kotlinCompilerExtensionVersion = "1.5.14" // TODO: Pin to project-wide Compose compiler version
     }
 
     kotlinOptions {
@@ -45,8 +53,12 @@ android {
 kotlin {
     jvmToolchain(17)
     compilerOptions {
-        freeCompilerArgs.add("-P")
-        freeCompilerArgs.add("plugin:androidx.compose.compiler.plugins.kotlin:suppressKotlinVersionCompatibilityCheck=true")
+        freeCompilerArgs.addAll(
+            listOf(
+                 "-P",
+                "plugin:androidx.compose.compiler.plugins.kotlin:suppressKotlinVersionCompatibilityCheck=1.9.25"
+            )
+        )
     }
 }
 
@@ -62,7 +74,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
@@ -71,5 +82,3 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("junit:junit:4.13.2")
 }
-
-// TODO: Wire cargo/NDK tasks that build libwaterui_ffi for Android ABIs
