@@ -15,6 +15,8 @@
 
 #![no_std]
 extern crate alloc;
+#[cfg(target_os = "android")]
+extern crate std;
 #[macro_use]
 mod macros;
 pub mod action;
@@ -29,6 +31,9 @@ pub mod reactive;
 mod ty;
 pub mod views;
 use core::ptr::null_mut;
+
+#[cfg(target_os = "android")]
+pub mod android;
 
 use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
