@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.library") version "8.7.1"
-    id("org.jetbrains.kotlin.android") version "1.9.25"
+    id("com.android.library")
+    id("org.jetbrains.kotlin.android")
 }
 
 pluginManagement {
