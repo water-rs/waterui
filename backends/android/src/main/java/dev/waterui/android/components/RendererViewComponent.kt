@@ -4,7 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.matchParentSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,8 +42,8 @@ internal fun MutableMap<WuiTypeId, WuiRenderer>.registerWuiRendererView() {
 
 @Composable
 private fun RendererView(node: WuiNode, env: WuiEnvironment) {
-    val handle = remember(node.pointer) {
-        NativeBindings.waterui_force_as_renderer_view(node.pointer)
+    val handle = remember(node.raw()) {
+        NativeBindings.waterui_force_as_renderer_view(node.raw())
     }
 
     DisposableEffect(handle) {
@@ -120,7 +120,7 @@ private fun RendererView(node: WuiNode, env: WuiEnvironment) {
                 bitmap = image,
                 contentDescription = null,
                 contentScale = ContentScale.FillBounds,
-                modifier = Modifier.matchParentSize()
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
