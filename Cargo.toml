@@ -56,7 +56,8 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 [workspace.dependencies]
 executor-core = { version = "0.6.0", features = ["std"]}
-nami = "0.6.2"
+nami = "0.7.1"
+nami-core = "0.1.0"
 log = "0.4.28"
 waterui-core = { version = "0.1.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
