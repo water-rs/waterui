@@ -1,6 +1,5 @@
 #![doc = include_str!("../README.md")]
 #![allow(clippy::cast_possible_wrap)]
-#![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
 mod impls;
@@ -21,7 +20,7 @@ use core::{
     slice,
 };
 
-nami::impl_constant!(Str);
+nami_core::impl_constant!(Str);
 
 /// A string type that can be either a static reference or a ref-counted owned string.
 ///
