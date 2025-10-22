@@ -8,6 +8,7 @@
 extern crate alloc;
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use core::fmt;
 use nami::Signal;
