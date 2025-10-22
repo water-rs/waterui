@@ -16,8 +16,6 @@ waterui-str.workspace = true
 nami.workspace = true
 
 [features]
-default = ["std"]
-std = ["waterui-str/std"]
-
+std = []
 [lints]
 workspace = true
