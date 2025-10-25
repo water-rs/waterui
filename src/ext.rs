@@ -22,7 +22,7 @@ pub trait SignalExt: Signal + Sized {
     /// A new computation that applies the transformation.
     fn map<F, Output>(self, f: F) -> Map<Self, F, Output>
     where
-        F: 'static + Fn(Self::Output) -> Output,
+        F: 'static + Clone + Fn(Self::Output) -> Output,
         Output: 'static,
         Self: 'static,
     {
@@ -38,7 +38,11 @@ pub trait SignalExt: Signal + Sized {
     /// # Returns
     ///
     /// A new computation that produces a tuple of both values.
-    fn zip<B: Signal>(self, b: B) -> Zip<Self, B> {
+    fn zip<B: Signal>(self, b: B) -> Zip<Self, B>
+    where
+        Self::Output: Clone,
+        B::Output: Clone,
+    {
         Zip::new(self, b)
     }
 

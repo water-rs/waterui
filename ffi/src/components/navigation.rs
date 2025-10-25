@@ -3,7 +3,7 @@ use crate::components::text::WuiText;
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use crate::{closure::WuiFn, ffi_struct, ffi_view};
 use waterui::{Binding, Color, Computed};
-use waterui_core::handler::BoxHandler;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::Tab;
 use waterui_navigation::{Bar, NavigationLink, NavigationView, tab::TabsConfig};
@@ -50,7 +50,7 @@ pub struct WuiTabs {
 
 ffi_type!(
     WuiTabContent,
-    BoxHandler<NavigationView>,
+    AnyViewBuilder<NavigationView>,
     waterui_drop_tab_content
 );
 
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn waterui_tab_content(
     env: *const WuiEnv,
 ) -> WuiNavigationView {
     unsafe {
-        let view = (&*handler).handle(&*env);
+        let view = (&*handler).build(&*env);
         IntoFFI::into_ffi(view)
     }
 }

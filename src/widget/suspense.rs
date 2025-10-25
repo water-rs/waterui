@@ -178,7 +178,7 @@ pub struct DefaultLoadingView(AnyViewBuilder);
 impl DefaultLoadingView {
     /// Creates a new default loading view from any view builder.
     pub fn new<B: 'static>(builder: impl ViewBuilderFn<B>) -> Self {
-        Self(AnyViewBuilder::new(builder))
+        Self(AnyViewBuilder::new(builder).erase())
     }
 
     /// Wraps an existing `AnyViewBuilder` as a default loading view.

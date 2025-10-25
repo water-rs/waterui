@@ -12,9 +12,12 @@
 
 use crate::{AnyView, View, extract::Extractor};
 use alloc::boxed::Box;
-use core::{fmt::Debug, marker::PhantomData};
+use core::{any::type_name, fmt::Debug, marker::PhantomData};
 
 use crate::Environment;
+
+/// Type alias for an action handler that produces no result.
+pub type ActionObject = BoxHandler<()>;
 
 /// Handler trait that processes an environment and produces a result of type T.
 ///
@@ -25,38 +28,21 @@ pub trait Handler<T>: 'static {
     /// # Arguments
     ///
     /// * `env` - The environment containing request data and context
-    fn handle(&self, env: &Environment) -> T;
+    fn handle(&mut self, env: &Environment) -> T;
 }
 
-impl Debug for dyn Handler<()> {
+impl<T> Debug for dyn Handler<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Handler<()>")
+        f.write_str(type_name::<Self>())
     }
 }
 
 impl Handler<()> for () {
-    fn handle(&self, _env: &Environment) {}
-}
-
-impl HandlerMut<()> for () {
     fn handle(&mut self, _env: &Environment) {}
 }
 
 impl HandlerOnce<()> for () {
     fn handle(self, _env: &Environment) {}
-}
-
-/// Handler trait for mutable handlers that may change their state during execution.
-///
-/// This trait is implemented by handlers that need to modify their internal state
-/// while processing an environment.
-pub trait HandlerMut<T>: 'static {
-    /// Processes the environment and returns a value of type T.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment containing request data and context
-    fn handle(&mut self, env: &Environment) -> T;
 }
 
 /// Handler trait for single-use handlers that are consumed during execution.
@@ -72,26 +58,14 @@ pub trait HandlerOnce<T>: 'static {
     fn handle(self, env: &Environment) -> T;
 }
 
-/// A boxed immutable handler with dynamic dispatch.
+/// A boxed handler with dynamic dispatch.
 pub type BoxHandler<T> = Box<dyn Handler<T>>;
 
-/// A boxed mutable handler with dynamic dispatch that does not return a value.
-pub type ActionObject = BoxHandler<()>;
-
 impl<T: 'static> Handler<T> for BoxHandler<T> {
-    fn handle(&self, env: &Environment) -> T {
-        self.as_ref().handle(env)
-    }
-}
-
-impl<T: 'static> HandlerMut<T> for BoxHandlerMut<T> {
     fn handle(&mut self, env: &Environment) -> T {
         self.as_mut().handle(env)
     }
 }
-
-/// A boxed mutable handler with dynamic dispatch.
-pub type BoxHandlerMut<T> = Box<dyn HandlerMut<T>>;
 
 /// A boxed one-time handler with dynamic dispatch.
 pub type BoxHandlerOnce<T> = Box<dyn HandlerOnce<T>>;
@@ -101,7 +75,7 @@ pub type BoxHandlerOnce<T> = Box<dyn HandlerOnce<T>>;
 /// P represents the parameter types to extract, T represents the return type.
 pub trait HandlerFn<P, T>: 'static {
     /// Internal implementation that extracts parameters from the environment and calls the handler.
-    fn handle_inner(&self, env: &Environment) -> T;
+    fn handle_inner(&mut self, env: &Environment) -> T;
 }
 
 /// Function-like trait for immutable handlers that extract parameters from the environment with additional state.
@@ -109,15 +83,7 @@ pub trait HandlerFn<P, T>: 'static {
 /// P represents the parameter types to extract, T represents the return type, S represents the state type.
 pub trait HandlerFnWithState<P, T, S>: 'static {
     /// Internal implementation that extracts parameters from the environment and calls the handler.
-    fn handle_inner(&self, state: S, env: &Environment) -> T;
-}
-
-/// Function-like trait for mutable handlers that extract parameters from the environment.
-///
-/// P represents the parameter types to extract, T represents the return type.
-pub trait HandlerFnMut<P, T>: 'static {
-    /// Internal implementation that extracts parameters from the environment and calls the handler.
-    fn handle_inner(&mut self, env: &Environment) -> T;
+    fn handle_inner(&mut self, state: S, env: &Environment) -> T;
 }
 
 /// Function-like trait for single-use handlers that extract parameters from the environment.
@@ -134,9 +100,9 @@ macro_rules! impl_handle_fn {
         #[allow(non_snake_case)]
         impl<F, R, $($ty:Extractor,)*> HandlerFn<($($ty,)*),R> for F
         where
-            F: Fn($($ty,)*) -> R+ 'static,
+            F: FnMut($($ty,)*) -> R+ 'static,
         {
-            fn handle_inner(&self, env: &Environment) -> R {
+            fn handle_inner(&mut self, env: &Environment) -> R {
 
                 $(
                     let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
@@ -154,9 +120,9 @@ macro_rules! impl_handle_fn_with_state {
         #[allow(non_snake_case)]
         impl<F, S, R, $($ty:Extractor,)*> HandlerFnWithState<($($ty,)*),R,S> for F
         where
-            F: Fn(S,$($ty,)*) -> R+ 'static,
+            F: FnMut(S,$($ty,)*) -> R+ 'static,
         {
-            fn handle_inner(&self, state:S, env: &Environment) -> R {
+            fn handle_inner(&mut self, state:S, env: &Environment) -> R {
 
                 $(
                     let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
@@ -170,29 +136,7 @@ macro_rules! impl_handle_fn_with_state {
 
 tuples!(impl_handle_fn_with_state);
 
-macro_rules! impl_handle_fn_mut {
-    ($($ty:ident),*) => {
-        #[allow(unused_variables)]
-        #[allow(non_snake_case)]
-        impl<F, R, $($ty:Extractor,)*> HandlerFnMut<($($ty,)*),R> for F
-        where
-            F: FnMut($($ty,)*) -> R+ 'static,
-        {
-            fn handle_inner(&mut self, env: &Environment) -> R {
-
-                $(
-                    let $ty:$ty=Extractor::extract(env).expect("failed to extract value from environment");
-                )*
-
-                self($($ty,)*)
-            }
-        }
-    };
-}
-
 tuples!(impl_handle_fn);
-
-tuples!(impl_handle_fn_mut);
 
 macro_rules! impl_handle_fn_once {
     ($($ty:ident),*) => {
@@ -272,7 +216,7 @@ where
     T: 'static,
     P: 'static,
 {
-    fn handle(&self, env: &Environment) -> T {
+    fn handle(&mut self, env: &Environment) -> T {
         self.h.handle_inner(self.state.clone(), env)
     }
 }
@@ -296,17 +240,6 @@ where
     P: 'static,
     T: 'static,
 {
-    fn handle(&self, env: &Environment) -> T {
-        self.h.handle_inner(env)
-    }
-}
-
-impl<H, P, T> HandlerMut<T> for IntoHandlerMut<H, P, T>
-where
-    H: HandlerFnMut<P, T>,
-    P: 'static,
-    T: 'static,
-{
     fn handle(&mut self, env: &Environment) -> T {
         self.h.handle_inner(env)
     }
@@ -322,8 +255,6 @@ where
         self.h.handle_inner(env)
     }
 }
-
-into_handlers!(IntoHandlerMut, HandlerMut, HandlerFnMut);
 
 into_handlers!(IntoHandlerOnce, HandlerOnce, HandlerFnOnce);
 
@@ -343,24 +274,6 @@ where
     H: HandlerFn<P, T>,
 {
     IntoHandler::new(h)
-}
-
-/// Converts a mutable function into a mutable handler.
-///
-/// # Arguments
-///
-/// * `h` - The mutable function to convert into a handler
-///
-/// # Returns
-///
-/// A handler that implements the [`HandlerMut`] trait
-pub const fn into_handler_mut<H, P, T>(h: H) -> IntoHandlerMut<H, P, T>
-where
-    H: HandlerFnMut<P, T>,
-    P: 'static,
-    T: 'static,
-{
-    IntoHandlerMut::new(h)
 }
 
 /// Converts a single-use function into a one-time handler.
@@ -476,29 +389,14 @@ where
 /// A builder for creating views from handler functions.
 ///
 /// This struct wraps a boxed handler that produces `AnyView` instances.
-pub struct AnyViewBuilder(BoxHandler<AnyView>);
+pub struct AnyViewBuilder<V = AnyView>(Box<dyn ViewBuilder<Output = V>>);
 
-impl Debug for AnyViewBuilder {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ViewBuilder(..)")
-    }
-}
-
-impl<P, F> Handler<AnyView> for IntoViewBuilder<P, F>
-where
-    F: ViewBuilderFn<P>,
-{
-    fn handle(&self, env: &Environment) -> AnyView {
-        AnyView::new(self.build(env))
-    }
-}
-
-impl AnyViewBuilder {
+impl<V: View> AnyViewBuilder<V> {
     /// Creates a new `ViewBuilder` from a handler function.
     /// # Arguments
     /// * `handler` - The function that builds a view from extracted parameters
     #[must_use]
-    pub fn new<H: 'static>(handler: impl ViewBuilderFn<H>) -> Self {
+    pub fn new<H: 'static>(handler: impl ViewBuilderFn<H, Output = V>) -> Self {
         Self(Box::new(into_view_builder(handler)))
     }
 
@@ -507,7 +405,23 @@ impl AnyViewBuilder {
     /// * `env` - The environment to pass to the handler
     /// # Returns
     /// An `AnyView` produced by the handler
-    pub fn build(&self, env: &Environment) -> AnyView {
-        (self.0).handle(env)
+    #[must_use]
+    pub fn build(&self, env: &Environment) -> V {
+        ViewBuilder::build(&*self.0, env)
+    }
+
+    /// Erases the specific view type, returning a builder that produces `AnyView`.
+    #[must_use]
+    pub fn erase(self) -> AnyViewBuilder<AnyView> {
+        AnyViewBuilder::new(move |env: Environment| {
+            let v = self.build(&env);
+            AnyView::new(v)
+        })
+    }
+}
+
+impl<V> Debug for AnyViewBuilder<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AnyViewBuilder")
     }
 }

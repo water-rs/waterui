@@ -8,7 +8,7 @@ use waterui_core::{Error, extract::Extractor};
 ///
 /// This trait allows different types to be formatted according to
 /// locale-specific rules and conventions.
-pub trait Formatter<T> {
+pub trait Formatter<T>: Clone {
     /// Formats the given value into a localized string representation.
     fn format(&self, value: &T) -> Str;
 }
@@ -17,7 +17,7 @@ pub trait Formatter<T> {
 ///
 /// This formatter can convert date values into locale-appropriate
 /// string representations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DateFormatter {
     locale: Locale,
 }

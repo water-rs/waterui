@@ -313,7 +313,7 @@ pub unsafe extern "C" fn waterui_call_gesture_action(
         return;
     }
 
-    let action = unsafe { &*action };
+    let action = unsafe { &mut *action };
     let env = unsafe { &**env };
     let mut env = env.clone();
     event.write_to_env(&mut env);

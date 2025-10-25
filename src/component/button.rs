@@ -20,7 +20,7 @@ use core::fmt::Debug;
 
 use alloc::boxed::Box;
 use waterui_core::handler::{
-    ActionObject, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
+    BoxHandler, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
     into_handler, into_handler_with_state,
 };
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
@@ -37,7 +37,7 @@ pub struct ButtonConfig {
     /// The label displayed on the button
     pub label: AnyView,
     /// The action to execute when the button is clicked
-    pub action: ActionObject,
+    pub action: BoxHandler<()>,
 }
 
 impl_debug!(ButtonConfig);
@@ -58,7 +58,7 @@ where
 }
 
 impl ViewConfiguration for ButtonConfig {
-    type View = Button<AnyView, ActionObject>;
+    type View = Button<AnyView, BoxHandler<()>>;
 
     fn render(self) -> Self::View {
         Button {

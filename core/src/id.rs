@@ -47,7 +47,7 @@ impl TryFrom<i32> for Id {
 /// the ID from an instance.
 pub trait Identifable {
     /// The type of ID to use, which must implement Hash and Ord traits.
-    type Id: Hash + Ord;
+    type Id: Hash + Ord + Clone;
 
     /// Retrieves the unique identifier for this instance.
     fn id(&self) -> Self::Id;
@@ -88,7 +88,7 @@ impl<T, F> Deref for UseId<T, F> {
 impl<T, F, Id> Identifable for UseId<T, F>
 where
     F: Fn(&T) -> Id,
-    Id: Ord + Hash,
+    Id: Ord + Hash + Clone,
 {
     type Id = Id;
 
@@ -101,7 +101,7 @@ where
 /// A wrapper that uses the value itself as its own identifier.
 ///
 /// This is useful for types that are already suitable as identifiers.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SelfId<T>(T);
 
 impl<T> SelfId<T> {
