@@ -31,6 +31,8 @@ pub struct NavigationView {
     pub content: AnyView,
 }
 
+raw_view!(NavigationView);
+
 /// Configuration for a navigation bar.
 ///
 /// Represents the appearance and behavior of a navigation bar, including

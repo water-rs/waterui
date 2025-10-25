@@ -3,12 +3,12 @@
 //! This module includes the components needed to create and manage tabs,
 //! with support for selection binding and navigation views.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use nami::Binding;
 use waterui_core::{
     AnyView, configurable,
-    handler::{BoxHandler, HandlerFn, into_handler},
+    handler::{AnyViewBuilder, ViewBuilderFn},
     id::Id,
     impl_debug,
 };
@@ -26,7 +26,7 @@ pub struct Tab<T> {
 
     /// The content to display when this tab is selected.
     /// Returns a [`NavigationView`] when given an Environment.
-    pub content: BoxHandler<NavigationView>,
+    pub content: AnyViewBuilder<NavigationView>,
 }
 
 impl_debug!(Tab<Id>);
@@ -40,11 +40,11 @@ impl<T> Tab<T> {
     /// * `content` - A function that returns the tab's content as a [`NavigationView`]
     pub fn new<H: 'static>(
         label: TaggedView<T, AnyView>,
-        content: impl HandlerFn<H, NavigationView>,
+        content: impl ViewBuilderFn<H, Output = NavigationView>,
     ) -> Self {
         Self {
             label,
-            content: Box::new(into_handler(content)),
+            content: AnyViewBuilder::new(content),
         }
     }
 }
