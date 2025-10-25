@@ -35,7 +35,7 @@ impl<V, G> OnChange<V, G> {
     {
         let cache: RefCell<Option<C::Output>> = RefCell::new(None);
         let guard = source.watch(move |context| {
-            let value = context.value;
+            let value = context.into_value();
             if let Some(cache) = &mut *cache.borrow_mut()
                 && *cache != value
             {
