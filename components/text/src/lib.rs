@@ -22,7 +22,8 @@ pub mod locale;
 pub mod macros;
 extern crate alloc;
 
-mod text;
+/// Core text component.
+pub mod text;
 pub use text::{Text, TextConfig, text};
 
 pub use nami as __nami;

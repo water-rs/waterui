@@ -16,7 +16,7 @@ use core::{
     hash::Hash,
 };
 use nami::collection::Collection;
-use nami::watcher::{BoxWatcher, BoxWatcherGuard, Context, WatcherGuard};
+use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 
 use crate::id::{Identifable, SelfId};
 
@@ -25,10 +25,10 @@ use crate::id::{Identifable, SelfId};
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
 /// Tip: the `get` method of `Collection` should return a unique identifier for each item.
-pub trait Views: Clone {
+pub trait Views {
     /// The type of unique identifier for items in the collection.
     /// Must implement `Hash` and `Ord` to ensure uniqueness and ordering.
-    type Id: 'static + Hash + Ord;
+    type Id: 'static + Hash + Ord + Clone;
     /// The type of guard returned when registering a watcher.
     type Guard: WatcherGuard;
     /// The view type that this collection produces for each element.
@@ -49,7 +49,7 @@ pub trait Views: Clone {
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard;
 
     /// Returns the view at the specified index, or `None` if the index is out of bounds.
@@ -69,19 +69,87 @@ impl<V> Debug for AnyViews<V> {
     }
 }
 
+/// A reference-counted, type-erased container for `Views` collections.
+/// `SharedAnyViews` allows multiple owners to share access
+/// to the same views collection through reference counting.
+pub struct SharedAnyViews<V>(Rc<dyn AnyViewsImpl<View = V>>);
+
+impl<V> Clone for SharedAnyViews<V> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<V> SharedAnyViews<V> {
+    /// Creates a new type-erased shared view collection from any type implementing the `Views` trait.
+    ///
+    /// This function wraps the provided collection in a type-erased container using reference counting, allowing
+    /// different view collection implementations to be used through a common interface with shared ownership.
+    ///
+    /// # Parameters
+    /// * `contents` - Any collection implementing the `Views` trait with the appropriate item type
+    ///
+    /// # Returns
+    /// A new `SharedAnyViews` instance containing the provided collection
+    pub fn new(contents: impl Views<View = V> + 'static) -> Self {
+        Self(Rc::new(IntoAnyViews::new(contents)))
+    }
+}
+
+impl<V> From<AnyViews<V>> for SharedAnyViews<V> {
+    fn from(value: AnyViews<V>) -> Self {
+        Self(Rc::from(value.0))
+    }
+}
+
+impl<V> Debug for SharedAnyViews<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(type_name::<Self>())
+    }
+}
+
+impl<V: View> Views for SharedAnyViews<V> {
+    type Id = SelfId<RawId>;
+    type Guard = BoxWatcherGuard;
+    type View = V;
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.0.get_id(index).map(SelfId::new)
+    }
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.0.get_view(index)
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+    ) -> Self::Guard {
+        self.0.watch(
+            (range.start_bound().cloned(), range.end_bound().cloned()),
+            Box::new(move |ctx| {
+                let ctx =
+                    ctx.map(|value| value.iter().copied().map(SelfId::new).collect::<Vec<_>>());
+                watcher(ctx.as_deref());
+            }),
+        )
+    }
+}
+
 trait AnyViewsImpl {
     type View;
 
     fn get_view(&self, index: usize) -> Option<Self::View>;
     fn get_id(&self, index: usize) -> Option<RawId>;
     fn len(&self) -> usize;
+    #[allow(clippy::type_complexity)]
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: BoxWatcher<Vec<RawId>>,
+        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>) + 'static>,
     ) -> BoxWatcherGuard;
-
-    fn cloned(&self) -> Box<dyn AnyViewsImpl<View = Self::View>>;
 }
 
 #[derive(Debug)]
@@ -90,10 +158,16 @@ struct IdGenerator<Id> {
     counter: Cell<i32>,
 }
 
+impl<Id: Hash + Ord> Default for IdGenerator<Id> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<Id: Hash + Ord> IdGenerator<Id> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            map: RefCell::default(),
+            map: RefCell::new(BTreeMap::new()),
             counter: Cell::new(i32::MIN),
         }
     }
@@ -118,9 +192,21 @@ where
     id: Rc<IdGenerator<V::Id>>,
 }
 
+impl<V> IntoAnyViews<V>
+where
+    V: Views + 'static,
+{
+    pub fn new(contents: V) -> Self {
+        Self {
+            contents,
+            id: Rc::default(),
+        }
+    }
+}
+
 impl<V> AnyViewsImpl for IntoAnyViews<V>
 where
-    V: Views + 'static + Clone,
+    V: Views + 'static,
 {
     type View = V::View;
 
@@ -139,21 +225,18 @@ where
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: BoxWatcher<Vec<RawId>>,
+        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>) + 'static>,
     ) -> BoxWatcherGuard {
         let id = self.id.clone();
         Box::new(self.contents.watch(range, move |ctx| {
-            let metadata = ctx.metadata;
-            let values: Vec<_> = ctx.value.into_iter().map(|data| id.to_id(data)).collect();
-            watcher(Context::new(values, metadata));
+            let ctx = ctx.map(|value| {
+                value
+                    .iter()
+                    .map(|data| id.to_id(data.clone()))
+                    .collect::<Vec<_>>()
+            });
+            watcher(ctx.as_deref());
         }))
-    }
-
-    fn cloned(&self) -> Box<dyn AnyViewsImpl<View = Self::View>> {
-        Box::new(Self {
-            contents: self.contents.clone(),
-            id: self.id.clone(),
-        })
     }
 }
 impl<V> AnyViews<V>
@@ -181,12 +264,6 @@ where
     }
 }
 
-impl<V> Clone for AnyViews<V> {
-    fn clone(&self) -> Self {
-        Self(self.0.cloned())
-    }
-}
-
 impl<V> Views for AnyViews<V>
 where
     V: View,
@@ -207,14 +284,14 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.0.watch(
             (range.start_bound().cloned(), range.end_bound().cloned()),
             Box::new(move |ctx| {
-                let metadata = ctx.metadata;
-                let values: Vec<_> = ctx.value.into_iter().map(SelfId::new).collect();
-                watcher(Context::new(values, metadata));
+                let ctx =
+                    ctx.map(|value| value.iter().copied().map(SelfId::new).collect::<Vec<_>>());
+                watcher(ctx.as_deref());
             }),
         )
     }
@@ -224,7 +301,7 @@ where
 /// `ForEach` applies a transformation function to each element of a source collection,
 /// producing a new collection with the transformed elements. This is useful for
 /// transforming data models into view representations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForEach<C, F, V>
 where
     C: Collection,
@@ -233,22 +310,7 @@ where
     V: View,
 {
     data: C,
-    generator: Rc<F>,
-}
-
-impl<C, F, V> Clone for ForEach<C, F, V>
-where
-    C: Collection,
-    C::Item: Identifable,
-    F: Fn(C::Item) -> V,
-    V: View,
-{
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            generator: self.generator.clone(),
-        }
-    }
+    generator: F,
 }
 
 impl<C, F, V> ForEach<C, F, V>
@@ -266,11 +328,8 @@ where
     ///
     /// # Returns
     /// A new `ForEach` instance that will apply the transformation when accessed
-    pub fn new(data: C, generator: F) -> Self {
-        Self {
-            data,
-            generator: Rc::new(generator),
-        }
+    pub const fn new(data: C, generator: F) -> Self {
+        Self { data, generator }
     }
 }
 
@@ -307,12 +366,17 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(nami::watcher::Context<Vec<Self::Item>>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.data.watch(range, move |ctx| {
-            let metadata = ctx.metadata;
-            let values: Vec<_> = ctx.value.into_iter().map(|data| data.id()).collect();
-            watcher(Context::new(values, metadata));
+            let ctx = ctx.map(|value| {
+                value
+                    .iter()
+                    .map(super::id::Identifable::id)
+                    .collect::<Vec<_>>()
+            });
+
+            watcher(ctx.as_deref());
         })
     }
 }
@@ -336,16 +400,20 @@ where
     fn len(&self) -> usize {
         self.data.len()
     }
-
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.data.watch(range, move |ctx| {
-            let metadata = ctx.metadata;
-            let values: Vec<_> = ctx.value.into_iter().map(|data| data.id()).collect();
-            watcher(Context::new(values, metadata));
+            let ctx = ctx.map(|value| {
+                value
+                    .iter()
+                    .map(super::id::Identifable::id)
+                    .collect::<Vec<_>>()
+            });
+
+            watcher(ctx.as_deref());
         })
     }
 }
@@ -358,7 +426,7 @@ where
 #[derive(Debug, Clone)]
 pub struct Constant<C>
 where
-    C: Collection + Clone,
+    C: Collection,
     C::Item: View,
 {
     value: C,
@@ -366,7 +434,7 @@ where
 
 impl<C> Constant<C>
 where
-    C: Collection + Clone,
+    C: Collection,
     C::Item: View,
 {
     /// Creates a new `Constant` collection from the provided collection.
@@ -404,15 +472,14 @@ where
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(nami::watcher::Context<Vec<Self::Item>>) + 'static,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
-        // never change, do nothing
     }
 }
 
 impl<V> Views for Constant<V>
 where
-    V: Collection,
+    V: Collection + Clone,
     V::Item: View,
 {
     type Id = SelfId<usize>;
@@ -438,8 +505,9 @@ where
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
+        // No-op for Constant
     }
 }
 
@@ -467,8 +535,9 @@ impl<V: View + Clone> Views for Vec<V> {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
+        // No-op for Vec
     }
 }
 
@@ -496,8 +565,9 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
+        // No-op for arrays
     }
 }
 
@@ -556,7 +626,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(nami::watcher::Context<Vec<Self::Id>>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.source.watch(range, watcher)
     }
@@ -586,7 +656,7 @@ pub trait ViewsExt: Views {
     /// Erases the specific type of the view collection, returning a type-erased `AnyViews`.
     fn erase(self) -> AnyViews<AnyView>
     where
-        Self: 'static,
+        Self: 'static + Sized,
     {
         AnyViews::new(self.map(AnyView::new))
     }
