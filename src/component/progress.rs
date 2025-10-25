@@ -121,8 +121,8 @@ impl Progress {
     ///
     /// * `total` - The total value against which progress is measured.
     pub fn total(mut self, total: impl IntoComputed<f64>) -> ProgressWithTotal {
+        let total = total.into_signal();
         self.0.value = total
-            .into_signal()
             .zip(self.0.value)
             .flatten_map(|total, value| value / total)
             .computed();
