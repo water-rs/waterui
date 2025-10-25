@@ -21,7 +21,7 @@ pub mod table;
 pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 
 pub use media::*;
-pub use text::{Text, text};
+pub use text::{Text, text::text};
 //pub use waterui_canvas as canvas;
 #[doc(inline)]
 pub use waterui_form as form;

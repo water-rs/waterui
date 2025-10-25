@@ -16,13 +16,13 @@ use core::any::type_name;
 
 use alloc::vec::Vec;
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::{
+    view::{ConfigurableView, Hook, ViewConfiguration},
+    views::SharedAnyViews,
+};
 use waterui_text::Text;
 
-use crate::{
-    AnyView, Environment, View,
-    views::{AnyViews, Views},
-};
+use crate::{AnyView, Environment, View, views::Views};
 
 use waterui_core::Native;
 
@@ -101,7 +101,7 @@ impl_constant!(TableColumn);
 #[derive(Clone)]
 pub struct TableColumn {
     label: Text,
-    rows: AnyViews<Text>,
+    rows: SharedAnyViews<Text>,
 }
 
 impl_debug!(TableColumn);
@@ -117,13 +117,13 @@ impl TableColumn {
     pub fn new(label: impl Into<Text>, contents: impl Views<View = Text> + 'static) -> Self {
         Self {
             label: label.into(),
-            rows: AnyViews::new(contents),
+            rows: SharedAnyViews::new(contents),
         }
     }
 
     /// Returns the rows of content in this column.
     #[must_use]
-    pub fn rows(&self) -> AnyViews<Text> {
+    pub fn rows(&self) -> SharedAnyViews<Text> {
         self.rows.clone()
     }
 

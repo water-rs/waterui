@@ -1,6 +1,6 @@
 use waterui::component::Dynamic;
 
-use crate::{IntoFFI, IntoRust, WuiAnyView, reactive::WuiWatcher};
+use crate::{IntoRust, WuiAnyView, reactive::WuiWatcher};
 
 ffi_type!(WuiDynamic, Dynamic, waterui_drop_dynamic);
 
@@ -18,7 +18,9 @@ unsafe extern "C" fn waterui_dynamic_connect(
 ) {
     unsafe {
         (dynamic).into_rust().connect(move |ctx| {
-            watcher.call(ctx.value.into_ffi(), ctx.metadata);
+            let metadata = ctx.metadata().clone();
+            let value = ctx.into_value();
+            watcher.call(value, metadata);
         });
     }
 }

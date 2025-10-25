@@ -41,7 +41,7 @@ where
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a new list by iterating over a collection and generating items.
-    pub fn for_each(data: C, generator: F) -> Self {
+    pub const fn for_each(data: C, generator: F) -> Self {
         Self(ForEach::new(data, generator))
     }
 }
