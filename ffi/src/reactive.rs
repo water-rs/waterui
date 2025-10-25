@@ -49,8 +49,11 @@ macro_rules! impl_computed {
             use waterui::Signal;
             use $crate::IntoFFI;
             unsafe {
-                let guard =
-                    (*computed).watch(move |ctx| watcher.call(ctx.value.into_ffi(), ctx.metadata));
+                let guard = (*computed).watch(move |ctx| {
+                    let metadata = ctx.metadata().clone();
+                    let value = ctx.into_value();
+                    watcher.call(value, metadata);
+                });
                 guard.into_ffi()
             }
         }
@@ -100,7 +103,9 @@ macro_rules! impl_binding {
             unsafe {
                 use waterui::Signal;
                 let guard = (*binding).watch(move |ctx| {
-                    watcher.call($crate::IntoFFI::into_ffi(ctx.value), ctx.metadata)
+                    let metadata = ctx.metadata().clone();
+                    let value = ctx.into_value();
+                    watcher.call(value, metadata);
                 });
                 guard.into_ffi()
             }
@@ -204,8 +209,8 @@ impl<T: 'static> WuiWatcher<T> {
     ) -> Self {
         Self { data, call, drop }
     }
-    pub fn call(&self, value: T, metadata: Metadata) {
-        unsafe { (self.call)(self.data, value, metadata.into_ffi()) }
+    pub fn call(&self, value: impl IntoFFI<FFI = T>, metadata: Metadata) {
+        unsafe { (self.call)(self.data, value.into_ffi(), metadata.into_ffi()) }
     }
 }
 

@@ -151,7 +151,7 @@ impl VideoPlayer {
     /// Mutes or unmutes the video player based on the provided boolean binding.
     #[must_use]
     pub fn muted(mut self, muted: &Binding<bool>) -> Self {
-        let volume_binding = self.0.volume;
+        let mut volume_binding = self.0.volume;
         self.0.volume = Binding::mapping(
             muted,
             {
