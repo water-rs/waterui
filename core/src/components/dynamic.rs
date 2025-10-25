@@ -100,7 +100,7 @@ impl Dynamic {
         let (handle, dynamic) = Self::new();
         handle.set(f(value.get()));
 
-        let guard = value.watch(move |value| handle.set(f(value.value)));
+        let guard = value.watch(move |value| handle.set(f(value.into_value())));
 
         With::new(dynamic, (guard, value))
     }
