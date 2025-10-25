@@ -46,7 +46,13 @@ pub mod prelude {
     pub use navigation::*;
     pub use padding::*;
     pub use style::*;
-    pub use text::*;
+
+    pub use text::{
+        TextConfig, font, highlight,
+        link::{Link, link},
+        locale, styled,
+    };
+
     pub use widget::{Card, Divider, card, suspense};
 }
 pub use color::Color;
@@ -60,13 +66,33 @@ pub use waterui_navigation as navigation;
 pub use waterui_text as text;
 pub mod style;
 
-pub use text::text;
 #[doc(inline)]
 pub use waterui_core::{
     AnyView, Str, animation,
     env::{self, Environment},
     impl_extractor, raw_view, views,
 };
+
+/// Creates a reactive text component with formatted content.
+///
+/// This macro provides a convenient way to create text components with
+/// formatted content that automatically updates when reactive values change.
+///
+/// # Usage
+///
+/// ```ignore
+/// let name = binding("World");
+/// let greeting = text!("Hello, {}!", name);
+/// ```
+#[macro_export]
+macro_rules! text {
+    ($($arg:tt)*) => {
+        {
+            #[allow(unused_parens)]
+            $crate::text::Text::new($crate::s!($($arg)*))
+        }
+    };
+}
 
 mod ext;
 pub use ext::SignalExt;
