@@ -55,7 +55,7 @@ impl DatePicker {
 
     /// Sets the range of valid dates.
     #[must_use]
-    pub fn range(mut self, range: impl RangeBounds<Date> + 'static) -> Self {
+    pub fn range(mut self, range: impl RangeBounds<Date> + Clone + 'static) -> Self {
         self.0.value = self.0.value.range(range);
         self
     }
