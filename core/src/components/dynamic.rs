@@ -37,7 +37,12 @@ raw_view!(Dynamic);
 ///
 /// Provides methods to set new content for the associated Dynamic view.
 #[derive(Clone)]
-pub struct DynamicHandler(Rc<RefCell<Receiver>>);
+pub struct DynamicHandler(Rc<RefCell<DynamicHandlerState>>);
+
+enum DynamicHandlerState {
+    Connected(Receiver),
+    Unconnected(Option<AnyView>),
+}
 
 type Receiver = Box<dyn Fn(Context<AnyView>)>;
 
@@ -52,7 +57,16 @@ impl DynamicHandler {
     /// * `view` - The new view to display
     /// * `metadata` - Additional metadata associated with the update
     pub fn set_with_metadata(&self, view: impl View, metadata: Metadata) {
-        (self.0.borrow())(Context::new(AnyView::new(view), metadata));
+        let mut state = self.0.borrow_mut();
+        let view = AnyView::new(view);
+        match &mut *state {
+            DynamicHandlerState::Connected(receiver) => {
+                receiver(Context::new(view, metadata));
+            }
+            DynamicHandlerState::Unconnected(state) => {
+                *state = Some(view);
+            }
+        }
     }
 
     /// Sets the content of the Dynamic view with the provided view.
@@ -76,7 +90,9 @@ impl Dynamic {
     /// A tuple containing the [`DynamicHandler`] and Dynamic view
     #[must_use]
     pub fn new() -> (DynamicHandler, Self) {
-        let handler = DynamicHandler(Rc::new(RefCell::new(Box::new(|_| {}))));
+        let handler = DynamicHandler(Rc::new(RefCell::new(DynamicHandlerState::Unconnected(
+            None,
+        ))));
         (handler.clone(), Self(handler))
     }
 
@@ -107,6 +123,8 @@ impl Dynamic {
 
     /// Connects the Dynamic view to a receiver function.
     ///
+    /// For internal use only.
+    ///
     /// The receiver function is called whenever the view content is updated.
     /// If there's a temporary view stored (set before connecting), it will
     /// be immediately passed to the receiver.
@@ -115,9 +133,18 @@ impl Dynamic {
     ///
     /// * `receiver` - A function that receives view updates
     pub fn connect(self, receiver: impl Fn(Context<AnyView>) + 'static) {
-        #[allow(unused_must_use)]
         // It would be used on swift side
-        self.0.0.replace(Box::new(receiver));
+        let mut state = self.0.0.borrow_mut();
+
+        match &mut *state {
+            DynamicHandlerState::Unconnected(temp_view) => {
+                if let Some(view) = temp_view.take() {
+                    receiver(Context::new(view, Metadata::new()));
+                }
+                *state = DynamicHandlerState::Connected(Box::new(receiver));
+            }
+            DynamicHandlerState::Connected(_) => unreachable!("Dynamic already connected"),
+        }
     }
 }
 
