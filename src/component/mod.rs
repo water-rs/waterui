@@ -2,9 +2,8 @@
 //!
 //! This module contains various UI components that can be used to build user interfaces.
 
-pub mod button;
 #[doc(inline)]
-pub use button::{Button, button};
+pub use waterui_controls::*;
 
 pub mod badge;
 pub mod focu;
