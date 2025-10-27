@@ -8,7 +8,9 @@ extern crate alloc;
 pub mod search;
 pub mod tab;
 
-use alloc::{boxed::Box, vec::Vec};
+use core::fmt::Debug;
+
+use alloc::boxed::Box;
 use nami::Computed;
 use waterui_color::Color;
 use waterui_core::{
@@ -31,7 +33,55 @@ pub struct NavigationView {
     pub content: AnyView,
 }
 
-raw_view!(NavigationView);
+/// A trait for handling custom navigation actions.
+/// For renderers to implement navigation handling.
+pub trait CustomNavigationReceiver: 'static {
+    /// Pushes a new navigation view onto the stack.
+    /// # Arguments
+    /// * `content` - The navigation view to push
+    fn push(&mut self, content: NavigationView);
+    /// Pops the top navigation view off the stack.
+    fn pop(&mut self);
+}
+
+/// A receiver that handles navigation actions.
+/// For renderers to implement navigation handling.
+pub struct NavigationReceiver(Box<dyn CustomNavigationReceiver>);
+
+impl Debug for NavigationReceiver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationReceiver").finish()
+    }
+}
+
+impl NavigationReceiver {
+    /// Creates a new navigation receiver.
+    ///
+    /// # Arguments
+    ///
+    /// * `receiver` - An implementation of `CustomNavigationReceiver`
+    pub fn new(receiver: impl CustomNavigationReceiver) -> Self {
+        Self(Box::new(receiver))
+    }
+
+    /// Pushes a new navigation view onto the stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The navigation view to push
+    pub fn push(&mut self, content: NavigationView) {
+        self.0.push(content);
+    }
+    /// Pops the top navigation view off the stack.
+    pub fn pop(&mut self) {
+        self.0.pop();
+    }
+}
+
+raw_view!(
+    NavigationView,
+    "Please use `NavigationView` in a proper navigation context"
+);
 
 /// Configuration for a navigation bar.
 ///
@@ -46,11 +96,6 @@ pub struct Bar {
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
 }
-
-/// A path of navigation views forming a navigation hierarchy.
-///
-/// Used to track the navigation stack in a hierarchical UI.
-pub type NavigationPath = Vec<NavigationView>;
 
 /// A link that navigates to another view when activated.
 ///
