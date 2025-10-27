@@ -1,3 +1,8 @@
+//! Slider control for adjusting numeric values within a range.
+//!
+//! This module provides a `Slider` widget that allows users to select a value
+//! within a specified numeric range by sliding a handle along a track.
+
 use core::ops::RangeInclusive;
 
 use nami::Binding;
