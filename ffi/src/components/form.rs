@@ -1,17 +1,19 @@
 use crate::components::text::WuiText;
 use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view};
 use alloc::vec::Vec;
-use waterui::{Binding, Color, Computed, Str};
+use waterui::{
+    Binding, Color, Computed, Str,
+    component::{
+        slider::SliderConfig,
+        stepper::StepperConfig,
+        text_field::{KeyboardType, TextFieldConfig},
+        toggle::ToggleConfig,
+    },
+};
 use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::{PickerConfig, PickerItem};
-use waterui_form::{
-    slider::SliderConfig,
-    stepper::StepperConfig,
-    text_field::{KeyboardType, TextFieldConfig},
-    toggle::ToggleConfig,
-};
 
 ffi_enum_with_default!(
     KeyboardType,
