@@ -6,7 +6,7 @@ use waterui::{Binding, Color, Computed};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::Tab;
-use waterui_navigation::{Bar, NavigationLink, NavigationView, tab::TabsConfig};
+use waterui_navigation::{Bar, NavigationView, tab::TabsConfig};
 
 #[repr(C)]
 pub struct WuiNavigationView {
@@ -37,7 +37,6 @@ ffi_struct!(Bar, WuiBar, title, color, hidden);
 
 // FFI view bindings for navigation components
 ffi_view!(NavigationView, waterui_navigation_view_id);
-ffi_view!(NavigationLink, waterui_navigation_link_id);
 
 #[repr(C)]
 pub struct WuiTabs {
