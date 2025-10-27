@@ -22,6 +22,7 @@ waterui-color.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
 serde = { workspace = true, features = ["derive"], optional = true }
+regex = { version = "1.12.2", features = ["pattern"] }
 
 [features]
 default = []
