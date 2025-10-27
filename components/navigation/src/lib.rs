@@ -1,3 +1,5 @@
+#![no_std]
+
 //! Navigation module for `WaterUI` framework.
 //!
 //! This module provides navigation components and utilities for building
@@ -8,17 +10,19 @@ extern crate alloc;
 pub mod search;
 pub mod tab;
 
-use core::fmt::Debug;
+use alloc::rc::Rc;
+use core::{cell::RefCell, fmt::Debug};
 
 use alloc::boxed::Box;
 use nami::Computed;
 use waterui_color::Color;
+use waterui_controls::button;
 use waterui_core::{
-    AnyView, View,
-    handler::{BoxHandler, HandlerFn, into_handler},
-    impl_debug, raw_view,
+    AnyView, Environment, View,
+    handler::{BoxHandler, HandlerFn, ViewBuilder, into_handler},
+    impl_debug, impl_extractor, raw_view,
 };
-use waterui_text::Text;
+use waterui_text::{Text, link};
 
 /// A view that combines a navigation bar with content.
 ///
@@ -46,7 +50,10 @@ pub trait CustomNavigationReceiver: 'static {
 
 /// A receiver that handles navigation actions.
 /// For renderers to implement navigation handling.
-pub struct NavigationReceiver(Box<dyn CustomNavigationReceiver>);
+#[derive(Clone)]
+pub struct NavigationReceiver(Rc<RefCell<dyn CustomNavigationReceiver>>);
+
+impl_extractor!(NavigationReceiver);
 
 impl Debug for NavigationReceiver {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -61,7 +68,7 @@ impl NavigationReceiver {
     ///
     /// * `receiver` - An implementation of `CustomNavigationReceiver`
     pub fn new(receiver: impl CustomNavigationReceiver) -> Self {
-        Self(Box::new(receiver))
+        Self(Rc::new(RefCell::new(receiver)))
     }
 
     /// Pushes a new navigation view onto the stack.
@@ -69,12 +76,12 @@ impl NavigationReceiver {
     /// # Arguments
     ///
     /// * `content` - The navigation view to push
-    pub fn push(&mut self, content: NavigationView) {
-        self.0.push(content);
+    pub fn push(&self, content: NavigationView) {
+        self.0.borrow_mut().push(content);
     }
     /// Pops the top navigation view off the stack.
-    pub fn pop(&mut self) {
-        self.0.pop();
+    pub fn pop(&self) {
+        self.0.borrow_mut().pop();
     }
 }
 
@@ -102,34 +109,86 @@ pub struct Bar {
 /// The `NavigationLink` combines a label view with a function that creates
 /// the destination view when the link is activated.
 #[must_use]
-pub struct NavigationLink {
+#[derive(Debug)]
+pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
-    pub label: AnyView,
+    pub label: Label,
     /// A function that creates the destination view when the link is activated
-    pub content: BoxHandler<NavigationView>,
+    pub content: Content,
 }
-
-impl_debug!(NavigationLink);
-
-impl NavigationLink {
+impl<Label, Content> NavigationLink<Label, Content> {
     /// Creates a new navigation link.
     ///
     /// # Arguments
     ///
-    /// * `label` - The view to display as the link
-    /// * `destination` - A function that creates the destination view
-    pub fn new<P: 'static>(
-        label: impl View,
-        destination: impl HandlerFn<P, NavigationView>,
-    ) -> Self {
-        Self {
-            label: AnyView::new(label),
-            content: Box::new(into_handler(destination)),
-        }
+    /// * `label` - The label view to display for the link
+    /// * `content` - A function that creates the destination view
+    pub fn new(label: Label, content: Content) -> Self {
+        Self { label, content }
     }
 }
 
-raw_view!(NavigationLink);
+/// A stack of navigation views.
+#[must_use]
+pub struct NavigationStack {
+    root: AnyView, // Renderer requires to inject `NavigationReceiver` to the root view's environment
+}
+
+impl NavigationStack {
+    pub fn new(root: impl View) -> Self {
+        Self {
+            root: AnyView::new(root),
+        }
+    }
+
+    pub fn into_inner(self) -> AnyView {
+        self.root
+    }
+}
+
+pub struct NavigationPath<T> {
+    _marker: core::marker::PhantomData<T>,
+}
+
+impl<T> NavigationPath<T> {
+    pub fn new() -> Self {
+        Self {
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    pub fn push(&self, value: impl Into<T>) {
+        todo!()
+    }
+
+    pub fn pop(&self) {
+        todo!()
+    }
+
+    pub fn pop_n(&self, n: usize) {
+        todo!()
+    }
+}
+
+impl<Label, Content> View for NavigationLink<Label, Content>
+where
+    Label: View,
+    Content: 'static + ViewBuilder<Output = NavigationView>,
+{
+    fn body(self, env: &waterui_core::Environment) -> impl View {
+        // better error messages in debug mode
+        if cfg!(debug_assertions) {
+            if env.get::<NavigationReceiver>().is_none() {
+                panic!("NavigationLink used outside of a navigation context");
+            }
+        }
+
+        button(self.label).action(move |receiver: NavigationReceiver, env: Environment| {
+            let content = (self.content).build(&env);
+            receiver.push(content);
+        })
+    }
+}
 
 impl NavigationView {
     /// Creates a new navigation view.
@@ -159,17 +218,4 @@ impl NavigationView {
 /// * `view` - The content view to display
 pub fn navigation(title: impl Into<Text>, view: impl View) -> NavigationView {
     NavigationView::new(title, view)
-}
-
-/// Convenience function to create a navigation link.
-///
-/// # Arguments
-///
-/// * `label` - The view to display as the link
-/// * `destination` - A function that creates the destination view
-pub fn navigate(
-    label: impl View,
-    destination: impl 'static + Fn() -> NavigationView,
-) -> NavigationLink {
-    NavigationLink::new(label, destination)
 }
