@@ -10,6 +10,7 @@ use waterui_color::Color;
 
 /// Picker form component module.
 pub mod picker;
+pub mod valid;
 
 use waterui_core::{AnyView, Binding, Str, View};
 
