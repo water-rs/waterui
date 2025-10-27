@@ -10,15 +10,16 @@ extern crate alloc;
 pub mod search;
 pub mod tab;
 
-use alloc::rc::Rc;
+use alloc::{rc::Rc, vec::Vec};
 use core::{cell::RefCell, fmt::Debug};
 
 use alloc::boxed::Box;
-use nami::Computed;
+use nami::{Computed, collection::List};
 use waterui_color::Color;
 use waterui_controls::button;
 use waterui_core::{
     AnyView, Environment, View,
+    env::use_env,
     handler::{BoxHandler, HandlerFn, ViewBuilder, into_handler},
     impl_debug, impl_extractor, raw_view,
 };
@@ -116,28 +117,39 @@ pub struct NavigationLink<Label, Content> {
     /// A function that creates the destination view when the link is activated
     pub content: Content,
 }
-impl<Label, Content> NavigationLink<Label, Content> {
+impl<Label, Content> NavigationLink<Label, Content>
+where
+    Label: View,
+    Content: ViewBuilder<Output = NavigationView>,
+{
     /// Creates a new navigation link.
     ///
     /// # Arguments
     ///
     /// * `label` - The label view to display for the link
     /// * `content` - A function that creates the destination view
-    pub fn new(label: Label, content: Content) -> Self {
+    pub const fn new(label: Label, content: Content) -> Self {
         Self { label, content }
     }
 }
 
 /// A stack of navigation views.
 #[must_use]
-pub struct NavigationStack {
+#[derive(Debug)]
+pub struct NavigationStack<T> {
     root: AnyView, // Renderer requires to inject `NavigationReceiver` to the root view's environment
+    path: T,
 }
 
-impl NavigationStack {
+impl NavigationStack<()> {
+    /// Creates a new navigation stack with the specified root view.
+    ///
+    /// # Arguments
+    /// * `root` - The root view of the navigation stack
     pub fn new(root: impl View) -> Self {
         Self {
             root: AnyView::new(root),
+            path: (),
         }
     }
 
@@ -146,45 +158,81 @@ impl NavigationStack {
     }
 }
 
-pub struct NavigationPath<T> {
-    _marker: core::marker::PhantomData<T>,
-}
-
-impl<T> NavigationPath<T> {
-    pub fn new() -> Self {
+impl<T> NavigationStack<NavigationPath<T>> {
+    /// Creates a new navigation stack with the specified navigation path and root view.
+    ///
+    /// # Arguments
+    /// * `path` - The navigation path representing the current stack
+    /// * `root` - The root view of the navigation stack
+    pub fn with(path: NavigationPath<T>, root: impl View) -> Self {
         Self {
-            _marker: core::marker::PhantomData,
+            root: AnyView::new(root),
+            path,
         }
     }
+}
 
-    pub fn push(&self, value: impl Into<T>) {
+raw_view!(NavigationStack<()>);
+
+impl<T> View for NavigationStack<NavigationPath<T>>
+where
+    T: 'static + Clone,
+{
+    fn body(self, env: &Environment) -> impl View {
+        NavigationStack::new(|| {
+            // make sure we are in a navigation context
+
+            use_env(|| self.root)
+        })
+    }
+}
+
+/// A path representing the current navigation stack.
+#[must_use]
+#[derive(Debug)]
+pub struct NavigationPath<T> {
+    inner: List<T>,
+}
+
+impl<T> From<Vec<T>> for NavigationPath<T> {
+    fn from(value: Vec<T>) -> Self {
         todo!()
+    }
+}
+
+impl<T: 'static + Clone> NavigationPath<T> {
+    pub fn new() -> Self {
+        Self { inner: List::new() }
+    }
+
+    pub fn push(&mut self, value: T) {
+        self.inner.push(value)
     }
 
     pub fn pop(&self) {
-        todo!()
+        let _ = self.inner.pop();
     }
 
     pub fn pop_n(&self, n: usize) {
-        todo!()
+        for _ in 0..n {
+            self.pop();
+        }
     }
 }
 
 impl<Label, Content> View for NavigationLink<Label, Content>
 where
     Label: View,
-    Content: 'static + ViewBuilder<Output = NavigationView>,
+    Content: ViewBuilder<Output = NavigationView>,
 {
     fn body(self, env: &waterui_core::Environment) -> impl View {
-        // better error messages in debug mode
-        if cfg!(debug_assertions) {
-            if env.get::<NavigationReceiver>().is_none() {
-                panic!("NavigationLink used outside of a navigation context");
-            }
-        }
+        debug_assert!(
+            env.get::<NavigationReceiver>().is_some(),
+            "NavigationLink used outside of a navigation context"
+        );
 
-        button(self.label).action(move |receiver: NavigationReceiver, env: Environment| {
-            let content = (self.content).build(&env);
+        button(self.label).action(move |receiver: NavigationReceiver| {
+            let content = (self.content).build();
             receiver.push(content);
         })
     }

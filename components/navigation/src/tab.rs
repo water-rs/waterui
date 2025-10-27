@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use nami::Binding;
 use waterui_core::{
     AnyView, configurable,
-    handler::{AnyViewBuilder, ViewBuilderFn},
+    handler::{AnyViewBuilder, ViewBuilder},
     id::Id,
     impl_debug,
 };
@@ -38,9 +38,9 @@ impl<T> Tab<T> {
     ///
     /// * `label` - The visual representation of the tab
     /// * `content` - A function that returns the tab's content as a [`NavigationView`]
-    pub fn new<H: 'static>(
+    pub fn new(
         label: TaggedView<T, AnyView>,
-        content: impl ViewBuilderFn<H, Output = NavigationView>,
+        content: impl ViewBuilder<Output = NavigationView>,
     ) -> Self {
         Self {
             label,

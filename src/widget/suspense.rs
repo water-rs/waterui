@@ -36,7 +36,7 @@ use core::future::Future;
 use executor_core::{Task, spawn_local};
 use waterui_core::{
     AnyView, Environment, View,
-    handler::{AnyViewBuilder, ViewBuilderFn},
+    handler::{AnyViewBuilder, ViewBuilder},
 };
 
 use crate::{ViewExt, component::Dynamic};
@@ -177,7 +177,7 @@ pub struct DefaultLoadingView(AnyViewBuilder);
 
 impl DefaultLoadingView {
     /// Creates a new default loading view from any view builder.
-    pub fn new<B: 'static>(builder: impl ViewBuilderFn<B>) -> Self {
+    pub fn new(builder: impl ViewBuilder) -> Self {
         Self(AnyViewBuilder::new(builder).erase())
     }
 
@@ -215,10 +215,8 @@ pub struct UseDefaultLoadingView;
 
 impl View for UseDefaultLoadingView {
     fn body(self, env: &Environment) -> impl View {
-        env.get::<DefaultLoadingView>().map_or_else(
-            || AnyView::new(()),
-            |builder| builder.0.build(env).anyview(),
-        )
+        env.get::<DefaultLoadingView>()
+            .map_or_else(|| AnyView::new(()), |builder| builder.0.build().anyview())
     }
 }
 
