@@ -20,6 +20,8 @@
 //! when(!is_visible, || "This text is hidden");
 //! ```
 
+use core::any::Any;
+
 use crate::{ViewExt, component::Dynamic};
 use nami::signal::IntoComputed;
 use waterui_core::{Environment, View, handler::ViewBuilder};
@@ -247,12 +249,31 @@ where
     Or: ViewBuilder,
 {
     fn body(self, _env: &Environment) -> impl View {
-        Dynamic::watch(self.condition.into_signal(), move |condition| {
+        // if condition is static, optimize by choosing branch at build time
+        let condition = self.condition.into_signal();
+
+        // may bool, which is static. may Binding<bool>, which is dynamic. We need to downcast to check.
+        let any: &dyn Any = &condition;
+
+        if let Some(static_bool) = any.downcast_ref::<bool>() {
+            // static condition, optimize it
+            return {
+                if *static_bool {
+                    (self.then).build().anyview()
+                } else {
+                    (self.or).build().anyview()
+                }
+            };
+        }
+
+        // dynamic condition, watch for changes
+        Dynamic::watch(condition, move |condition| {
             if condition {
                 (self.then).build().anyview()
             } else {
                 (self.or).build().anyview()
             }
         })
+        .anyview()
     }
 }
