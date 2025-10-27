@@ -294,96 +294,27 @@ where
     IntoHandlerOnce::new(h)
 }
 
-/// Trait for functions that build views from extracted parameters.
+/// A trait for types that can repeatedly construct views.
 ///
-/// This trait is implemented for functions that extract parameters from an environment
-/// and construct a view from them.
-pub trait ViewBuilderFn<P>: 'static {
-    /// The type of view produced by this builder.
-    type Output: View;
-    /// Builds a view by extracting parameters from the environment.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment containing request data and context
-    fn build_inner(&self, env: &Environment) -> Self::Output;
-}
-
-/// A wrapper that converts a function into a view builder.
-#[derive(Debug, Clone)]
-pub struct IntoViewBuilder<P: 'static, F> {
-    f: F,
-    _phantom: core::marker::PhantomData<P>,
-}
-
-impl<P: 'static, F> IntoViewBuilder<P, F>
-where
-    F: ViewBuilderFn<P>,
-{
-    /// Creates a new view builder from the given function.
-    #[must_use]
-    pub const fn new(f: F) -> Self {
-        Self {
-            f,
-            _phantom: core::marker::PhantomData,
-        }
-    }
-}
-
-macro_rules! impl_view_builder_fn {
-    ($($param:ident),*) => {
-        #[allow(non_snake_case)]
-        #[allow(unused_variables)]
-        impl<V, F, $($param:Extractor),*> ViewBuilderFn<($($param,)*)> for F
-        where
-            V: View,
-            F: Fn($($param,)*) -> V + 'static,
-        {
-            type Output = V;
-            fn build_inner(&self, env: &Environment) -> Self::Output {
-                $(
-                    let $param:$param=Extractor::extract(env).expect("failed to extract value from environment");
-                )*
-                (self)($($param,)*)
-            }
-        }
-    };
-}
-
-tuples!(impl_view_builder_fn);
-
-/// Trait for types that can repeatedly build views from an environment.
-///
-/// Implementors can be invoked multiple times to construct new view instances,
-/// extracting necessary data from the environment on each invocation.
+/// This is a convenience trait that provides similar functionality to `Fn() -> impl View`,
+/// allowing types to be used as view factories.
 pub trait ViewBuilder: 'static {
     /// The type of view produced by this builder.
     type Output: View;
-    /// Builds a view from the environment.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment containing request data and context
-    fn build(&self, env: &Environment) -> Self::Output;
+    /// Builds a view
+    // Note: unlike `Handler`, a `View` can obtain its `Environment` during rendering
+    // so no need to pass it here
+    fn build(&self) -> Self::Output;
 }
 
-impl<P: 'static, F> ViewBuilder for IntoViewBuilder<P, F>
+impl<V: View, F> ViewBuilder for F
 where
-    F: ViewBuilderFn<P>,
+    F: 'static + Fn() -> V,
 {
-    type Output = F::Output;
-    fn build(&self, env: &Environment) -> Self::Output {
-        self.f.build_inner(env)
+    type Output = V;
+    fn build(&self) -> Self::Output {
+        (self)()
     }
-}
-
-/// Converts a function into a view builder.
-#[must_use]
-pub const fn into_view_builder<P: 'static, F>(f: F) -> IntoViewBuilder<P, F>
-where
-    F: ViewBuilderFn<P>,
-{
-    IntoViewBuilder::new(f)
 }
 
 /// A builder for creating views from handler functions.
@@ -396,25 +327,23 @@ impl<V: View> AnyViewBuilder<V> {
     /// # Arguments
     /// * `handler` - The function that builds a view from extracted parameters
     #[must_use]
-    pub fn new<H: 'static>(handler: impl ViewBuilderFn<H, Output = V>) -> Self {
-        Self(Box::new(into_view_builder(handler)))
+    pub fn new(handler: impl ViewBuilder<Output = V>) -> Self {
+        Self(Box::new(handler))
     }
 
-    /// Builds a view by invoking the underlying handler with the given environment.
-    /// # Arguments
-    /// * `env` - The environment to pass to the handler
+    /// Builds a view by invoking the underlying handler.
     /// # Returns
     /// An `AnyView` produced by the handler
     #[must_use]
-    pub fn build(&self, env: &Environment) -> V {
-        ViewBuilder::build(&*self.0, env)
+    pub fn build(&self) -> V {
+        ViewBuilder::build(&*self.0)
     }
 
     /// Erases the specific view type, returning a builder that produces `AnyView`.
     #[must_use]
     pub fn erase(self) -> AnyViewBuilder<AnyView> {
-        AnyViewBuilder::new(move |env: Environment| {
-            let v = self.build(&env);
+        AnyViewBuilder::new(move || {
+            let v = self.build();
             AnyView::new(v)
         })
     }

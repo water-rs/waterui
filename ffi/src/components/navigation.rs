@@ -71,15 +71,11 @@ pub struct WuiTab {
 ///
 /// This function is unsafe because:
 /// - `handler` must be a valid, non-null pointer to a `WuiTabContent`
-/// - `env` must be a valid, non-null pointer to a `WuiEnv`
 /// - Both pointers must remain valid for the duration of the function call
 /// - The caller must ensure proper memory management of the returned view
-pub unsafe extern "C" fn waterui_tab_content(
-    handler: *mut WuiTabContent,
-    env: *const WuiEnv,
-) -> WuiNavigationView {
+pub unsafe extern "C" fn waterui_tab_content(handler: *mut WuiTabContent) -> WuiNavigationView {
     unsafe {
-        let view = (&*handler).build(&*env);
+        let view = (&*handler).build();
         IntoFFI::into_ffi(view)
     }
 }
