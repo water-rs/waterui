@@ -1,3 +1,5 @@
+//! A numeric stepper control for incrementing or decrementing values.
+
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
 use nami::{Binding, Computed, signal::IntoComputed};
