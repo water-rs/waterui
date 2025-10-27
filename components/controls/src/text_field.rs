@@ -1,3 +1,4 @@
+//! A text input component wired to a reactive string binding.
 use nami::Binding;
 use waterui_core::Str;
 use waterui_core::configurable;
