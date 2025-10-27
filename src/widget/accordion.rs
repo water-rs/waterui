@@ -2,10 +2,7 @@
 
 use crate::{ViewExt, component::Dynamic};
 use nami::Binding;
-use waterui_core::{
-    Environment, View,
-    handler::{IntoViewBuilder, ViewBuilder, ViewBuilderFn, into_view_builder},
-};
+use waterui_core::{View, handler::ViewBuilder};
 use waterui_layout::stack::vstack;
 
 /// An accordion component with a header and expandable content.
@@ -26,10 +23,10 @@ pub struct Accordion<H, V> {
     content: V,
 }
 
-impl<H, P, F> Accordion<H, IntoViewBuilder<P, F>>
+impl<H, F> Accordion<H, F>
 where
     H: View,
-    F: ViewBuilderFn<P>,
+    F: ViewBuilder,
 {
     /// Creates a new accordion with the specified header and content.
     ///
@@ -51,16 +48,16 @@ where
         Self {
             toggle: toggle.clone(),
             header,
-            content: into_view_builder(content),
+            content,
         }
     }
 }
 
 /// Creates an accordion component with a header and expandable content.
-pub fn accordion<H, P: 'static, F>(header: H, content: F) -> Accordion<H, IntoViewBuilder<P, F>>
+pub fn accordion<H, F>(header: H, content: F) -> Accordion<H, F>
 where
     H: View,
-    F: ViewBuilderFn<P>,
+    F: ViewBuilder,
 {
     Accordion::new(header, content)
 }
@@ -75,10 +72,10 @@ where
         let (handler, dynamic) = Dynamic::new();
         let mut toggle = self.toggle;
         vstack((
-            self.header.on_tap(move |env: Environment| {
+            self.header.on_tap(move || {
                 toggle.toggle();
                 if toggle.get() {
-                    handler.set(self.content.build(&env));
+                    handler.set(self.content.build());
                 } else {
                     handler.set(());
                 }
