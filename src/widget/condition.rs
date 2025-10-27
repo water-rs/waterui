@@ -22,10 +22,7 @@
 
 use crate::{ViewExt, component::Dynamic};
 use nami::signal::IntoComputed;
-use waterui_core::{
-    Environment, View,
-    handler::{IntoViewBuilder, ViewBuilder, ViewBuilderFn, into_view_builder},
-};
+use waterui_core::{Environment, View, handler::ViewBuilder};
 
 /// A component that conditionally renders a view based on a reactive boolean condition.
 ///
@@ -63,7 +60,7 @@ pub struct When<Condition, Then> {
     then: Then,
 }
 
-impl<P, Condition, Then> When<Condition, IntoViewBuilder<P, Then>>
+impl<Condition, Then> When<Condition, Then>
 where
     Condition: IntoComputed<bool>,
 {
@@ -91,12 +88,9 @@ where
     /// ```
     pub const fn new(condition: Condition, then: Then) -> Self
     where
-        Then: ViewBuilderFn<P>,
+        Then: ViewBuilder,
     {
-        Self {
-            condition,
-            then: into_view_builder(then),
-        }
+        Self { condition, then }
     }
 }
 
@@ -143,14 +137,10 @@ where
 /// when(is_logged_in, || "Dashboard")
 ///     .or(|| "Please log in");
 /// ```
-pub const fn when<Condition, P, Then>(
-    condition: Condition,
-    then: Then,
-) -> When<Condition, IntoViewBuilder<P, Then>>
+pub const fn when<Condition, Then>(condition: Condition, then: Then) -> When<Condition, Then>
 where
     Condition: IntoComputed<bool>,
-    Then: ViewBuilderFn<P>,
-    P: 'static,
+    Then: ViewBuilder,
 {
     When::new(condition, then)
 }
@@ -193,15 +183,15 @@ impl<Condition, Then> When<Condition, Then> {
     /// when(!has_data, || "Loading...")
     ///     .or(|| "Data loaded");
     /// ```
-    pub fn or<P, Or>(self, or: Or) -> WhenOr<Condition, Then, IntoViewBuilder<P, Or>>
+    pub fn or<Or>(self, or: Or) -> WhenOr<Condition, Then, Or>
     where
         Condition: IntoComputed<bool>,
-        Or: ViewBuilderFn<P>,
+        Or: ViewBuilder,
     {
         WhenOr {
             condition: self.condition,
             then: self.then,
-            or: into_view_builder(or),
+            or,
         }
     }
 }
@@ -256,13 +246,12 @@ where
     Then: ViewBuilder,
     Or: ViewBuilder,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let env = env.clone();
+    fn body(self, _env: &Environment) -> impl View {
         Dynamic::watch(self.condition.into_signal(), move |condition| {
             if condition {
-                (self.then).build(&env).anyview()
+                (self.then).build().anyview()
             } else {
-                (self.or).build(&env).anyview()
+                (self.or).build().anyview()
             }
         })
     }
