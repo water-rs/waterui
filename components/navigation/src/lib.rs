@@ -13,17 +13,13 @@ pub mod tab;
 use alloc::{rc::Rc, vec::Vec};
 use core::{cell::RefCell, fmt::Debug};
 
-use alloc::boxed::Box;
 use nami::{Computed, collection::List};
 use waterui_color::Color;
 use waterui_controls::button;
 use waterui_core::{
-    AnyView, Environment, View,
-    env::use_env,
-    handler::{BoxHandler, HandlerFn, ViewBuilder, into_handler},
-    impl_debug, impl_extractor, raw_view,
+    AnyView, Environment, View, env::use_env, handler::ViewBuilder, impl_extractor, raw_view,
 };
-use waterui_text::{Text, link};
+use waterui_text::Text;
 
 /// A view that combines a navigation bar with content.
 ///
@@ -40,7 +36,7 @@ pub struct NavigationView {
 
 /// A trait for handling custom navigation actions.
 /// For renderers to implement navigation handling.
-pub trait CustomNavigationReceiver: 'static {
+pub trait CustomNavigationController: 'static {
     /// Pushes a new navigation view onto the stack.
     /// # Arguments
     /// * `content` - The navigation view to push
@@ -52,23 +48,23 @@ pub trait CustomNavigationReceiver: 'static {
 /// A receiver that handles navigation actions.
 /// For renderers to implement navigation handling.
 #[derive(Clone)]
-pub struct NavigationReceiver(Rc<RefCell<dyn CustomNavigationReceiver>>);
+pub struct NavigationController(Rc<RefCell<dyn CustomNavigationController>>);
 
-impl_extractor!(NavigationReceiver);
+impl_extractor!(NavigationController);
 
-impl Debug for NavigationReceiver {
+impl Debug for NavigationController {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("NavigationReceiver").finish()
+        f.debug_struct("NavigationController").finish()
     }
 }
 
-impl NavigationReceiver {
+impl NavigationController {
     /// Creates a new navigation receiver.
     ///
     /// # Arguments
     ///
-    /// * `receiver` - An implementation of `CustomNavigationReceiver`
-    pub fn new(receiver: impl CustomNavigationReceiver) -> Self {
+    /// * `receiver` - An implementation of `CustomNavigationController`
+    pub fn new(receiver: impl CustomNavigationController) -> Self {
         Self(Rc::new(RefCell::new(receiver)))
     }
 
@@ -137,7 +133,7 @@ where
 #[must_use]
 #[derive(Debug)]
 pub struct NavigationStack<T> {
-    root: AnyView, // Renderer requires to inject `NavigationReceiver` to the root view's environment
+    root: AnyView, // Renderer requires to inject `NavigationController` to the root view's environment
     path: T,
 }
 
@@ -179,11 +175,8 @@ where
     T: 'static + Clone,
 {
     fn body(self, env: &Environment) -> impl View {
-        NavigationStack::new(|| {
-            // make sure we are in a navigation context
-
-            use_env(|| self.root)
-        })
+        let path = self.path;
+        NavigationStack::new(use_env(|receiver: NavigationController| {}))
     }
 }
 
@@ -200,19 +193,35 @@ impl<T> From<Vec<T>> for NavigationPath<T> {
     }
 }
 
+impl<T> FromIterator<T> for NavigationPath<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        todo!()
+    }
+}
+
+impl<T: 'static + Clone> Default for NavigationPath<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: 'static + Clone> NavigationPath<T> {
+    /// Creates a new, empty navigation path.
     pub fn new() -> Self {
         Self { inner: List::new() }
     }
 
+    /// Pushes a new item onto the navigation path.
     pub fn push(&mut self, value: T) {
-        self.inner.push(value)
+        self.inner.push(value);
     }
 
+    /// Pops the top item from the navigation path.
     pub fn pop(&self) {
         let _ = self.inner.pop();
     }
 
+    /// Pops `n` items from the navigation path.
     pub fn pop_n(&self, n: usize) {
         for _ in 0..n {
             self.pop();
@@ -227,11 +236,11 @@ where
 {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         debug_assert!(
-            env.get::<NavigationReceiver>().is_some(),
+            env.get::<NavigationController>().is_some(),
             "NavigationLink used outside of a navigation context"
         );
 
-        button(self.label).action(move |receiver: NavigationReceiver| {
+        button(self.label).action(move |receiver: NavigationController| {
             let content = (self.content).build();
             receiver.push(content);
         })
