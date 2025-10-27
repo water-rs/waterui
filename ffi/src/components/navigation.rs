@@ -1,6 +1,6 @@
 use crate::array::WuiArray;
 use crate::components::text::WuiText;
-use crate::{IntoFFI, WuiAnyView, WuiEnv};
+use crate::{IntoFFI, WuiAnyView};
 use crate::{closure::WuiFn, ffi_struct, ffi_view};
 use waterui::{Binding, Color, Computed};
 use waterui_core::handler::AnyViewBuilder;
