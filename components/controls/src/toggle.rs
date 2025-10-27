@@ -1,3 +1,5 @@
+//! A boolean toggle switch backed by a reactive binding.
+
 use nami::Binding;
 use waterui_core::configurable;
 

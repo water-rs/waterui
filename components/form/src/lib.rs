@@ -8,23 +8,9 @@ extern crate alloc;
 
 use waterui_color::Color;
 
-/// Text field form component module.
-pub mod text_field;
-/// Toggle (switch) form component module.
-pub mod toggle;
-#[doc(inline)]
-pub use text_field::{TextField, field};
-#[doc(inline)]
-pub use toggle::{Toggle, toggle};
-/// Slider form component module.
-pub mod slider;
-pub use slider::Slider;
 /// Picker form component module.
 pub mod picker;
-/// Stepper form component module.
-pub mod stepper;
-#[doc(inline)]
-pub use stepper::{Stepper, stepper};
+
 use waterui_core::{AnyView, Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
@@ -58,9 +44,8 @@ use waterui_core::{AnyView, Binding, Str, View};
 /// For custom layouts or specialized form behavior, implement the trait manually:
 ///
 /// ```text
-/// use waterui_form::{FormBuilder, TextField, Toggle};
-/// use waterui_core::{Binding, View};
-/// use waterui_layout::vstack;
+/// use waterui_form::FormBuilder;
+/// use waterui::prelude::*;
 ///
 /// struct CustomForm {
 ///     title: String,
@@ -126,10 +111,10 @@ pub trait FormBuilder: Sized {
 
 // TextField has prompt, so handle it specially
 impl FormBuilder for Str {
-    type View = TextField;
+    type View = waterui_controls::TextField;
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        let mut field = TextField::new(binding).label(label);
+        let mut field = waterui_controls::TextField::new(binding).label(label);
         if !placeholder.is_empty() {
             field = field.prompt(placeholder);
         }
@@ -139,7 +124,7 @@ impl FormBuilder for Str {
 
 // String also uses TextField with prompt
 impl FormBuilder for alloc::string::String {
-    type View = TextField;
+    type View = waterui_controls::TextField;
 
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
         use alloc::string::ToString;
@@ -148,7 +133,7 @@ impl FormBuilder for alloc::string::String {
         let str_binding = NamiBinding::mapping(binding, Str::from, |binding, str_val: Str| {
             *binding.get_mut() = str_val.to_string();
         });
-        let mut field = TextField::new(&str_binding).label(label);
+        let mut field = waterui_controls::TextField::new(&str_binding).label(label);
         if !placeholder.is_empty() {
             field = field.prompt(placeholder);
         }
@@ -158,18 +143,18 @@ impl FormBuilder for alloc::string::String {
 
 // Other components don't have prompt
 impl FormBuilder for i32 {
-    type View = Stepper;
+    type View = waterui_controls::Stepper;
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        Stepper::new(binding).label(label)
+        waterui_controls::Stepper::new(binding).label(label)
     }
 }
 
 impl FormBuilder for bool {
-    type View = Toggle;
+    type View = waterui_controls::Toggle;
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        Toggle::new(binding).label(label)
+        waterui_controls::Toggle::new(binding).label(label)
     }
 }
 
@@ -182,10 +167,10 @@ impl FormBuilder for Color {
 }
 
 impl FormBuilder for f64 {
-    type View = Slider;
+    type View = waterui_controls::Slider;
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        Slider::new(0.0..=1.0, binding).label(label)
+        waterui_controls::Slider::new(0.0..=1.0, binding).label(label)
     }
 }
 
