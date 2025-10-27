@@ -24,10 +24,10 @@ use waterui_core::handler::{
     into_handler, into_handler_with_state,
 };
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{Environment, Native};
+use waterui_core::{Environment, Native, impl_debug};
 
-use crate::View;
-use crate::{AnyView, ViewExt};
+use waterui_core::AnyView;
+use waterui_core::View;
 
 /// Configuration for a button component.
 ///
@@ -52,7 +52,7 @@ where
         if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
             hook.apply(env, config)
         } else {
-            Native(config).anyview()
+            AnyView::new(Native(config))
         }
     }
 }
