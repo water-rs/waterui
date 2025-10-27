@@ -19,6 +19,17 @@ macro_rules! impl_debug {
 /// and should not have their `body()` method called in normal view composition.
 #[macro_export]
 macro_rules! raw_view {
+    ($ty:ty,$info:expr) => {
+        impl $crate::View for $ty {
+            #[allow(clippy::unused_unit)]
+            #[allow(unused)]
+            fn body(self, _env: &$crate::Environment) -> impl $crate::View {
+                panic!($info);
+                ()
+            }
+        }
+    };
+
     ($ty:ty) => {
         impl $crate::View for $ty {
             #[allow(clippy::unused_unit)]
