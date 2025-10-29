@@ -18,11 +18,8 @@ use output::OutputFormat;
 use std::process::ExitCode;
 use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
 
-//pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
-//pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_SWIFT_BACKEND_VERSION");
-
-pub const WATERUI_VERSION: &str = "";
-pub const WATERUI_SWIFT_BACKEND_VERSION: &str = "";
+pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
+pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_SWIFT_VERSION");
 
 #[derive(Parser)]
 #[command(name = "water")]
