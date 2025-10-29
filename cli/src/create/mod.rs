@@ -299,18 +299,25 @@ pub struct ProjectDependencies {
 }
 
 pub enum SwiftDependency {
-    Git { version: Option<String> },
+    Git {
+        version: Option<String>,
+        branch: Option<String>,
+    },
 }
 
 #[allow(clippy::const_is_empty)]
 pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
-        let rust_toml = r#"waterui = { git = "https://github.com/water-rs/waterui" }
-waterui-ffi = { git = "https://github.com/water-rs/waterui" }"#
-            .to_string();
+        let rust_toml =
+            r#"waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
+waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
+                .to_string();
         return Ok(ProjectDependencies {
             rust_toml,
-            swift: SwiftDependency::Git { version: None },
+            swift: SwiftDependency::Git {
+                version: None,
+                branch: Some("dev".to_string()),
+            },
         });
     }
 
@@ -326,19 +333,15 @@ waterui-ffi = "{}""#,
     );
 
     let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
-    let swift_version = if swift_backend_version.is_empty() {
-        warn!(
-            "WATERUI_SWIFT_BACKEND_VERSION is not set. This can happen if no tags are found. Defaulting to main branch for Apple backend."
-        );
-        None
-    } else {
-        Some(swift_backend_version.to_string())
-    };
+    if swift_backend_version.is_empty() {
+        bail!("WATERUI_SWIFT_BACKEND_VERSION is not set. This should be set at build time.");
+    }
 
     Ok(ProjectDependencies {
         rust_toml,
         swift: SwiftDependency::Git {
-            version: swift_version,
+            version: Some(swift_backend_version.to_string()),
+            branch: None,
         },
     })
 }
