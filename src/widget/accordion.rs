@@ -70,7 +70,7 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let (handler, dynamic) = Dynamic::new();
-        let mut toggle = self.toggle;
+        let toggle = self.toggle;
         vstack((
             self.header.on_tap(move || {
                 toggle.toggle();

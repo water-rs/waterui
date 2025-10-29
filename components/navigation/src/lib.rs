@@ -11,13 +11,20 @@ pub mod search;
 pub mod tab;
 
 use alloc::{rc::Rc, vec::Vec};
-use core::{cell::RefCell, fmt::Debug};
+use core::{
+    cell::{Cell, RefCell},
+    fmt::Debug,
+};
 
-use nami::{Computed, collection::List};
+use nami::{
+    Computed,
+    collection::{Collection, List},
+};
 use waterui_color::Color;
 use waterui_controls::button;
 use waterui_core::{
-    AnyView, Environment, View, env::use_env, handler::ViewBuilder, impl_extractor, raw_view,
+    AnyView, Environment, IgnorableMetadata, View, env::use_env, handler::ViewBuilder,
+    impl_extractor, raw_view,
 };
 use waterui_text::Text;
 
@@ -132,12 +139,13 @@ where
 /// A stack of navigation views.
 #[must_use]
 #[derive(Debug)]
-pub struct NavigationStack<T> {
+pub struct NavigationStack<T, F> {
     root: AnyView, // Renderer requires to inject `NavigationController` to the root view's environment
     path: T,
+    destination: F,
 }
 
-impl NavigationStack<()> {
+impl NavigationStack<(), ()> {
     /// Creates a new navigation stack with the specified root view.
     ///
     /// # Arguments
@@ -146,15 +154,17 @@ impl NavigationStack<()> {
         Self {
             root: AnyView::new(root),
             path: (),
+            destination: (),
         }
     }
 
+    /// Consumes the navigation stack and returns its root view.
     pub fn into_inner(self) -> AnyView {
         self.root
     }
 }
 
-impl<T> NavigationStack<NavigationPath<T>> {
+impl<T> NavigationStack<NavigationPath<T>, ()> {
     /// Creates a new navigation stack with the specified navigation path and root view.
     ///
     /// # Arguments
@@ -164,19 +174,69 @@ impl<T> NavigationStack<NavigationPath<T>> {
         Self {
             root: AnyView::new(root),
             path,
+            destination: (),
+        }
+    }
+
+    /// Sets the destination builder for the navigation stack.
+    ///
+    /// # Arguments
+    /// * `destination` - A function that creates a `NavigationView` from a path component
+    pub fn destination<F>(self, destination: F) -> NavigationStack<NavigationPath<T>, F>
+    where
+        F: 'static + Fn(T) -> NavigationView,
+    {
+        NavigationStack {
+            root: self.root,
+            path: self.path,
+            destination,
         }
     }
 }
 
-raw_view!(NavigationStack<()>);
+raw_view!(NavigationStack<(),()>);
 
-impl<T> View for NavigationStack<NavigationPath<T>>
+impl<T, F> View for NavigationStack<NavigationPath<T>, F>
 where
-    T: 'static + Clone,
+    T: 'static + Clone + View,
+    F: 'static + Fn(T) -> NavigationView,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let path = self.path;
-        NavigationStack::new(use_env(|receiver: NavigationController| {}))
+    fn body(self, _env: &Environment) -> impl View {
+        let path: NavigationPath<T> = self.path;
+        let destination = self.destination;
+        let root = self.root;
+        NavigationStack::new(use_env(move |receiver: NavigationController| {
+            let path = path.inner;
+            for component in &path {
+                receiver.push(destination(component));
+            }
+
+            let old_len = Cell::new(path.len());
+            #[allow(clippy::cast_possible_wrap)]
+            let guard = path.watch(.., move |slice| {
+                // list is a stack, only pop or push. So we only watch its length change
+                let slice = slice.into_value();
+                let len = slice.len();
+                let change = len as isize - old_len.get() as isize;
+                if change > 0 {
+                    // length increase, it has been pushed
+                    for item in slice.iter().skip(old_len.get()).take(len - old_len.get()) {
+                        receiver.push(destination(item.clone()));
+                    }
+                }
+                #[allow(clippy::cast_sign_loss)]
+                if change < 0 {
+                    //length decrease, it has been popped
+                    let pop_count = (-change) as usize;
+                    for _ in 0..pop_count {
+                        receiver.pop();
+                    }
+                }
+                old_len.set(len);
+            });
+
+            IgnorableMetadata::new(root, guard)
+        }))
     }
 }
 
@@ -187,15 +247,19 @@ pub struct NavigationPath<T> {
     inner: List<T>,
 }
 
-impl<T> From<Vec<T>> for NavigationPath<T> {
+impl<T: 'static> From<Vec<T>> for NavigationPath<T> {
     fn from(value: Vec<T>) -> Self {
-        todo!()
+        Self {
+            inner: value.into(),
+        }
     }
 }
 
-impl<T> FromIterator<T> for NavigationPath<T> {
+impl<T: 'static> FromIterator<T> for NavigationPath<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        todo!()
+        Self {
+            inner: List::from_iter(iter),
+        }
     }
 }
 
@@ -226,6 +290,11 @@ impl<T: 'static + Clone> NavigationPath<T> {
         for _ in 0..n {
             self.pop();
         }
+    }
+
+    /// Returns an iterator over the items in the navigation path.
+    pub fn iter(&self) -> impl Iterator<Item = T> {
+        self.inner.iter()
     }
 }
 
