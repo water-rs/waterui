@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
     format: OutputFormat,
 
+    /// Emit machine-readable JSON output (shorthand for --format json)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -75,7 +79,13 @@ fn run_cli() -> Result<()> {
         .panic_section("It looks like WaterUI CLI encountered a bug")
         .install()?;
 
-    output::set_global_output_format(cli.format);
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        cli.format
+    };
+
+    output::set_global_output_format(format);
 
     let level = match cli.verbose {
         0 => LevelFilter::INFO,
@@ -83,14 +93,27 @@ fn run_cli() -> Result<()> {
         _ => LevelFilter::TRACE,
     };
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .with_span_events(FmtSpan::NONE)
-        .without_time()
-        .with_target(false)
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    if format.is_json() {
+        let subscriber = FmtSubscriber::builder()
+            .with_max_level(level)
+            .with_span_events(FmtSpan::NONE)
+            .without_time()
+            .with_target(false)
+            .with_ansi(false)
+            .json()
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("setting default subscriber failed");
+    } else {
+        let subscriber = FmtSubscriber::builder()
+            .with_max_level(level)
+            .with_span_events(FmtSpan::NONE)
+            .without_time()
+            .with_target(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("setting default subscriber failed");
+    }
 
     match cli.command {
         Commands::Create(args) => create::run(args),

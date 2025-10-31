@@ -40,7 +40,7 @@ use crate::{
     },
     config::Config,
     devices::{self, DeviceInfo, DeviceKind},
-    util,
+    output, util,
 };
 
 #[derive(Args, Debug)]
@@ -90,11 +90,18 @@ pub fn run(args: RunArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let config = Config::load(&project_dir)?;
+    let is_json = output::global_output_format().is_json();
 
     info!("Running WaterUI app '{}'", config.package.display_name);
 
     let mut platform = args.platform;
     let device = args.device.clone();
+
+    if is_json && platform.is_none() && device.is_none() {
+        bail!(
+            "JSON output requires specifying --platform or --device to avoid interactive prompts."
+        );
+    }
 
     if platform.is_none() {
         let available_devices = devices::list_devices()?;

@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
+use serde::Serialize;
 use tracing::{debug, info};
 
-use crate::{android, apple, config::Config, util};
+use crate::{android, apple, config::Config, output, util};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -51,6 +52,7 @@ pub fn run(args: PackageArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let config = Config::load(&project_dir)?;
+    let is_json = output::global_output_format().is_json();
 
     if args.all && args.platform.is_some() {
         bail!("Cannot specify a platform when using --all");
@@ -74,6 +76,11 @@ pub fn run(args: PackageArgs) -> Result<()> {
         }
         vec![platform]
     } else {
+        if is_json {
+            bail!(
+                "JSON output requires specifying --platform or --all to avoid interactive prompts."
+            );
+        }
         let options: Vec<String> = available
             .iter()
             .map(|platform| platform.display_name().to_string())
@@ -85,6 +92,8 @@ pub fn run(args: PackageArgs) -> Result<()> {
             .interact()?;
         vec![available[selection]]
     };
+
+    let mut artifacts = Vec::new();
 
     for platform in platforms {
         match platform {
@@ -102,6 +111,12 @@ pub fn run(args: PackageArgs) -> Result<()> {
                     &config.package.bundle_identifier,
                 )?;
                 info!("Android package ready: {}", apk_path.display());
+                if is_json {
+                    artifacts.push(PackageArtifact {
+                        platform: "android".to_string(),
+                        path: apk_path.display().to_string(),
+                    });
+                }
             }
             PackagePlatform::Ios => {
                 let swift_config = config.backends.swift.as_ref().ok_or_else(|| {
@@ -111,11 +126,41 @@ pub fn run(args: PackageArgs) -> Result<()> {
                 })?;
                 let app_bundle = package_ios(&project_dir, swift_config, args.release)?;
                 info!("iOS package ready: {}", app_bundle.display());
+                if is_json {
+                    artifacts.push(PackageArtifact {
+                        platform: "ios".to_string(),
+                        path: app_bundle.display().to_string(),
+                    });
+                }
             }
         }
     }
 
+    if is_json {
+        let report = PackageReport {
+            project_dir: project_dir.display().to_string(),
+            release: args.release,
+            skip_native: args.skip_native,
+            artifacts,
+        };
+        output::emit_json(&report)?;
+    }
+
     Ok(())
+}
+
+#[derive(Serialize)]
+struct PackageReport {
+    project_dir: String,
+    release: bool,
+    skip_native: bool,
+    artifacts: Vec<PackageArtifact>,
+}
+
+#[derive(Serialize)]
+struct PackageArtifact {
+    platform: String,
+    path: String,
 }
 
 fn available_platforms(config: &Config) -> Vec<PackagePlatform> {

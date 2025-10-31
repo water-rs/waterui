@@ -7,8 +7,9 @@ use tracing::info;
 use crate::{
     config::{Android, Config, Swift, Web},
     create::{self, BackendChoice, resolve_dependencies},
-    util,
+    output, util,
 };
+use serde::Serialize;
 
 #[derive(Args, Debug)]
 pub struct AddBackendArgs {
@@ -92,5 +93,23 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
     config.save(&project_dir)?;
     info!("Updated Water.toml.");
 
+    if output::global_output_format().is_json() {
+        let report = AddBackendReport {
+            project_dir: project_dir.display().to_string(),
+            backend: args.backend.label().to_string(),
+            using_dev_dependencies: args.dev,
+            config_path: Config::path(&project_dir).display().to_string(),
+        };
+        output::emit_json(&report)?;
+    }
+
     Ok(())
+}
+
+#[derive(Serialize)]
+struct AddBackendReport {
+    project_dir: String,
+    backend: String,
+    using_dev_dependencies: bool,
+    config_path: String,
 }
