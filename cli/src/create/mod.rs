@@ -8,8 +8,9 @@ use tracing::{info, warn};
 
 use crate::{
     config::{Android, Config, Package, Swift, Web},
-    util,
+    output, util,
 };
+use serde::Serialize;
 
 pub mod android;
 pub mod rust;
@@ -63,7 +64,7 @@ pub enum BackendChoice {
 }
 
 impl BackendChoice {
-    fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             BackendChoice::Web => "Web",
             BackendChoice::Swiftui => "SwiftUI",
@@ -73,6 +74,13 @@ impl BackendChoice {
 }
 
 pub fn run(args: CreateArgs) -> Result<()> {
+    let is_json = output::global_output_format().is_json();
+    if is_json && !args.yes {
+        bail!(
+            "JSON output requires --yes to avoid interactive prompts. Re-run with --yes or provide --backend, --name, and related flags."
+        );
+    }
+
     let theme = ColorfulTheme::default();
 
     let deps = resolve_dependencies(args.dev)?;
@@ -198,19 +206,26 @@ pub fn run(args: CreateArgs) -> Result<()> {
     }
 
     // Create progress indicator
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    spinner.set_message("Creating project structure...");
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    let spinner = if is_json {
+        None
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        pb.set_message("Creating project structure...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    };
 
     prepare_directory(&project_dir)?;
 
-    spinner.set_message("Generating Rust sources...");
+    if let Some(pb) = spinner.as_ref() {
+        pb.set_message("Generating Rust sources...");
+    }
     rust::create_rust_sources(&project_dir, &crate_name, &author, &display_name, &deps)?;
 
     let mut config = Config::new(Package {
@@ -225,29 +240,39 @@ pub fn run(args: CreateArgs) -> Result<()> {
         let progress = format!("[{}/{}]", idx + 1, total_backends);
         match backend {
             BackendChoice::Web => {
-                spinner.set_message(format!("{} Creating Web backend...", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} Creating Web backend...", progress));
+                }
                 web::create_web_assets(&project_dir, &display_name)?;
-                spinner.set_message(format!("{} Web backend created ✓", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} Web backend created ✓", progress));
+                }
                 config.backends.web = Some(Web {
                     project_path: "web".to_string(),
                 });
                 web_enabled = true;
             }
             BackendChoice::Android => {
-                spinner.set_message(format!("{} Creating Android backend...", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} Creating Android backend...", progress));
+                }
                 android::create_android_project(
                     &project_dir,
                     &app_name,
                     &crate_name,
                     &bundle_identifier,
                 )?;
-                spinner.set_message(format!("{} Android backend created ✓", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} Android backend created ✓", progress));
+                }
                 config.backends.android = Some(Android {
                     project_path: "android".to_string(),
                 });
             }
             BackendChoice::Swiftui => {
-                spinner.set_message(format!("{} Creating SwiftUI backend...", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} Creating SwiftUI backend...", progress));
+                }
                 swift::create_xcode_project(
                     &project_dir,
                     &app_name,
@@ -256,7 +281,9 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     &bundle_identifier,
                     &deps.swift,
                 )?;
-                spinner.set_message(format!("{} SwiftUI backend created ✓", progress));
+                if let Some(pb) = spinner.as_ref() {
+                    pb.set_message(format!("{} SwiftUI backend created ✓", progress));
+                }
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
                     scheme: crate_name.clone(),
@@ -270,17 +297,39 @@ pub fn run(args: CreateArgs) -> Result<()> {
         config.hot_reload.watch.push("web".to_string());
     }
 
-    spinner.set_message("Saving configuration...");
+    if let Some(pb) = spinner.as_ref() {
+        pb.set_message("Saving configuration...");
+    }
     config.save(&project_dir)?;
 
-    spinner.finish_with_message("Project created successfully!");
-    spinner.finish_and_clear();
+    if let Some(pb) = &spinner {
+        pb.finish_with_message("Project created successfully!");
+        pb.finish_and_clear();
+    }
     info!("✅ Project created");
-    let current_dir = std::env::current_dir()?;
-    let display_path = project_dir
-        .strip_prefix(current_dir)
-        .unwrap_or(&project_dir);
-    info!("Next steps:\n  cd {}\n  water run", display_path.display());
+    if !is_json {
+        let current_dir = std::env::current_dir()?;
+        let display_path = project_dir
+            .strip_prefix(current_dir)
+            .unwrap_or(&project_dir);
+        info!("Next steps:\n  cd {}\n  water run", display_path.display());
+    }
+
+    if is_json {
+        let report = CreateReport {
+            project_dir: project_dir.display().to_string(),
+            crate_name: crate_name.clone(),
+            display_name: display_name.clone(),
+            bundle_identifier: bundle_identifier.clone(),
+            backends: selected_backends
+                .iter()
+                .map(|backend| backend.label().to_string())
+                .collect(),
+            using_dev_dependencies: args.dev,
+            config_path: Config::path(&project_dir).display().to_string(),
+        };
+        output::emit_json(&report)?;
+    }
 
     // if which::which("git").is_ok() {
     //     std::process::Command::new("git")
@@ -291,6 +340,17 @@ pub fn run(args: CreateArgs) -> Result<()> {
     // }
 
     Ok(())
+}
+
+#[derive(Serialize)]
+struct CreateReport {
+    project_dir: String,
+    crate_name: String,
+    display_name: String,
+    bundle_identifier: String,
+    backends: Vec<String>,
+    using_dev_dependencies: bool,
+    config_path: String,
 }
 
 pub struct ProjectDependencies {
