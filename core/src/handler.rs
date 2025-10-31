@@ -37,6 +37,12 @@ impl<T> Debug for dyn Handler<T> {
     }
 }
 
+impl<T> Debug for dyn HandlerOnce<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(type_name::<Self>())
+    }
+}
+
 impl Handler<()> for () {
     fn handle(&mut self, _env: &Environment) {}
 }
@@ -69,6 +75,25 @@ impl<T: 'static> Handler<T> for BoxHandler<T> {
 
 /// A boxed one-time handler with dynamic dispatch.
 pub type BoxHandlerOnce<T> = Box<dyn HandlerOnce<T>>;
+
+impl<T: 'static> HandlerOnce<T> for Box<dyn HandlerOnce<T>> {
+    fn handle(self, env: &Environment) -> T {
+        trait CallBoxHandlerOnce<T> {
+            fn call_box(self: Box<Self>, env: &Environment) -> T;
+        }
+
+        impl<T, H> CallBoxHandlerOnce<T> for H
+        where
+            H: HandlerOnce<T>,
+        {
+            fn call_box(self: Box<Self>, env: &Environment) -> T {
+                self.handle(env)
+            }
+        }
+
+        Box::call_box(self.into(), env)
+    }
+}
 
 /// Function-like trait for immutable handlers that extract parameters from the environment.
 ///

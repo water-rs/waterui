@@ -15,7 +15,7 @@ pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata,
     env::{With, WithEnv},
-    handler::HandlerFn,
+    handler::{HandlerFn, HandlerFnOnce},
 };
 
 use waterui_layout::{
@@ -36,8 +36,8 @@ use crate::{
     prelude::Shadow,
 };
 use waterui_core::Metadata;
+use waterui_core::event::{Event, OnEvent};
 use waterui_core::id::TaggedView;
-
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
     /// Attaches metadata to a view.
@@ -103,6 +103,40 @@ pub trait ViewExt: View + Sized {
     /// * `color` - The foreground color to apply
     fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor> {
         Metadata::new(self, ForegroundColor::new(color))
+    }
+
+    /// Adds an event handler for the specified event.
+    ///
+    /// # Arguments
+    /// * `event` - The event to listen for
+    /// * `handler` - The action to execute when the event occurs
+    fn event<H: 'static>(
+        self,
+        event: Event,
+        handler: impl HandlerFnOnce<H, ()> + 'static,
+    ) -> Metadata<OnEvent> {
+        Metadata::new(self, OnEvent::new(event, handler))
+    }
+
+    /// Adds a handler that triggers when the view disappears.
+    ////
+    /// # Arguments
+    /// * `handler` - The action to execute when the view disappears
+    fn on_disappear<H: 'static>(
+        self,
+        handler: impl HandlerFnOnce<H, ()> + 'static,
+    ) -> Metadata<OnEvent> {
+        self.event(Event::Disappear, handler)
+    }
+
+    /// Adds a handler that triggers when the view appears.
+    //// # Arguments
+    /// * `handler` - The action to execute when the view appears
+    fn on_appear<H: 'static>(
+        self,
+        handler: impl HandlerFnOnce<H, ()> + 'static,
+    ) -> Metadata<OnEvent> {
+        self.event(Event::Appear, handler)
     }
 
     /// Adds a badge to this view.
