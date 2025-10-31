@@ -259,15 +259,15 @@ pub unsafe extern "C" fn waterui_view_body(
     }
 }
 
-/// Gets the type ID of a view
+/// Gets the id of a view
 ///
 /// # Safety
 /// The caller must ensure that `view` is a valid pointer to a properly
 /// initialized `WuiAnyView` instance and that it remains valid for the
 /// duration of this function call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiTypeId {
-    unsafe { (&*view).type_id().into_ffi() }
+pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiStr {
+    unsafe { (&*view).name().into_ffi() }
 }
 
 // UTF-8 string represented as a byte array
@@ -278,6 +278,13 @@ impl IntoFFI for Str {
     type FFI = WuiStr;
     fn into_ffi(self) -> Self::FFI {
         WuiStr(WuiArray::new(self))
+    }
+}
+
+impl IntoFFI for &'static str {
+    type FFI = WuiStr;
+    fn into_ffi(self) -> Self::FFI {
+        WuiStr(WuiArray::new(Str::from_static(self)))
     }
 }
 
@@ -296,6 +303,6 @@ pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_anyview_id() -> WuiTypeId {
-    core::any::TypeId::of::<AnyView>().into_ffi()
+pub extern "C" fn waterui_anyview_id() -> WuiStr {
+    core::any::type_name::<AnyView>().into_ffi()
 }
