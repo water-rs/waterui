@@ -360,21 +360,44 @@ fn run_platform(
 
 fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<()> {
     info!("Compiling Rust library...");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build").arg("--package").arg(package);
-    if release {
-        cmd.arg("--release");
-    }
-    cmd.current_dir(project_dir);
-    apply_build_speedups(&mut cmd);
+    let make_command = || {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").arg("--package").arg(package);
+        if release {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(project_dir);
+        cmd
+    };
+
+    let mut cmd = make_command();
+    let sccache_enabled = configure_build_speedups(&mut cmd, true);
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
         .with_context(|| format!("failed to run cargo build in {}", project_dir.display()))?;
-    if !status.success() {
-        bail!("cargo build failed");
+    if status.success() {
+        return Ok(());
     }
-    Ok(())
+
+    if sccache_enabled {
+        warn!("cargo build failed when using sccache; retrying without build cache");
+        let mut retry_cmd = make_command();
+        configure_build_speedups(&mut retry_cmd, false);
+        debug!("Running command without sccache: {:?}", retry_cmd);
+        let retry_status = retry_cmd.status().with_context(|| {
+            format!(
+                "failed to rerun cargo build without sccache in {}",
+                project_dir.display()
+            )
+        })?;
+        if retry_status.success() {
+            info!("cargo build succeeded after disabling sccache");
+            return Ok(());
+        }
+    }
+
+    bail!("cargo build failed");
 }
 
 fn indent_lines(text: &str, indent: &str) -> String {
@@ -615,25 +638,32 @@ fn apply_dev_cache_headers(response: &mut Response<hyper_staticfile::Body>) {
     headers.insert(EXPIRES, HeaderValue::from_static("0"));
 }
 
-fn apply_build_speedups(cmd: &mut Command) {
-    configure_sccache(cmd);
+fn configure_build_speedups(cmd: &mut Command, enable_sccache: bool) -> bool {
+    let sccache_enabled = if enable_sccache {
+        configure_sccache(cmd)
+    } else {
+        false
+    };
     #[cfg(target_os = "linux")]
     configure_mold(cmd);
+    sccache_enabled
 }
 
-fn configure_sccache(cmd: &mut Command) {
+fn configure_sccache(cmd: &mut Command) -> bool {
     if env::var_os("RUSTC_WRAPPER").is_some() {
         debug!("RUSTC_WRAPPER already set; not overriding with sccache");
-        return;
+        return false;
     }
 
     match which("sccache") {
         Ok(path) => {
             debug!("Enabling sccache for cargo builds");
             cmd.env("RUSTC_WRAPPER", path);
+            true
         }
         Err(_) => {
             warn!("`sccache` not found on PATH; proceeding without build cache");
+            false
         }
     }
 }
