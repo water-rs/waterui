@@ -5,8 +5,8 @@ use waterui_layout::{
     scroll::Axis,
 };
 
-use crate::views::WuiAnyViews;
-use crate::{IntoFFI, IntoRust, WuiAnyView, WuiTypeId, array::WuiArray};
+use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
+use crate::{WuiStr, views::WuiAnyViews};
 
 ffi_type!(WuiLayout, Box<dyn Layout>, waterui_drop_layout);
 
@@ -17,8 +17,8 @@ pub struct WuiFixedContainer {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
-    core::any::TypeId::of::<waterui::component::spacer::Spacer>().into_ffi()
+pub extern "C" fn waterui_spacer_id() -> WuiStr {
+    core::any::type_name::<waterui::component::spacer::Spacer>().into_ffi()
 }
 
 ffi_view!(
