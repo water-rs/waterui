@@ -45,15 +45,6 @@ impl<F: 'static + FnOnce() -> V, V: View> View for F {
     }
 }
 
-/// A marker trait for views that have native implementations.
-pub trait NativeView {
-    /// Returns a unique identifier for this view type.
-    #[must_use]
-    fn id() -> &'static str {
-        core::any::type_name::<Self>()
-    }
-}
-
 impl<V: View, E: View> View for Result<V, E> {
     fn body(self, _env: &Environment) -> impl View {
         match self {
