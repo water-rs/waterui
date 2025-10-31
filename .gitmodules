@@ -4,3 +4,4 @@
 [submodule "backends/apple"]
 	path = backends/apple
 	url = https://github.com/water-rs/apple-backend.git
+	branch = dev
