@@ -4,10 +4,11 @@ use std::{
     process::Command,
 };
 
-use crate::android;
+use crate::{android, output};
 use color_eyre::eyre::{Context, Result, eyre};
 use console::style;
 use indexmap::IndexSet;
+use serde::Serialize;
 use which::which;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +100,9 @@ pub fn perform_check(mode: CheckMode, target: CheckTarget) -> Option<SectionOutc
     }
 }
 
-pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<()> {
+pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixApplication>> {
+    let is_json = output::global_output_format().is_json();
+
     let mut seen = IndexSet::new();
     let mut unique = Vec::new();
     for fix in fixes {
@@ -109,34 +112,60 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<()> {
     }
 
     if unique.is_empty() {
-        println!(
-            "{}",
-            style("All required checks are already satisfied.").green()
-        );
-        return Ok(());
+        if !is_json {
+            println!(
+                "{}",
+                style("All required checks are already satisfied.").green()
+            );
+        }
+        return Ok(Vec::new());
     }
 
-    println!();
-    println!("{}", style("Attempting to fix required issues").bold());
+    if !is_json {
+        println!();
+        println!("{}", style("Attempting to fix required issues").bold());
+    }
+
+    let mut results = Vec::new();
 
     for fix in unique {
-        println!(
-            "\n{} {}",
-            style("•").cyan(),
-            style(fix.description()).bold()
-        );
-        println!("    {}", style(fix.command_preview()).dim());
+        if !is_json {
+            println!(
+                "\n{} {}",
+                style("•").cyan(),
+                style(fix.description()).bold()
+            );
+            println!("    {}", style(fix.command_preview()).dim());
+        }
+
+        let mut outcome = FixApplication {
+            id: fix.id.clone(),
+            description: fix.description().to_string(),
+            command: fix.command.clone(),
+            outcome: FixApplicationOutcome::Skipped,
+            detail: None,
+        };
 
         if !mode.should_apply_fix()? {
-            println!("    {}", style("Skipped.").yellow());
+            if !is_json {
+                println!("    {}", style("Skipped.").yellow());
+            }
+            outcome.outcome = FixApplicationOutcome::Skipped;
+            outcome.detail = Some("User skipped this fix.".to_string());
+            results.push(outcome);
             continue;
         }
 
         if fix.command.is_empty() {
-            println!(
-                "    {}",
-                style("No command associated with this fix. Skipping.").yellow()
-            );
+            if !is_json {
+                println!(
+                    "    {}",
+                    style("No command associated with this fix. Skipping.").yellow()
+                );
+            }
+            outcome.outcome = FixApplicationOutcome::Unavailable;
+            outcome.detail = Some("No command associated with this fix.".to_string());
+            results.push(outcome);
             continue;
         }
 
@@ -147,28 +176,42 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<()> {
 
         match command.status() {
             Ok(status) if status.success() => {
-                println!("    {}", style("Completed successfully.").green());
+                if !is_json {
+                    println!("    {}", style("Completed successfully.").green());
+                }
+                outcome.outcome = FixApplicationOutcome::Applied;
+                outcome.detail = None;
             }
             Ok(status) => {
                 let code = status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "signal".to_string());
-                println!(
-                    "    {}",
-                    style(format!("Command exited with status {code}.")).red()
-                );
+                if !is_json {
+                    println!(
+                        "    {}",
+                        style(format!("Command exited with status {code}.")).red()
+                    );
+                }
+                outcome.outcome = FixApplicationOutcome::Failed;
+                outcome.detail = Some(format!("Command exited with status {code}."));
             }
             Err(err) => {
-                println!(
-                    "    {}",
-                    style(format!("Failed to execute command: {err}")).red()
-                );
+                if !is_json {
+                    println!(
+                        "    {}",
+                        style(format!("Failed to execute command: {err}")).red()
+                    );
+                }
+                outcome.outcome = FixApplicationOutcome::Failed;
+                outcome.detail = Some(format!("Failed to execute command: {err}"));
             }
         }
+
+        results.push(outcome);
     }
 
-    Ok(())
+    Ok(results)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +238,25 @@ impl FixMode {
             }
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct FixApplication {
+    pub id: String,
+    pub description: String,
+    pub command: Vec<String>,
+    pub outcome: FixApplicationOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixApplicationOutcome {
+    Applied,
+    Skipped,
+    Failed,
+    Unavailable,
 }
 
 pub struct SectionOutcome {
@@ -230,7 +292,7 @@ impl SectionOutcome {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct FixSuggestion {
     pub id: String,
     description: String,
@@ -255,7 +317,8 @@ impl FixSuggestion {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Status {
     Pass,
     Warn,
@@ -263,9 +326,11 @@ pub enum Status {
     Info,
 }
 
+#[derive(Clone, Serialize)]
 pub struct Row {
     pub status: Status,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
     indent: usize,
 }
@@ -350,6 +415,7 @@ impl Row {
     }
 }
 
+#[derive(Clone, Serialize)]
 pub struct Section {
     title: String,
     rows: Vec<Row>,
@@ -418,6 +484,12 @@ impl Section {
         self.rows
             .iter()
             .any(|row| matches!(row.status(), Status::Fail))
+    }
+
+    pub fn has_warning(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|row| matches!(row.status(), Status::Warn))
     }
 
     fn failure_summaries(&self) -> Vec<String> {
