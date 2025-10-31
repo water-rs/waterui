@@ -1,4 +1,4 @@
-use crate::{IntoFFI, WuiStr, WuiTypeId};
+use crate::{IntoFFI, WuiStr};
 
 pub mod layout;
 
@@ -39,8 +39,8 @@ pub mod list;
 pub mod table;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_empty_id() -> WuiTypeId {
-    core::any::TypeId::of::<()>().into_ffi()
+pub extern "C" fn waterui_empty_id() -> WuiStr {
+    core::any::type_name::<()>().into_ffi()
 }
 
 pub mod progress;

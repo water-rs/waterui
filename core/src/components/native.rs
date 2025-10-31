@@ -2,7 +2,7 @@
 
 use core::any::type_name;
 
-use crate::{Environment, View, view::NativeView};
+use crate::{Environment, View};
 
 /// A wrapper for platform-specific native UI components.
 ///
@@ -24,5 +24,3 @@ impl<T: 'static> View for Native<T> {
         return;
     }
 }
-
-impl<T> NativeView for Native<T> {}
