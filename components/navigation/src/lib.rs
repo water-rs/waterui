@@ -23,7 +23,7 @@ use nami::{
 use waterui_color::Color;
 use waterui_controls::button;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, View, env::use_env, handler::ViewBuilder,
+    AnyView, Environment, View, env::use_env, event::Associated, handler::ViewBuilder,
     impl_extractor, raw_view,
 };
 use waterui_text::Text;
@@ -235,7 +235,7 @@ where
                 old_len.set(len);
             });
 
-            IgnorableMetadata::new(root, guard)
+            Associated::new(guard, root)
         }))
     }
 }
