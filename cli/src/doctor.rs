@@ -5,7 +5,11 @@ use core::time::Duration;
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::toolchain::{self, CheckMode, CheckTarget, FixMode, Section};
+use crate::{
+    output,
+    toolchain::{self, CheckMode, CheckTarget, FixApplication, FixMode, FixSuggestion, Section},
+};
+use serde::Serialize;
 
 #[derive(Args, Debug, Default)]
 pub struct DoctorArgs {
@@ -15,90 +19,122 @@ pub struct DoctorArgs {
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
-    let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.blue} {msg}")
-            .expect("template should be valid")
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
+    let is_json = output::global_output_format().is_json();
 
-    pb.set_message(style("Preparing environment checks…").dim().to_string());
-    pb.tick();
+    let mut spinner = if is_json {
+        None
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.blue} {msg}")
+                .expect("template should be valid")
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        pb.set_message(style("Preparing environment checks…").dim().to_string());
+        pb.tick();
+        Some(pb)
+    };
 
     let targets = doctor_targets();
     let total = targets.len();
     let mut sections = Vec::new();
-    let mut fixes = Vec::new();
+    let mut fix_suggestions = Vec::new();
 
     for (index, target) in targets.iter().enumerate() {
         let step = index + 1;
-        pb.set_message(progress_label(step, total, target.label()));
-        pb.tick();
+        if let Some(pb) = spinner.as_mut() {
+            pb.set_message(progress_label(step, total, target.label()));
+            pb.tick();
+        }
 
         if let Some(outcome) = toolchain::perform_check(CheckMode::Full, *target) {
-            announce_section(&pb, step, total, outcome.section());
+            if let Some(pb) = spinner.as_ref() {
+                announce_section(pb, step, total, outcome.section());
+            }
             let (section, mut section_fixes) = outcome.into_parts();
             sections.push(section);
-            fixes.append(&mut section_fixes);
+            fix_suggestions.append(&mut section_fixes);
         }
     }
 
-    pb.finish_and_clear();
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
 
     let has_failures = sections.iter().any(Section::has_failure);
+    let has_warnings = sections.iter().any(Section::has_warning);
+    let status = if has_failures {
+        DoctorStatus::Fail
+    } else if has_warnings {
+        DoctorStatus::Warn
+    } else {
+        DoctorStatus::Pass
+    };
 
-    println!("{}", style("WaterUI doctor report").bold().underlined());
-    for (index, section) in sections.iter().enumerate() {
-        if index > 0 {
-            println!();
+    if !is_json {
+        println!("{}", style("WaterUI doctor report").bold().underlined());
+        for (index, section) in sections.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            for line in section.render() {
+                println!("{line}");
+            }
         }
-        for line in section.render() {
-            println!("{line}");
-        }
+
+        println!();
+        println!("{}", style("Doctor check complete.").green());
+        println!(
+            "{}",
+            style("Resolve ⚠ or ✘ entries to keep your toolchain healthy.").dim()
+        );
     }
-
-    println!();
-    println!("{}", style("Doctor check complete.").green());
-    println!(
-        "{}",
-        style("Resolve ⚠ or ✘ entries to keep your toolchain healthy.").dim()
-    );
 
     let mut fix_mode = None;
 
     if has_failures {
-        let requested = if args.fix {
-            true
-        } else {
+        if args.fix {
+            fix_mode = Some(FixMode::Automatic);
+        } else if !is_json {
             println!();
-            Confirm::new()
+            let requested = Confirm::new()
                 .with_prompt("Critical issues detected. Apply automatic fixes now?")
                 .default(true)
-                .interact()?
-        };
+                .interact()?;
 
-        if requested {
-            fix_mode = Some(if args.fix {
-                FixMode::Automatic
+            if requested {
+                fix_mode = Some(FixMode::Interactive);
             } else {
-                FixMode::Interactive
-            });
-        } else if !args.fix {
-            println!(
-                "{}",
-                style("Tip: run `water doctor --fix` to attempt automatic repairs.").yellow()
-            );
+                println!(
+                    "{}",
+                    style("Tip: run `water doctor --fix` to attempt automatic repairs.").yellow()
+                );
+            }
         }
-    } else if args.fix {
+    } else if args.fix && !is_json {
         println!(
             "{}",
             style("All required checks already pass. Nothing to fix.").green()
         );
     }
 
+    let mut applied_fixes = None;
     if let Some(mode) = fix_mode {
-        toolchain::apply_fixes(fixes, mode)?;
+        let results = toolchain::apply_fixes(fix_suggestions.clone(), mode)?;
+        applied_fixes = Some(results);
+    } else if args.fix && !has_failures {
+        applied_fixes = Some(Vec::new());
+    }
+
+    if is_json {
+        let report = DoctorReport {
+            status,
+            sections,
+            suggestions: fix_suggestions,
+            applied_fixes,
+        };
+        output::emit_json(&report)?;
     }
 
     Ok(())
@@ -128,4 +164,21 @@ fn progress_label(step: usize, total: usize, message: &str) -> String {
         style(format!("[{step}/{total}]")).dim(),
         style(message).bold()
     )
+}
+
+#[derive(Serialize)]
+struct DoctorReport {
+    status: DoctorStatus,
+    sections: Vec<Section>,
+    suggestions: Vec<FixSuggestion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_fixes: Option<Vec<FixApplication>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
 }
