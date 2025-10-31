@@ -29,7 +29,6 @@ macro_rules! raw_view {
             }
         }
 
-        impl $crate::view::NativeView for $ty {}
     };
 
     ($ty:ty) => {
