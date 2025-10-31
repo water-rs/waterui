@@ -12,11 +12,7 @@ use std::process::Command;
 use which::which;
 
 #[derive(Args, Debug, Default)]
-pub struct DevicesArgs {
-    /// Output devices as JSON
-    #[arg(long)]
-    pub json: bool,
-}
+pub struct DevicesArgs;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -46,23 +42,20 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
-pub fn run(args: DevicesArgs) -> Result<()> {
+pub fn run(_args: DevicesArgs) -> Result<()> {
     let devices = list_devices()?;
 
-    if devices.is_empty() {
-        println!("No devices detected. Install a simulator or connect a device, then try again.");
-        return Ok(());
-    }
-
-    match if args.json {
-        OutputFormat::Json
-    } else {
-        output::global_output_format()
-    } {
+    match output::global_output_format() {
         OutputFormat::Json => {
             output::emit_json(&devices)?;
         }
         OutputFormat::Human => {
+            if devices.is_empty() {
+                println!(
+                    "No devices detected. Install a simulator or connect a device, then try again."
+                );
+                return Ok(());
+            }
             print_table(&devices);
         }
     }
