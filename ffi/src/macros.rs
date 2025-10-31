@@ -264,8 +264,8 @@ macro_rules! ffi_view {
 
     ($view_ty:ty,$id:ident) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $id() -> $crate::WuiTypeId {
-            $crate::IntoFFI::into_ffi(core::any::TypeId::of::<$view_ty>())
+        pub extern "C" fn $id() -> $crate::WuiStr {
+            $crate::IntoFFI::into_ffi(core::any::type_name::<$view_ty>()) // type_name is constant between runs, so it's good to use as a hot reload id.
         }
     };
 }
