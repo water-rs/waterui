@@ -1,8 +1,9 @@
-use crate::util;
+use crate::{output, util};
 use clap::Args;
 use color_eyre::eyre::{Context, Result, eyre};
 use console::style;
 use dialoguer::Confirm;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,15 +17,29 @@ pub struct CleanArgs {
 }
 
 pub fn run(args: CleanArgs) -> Result<()> {
+    let format = output::global_output_format();
+    let is_json = format.is_json();
+    let auto_confirm = args.yes || is_json;
+
     let workspace = util::workspace_root();
     let actions = build_actions(&workspace)?;
 
     if actions.is_empty() {
-        println!("{}", style("Nothing to clean.").green());
+        if is_json {
+            let report = CleanReport {
+                status: CleanStatus::Noop,
+                workspace: workspace.display().to_string(),
+                actions: Vec::new(),
+                errors: Vec::new(),
+            };
+            output::emit_json(&report)?;
+        } else {
+            println!("{}", style("Nothing to clean.").green());
+        }
         return Ok(());
     }
 
-    if !args.yes {
+    if !auto_confirm {
         println!(
             "{}",
             style("The following cleanup actions will be performed:").bold()
@@ -43,39 +58,99 @@ pub fn run(args: CleanArgs) -> Result<()> {
         }
     }
 
-    println!("{}", style("Starting cleanup…").bold());
+    if !is_json {
+        println!("{}", style("Starting cleanup…").bold());
+    }
 
     let mut errors = Vec::new();
+    let mut reports = Vec::new();
 
     for action in actions {
+        let description = action.description.clone();
         match execute_action(&action) {
             Ok(ActionResult::Removed(detail)) => {
-                println!(
-                    "  {} {}",
-                    style("[ok]").green(),
-                    format_detail(&action.description, detail.as_deref())
-                );
+                if !is_json {
+                    println!(
+                        "  {} {}",
+                        style("[ok]").green(),
+                        format_detail(&description, detail.as_deref())
+                    );
+                }
+                if is_json {
+                    reports.push(CleanActionReport {
+                        description,
+                        result: CleanActionResult::Removed,
+                        detail,
+                        error: None,
+                    });
+                }
             }
             Ok(ActionResult::Skipped(reason)) => {
-                println!(
-                    "  {} {}",
-                    style("[skip]").yellow(),
-                    format_detail(&action.description, Some(reason))
-                );
+                if !is_json {
+                    println!(
+                        "  {} {}",
+                        style("[skip]").yellow(),
+                        format_detail(&description, Some(reason))
+                    );
+                }
+                if is_json {
+                    reports.push(CleanActionReport {
+                        description,
+                        result: CleanActionResult::Skipped,
+                        detail: Some(reason.to_string()),
+                        error: None,
+                    });
+                }
             }
             Ok(ActionResult::Done) => {
-                println!("  {} {}", style("[ok]").green(), action.description);
+                if !is_json {
+                    println!("  {} {}", style("[ok]").green(), description);
+                }
+                if is_json {
+                    reports.push(CleanActionReport {
+                        description,
+                        result: CleanActionResult::Done,
+                        detail: None,
+                        error: None,
+                    });
+                }
             }
             Err(err) => {
-                println!("  {} {}", style("[err]").red(), action.description);
+                let message = err.to_string();
+                if !is_json {
+                    println!("  {} {}", style("[err]").red(), description);
+                }
                 errors.push(err);
+                if is_json {
+                    reports.push(CleanActionReport {
+                        description,
+                        result: CleanActionResult::Error,
+                        detail: None,
+                        error: Some(message),
+                    });
+                }
             }
         }
     }
 
-    if errors.is_empty() {
+    let success = errors.is_empty();
+
+    if is_json {
+        let status = if success {
+            CleanStatus::Ok
+        } else {
+            CleanStatus::Error
+        };
+        let error_messages: Vec<String> = errors.iter().map(|err| err.to_string()).collect();
+        let report = CleanReport {
+            status,
+            workspace: workspace.display().to_string(),
+            actions: reports,
+            errors: error_messages,
+        };
+        output::emit_json(&report)?;
+    } else if success {
         println!("{}", style("Cleanup complete.").green().bold());
-        Ok(())
     } else {
         println!(
             "{}",
@@ -86,9 +161,14 @@ pub fn run(args: CleanArgs) -> Result<()> {
             .red()
             .bold()
         );
-        for err in errors {
+        for err in &errors {
             eprintln!("    - {err}");
         }
+    }
+
+    if success {
+        Ok(())
+    } else {
         Err(eyre!("One or more cleanup steps failed"))
     }
 }
@@ -242,4 +322,39 @@ enum ActionResult {
     Done,
     Removed(Option<String>),
     Skipped(&'static str),
+}
+
+#[derive(Serialize)]
+struct CleanReport {
+    status: CleanStatus,
+    workspace: String,
+    actions: Vec<CleanActionReport>,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CleanStatus {
+    Ok,
+    Error,
+    Noop,
+}
+
+#[derive(Serialize)]
+struct CleanActionReport {
+    description: String,
+    result: CleanActionResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CleanActionResult {
+    Done,
+    Removed,
+    Skipped,
+    Error,
 }
