@@ -1,4 +1,4 @@
-//! Build script configuring compile-time options for WaterUI.
+//! Build script configuring compile-time options for `WaterUI`.
 
 use std::env;
 

@@ -50,32 +50,11 @@ macro_rules! export {
             $crate::IntoFFI::into_ffi(env)
         }
 
-        #[unsafe(no_mangle)]
-        pub extern "C" fn waterui_main_reloadble() -> *mut $crate::WuiAnyView {
-            fn _inner() -> impl View {
-                main()
-            }
-
-            let view = waterui::AnyView::new(_inner());
-
-            $crate::IntoFFI::into_ffi(view)
-        }
-
         /// Creates the main view for the WaterUI application
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
-            #[cfg(not(waterui_disable_hot_reload))]
-            unsafe {
-                return $crate::IntoFFI::into_ffi(waterui::AnyView::new(waterui::hot_reload!(
-                    "waterui_main_reloadble",
-                    main()
-                )));
-            }
-
-            #[cfg(waterui_disable_hot_reload)]
-            {
-                waterui_main_reloadble()
-            }
+            let view = main();
+            $crate::IntoFFI::into_ffi(AnyView::new(view))
         }
     };
 }
@@ -250,7 +229,7 @@ pub unsafe extern "C" fn waterui_clone_env(env: *const WuiEnv) -> *mut WuiEnv {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_body(
     view: *mut WuiAnyView,
-    env: *mut waterui::Environment,
+    env: *mut WuiEnv,
 ) -> *mut WuiAnyView {
     unsafe {
         let view = view.into_rust();
@@ -260,15 +239,6 @@ pub unsafe extern "C" fn waterui_view_body(
 
         body.into_ffi()
     }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_view_body_with_env(
-    view: *mut WuiAnyView,
-    env: *mut WuiEnv,
-) -> *mut WuiAnyView {
-    let env_ptr: *mut waterui::Environment = unsafe { &mut (*env).0 };
-    unsafe { waterui_view_body(view, env_ptr) }
 }
 
 /// Gets the id of a view
