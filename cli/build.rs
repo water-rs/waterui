@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use std::{path::Path, process::Command};
 
 fn main() {
@@ -13,16 +15,13 @@ fn emit_waterui_version() {
     let repo_path = Path::new("..");
     let version = git_tag_version(repo_path, "waterui", "waterui-v*");
 
-    match version {
-        Some(version) => {
-            println!("cargo:rustc-env=WATERUI_VERSION={}", version);
-        }
-        None => {
-            eprintln!(
-                "cargo:warning=No stable version tag found for 'waterui'. Use `water create --dev` until a release is cut."
-            );
-            println!("cargo:rustc-env=WATERUI_VERSION=");
-        }
+    if let Some(version) = version {
+        println!("cargo:rustc-env=WATERUI_VERSION={version}");
+    } else {
+        eprintln!(
+            "cargo:warning=No stable version tag found for 'waterui'. Use `water create --dev` until a release is cut."
+        );
+        println!("cargo:rustc-env=WATERUI_VERSION=");
     }
 }
 
@@ -34,16 +33,13 @@ fn emit_swift_backend_version() {
         "apple-backend-v*",
     );
 
-    match version {
-        Some(version) => {
-            println!("cargo:rustc-env=WATERUI_BACKEND_SWIFT_VERSION={}", version);
-        }
-        None => {
-            eprintln!(
-                "cargo:warning=No stable version tag found for 'waterui-backend-swift'. Use `water create --dev` until a release is cut."
-            );
-            println!("cargo:rustc-env=WATERUI_BACKEND_SWIFT_VERSION=");
-        }
+    if let Some(version) = version {
+        println!("cargo:rustc-env=WATERUI_BACKEND_SWIFT_VERSION={version}");
+    } else {
+        eprintln!(
+            "cargo:warning=No stable version tag found for 'waterui-backend-swift'. Use `water create --dev` until a release is cut."
+        );
+        println!("cargo:rustc-env=WATERUI_BACKEND_SWIFT_VERSION=");
     }
 }
 
@@ -55,10 +51,7 @@ fn git_tag_version(repo_path: &Path, name: &str, pattern: &str) -> Option<String
     let output = match command.output() {
         Ok(output) => output,
         Err(err) => {
-            eprintln!(
-                "cargo:warning=Failed to query git tags for '{}': {}",
-                name, err
-            );
+            eprintln!("cargo:warning=Failed to query git tags for '{name}': {err}");
             return None;
         }
     };
@@ -66,7 +59,7 @@ fn git_tag_version(repo_path: &Path, name: &str, pattern: &str) -> Option<String
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("No names found") {
-            eprintln!("cargo:warning=No matching tags found for '{}'.", name);
+            eprintln!("cargo:warning=No matching tags found for '{name}'.");
         } else {
             eprintln!(
                 "cargo:warning=git describe for '{}' failed: {}",
@@ -78,16 +71,13 @@ fn git_tag_version(repo_path: &Path, name: &str, pattern: &str) -> Option<String
     }
 
     let version_tag = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let prefix = format!("{}-v", name);
+    let prefix = format!("{name}-v");
 
-    match version_tag.strip_prefix(&prefix) {
-        Some(version) => Some(version.to_string()),
-        None => {
-            eprintln!(
-                "cargo:warning=Unexpected tag format '{}' for '{}'.",
-                version_tag, name
-            );
+    version_tag.strip_prefix(&prefix).map_or_else(
+        || {
+            eprintln!("cargo:warning=Unexpected tag format '{version_tag}' for '{name}'.");
             None
-        }
-    }
+        },
+        |version| Some(version.to_string()),
+    )
 }
