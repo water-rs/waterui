@@ -32,11 +32,19 @@ crates-index = "3.11.0"
 semver = "1.0.27"
 webbrowser = "1.0.5"
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
-tokio = { version = "1.41.1", features = ["rt", "net", "sync", "macros"] }
-hyper = { version = "1.4.1", features = ["http1", "server"] }
-hyper-util = { version = "0.1.5", features = ["server", "tokio"] }
-hyper-staticfile = "0.10.0"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7.5", features = ["ws"] }
+tower-http = { version = "0.5.2", features = ["fs"] }
 indexmap = "2.6.0"
+tungstenite = "0.23"
+tokio-tungstenite = "0.23"
+thiserror = "2.0.17"
+smol = "2.0.2"
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 which = "8.0.0"
+
+
+[lints]
+workspace = true

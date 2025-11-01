@@ -8,6 +8,7 @@ mod devices;
 mod doctor;
 mod output;
 mod package;
+mod platform;
 mod run;
 mod toolchain;
 mod util;
