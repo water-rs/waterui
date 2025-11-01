@@ -62,9 +62,9 @@ pub struct RunArgs {
     #[arg(long)]
     pub release: bool,
 
-    /// Disable CLI file watcher hot reload
+    /// Disable CLI file hot reload
     #[arg(long)]
-    pub no_watch: bool,
+    pub no_hot_reload: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -128,7 +128,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         &project_dir,
         &config,
         args.release,
-        args.no_watch,
+        !args.no_hot_reload,
     )?;
 
     Ok(())
@@ -250,7 +250,7 @@ fn run_platform(
     project_dir: &Path,
     config: &Config,
     release: bool,
-    no_watch: bool,
+    hot_reload: bool,
 ) -> Result<()> {
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
@@ -268,13 +268,11 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        run_web(project_dir, config, release, no_watch)?;
+        run_web(project_dir, config, release, hot_reload)?;
         return Ok(());
     }
 
-    let hot_reload_enabled = !no_watch;
-
-    let hot_reload_bridge = if hot_reload_enabled && platform == Platform::Macos {
+    let hot_reload_bridge = if hot_reload && platform == Platform::Macos {
         match HotReloadBridge::new(project_dir, &config.package.name, release) {
             Ok(bridge) => Some(Arc::new(bridge)),
             Err(err) => {
@@ -286,12 +284,7 @@ fn run_platform(
         None
     };
 
-    run_cargo_build(
-        project_dir,
-        &config.package.name,
-        release,
-        hot_reload_enabled,
-    )?;
+    run_cargo_build(project_dir, &config.package.name, release, hot_reload)?;
 
     if let Some(bridge) = &hot_reload_bridge {
         if let Err(err) = bridge.notify() {
@@ -308,9 +301,8 @@ fn run_platform(
         let project_dir = project_dir.to_path_buf();
         let package = config.package.name.clone();
         let bridge = hot_reload_bridge.clone();
-        let hot_reload_enabled = hot_reload_enabled;
         Arc::new(move || {
-            run_cargo_build(&project_dir, &package, release, hot_reload_enabled)?;
+            run_cargo_build(&project_dir, &package, release, hot_reload)?;
             if let Some(bridge) = &bridge {
                 if let Err(err) = bridge.notify() {
                     warn!("Failed to notify hot reload clients: {err}");
@@ -320,11 +312,11 @@ fn run_platform(
         })
     };
 
-    let watcher = if no_watch {
+    let watcher = if hot_reload {
+        Some(RebuildWatcher::new(watch_paths, build_callback)?)
+    } else {
         info!("CLI hot reload watcher disabled (--no-watch)");
         None
-    } else {
-        Some(RebuildWatcher::new(watch_paths, build_callback)?)
     };
 
     match platform {
@@ -338,7 +330,7 @@ fn run_platform(
                 info!("(Xcode scheme: {})", swift_config.scheme);
 
                 match platform {
-                    Platform::Macos => run_macos(project_dir, swift_config, release, no_watch)?,
+                    Platform::Macos => run_macos(project_dir, swift_config, release, hot_reload)?,
                     Platform::Ios
                     | Platform::Ipados
                     | Platform::Watchos
@@ -358,7 +350,7 @@ fn run_platform(
                             release,
                             platform,
                             Some(device_name),
-                            no_watch,
+                            hot_reload,
                         )?
                     }
                     _ => unreachable!(),
@@ -381,7 +373,7 @@ fn run_platform(
                     android_config,
                     release,
                     selection,
-                    no_watch,
+                    hot_reload,
                 )?;
             } else {
                 bail!(
@@ -451,7 +443,7 @@ fn indent_lines(text: &str, indent: &str) -> String {
         .join("\n")
 }
 
-fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -> Result<()> {
+fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
         eyre!("Web backend not configured for this project. Add it to Water.toml or recreate the project with the web backend.")
     })?;
@@ -470,8 +462,6 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         );
     }
 
-    let hot_reload_enabled = !no_watch;
-
     info!("Compiling WebAssembly bundle...");
     build_web_app(
         project_dir,
@@ -479,7 +469,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         &web_dir,
         release,
         &wasm_pack,
-        hot_reload_enabled,
+        hot_reload,
     )?;
 
     let mut watch_paths = vec![project_dir.join("src"), web_dir.clone()];
@@ -491,7 +481,6 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
     let package_name = config.package.name.clone();
     let web_dir_buf = web_dir.clone();
     let wasm_pack_path = wasm_pack.clone();
-    let hot_reload_enabled = hot_reload_enabled;
     let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
         build_web_app(
             project_dir_buf.as_path(),
@@ -499,15 +488,15 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
             web_dir_buf.as_path(),
             release,
             wasm_pack_path.as_path(),
-            hot_reload_enabled,
+            hot_reload,
         )
     });
 
-    let watcher = if no_watch {
+    let watcher = if hot_reload {
+        Some(RebuildWatcher::new(watch_paths, build_callback.clone())?)
+    } else {
         info!("CLI hot reload watcher disabled (--no-watch)");
         None
-    } else {
-        Some(RebuildWatcher::new(watch_paths, build_callback.clone())?)
     };
 
     let server = WebDevServer::start(web_dir.clone())?;
@@ -751,7 +740,7 @@ fn run_macos(
     project_dir: &Path,
     swift_config: &crate::config::Swift,
     release: bool,
-    no_watch: bool,
+    hot_reload: bool,
 ) -> Result<()> {
     ensure_macos_host("SwiftUI backend support")?;
     util::require_tool(
@@ -793,11 +782,11 @@ fn run_macos(
         bail!("Failed to launch app");
     }
 
-    if no_watch {
-        info!("App launched.");
-    } else {
+    if hot_reload {
         info!("App launched. Press Ctrl+C to stop the watcher.");
         wait_for_interrupt()?;
+    } else {
+        info!("App launched.");
     }
     Ok(())
 }
