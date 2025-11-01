@@ -198,9 +198,7 @@ final class WuiLayout {
 
 @MainActor
 struct WuiContainer: WuiComponent, View {
-    static var id:WuiTypeId{
-        waterui_container_id()
-    }
+    static let id: String = Self.decodeId(waterui_container_id())
 
     private var layout: WuiLayout
     private var children: [WuiAnyView]
@@ -235,9 +233,7 @@ struct WuiContainer: WuiComponent, View {
 
 @MainActor
 struct WuiFixedContainer: WuiComponent, View {
-    static var id: WuiTypeId {
-        waterui_fixed_container_id()
-    }
+    static let id: String = Self.decodeId(waterui_fixed_container_id())
 
     private var layout: WuiLayout
     private var children: [WuiAnyView]
@@ -269,7 +265,7 @@ struct WuiFixedContainer: WuiComponent, View {
 }
 
 private struct ChildDescriptor {
-    let typeId: WuiTypeId
+    let typeId: String
     let isSpacer: Bool
 }
 

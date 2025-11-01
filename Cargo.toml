@@ -99,6 +99,8 @@ serde = { workspace = true, features = ["derive"], optional = true }
 log.workspace = true
 pulldown-cmark = "0.13"
 waterui-derive.workspace = true
+async-channel = "1.9"
+libloading = "0.8"
 
 [features]
 default = []

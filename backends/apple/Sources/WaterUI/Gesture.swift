@@ -11,9 +11,7 @@ import SwiftUI
 
 @MainActor
 struct WuiGestureView: WuiComponent, View {
-    static var id: WuiTypeId {
-        waterui_gesture_id()
-    }
+    static let id: String = Self.decodeId(waterui_gesture_id())
     
     private var content: WuiAnyView
     private var sequence: [BaseGestureDescriptor]

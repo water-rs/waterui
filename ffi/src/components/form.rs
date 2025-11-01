@@ -1,8 +1,11 @@
+use crate::WuiAnyView;
 use crate::components::text::WuiText;
-use crate::{WuiAnyView, WuiId, ffi_struct, ffi_view};
+use crate::id::WuiId;
+use crate::reactive::{WuiBinding, WuiComputed};
 use alloc::vec::Vec;
+use waterui::prelude::{Slider, Stepper, TextField, Toggle};
 use waterui::{
-    Binding, Color, Computed, Str,
+    Color, Str,
     component::{
         slider::SliderConfig,
         stepper::StepperConfig,
@@ -10,42 +13,33 @@ use waterui::{
         toggle::ToggleConfig,
     },
 };
-use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
-use waterui_form::picker::{PickerConfig, PickerItem};
+use waterui_form::picker::{ColorPicker, Picker, PickerConfig, PickerItem};
 
-ffi_enum_with_default!(
-    KeyboardType,
-    WuiKeyboardType,
+into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
     Text,
     Secure,
     Email,
     URL,
     Number,
     PhoneNumber
-);
+}}
 
-/// C representation of a TextField configuration
-#[repr(C)]
-pub struct WuiTextField {
-    /// Pointer to the text field's label view
-    pub label: *mut WuiAnyView,
-    /// Pointer to the text value binding
-    pub value: *mut Binding<Str>,
-    /// Pointer to the prompt text
-    pub prompt: WuiText,
-    /// The keyboard type to use
-    pub keyboard: WuiKeyboardType,
+into_ffi! {TextFieldConfig,
+    pub struct WuiTextField {
+        label: *mut WuiAnyView,
+        value: *mut WuiBinding<Str>,
+        prompt: WuiText,
+        keyboard: WuiKeyboardType,
+    }
 }
 
-/// C representation of a Toggle configuration
-#[repr(C)]
-pub struct WuiToggle {
-    /// Pointer to the toggle's label view
-    pub label: *mut WuiAnyView,
-    /// Pointer to the toggle state binding
-    pub toggle: *mut Binding<bool>,
+into_ffi! {ToggleConfig,
+    pub struct WuiToggle {
+        label: *mut WuiAnyView,
+        toggle: *mut WuiBinding<bool>,
+    }
 }
 
 /// C representation of a range
@@ -57,32 +51,23 @@ pub struct WuiRange<T> {
     pub end: T,
 }
 
-/// C representation of a Slider configuration
-#[repr(C)]
-pub struct WuiSlider {
-    /// Pointer to the slider's label view
-    pub label: *mut WuiAnyView,
-    /// Pointer to the minimum value label view
-    pub min_value_label: *mut WuiAnyView,
-    /// Pointer to the maximum value label view
-    pub max_value_label: *mut WuiAnyView,
-    /// The range of values
-    pub range: WuiRange<f64>,
-    /// Pointer to the value binding
-    pub value: *mut Binding<f64>,
+into_ffi! {SliderConfig,
+    pub struct WuiSlider {
+        label: *mut WuiAnyView,
+        min_value_label: *mut WuiAnyView,
+        max_value_label: *mut WuiAnyView,
+        range: WuiRange<f64>,
+        value: *mut WuiBinding<f64>,
+    }
 }
 
-/// C representation of a Stepper configuration
-#[repr(C)]
-pub struct WuiStepper {
-    /// Pointer to the value binding
-    pub value: *mut Binding<i32>,
-    /// Pointer to the step size computed value
-    pub step: *mut Computed<i32>,
-    /// Pointer to the stepper's label view
-    pub label: *mut WuiAnyView,
-    /// The valid range of values
-    pub range: WuiRange<i32>,
+into_ffi! {StepperConfig,
+    pub struct WuiStepper {
+        value: *mut WuiBinding<i32>,
+        step: *mut WuiComputed<i32>,
+        label: *mut WuiAnyView,
+        range: WuiRange<i32>,
+    }
 }
 
 // Implement RangeInclusive conversions
@@ -109,100 +94,36 @@ impl IntoFFI for RangeInclusive<i32> {
     }
 }
 
-// Implement struct conversions
-ffi_struct!(
-    TextFieldConfig,
-    WuiTextField,
-    label,
-    value,
-    prompt,
-    keyboard
-);
-
-ffi_struct!(ToggleConfig, WuiToggle, label, toggle);
-ffi_struct!(
-    SliderConfig,
-    WuiSlider,
-    label,
-    min_value_label,
-    max_value_label,
-    range,
-    value
-);
-ffi_struct!(StepperConfig, WuiStepper, value, step, label, range);
-
 // FFI view bindings for form components
-ffi_view!(
-    Native<TextFieldConfig>,
-    WuiTextField,
-    waterui_text_field_id,
-    waterui_force_as_text_field
-);
+native_view!(TextField, WuiTextField);
 
-ffi_view!(
-    Native<ToggleConfig>,
-    WuiToggle,
-    waterui_toggle_id,
-    waterui_force_as_toggle
-);
+native_view!(Toggle, WuiToggle);
 
-ffi_view!(
-    Native<SliderConfig>,
-    WuiSlider,
-    waterui_slider_id,
-    waterui_force_as_slider
-);
+native_view!(Slider, WuiSlider);
 
-ffi_view!(
-    Native<StepperConfig>,
-    WuiStepper,
-    waterui_stepper_id,
-    waterui_force_as_stepper
-);
+native_view!(Stepper, WuiStepper);
 
-ffi_view!(
-    Native<ColorPickerConfig>,
-    WuiColorPicker,
-    waterui_color_picker_id,
-    waterui_force_as_color_picker
-);
+native_view!(ColorPicker, WuiColorPicker);
 
-ffi_view!(
-    Native<PickerConfig>,
-    WuiPicker,
-    waterui_picker_id,
-    waterui_force_as_picker
-);
+native_view!(Picker, WuiPicker);
 
-/*
-
-  /// The items to display in the picker.
-    pub items: Computed<Vec<PickerItem<Id>>>,
-    /// The binding to the currently selected item.
-    pub selection: Binding<Id>,
-
-*/
-
-#[repr(C)]
-pub struct WuiPicker {
-    items: *mut Computed<Vec<PickerItem<Id>>>,
-    selection: *mut Binding<Id>,
+into_ffi! {PickerConfig,
+    pub struct WuiPicker {
+        items: *mut WuiComputed<Vec<PickerItem<Id>>>,
+        selection: *mut WuiBinding<Id>,
+    }
 }
 
-#[repr(C)]
-pub struct WuiPickerItem {
-    tag: WuiId,
-    content: WuiText,
+into_ffi! {PickerItem<Id>,
+    pub struct WuiPickerItem {
+        tag: WuiId,
+        content: WuiText,
+    }
 }
 
-ffi_struct!(PickerItem<Id>, WuiPickerItem, tag, content);
-
-ffi_struct!(PickerConfig, WuiPicker, items, selection);
-
-#[repr(C)]
-pub struct WuiColorPicker {
-    pub label: *mut WuiAnyView,
-    pub value: *mut Binding<Color>,
+into_ffi! {ColorPickerConfig,
+    pub struct WuiColorPicker {
+        label: *mut WuiAnyView,
+        value: *mut WuiBinding<Color>,
+    }
 }
-
-ffi_struct!(ColorPickerConfig, WuiColorPicker, label, value);
