@@ -79,12 +79,12 @@ extension WuiComputed where T == Int32 {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_int,
+            read: waterui_read_binding_i32,
             watch: { inner, f in
-                let g = waterui_watch_binding_int(inner, WuiWatcher_i32(f))
+                let g = waterui_watch_binding_i32(inner, WuiWatcher_i32(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_int
+            drop: waterui_drop_binding_i32
         )
     }
 }
@@ -107,12 +107,12 @@ extension WuiComputed where T == Double {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_double,
+            read: waterui_read_binding_f64,
             watch: { inner, f in
-                let g = waterui_watch_binding_double(inner, WuiWatcher_f64(f))
+                let g = waterui_watch_binding_f64(inner, WuiWatcher_f64(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_double
+            drop: waterui_drop_binding_f64
         )
     }
 }
