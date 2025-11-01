@@ -52,7 +52,7 @@ macro_rules! ffi_view {
         }
 
         #[unsafe(no_mangle)]
-        pub extern "C" fn [<waterui $ident _id>]() -> $crate::WuiStr {
+        pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiStr {
             $crate::IntoFFI::into_ffi(core::any::type_name::<$view>()) // type_name is constant between runs, so it's good to use as a hot reload id.
         }
         }
