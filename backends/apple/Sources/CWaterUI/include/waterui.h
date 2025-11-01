@@ -965,7 +965,7 @@ void waterui_drop_color(struct WuiColor *value);
  */
 struct WuiColor *waterui_force_as_color(struct WuiAnyView *view);
 
-struct WuiStr wateruicolor_id(void);
+struct WuiStr waterui_color_id(void);
 
 /**
  * Reads the current value from a computed
@@ -1068,7 +1068,7 @@ struct WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *c
  */
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
-struct WuiStr wateruiplain_id(void);
+struct WuiStr waterui_plain_id(void);
 
 struct WuiStr waterui_empty_id(void);
 
@@ -1087,7 +1087,7 @@ struct WuiStr waterui_spacer_id(void);
  */
 struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
-struct WuiStr wateruifixed_container_id(void);
+struct WuiStr waterui_fixed_container_id(void);
 
 /**
  * # Safety
@@ -1096,7 +1096,7 @@ struct WuiStr wateruifixed_container_id(void);
  */
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
-struct WuiStr wateruilayout_container_id(void);
+struct WuiStr waterui_layout_container_id(void);
 
 /**
  * Proposes sizes for children based on parent constraints and child metadata.
@@ -1129,7 +1129,7 @@ struct WuiSize waterui_layout_size(struct WuiLayout *layout,
  */
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
-struct WuiStr wateruiscroll_view_id(void);
+struct WuiStr waterui_scroll_view_id(void);
 
 /**
  * Places child views within the specified bounds based on layout constraints and child metadata.
@@ -1151,7 +1151,7 @@ struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
  */
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
-struct WuiStr wateruibutton_id(void);
+struct WuiStr waterui_button_id(void);
 
 /**
  * # Safety
@@ -1160,7 +1160,7 @@ struct WuiStr wateruibutton_id(void);
  */
 struct WuiLazy waterui_force_as_lazy(struct WuiAnyView *view);
 
-struct WuiStr wateruilazy_id(void);
+struct WuiStr waterui_lazy_id(void);
 
 /**
  * # Safety
@@ -1169,7 +1169,7 @@ struct WuiStr wateruilazy_id(void);
  */
 struct WuiLink waterui_force_as_link(struct WuiAnyView *view);
 
-struct WuiStr wateruilink_id(void);
+struct WuiStr waterui_link_id(void);
 
 /**
  * # Safety
@@ -1268,7 +1268,7 @@ void waterui_drop_computed_font(struct WuiComputed_Font *computed);
  */
 struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
-struct WuiStr wateruitext_id(void);
+struct WuiStr waterui_text_id(void);
 
 /**
  * Reads the current value from a computed
@@ -1307,7 +1307,7 @@ struct WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font
  */
 struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
-struct WuiStr wateruitext_field_id(void);
+struct WuiStr waterui_text_field_id(void);
 
 /**
  * # Safety
@@ -1316,7 +1316,7 @@ struct WuiStr wateruitext_field_id(void);
  */
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
-struct WuiStr wateruitoggle_id(void);
+struct WuiStr waterui_toggle_id(void);
 
 /**
  * # Safety
@@ -1325,7 +1325,7 @@ struct WuiStr wateruitoggle_id(void);
  */
 struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
-struct WuiStr wateruislider_id(void);
+struct WuiStr waterui_slider_id(void);
 
 /**
  * # Safety
@@ -1334,7 +1334,7 @@ struct WuiStr wateruislider_id(void);
  */
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
-struct WuiStr wateruistepper_id(void);
+struct WuiStr waterui_stepper_id(void);
 
 /**
  * # Safety
@@ -1343,7 +1343,7 @@ struct WuiStr wateruistepper_id(void);
  */
 struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 
-struct WuiStr wateruicolor_picker_id(void);
+struct WuiStr waterui_color_picker_id(void);
 
 /**
  * # Safety
@@ -1352,7 +1352,7 @@ struct WuiStr wateruicolor_picker_id(void);
  */
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
-struct WuiStr wateruipicker_id(void);
+struct WuiStr waterui_picker_id(void);
 
 /**
  * # Safety
@@ -1361,7 +1361,7 @@ struct WuiStr wateruipicker_id(void);
  */
 struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
-struct WuiStr wateruinavigation_view_id(void);
+struct WuiStr waterui_navigation_view_id(void);
 
 /**
  * # Safety
@@ -1376,7 +1376,7 @@ void waterui_drop_tab_content(struct WuiTabContent *value);
  */
 struct WuiPhoto waterui_force_as_photo(struct WuiAnyView *view);
 
-struct WuiStr wateruiphoto_id(void);
+struct WuiStr waterui_photo_id(void);
 
 /**
  * # Safety
@@ -1385,7 +1385,7 @@ struct WuiStr wateruiphoto_id(void);
  */
 struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
-struct WuiStr wateruivideo_player_id(void);
+struct WuiStr waterui_video_player_id(void);
 
 /**
  * # Safety
@@ -1394,7 +1394,7 @@ struct WuiStr wateruivideo_player_id(void);
  */
 struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
 
-struct WuiStr wateruilive_photo_id(void);
+struct WuiStr waterui_live_photo_id(void);
 
 /**
  * # Safety
@@ -1403,7 +1403,7 @@ struct WuiStr wateruilive_photo_id(void);
  */
 struct WuiLivePhotoSource waterui_force_as_live_photo_source(struct WuiAnyView *view);
 
-struct WuiStr wateruilive_photo_source_id(void);
+struct WuiStr waterui_live_photo_source_id(void);
 
 /**
  * # Safety
@@ -1418,7 +1418,7 @@ void waterui_drop_dynamic(struct WuiDynamic *value);
  */
 struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 
-struct WuiStr wateruidynamic_id(void);
+struct WuiStr waterui_dynamic_id(void);
 
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_____WuiAnyView watcher);
 
@@ -1429,7 +1429,7 @@ void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_____W
  */
 struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
 
-struct WuiStr wateruilist_item_id(void);
+struct WuiStr waterui_list_item_id(void);
 
 /**
  * # Safety
@@ -1438,7 +1438,7 @@ struct WuiStr wateruilist_item_id(void);
  */
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
-struct WuiStr wateruilist_id(void);
+struct WuiStr waterui_list_id(void);
 
 /**
  * Calls the delete callback for a list item.
@@ -1484,7 +1484,7 @@ void waterui_drop_computed_table_cols(struct WuiComputed_Vec_TableColumn *comput
  */
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
-struct WuiStr wateruitable_id(void);
+struct WuiStr waterui_table_id(void);
 
 /**
  * # Safety
@@ -1493,7 +1493,7 @@ struct WuiStr wateruitable_id(void);
  */
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
-struct WuiStr wateruitable_column_id(void);
+struct WuiStr waterui_table_column_id(void);
 
 /**
  * # Safety
@@ -1502,7 +1502,7 @@ struct WuiStr wateruitable_column_id(void);
  */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
-struct WuiStr wateruiprogress_id(void);
+struct WuiStr waterui_progress_id(void);
 
 /**
  * # Safety
@@ -1517,7 +1517,7 @@ void waterui_drop_renderer_view(struct WuiRendererView *value);
  */
 struct WuiRendererView *waterui_force_as_renderer_view(struct WuiAnyView *view);
 
-struct WuiStr wateruirenderer_view_id(void);
+struct WuiStr waterui_renderer_view_id(void);
 
 /**
  * Gets the width of the renderer view.
