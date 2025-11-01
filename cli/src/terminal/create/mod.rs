@@ -261,6 +261,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     &app_name,
                     &crate_name,
                     &bundle_identifier,
+                    args.dev,
                 )?;
                 if let Some(pb) = spinner.as_ref() {
                     pb.set_message(format!("{} Android backend created ✓", progress));
