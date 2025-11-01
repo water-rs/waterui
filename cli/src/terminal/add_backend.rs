@@ -61,6 +61,7 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
                 &app_name,
                 &config.package.name,
                 &config.package.bundle_identifier,
+                args.dev,
             )?;
             config.backends.android = Some(Android {
                 project_path: "android".to_string(),

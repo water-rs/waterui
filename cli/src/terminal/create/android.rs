@@ -1,7 +1,8 @@
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -14,11 +15,12 @@ pub fn create_android_project(
     display_name: &str,
     crate_name: &str,
     bundle_identifier: &str,
+    use_dev_backend: bool,
 ) -> Result<()> {
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
 
-    copy_android_backend(project_dir)?;
+    copy_android_backend(project_dir, use_dev_backend)?;
 
     let android_package = crate::android::sanitize_package_name(bundle_identifier);
 
@@ -196,15 +198,10 @@ pub fn create_android_project(
     Ok(())
 }
 
-fn copy_android_backend(project_dir: &Path) -> Result<()> {
-    let source = util::workspace_root().join("backends/android");
-    if !source.exists() {
-        return Err(eyre!(
-            "Android backend sources not found at {}",
-            source.display()
-        ));
-    }
+const ANDROID_BACKEND_GIT_URL: &str = "https://github.com/water-rs/android-backend.git";
+const ANDROID_BACKEND_DEV_BRANCH: &str = "dev";
 
+fn copy_android_backend(project_dir: &Path, use_dev_backend: bool) -> Result<()> {
     let destination = project_dir.join("backends/android");
     if destination.exists() {
         fs::remove_dir_all(&destination).with_context(|| {
@@ -215,7 +212,19 @@ fn copy_android_backend(project_dir: &Path) -> Result<()> {
         })?;
     }
 
-    copy_dir_filtered(&source, &destination)?;
+    if use_dev_backend {
+        clone_android_backend(&destination)?;
+    } else {
+        let source = util::workspace_root().join("backends/android");
+        if !source.exists() {
+            return Err(eyre!(
+                "Android backend sources not found at {}",
+                source.display()
+            ));
+        }
+
+        copy_dir_filtered(&source, &destination)?;
+    }
 
     #[cfg(unix)]
     {
@@ -225,6 +234,48 @@ fn copy_android_backend(project_dir: &Path) -> Result<()> {
             perms.set_mode(0o755);
             fs::set_permissions(&gradlew, perms)?;
         }
+    }
+
+    Ok(())
+}
+
+fn clone_android_backend(destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        util::ensure_directory(parent)?;
+    }
+
+    util::require_tool(
+        "git",
+        "Install Git to fetch the Android backend or rerun without --dev.",
+    )?;
+
+    let repo_url = std::env::var("WATERUI_ANDROID_BACKEND_URL")
+        .unwrap_or_else(|_| ANDROID_BACKEND_GIT_URL.to_string());
+    let status = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg(ANDROID_BACKEND_DEV_BRANCH)
+        .arg("--single-branch")
+        .arg(&repo_url)
+        .arg(destination)
+        .status()
+        .with_context(|| format!("failed to clone Android backend from {}", repo_url))?;
+
+    if !status.success() {
+        if destination.exists() {
+            let _ = fs::remove_dir_all(destination);
+        }
+        let code = status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "terminated by signal".to_string());
+        bail!(
+            "git clone failed when fetching Android backend from {} (exit status: {})",
+            repo_url,
+            code
+        );
     }
 
     Ok(())
