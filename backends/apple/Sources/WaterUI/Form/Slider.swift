@@ -7,10 +7,8 @@
 
 import SwiftUI
 import CWaterUI
-struct WuiSlider:View,WuiComponent{
-    static var id:WuiTypeId{
-        waterui_slider_id()
-    }
+struct WuiSlider: View, WuiComponent{
+    static let id: String = decodeViewIdentifier(waterui_slider_id())
     var label:WuiAnyView
     var min_value_label: WuiAnyView
     var max_value_label: WuiAnyView
