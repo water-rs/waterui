@@ -4,8 +4,19 @@ import SwiftUI
 
 @MainActor
 protocol WuiComponent: View {
-    static var id: WuiTypeId { get }
+    static var id: String { get }
     init(anyview: OpaquePointer, env: WuiEnvironment)
+}
+
+extension WuiComponent {
+    static func decodeId(_ raw: CWaterUI.WuiStr) -> String {
+        decodeViewIdentifier(raw)
+    }
+}
+
+@inline(__always)
+func decodeViewIdentifier(_ raw: CWaterUI.WuiStr) -> String {
+    WuiStr(raw).toString()
 }
 
 

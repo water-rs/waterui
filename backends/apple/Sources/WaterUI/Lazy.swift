@@ -9,7 +9,7 @@ import Combine
 import SwiftUI
 
 struct WuiLazy: WuiComponent, View {
-    static var id: WuiTypeId { waterui_lazy_id() }
+    static let id: String = decodeViewIdentifier(waterui_lazy_id())
 
     let views: WuiAnyViews
     let env: WuiEnvironment

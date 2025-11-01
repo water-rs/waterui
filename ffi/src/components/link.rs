@@ -1,18 +1,14 @@
-use crate::{WuiAnyView, ffi_struct, ffi_view};
+use crate::WuiAnyView;
+use crate::reactive::WuiComputed;
+use waterui::Str;
 use waterui::component::link::LinkConfig;
-use waterui::{Computed, Str};
-use waterui_core::Native;
+use waterui_text::Link;
 
-#[repr(C)]
-pub struct WuiLink {
-    pub label: *mut WuiAnyView,
-    pub url: *mut Computed<Str>,
+into_ffi! {LinkConfig,
+    pub struct WuiLink {
+        label: *mut WuiAnyView,
+        url: *mut WuiComputed<Str>,
+    }
 }
 
-ffi_struct!(LinkConfig, WuiLink, label, url);
-ffi_view!(
-    Native<LinkConfig>,
-    WuiLink,
-    waterui_link_id,
-    waterui_force_as_link
-);
+native_view!(Link, WuiLink);

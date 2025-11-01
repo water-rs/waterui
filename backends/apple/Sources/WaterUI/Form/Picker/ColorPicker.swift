@@ -11,9 +11,7 @@ import CWaterUI
 
 /*
 struct WuiColorPicker:View,WuiComponent {
-    static var id:WuiTypeId{
-        waterui_color_picker_id()
-    }
+    static let id: String = decodeViewIdentifier(waterui_color_picker_id())
     
     var label:WuiAnyView
     @ObservedObject var value:BindingColor

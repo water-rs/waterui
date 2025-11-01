@@ -9,10 +9,8 @@ import CWaterUI
 import Foundation
 import SwiftUI
 
-struct WuiStepper: View,WuiComponent {
-    static var id:WuiTypeId{
-        waterui_stepper_id()
-    }
+struct WuiStepper: View, WuiComponent {
+    static let id: String = decodeViewIdentifier(waterui_stepper_id())
     @State var step: WuiComputed<Int32>
     @State var value: WuiBinding<Int32>
     

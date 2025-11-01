@@ -1,10 +1,9 @@
-use crate::{IntoFFI, WuiEnv, impl_binding, impl_computed};
+use crate::{IntoFFI, WuiEnv, ffi_computed, ffi_reactive, reactive::WuiComputed};
 
-use nami::Computed;
 use waterui::Color;
 use waterui_color::ResolvedColor;
 
-ffi_type!(WuiColor, Color, waterui_drop_color);
+opaque!(WuiColor, Color);
 
 pub enum WuiColorspace {
     Srgb,
@@ -12,48 +11,21 @@ pub enum WuiColorspace {
     Oklch,
 }
 
-// colorspace: extended srgb
-#[repr(C)]
-pub struct WuiResolvedColor {
-    red: f32,
-    green: f32,
-    blue: f32,
-    opacity: f32,
-}
-
-ffi_struct!(ResolvedColor, WuiResolvedColor, red, green, blue, opacity);
-
-ffi_view!(
-    Color,
-    *mut WuiColor,
-    waterui_color_id,
-    waterui_force_as_color
-);
-
-impl_computed!(
+into_ffi!(
     ResolvedColor,
-    WuiResolvedColor,
-    waterui_read_computed_resolved_color,
-    waterui_watch_computed_resolved_color,
-    waterui_drop_computed_resolved_color
+    pub struct WuiResolvedColor {
+        red: f32,
+        green: f32,
+        blue: f32,
+        opacity: f32,
+    }
 );
 
-impl_binding!(
-    Color,
-    *mut WuiColor,
-    waterui_binding_read_color,
-    waterui_binding_set_color,
-    waterui_binding_watch_color,
-    waterui_drop_color_watcher_guard
-);
+ffi_view!(Color, *mut WuiColor);
 
-impl_computed!(
-    Color,
-    *mut WuiColor,
-    waterui_read_computed_color,
-    waterui_watch_computed_color,
-    waterui_drop_computed_color
-);
+ffi_computed!(ResolvedColor, WuiResolvedColor);
+
+ffi_reactive!(Color, *mut WuiColor);
 
 /// Resolves a color in the given environment.
 ///
@@ -64,7 +36,7 @@ impl_computed!(
 pub unsafe extern "C" fn waterui_resolve_color(
     color: *const WuiColor,
     env: *const WuiEnv,
-) -> *mut Computed<ResolvedColor> {
+) -> *mut WuiComputed<ResolvedColor> {
     unsafe {
         let color = &*color;
         let env = &*env;

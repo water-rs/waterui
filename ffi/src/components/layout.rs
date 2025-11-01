@@ -8,7 +8,7 @@ use waterui_layout::{
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
 use crate::{WuiStr, views::WuiAnyViews};
 
-ffi_type!(WuiLayout, Box<dyn Layout>, waterui_drop_layout);
+opaque!(WuiLayout, Box<dyn Layout>, layout);
 
 #[repr(C)]
 pub struct WuiFixedContainer {
@@ -21,12 +21,7 @@ pub extern "C" fn waterui_spacer_id() -> WuiStr {
     core::any::type_name::<waterui::component::spacer::Spacer>().into_ffi()
 }
 
-ffi_view!(
-    FixedContainer,
-    WuiFixedContainer,
-    waterui_fixed_container_id,
-    waterui_force_as_fixed_container
-);
+ffi_view!(FixedContainer, WuiFixedContainer);
 
 impl IntoFFI for FixedContainer {
     type FFI = WuiFixedContainer;
@@ -45,12 +40,7 @@ pub struct WuiContainer {
     contents: *mut WuiAnyViews,
 }
 
-ffi_view!(
-    LayoutContainer,
-    WuiContainer,
-    waterui_container_id,
-    waterui_force_as_container
-);
+ffi_view!(LayoutContainer, WuiContainer);
 
 impl IntoFFI for LayoutContainer {
     type FFI = WuiContainer;
@@ -63,8 +53,8 @@ impl IntoFFI for LayoutContainer {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Default)]
+#[repr(C)]
 pub struct WuiProposalSize {
     width: f32, // May be f32::NAN
     height: f32,
@@ -98,23 +88,12 @@ impl IntoFFI for waterui_layout::ProposalSize {
     }
 }
 
+#[derive(Default, Clone)]
 #[repr(C)]
-#[derive(Clone, Default)]
 pub struct WuiChildMetadata {
     proposal: WuiProposalSize,
     priority: u8,
     stretch: bool,
-}
-
-impl IntoRust for WuiChildMetadata {
-    type Rust = ChildMetadata;
-    unsafe fn into_rust(self) -> Self::Rust {
-        ChildMetadata::new(
-            unsafe { self.proposal.into_rust() },
-            self.priority,
-            self.stretch,
-        )
-    }
 }
 
 impl IntoFFI for ChildMetadata {
@@ -125,6 +104,17 @@ impl IntoFFI for ChildMetadata {
             priority: self.priority(),
             stretch: self.stretch(),
         }
+    }
+}
+
+impl IntoRust for WuiChildMetadata {
+    type Rust = ChildMetadata;
+    unsafe fn into_rust(self) -> Self::Rust {
+        ChildMetadata::new(
+            unsafe { self.proposal.into_rust() },
+            self.priority,
+            self.stretch,
+        )
     }
 }
 
@@ -175,10 +165,11 @@ pub unsafe extern "C" fn waterui_layout_size(
     size.into_ffi()
 }
 
-#[repr(C)]
-pub struct WuiPoint {
-    x: f32,
-    y: f32,
+into_ffi! {Point,
+    pub struct WuiPoint {
+        x: f32,
+        y: f32,
+    }
 }
 
 impl IntoRust for WuiPoint {
@@ -208,9 +199,6 @@ impl IntoRust for WuiRect {
     }
 }
 
-ffi_struct!(Point, WuiPoint, x, y);
-ffi_struct!(Size, WuiSize, width, height);
-
 impl IntoFFI for Rect {
     type FFI = WuiRect;
     fn into_ffi(self) -> Self::FFI {
@@ -221,10 +209,11 @@ impl IntoFFI for Rect {
     }
 }
 
-#[repr(C)]
-pub struct WuiSize {
-    width: f32,
-    height: f32,
+into_ffi! {Size,
+    pub struct WuiSize {
+        width: f32,
+        height: f32,
+    }
 }
 
 #[repr(C)]
@@ -233,20 +222,11 @@ pub struct WuiRect {
     size: WuiSize,
 }
 
-#[repr(C)]
-pub enum WuiAxis {
-    Horizontal,
-    Vertical,
-    All,
-}
-impl crate::IntoFFI for Axis {
-    type FFI = WuiAxis;
-    fn into_ffi(self) -> Self::FFI {
-        match self {
-            <Axis>::Horizontal => WuiAxis::Horizontal,
-            <Axis>::Vertical => WuiAxis::Vertical,
-            _ => WuiAxis::All,
-        }
+into_ffi! {Axis,All,
+    pub enum WuiAxis {
+        Horizontal,
+        Vertical,
+        All,
     }
 }
 
@@ -267,12 +247,7 @@ impl IntoFFI for ScrollView {
     }
 }
 
-ffi_view!(
-    ScrollView,
-    WuiScrollView,
-    waterui_scroll_view_id,
-    waterui_force_as_scroll_view
-);
+ffi_view!(ScrollView, WuiScrollView);
 
 /// Places child views within the specified bounds based on layout constraints and child metadata.
 ///

@@ -1,57 +1,48 @@
 use crate::array::WuiArray;
 use crate::components::text::WuiText;
+use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiAnyView};
-use crate::{closure::WuiFn, ffi_struct, ffi_view};
-use waterui::{Binding, Color, Computed};
+use crate::{closure::WuiFn, ffi_view};
+use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::Tab;
-use waterui_navigation::{Bar, NavigationView, tab::TabsConfig};
+use waterui_navigation::{Bar, NavigationView};
 
-#[repr(C)]
-pub struct WuiNavigationView {
-    bar: WuiBar,
-    content: *mut WuiAnyView,
+into_ffi! {
+    NavigationView,
+    pub struct WuiNavigationView {
+        bar: WuiBar,
+        content: *mut WuiAnyView,
+    }
 }
-
-ffi_struct!(NavigationView, WuiNavigationView, bar, content);
 
 pub struct WuiNavigationLink {
     pub label: *mut WuiAnyView,
     pub destination: *mut WuiFn<*mut WuiAnyView>,
 }
 
-/// C representation of a navigation Bar configuration
-#[repr(C)]
-pub struct WuiBar {
-    /// Pointer to the title text
-    pub title: WuiText,
-    /// Pointer to the background color computed value
-    pub color: *mut Computed<Color>,
-    /// Pointer to the hidden state computed value
-    pub hidden: *mut Computed<bool>,
+into_ffi! {Bar,
+    pub struct WuiBar {
+        title: WuiText,
+        color: *mut WuiComputed<Color>,
+        hidden: *mut WuiComputed<bool>,
+    }
 }
 
-// Implement struct conversions
-ffi_struct!(Bar, WuiBar, title, color, hidden);
-
 // FFI view bindings for navigation components
-ffi_view!(NavigationView, waterui_navigation_view_id);
+ffi_view!(NavigationView, WuiNavigationView);
 
 #[repr(C)]
 pub struct WuiTabs {
     /// The currently selected tab identifier.
-    pub selection: *mut Binding<Id>,
+    pub selection: *mut WuiBinding<Id>,
 
     /// The collection of tabs to display.
     pub tabs: WuiArray<WuiTab>,
 }
 
-ffi_type!(
-    WuiTabContent,
-    AnyViewBuilder<NavigationView>,
-    waterui_drop_tab_content
-);
+opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
 
 #[repr(C)]
 pub struct WuiTab {
@@ -90,5 +81,3 @@ impl IntoFFI for Tab<Id> {
         }
     }
 }
-
-ffi_struct!(TabsConfig, WuiTabs, selection, tabs);

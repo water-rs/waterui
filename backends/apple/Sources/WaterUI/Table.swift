@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 struct WuiTable: WuiComponent, View {
-    static var id: WuiTypeId { waterui_table_id() }
+    static let id: String = decodeViewIdentifier(waterui_table_id())
     let env: WuiEnvironment
 
     private var columns: WuiComputed<[WuiTableColumn]>
@@ -25,7 +25,7 @@ struct WuiTable: WuiComponent, View {
 @MainActor
 struct WuiTableColumn: Identifiable {
     var id = UUID()
-    static var id: WuiTypeId { waterui_table_column_id() }
+    static let id: String = decodeViewIdentifier(waterui_table_column_id())
     @State var label: WuiComputed<WuiStyledStr>
     var contents: WuiAnyViews
     init(column: CWaterUI.WuiTableColumn) {
