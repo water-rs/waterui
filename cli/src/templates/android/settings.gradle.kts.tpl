@@ -1,3 +1,5 @@
+import org.gradle.api.artifacts.dsl.RepositoriesMode
+
 pluginManagement {
     repositories {
         google()
@@ -6,6 +8,7 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
@@ -18,6 +21,8 @@ dependencyResolutionManagement {
 rootProject.name = "__APP_NAME__"
 include(":app")
 
-// --- New fix: explicitly include Android backend ---
-include(":backends:android")
-project(":backends:android").projectDir = file("../../backends/android")
+includeBuild("../backends/android") {
+    dependencySubstitution {
+        substitute(module("dev.waterui.android:runtime")).using(project(":runtime"))
+    }
+}
