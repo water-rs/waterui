@@ -11,12 +11,7 @@ impl<T: IntoFFI> IntoFFI for waterui_core::Native<T> {
 
 pub mod button;
 
-ffi_view!(
-    waterui::Str,
-    WuiStr,
-    waterui_label_id,
-    waterui_force_as_label
-);
+ffi_view!(waterui::Str, WuiStr, plain);
 pub mod lazy;
 
 pub mod link;
