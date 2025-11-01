@@ -61,7 +61,7 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":backends:android"))
+    implementation("dev.waterui.android:runtime")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)
