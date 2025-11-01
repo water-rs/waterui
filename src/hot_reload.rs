@@ -4,13 +4,12 @@ use executor_core::{Task, spawn_local};
 use libloading::Library;
 use std::{
     fs::File,
-    io::{self, Write},
-    net::TcpListener,
+    io::Write,
     path::{Path, PathBuf},
     thread::spawn,
 };
 use thiserror::Error;
-use tungstenite::accept;
+use tungstenite::connect;
 use waterui_core::{AnyView, Dynamic, View, event::Associated};
 
 /// A view that can be hot-reloaded at runtime.
@@ -43,9 +42,7 @@ impl<V: View> View for Hotreload<V> {
         .detach();
 
         // Start the hot-reload daemon in a separate thread
-        spawn(move || {
-            hot_reload_daemon(&trigger).expect("Hot reload daemon failed");
-        });
+        spawn(move || hot_reload_daemon(&trigger).expect("Fail to launch hot reload daemon"));
 
         dynamic
     }
@@ -53,12 +50,10 @@ impl<V: View> View for Hotreload<V> {
 
 #[derive(Debug, Error)]
 enum Error {
-    #[error("Failed to connect to hot-reload server")]
-    FailedToConnect,
+    #[error("Failed to connect to hot-reload server: {0}")]
+    FailedToConnect(#[from] tungstenite::Error),
     #[error("Hot reload port not set")]
     HotReloadPortNotSet,
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
 }
 
 // you must call this function on main thread, otherwise it is UB
@@ -87,23 +82,20 @@ impl HotReloadTrigger {
 }
 
 fn hot_reload_daemon(trigger: &HotReloadTrigger) -> Result<(), Error> {
-    // Connect to CLI
+    // The app is the client, connecting to the CLI.
     let port = std::env::var("WATERUI_HOT_RELOAD_PORT").map_err(|_| Error::HotReloadPortNotSet)?;
-    let listener =
-        TcpListener::bind(format!("127.0.0.1:{port}")).map_err(|_| Error::FailedToConnect)?;
+    let url = format!("ws://127.0.0.1:{port}/reload");
 
-    for stream in listener.incoming() {
-        let stream = stream?;
-        let trigger = trigger.clone();
-        spawn(move || {
-            let mut stream = accept(stream).expect("Failed to accept connection");
-            while let Ok(msg) = stream.read() {
-                let data = msg.into_data();
-                let lib_path = create_library(&data);
-                trigger.trigger_reload(lib_path);
-            }
-        });
+    let (mut socket, _) = connect(url)?;
+
+    while let Ok(msg) = socket.read() {
+        if msg.is_binary() {
+            let data = msg.into_data();
+            let lib_path = create_library(&data);
+            trigger.trigger_reload(lib_path);
+        }
     }
+
     Ok(())
 }
 
