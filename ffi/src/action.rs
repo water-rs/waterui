@@ -2,7 +2,7 @@ use waterui_core::handler::BoxHandler;
 
 use crate::WuiEnv;
 
-ffi_type!(WuiAction, BoxHandler<()>, waterui_drop_action);
+opaque!(WuiAction, BoxHandler<()>, action);
 
 /// Calls an action with the given environment.
 ///

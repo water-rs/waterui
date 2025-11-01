@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 struct WuiList: WuiComponent, View {
-    static var id: WuiTypeId { waterui_list_id() }
+    static let id: String = decodeViewIdentifier(waterui_list_id())
 
     let views: WuiAnyViews
     let env: WuiEnvironment
@@ -25,7 +25,7 @@ struct WuiList: WuiComponent, View {
 }
 
 struct WuiListItem: WuiComponent, View {
-    static var id: WuiTypeId { waterui_list_item_id() }
+    static let id: String = decodeViewIdentifier(waterui_list_item_id())
 
     let content: WuiAnyView
 

@@ -1,3 +1,5 @@
+//! Event handling components and utilities.
+
 use crate::{
     Metadata, View,
     handler::{BoxHandlerOnce, HandlerFnOnce, HandlerOnce, into_handler_once},
