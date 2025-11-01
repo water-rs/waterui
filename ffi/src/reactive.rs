@@ -1,7 +1,10 @@
+use core::ops::Deref;
+
 use crate::array::WuiArray;
 use crate::components::form::WuiPickerItem;
 use crate::components::media::{WuiLivePhotoSource, WuiVideo};
-use crate::{IntoFFI, WuiAnyView, WuiId, WuiStr, impl_opaque_drop};
+use crate::{IntoFFI, OpaqueType, WuiAnyView, WuiStr};
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::watcher::Metadata;
@@ -10,29 +13,124 @@ use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
-ffi_type!(WuiWatcherMetadata, Metadata, waterui_drop_watcher_metadata);
+opaque!(WuiWatcherMetadata, Metadata);
 
-ffi_type!(
-    WuiWatcherGuard,
-    BoxWatcherGuard,
-    waterui_drop_box_watcher_guard
-);
+opaque!(WuiWatcherGuard, BoxWatcherGuard);
+
+pub struct WuiComputed<T>(pub(crate) waterui::Computed<T>);
+impl<T> IntoFFI for waterui::Computed<T> {
+    type FFI = *mut WuiComputed<T>;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiComputed(self)))
+    }
+}
+
+impl<T> IntoFFI for waterui::Binding<T> {
+    type FFI = *mut WuiBinding<T>;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiBinding(self)))
+    }
+}
+
+impl<T> OpaqueType for WuiComputed<T> {}
+
+impl<T> Deref for WuiComputed<T> {
+    type Target = waterui::Computed<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Deref for WuiBinding<T> {
+    type Target = waterui::Binding<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub struct WuiBinding<T: 'static>(pub(crate) waterui::Binding<T>);
+
+impl<T> OpaqueType for WuiBinding<T> {}
 
 #[macro_export]
-macro_rules! impl_computed {
-    ($ty:ty,$ffi_ty:ty,$read:ident,$watch:ident,$drop:ident) => {
-        impl $crate::OpaqueType for waterui_core::Computed<$ty> {}
-        impl_opaque_drop!(waterui_core::Computed<$ty>, $drop);
+macro_rules! ffi_binding {
+    ($ty:ty,$ffi:ty, $ident:tt) => {
+        paste::paste!{
+            /// Reads the current value from a binding
+            /// # Safety
+            /// The binding pointer must be valid and point to a properly initialized binding object.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_read_binding_ $ident >](binding: *const $crate::reactive::WuiBinding<$ty>) -> $ffi {
+                unsafe { (*binding).get().into_ffi() }
+            }
+            /// Sets the value of a binding
+            /// # Safety
+            /// The binding pointer must be valid and point to a properly initialized binding object.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_set_binding_ $ident >](binding: *mut $crate::reactive::WuiBinding<$ty>, value: $ffi) {
+                unsafe {
+                    (*binding).set($crate::IntoRust::into_rust(value));
+                }
+            }
+            /// Watches for changes in a binding
+            /// # Safety
+            /// The binding pointer must be valid and point to a properly initialized binding object.
+            /// The watcher must be a valid callback function.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_watch_binding_ $ident >](
+                binding: *const waterui_core::Binding<$ty>,
+                watcher: $crate::reactive::WuiWatcher<$ffi>,
+            ) -> *mut $crate::reactive::WuiWatcherGuard {
+                unsafe {
+                    use waterui::Signal;
+                    let guard = (*binding).watch(move |ctx| {
+                        let metadata = ctx.metadata().clone();
+                        let value = ctx.into_value();
+                        watcher.call(value, metadata);
+                    });
+                    guard.into_ffi()
+                }
 
-        #[unsafe(no_mangle)]
+            }
+            /// Drops a binding
+            /// # Safety
+            /// The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_drop_binding_ $ident >](binding: *mut $crate::reactive::WuiBinding<$ty>) {
+                unsafe {
+                    drop(alloc::boxed::Box::from_raw(binding));
+                }
+            }
+        }
+    };
+
+    ($ty:ty,$ffi:ty) =>{
+        paste::paste!{
+            $crate::ffi_binding!($ty,$ffi,[<$ty:snake>]);
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! ffi_computed {
+    ($ty:ty,$ffi:ty, $ident:tt) => {
+
+        paste::paste!{
+            #[unsafe(no_mangle)]
         /// Reads the current value from a computed
         ///
         /// # Safety
         ///
         /// The computed pointer must be valid and point to a properly initialized computed object.
-        pub unsafe extern "C" fn $read(computed: *const waterui_core::Computed<$ty>) -> $ffi_ty {
+        pub unsafe extern "C" fn [< waterui_read_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> $ffi {
             use waterui::Signal;
-            unsafe { (*computed).get().into_ffi() }
+            unsafe{
+                $crate::IntoFFI::into_ffi((&(*computed)).get())
+            }
         }
 
         /// Watches for changes in a computed
@@ -42,149 +140,77 @@ macro_rules! impl_computed {
         /// The computed pointer must be valid and point to a properly initialized computed object.
         /// The watcher must be a valid callback function.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $watch(
+        pub unsafe extern "C" fn [< waterui_watch_computed_ $ident >](
             computed: *const waterui_core::Computed<$ty>,
-            watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
+            watcher: $crate::reactive::WuiWatcher<$ffi>,
         ) -> *mut $crate::reactive::WuiWatcherGuard {
             use waterui::Signal;
-            use $crate::IntoFFI;
             unsafe {
                 let guard = (*computed).watch(move |ctx| {
                     let metadata = ctx.metadata().clone();
                     let value = ctx.into_value();
                     watcher.call(value, metadata);
                 });
-                guard.into_ffi()
+                $crate::IntoFFI::into_ffi(guard)
             }
         }
+
+        /// Drops a computed
+        /// # Safety
+        /// The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn [< waterui_drop_computed_ $ident >](computed: *mut $crate::reactive::WuiComputed<$ty>) {
+            unsafe {
+                drop(alloc::boxed::Box::from_raw(computed));
+            }
+        }
+
+
+    }
+
     };
+
+    ($ty:ty,$ffi:ty) =>{
+        paste::paste!{
+            $crate::ffi_computed!($ty,$ffi,[<$ty:snake>]);
+        }
+    }
 }
 
 #[macro_export]
-macro_rules! impl_binding {
-    ($ty:ty,$ffi_ty:ty,$read:ident,$set:ident,$watch:ident,$drop:ident) => {
-        impl $crate::OpaqueType for waterui::Binding<$ty> {}
-        impl_opaque_drop!(waterui::Binding<$ty>, $drop);
-
-        #[unsafe(no_mangle)]
-        /// Reads the current value from a binding
-        ///
-        /// # Safety
-        ///
-        /// The binding pointer must be valid and point to a properly initialized binding object.
-        pub unsafe extern "C" fn $read(binding: *const waterui::Binding<$ty>) -> $ffi_ty {
-            unsafe { $crate::IntoFFI::into_ffi((*binding).get()) }
+macro_rules! ffi_reactive {
+    ($ty:ty,$ffi:ty, $ident:tt) => {
+        paste::paste! {
+            $crate::ffi_binding!($ty,$ffi, $ident);
+            $crate::ffi_computed!($ty,$ffi, $ident);
         }
+    };
 
-        /// Sets a new value to a binding
-        ///
-        /// # Safety
-        ///
-        /// The binding pointer must be valid and point to a properly initialized binding object.
-        /// The value must be a valid instance of the FFI type.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $set(binding: *mut waterui::Binding<$ty>, value: $ffi_ty) {
-            unsafe {
-                (*binding).set($crate::IntoRust::into_rust(value));
-            }
-        }
-
-        #[unsafe(no_mangle)]
-        /// Watches for changes in a binding
-        ///
-        /// # Safety
-        ///
-        /// The binding pointer must be valid and point to a properly initialized binding object.
-        /// The watcher must be a valid callback function.
-        pub unsafe extern "C" fn $watch(
-            binding: *const waterui::Binding<$ty>,
-            watcher: $crate::reactive::WuiWatcher<$ffi_ty>,
-        ) -> *mut $crate::reactive::WuiWatcherGuard {
-            unsafe {
-                use waterui::Signal;
-                let guard = (*binding).watch(move |ctx| {
-                    let metadata = ctx.metadata().clone();
-                    let value = ctx.into_value();
-                    watcher.call(value, metadata);
-                });
-                guard.into_ffi()
-            }
+    ($ty:ty,$ffi:ty) => {
+        paste::paste! {
+            $crate::ffi_reactive!($ty,$ffi,[<$ty:snake>]);
         }
     };
 }
 
-impl_computed!(
-    Str,
-    WuiStr,
-    waterui_read_computed_str,
-    waterui_watch_computed_str,
-    waterui_drop_computed_str
-);
+ffi_reactive!(Str, WuiStr);
 
-impl_computed!(
-    AnyView,
-    *mut WuiAnyView,
-    waterui_read_computed_any_view,
-    waterui_watch_computed_any_view,
-    waterui_drop_computed_any_view
-);
+ffi_reactive!(AnyView, *mut WuiAnyView);
 
-impl_computed!(
-    i32,
-    i32,
-    waterui_read_computed_int,
-    waterui_watch_computed_int,
-    waterui_drop_computed_int
-);
+ffi_reactive!(i32, i32);
 
-impl_computed!(
-    bool,
-    bool,
-    waterui_read_computed_bool,
-    waterui_watch_computed_bool,
-    waterui_drop_computed_bool
-);
+ffi_reactive!(bool, bool);
 
-impl_computed!(
-    f32,
-    f32,
-    waterui_read_computed_float,
-    waterui_watch_computed_float,
-    waterui_drop_computed_float
-);
+ffi_reactive!(f32, f32);
 
-impl_computed!(
-    f64,
-    f64,
-    waterui_read_computed_double,
-    waterui_watch_computed_double,
-    waterui_drop_computed_double
-);
+ffi_reactive!(f64, f64);
 
 // Computed<Vec<PickerItem<Id>>>,
-impl_computed!(
-    Vec<PickerItem<Id>>,
-    WuiArray<WuiPickerItem>,
-    waterui_read_computed_picker_items,
-    waterui_watch_computed_picker_items,
-    waterui_drop_computed_picker_items
-);
+ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
-impl_computed!(
-    Video,
-    WuiVideo,
-    waterui_read_computed_video,
-    waterui_watch_computed_video,
-    waterui_drop_computed_video
-);
+ffi_computed!(Video, WuiVideo);
 
-impl_computed!(
-    LivePhotoSource,
-    WuiLivePhotoSource,
-    waterui_read_computed_live_photo_source,
-    waterui_watch_computed_live_photo_source,
-    waterui_drop_computed_live_photo_sources
-);
+ffi_computed!(LivePhotoSource, WuiLivePhotoSource);
 
 #[repr(C)]
 pub struct WuiWatcher<T> {
@@ -219,58 +245,3 @@ impl<T> Drop for WuiWatcher<T> {
         unsafe { (self.drop)(self.data) }
     }
 }
-
-impl_binding!(
-    Str,
-    WuiStr,
-    waterui_read_binding_str,
-    waterui_set_binding_str,
-    waterui_watch_binding_str,
-    waterui_drop_binding_str
-);
-
-impl_binding!(
-    f32,
-    f32,
-    waterui_read_binding_float,
-    waterui_set_binding_float,
-    waterui_watch_binding_float,
-    waterui_drop_binding_float
-);
-
-impl_binding!(
-    f64,
-    f64,
-    waterui_read_binding_double,
-    waterui_set_binding_double,
-    waterui_watch_binding_double,
-    waterui_drop_binding_double
-);
-
-impl_binding!(
-    i32,
-    i32,
-    waterui_read_binding_int,
-    waterui_set_binding_int,
-    waterui_watch_binding_int,
-    waterui_drop_binding_int
-);
-
-impl_binding!(
-    bool,
-    bool,
-    waterui_read_binding_bool,
-    waterui_set_binding_bool,
-    waterui_watch_binding_bool,
-    waterui_drop_binding_bool
-);
-
-// Add Id binding support
-impl_binding!(
-    waterui_core::id::Id,
-    WuiId,
-    waterui_read_binding_id,
-    waterui_set_binding_id,
-    waterui_watch_binding_id,
-    waterui_drop_binding_id
-);

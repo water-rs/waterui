@@ -1,7 +1,7 @@
 use crate::WuiStr;
-use crate::{IntoFFI, WuiAnyView, ffi_struct, ffi_view};
-use waterui::{Binding, Computed};
-use waterui_core::Native;
+use crate::reactive::{WuiBinding, WuiComputed};
+use crate::{IntoFFI, WuiAnyView, ffi_view};
+use waterui_media::{LivePhoto, Photo, VideoPlayer};
 use waterui_media::{
     Video,
     live::{LivePhotoConfig, LivePhotoSource},
@@ -13,50 +13,18 @@ use waterui_media::{
 type Url = WuiStr;
 type Volume = f32;
 
-/// C representation of Photo configuration
-#[repr(C)]
-pub struct WuiPhoto {
-    /// The image source URL
-    pub source: Url,
-    /// Pointer to the placeholder view
-    pub placeholder: *mut WuiAnyView,
+into_ffi! {PhotoConfig,
+    pub struct WuiPhoto {
+        source: Url,
+        placeholder: *mut WuiAnyView,
+    }
 }
+
+// It is not a native view, the actual view is VideoPlayer
 #[repr(C)]
 pub struct WuiVideo {
-    pub url: Url,
+    url: Url,
 }
-
-/// C representation of VideoPlayer configuration
-#[repr(C)]
-pub struct WuiVideoPlayer {
-    /// Pointer to the video computed value
-    pub video: *mut Computed<Video>,
-    /// Pointer to the volume binding
-    pub volume: *mut Binding<Volume>,
-}
-
-/// C representation of LivePhoto configuration
-#[repr(C)]
-pub struct WuiLivePhoto {
-    /// Pointer to the live photo source computed value
-    pub source: *mut Computed<LivePhotoSource>,
-}
-
-/// C representation of LivePhotoSource
-#[repr(C)]
-pub struct WuiLivePhotoSource {
-    /// The image URL
-    pub image: Url,
-    /// The video URL
-    pub video: Url,
-}
-
-ffi_struct!(LivePhotoSource, WuiLivePhotoSource, image, video);
-
-// Implement struct conversions
-ffi_struct!(PhotoConfig, WuiPhoto, source, placeholder);
-ffi_struct!(VideoPlayerConfig, WuiVideoPlayer, video, volume);
-ffi_struct!(LivePhotoConfig, WuiLivePhoto, source);
 
 impl IntoFFI for Video {
     type FFI = WuiVideo;
@@ -64,6 +32,27 @@ impl IntoFFI for Video {
         WuiVideo {
             url: self.url().inner().into_ffi(),
         }
+    }
+}
+
+into_ffi! {VideoPlayerConfig,
+    pub struct WuiVideoPlayer {
+        video: *mut WuiComputed<Video>,
+        volume: *mut WuiBinding<Volume>,
+    }
+}
+
+into_ffi! { LivePhotoConfig,
+    pub struct WuiLivePhoto {
+        source: *mut WuiComputed<LivePhotoSource>,
+    }
+}
+
+into_ffi! {
+    LivePhotoSource,
+    pub struct WuiLivePhotoSource {
+         image: Url,
+         video: Url,
     }
 }
 
@@ -75,28 +64,13 @@ impl IntoFFI for waterui_media::Url {
 }
 
 // FFI view bindings for media components
-ffi_view!(
-    Native<PhotoConfig>,
-    WuiPhoto,
-    waterui_photo_id,
-    waterui_force_as_photo
-);
+native_view!(Photo, WuiPhoto);
 
-ffi_view!(
-    Native<VideoPlayerConfig>,
-    WuiVideoPlayer,
-    waterui_video_player_id,
-    waterui_force_as_video_player
-);
+native_view!(VideoPlayer, WuiVideoPlayer);
 
-ffi_view!(
-    Native<LivePhotoConfig>,
-    WuiLivePhoto,
-    waterui_live_photo_id,
-    waterui_force_as_live_photo
-);
+native_view!(LivePhoto, WuiLivePhoto);
 
-ffi_view!(LivePhotoSource, waterui_live_photo_source_id);
+ffi_view!(LivePhotoSource, WuiLivePhotoSource);
 
 // Note: Media enum has complex tuple variants that need special FFI handling
 // - leaving for future implementation with manual IntoFFI implementation
