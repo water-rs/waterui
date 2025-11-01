@@ -25,7 +25,9 @@ pub struct Hotreload {
     dynamic: Dynamic,
 }
 
-fn preparing_view() -> impl View {
+/// Placeholder view used when no initial content is supplied.
+#[allow(dead_code)]
+pub fn preparing_view() -> impl View {
     vstack((loading(), "Preparing for hot reload..."))
 }
 
@@ -38,9 +40,13 @@ impl Hotreload {
     /// signature `fn() -> *mut ()` that returns a heap-allocated `AnyView` (boxed and leaked
     /// with `Box::into_raw`). The dynamic library must remain compatible with the running
     /// process.
-    pub fn new(function_name: &'static str) -> Self {
+    pub fn new<V, F>(function_name: &'static str, initial_view: F) -> Self
+    where
+        V: View,
+        F: FnOnce() -> V,
+    {
         let (handler, dynamic) = Dynamic::new();
-        handler.set(preparing_view);
+        handler.set(initial_view());
         start_listener(handler, function_name);
         Self { dynamic }
     }
@@ -136,5 +142,6 @@ fn load_view_from_library(path: &Path, function_name: &'static str) -> Result<An
 /// A macro to create a hot-reloadable view.
 #[macro_export]
 macro_rules! hot_reload {
-    ($function_name:expr) => {{ $crate::hot_reload::Hotreload::new($function_name) }};
+    ($function_name:expr, $view:expr) => {{ $crate::hot_reload::Hotreload::new($function_name, || $view) }};
+    ($function_name:expr) => {{ $crate::hot_reload::Hotreload::new($function_name, || $crate::hot_reload::preparing_view()) }};
 }
