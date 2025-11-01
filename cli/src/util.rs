@@ -4,6 +4,7 @@ use core::fmt::Display;
 use heck::{AsKebabCase, AsPascalCase};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use which::which;
 
 use crate::output;
@@ -70,5 +71,13 @@ pub fn require_tool(tool: &str, hint: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("{tool} not found. {hint}")
+    }
+}
+
+pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool) {
+    if enable {
+        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "0");
+    } else {
+        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "1");
     }
 }

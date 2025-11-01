@@ -64,14 +64,15 @@ macro_rules! export {
         /// Creates the main view for the WaterUI application
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
-            #[cfg(debug_assertions)]
+            #[cfg(not(waterui_disable_hot_reload))]
             unsafe {
                 return $crate::IntoFFI::into_ffi(waterui::AnyView::new(waterui::hot_reload!(
-                    "waterui_main_reloadble"
+                    "waterui_main_reloadble",
+                    main()
                 )));
             }
 
-            #[cfg(not(debug_assertions))]
+            #[cfg(waterui_disable_hot_reload)]
             {
                 waterui_main_reloadble()
             }
@@ -259,6 +260,15 @@ pub unsafe extern "C" fn waterui_view_body(
 
         body.into_ffi()
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_body_with_env(
+    view: *mut WuiAnyView,
+    env: *mut WuiEnv,
+) -> *mut WuiAnyView {
+    let env_ptr: *mut waterui::Environment = unsafe { &mut (*env).0 };
+    unsafe { waterui_view_body(view, env_ptr) }
 }
 
 /// Gets the id of a view
