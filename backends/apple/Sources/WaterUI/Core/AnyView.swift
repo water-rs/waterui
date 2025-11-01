@@ -30,7 +30,6 @@ struct Render {
             WuiText.self,
             WuiLabel.self,
             WuiButton.self,
-            WuiGestureView.self,
             WuiColorView.self,
             // Stack components will be added here when Rust FFI is implemented:
             WuiTextField.self,
@@ -58,7 +57,6 @@ struct Render {
             WuiLazy.self,
             WuiList.self,
             WuiListItem.self,
-            WuiEventMetadataView.self,
 
                 // WaterUI.ColorPicker.self,
                 // WaterUI.Icon.self
