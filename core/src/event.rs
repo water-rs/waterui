@@ -4,7 +4,7 @@ use crate::{
     Metadata, View,
     handler::{BoxHandlerOnce, HandlerFnOnce, HandlerOnce, into_handler_once},
 };
-
+use alloc::boxed::Box;
 /// An enumeration of events that can occur within the UI framework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
