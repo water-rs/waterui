@@ -11,7 +11,7 @@ import SwiftUI
 
 @MainActor
 struct Render {
-    var map: [WuiTypeId: any WuiComponent.Type]
+    var map: [String: any WuiComponent.Type]
 
     init() {
         self.map = [:]
@@ -58,6 +58,7 @@ struct Render {
             WuiLazy.self,
             WuiList.self,
             WuiListItem.self,
+            WuiEventMetadataView.self,
 
                 // WaterUI.ColorPicker.self,
                 // WaterUI.Icon.self
@@ -69,7 +70,7 @@ struct Render {
     }
 
     func render(anyview: OpaquePointer, env: WuiEnvironment) -> SwiftUI.AnyView {
-        let id = waterui_view_id(anyview)
+        let id = decodeViewIdentifier(waterui_view_id(anyview))
         if let ty = map[id] {
             let component = ty.init(anyview: anyview, env: env) as (any View)
             return SwiftUI.AnyView(component)
@@ -81,31 +82,24 @@ struct Render {
     }
 }
 
-extension WuiTypeId: @retroactive Hashable {
-    public func hash(into hasher: inout Hasher) {
-        self.inner.0.hash(into: &hasher)
-        self.inner.1.hash(into: &hasher)
-    }
-}
-
 @MainActor
 public struct WuiAnyView: View, Identifiable {
     public var id = UUID()
     var main: any View
     private var anyviewPtr: OpaquePointer
     private var env: WuiEnvironment
-    public var typeId: WuiTypeId
+    public var typeId: String
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
         self.anyviewPtr = anyview
         self.env = env
-        self.typeId = waterui_view_id(anyview)
+        self.typeId = decodeViewIdentifier(waterui_view_id(anyview))
         self.main = Render.main.render(anyview: anyview, env: env)
     }
 
     /// Force downcast to a specific component type
     func forceAs<T: WuiComponent>(_ type: T.Type) -> T? {
-        let currentId = waterui_view_id(anyviewPtr)
+        let currentId = decodeViewIdentifier(waterui_view_id(anyviewPtr))
         if currentId == T.id {
             return T(anyview: anyviewPtr, env: env)
         }
@@ -114,7 +108,7 @@ public struct WuiAnyView: View, Identifiable {
 
     /// Check if this view is of a specific component type
     func isType<T: WuiComponent>(_ type: T.Type) -> Bool {
-        let currentId = waterui_view_id(anyviewPtr)
+        let currentId = decodeViewIdentifier(waterui_view_id(anyviewPtr))
         return currentId == T.id
     }
 

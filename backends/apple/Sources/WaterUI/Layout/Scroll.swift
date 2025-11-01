@@ -2,9 +2,7 @@ import CWaterUI
 import SwiftUI
 
 struct WuiScrollView: View, WuiComponent {
-    static var id:WuiTypeId{
-        waterui_scroll_view_id()
-    }
+    static let id: String = decodeViewIdentifier(waterui_scroll_view_id())
     
     var content:WuiAnyView
 
@@ -19,4 +17,3 @@ struct WuiScrollView: View, WuiComponent {
         self.content = .init(anyview: scroll.content, env: env)
     }
 }
-

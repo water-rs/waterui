@@ -8,10 +8,8 @@
 import SwiftUI
 import CWaterUI
 @MainActor
-struct WuiDynamic: View,WuiComponent {
-    static var id:WuiTypeId{
-        waterui_dynamic_id()
-    }
+struct WuiDynamic: View, WuiComponent {
+    static let id: String = decodeViewIdentifier(waterui_dynamic_id())
     @State var view:WuiAnyView?
     var dynamic:OpaquePointer
     var env:WuiEnvironment

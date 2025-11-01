@@ -1,26 +1,20 @@
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui::component::list::{ListConfig, ListItem};
+use waterui::prelude::list::List;
 use waterui::views::ViewsExt;
-use waterui_core::Native;
 
-#[repr(C)]
-pub struct WuiListItem {
-    pub content: *mut WuiAnyView,
+into_ffi! {
+    ListItem, pub struct WuiListItem {
+        content: *mut WuiAnyView,
+    }
 }
 
-ffi_struct!(ListItem, WuiListItem, content);
-
-ffi_view!(
-    ListItem,
-    WuiListItem,
-    waterui_list_item_id,
-    waterui_force_as_list_item
-);
+ffi_view!(ListItem, WuiListItem);
 
 #[repr(C)]
 pub struct WuiList {
-    pub contents: *mut WuiAnyViews,
+    contents: *mut WuiAnyViews,
 }
 
 impl IntoFFI for ListConfig {
@@ -33,12 +27,7 @@ impl IntoFFI for ListConfig {
     }
 }
 
-ffi_view!(
-    Native<ListConfig>,
-    WuiList,
-    waterui_list_id,
-    waterui_force_as_list
-);
+native_view!(List, WuiList);
 
 /// Calls the delete callback for a list item.
 ///

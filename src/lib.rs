@@ -101,7 +101,7 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use task::task;
 
-//pub mod hot_reload; Hot reload is tough :cry
+pub mod hot_reload;
 
 mod entry;
 pub use entry::entry;
