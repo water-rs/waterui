@@ -188,8 +188,8 @@ fn build_actions(workspace: &Path) -> Result<Vec<Action>> {
     let android_dirs = [
         workspace.join("backends/android/build"),
         workspace.join("backends/android/.gradle"),
-        workspace.join("backends/android/app/build"),
-        workspace.join("backends/android/app/.cxx"),
+        workspace.join("backends/android/runtime/build"),
+        workspace.join("backends/android/runtime/.cxx"),
     ];
     directories.extend(android_dirs);
 
