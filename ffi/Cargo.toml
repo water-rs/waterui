@@ -28,6 +28,7 @@ waterui-graphics.workspace = true
 wgpu.workspace = true
 paste = "1.0.15"
 
+
 [[bin]]
 name = "generate_header"
 path = "generate_header.rs"
@@ -35,6 +36,3 @@ required-features = ["cbindgen"]
 
 [features]
 default = []
-
-[target.'cfg(target_os = "android")'.dependencies]
-jni = { version = "0.21" }
