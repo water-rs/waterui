@@ -16,4 +16,4 @@ impl IntoFFI for Lazy {
         }
     }
 }
-ffi_view!(Lazy, WuiLazy, waterui_lazy_id, waterui_force_as_lazy);
+ffi_view!(Lazy, WuiLazy);

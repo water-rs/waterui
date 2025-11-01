@@ -3,9 +3,9 @@ use waterui::{
     views::{AnyViews, Views},
 };
 
-use crate::{IntoFFI, WuiAnyView, WuiId, impl_computed};
+use crate::{IntoFFI, WuiAnyView, ffi_computed, id::WuiId};
 
-ffi_type!(WuiAnyViews, AnyViews<AnyView>, waterui_drop_anyviews);
+opaque!(WuiAnyViews, AnyViews<AnyView>, anyviews);
 
 /// Gets the ID of a view at the specified index.
 ///
@@ -46,10 +46,4 @@ pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> u
     unsafe { (&*anyviews).len() }
 }
 
-impl_computed!(
-    AnyViews<AnyView>,
-    *mut WuiAnyViews,
-    waterui_read_computed_views,
-    waterui_watch_computed_views,
-    waterui_drop_computed_views
-);
+ffi_computed!(AnyViews<AnyView>, *mut WuiAnyViews, views);
