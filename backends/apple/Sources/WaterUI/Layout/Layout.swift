@@ -197,15 +197,15 @@ final class WuiLayout {
 }
 
 @MainActor
-struct WuiContainer: WuiComponent, View {
-    static let id: String = Self.decodeId(waterui_container_id())
+struct WuiLayoutContainer: WuiComponent, View {
+    static let id: String = Self.decodeId(waterui_layout_container_id())
 
     private var layout: WuiLayout
     private var children: [WuiAnyView]
     private var descriptors: [ChildDescriptor]
 
     init(anyview: OpaquePointer, env: WuiEnvironment) {
-        let container = waterui_force_as_container(anyview)
+        let container = waterui_force_as_layout_container(anyview)
         self.layout = WuiLayout(inner: container.layout!)
 
         let anyViews = WuiAnyViews(container.contents)

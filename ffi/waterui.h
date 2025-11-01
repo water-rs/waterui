@@ -1618,7 +1618,7 @@ void waterui_drop_computed_id(struct WuiComputed_Id *computed);
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
-void waterui_drop_metadata(struct WuiWatcherMetadata *value);
+void waterui_drop_watcher_metadata(struct WuiWatcherMetadata *value);
 
 /**
  * # Safety

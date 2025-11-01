@@ -28,7 +28,7 @@ struct Render {
         .init([
             WuiEmptyView.self,
             WuiText.self,
-            WuiLabel.self,
+            WuiPlain.self,
             WuiButton.self,
             WuiColorView.self,
             // Stack components will be added here when Rust FFI is implemented:
@@ -42,7 +42,7 @@ struct Render {
             // WaterUI.WithEnv.self,
             // WaterUI.NavigationLink.self,
             WuiScrollView.self,
-            WuiContainer.self,
+            WuiLayoutContainer.self,
             WuiFixedContainer.self,
             WuiList.self,
             WuiTable.self,
