@@ -101,6 +101,7 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use task::task;
 
+#[cfg(not(waterui_disable_hot_reload))]
 pub mod hot_reload;
 
 mod entry;

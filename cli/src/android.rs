@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use crate::util;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use tracing::{debug, info, warn};
 use which::which;
@@ -589,6 +590,7 @@ pub fn build_android_apk(
     android_config: &crate::config::Android,
     release: bool,
     skip_native: bool,
+    hot_reload_enabled: bool,
     bundle_identifier: &str,
 ) -> Result<PathBuf> {
     let _sanitized = prepare_android_package(project_dir, bundle_identifier)?;
@@ -605,6 +607,7 @@ pub fn build_android_apk(
             } else {
                 cmd.arg("debug");
             }
+            util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
             cmd.current_dir(project_dir);
             let ndk_env = env::var("ANDROID_NDK_HOME")
                 .ok()
@@ -674,6 +677,7 @@ pub fn build_android_apk(
         "./gradlew"
     };
     let mut cmd = Command::new(gradlew_executable);
+    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
 
     let ipv4_flag = "-Djava.net.preferIPv4Stack=true";
     let gradle_opts = ensure_jvm_flag(env::var("GRADLE_OPTS").ok(), ipv4_flag);

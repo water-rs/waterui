@@ -920,6 +920,8 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  */
 struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
 
+struct WuiAnyView *waterui_view_body_with_env(struct WuiAnyView *view, struct WuiEnv *env);
+
 /**
  * Gets the id of a view
  *
@@ -2109,4 +2111,3 @@ void waterui_drop_computed_views(struct WuiComputed_AnyViews_AnyView *computed);
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
-
