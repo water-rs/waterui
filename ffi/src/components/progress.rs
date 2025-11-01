@@ -1,45 +1,25 @@
-use nami::Computed;
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui_core::Native;
+use waterui::{
+    component::progress::{ProgressConfig, ProgressStyle},
+    prelude::Progress,
+};
 
-use crate::{IntoFFI, WuiAnyView};
+use crate::{WuiAnyView, reactive::WuiComputed};
 
-#[repr(C)]
-pub struct WuiProgress {
-    pub label: *mut WuiAnyView,
-    pub value_label: *mut WuiAnyView,
-    pub value: *mut Computed<f64>,
-    pub style: WuiProgressStyle,
-}
-
-#[repr(C)]
-pub enum WuiProgressStyle {
-    Linear,
-    Circular,
-}
-
-impl IntoFFI for ProgressStyle {
-    type FFI = WuiProgressStyle;
-    fn into_ffi(self) -> WuiProgressStyle {
-        match self {
-            ProgressStyle::Linear => WuiProgressStyle::Linear,
-            _ => WuiProgressStyle::Circular,
-        }
+into_ffi! {ProgressStyle,Circular,
+    pub enum WuiProgressStyle {
+        Linear,
+        Circular,
     }
 }
 
-ffi_struct!(
+into_ffi! {
     ProgressConfig,
-    WuiProgress,
-    label,
-    value_label,
-    value,
-    style
-);
+    pub struct WuiProgress {
+        label: *mut WuiAnyView,
+        value_label: *mut WuiAnyView,
+        value: *mut WuiComputed<f64>,
+        style: WuiProgressStyle,
+    }
+}
 
-ffi_view!(
-    Native<ProgressConfig>,
-    WuiProgress,
-    waterui_progress_id,
-    waterui_force_as_progress
-);
+native_view!(Progress, WuiProgress);

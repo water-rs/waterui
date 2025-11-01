@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use nami::Computed;
 use waterui::{
     prelude::table::{TableColumn, TableConfig},
     views::ViewsExt,
@@ -7,21 +6,18 @@ use waterui::{
 use waterui_core::Native;
 
 use crate::{
-    IntoFFI, array::WuiArray, components::text::WuiText, impl_computed, views::WuiAnyViews,
+    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed, reactive::WuiComputed,
+    views::WuiAnyViews,
 };
 
-#[repr(C)]
-pub struct WuiTable {
-    columns: *mut Computed<Vec<TableColumn>>,
+into_ffi! {
+   TableConfig,
+   pub struct WuiTable {
+       columns: *mut WuiComputed<Vec<TableColumn>>,
+   }
 }
 
-impl_computed!(
-    Vec<TableColumn>,
-    WuiArray<WuiTableColumn>,
-    waterui_read_computed_table_cols,
-    waterui_watch_computed_table_cols,
-    waterui_drop_computed_table_cols
-);
+ffi_computed!(Vec<TableColumn>, WuiArray<WuiTableColumn>, table_cols);
 
 #[repr(C)]
 pub struct WuiTableColumn {
@@ -40,18 +36,6 @@ impl IntoFFI for TableColumn {
     }
 }
 
-ffi_struct!(TableConfig, WuiTable, columns);
+ffi_view!(Native<TableConfig>, WuiTable, table);
 
-ffi_view!(
-    Native<TableConfig>,
-    WuiTable,
-    waterui_table_id,
-    waterui_force_as_table
-);
-
-ffi_view!(
-    TableColumn,
-    WuiTableColumn,
-    waterui_table_column_id,
-    waterui_force_as_table_column
-);
+ffi_view!(TableColumn, WuiTableColumn);

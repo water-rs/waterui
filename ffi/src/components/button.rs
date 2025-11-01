@@ -1,22 +1,14 @@
 use crate::action::WuiAction;
-use crate::{WuiAnyView, ffi_struct, ffi_view};
+use crate::{WuiAnyView, ffi_view};
 use waterui::component::button::ButtonConfig;
 use waterui_core::Native;
 
-/// C representation of a WaterUI button for FFI purposes.
-#[derive(Debug)]
-#[repr(C)]
-pub struct WuiButton {
-    /// Pointer to the button's label view
-    pub label: *mut WuiAnyView,
-    /// Pointer to the button's action handler
-    pub action: *mut WuiAction,
+into_ffi! {
+    ButtonConfig,
+    pub struct WuiButton {
+        label: *mut WuiAnyView,
+        action: *mut WuiAction,
+    }
 }
 
-ffi_struct!(ButtonConfig, WuiButton, label, action);
-ffi_view!(
-    Native<ButtonConfig>,
-    WuiButton,
-    waterui_button_id,
-    waterui_force_as_button
-);
+ffi_view!(Native<ButtonConfig>, WuiButton, button);
