@@ -1,5 +1,7 @@
 import init from "./pkg/app.js";
 
+const HOT_RELOAD_PORT = "__HOT_RELOAD_PORT__";
+
 async function bootstrap() {
   try {
     const wasm = await init();
@@ -25,6 +27,22 @@ async function bootstrap() {
       root.appendChild(message);
     }
   }
+}
+
+function connect_hot_reload() {
+    const ws = new WebSocket(`ws://127.0.0.1:${HOT_RELOAD_PORT}`);
+    ws.onmessage = (event) => {
+        if (event.data === "reload") {
+            location.reload();
+        }
+    };
+    ws.onclose = () => {
+        setTimeout(connect_hot_reload, 1000);
+    };
+}
+
+if (HOT_RELOAD_PORT !== "__HOT_RELOAD_PORT__") {
+    connect_hot_reload();
 }
 
 bootstrap();

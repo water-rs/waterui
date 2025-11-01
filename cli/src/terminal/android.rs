@@ -607,7 +607,7 @@ pub fn build_android_apk(
             } else {
                 cmd.arg("debug");
             }
-            util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
+            util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
             cmd.current_dir(project_dir);
             let ndk_env = env::var("ANDROID_NDK_HOME")
                 .ok()
@@ -677,7 +677,7 @@ pub fn build_android_apk(
         "./gradlew"
     };
     let mut cmd = Command::new(gradlew_executable);
-    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
+    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
 
     let ipv4_flag = "-Djava.net.preferIPv4Stack=true";
     let gradle_opts = ensure_jvm_flag(env::var("GRADLE_OPTS").ok(), ipv4_flag);
