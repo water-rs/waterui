@@ -1,4 +1,4 @@
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Context, Result, eyre};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -17,6 +17,8 @@ pub fn create_android_project(
 ) -> Result<()> {
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
+
+    copy_android_backend(project_dir)?;
 
     let android_package = crate::android::sanitize_package_name(bundle_identifier);
 
@@ -132,6 +134,13 @@ pub fn create_android_project(
         &java_dir.join("MainActivity.kt"),
         &context,
     )?;
+    template::process_template_file(
+        templates
+            .get_file("android/app/src/main/java/WaterUIApplication.kt.tpl")
+            .unwrap(),
+        &java_dir.join("WaterUIApplication.kt"),
+        &context,
+    )?;
 
     // Process root build script
     template::process_template_file(
@@ -185,4 +194,85 @@ pub fn create_android_project(
         .status()?;
 
     Ok(())
+}
+
+fn copy_android_backend(project_dir: &Path) -> Result<()> {
+    let source = util::workspace_root().join("backends/android");
+    if !source.exists() {
+        return Err(eyre!(
+            "Android backend sources not found at {}",
+            source.display()
+        ));
+    }
+
+    let destination = project_dir.join("backends/android");
+    if destination.exists() {
+        fs::remove_dir_all(&destination).with_context(|| {
+            format!(
+                "failed to remove existing backend directory {}",
+                destination.display()
+            )
+        })?;
+    }
+
+    copy_dir_filtered(&source, &destination)?;
+
+    #[cfg(unix)]
+    {
+        let gradlew = destination.join("gradlew");
+        if gradlew.exists() {
+            let mut perms = fs::metadata(&gradlew)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&gradlew, perms)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_dir_filtered(src: &Path, dst: &Path) -> Result<()> {
+    util::ensure_directory(dst)?;
+
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if should_skip(&name_str) {
+            continue;
+        }
+
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+
+        if entry.file_type()?.is_dir() {
+            copy_dir_filtered(&src_path, &dst_path)?;
+        } else {
+            if let Some(parent) = dst_path.parent() {
+                util::ensure_directory(parent)?;
+            }
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn should_skip(name: &str) -> bool {
+    matches!(
+        name,
+        "build"
+            | ".gradle"
+            | ".cxx"
+            | "local.properties"
+            | ".DS_Store"
+            | "target"
+            | ".idea"
+            | ".git"
+    )
 }
