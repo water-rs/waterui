@@ -1,9 +1,30 @@
+use crate::{
+    apple::{
+        derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
+        resolve_xcode_project, run_xcodebuild_with_progress, xcodebuild_base,
+    },
+    config::Config,
+    platform::Platform,
+    util,
+};
+use axum::{
+    Router,
+    extract::{
+        State,
+        ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::IntoResponse,
+    routing::get,
+};
+use clap::{Args, ValueEnum};
+use color_eyre::eyre::{Context, Result, bail, eyre};
+use dialoguer::{Select, theme::ColorfulTheme};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
-    convert::Infallible,
-    env, fs,
+    env,
     io::Write,
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -14,75 +35,48 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-
-use crate::toolchain::{self, CheckMode, CheckTarget};
-use clap::{Args, ValueEnum};
-use color_eyre::eyre::{Context, Result, bail, eyre};
-use dialoguer::{Select, theme::ColorfulTheme};
-use hyper::{
-    Request, Response,
-    body::Incoming,
-    header::{CACHE_CONTROL, EXPIRES, HeaderValue, PRAGMA},
-    http::StatusCode,
-    server::conn::http1,
-    service::service_fn,
+use tokio::sync::{broadcast, oneshot};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
 };
-use hyper_util::rt::TokioIo;
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::{runtime::Builder, sync::oneshot, time::sleep};
+use tower_http::services::ServeDir;
 use tracing::{debug, info, warn};
-use which::which;
 
 use crate::{
-    android,
-    apple::{
-        derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
-        resolve_xcode_project, run_xcodebuild_with_progress, xcodebuild_base,
-    },
-    config::Config,
+    android, apple,
     devices::{self, DeviceInfo, DeviceKind},
-    output, util,
+    output,
+    toolchain::{self, CheckMode, CheckTarget},
 };
 
-#[derive(Args, Debug)]
+use which::which;
+
+#[derive(Args, Debug, Clone)]
 pub struct RunArgs {
-    /// Target platform to run
-    #[arg(long, value_enum)]
+    /// Platform to run on
+    #[arg(value_enum)]
     pub platform: Option<Platform>,
+
+    /// Device to run on (e.g. a simulator name or device UDID)
+    #[arg(long)]
+    pub device: Option<String>,
 
     /// Project directory (defaults to current working directory)
     #[arg(long)]
     pub project: Option<PathBuf>,
 
-    /// Override simulator/device name (for iOS, iPadOS, watchOS, visionOS)
-    #[arg(long)]
-    pub device: Option<String>,
-
     /// Build in release mode
     #[arg(long)]
     pub release: bool,
 
-    /// Disable CLI file hot reload
+    /// Disable sccache
+    #[arg(long)]
+    pub no_sccache: bool,
+
+    /// Disable hot reloading
     #[arg(long)]
     pub no_hot_reload: bool,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
-pub enum Platform {
-    Web,
-    #[clap(alias = "mac")]
-    Macos,
-    #[clap(alias = "iphone")]
-    Ios,
-    #[clap(alias = "ipad")]
-    Ipados,
-    #[clap(alias = "watch")]
-    Watchos,
-    #[clap(alias = "tv")]
-    Tvos,
-    #[clap(alias = "vision")]
-    Visionos,
-    Android,
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
@@ -98,13 +92,13 @@ pub fn run(args: RunArgs) -> Result<()> {
     let mut platform = args.platform;
     let device = args.device.clone();
 
-    if is_json && platform.is_none() && device.is_none() {
+    if is_json && args.platform.is_none() && device.is_none() {
         bail!(
             "JSON output requires specifying --platform or --device to avoid interactive prompts."
         );
     }
 
-    if platform.is_none() {
+    if args.platform.is_none() {
         let available_devices = devices::list_devices()?;
         if let Some(device_name) = &device {
             let selected_device =
@@ -120,7 +114,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    let platform = platform.ok_or_else(|| eyre!("No platform selected"))?;
+    let platform = args.platform.ok_or_else(|| eyre!("No platform selected"))?;
 
     run_platform(
         platform,
@@ -227,21 +221,27 @@ fn platform_from_device(device: &DeviceInfo) -> Result<Platform> {
 
 fn toolchain_targets_for_platform(platform: Platform) -> Vec<CheckTarget> {
     let mut targets = vec![CheckTarget::Rust];
-    if matches!(
-        platform,
-        Platform::Macos
-            | Platform::Ios
-            | Platform::Ipados
-            | Platform::Watchos
-            | Platform::Tvos
-            | Platform::Visionos
-    ) {
+    if platform.is_apple_platform() {
         targets.push(CheckTarget::Swift);
     }
+
     if platform == Platform::Android {
         targets.push(CheckTarget::Android);
     }
     targets
+}
+
+fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) -> PathBuf {
+    let profile = if release { "release" } else { "debug" };
+    let normalized = crate_name.replace('-', "_");
+    let filename = if cfg!(target_os = "windows") {
+        format!("{normalized}.dll")
+    } else if cfg!(target_os = "macos") {
+        format!("lib{normalized}.dylib")
+    } else {
+        format!("lib{normalized}.so")
+    };
+    project_dir.join("target").join(profile).join(filename)
 }
 
 fn run_platform(
@@ -268,54 +268,55 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        run_web(project_dir, config, release, hot_reload)?;
-        return Ok(());
+        return run_web(project_dir, config, release, hot_reload);
     }
 
-    let hot_reload_bridge = if hot_reload && platform == Platform::Macos {
-        match HotReloadBridge::new(project_dir, &config.package.name, release) {
-            Ok(bridge) => Some(Arc::new(bridge)),
-            Err(err) => {
-                warn!("Hot reload bridge unavailable: {err}");
-                None
-            }
-        }
+    let server = if hot_reload {
+        Some(Server::start(project_dir.to_path_buf())?)
     } else {
         None
     };
 
-    run_cargo_build(project_dir, &config.package.name, release, hot_reload)?;
+    let hot_reload_port = server.as_ref().map(|s| s.address().port());
 
-    if let Some(bridge) = &hot_reload_bridge {
-        if let Err(err) = bridge.notify() {
-            warn!("Failed to notify hot reload clients: {err}");
+    run_cargo_build(
+        project_dir,
+        &config.package.name,
+        release,
+        hot_reload,
+        hot_reload_port,
+    )?;
+
+    if let Some(server) = &server {
+        let library_path = hot_reload_library_path(project_dir, &config.package.name, release);
+        if library_path.exists() {
+            server.notify_native_reload(library_path);
         }
     }
 
-    let mut watch_paths = vec![project_dir.join("src")];
-    for path in &config.hot_reload.watch {
-        watch_paths.push(project_dir.join(path));
-    }
+    let watcher = if let Some(server) = server {
+        let mut watch_paths = vec![project_dir.join("src")];
+        for path in &config.hot_reload.watch {
+            watch_paths.push(project_dir.join(path));
+        }
 
-    let build_callback = {
-        let project_dir = project_dir.to_path_buf();
-        let package = config.package.name.clone();
-        let bridge = hot_reload_bridge.clone();
-        Arc::new(move || {
-            run_cargo_build(&project_dir, &package, release, hot_reload)?;
-            if let Some(bridge) = &bridge {
-                if let Err(err) = bridge.notify() {
-                    warn!("Failed to notify hot reload clients: {err}");
-                }
-            }
+        let project_dir_buf = project_dir.to_path_buf();
+        let package_name = config.package.name.clone();
+        let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+            run_cargo_build(
+                &project_dir_buf,
+                &package_name,
+                release,
+                hot_reload,
+                hot_reload_port,
+            )?;
+            let library_path = hot_reload_library_path(&project_dir_buf, &package_name, release);
+            server.notify_native_reload(library_path);
             Ok(())
-        })
-    };
+        });
 
-    let watcher = if hot_reload {
         Some(RebuildWatcher::new(watch_paths, build_callback)?)
     } else {
-        info!("CLI hot reload watcher disabled (--no-watch)");
         None
     };
 
@@ -330,7 +331,9 @@ fn run_platform(
                 info!("(Xcode scheme: {})", swift_config.scheme);
 
                 match platform {
-                    Platform::Macos => run_macos(project_dir, swift_config, release, hot_reload)?,
+                    Platform::Macos => {
+                        run_macos(project_dir, swift_config, release, hot_reload_port)?
+                    }
                     Platform::Ios
                     | Platform::Ipados
                     | Platform::Watchos
@@ -350,7 +353,7 @@ fn run_platform(
                             release,
                             platform,
                             Some(device_name),
-                            hot_reload,
+                            hot_reload_port,
                         )?
                     }
                     _ => unreachable!(),
@@ -384,6 +387,13 @@ fn run_platform(
         Platform::Web => unreachable!(),
     }
 
+    if hot_reload {
+        info!("App launched. Press Ctrl+C to stop the watcher.");
+        wait_for_interrupt()?;
+    } else {
+        info!("App launched.");
+    }
+
     drop(watcher);
     Ok(())
 }
@@ -393,6 +403,7 @@ fn run_cargo_build(
     package: &str,
     release: bool,
     hot_reload_enabled: bool,
+    hot_reload_port: Option<u16>,
 ) -> Result<()> {
     info!("Compiling Rust library...");
     let make_command = || {
@@ -402,7 +413,7 @@ fn run_cargo_build(
             cmd.arg("--release");
         }
         cmd.current_dir(project_dir);
-        util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
+        util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, hot_reload_port);
         cmd
     };
 
@@ -462,46 +473,52 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
         );
     }
 
-    info!("Compiling WebAssembly bundle...");
     build_web_app(
         project_dir,
         &config.package.name,
         &web_dir,
         release,
         &wasm_pack,
-        hot_reload,
+        false,
     )?;
 
-    let mut watch_paths = vec![project_dir.join("src"), web_dir.clone()];
-    for path in &config.hot_reload.watch {
-        watch_paths.push(project_dir.join(path));
-    }
-
-    let project_dir_buf = project_dir.to_path_buf();
-    let package_name = config.package.name.clone();
-    let web_dir_buf = web_dir.clone();
-    let wasm_pack_path = wasm_pack.clone();
-    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-        build_web_app(
-            project_dir_buf.as_path(),
-            &package_name,
-            web_dir_buf.as_path(),
-            release,
-            wasm_pack_path.as_path(),
-            hot_reload,
-        )
-    });
+    let server = Server::start(web_dir.clone())?;
+    let address = server.address();
+    let url = format!("http://{}/", address);
 
     let watcher = if hot_reload {
-        Some(RebuildWatcher::new(watch_paths, build_callback.clone())?)
+        let main_js_path = web_dir.join("main.js");
+        let main_js_template = std::fs::read_to_string(&main_js_path)?;
+        let main_js = main_js_template.replace("__HOT_RELOAD_PORT__", &address.port().to_string());
+        std::fs::write(&main_js_path, main_js)?;
+
+        let mut watch_paths = vec![project_dir.join("src")];
+        for path in &config.hot_reload.watch {
+            watch_paths.push(project_dir.join(path));
+        }
+
+        let project_dir_buf = project_dir.to_path_buf();
+        let package_name = config.package.name.clone();
+        let web_dir_buf = web_dir.clone();
+        let wasm_pack_path = wasm_pack.clone();
+        let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+            build_web_app(
+                project_dir_buf.as_path(),
+                &package_name,
+                web_dir_buf.as_path(),
+                release,
+                wasm_pack_path.as_path(),
+                false,
+            )?;
+            server.notify_web_reload();
+            Ok(())
+        });
+
+        Some(RebuildWatcher::new(watch_paths, build_callback)?)
     } else {
-        info!("CLI hot reload watcher disabled (--no-watch)");
         None
     };
 
-    let server = WebDevServer::start(web_dir.clone())?;
-    let address = server.address();
-    let url = format!("http://{}/", address);
     info!("Serving web app at {}", url);
     match webbrowser::open(&url) {
         Ok(_) => info!("Opened default browser"),
@@ -511,8 +528,15 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
 
     wait_for_interrupt()?;
 
+    if hot_reload {
+        if let Ok(template_content) =
+            std::fs::read_to_string(project_dir.join("cli/src/templates/web/main.js"))
+        {
+            let _ = std::fs::write(web_dir.join("main.js"), template_content);
+        }
+    }
+
     drop(watcher);
-    drop(server);
 
     Ok(())
 }
@@ -539,7 +563,7 @@ fn build_web_app(
         cmd.arg("--dev");
     }
     cmd.current_dir(project_dir);
-    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
+    util::configure_hot_reload_env(&mut cmd, false, None);
 
     debug!("Running command: {:?}", cmd);
     let status = cmd
@@ -550,132 +574,6 @@ fn build_web_app(
     }
 
     Ok(())
-}
-
-struct WebDevServer {
-    thread: Option<thread::JoinHandle<()>>,
-    shutdown: Option<oneshot::Sender<()>>,
-    address: SocketAddr,
-}
-
-impl WebDevServer {
-    fn start(root: PathBuf) -> Result<Self> {
-        use hyper_staticfile::{Body as StaticBody, Static};
-
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .context("failed to bind local development server")?;
-        listener
-            .set_nonblocking(true)
-            .context("failed to configure web server socket")?;
-        let address = listener
-            .local_addr()
-            .context("failed to read web server socket address")?;
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let (startup_tx, startup_rx) = mpsc::channel();
-
-        let thread = thread::spawn(move || {
-            let runtime = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to construct tokio runtime for web dev server");
-
-            runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::from_std(listener)
-                    .expect("failed to convert listener to tokio listener");
-                let static_files = Static::new(root);
-                let mut shutdown_rx = shutdown_rx;
-
-                if startup_tx.send(()).is_err() {
-                    warn!("web dev server startup receiver dropped");
-                    return;
-                }
-
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => {
-                            break;
-                        }
-                        accept_result = listener.accept() => {
-                            match accept_result {
-                                Ok((stream, _)) => {
-                                    let handler = static_files.clone();
-                                    tokio::spawn(async move {
-                                        let service = service_fn(move |request: Request<Incoming>| {
-                                            let handler = handler.clone();
-                                            async move {
-                                                let result = handler.serve(request).await;
-                                                let mut response = match result {
-                                                    Ok(response) => response,
-                                                    Err(error) => {
-                                                        warn!("web dev server static file error: {}", error);
-                                                        Response::builder()
-                                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                                            .body(StaticBody::Empty)
-                                                            .unwrap()
-                                                    }
-                                                };
-                                                apply_dev_cache_headers(&mut response);
-                                                Ok::<Response<StaticBody>, Infallible>(response)
-                                            }
-                                        });
-
-                                        if let Err(err) = http1::Builder::new()
-                                            .serve_connection(TokioIo::new(stream), service)
-                                            .await
-                                        {
-                                            warn!("web dev server connection error: {}", err);
-                                        }
-                                    });
-                                }
-                                Err(err) => {
-                                    warn!("web dev server accept error: {}", err);
-                                    sleep(Duration::from_millis(200)).await;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        });
-
-        startup_rx
-            .recv()
-            .context("failed to receive web dev server startup confirmation")?;
-
-        Ok(Self {
-            thread: Some(thread),
-            shutdown: Some(shutdown_tx),
-            address,
-        })
-    }
-
-    fn address(&self) -> SocketAddr {
-        self.address
-    }
-}
-
-impl Drop for WebDevServer {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(handle) = self.thread.take() {
-            if let Err(err) = handle.join() {
-                warn!("web dev server thread panicked: {:?}", err);
-            }
-        }
-    }
-}
-
-fn apply_dev_cache_headers(response: &mut Response<hyper_staticfile::Body>) {
-    let headers = response.headers_mut();
-    headers.insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
-    );
-    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
-    headers.insert(EXPIRES, HeaderValue::from_static("0"));
 }
 
 fn configure_build_speedups(cmd: &mut Command, enable_sccache: bool) -> bool {
@@ -740,7 +638,7 @@ fn run_macos(
     project_dir: &Path,
     swift_config: &crate::config::Swift,
     release: bool,
-    hot_reload: bool,
+    hot_reload_port: Option<u16>,
 ) -> Result<()> {
     ensure_macos_host("SwiftUI backend support")?;
     util::require_tool(
@@ -774,20 +672,24 @@ fn run_macos(
     }
 
     info!("Launching app…");
-    let status = Command::new("open")
-        .arg(&app_bundle)
-        .status()
-        .context("failed to open app bundle")?;
-    if !status.success() {
-        bail!("Failed to launch app");
+    if let Some(port) = hot_reload_port {
+        let executable_path = app_bundle.join("Contents/MacOS").join(&project.scheme);
+        if !executable_path.exists() {
+            bail!("App executable not found at {}", executable_path.display());
+        }
+        let mut cmd = Command::new(executable_path);
+        cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
+        cmd.spawn().context("failed to launch app executable")?;
+    } else {
+        let status = Command::new("open")
+            .arg(&app_bundle)
+            .status()
+            .context("failed to open app bundle")?;
+        if !status.success() {
+            bail!("Failed to launch app");
+        }
     }
 
-    if hot_reload {
-        info!("App launched. Press Ctrl+C to stop the watcher.");
-        wait_for_interrupt()?;
-    } else {
-        info!("App launched.");
-    }
     Ok(())
 }
 
@@ -835,7 +737,7 @@ fn run_apple_simulator(
     release: bool,
     platform: Platform,
     device: Option<String>,
-    no_watch: bool,
+    hot_reload_port: Option<u16>,
 ) -> Result<()> {
     ensure_macos_host("Apple simulators")?;
     for tool in ["xcrun", "xcodebuild"] {
@@ -925,24 +827,19 @@ fn run_apple_simulator(
 
     info!("Launching app…");
     let mut launch_cmd = Command::new("xcrun");
-    launch_cmd.args([
-        "simctl",
-        "launch",
-        "--terminate-running-process",
-        &device_name,
-        &package.bundle_identifier,
-    ]);
+    launch_cmd.args(["simctl", "launch", "--terminate-running-process"]);
+    if let Some(port) = hot_reload_port {
+        launch_cmd.arg("--setenv");
+        launch_cmd.arg("WATERUI_HOT_RELOAD_PORT");
+        launch_cmd.arg(port.to_string());
+    }
+    launch_cmd.args([&device_name, &package.bundle_identifier]);
     let status = launch_cmd.status().context("failed to launch app")?;
     if !status.success() {
         bail!("Failed to launch app on simulator {}", device_name);
     }
 
-    if no_watch {
-        info!("Simulator launch complete.");
-    } else {
-        info!("Simulator launch complete. Press Ctrl+C to stop.");
-        wait_for_interrupt()?;
-    }
+    info!("Simulator launch complete.");
     Ok(())
 }
 
@@ -1049,13 +946,6 @@ fn run_android(
     let status = launch_cmd.status().context("failed to launch app")?;
     if !status.success() {
         bail!("Failed to launch app");
-    }
-
-    if no_watch {
-        info!("App launched.");
-    } else {
-        info!("App launched. Press Ctrl+C to stop the watcher.");
-        wait_for_interrupt()?;
     }
 
     Ok(())
@@ -1228,75 +1118,151 @@ fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
 fn apple_simulator_platform_id(platform: Platform) -> &'static str {
     match platform {
         Platform::Ios | Platform::Ipados => "com.apple.platform.iphonesimulator",
+
         Platform::Watchos => "com.apple.platform.watchsimulator",
+
         Platform::Tvos => "com.apple.platform.appletvsimulator",
+
         Platform::Visionos => "com.apple.platform.visionossimulator",
+
         Platform::Macos | Platform::Android | Platform::Web => "",
     }
 }
 
-const HOT_RELOAD_HOST: &str = "127.0.0.1";
-const HOT_RELOAD_PORT: u16 = 51230;
-
-struct HotReloadBridge {
-    library_path: PathBuf,
-    sender: mpsc::Sender<PathBuf>,
+fn find_free_port() -> Result<u16> {
+    std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()
+        .map(|addr| addr.port())
+        .context("Failed to get free port")
 }
 
-impl HotReloadBridge {
-    fn new(project_dir: &Path, crate_name: &str, release: bool) -> Result<Self> {
-        let library_path = hot_reload_library_path(project_dir, crate_name, release);
-        let (sender, receiver) = mpsc::channel::<PathBuf>();
-        spawn_hot_reload_server(receiver)?;
+#[derive(Debug, Clone)]
+enum HotReloadMessage {
+    Native(PathBuf),
+    Web,
+}
+
+#[derive(Clone)]
+struct AppState {
+    hot_reload_tx: broadcast::Sender<HotReloadMessage>,
+}
+
+#[derive(Clone)]
+struct Server {
+    address: SocketAddr,
+    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    hot_reload_tx: broadcast::Sender<HotReloadMessage>,
+}
+
+impl Server {
+    fn start(static_path: PathBuf) -> Result<Self> {
+        let (hot_reload_tx, _) = broadcast::channel(16);
+        let app_state = AppState {
+            hot_reload_tx: hot_reload_tx.clone(),
+        };
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+
+        let thread_hot_reload_tx = hot_reload_tx.clone();
+        let thread = thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let app = Router::new()
+                    .route("/hot-reload-native", get(native_ws_handler))
+                    .route("/hot-reload-web", get(web_ws_handler))
+                    .fallback_service(ServeDir::new(static_path))
+                    .with_state(app_state);
+
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                startup_tx.send(addr).unwrap();
+
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        shutdown_rx.await.ok();
+                    })
+                    .await
+                    .unwrap();
+            });
+        });
+
+        let address = startup_rx.recv()?;
+
         Ok(Self {
-            library_path,
-            sender,
+            address,
+            shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+            thread: Arc::new(Mutex::new(Some(thread))),
+            hot_reload_tx,
         })
     }
 
-    fn notify(&self) -> Result<()> {
-        let path =
-            fs::canonicalize(&self.library_path).unwrap_or_else(|_| self.library_path.clone());
-        self.sender
-            .send(path)
-            .map_err(|err| eyre!("failed to notify hot reload clients: {err}"))
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    fn notify_native_reload(&self, path: PathBuf) {
+        let _ = self.hot_reload_tx.send(HotReloadMessage::Native(path));
+    }
+
+    fn notify_web_reload(&self) {
+        let _ = self.hot_reload_tx.send(HotReloadMessage::Web);
     }
 }
 
-fn spawn_hot_reload_server(receiver: mpsc::Receiver<PathBuf>) -> Result<()> {
-    let listener = TcpListener::bind((HOT_RELOAD_HOST, HOT_RELOAD_PORT)).with_context(|| {
-        format!("failed to bind WaterUI hot reload server on port {HOT_RELOAD_PORT}")
-    })?;
-
-    let clients = Arc::new(Mutex::new(Vec::new()));
-    let last_message = Arc::new(Mutex::new(None::<String>));
-
-    {
-        let clients = Arc::clone(&clients);
-        let last = Arc::clone(&last_message);
-        thread::spawn(move || accept_loop(listener, clients, last));
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        if let Some(thread) = self.thread.lock().unwrap().take() {
+            thread.join().unwrap();
+        }
     }
-
-    {
-        let clients = Arc::clone(&clients);
-        let last = Arc::clone(&last_message);
-        thread::spawn(move || broadcast_loop(receiver, clients, last));
-    }
-
-    Ok(())
 }
 
-fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) -> PathBuf {
-    let profile = if release { "release" } else { "debug" };
-    let normalized = crate_name.replace('-', "_");
-    let filename = if cfg!(target_os = "windows") {
-        format!("{normalized}.dll")
-    } else if cfg!(target_os = "macos") {
-        format!("lib{normalized}.dylib")
-    } else {
-        format!("lib{normalized}.so")
-    };
-    project_dir.join("target").join(profile).join(filename)
+async fn native_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_native_socket(socket, state))
+}
+
+async fn handle_native_socket(mut socket: WebSocket, state: AppState) {
+    let mut rx = state.hot_reload_tx.subscribe();
+    while let Ok(msg) = rx.recv().await {
+        if let HotReloadMessage::Native(path) = msg {
+            if let Ok(data) = std::fs::read(path) {
+                if socket.send(AxumMessage::Binary(data)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn web_ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_web_socket(socket, state))
+}
+
+async fn handle_web_socket(mut socket: WebSocket, state: AppState) {
+    let mut rx = state.hot_reload_tx.subscribe();
+    while let Ok(msg) = rx.recv().await {
+        if let HotReloadMessage::Web = msg {
+            if socket
+                .send(AxumMessage::Text("reload".to_string()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
 }
 
 fn accept_loop(
@@ -1304,7 +1270,7 @@ fn accept_loop(
     clients: Arc<Mutex<Vec<TcpStream>>>,
     last_message: Arc<Mutex<Option<String>>>,
 ) {
-    for connection in listener.incoming() {
+    for connection in listener.accept().await {
         match connection {
             Ok(mut stream) => {
                 if let Err(err) = stream.set_nodelay(true) {
@@ -1363,10 +1329,10 @@ fn broadcast_loop(
     }
 }
 
-fn send_hot_reload_message(stream: &mut TcpStream, message: &str) -> std::io::Result<()> {
-    stream.write_all(message.as_bytes())?;
-    stream.write_all(b"\n")?;
-    stream.flush()
+async fn send_hot_reload_message(stream: &mut TcpStream, message: &str) -> std::io::Result<()> {
+    stream.write_all(message.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await
 }
 
 struct RebuildWatcher {
