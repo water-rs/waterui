@@ -272,7 +272,9 @@ fn run_platform(
         return Ok(());
     }
 
-    let hot_reload_bridge = if !no_watch && platform == Platform::Macos {
+    let hot_reload_enabled = !no_watch;
+
+    let hot_reload_bridge = if hot_reload_enabled && platform == Platform::Macos {
         match HotReloadBridge::new(project_dir, &config.package.name, release) {
             Ok(bridge) => Some(Arc::new(bridge)),
             Err(err) => {
@@ -284,7 +286,12 @@ fn run_platform(
         None
     };
 
-    run_cargo_build(project_dir, &config.package.name, release)?;
+    run_cargo_build(
+        project_dir,
+        &config.package.name,
+        release,
+        hot_reload_enabled,
+    )?;
 
     if let Some(bridge) = &hot_reload_bridge {
         if let Err(err) = bridge.notify() {
@@ -301,8 +308,9 @@ fn run_platform(
         let project_dir = project_dir.to_path_buf();
         let package = config.package.name.clone();
         let bridge = hot_reload_bridge.clone();
+        let hot_reload_enabled = hot_reload_enabled;
         Arc::new(move || {
-            run_cargo_build(&project_dir, &package, release)?;
+            run_cargo_build(&project_dir, &package, release, hot_reload_enabled)?;
             if let Some(bridge) = &bridge {
                 if let Err(err) = bridge.notify() {
                     warn!("Failed to notify hot reload clients: {err}");
@@ -388,7 +396,12 @@ fn run_platform(
     Ok(())
 }
 
-fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<()> {
+fn run_cargo_build(
+    project_dir: &Path,
+    package: &str,
+    release: bool,
+    hot_reload_enabled: bool,
+) -> Result<()> {
     info!("Compiling Rust library...");
     let make_command = || {
         let mut cmd = Command::new("cargo");
@@ -397,6 +410,7 @@ fn run_cargo_build(project_dir: &Path, package: &str, release: bool) -> Result<(
             cmd.arg("--release");
         }
         cmd.current_dir(project_dir);
+        util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
         cmd
     };
 
@@ -456,6 +470,8 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         );
     }
 
+    let hot_reload_enabled = !no_watch;
+
     info!("Compiling WebAssembly bundle...");
     build_web_app(
         project_dir,
@@ -463,6 +479,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
         &web_dir,
         release,
         &wasm_pack,
+        hot_reload_enabled,
     )?;
 
     let mut watch_paths = vec![project_dir.join("src"), web_dir.clone()];
@@ -474,6 +491,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
     let package_name = config.package.name.clone();
     let web_dir_buf = web_dir.clone();
     let wasm_pack_path = wasm_pack.clone();
+    let hot_reload_enabled = hot_reload_enabled;
     let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
         build_web_app(
             project_dir_buf.as_path(),
@@ -481,6 +499,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, no_watch: bool) -
             web_dir_buf.as_path(),
             release,
             wasm_pack_path.as_path(),
+            hot_reload_enabled,
         )
     });
 
@@ -515,6 +534,7 @@ fn build_web_app(
     web_dir: &Path,
     release: bool,
     wasm_pack: &Path,
+    hot_reload_enabled: bool,
 ) -> Result<()> {
     let mut cmd = Command::new(wasm_pack);
     cmd.arg("build")
@@ -530,6 +550,7 @@ fn build_web_app(
         cmd.arg("--dev");
     }
     cmd.current_dir(project_dir);
+    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled);
 
     debug!("Running command: {:?}", cmd);
     let status = cmd
@@ -946,6 +967,8 @@ fn run_android(
 ) -> Result<()> {
     info!("Running for Android...");
 
+    let hot_reload_enabled = !no_watch;
+
     let adb_path = android::find_android_tool("adb").ok_or_else(|| {
         eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are available in your Android SDK directory (e.g. ~/Library/Android/sdk) or on your PATH.")
     })?;
@@ -1011,6 +1034,7 @@ fn run_android(
         android_config,
         release,
         false,
+        hot_reload_enabled,
         &package.bundle_identifier,
     )?;
 
