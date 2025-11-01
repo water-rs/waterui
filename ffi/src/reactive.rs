@@ -13,7 +13,7 @@ use waterui_core::id::Id;
 use waterui_form::picker::PickerItem;
 use waterui_media::Video;
 use waterui_media::live::LivePhotoSource;
-opaque!(WuiWatcherMetadata, Metadata);
+opaque!(WuiWatcherMetadata, Metadata, watcher_metadata);
 
 opaque!(WuiWatcherGuard, BoxWatcherGuard);
 
