@@ -1,9 +1,9 @@
 use core::slice;
 
-use crate::{ffi_type, ffi_view};
+use crate::ffi_view;
 use waterui_graphics::{RendererBufferFormat, RendererCpuSurface, RendererSurface, RendererView};
 
-ffi_type!(WuiRendererView, RendererView, waterui_drop_renderer_view);
+opaque!(WuiRendererView, RendererView);
 
 /// Pixel formats supported by the renderer bridge FFI.
 #[repr(C)]
@@ -29,12 +29,7 @@ impl From<RendererBufferFormat> for WuiRendererBufferFormat {
     }
 }
 
-ffi_view!(
-    RendererView,
-    *mut WuiRendererView,
-    waterui_renderer_view_id,
-    waterui_force_as_renderer_view
-);
+ffi_view!(RendererView, *mut WuiRendererView);
 
 /// Gets the width of the renderer view.
 ///

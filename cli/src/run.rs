@@ -1,12 +1,13 @@
 use std::{
     collections::HashSet,
     convert::Infallible,
-    env,
-    net::{SocketAddr, TcpListener},
+    env, fs,
+    io::Write,
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -271,7 +272,25 @@ fn run_platform(
         return Ok(());
     }
 
+    let hot_reload_bridge = if platform == Platform::Macos {
+        match HotReloadBridge::new(project_dir, &config.package.name, release) {
+            Ok(bridge) => Some(Arc::new(bridge)),
+            Err(err) => {
+                warn!("Hot reload bridge unavailable: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     run_cargo_build(project_dir, &config.package.name, release)?;
+
+    if let Some(bridge) = &hot_reload_bridge {
+        if let Err(err) = bridge.notify() {
+            warn!("Failed to notify hot reload clients: {err}");
+        }
+    }
 
     let mut watch_paths = vec![project_dir.join("src")];
     for path in &config.hot_reload.watch {
@@ -281,7 +300,16 @@ fn run_platform(
     let build_callback = {
         let project_dir = project_dir.to_path_buf();
         let package = config.package.name.clone();
-        Arc::new(move || run_cargo_build(&project_dir, &package, release))
+        let bridge = hot_reload_bridge.clone();
+        Arc::new(move || {
+            run_cargo_build(&project_dir, &package, release)?;
+            if let Some(bridge) = &bridge {
+                if let Err(err) = bridge.notify() {
+                    warn!("Failed to notify hot reload clients: {err}");
+                }
+            }
+            Ok(())
+        })
     };
 
     let watcher = if no_watch {
@@ -1171,6 +1199,140 @@ fn apple_simulator_platform_id(platform: Platform) -> &'static str {
         Platform::Visionos => "com.apple.platform.visionossimulator",
         Platform::Macos | Platform::Android | Platform::Web => "",
     }
+}
+
+const HOT_RELOAD_HOST: &str = "127.0.0.1";
+const HOT_RELOAD_PORT: u16 = 51230;
+
+struct HotReloadBridge {
+    library_path: PathBuf,
+    sender: mpsc::Sender<PathBuf>,
+}
+
+impl HotReloadBridge {
+    fn new(project_dir: &Path, crate_name: &str, release: bool) -> Result<Self> {
+        let library_path = hot_reload_library_path(project_dir, crate_name, release);
+        let (sender, receiver) = mpsc::channel::<PathBuf>();
+        spawn_hot_reload_server(receiver)?;
+        Ok(Self {
+            library_path,
+            sender,
+        })
+    }
+
+    fn notify(&self) -> Result<()> {
+        let path =
+            fs::canonicalize(&self.library_path).unwrap_or_else(|_| self.library_path.clone());
+        self.sender
+            .send(path)
+            .map_err(|err| eyre!("failed to notify hot reload clients: {err}"))
+    }
+}
+
+fn spawn_hot_reload_server(receiver: mpsc::Receiver<PathBuf>) -> Result<()> {
+    let listener = TcpListener::bind((HOT_RELOAD_HOST, HOT_RELOAD_PORT)).with_context(|| {
+        format!("failed to bind WaterUI hot reload server on port {HOT_RELOAD_PORT}")
+    })?;
+
+    let clients = Arc::new(Mutex::new(Vec::new()));
+    let last_message = Arc::new(Mutex::new(None::<String>));
+
+    {
+        let clients = Arc::clone(&clients);
+        let last = Arc::clone(&last_message);
+        thread::spawn(move || accept_loop(listener, clients, last));
+    }
+
+    {
+        let clients = Arc::clone(&clients);
+        let last = Arc::clone(&last_message);
+        thread::spawn(move || broadcast_loop(receiver, clients, last));
+    }
+
+    Ok(())
+}
+
+fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) -> PathBuf {
+    let profile = if release { "release" } else { "debug" };
+    let normalized = crate_name.replace('-', "_");
+    let filename = if cfg!(target_os = "windows") {
+        format!("{normalized}.dll")
+    } else if cfg!(target_os = "macos") {
+        format!("lib{normalized}.dylib")
+    } else {
+        format!("lib{normalized}.so")
+    };
+    project_dir.join("target").join(profile).join(filename)
+}
+
+fn accept_loop(
+    listener: TcpListener,
+    clients: Arc<Mutex<Vec<TcpStream>>>,
+    last_message: Arc<Mutex<Option<String>>>,
+) {
+    for connection in listener.incoming() {
+        match connection {
+            Ok(mut stream) => {
+                if let Err(err) = stream.set_nodelay(true) {
+                    warn!("Failed to configure hot reload socket: {err}");
+                }
+
+                let latest = {
+                    let guard = last_message
+                        .lock()
+                        .expect("hot reload last message poisoned");
+                    guard.clone()
+                };
+
+                if let Some(message) = latest {
+                    if let Err(err) = send_hot_reload_message(&mut stream, &message) {
+                        warn!("Failed to send latest hot reload payload to client: {err}");
+                        continue;
+                    }
+                }
+
+                info!("Hot reload client connected");
+                clients
+                    .lock()
+                    .expect("hot reload clients lock poisoned")
+                    .push(stream);
+            }
+            Err(err) => {
+                warn!("Hot reload accept error: {err}");
+            }
+        }
+    }
+}
+
+fn broadcast_loop(
+    receiver: mpsc::Receiver<PathBuf>,
+    clients: Arc<Mutex<Vec<TcpStream>>>,
+    last_message: Arc<Mutex<Option<String>>>,
+) {
+    for path in receiver {
+        let message = path.to_string_lossy().into_owned();
+        {
+            let mut guard = last_message
+                .lock()
+                .expect("hot reload last message poisoned");
+            *guard = Some(message.clone());
+        }
+
+        let mut clients_guard = clients.lock().expect("hot reload clients lock poisoned");
+        clients_guard.retain_mut(|stream| match send_hot_reload_message(stream, &message) {
+            Ok(()) => true,
+            Err(err) => {
+                warn!("Hot reload client disconnected: {err}");
+                false
+            }
+        });
+    }
+}
+
+fn send_hot_reload_message(stream: &mut TcpStream, message: &str) -> std::io::Result<()> {
+    stream.write_all(message.as_bytes())?;
+    stream.write_all(b"\n")?;
+    stream.flush()
 }
 
 struct RebuildWatcher {

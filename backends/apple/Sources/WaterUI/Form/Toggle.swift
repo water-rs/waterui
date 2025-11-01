@@ -10,10 +10,8 @@ import CWaterUI
 import SwiftUI
 
 
-public struct WuiToggle:View,WuiComponent{
-    static var id:WuiTypeId{
-        waterui_toggle_id()
-    }
+public struct WuiToggle: View, WuiComponent{
+    static let id: String = decodeViewIdentifier(waterui_toggle_id())
     @State private var isOn: WuiBinding<Bool>
     var label:WuiAnyView
     init(toggle:CWaterUI.WuiToggle,env:WuiEnvironment){
@@ -31,4 +29,3 @@ public struct WuiToggle:View,WuiComponent{
         })
     }
 }
-

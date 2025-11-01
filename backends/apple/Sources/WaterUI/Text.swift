@@ -12,9 +12,7 @@ import SwiftUI
 // MARK: - Text View
 
 struct WuiText: View, WuiComponent {
-    static var id: CWaterUI.WuiTypeId {
-        waterui_text_id()
-    }
+    static let id: String = Self.decodeId(waterui_text_id())
 
     @State private var content: WuiComputed<WuiStyledStr>
     private var env: WuiEnvironment
