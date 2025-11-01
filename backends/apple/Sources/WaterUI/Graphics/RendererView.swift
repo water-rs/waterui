@@ -17,7 +17,7 @@ private final class RendererHandle: ObservableObject {
 
 @MainActor
 struct WuiRendererView: View, WuiComponent {
-    static var id: WuiTypeId { waterui_renderer_view_id() }
+    static let id: String = decodeViewIdentifier(waterui_renderer_view_id())
 
     @StateObject private var handle: RendererHandle
     private let width: Int

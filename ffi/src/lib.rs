@@ -21,12 +21,13 @@ extern crate std;
 mod macros;
 pub mod action;
 pub mod animation;
-
 pub mod array;
 pub mod closure;
 pub mod color;
 pub mod components;
+pub mod event;
 pub mod gesture;
+pub mod id;
 pub mod reactive;
 mod ty;
 pub mod views;
@@ -37,8 +38,8 @@ pub mod android;
 
 use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
-pub use ty::*;
 use waterui::{AnyView, Str, View};
+use waterui_core::Metadata;
 
 use crate::array::WuiArray;
 #[macro_export]
@@ -66,13 +67,17 @@ macro_rules! export {
         /// Creates the main view for the WaterUI application
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
-            /*unsafe {
-                $crate::IntoFFI::into_ffi(waterui::AnyView::new(waterui::hot_reload!(
+            #[cfg(debug_assertions)]
+            unsafe {
+                return $crate::IntoFFI::into_ffi(waterui::AnyView::new(waterui::hot_reload!(
                     "waterui_main_reloadble"
-                )))
-            }*/
+                )));
+            }
 
-            waterui_main_reloadble()
+            #[cfg(not(debug_assertions))]
+            {
+                waterui_main_reloadble()
+            }
         }
     };
 }
@@ -216,9 +221,9 @@ pub trait IntoRust {
 
 ffi_safe!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
-ffi_type!(WuiEnv, waterui::Environment, waterui_drop_env);
+opaque!(WuiEnv, waterui::Environment, env);
 
-ffi_type!(WuiAnyView, waterui::AnyView, waterui_drop_any_view);
+opaque!(WuiAnyView, waterui::AnyView, anyview);
 
 /// Creates a new environment instance
 #[unsafe(no_mangle)]
@@ -305,4 +310,19 @@ pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_anyview_id() -> WuiStr {
     core::any::type_name::<AnyView>().into_ffi()
+}
+
+pub struct WuiMetadata<T> {
+    pub content: *mut WuiAnyView,
+    pub value: T,
+}
+
+impl<T: IntoFFI> IntoFFI for Metadata<T> {
+    type FFI = WuiMetadata<T::FFI>;
+    fn into_ffi(self) -> Self::FFI {
+        WuiMetadata {
+            content: self.content.into_ffi(),
+            value: self.value.into_ffi(),
+        }
+    }
 }

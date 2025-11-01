@@ -1,15 +1,24 @@
-use std::path::{Path, PathBuf};
+//! A view that can be hot-reloaded at runtime.
 
-use async_channel::Receiver;
-use executor_core::spawn_local;
-use waterui_core::{
-    AnyView, View,
-    components::{Dynamic, dynamic::DynamicHandler},
+use std::{
+    io::{BufRead, BufReader},
+    net::TcpStream,
+    path::Path,
+    thread,
+    time::Duration,
 };
+
+use crate::component::{Dynamic, dynamic::DynamicHandler};
+use crate::prelude::loading;
+use async_channel::Sender;
+use executor_core::spawn_local;
+use libloading::Library;
+use waterui_core::{AnyView, View, event::Associated};
 use waterui_layout::stack::vstack;
 
-use crate::prelude::loading;
-
+const HOST: &str = "127.0.0.1";
+const PORT: u16 = 51230;
+const RETRY_DELAY: Duration = Duration::from_secs(1);
 /// A view that can be hot-reloaded at runtime.
 #[derive(Debug)]
 pub struct Hotreload {
@@ -20,173 +29,112 @@ fn preparing_view() -> impl View {
     vstack((loading(), "Preparing for hot reload..."))
 }
 
-type ReloadableView = extern "C" fn() -> *mut ();
-
-unsafe fn load_new_version(
-    function_name: &'static str,
-    crate_dir: &Path,
-    target_dir: &Path,
-    crate_name: &str,
-) -> AnyView {
-    unsafe {
-        // Load the dynamic library
-        log::debug!(
-            "Loading dynamic library from {}",
-            current_dylib_path(target_dir, crate_name).display()
-        );
-        let lib = libloading::Library::new(current_dylib_path(target_dir, crate_name)).expect("failed to load dynamic library");
-
-        // Get a symbol from the library
-        let func: libloading::Symbol<ReloadableView> = lib.get(function_name.as_bytes()).expect("failed to load symbol");
-        let boxed: Box<AnyView> = Box::from_raw(func().cast::<AnyView>());
-        *boxed
-    }
-}
-
-// target_dir:
-fn current_dylib_path(target_dir: &Path, crate_name: &str) -> PathBuf {
-    let mut dir = target_dir.to_path_buf();
-    if cfg!(debug_assertions) {
-        dir.push("debug");
-    } else {
-        dir.push("release");
-    }
-
-    let libname = crate_name;
-
-    let filename = if cfg!(target_os = "windows") {
-        format!("{libname}.dll")
-    } else if cfg!(target_os = "macos") {
-        format!("lib{libname}.dylib")
-    } else {
-        format!("lib{libname}.so")
-    };
-
-    dir.push(filename);
-    dir
-}
-
-fn start_hot_reload(
-    function_name: &'static str,
-    dir: PathBuf,
-    crate_name: &'static str,
-    target_dir: PathBuf,
-    handler: DynamicHandler,
-) {
-    log::debug!("Watching directory: {dir:?}");
-    let receiver = observe_directory_changes(&dir);
-
-    spawn_local(async move {
-        while receiver.recv().await == Ok(()) {
-            log::debug!("Change detected, recompiling...");
-            recompile(&dir);
-            log::debug!("Recompilation finished, reloading...");
-
-            let new_view =
-                unsafe { load_new_version(function_name, &dir, &target_dir, crate_name) };
-            handler.set(new_view);
-            log::debug!("Reloaded new version of the view.");
-
-            // Update the dynamic view
-            // Note: This requires that you have access to the Dynamic instance
-            // Here we assume you have a way to get it, e.g., through a global state or passed reference
-            // For demonstration, we will just print a message
-            // In practice, you would call something like `dynamic.set(new_view);`
-            log::debug!("Dynamic view should be updated here.");
-        }
-    });
-}
-
-fn observe_directory_changes(dir: &Path) -> Receiver<()> {
-    let (sender, receiver) = async_channel::unbounded();
-
-    let dir = dir.to_path_buf();
-    std::thread::spawn(move || {
-        use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-        use std::sync::mpsc::channel;
-
-        let (tx, rx) = channel();
-
-        let mut watcher: RecommendedWatcher = Watcher::new(tx, notify::Config::default()).expect("failed to create watcher");
-
-        watcher.watch(&dir, RecursiveMode::Recursive).expect("failed to watch directory");
-
-        for res in rx {
-            match res {
-                Ok(event) => {
-                    log::debug!("Change detected: {event:?}");
-                    // Notify the async channel about the change
-                    let _ = sender.try_send(());
-                }
-                Err(e) => log::error!("watch error: {e:?}"),
-            }
-        }
-    });
-
-    receiver
-}
-
-fn recompile(dir: &Path) {
-    let cargo = env!("CARGO");
-
-    // Trigger recompilation using cargo
-    let status = std::process::Command::new(cargo)
-        .current_dir(dir)
-        .args(["build"])
-        .env(
-            "PATH",
-            format!(
-                "{}/.cargo/bin:{}",
-                std::env::var("HOME").expect("HOME environment variable should be set"),
-                std::env::var("PATH").expect("PATH environment variable should be set")
-            ),
-        )
-        .status()
-        .expect("Failed to execute cargo build");
-
-    if !status.success() {
-        log::debug!("Recompilation failed");
-    }
-}
-
 impl Hotreload {
-    /// Creates a new `Hotreload` view that can be updated at runtime.
+    /// Creates a new `Hotreload` view that listens for updates from the `WaterUI` CLI.
     ///
     /// # Safety
     ///
-    /// The `function_name` must be the name of an `extern "C"` function
-    /// with the signature `fn() -> *mut ()` which returns a raw pointer of `Box<AnyView>`
-    /// that has been converted to a raw pointer using `Box::into_raw`.
-    pub unsafe fn new(
-        function_name: &'static str,
-        dir: PathBuf,
-        target_dir: PathBuf,
-        crate_name: &'static str,
-    ) -> Self {
+    /// The `function_name` must be the name of an exported `extern "C"` function with the
+    /// signature `fn() -> *mut ()` that returns a heap-allocated `AnyView` (boxed and leaked
+    /// with `Box::into_raw`). The dynamic library must remain compatible with the running
+    /// process.
+    pub fn new(function_name: &'static str) -> Self {
         let (handler, dynamic) = Dynamic::new();
         handler.set(preparing_view);
-        start_hot_reload(function_name, dir, crate_name, target_dir, handler);
+        start_listener(handler, function_name);
         Self { dynamic }
     }
-}
-
-#[macro_export]
-macro_rules! hot_reload {
-    ($function_name:expr) => {{
-        let dir = std::path::PathBuf::from(
-            option_env!("CARGO_WORKSPACE_DIR").unwrap_or(env!("CARGO_MANIFEST_DIR")),
-        );
-        let crate_name = env!("CARGO_PKG_NAME");
-        let target_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("failed to get parent directory")
-            .join("target");
-        $crate::hot_reload::Hotreload::new($function_name, dir, target_dir, crate_name)
-    }};
 }
 
 impl View for Hotreload {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.dynamic
     }
+}
+
+fn start_listener(handler: DynamicHandler, function_name: &'static str) {
+    let (tx, rx) = async_channel::unbounded::<String>();
+
+    thread::spawn(move || connection_loop(&tx));
+
+    spawn_local(async move {
+        while let Ok(path) = rx.recv().await {
+            match load_view_from_library(Path::new(&path), function_name) {
+                Ok(view) => handler.set(view),
+                Err(err) => log::error!("Failed to load hot reload view: {err}"),
+            }
+        }
+    });
+}
+
+fn connection_loop(tx: &Sender<String>) {
+    loop {
+        match TcpStream::connect((HOST, PORT)) {
+            Ok(stream) => {
+                log::info!("Connected to WaterUI CLI hot reload server on {HOST}:{PORT}");
+                if let Err(err) = read_updates(stream, tx) {
+                    log::warn!("Hot reload connection lost: {err}");
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "Failed to connect to WaterUI CLI hot reload server on {HOST}:{PORT}: {err}"
+                );
+            }
+        }
+        thread::sleep(RETRY_DELAY);
+    }
+}
+
+fn read_updates(stream: TcpStream, tx: &Sender<String>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let path = line.trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        if tx.send_blocking(path).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn load_view_from_library(path: &Path, function_name: &'static str) -> Result<AnyView, String> {
+    unsafe {
+        let library = Library::new(path)
+            .map_err(|err| format!("unable to load dynamic library {}: {err}", path.display()))?;
+
+        let symbol: libloading::Symbol<unsafe extern "C" fn() -> *mut ()> =
+            library.get(function_name.as_bytes()).map_err(|err| {
+                format!(
+                    "symbol {function_name} missing from {}: {err}",
+                    path.display()
+                )
+            })?;
+
+        let raw = symbol();
+        if raw.is_null() {
+            return Err(format!(
+                "symbol {function_name} returned null pointer from {}",
+                path.display()
+            ));
+        }
+
+        let boxed: Box<AnyView> = Box::from_raw(raw.cast());
+        let view = *boxed;
+        let associated = Associated::new(library, view);
+        Ok(AnyView::new(associated))
+    }
+}
+
+/// A macro to create a hot-reloadable view.
+#[macro_export]
+macro_rules! hot_reload {
+    ($function_name:expr) => {{ $crate::hot_reload::Hotreload::new($function_name) }};
 }
