@@ -272,7 +272,7 @@ fn run_platform(
         return Ok(());
     }
 
-    let hot_reload_bridge = if platform == Platform::Macos {
+    let hot_reload_bridge = if !no_watch && platform == Platform::Macos {
         match HotReloadBridge::new(project_dir, &config.package.name, release) {
             Ok(bridge) => Some(Arc::new(bridge)),
             Err(err) => {
@@ -330,7 +330,7 @@ fn run_platform(
                 info!("(Xcode scheme: {})", swift_config.scheme);
 
                 match platform {
-                    Platform::Macos => run_macos(project_dir, swift_config, release)?,
+                    Platform::Macos => run_macos(project_dir, swift_config, release, no_watch)?,
                     Platform::Ios
                     | Platform::Ipados
                     | Platform::Watchos
@@ -350,6 +350,7 @@ fn run_platform(
                             release,
                             platform,
                             Some(device_name),
+                            no_watch,
                         )?
                     }
                     _ => unreachable!(),
@@ -372,6 +373,7 @@ fn run_platform(
                     android_config,
                     release,
                     selection,
+                    no_watch,
                 )?;
             } else {
                 bail!(
@@ -724,7 +726,12 @@ fn configure_mold(cmd: &mut Command) {
     }
 }
 
-fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: bool) -> Result<()> {
+fn run_macos(
+    project_dir: &Path,
+    swift_config: &crate::config::Swift,
+    release: bool,
+    no_watch: bool,
+) -> Result<()> {
     ensure_macos_host("SwiftUI backend support")?;
     util::require_tool(
         "xcodebuild",
@@ -765,8 +772,12 @@ fn run_macos(project_dir: &Path, swift_config: &crate::config::Swift, release: b
         bail!("Failed to launch app");
     }
 
-    info!("App launched. Press Ctrl+C to stop the watcher.");
-    wait_for_interrupt()?;
+    if no_watch {
+        info!("App launched.");
+    } else {
+        info!("App launched. Press Ctrl+C to stop the watcher.");
+        wait_for_interrupt()?;
+    }
     Ok(())
 }
 
@@ -814,6 +825,7 @@ fn run_apple_simulator(
     release: bool,
     platform: Platform,
     device: Option<String>,
+    no_watch: bool,
 ) -> Result<()> {
     ensure_macos_host("Apple simulators")?;
     for tool in ["xcrun", "xcodebuild"] {
@@ -915,8 +927,12 @@ fn run_apple_simulator(
         bail!("Failed to launch app on simulator {}", device_name);
     }
 
-    info!("Simulator launch complete. Press Ctrl+C to stop.");
-    wait_for_interrupt()?;
+    if no_watch {
+        info!("Simulator launch complete.");
+    } else {
+        info!("Simulator launch complete. Press Ctrl+C to stop.");
+        wait_for_interrupt()?;
+    }
     Ok(())
 }
 
@@ -926,6 +942,7 @@ fn run_android(
     android_config: &crate::config::Android,
     release: bool,
     selection: Option<AndroidSelection>,
+    no_watch: bool,
 ) -> Result<()> {
     info!("Running for Android...");
 
@@ -1021,8 +1038,12 @@ fn run_android(
         bail!("Failed to launch app");
     }
 
-    info!("App launched. Press Ctrl+C to stop the watcher.");
-    wait_for_interrupt()?;
+    if no_watch {
+        info!("App launched.");
+    } else {
+        info!("App launched. Press Ctrl+C to stop the watcher.");
+        wait_for_interrupt()?;
+    }
 
     Ok(())
 }
