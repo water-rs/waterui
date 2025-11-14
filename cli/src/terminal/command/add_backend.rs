@@ -3,11 +3,14 @@ use std::path::PathBuf;
 use clap::Args;
 use color_eyre::eyre::{Result, bail};
 use heck::ToUpperCamelCase;
-use tracing::info;
 
 use super::create::{self, BackendChoice, resolve_dependencies};
+use crate::ui;
 use serde::Serialize;
-use waterui_cli::project::{Android, Config, Swift, Web};
+use waterui_cli::{
+    output,
+    project::{Android, Config, Swift, Web},
+};
 
 #[derive(Args, Debug, Clone)]
 pub struct AddBackendArgs {
@@ -40,12 +43,16 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
 
     let deps = resolve_dependencies(args.dev)?;
 
+    let is_json = output::global_output_format().is_json();
+
     match args.backend {
         BackendChoice::Web => {
             if config.backends.web.is_some() {
                 bail!("Web backend already exists in this project.");
             }
-            info!("Adding Web backend...");
+            if !is_json {
+                ui::step("Adding Web backend...");
+            }
             create::web::create_web_assets(&project_dir, &config.package.display_name)?;
             config.backends.web = Some(Web {
                 project_path: "web".to_string(),
@@ -53,13 +60,17 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             if !config.hot_reload.watch.iter().any(|path| path == "web") {
                 config.hot_reload.watch.push("web".to_string());
             }
-            info!("Web backend added successfully.");
+            if !is_json {
+                ui::success("Web backend added successfully");
+            }
         }
         BackendChoice::Android => {
             if config.backends.android.is_some() {
                 bail!("Android backend already exists in this project.");
             }
-            info!("Adding Android backend...");
+            if !is_json {
+                ui::step("Adding Android backend...");
+            }
             let app_name = {
                 let generated = config.package.display_name.to_upper_camel_case();
                 if generated.is_empty() {
@@ -78,13 +89,17 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             config.backends.android = Some(Android {
                 project_path: "android".to_string(),
             });
-            info!("Android backend added successfully.");
+            if !is_json {
+                ui::success("Android backend added successfully");
+            }
         }
         BackendChoice::Swiftui => {
             if config.backends.swift.is_some() {
                 bail!("SwiftUI backend already exists in this project.");
             }
-            info!("Adding SwiftUI backend...");
+            if !is_json {
+                ui::step("Adding SwiftUI backend...");
+            }
             let app_name = {
                 let generated = config.package.display_name.to_upper_camel_case();
                 if generated.is_empty() {
@@ -106,12 +121,16 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 scheme: config.package.name.clone(),
                 project_file: Some(format!("{app_name}.xcodeproj")),
             });
-            info!("SwiftUI backend added successfully.");
+            if !is_json {
+                ui::success("SwiftUI backend added successfully");
+            }
         }
     }
 
     config.save(&project_dir)?;
-    info!("Updated Water.toml.");
+    if !is_json {
+        ui::success("Configuration updated");
+    }
 
     let report = AddBackendReport {
         project_dir: project_dir.display().to_string(),
