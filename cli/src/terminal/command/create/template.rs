@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, hash::BuildHasher, path::Path};
 
 use color_eyre::eyre::{Context, Result};
 use include_dir::{Dir, include_dir};
@@ -7,16 +7,25 @@ use crate::util;
 
 pub static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 
-pub fn process_template_directory(
+/// Recursively process every entry in `template_dir`, rendering templated files into
+/// `output_dir` using the provided context map.
+///
+/// # Errors
+/// Returns an error if reading a template or writing the rendered output fails.
+///
+/// # Panics
+/// Panics if any template path cannot be represented as UTF-8; this indicates a bug in the
+/// bundled templates.
+pub fn process_template_directory<S: BuildHasher>(
     template_dir: &Dir,
     output_dir: &Path,
-    context: &HashMap<&str, String>,
+    context: &HashMap<&str, String, S>,
 ) -> Result<()> {
     for entry in template_dir.entries() {
         let relative_path = entry
             .path()
             .strip_prefix(template_dir.path())
-            .unwrap_or(entry.path());
+            .unwrap_or_else(|_| entry.path());
 
         let mut dest_path_str = relative_path
             .to_str()
@@ -67,25 +76,32 @@ pub fn process_template_directory(
     Ok(())
 }
 
-pub fn process_template_file(
+/// Render a single template file into `output_path` using the provided context.
+///
+/// # Errors
+/// Returns an error if the file cannot be written to disk.
+///
+/// # Panics
+/// Panics if the bundled template contents are not valid UTF-8.
+pub fn process_template_file<S: BuildHasher>(
     template_file: &include_dir::File,
     output_path: &Path,
-    context: &HashMap<&str, String>,
+    context: &HashMap<&str, String, S>,
 ) -> Result<()> {
-    let mut content = template_file
+    let mut rendered = template_file
         .contents_utf8()
         .expect("template file should be valid UTF-8")
         .to_string();
 
     for (key, value) in context {
-        content = content.replace(&format!("__{}__", key), value);
+        rendered = rendered.replace(&format!("__{key}__"), value);
     }
 
     if let Some(parent) = output_path.parent() {
         util::ensure_directory(parent)?;
     }
 
-    fs::write(output_path, content)
+    fs::write(output_path, rendered)
         .with_context(|| format!("Failed to write file: {}", output_path.display()))?;
 
     Ok(())
