@@ -29,7 +29,4 @@ all.rs.txt
 /.idea/
 /build/
 /*/build/
-/backends/android/.gradle/
-/backends/android/build/
-/backends/android/.cxx/
 local.properties

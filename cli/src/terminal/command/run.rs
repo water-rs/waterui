@@ -1,12 +1,4 @@
-use crate::{
-    apple::{
-        derived_data_dir, disable_code_signing, ensure_macos_host, prepare_derived_data_dir,
-        resolve_xcode_project, run_xcodebuild_with_progress, xcodebuild_base,
-    },
-    config::Config,
-    platform::Platform,
-    util,
-};
+use crate::util;
 use axum::{
     Router,
     extract::{
@@ -19,11 +11,26 @@ use axum::{
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
+use waterui_cli::{
+    device::{
+        self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
+        DeviceKind, MacosDevice,
+    },
+    doctor::{
+        AnyToolchainIssue,
+        toolchain::{self, CheckMode, CheckTarget},
+    },
+    output,
+    platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
+    project::{Config, FailToRun, HotReloadOptions, Project, RunOptions},
+    util as cli_util,
+};
+type Platform = PlatformKind;
+
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
     env,
-    io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -36,60 +43,92 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, oneshot};
-use tokio::{
-    io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
-};
 use tower_http::services::ServeDir;
 use tracing::{debug, info, warn};
 
-use crate::{
-    android, apple,
-    devices::{self, DeviceInfo, DeviceKind},
-    output,
-    toolchain::{self, CheckMode, CheckTarget},
-};
-
 use which::which;
+
+#[derive(ValueEnum, Copy, Clone, Debug)]
+enum PlatformArg {
+    Web,
+    #[value(alias = "mac")]
+    Macos,
+    #[value(alias = "iphone")]
+    Ios,
+    #[value(alias = "ipad")]
+    Ipados,
+    #[value(alias = "watch")]
+    Watchos,
+    #[value(alias = "tv")]
+    Tvos,
+    #[value(alias = "vision")]
+    Visionos,
+    Android,
+}
+
+impl From<PlatformArg> for PlatformKind {
+    fn from(arg: PlatformArg) -> Self {
+        match arg {
+            PlatformArg::Web => Self::Web,
+            PlatformArg::Macos => Self::Macos,
+            PlatformArg::Ios => Self::Ios,
+            PlatformArg::Ipados => Self::Ipados,
+            PlatformArg::Watchos => Self::Watchos,
+            PlatformArg::Tvos => Self::Tvos,
+            PlatformArg::Visionos => Self::Visionos,
+            PlatformArg::Android => Self::Android,
+        }
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     /// Platform to run on
     #[arg(value_enum)]
-    pub platform: Option<Platform>,
+    platform: Option<PlatformArg>,
 
     /// Device to run on (e.g. a simulator name or device UDID)
     #[arg(long)]
-    pub device: Option<String>,
+    device: Option<String>,
 
     /// Project directory (defaults to current working directory)
     #[arg(long)]
-    pub project: Option<PathBuf>,
+    project: Option<PathBuf>,
 
     /// Build in release mode
     #[arg(long)]
-    pub release: bool,
+    release: bool,
 
     /// Disable sccache
     #[arg(long)]
-    pub no_sccache: bool,
+    no_sccache: bool,
 
     /// Disable hot reloading
     #[arg(long)]
-    pub no_hot_reload: bool,
+    no_hot_reload: bool,
 }
 
+/// Build and launch a `WaterUI` project for the selected platform.
+///
+/// # Errors
+/// Returns an error if toolchain checks fail, builds fail, or launching the target
+/// application fails.
+///
+/// # Panics
+/// Panics if the current working directory cannot be determined when `--project` is not set.
+#[allow(clippy::needless_pass_by_value)]
 pub fn run(args: RunArgs) -> Result<()> {
     let project_dir = args
         .project
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
-    let config = Config::load(&project_dir)?;
+    let project = Project::open(&project_dir)?;
+    let config = project.config().clone();
     let is_json = output::global_output_format().is_json();
 
     info!("Running WaterUI app '{}'", config.package.display_name);
 
-    let mut platform = args.platform;
+    let mut platform = args.platform.map(PlatformKind::from);
     let device = args.device.clone();
 
     if is_json && args.platform.is_none() && device.is_none() {
@@ -98,8 +137,8 @@ pub fn run(args: RunArgs) -> Result<()> {
         );
     }
 
-    if args.platform.is_none() {
-        let available_devices = devices::list_devices()?;
+    if platform.is_none() {
+        let available_devices = device::list_devices()?;
         if let Some(device_name) = &device {
             let selected_device =
                 find_device(&available_devices, device_name).ok_or_else(|| {
@@ -114,12 +153,12 @@ pub fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    let platform = args.platform.ok_or_else(|| eyre!("No platform selected"))?;
+    let platform = platform.ok_or_else(|| eyre!("No platform selected"))?;
 
     run_platform(
         platform,
         device,
-        &project_dir,
+        &project,
         &config,
         args.release,
         !args.no_hot_reload,
@@ -244,27 +283,30 @@ fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) 
     project_dir.join("target").join(profile).join(filename)
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_platform(
     platform: Platform,
     device: Option<String>,
-    project_dir: &Path,
+    project: &Project,
     config: &Config,
     release: bool,
     hot_reload: bool,
 ) -> Result<()> {
+    let project_dir = project.root();
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
     {
         let details = report.to_string();
-        let mut message = format!("Toolchain not ready for {:?}", platform);
+        let mut message = format!("Toolchain not ready for {platform:?}");
         let trimmed = details.trim();
-        if !trimmed.is_empty() {
+        if trimmed.is_empty() {
+            message.push('.');
+        } else {
             message.push_str(":\n\n");
             message.push_str(&indent_lines(trimmed, "  "));
-        } else {
-            message.push('.');
         }
-        return Err(eyre!(message));
+
+        bail!(message);
     }
 
     if platform == Platform::Web {
@@ -315,77 +357,67 @@ fn run_platform(
             Ok(())
         });
 
-        Some(RebuildWatcher::new(watch_paths, build_callback)?)
+        Some(RebuildWatcher::new(watch_paths, &build_callback)?)
     } else {
         None
     };
 
-    match platform {
-        Platform::Macos
-        | Platform::Ios
+    let run_options = RunOptions {
+        release,
+        hot_reload: HotReloadOptions {
+            enabled: hot_reload,
+            port: hot_reload_port,
+        },
+    };
+
+    let artifact = match platform {
+        Platform::Macos => {
+            let swift_config = config.backends.swift.clone().ok_or_else(|| {
+                eyre!(
+                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
+                )
+            })?;
+            info!("(Xcode scheme: {})", swift_config.scheme);
+            let device_impl = MacosDevice::new(swift_config);
+            run_on_device(project, device_impl, run_options)?
+        }
+        Platform::Ios
         | Platform::Ipados
         | Platform::Watchos
         | Platform::Tvos
         | Platform::Visionos => {
-            if let Some(swift_config) = &config.backends.swift {
-                info!("(Xcode scheme: {})", swift_config.scheme);
-
-                match platform {
-                    Platform::Macos => {
-                        run_macos(project_dir, swift_config, release, hot_reload_port)?
-                    }
-                    Platform::Ios
-                    | Platform::Ipados
-                    | Platform::Watchos
-                    | Platform::Tvos
-                    | Platform::Visionos => {
-                        if platform == Platform::Watchos {
-                            ensure_rust_target_installed("aarch64-apple-watchos-sim")?;
-                        }
-                        let device_name = match device {
-                            Some(name) => name,
-                            None => prompt_for_apple_device(platform)?,
-                        };
-                        run_apple_simulator(
-                            project_dir,
-                            &config.package,
-                            swift_config,
-                            release,
-                            platform,
-                            Some(device_name),
-                            hot_reload_port,
-                        )?
-                    }
-                    _ => unreachable!(),
-                }
-            } else {
-                bail!(
+            let swift_config = config.backends.swift.clone().ok_or_else(|| {
+                eyre!(
                     "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
-                );
-            }
+                )
+            })?;
+            info!("(Xcode scheme: {})", swift_config.scheme);
+            let simulator_kind = apple_simulator_kind(platform);
+            let device_name = match device {
+                Some(name) => name,
+                None => prompt_for_apple_device(platform)?,
+            };
+            let simulator = AppleSimulatorDevice::new(swift_config, simulator_kind, device_name);
+            run_on_device(project, simulator, run_options)?
         }
         Platform::Android => {
-            if let Some(android_config) = &config.backends.android {
-                let selection = match device {
-                    Some(name) => Some(resolve_android_device(&name)?),
-                    None => Some(prompt_for_android_device()?),
-                };
-                run_android(
-                    project_dir,
-                    &config.package,
-                    android_config,
-                    release,
-                    selection,
-                    hot_reload,
-                )?;
-            } else {
-                bail!(
+            let android_config = config.backends.android.clone().ok_or_else(|| {
+                eyre!(
                     "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend."
-                );
-            }
+                )
+            })?;
+            let selection = match device {
+                Some(name) => resolve_android_device(&name)?,
+                None => prompt_for_android_device()?,
+            };
+            let platform_impl = AndroidPlatform::new(android_config.clone(), false, hot_reload);
+            let android_device = AndroidDevice::new(platform_impl, selection)?;
+            run_on_device(project, android_device, run_options)?
         }
         Platform::Web => unreachable!(),
-    }
+    };
+
+    info!("Application artifact: {}", artifact.display());
 
     if hot_reload {
         info!("App launched. Press Ctrl+C to stop the watcher.");
@@ -396,6 +428,39 @@ fn run_platform(
 
     drop(watcher);
     Ok(())
+}
+
+fn run_on_device<D>(project: &Project, device: D, options: RunOptions) -> Result<PathBuf>
+where
+    D: Device,
+{
+    project
+        .run(&device, options)
+        .map(|report| report.artifact)
+        .map_err(convert_run_error)
+}
+
+fn convert_run_error(err: FailToRun) -> color_eyre::eyre::Report {
+    match err {
+        FailToRun::BuildError(message) => eyre!(message),
+        FailToRun::RequirementNotMet(issues) => {
+            eyre!(render_toolchain_error("toolchain", &issues))
+        }
+        FailToRun::Other(report) => report,
+    }
+}
+
+fn render_toolchain_error(label: &str, issues: &[AnyToolchainIssue]) -> String {
+    let mut message = format!("{} requirements are not satisfied:", label);
+    for issue in issues {
+        message.push_str(&format!("\n  - {issue}"));
+        let suggestion = issue.suggestion();
+        if !suggestion.trim().is_empty() {
+            message.push_str(&format!("\n    suggestion: {}", suggestion.trim()));
+        }
+    }
+    message.push_str("\nRun `water doctor` for automatic fixes.");
+    message
 }
 
 fn run_cargo_build(
@@ -413,7 +478,7 @@ fn run_cargo_build(
             cmd.arg("--release");
         }
         cmd.current_dir(project_dir);
-        util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, hot_reload_port);
+        cli_util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, hot_reload_port);
         cmd
     };
 
@@ -484,7 +549,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
 
     let server = Server::start(web_dir.clone())?;
     let address = server.address();
-    let url = format!("http://{}/", address);
+    let url = format!("http://{address}/");
 
     let watcher = if hot_reload {
         let main_js_path = web_dir.join("main.js");
@@ -500,7 +565,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
         let project_dir_buf = project_dir.to_path_buf();
         let package_name = config.package.name.clone();
         let web_dir_buf = web_dir.clone();
-        let wasm_pack_path = wasm_pack.clone();
+        let wasm_pack_path = wasm_pack;
         let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
             build_web_app(
                 project_dir_buf.as_path(),
@@ -514,14 +579,14 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
             Ok(())
         });
 
-        Some(RebuildWatcher::new(watch_paths, build_callback)?)
+        Some(RebuildWatcher::new(watch_paths, &build_callback)?)
     } else {
         None
     };
 
     info!("Serving web app at {}", url);
     match webbrowser::open(&url) {
-        Ok(_) => info!("Opened default browser"),
+        Ok(()) => info!("Opened default browser"),
         Err(err) => warn!("Failed to open browser automatically: {}", err),
     }
     info!("Press Ctrl+C to stop the server.");
@@ -563,12 +628,12 @@ fn build_web_app(
         cmd.arg("--dev");
     }
     cmd.current_dir(project_dir);
-    util::configure_hot_reload_env(&mut cmd, false, None);
+    cli_util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
 
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
-        .with_context(|| format!("failed to run wasm-pack build for {}", package))?;
+        .with_context(|| format!("failed to run wasm-pack build for {package}"))?;
     if !status.success() {
         bail!("wasm-pack build failed with status {}", status);
     }
@@ -593,17 +658,17 @@ fn configure_sccache(cmd: &mut Command) -> bool {
         return false;
     }
 
-    match which("sccache") {
-        Ok(path) => {
+    which("sccache").map_or_else(
+        |_| {
+            warn!("`sccache` not found on PATH; proceeding without build cache");
+            false
+        },
+        |path| {
             debug!("Enabling sccache for cargo builds");
             cmd.env("RUSTC_WRAPPER", path);
             true
-        }
-        Err(_) => {
-            warn!("`sccache` not found on PATH; proceeding without build cache");
-            false
-        }
-    }
+        },
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -634,327 +699,15 @@ fn configure_mold(cmd: &mut Command) {
     }
 }
 
-fn run_macos(
-    project_dir: &Path,
-    swift_config: &crate::config::Swift,
-    release: bool,
-    hot_reload_port: Option<u16>,
-) -> Result<()> {
-    ensure_macos_host("SwiftUI backend support")?;
-    util::require_tool(
-        "xcodebuild",
-        "Install Xcode and command line tools (xcode-select --install)",
-    )?;
-
-    let project = resolve_xcode_project(project_dir, swift_config)?;
-    let derived_root = derived_data_dir(project_dir);
-    prepare_derived_data_dir(&derived_root)?;
-
-    let configuration = if release { "Release" } else { "Debug" };
-
-    let mut build_cmd = xcodebuild_base(&project, configuration, &derived_root);
-    build_cmd.arg("-destination").arg("platform=macOS");
-    disable_code_signing(&mut build_cmd);
-
-    info!("Building macOS app with xcodebuild…");
-    debug!("Executing command: {:?}", build_cmd);
-    let log_dir = project_dir.join(".waterui/logs");
-    run_xcodebuild_with_progress(
-        build_cmd,
-        &format!("Building {} ({configuration})", project.scheme),
-        &log_dir,
-    )?;
-
-    let products_dir = derived_root.join(format!("Build/Products/{}", configuration));
-    let app_bundle = products_dir.join(format!("{}.app", project.scheme));
-    if !app_bundle.exists() {
-        bail!("Expected app bundle at {}", app_bundle.display());
+fn apple_simulator_kind(platform: Platform) -> AppleSimulatorKind {
+    match platform {
+        Platform::Ios => AppleSimulatorKind::Ios,
+        Platform::Ipados => AppleSimulatorKind::Ipados,
+        Platform::Watchos => AppleSimulatorKind::Watchos,
+        Platform::Tvos => AppleSimulatorKind::Tvos,
+        Platform::Visionos => AppleSimulatorKind::Visionos,
+        _ => unreachable!("apple_simulator_kind called for unsupported platform {platform:?}"),
     }
-
-    info!("Launching app…");
-    if let Some(port) = hot_reload_port {
-        let executable_path = app_bundle.join("Contents/MacOS").join(&project.scheme);
-        if !executable_path.exists() {
-            bail!("App executable not found at {}", executable_path.display());
-        }
-        let mut cmd = Command::new(executable_path);
-        cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
-        cmd.spawn().context("failed to launch app executable")?;
-    } else {
-        let status = Command::new("open")
-            .arg(&app_bundle)
-            .status()
-            .context("failed to open app bundle")?;
-        if !status.success() {
-            bail!("Failed to launch app");
-        }
-    }
-
-    Ok(())
-}
-
-fn ensure_rust_target_installed(target: &str) -> Result<()> {
-    if which("rustup").is_err() {
-        bail!(
-            "Rust target `{target}` is required for watchOS builds, but `rustup` was not found. \
-            Install Rust from https://rustup.rs and try again."
-        );
-    }
-
-    let output = Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
-        .context("failed to query installed Rust targets via rustup")?;
-
-    if !output.status.success() {
-        bail!(
-            "Failed to query installed Rust targets (status {}). \
-             Run `rustup target list --installed` manually for more details.",
-            output.status
-        );
-    }
-
-    let installed = String::from_utf8_lossy(&output.stdout);
-    let has_target = installed
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|line| line == target);
-
-    if has_target {
-        Ok(())
-    } else {
-        bail!(
-            "Rust target `{target}` is required for watchOS simulator builds. \
-            Install it with `rustup target add {target}` and try again."
-        );
-    }
-}
-
-fn run_apple_simulator(
-    project_dir: &Path,
-    package: &crate::config::Package,
-    swift_config: &crate::config::Swift,
-    release: bool,
-    platform: Platform,
-    device: Option<String>,
-    hot_reload_port: Option<u16>,
-) -> Result<()> {
-    ensure_macos_host("Apple simulators")?;
-    for tool in ["xcrun", "xcodebuild"] {
-        util::require_tool(
-            tool,
-            "Install Xcode and command line tools (xcode-select --install)",
-        )?;
-    }
-
-    info!("Opening Simulator app...");
-    Command::new("open")
-        .arg("-a")
-        .arg("Simulator")
-        .status()
-        .context("failed to open Simulator app")?;
-
-    let (sim_platform, products_path) = match platform {
-        Platform::Ios | Platform::Ipados => ("iOS Simulator", "iphonesimulator"),
-        Platform::Watchos => ("watchOS Simulator", "watchsimulator"),
-        Platform::Tvos => ("tvOS Simulator", "appletvsimulator"),
-        Platform::Visionos => ("visionOS Simulator", "xrsimulator"),
-        _ => bail!("Unsupported platform for simulator: {:?}", platform),
-    };
-
-    let project = resolve_xcode_project(project_dir, swift_config)?;
-
-    let device_name = match device {
-        Some(name) => name,
-        None => default_apple_simulator(platform)?,
-    };
-    info!("Building for simulator {}…", device_name);
-
-    let derived_root = derived_data_dir(project_dir);
-    prepare_derived_data_dir(&derived_root)?;
-
-    let configuration = if release { "Release" } else { "Debug" };
-
-    let mut build_cmd = xcodebuild_base(&project, configuration, &derived_root);
-    build_cmd
-        .arg("-destination")
-        .arg(format!("platform={},name={}", sim_platform, device_name))
-        .arg("CODE_SIGNING_ALLOWED=NO")
-        .arg("CODE_SIGNING_REQUIRED=NO");
-
-    debug!("Executing command: {:?}", build_cmd);
-    let log_dir = project_dir.join(".waterui/logs");
-    run_xcodebuild_with_progress(
-        build_cmd,
-        &format!(
-            "Building {} for {device_name} ({configuration})",
-            project.scheme
-        ),
-        &log_dir,
-    )?;
-
-    let products_dir = derived_root.join(format!(
-        "Build/Products/{}-{}",
-        configuration, products_path
-    ));
-    let app_bundle = products_dir.join(format!("{}.app", project.scheme));
-    if !app_bundle.exists() {
-        bail!(
-            "Expected app bundle at {}, but it was not created",
-            app_bundle.display()
-        );
-    }
-
-    info!("Booting simulator…");
-    let mut boot_cmd = Command::new("xcrun");
-    boot_cmd.args(["simctl", "boot", &device_name]);
-    let _ = boot_cmd.status(); // Ignore errors if already booted
-
-    info!("Installing app on simulator…");
-    let mut install_cmd = Command::new("xcrun");
-    install_cmd.args([
-        "simctl",
-        "install",
-        &device_name,
-        app_bundle.to_str().expect("path should be valid UTF-8"),
-    ]);
-    let status = install_cmd
-        .status()
-        .context("failed to install app on simulator")?;
-    if !status.success() {
-        bail!("Failed to install app on simulator {}", device_name);
-    }
-
-    info!("Launching app…");
-    let mut launch_cmd = Command::new("xcrun");
-    launch_cmd.args(["simctl", "launch", "--terminate-running-process"]);
-    if let Some(port) = hot_reload_port {
-        launch_cmd.arg("--setenv");
-        launch_cmd.arg("WATERUI_HOT_RELOAD_PORT");
-        launch_cmd.arg(port.to_string());
-    }
-    launch_cmd.args([&device_name, &package.bundle_identifier]);
-    let status = launch_cmd.status().context("failed to launch app")?;
-    if !status.success() {
-        bail!("Failed to launch app on simulator {}", device_name);
-    }
-
-    info!("Simulator launch complete.");
-    Ok(())
-}
-
-fn run_android(
-    project_dir: &Path,
-    package: &crate::config::Package,
-    android_config: &crate::config::Android,
-    release: bool,
-    selection: Option<AndroidSelection>,
-    no_watch: bool,
-) -> Result<()> {
-    info!("Running for Android...");
-
-    let hot_reload_enabled = !no_watch;
-
-    let adb_path = android::find_android_tool("adb").ok_or_else(|| {
-        eyre!("`adb` not found. Install the Android SDK platform-tools and ensure they are available in your Android SDK directory (e.g. ~/Library/Android/sdk) or on your PATH.")
-    })?;
-    let emulator_path = android::find_android_tool("emulator");
-
-    let selection = if let Some(selection) = selection {
-        selection
-    } else {
-        let emulator = emulator_path.clone().ok_or_else(|| {
-            eyre!("No Android emulator available. Install the Android SDK emulator tools or specify a connected device.")
-        })?;
-        let output = Command::new(&emulator)
-            .arg("-list-avds")
-            .output()
-            .context("failed to get list of Android emulators")?;
-        let avds = String::from_utf8(output.stdout)?
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<String>>();
-        if avds.is_empty() {
-            bail!(
-                "No Android emulators found. Please create one using Android Studio's AVD Manager or connect a device."
-            );
-        }
-        AndroidSelection {
-            name: avds[0].clone(),
-            identifier: avds[0].clone(),
-            kind: DeviceKind::Emulator,
-        }
-    };
-
-    let target_identifier = if selection.kind == DeviceKind::Device {
-        info!("Using Android device: {}", selection.name);
-        Some(selection.identifier.clone())
-    } else {
-        let emulator = emulator_path.ok_or_else(|| {
-            eyre!(
-                "`emulator` not found. Install the Android SDK emulator tools or add them to PATH."
-            )
-        })?;
-        info!("Using emulator: {}", selection.name);
-        info!("Launching emulator...");
-        Command::new(emulator)
-            .arg("-avd")
-            .arg(&selection.name)
-            .spawn()
-            .context("failed to launch emulator")?;
-        None
-    };
-
-    info!("Waiting for device to be ready...");
-    android::wait_for_android_device(&adb_path, target_identifier.as_deref())?;
-
-    let desired_targets =
-        android::device_preferred_targets(&adb_path, target_identifier.as_deref())
-            .context("Failed to determine device CPU architecture")?;
-    android::configure_rust_android_linker_env(&desired_targets)
-        .context("Failed to configure Android NDK toolchain for Rust builds")?;
-
-    let apk_path = android::build_android_apk(
-        project_dir,
-        android_config,
-        release,
-        false,
-        hot_reload_enabled,
-        &package.bundle_identifier,
-    )?;
-
-    info!("Installing APK...");
-    let mut install_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
-    install_cmd.args([
-        "install",
-        "-r",
-        apk_path.to_str().expect("path should be valid UTF-8"),
-    ]);
-    debug!("Running command: {:?}", install_cmd);
-    let status = install_cmd.status().context("failed to install APK")?;
-    if !status.success() {
-        bail!("Failed to install APK");
-    }
-
-    info!("Launching app...");
-    let sanitized_package = android::sanitize_package_name(&package.bundle_identifier);
-    let activity = format!("{sanitized_package}/.MainActivity");
-    let mut launch_cmd = android::adb_command(&adb_path, target_identifier.as_deref());
-    launch_cmd.args(["shell", "am", "start", "-n", &activity]);
-    debug!("Running command: {:?}", launch_cmd);
-    let status = launch_cmd.status().context("failed to launch app")?;
-    if !status.success() {
-        bail!("Failed to launch app");
-    }
-
-    Ok(())
-}
-
-struct AndroidSelection {
-    name: String,
-    identifier: String,
-    kind: DeviceKind,
 }
 
 fn wait_for_interrupt() -> Result<()> {
@@ -969,7 +722,7 @@ fn wait_for_interrupt() -> Result<()> {
     Ok(())
 }
 
-fn apple_platform_display_name(platform: Platform) -> &'static str {
+const fn apple_platform_display_name(platform: Platform) -> &'static str {
     match platform {
         Platform::Ios => "iOS",
         Platform::Ipados => "iPadOS",
@@ -986,7 +739,7 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
         return Ok(Vec::new());
     }
 
-    let mut candidates: Vec<DeviceInfo> = devices::list_devices()?
+    let mut candidates: Vec<DeviceInfo> = device::list_devices()?
         .into_iter()
         .filter(|d| d.kind == DeviceKind::Simulator)
         .filter(|d| d.raw_platform.as_deref() == Some(raw_platform))
@@ -1003,26 +756,16 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
     Ok(candidates)
 }
 
-fn default_apple_simulator(platform: Platform) -> Result<String> {
-    let candidates = apple_simulator_candidates(platform)?;
-    let preferred = candidates
-        .iter()
-        .find(|d| d.state.as_deref() != Some("unavailable"))
-        .unwrap_or(&candidates[0]);
-    Ok(preferred.name.clone())
-}
-
 fn prompt_for_apple_device(platform: Platform) -> Result<String> {
     let candidates = apple_simulator_candidates(platform)?;
     let theme = ColorfulTheme::default();
     let options: Vec<String> = candidates
         .iter()
         .map(|d| {
-            if let Some(detail) = &d.detail {
-                format!("{} ({})", d.name, detail)
-            } else {
-                d.name.clone()
-            }
+            d.detail.as_ref().map_or_else(
+                || d.name.clone(),
+                |detail| format!("{} ({})", d.name, detail),
+            )
         })
         .collect();
 
@@ -1036,7 +779,7 @@ fn prompt_for_apple_device(platform: Platform) -> Result<String> {
 }
 
 fn prompt_for_android_device() -> Result<AndroidSelection> {
-    let devices = devices::list_devices()?;
+    let devices = device::list_devices()?;
     let mut candidates: Vec<DeviceInfo> = devices
         .into_iter()
         .filter(|d| {
@@ -1053,12 +796,12 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
         let kind_order = match a.kind {
             DeviceKind::Device => 0,
             DeviceKind::Emulator => 1,
-            _ => 2,
+            DeviceKind::Simulator => 2,
         }
         .cmp(&match b.kind {
             DeviceKind::Device => 0,
             DeviceKind::Emulator => 1,
-            _ => 2,
+            DeviceKind::Simulator => 2,
         });
         if kind_order == std::cmp::Ordering::Equal {
             a.name.cmp(&b.name)
@@ -1076,11 +819,10 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
                 DeviceKind::Emulator => "emulator",
                 DeviceKind::Simulator => "simulator",
             };
-            if let Some(state) = &d.state {
-                format!("{} ({}, {})", d.name, kind, state)
-            } else {
-                format!("{} ({})", d.name, kind)
-            }
+            d.state.as_ref().map_or_else(
+                || format!("{} ({})", d.name, kind),
+                |state| format!("{} ({}, {})", d.name, kind, state),
+            )
         })
         .collect();
 
@@ -1092,20 +834,27 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
 
     Ok(AndroidSelection {
         name: candidates[selection].name.clone(),
-        identifier: candidates[selection].identifier.clone(),
+        identifier: match candidates[selection].kind {
+            DeviceKind::Device => Some(candidates[selection].identifier.clone()),
+            _ => None,
+        },
         kind: candidates[selection].kind.clone(),
     })
 }
 
 fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
-    let devices = devices::list_devices()?;
+    let devices = device::list_devices()?;
     if let Some(device) = devices
         .iter()
         .find(|d| d.identifier == name || d.name == name)
     {
         return Ok(AndroidSelection {
             name: device.name.clone(),
-            identifier: device.identifier.clone(),
+            identifier: if device.kind == DeviceKind::Device {
+                Some(device.identifier.clone())
+            } else {
+                None
+            },
             kind: device.kind.clone(),
         });
     }
@@ -1115,7 +864,7 @@ fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
     );
 }
 
-fn apple_simulator_platform_id(platform: Platform) -> &'static str {
+const fn apple_simulator_platform_id(platform: Platform) -> &'static str {
     match platform {
         Platform::Ios | Platform::Ipados => "com.apple.platform.iphonesimulator",
 
@@ -1127,13 +876,6 @@ fn apple_simulator_platform_id(platform: Platform) -> &'static str {
 
         Platform::Macos | Platform::Android | Platform::Web => "",
     }
-}
-
-fn find_free_port() -> Result<u16> {
-    std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()
-        .map(|addr| addr.port())
-        .context("Failed to get free port")
 }
 
 #[derive(Debug, Clone)]
@@ -1166,7 +908,6 @@ impl Server {
 
         let (startup_tx, startup_rx) = std::sync::mpsc::channel();
 
-        let thread_hot_reload_tx = hot_reload_tx.clone();
         let thread = thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1202,7 +943,7 @@ impl Server {
         })
     }
 
-    fn address(&self) -> SocketAddr {
+    const fn address(&self) -> SocketAddr {
         self.address
     }
 
@@ -1217,10 +958,12 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.lock().unwrap().take() {
+        let shutdown_handle = self.shutdown_tx.lock().unwrap().take();
+        if let Some(tx) = shutdown_handle {
             let _ = tx.send(());
         }
-        if let Some(thread) = self.thread.lock().unwrap().take() {
+        let thread_handle = self.thread.lock().unwrap().take();
+        if let Some(thread) = thread_handle {
             thread.join().unwrap();
         }
     }
@@ -1253,86 +996,15 @@ async fn web_ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 async fn handle_web_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.hot_reload_tx.subscribe();
     while let Ok(msg) = rx.recv().await {
-        if let HotReloadMessage::Web = msg {
-            if socket
+        if matches!(msg, HotReloadMessage::Web)
+            && socket
                 .send(AxumMessage::Text("reload".to_string()))
                 .await
                 .is_err()
-            {
-                break;
-            }
-        }
-    }
-}
-
-fn accept_loop(
-    listener: TcpListener,
-    clients: Arc<Mutex<Vec<TcpStream>>>,
-    last_message: Arc<Mutex<Option<String>>>,
-) {
-    for connection in listener.accept().await {
-        match connection {
-            Ok(mut stream) => {
-                if let Err(err) = stream.set_nodelay(true) {
-                    warn!("Failed to configure hot reload socket: {err}");
-                }
-
-                let latest = {
-                    let guard = last_message
-                        .lock()
-                        .expect("hot reload last message poisoned");
-                    guard.clone()
-                };
-
-                if let Some(message) = latest {
-                    if let Err(err) = send_hot_reload_message(&mut stream, &message) {
-                        warn!("Failed to send latest hot reload payload to client: {err}");
-                        continue;
-                    }
-                }
-
-                info!("Hot reload client connected");
-                clients
-                    .lock()
-                    .expect("hot reload clients lock poisoned")
-                    .push(stream);
-            }
-            Err(err) => {
-                warn!("Hot reload accept error: {err}");
-            }
-        }
-    }
-}
-
-fn broadcast_loop(
-    receiver: mpsc::Receiver<PathBuf>,
-    clients: Arc<Mutex<Vec<TcpStream>>>,
-    last_message: Arc<Mutex<Option<String>>>,
-) {
-    for path in receiver {
-        let message = path.to_string_lossy().into_owned();
         {
-            let mut guard = last_message
-                .lock()
-                .expect("hot reload last message poisoned");
-            *guard = Some(message.clone());
+            break;
         }
-
-        let mut clients_guard = clients.lock().expect("hot reload clients lock poisoned");
-        clients_guard.retain_mut(|stream| match send_hot_reload_message(stream, &message) {
-            Ok(()) => true,
-            Err(err) => {
-                warn!("Hot reload client disconnected: {err}");
-                false
-            }
-        });
     }
-}
-
-async fn send_hot_reload_message(stream: &mut TcpStream, message: &str) -> std::io::Result<()> {
-    stream.write_all(message.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-    stream.flush().await
 }
 
 struct RebuildWatcher {
@@ -1344,7 +1016,7 @@ struct RebuildWatcher {
 impl RebuildWatcher {
     fn new(
         watch_paths: Vec<PathBuf>,
-        build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync>,
+        build_callback: &Arc<dyn Fn() -> Result<()> + Send + Sync>,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
         let mut watcher: RecommendedWatcher =
@@ -1373,14 +1045,14 @@ impl RebuildWatcher {
 
         let signal = Arc::new(AtomicBool::new(false));
         let shutdown_flag = signal.clone();
-        let build = build_callback.clone();
+        let build = Arc::clone(build_callback);
 
         let handle = thread::spawn(move || {
             info!("Hot reload watcher started (CLI)");
             let mut last_run = Instant::now();
             while !shutdown_flag.load(Ordering::Relaxed) {
                 match rx.recv_timeout(Duration::from_millis(500)) {
-                    Ok(_) => {
+                    Ok(()) => {
                         if last_run.elapsed() < Duration::from_millis(250) {
                             continue;
                         }
@@ -1389,7 +1061,7 @@ impl RebuildWatcher {
                         }
                         last_run = Instant::now();
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }

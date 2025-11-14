@@ -6,6 +6,7 @@ use color_eyre::eyre::{self, bail};
 use tracing::info;
 use which::which;
 
+#[allow(dead_code)]
 pub fn install_rust() -> eyre::Result<Child> {
     if which("rustc").is_ok() {
         bail!("Rust is already installed");
@@ -23,6 +24,7 @@ pub fn install_rust() -> eyre::Result<Child> {
     Ok(child)
 }
 
+#[allow(dead_code)]
 pub fn install_package(name: &'static str) -> eyre::Result<Child> {
     // install package takes time, run it on background thread
 
@@ -35,6 +37,7 @@ pub fn install_package(name: &'static str) -> eyre::Result<Child> {
     }
 }
 
+#[allow(dead_code)]
 fn install_package_macos(name: &str) -> eyre::Result<Child> {
     // Use Homebrew to install package
     let child = std::process::Command::new("brew")
@@ -45,6 +48,7 @@ fn install_package_macos(name: &str) -> eyre::Result<Child> {
 }
 
 // it can be super slow...complete it on background thread
+#[allow(dead_code)]
 fn install_package_linux(name: &str) -> eyre::Result<Child> {
     // linux has various package managers:
     // 1. apt (Debian/Ubuntu)

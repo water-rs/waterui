@@ -6,12 +6,16 @@
 pub mod platform;
 
 pub mod backend;
-pub mod command;
 pub mod device;
 pub mod doctor;
 pub(crate) mod installer;
+pub mod output;
 pub mod package;
 pub mod project;
+pub mod util;
+
+pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
+pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_SWIFT_VERSION");
 
 #[macro_use]
 mod macros {

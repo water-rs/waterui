@@ -4,8 +4,8 @@ use std::{
     process::Command,
 };
 
-use crate::{android, output};
-use color_eyre::eyre::{Context, Result, eyre};
+use crate::backend;
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use indexmap::IndexSet;
 use serde::Serialize;
@@ -18,8 +18,8 @@ pub enum CheckMode {
 }
 
 impl CheckMode {
-    fn is_full(self) -> bool {
-        matches!(self, CheckMode::Full)
+    const fn is_full(self) -> bool {
+        matches!(self, Self::Full)
     }
 }
 
@@ -31,15 +31,17 @@ pub enum CheckTarget {
 }
 
 impl CheckTarget {
-    pub fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
-            CheckTarget::Rust => "Rust toolchain",
-            CheckTarget::Swift => "Swift toolchain",
-            CheckTarget::Android => "Android tooling",
+            Self::Rust => "Rust toolchain",
+            Self::Swift => "Swift toolchain",
+            Self::Android => "Android tooling",
         }
     }
 }
 
+#[derive(Debug)]
 pub struct ToolchainReport {
     pub sections: Vec<Section>,
 }
@@ -57,6 +59,7 @@ impl ToolchainReport {
     }
 }
 
+#[must_use]
 pub fn run_checks(mode: CheckMode, targets: &[CheckTarget]) -> ToolchainReport {
     let mut sections = Vec::new();
 
@@ -70,6 +73,10 @@ pub fn run_checks(mode: CheckMode, targets: &[CheckTarget]) -> ToolchainReport {
     ToolchainReport { sections }
 }
 
+/// Ensure every required toolchain target passes the doctor checks.
+///
+/// # Errors
+/// Returns an error summarizing failed checks when the environment is incomplete.
 pub fn ensure_ready(mode: CheckMode, targets: &[CheckTarget]) -> Result<()> {
     let report = run_checks(mode, targets);
     if !report.has_failures() {
@@ -83,9 +90,10 @@ pub fn ensure_ready(mode: CheckMode, targets: &[CheckTarget]) -> Result<()> {
     }
     message.push_str("\nRun `water doctor` for a full report.");
 
-    Err(eyre!(message))
+    bail!(message);
 }
 
+#[must_use]
 pub fn perform_check(mode: CheckMode, target: CheckTarget) -> Option<SectionOutcome> {
     match target {
         CheckTarget::Rust => Some(check_rust(mode)),
@@ -100,9 +108,11 @@ pub fn perform_check(mode: CheckMode, target: CheckTarget) -> Option<SectionOutc
     }
 }
 
+/// Apply the requested fix suggestions that were produced by doctor checks.
+///
+/// # Errors
+/// Returns an error if a fix cannot be executed or user input fails.
 pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixApplication>> {
-    let is_json = output::global_output_format().is_json();
-
     let mut seen = IndexSet::new();
     let mut unique = Vec::new();
     for fix in fixes {
@@ -112,32 +122,12 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixAp
     }
 
     if unique.is_empty() {
-        if !is_json {
-            println!(
-                "{}",
-                style("All required checks are already satisfied.").green()
-            );
-        }
         return Ok(Vec::new());
-    }
-
-    if !is_json {
-        println!();
-        println!("{}", style("Attempting to fix required issues").bold());
     }
 
     let mut results = Vec::new();
 
     for fix in unique {
-        if !is_json {
-            println!(
-                "\n{} {}",
-                style("•").cyan(),
-                style(fix.description()).bold()
-            );
-            println!("    {}", style(fix.command_preview()).dim());
-        }
-
         let mut outcome = FixApplication {
             id: fix.id.clone(),
             description: fix.description().to_string(),
@@ -147,9 +137,6 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixAp
         };
 
         if !mode.should_apply_fix()? {
-            if !is_json {
-                println!("    {}", style("Skipped.").yellow());
-            }
             outcome.outcome = FixApplicationOutcome::Skipped;
             outcome.detail = Some("User skipped this fix.".to_string());
             results.push(outcome);
@@ -157,12 +144,6 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixAp
         }
 
         if fix.command.is_empty() {
-            if !is_json {
-                println!(
-                    "    {}",
-                    style("No command associated with this fix. Skipping.").yellow()
-                );
-            }
             outcome.outcome = FixApplicationOutcome::Unavailable;
             outcome.detail = Some("No command associated with this fix.".to_string());
             results.push(outcome);
@@ -176,33 +157,17 @@ pub fn apply_fixes(fixes: Vec<FixSuggestion>, mode: FixMode) -> Result<Vec<FixAp
 
         match command.status() {
             Ok(status) if status.success() => {
-                if !is_json {
-                    println!("    {}", style("Completed successfully.").green());
-                }
                 outcome.outcome = FixApplicationOutcome::Applied;
                 outcome.detail = None;
             }
             Ok(status) => {
                 let code = status
                     .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string());
-                if !is_json {
-                    println!(
-                        "    {}",
-                        style(format!("Command exited with status {code}.")).red()
-                    );
-                }
+                    .map_or_else(|| "signal".to_string(), |c| c.to_string());
                 outcome.outcome = FixApplicationOutcome::Failed;
                 outcome.detail = Some(format!("Command exited with status {code}."));
             }
             Err(err) => {
-                if !is_json {
-                    println!(
-                        "    {}",
-                        style(format!("Failed to execute command: {err}")).red()
-                    );
-                }
                 outcome.outcome = FixApplicationOutcome::Failed;
                 outcome.detail = Some(format!("Failed to execute command: {err}"));
             }
@@ -223,8 +188,8 @@ pub enum FixMode {
 impl FixMode {
     fn should_apply_fix(self) -> Result<bool> {
         match self {
-            FixMode::Automatic => Ok(true),
-            FixMode::Interactive => {
+            Self::Automatic => Ok(true),
+            Self::Interactive => {
                 use dialoguer::Confirm;
                 Confirm::new()
                     .with_prompt("Apply this fix?")
@@ -240,7 +205,7 @@ impl FixMode {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct FixApplication {
     pub id: String,
     pub description: String,
@@ -250,7 +215,7 @@ pub struct FixApplication {
     pub detail: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FixApplicationOutcome {
     Applied,
@@ -259,6 +224,7 @@ pub enum FixApplicationOutcome {
     Unavailable,
 }
 
+#[derive(Debug)]
 pub struct SectionOutcome {
     section: Section,
     fixes: Vec<FixSuggestion>,
@@ -283,16 +249,18 @@ impl SectionOutcome {
         self.section.push(outcome.row);
     }
 
-    pub fn section(&self) -> &Section {
+    #[must_use]
+    pub const fn section(&self) -> &Section {
         &self.section
     }
 
+    #[must_use]
     pub fn into_parts(self) -> (Section, Vec<FixSuggestion>) {
         (self.section, self.fixes)
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FixSuggestion {
     pub id: String,
     description: String,
@@ -300,7 +268,8 @@ pub struct FixSuggestion {
 }
 
 impl FixSuggestion {
-    pub fn new(id: String, description: String, command: Vec<String>) -> Self {
+    #[must_use]
+    pub const fn new(id: String, description: String, command: Vec<String>) -> Self {
         Self {
             id,
             description,
@@ -308,10 +277,12 @@ impl FixSuggestion {
         }
     }
 
+    #[must_use]
     pub fn description(&self) -> &str {
         &self.description
     }
 
+    #[must_use]
     pub fn command_preview(&self) -> String {
         self.command.join(" ")
     }
@@ -326,7 +297,7 @@ pub enum Status {
     Info,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Row {
     pub status: Status,
     message: String,
@@ -335,17 +306,18 @@ pub struct Row {
     indent: usize,
 }
 
+#[derive(Debug, Serialize)]
 pub struct RowOutcome {
     pub row: Row,
     pub fix: Option<FixSuggestion>,
 }
 
 impl RowOutcome {
-    fn new(row: Row) -> Self {
+    const fn new(row: Row) -> Self {
         Self { row, fix: None }
     }
 
-    fn with_fix(row: Row, fix: FixSuggestion) -> Self {
+    const fn with_fix(row: Row, fix: FixSuggestion) -> Self {
         Self {
             row,
             fix: Some(fix),
@@ -379,16 +351,19 @@ impl Row {
         }
     }
 
+    #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
 
-    pub fn with_indent(mut self, indent: usize) -> Self {
+    #[must_use]
+    pub const fn with_indent(mut self, indent: usize) -> Self {
         self.indent = indent;
         self
     }
 
+    #[must_use]
     pub fn render(&self) -> Vec<String> {
         let mut lines = Vec::new();
         let indent = "  ".repeat(self.indent + 1);
@@ -406,7 +381,8 @@ impl Row {
         lines
     }
 
-    pub fn status(&self) -> Status {
+    #[must_use]
+    pub const fn status(&self) -> Status {
         self.status
     }
 
@@ -415,7 +391,7 @@ impl Row {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Section {
     title: String,
     rows: Vec<Row>,
@@ -433,6 +409,7 @@ impl Section {
         self.rows.push(row);
     }
 
+    #[must_use]
     pub fn render(&self) -> Vec<String> {
         let mut lines = Vec::new();
         lines.push(format!(
@@ -446,6 +423,7 @@ impl Section {
         lines
     }
 
+    #[must_use]
     pub fn summary_line(&self) -> String {
         let icon = match self.overall_status() {
             Status::Pass => style("✔").green(),
@@ -456,6 +434,7 @@ impl Section {
         format!("{} {}", icon, style(&self.title).bold())
     }
 
+    #[must_use]
     pub fn overall_status(&self) -> Status {
         if self
             .rows
@@ -480,12 +459,14 @@ impl Section {
         }
     }
 
+    #[must_use]
     pub fn has_failure(&self) -> bool {
         self.rows
             .iter()
             .any(|row| matches!(row.status(), Status::Fail))
     }
 
+    #[must_use]
     pub fn has_warning(&self) -> bool {
         self.rows
             .iter()
@@ -668,22 +649,19 @@ fn check_android(mode: CheckMode) -> SectionOutcome {
 }
 
 fn check_command(name: &str, help: &str) -> RowOutcome {
-    match which(name) {
-        Ok(path) => RowOutcome::new(
-            Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
-        ),
-        Err(_) => RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help)),
-    }
+    which(name).map_or_else(
+        |_| RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help)),
+        |path| {
+            RowOutcome::new(
+                Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
+            )
+        },
+    )
 }
 
 fn check_sccache_tool() -> RowOutcome {
-    match which("sccache") {
-        Ok(path) => RowOutcome::new(
-            Row::pass("`sccache` build cache available")
-                .with_indent(1)
-                .with_detail(path.display().to_string()),
-        ),
-        Err(_) => {
+    which("sccache").map_or_else(
+        |_| {
             let detail =
                 "Install sccache to cache Rust compilation outputs. Run `cargo install sccache`.";
             let row = Row::warn("`sccache` not installed")
@@ -697,8 +675,15 @@ fn check_sccache_tool() -> RowOutcome {
                     vec!["cargo".into(), "install".into(), "sccache".into()],
                 ),
             )
-        }
-    }
+        },
+        |path| {
+            RowOutcome::new(
+                Row::pass("`sccache` build cache available")
+                    .with_indent(1)
+                    .with_detail(path.display().to_string()),
+            )
+        },
+    )
 }
 
 fn check_mold_tool() -> Option<RowOutcome> {
@@ -706,36 +691,39 @@ fn check_mold_tool() -> Option<RowOutcome> {
         return None;
     }
 
-    match which("mold") {
-        Ok(path) => Some(RowOutcome::new(
-            Row::pass("`mold` linker available")
-                .with_indent(1)
-                .with_detail(path.display().to_string()),
-        )),
-        Err(_) => {
+    let outcome = which("mold").map_or_else(
+        |_| {
             let mut detail = String::from("Install mold to speed up Rust linking on Linux.");
             if let Some((fix, hint)) = mold_fix_suggestion() {
                 if !hint.is_empty() {
                     detail.push(' ');
                     detail.push_str(&hint);
                 }
-                Some(RowOutcome::with_fix(
+                RowOutcome::with_fix(
                     Row::warn("`mold` linker not installed")
                         .with_indent(1)
                         .with_detail(detail),
                     fix,
-                ))
+                )
             } else {
                 detail
                     .push_str(" See https://github.com/rui314/mold for installation instructions.");
-                Some(RowOutcome::new(
+                RowOutcome::new(
                     Row::warn("`mold` linker not installed")
                         .with_indent(1)
                         .with_detail(detail),
-                ))
+                )
             }
-        }
-    }
+        },
+        |path| {
+            RowOutcome::new(
+                Row::pass("`mold` linker available")
+                    .with_indent(1)
+                    .with_detail(path.display().to_string()),
+            )
+        },
+    );
+    Some(outcome)
 }
 
 fn mold_fix_suggestion() -> Option<(FixSuggestion, String)> {
@@ -822,7 +810,7 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
     let env_status = evaluate_android_env();
     outcomes.extend(env_status.rows);
 
-    if let Some(root) = env_status.root.clone() {
+    if let Some(root) = env_status.root {
         let sdk = AndroidSdk::new(root);
         outcomes.extend(sdk.check_components()?);
     }
@@ -855,61 +843,62 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
 
 fn check_java_environment() -> RowOutcome {
     let java_env = env::var("JAVA_HOME").ok();
-    let java_version_cmd = if let Some(java_home) = java_env.clone() {
-        let java_exe = Path::new(&java_home).join("bin/java");
-        if java_exe.exists() {
-            Some(Command::new(java_exe))
-        } else {
-            None
-        }
-    } else if which("java").is_ok() {
-        Some(Command::new("java"))
-    } else {
-        None
-    };
+    let java_version_cmd = java_env.map_or_else(
+        || which("java").ok().map(|_| Command::new("java")),
+        |java_home| {
+            let java_exe = Path::new(&java_home).join("bin/java");
+            java_exe.exists().then(|| Command::new(java_exe))
+        },
+    );
 
-    if let Some(mut cmd) = java_version_cmd {
-        match cmd.arg("-version").output() {
+    java_version_cmd.map_or_else(
+        || {
+            let detail = if cfg!(target_os = "macos") {
+                "Install a Java Development Kit (JDK 17 or newer). Try `brew install --cask temurin@17`."
+            } else if cfg!(target_os = "linux") {
+                "Install a Java Development Kit (JDK 17 or newer) using your distribution's package manager."
+            } else if cfg!(target_os = "windows") {
+                "Install a Java Development Kit (JDK 17 or newer) and ensure `JAVA_HOME` is set."
+            } else {
+                "Install a Java Development Kit (JDK 17 or newer) and ensure it is on PATH."
+            };
+            let row =
+                Row::fail("Java not found in JAVA_HOME or PATH").with_detail(detail.to_string());
+            if let Some(fix) = java_install_fix() {
+                RowOutcome::with_fix(row, fix)
+            } else {
+                RowOutcome::new(row)
+            }
+        },
+        |mut cmd| match cmd.arg("-version").output() {
             Ok(output) => {
                 let version_info = String::from_utf8_lossy(&output.stderr);
-                if let Some(line) = version_info.lines().next() {
-                    RowOutcome::new(Row::pass("Java detected").with_detail(line.trim().to_string()))
-                } else {
-                    RowOutcome::new(Row::warn("Could not determine Java version"))
-                }
+                version_info.lines().next().map_or_else(
+                    || RowOutcome::new(Row::warn("Could not determine Java version")),
+                    |line| {
+                        RowOutcome::new(
+                            Row::pass("Java detected").with_detail(line.trim().to_string()),
+                        )
+                    },
+                )
             }
             Err(err) => RowOutcome::new(
                 Row::warn("Failed to read Java version")
                     .with_detail(format!("java -version failed: {err}")),
             ),
-        }
-    } else {
-        let detail = if cfg!(target_os = "macos") {
-            "Install a Java Development Kit (JDK 17 or newer). Try `brew install --cask temurin@17`."
-        } else if cfg!(target_os = "linux") {
-            "Install a Java Development Kit (JDK 17 or newer) using your distribution's package manager."
-        } else if cfg!(target_os = "windows") {
-            "Install a Java Development Kit (JDK 17 or newer) and ensure `JAVA_HOME` is set."
-        } else {
-            "Install a Java Development Kit (JDK 17 or newer) and ensure it is on PATH."
-        };
-        let row = Row::fail("Java not found in JAVA_HOME or PATH").with_detail(detail.to_string());
-        if let Some(fix) = java_install_fix() {
-            RowOutcome::with_fix(row, fix)
-        } else {
-            RowOutcome::new(row)
-        }
-    }
+        },
+    )
 }
 
 fn check_android_tool(name: &str, help: &str) -> RowOutcome {
-    if let Some(path) = android::find_android_tool(name) {
-        RowOutcome::new(
-            Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
-        )
-    } else {
-        RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help))
-    }
+    backend::android::find_android_tool(name).map_or_else(
+        || RowOutcome::new(Row::fail(format!("`{name}` not found")).with_detail(help)),
+        |path| {
+            RowOutcome::new(
+                Row::pass(format!("Found `{name}`")).with_detail(path.display().to_string()),
+            )
+        },
+    )
 }
 
 struct AndroidEnvStatus {
@@ -990,8 +979,8 @@ fn check_env_path(
 
 fn auto_detect_android_path(name: &str) -> Option<PathBuf> {
     match name {
-        "ANDROID_SDK_ROOT" | "ANDROID_HOME" => android::resolve_android_sdk_path(),
-        "ANDROID_NDK_HOME" => android::resolve_android_ndk_path(),
+        "ANDROID_SDK_ROOT" | "ANDROID_HOME" => backend::android::resolve_android_sdk_path(),
+        "ANDROID_NDK_HOME" => backend::android::resolve_android_ndk_path(),
         _ => None,
     }
 }
@@ -1105,10 +1094,11 @@ impl AndroidSdk {
             ));
         }
 
+        let platform_tools = self.root.join("platform-tools");
         rows.push(self.component_row(
             "android-platform-tools",
             "Android Platform Tools",
-            self.root.join("platform-tools"),
+            &platform_tools,
             &["platform-tools"],
         ));
 
@@ -1119,7 +1109,7 @@ impl AndroidSdk {
         Ok(rows)
     }
 
-    fn component_row(&self, id: &str, label: &str, path: PathBuf, packages: &[&str]) -> RowOutcome {
+    fn component_row(&self, id: &str, label: &str, path: &Path, packages: &[&str]) -> RowOutcome {
         if path.exists() {
             RowOutcome::new(
                 Row::pass(format!("{label} installed"))
@@ -1148,7 +1138,7 @@ impl AndroidSdk {
             return Ok(self.component_row(
                 "android-build-tools",
                 "Android Build Tools",
-                build_tools_dir,
+                &build_tools_dir,
                 &["build-tools;34.0.0"],
             ));
         }
@@ -1167,7 +1157,7 @@ impl AndroidSdk {
             Ok(self.component_row(
                 "android-build-tools",
                 "Android Build Tools",
-                build_tools_dir,
+                &build_tools_dir,
                 &["build-tools;34.0.0"],
             ))
         }
@@ -1179,7 +1169,7 @@ impl AndroidSdk {
             return Ok(self.component_row(
                 "android-platform",
                 "Android platform SDK",
-                platforms_dir,
+                &platforms_dir,
                 &["platforms;android-34"],
             ));
         }
@@ -1198,7 +1188,7 @@ impl AndroidSdk {
             Ok(self.component_row(
                 "android-platform",
                 "Android platform SDK",
-                platforms_dir,
+                &platforms_dir,
                 &["platforms;android-34"],
             ))
         }
@@ -1239,7 +1229,7 @@ impl AndroidSdk {
         command.push(sdkmanager.display().to_string());
         command.push(format!("--sdk_root={}", self.root.display()));
         command.push("--install".into());
-        command.extend(packages.iter().map(|pkg| pkg.to_string()));
+        command.extend(packages.iter().map(|pkg| (*pkg).to_string()));
         Some(FixSuggestion::new(id.into(), description.into(), command))
     }
 }
@@ -1279,6 +1269,7 @@ fn locate_sdkmanager(root: &Path) -> Option<PathBuf> {
     None
 }
 
+#[derive(Copy, Clone)]
 enum TargetKind {
     Required { note: Option<&'static str> },
     Optional(&'static str),
@@ -1292,12 +1283,13 @@ fn target_row(installed: &str, target: &str, kind: TargetKind) -> RowOutcome {
                 RowOutcome::new(Row::pass(format!("Rust target `{target}`")).with_indent(2))
             } else {
                 let mut detail = format!("Run `rustup target add {target}`");
-                let description = if let Some(note) = note {
-                    detail = format!("{note}. {detail}");
-                    format!("Install Rust target `{target}` ({note})")
-                } else {
-                    format!("Install Rust target `{target}`")
-                };
+                let description = note.map_or_else(
+                    || format!("Install Rust target `{target}`"),
+                    |note| {
+                        detail = format!("{note}. {detail}");
+                        format!("Install Rust target `{target}` ({note})")
+                    },
+                );
                 let row = Row::fail(format!("Rust target `{target}` missing"))
                     .with_detail(detail)
                     .with_indent(2);
