@@ -1,18 +1,46 @@
-use crate::{
-    android,
-    output::{self, OutputFormat},
-};
-use clap::Args;
-use color_eyre::eyre::{Context, Result};
-use console::style;
+use std::{path::Path, process::Command};
+
+use color_eyre::eyre::{self, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::process::Command;
 use which::which;
 
-#[derive(Args, Debug, Default)]
-pub struct DevicesArgs;
+use crate::{
+    backend,
+    platform::{AnyPlatform, Platform},
+    project::{Project, RunOptions},
+};
+
+pub mod android;
+pub mod apple;
+pub use android::{AndroidDevice, AndroidSelection};
+pub use apple::{AppleSimulatorDevice, MacosDevice};
+
+pub trait Device: Send + Sync {
+    type Platform: Platform;
+    /// Perform any per-run setup (toolchain configuration, emulator launch, etc.).
+    ///
+    /// # Errors
+    /// Returns an error if preparation fails.
+    fn prepare(&self, project: &Project, options: &RunOptions) -> eyre::Result<()>;
+    /// Run the packaged application artifact on this device.
+    ///
+    /// # Errors
+    /// Returns an error if launching fails.
+    fn run(&self, project: &Project, artifact: &Path, options: &RunOptions) -> eyre::Result<()>;
+    fn platform(&self) -> &Self::Platform;
+}
+
+pub type AnyDevice = Box<dyn Device<Platform = AnyPlatform>>;
+
+/// Scan for all available devices.
+#[must_use]
+pub fn scan() -> Vec<AnyDevice> {
+    todo!("device scanning not implemented")
+}
+
+#[derive(Debug)]
+pub struct LocalDevice;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -35,32 +63,15 @@ pub struct DeviceInfo {
     pub detail: Option<String>,
 }
 
+/// Collect a combined view of connected simulators and devices.
+///
+/// # Errors
+/// Returns an error if querying connected devices fails.
 pub fn list_devices() -> Result<Vec<DeviceInfo>> {
     let mut devices = Vec::new();
     devices.extend(apple_devices()?);
     devices.extend(android_devices()?);
     Ok(devices)
-}
-
-pub fn run(_args: DevicesArgs) -> Result<()> {
-    let devices = list_devices()?;
-
-    match output::global_output_format() {
-        OutputFormat::Json => {
-            output::emit_json(&devices)?;
-        }
-        OutputFormat::Human => {
-            if devices.is_empty() {
-                println!(
-                    "No devices detected. Install a simulator or connect a device, then try again."
-                );
-                return Ok(());
-            }
-            print_table(&devices);
-        }
-    }
-
-    Ok(())
 }
 
 fn apple_devices() -> Result<Vec<DeviceInfo>> {
@@ -101,7 +112,7 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
             let raw_platform = item
                 .get("platform")
                 .and_then(Value::as_str)
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             let simulator = item
                 .get("simulator")
                 .and_then(Value::as_bool)
@@ -113,9 +124,9 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
             let operating_system = item
                 .get("operatingSystemVersion")
                 .and_then(Value::as_str)
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
 
-            let detail = if let Some(error) = item.get("error") {
+            let detail = item.get("error").map_or(operating_system, |error| {
                 let description = error
                     .get("description")
                     .and_then(Value::as_str)
@@ -136,14 +147,11 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
                 } else {
                     Some(message)
                 }
-            } else {
-                operating_system
-            };
+            });
 
             let platform_label = raw_platform
                 .as_deref()
-                .map(apple_platform_friendly_name)
-                .unwrap_or_else(|| "Apple".to_string());
+                .map_or_else(|| "Apple".to_string(), apple_platform_friendly_name);
 
             results.push(DeviceInfo {
                 platform: platform_label,
@@ -171,7 +179,7 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
 fn android_devices() -> Result<Vec<DeviceInfo>> {
     let mut results = Vec::new();
 
-    if let Some(adb) = android::find_android_tool("adb") {
+    if let Some(adb) = backend::android::find_android_tool("adb") {
         let output = Command::new(&adb)
             .args(["devices", "-l"])
             .output()
@@ -220,7 +228,7 @@ fn android_devices() -> Result<Vec<DeviceInfo>> {
         }
     }
 
-    if let Some(emulator) = android::find_android_tool("emulator") {
+    if let Some(emulator) = backend::android::find_android_tool("emulator") {
         let output = Command::new(&emulator)
             .arg("-list-avds")
             .output()
@@ -262,67 +270,4 @@ fn apple_platform_friendly_name(identifier: &str) -> String {
         other => other,
     }
     .to_string()
-}
-
-fn print_table(devices: &[DeviceInfo]) {
-    let mut grouped: BTreeMap<String, Vec<&DeviceInfo>> = BTreeMap::new();
-    for device in devices {
-        grouped
-            .entry(device.platform.clone())
-            .or_default()
-            .push(device);
-    }
-
-    for (idx, (platform, list)) in grouped.iter().enumerate() {
-        if idx > 0 {
-            println!();
-        }
-        println!("{}", style(platform).bold().underlined());
-
-        let mut items: Vec<&DeviceInfo> = list.to_vec();
-        items.sort_by(|a, b| {
-            let kind_rank = |kind: &DeviceKind| match kind {
-                DeviceKind::Device => 0,
-                DeviceKind::Simulator => 1,
-                DeviceKind::Emulator => 2,
-            };
-            kind_rank(&a.kind)
-                .cmp(&kind_rank(&b.kind))
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        for device in items {
-            let bullet = style("•").cyan();
-            let name = style(&device.name).bold();
-            let kind_label = match device.kind {
-                DeviceKind::Device => style("device").green(),
-                DeviceKind::Simulator => style("simulator").magenta(),
-                DeviceKind::Emulator => style("emulator").yellow(),
-            };
-            let state_text =
-                device
-                    .state
-                    .as_deref()
-                    .unwrap_or(if device.kind == DeviceKind::Emulator {
-                        "stopped"
-                    } else {
-                        "-"
-                    });
-            let state_label = match state_text {
-                "available" | "device" | "online" => style(state_text).green(),
-                "unavailable" | "offline" => style(state_text).red(),
-                "stopped" => style(state_text).yellow(),
-                other => style(other).dim(),
-            };
-
-            println!("  {} {} ({}, {})", bullet, name, kind_label, state_label);
-            println!(
-                "      {}",
-                style(format!("id: {}", device.identifier)).dim()
-            );
-            if let Some(detail) = &device.detail {
-                println!("      {}", style(detail).dim());
-            }
-        }
-    }
 }
