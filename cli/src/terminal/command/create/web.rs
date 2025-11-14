@@ -4,6 +4,13 @@ use color_eyre::eyre::Result;
 
 use super::template;
 
+/// Create the web frontend assets for a `WaterUI` project.
+///
+/// # Errors
+/// Returns an error if the generated files cannot be written to disk.
+///
+/// # Panics
+/// Panics when the embedded web templates are missing.
 pub fn create_web_assets(project_dir: &Path, display_name: &str) -> Result<()> {
     let mut context = HashMap::new();
     context.insert("APP_DISPLAY_NAME", display_name.to_string());

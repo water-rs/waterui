@@ -3,14 +3,15 @@ use std::path::{Path, PathBuf};
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
-use indicatif::{ProgressBar, ProgressStyle};
+use heck::{ToKebabCase, ToUpperCamelCase};
 use tracing::{info, warn};
 
-use crate::{
-    config::{Android, Config, Package, Swift, Web},
-    output, util,
-};
+use crate::util;
 use serde::Serialize;
+use waterui_cli::{
+    WATERUI_SWIFT_BACKEND_VERSION, WATERUI_VERSION, output,
+    project::{Android, Config, Package, Swift, Web},
+};
 
 pub mod android;
 pub mod rust;
@@ -18,7 +19,7 @@ pub mod swift;
 pub mod template;
 pub mod web;
 
-pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
+const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
 #[allow(dead_code)]
 const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
 
@@ -40,7 +41,7 @@ pub struct CreateArgs {
     #[arg(long)]
     pub team_id: Option<String>,
 
-    /// Use the development version of WaterUI from GitHub
+    /// Use the development version of `WaterUI` from GitHub
     #[arg(long)]
     pub dev: bool,
 
@@ -64,16 +65,26 @@ pub enum BackendChoice {
 }
 
 impl BackendChoice {
-    pub fn label(&self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
-            BackendChoice::Web => "Web",
-            BackendChoice::Swiftui => "SwiftUI",
-            BackendChoice::Android => "Android",
+            Self::Web => "Web",
+            Self::Swiftui => "SwiftUI",
+            Self::Android => "Android",
         }
     }
 }
 
-pub fn run(args: CreateArgs) -> Result<()> {
+/// Interactive entry point for `water create`.
+///
+/// # Errors
+/// Returns an error if user input cannot be read, dependencies cannot be resolved, or
+/// template files fail to write.
+///
+/// # Panics
+/// Panics if required embedded templates are missing; this indicates a build-time bug.
+#[allow(clippy::too_many_lines)]
+pub fn run(args: CreateArgs) -> Result<CreateReport> {
     let is_json = output::global_output_format().is_json();
     if is_json && !args.yes {
         bail!(
@@ -114,14 +125,28 @@ pub fn run(args: CreateArgs) -> Result<()> {
             .interact_text()?
     };
 
-    let crate_name = util::kebab_case(&display_name);
-    let app_name = util::pascal_case(&display_name);
+    let crate_name = {
+        let generated = display_name.to_kebab_case();
+        if generated.is_empty() {
+            "waterui-app".to_string()
+        } else {
+            generated
+        }
+    };
+    let app_name = {
+        let generated = display_name.to_upper_camel_case();
+        if generated.is_empty() {
+            "WaterUIApp".to_string()
+        } else {
+            generated
+        }
+    };
 
-    let default_bundle_identifier = format!("com.waterui.{}", crate_name);
+    let default_bundle_identifier = format!("com.waterui.{crate_name}");
     let bundle_identifier = if let Some(id) = args.bundle_identifier {
         id
     } else if args.yes {
-        default_bundle_identifier.clone()
+        default_bundle_identifier
     } else {
         Input::with_theme(&theme)
             .with_prompt("Bundle identifier")
@@ -153,7 +178,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
         let defaults = vec![true; available_backends.len()];
         let labels: Vec<String> = available_backends
             .iter()
-            .map(BackendChoice::label)
+            .map(|choice| choice.label())
             .map(str::to_string)
             .collect();
         let selected_indices = if args.yes {
@@ -168,7 +193,15 @@ pub fn run(args: CreateArgs) -> Result<()> {
 
         if selected_indices.is_empty() {
             warn!("No backends selected, aborting.");
-            return Ok(());
+            return Ok(build_report(
+                CreateStatus::Cancelled,
+                &project_dir,
+                &crate_name,
+                &display_name,
+                &bundle_identifier,
+                &[],
+                args.dev,
+            ));
         }
 
         selected_indices
@@ -188,7 +221,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
     info!("Bundle ID: {}", bundle_identifier);
     let backend_list = selected_backends
         .iter()
-        .map(BackendChoice::label)
+        .map(|choice| choice.label())
         .collect::<Vec<_>>()
         .join(", ");
     info!("Backends: {}", backend_list);
@@ -201,61 +234,40 @@ pub fn run(args: CreateArgs) -> Result<()> {
             .interact()?;
         if !proceed {
             warn!("Cancelled");
-            return Ok(());
+            return Ok(build_report(
+                CreateStatus::Cancelled,
+                &project_dir,
+                &crate_name,
+                &display_name,
+                &bundle_identifier,
+                &selected_backends,
+                args.dev,
+            ));
         }
     }
 
-    // Create progress indicator
-    let spinner = if is_json {
-        None
-    } else {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .unwrap()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-        );
-        pb.set_message("Creating project structure...");
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        Some(pb)
-    };
-
     prepare_directory(&project_dir)?;
 
-    if let Some(pb) = spinner.as_ref() {
-        pb.set_message("Generating Rust sources...");
-    }
     rust::create_rust_sources(&project_dir, &crate_name, &author, &display_name, &deps)?;
 
     let mut config = Config::new(Package {
         name: crate_name.clone(),
         display_name: display_name.clone(),
         bundle_identifier: bundle_identifier.clone(),
+        author,
     });
 
     let mut web_enabled = false;
-    let total_backends = selected_backends.len();
-    for (idx, backend) in selected_backends.iter().enumerate() {
-        let progress = format!("[{}/{}]", idx + 1, total_backends);
+    for backend in &selected_backends {
         match backend {
             BackendChoice::Web => {
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} Creating Web backend...", progress));
-                }
                 web::create_web_assets(&project_dir, &display_name)?;
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} Web backend created ✓", progress));
-                }
                 config.backends.web = Some(Web {
                     project_path: "web".to_string(),
                 });
                 web_enabled = true;
             }
             BackendChoice::Android => {
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} Creating Android backend...", progress));
-                }
                 android::create_android_project(
                     &project_dir,
                     &app_name,
@@ -263,17 +275,11 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     &bundle_identifier,
                     args.dev,
                 )?;
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} Android backend created ✓", progress));
-                }
                 config.backends.android = Some(Android {
                     project_path: "android".to_string(),
                 });
             }
             BackendChoice::Swiftui => {
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} Creating SwiftUI backend...", progress));
-                }
                 swift::create_xcode_project(
                     &project_dir,
                     &app_name,
@@ -282,13 +288,10 @@ pub fn run(args: CreateArgs) -> Result<()> {
                     &bundle_identifier,
                     &deps.swift,
                 )?;
-                if let Some(pb) = spinner.as_ref() {
-                    pb.set_message(format!("{} SwiftUI backend created ✓", progress));
-                }
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
                     scheme: crate_name.clone(),
-                    project_file: Some(format!("{}.xcodeproj", app_name)),
+                    project_file: Some(format!("{app_name}.xcodeproj")),
                 });
             }
         }
@@ -298,15 +301,7 @@ pub fn run(args: CreateArgs) -> Result<()> {
         config.hot_reload.watch.push("web".to_string());
     }
 
-    if let Some(pb) = spinner.as_ref() {
-        pb.set_message("Saving configuration...");
-    }
     config.save(&project_dir)?;
-
-    if let Some(pb) = &spinner {
-        pb.finish_with_message("Project created successfully!");
-        pb.finish_and_clear();
-    }
     info!("✅ Project created");
     if !is_json {
         let current_dir = std::env::current_dir()?;
@@ -316,21 +311,15 @@ pub fn run(args: CreateArgs) -> Result<()> {
         info!("Next steps:\n  cd {}\n  water run", display_path.display());
     }
 
-    if is_json {
-        let report = CreateReport {
-            project_dir: project_dir.display().to_string(),
-            crate_name: crate_name.clone(),
-            display_name: display_name.clone(),
-            bundle_identifier: bundle_identifier.clone(),
-            backends: selected_backends
-                .iter()
-                .map(|backend| backend.label().to_string())
-                .collect(),
-            using_dev_dependencies: args.dev,
-            config_path: Config::path(&project_dir).display().to_string(),
-        };
-        output::emit_json(&report)?;
-    }
+    let report = build_report(
+        CreateStatus::Created,
+        &project_dir,
+        &crate_name,
+        &display_name,
+        &bundle_identifier,
+        &selected_backends,
+        args.dev,
+    );
 
     // if which::which("git").is_ok() {
     //     std::process::Command::new("git")
@@ -340,25 +329,59 @@ pub fn run(args: CreateArgs) -> Result<()> {
     //     info!("✅ Git repository initialized");
     // }
 
-    Ok(())
+    Ok(report)
 }
 
-#[derive(Serialize)]
-struct CreateReport {
-    project_dir: String,
-    crate_name: String,
-    display_name: String,
-    bundle_identifier: String,
-    backends: Vec<String>,
+#[derive(Debug, Serialize)]
+pub struct CreateReport {
+    pub status: CreateStatus,
+    pub project_dir: String,
+    pub crate_name: String,
+    pub display_name: String,
+    pub bundle_identifier: String,
+    pub backends: Vec<String>,
+    pub using_dev_dependencies: bool,
+    pub config_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreateStatus {
+    Created,
+    Cancelled,
+}
+
+fn build_report(
+    status: CreateStatus,
+    project_dir: &Path,
+    crate_name: &str,
+    display_name: &str,
+    bundle_identifier: &str,
+    backends: &[BackendChoice],
     using_dev_dependencies: bool,
-    config_path: String,
+) -> CreateReport {
+    CreateReport {
+        status,
+        project_dir: project_dir.display().to_string(),
+        crate_name: crate_name.to_string(),
+        display_name: display_name.to_string(),
+        bundle_identifier: bundle_identifier.to_string(),
+        backends: backends
+            .iter()
+            .map(|backend| backend.label().to_string())
+            .collect(),
+        using_dev_dependencies,
+        config_path: Config::path(project_dir).display().to_string(),
+    }
 }
 
+#[derive(Debug)]
 pub struct ProjectDependencies {
     rust_toml: String,
     pub swift: SwiftDependency,
 }
 
+#[derive(Debug)]
 pub enum SwiftDependency {
     Git {
         version: Option<String>,
@@ -367,6 +390,10 @@ pub enum SwiftDependency {
 }
 
 #[allow(clippy::const_is_empty)]
+/// Resolve the template dependencies used when rendering new projects.
+///
+/// # Errors
+/// Returns an error if the crates index cannot be queried.
 pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
         let rust_toml =
@@ -382,18 +409,17 @@ waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
         });
     }
 
-    let waterui_version = crate::WATERUI_VERSION;
+    let waterui_version = WATERUI_VERSION;
     if waterui_version.is_empty() {
         bail!("WATERUI_VERSION is not set. This should be set at build time.");
     }
 
     let rust_toml = format!(
-        r#"waterui = "{}"
-waterui-ffi = "{}""#,
-        waterui_version, waterui_version
+        r#"waterui = "{waterui_version}"
+waterui-ffi = "{waterui_version}""#
     );
 
-    let swift_backend_version = crate::WATERUI_SWIFT_BACKEND_VERSION;
+    let swift_backend_version = WATERUI_SWIFT_BACKEND_VERSION;
     if swift_backend_version.is_empty() {
         bail!("WATERUI_SWIFT_BACKEND_VERSION is not set. This should be set at build time.");
     }
