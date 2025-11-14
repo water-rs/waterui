@@ -7,6 +7,14 @@ use color_eyre::eyre::Result;
 
 use super::{SWIFT_BACKEND_GIT_URL, SwiftDependency, template};
 
+/// Generate the Swift/Xcode portion of a `WaterUI` project.
+///
+/// # Errors
+/// Returns an error if file writes fail or file permissions cannot be updated.
+///
+/// # Panics
+/// Panics if bundled templates are missing or contain invalid data.
+#[allow(clippy::too_many_lines)]
 pub fn create_xcode_project(
     project_dir: &Path,
     app_name: &str,
@@ -21,22 +29,25 @@ pub fn create_xcode_project(
     let mut context = HashMap::new();
     context.insert("APP_NAME", app_name.to_string());
     context.insert("APP_DISPLAY_NAME", app_display_name.to_string());
-    context.insert("LIB_NAME", lib_name.to_string());
+    context.insert("LIB_NAME", lib_name);
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
 
     let SwiftDependency::Git { version, branch } = swift_dependency;
 
-    let requirement = if let Some(version) = version {
-        format!(
-            "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
-        )
-    } else {
-        let branch = branch.as_deref().unwrap_or("main");
-        format!(
-            "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
-        )
-    };
+    let requirement = version.as_ref().map_or_else(
+        || {
+            let branch = branch.as_deref().unwrap_or("main");
+            format!(
+                "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
+            )
+        },
+        |version| {
+            format!(
+                "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
+            )
+        },
+    );
 
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_ENTRY",
@@ -53,11 +64,10 @@ pub fn create_xcode_project(
             r#"/* Begin XCRemoteSwiftPackageReference section */
         D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */ = {{
             isa = XCRemoteSwiftPackageReference;
-            repositoryURL = "{}";
-            {}
+            repositoryURL = "{repo_url}";
+            {requirement}
         }};
-/* End XCRemoteSwiftPackageReference section */"#,
-            repo_url, requirement
+/* End XCRemoteSwiftPackageReference section */"#
         ),
     );
 

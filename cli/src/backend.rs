@@ -1,13 +1,13 @@
+pub mod android;
 pub mod apple;
+
+use self::{android::AndroidBackend, apple::Apple};
 
 use core::fmt::{Debug, Display};
 
 use color_eyre::eyre;
 
-use crate::{
-    doctor::{AnyToolchainIssue, ToolchainIssue},
-    project::{self, Project},
-};
+use crate::{doctor::AnyToolchainIssue, project::Project};
 
 /// A backend for building and packaging `WaterUI` projects.
 ///  Implementors should provide methods for initializing, cleaning,
@@ -40,10 +40,41 @@ pub trait Backend: Display + Debug {
 }
 
 /// A type alias for any backend with dynamic dispatch.
-pub type AnyBackend = Box<dyn Backend<ToolchainIssue = AnyToolchainIssue>>;
+pub type AnyBackend = Box<dyn 'static + Backend<ToolchainIssue = AnyToolchainIssue>>;
+
+impl<B: Backend> Backend for &B {
+    type ToolchainIssue = B::ToolchainIssue;
+
+    fn init(&self, project: &Project, dev: bool) -> eyre::Result<()> {
+        (*self).init(project, dev)
+    }
+
+    fn is_existing(&self, project: &Project) -> bool {
+        (*self).is_existing(project)
+    }
+
+    fn clean(&self, project: &Project) -> eyre::Result<()> {
+        (*self).clean(project)
+    }
+
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+        (*self).check_requirements(project)
+    }
+}
 
 /// Scan and return a list of available backends.
 #[must_use]
 pub fn scan_backends(project: &Project) -> Vec<AnyBackend> {
-    todo!()
+    let mut backends: Vec<AnyBackend> = Vec::new();
+    let config = project.config();
+
+    if config.backends.swift.is_some() {
+        backends.push(Box::new(Apple) as AnyBackend);
+    }
+
+    if config.backends.android.is_some() {
+        backends.push(Box::new(AndroidBackend) as AnyBackend);
+    }
+
+    backends
 }
