@@ -2,31 +2,36 @@ use std::path::PathBuf;
 
 use clap::Args;
 use color_eyre::eyre::{Result, bail};
+use heck::ToUpperCamelCase;
 use tracing::info;
 
-use crate::{
-    config::{Android, Config, Swift, Web},
-    create::{self, BackendChoice, resolve_dependencies},
-    output, util,
-};
+use super::create::{self, BackendChoice, resolve_dependencies};
 use serde::Serialize;
+use waterui_cli::project::{Android, Config, Swift, Web};
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct AddBackendArgs {
     /// Backend to add to the project
-    #[arg(value_enum)]
     pub backend: BackendChoice,
 
     /// Project directory (defaults to current working directory)
-    #[arg(long)]
     pub project: Option<PathBuf>,
 
-    /// Use the development version of WaterUI from GitHub
-    #[arg(long)]
+    /// Use the development version of `WaterUI` from GitHub
     pub dev: bool,
 }
 
-pub fn run(args: AddBackendArgs) -> Result<()> {
+/// Add an additional backend implementation to an existing `WaterUI` project.
+///
+/// # Errors
+/// Returns an error if the project configuration cannot be read or written, or if template
+/// generation fails.
+///
+/// # Panics
+/// Panics when the current working directory cannot be determined, which indicates an
+/// unexpected environment issue.
+#[allow(clippy::needless_pass_by_value)]
+pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
     let project_dir = args
         .project
         .clone()
@@ -55,7 +60,14 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
                 bail!("Android backend already exists in this project.");
             }
             info!("Adding Android backend...");
-            let app_name = util::pascal_case(&config.package.display_name);
+            let app_name = {
+                let generated = config.package.display_name.to_upper_camel_case();
+                if generated.is_empty() {
+                    "WaterUIApp".to_string()
+                } else {
+                    generated
+                }
+            };
             create::android::create_android_project(
                 &project_dir,
                 &app_name,
@@ -73,7 +85,14 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
                 bail!("SwiftUI backend already exists in this project.");
             }
             info!("Adding SwiftUI backend...");
-            let app_name = util::pascal_case(&config.package.display_name);
+            let app_name = {
+                let generated = config.package.display_name.to_upper_camel_case();
+                if generated.is_empty() {
+                    "WaterUIApp".to_string()
+                } else {
+                    generated
+                }
+            };
             create::swift::create_xcode_project(
                 &project_dir,
                 &app_name,
@@ -85,7 +104,7 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
                 scheme: config.package.name.clone(),
-                project_file: Some(format!("{}.xcodeproj", app_name)),
+                project_file: Some(format!("{app_name}.xcodeproj")),
             });
             info!("SwiftUI backend added successfully.");
         }
@@ -94,23 +113,20 @@ pub fn run(args: AddBackendArgs) -> Result<()> {
     config.save(&project_dir)?;
     info!("Updated Water.toml.");
 
-    if output::global_output_format().is_json() {
-        let report = AddBackendReport {
-            project_dir: project_dir.display().to_string(),
-            backend: args.backend.label().to_string(),
-            using_dev_dependencies: args.dev,
-            config_path: Config::path(&project_dir).display().to_string(),
-        };
-        output::emit_json(&report)?;
-    }
+    let report = AddBackendReport {
+        project_dir: project_dir.display().to_string(),
+        backend: args.backend.label().to_string(),
+        using_dev_dependencies: args.dev,
+        config_path: Config::path(&project_dir).display().to_string(),
+    };
 
-    Ok(())
+    Ok(report)
 }
 
-#[derive(Serialize)]
-struct AddBackendReport {
-    project_dir: String,
-    backend: String,
-    using_dev_dependencies: bool,
-    config_path: String,
+#[derive(Debug, Serialize)]
+pub struct AddBackendReport {
+    pub project_dir: String,
+    pub backend: String,
+    pub using_dev_dependencies: bool,
+    pub config_path: String,
 }
