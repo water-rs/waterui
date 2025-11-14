@@ -1,4 +1,4 @@
-use crate::util;
+use crate::{ui, util};
 use axum::{
     Router,
     extract::{
@@ -127,7 +127,9 @@ pub fn run(args: RunArgs) -> Result<()> {
     let config = project.config().clone();
     let is_json = output::global_output_format().is_json();
 
-    info!("Running WaterUI app '{}'", config.package.display_name);
+    if !is_json {
+        ui::section(format!("Running: {}", config.package.display_name));
+    }
 
     let mut platform = args.platform.map(PlatformKind::from);
     let device = args.device.clone();
@@ -409,7 +411,9 @@ fn run_platform(
                     "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
                 )
             })?;
-            info!("(Xcode scheme: {})", swift_config.scheme);
+            if !output::global_output_format().is_json() {
+                ui::info(format!("Xcode scheme: {}", swift_config.scheme));
+            }
             let device_impl = MacosDevice::new(swift_config);
             run_on_device(project, device_impl, run_options)?
         }
@@ -423,7 +427,9 @@ fn run_platform(
                     "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
                 )
             })?;
-            info!("(Xcode scheme: {})", swift_config.scheme);
+            if !output::global_output_format().is_json() {
+                ui::info(format!("Xcode scheme: {}", swift_config.scheme));
+            }
             let simulator_kind = apple_simulator_kind(platform);
             let device_name = match device {
                 Some(name) => name,
@@ -449,13 +455,19 @@ fn run_platform(
         Platform::Web => unreachable!(),
     };
 
-    info!("Application artifact: {}", artifact.display());
+    if !output::global_output_format().is_json() {
+        ui::success(format!("Application built: {}", artifact.display()));
+
+        if hot_reload {
+            ui::info("App launched with hot reload enabled");
+            ui::plain("Press Ctrl+C to stop the watcher");
+        } else {
+            ui::info("App launched successfully");
+        }
+    }
 
     if hot_reload {
-        info!("App launched. Press Ctrl+C to stop the watcher.");
         wait_for_interrupt()?;
-    } else {
-        info!("App launched.");
     }
 
     drop(watcher);
@@ -526,7 +538,9 @@ fn run_cargo_build(
     hot_reload_enabled: bool,
     hot_reload_port: Option<u16>,
 ) -> Result<()> {
-    info!("Compiling Rust library...");
+    if !output::global_output_format().is_json() {
+        ui::step("Compiling Rust library...");
+    }
     let make_command = || {
         let mut cmd = Command::new("cargo");
         cmd.arg("build").arg("--package").arg(package);
@@ -640,12 +654,16 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
         None
     };
 
-    info!("Serving web app at {}", url);
-    match webbrowser::open(&url) {
-        Ok(()) => info!("Opened default browser"),
-        Err(err) => warn!("Failed to open browser automatically: {}", err),
+    if output::global_output_format().is_json() {
+        let _ = webbrowser::open(&url);
+    } else {
+        ui::success(format!("Web server started at {url}"));
+        match webbrowser::open(&url) {
+            Ok(()) => ui::info("Opened in default browser"),
+            Err(err) => ui::warning(format!("Could not open browser: {err}")),
+        }
+        ui::plain("Press Ctrl+C to stop the server");
     }
-    info!("Press Ctrl+C to stop the server.");
 
     wait_for_interrupt()?;
 
