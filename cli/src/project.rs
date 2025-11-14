@@ -270,16 +270,16 @@ impl Project {
     fn build_rust(&self, platform: &impl Platform, release: bool) -> eyre::Result<()> {
         let target_triple = platform.target_triple();
         // use cargo to build the project for the specified target
-        let status = Command::new("cargo")
-            .args([
-                "build",
-                "--manifest-path",
-                &self.root().join("Cargo.toml").to_string_lossy(),
-                "--target",
-                target_triple,
-                if release { "--release" } else { "" },
-            ])
-            .status()?;
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build")
+            .arg("--manifest-path")
+            .arg(self.root().join("Cargo.toml"))
+            .arg("--target")
+            .arg(target_triple);
+        if release {
+            cmd.arg("--release");
+        }
+        let status = cmd.status()?;
 
         if !status.success() {
             bail!("Failed to build project for target {}", target_triple);
