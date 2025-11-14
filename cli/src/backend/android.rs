@@ -7,8 +7,15 @@ use std::{
     time::Duration,
 };
 
-use crate::util;
+use crate::{
+    backend::Backend,
+    doctor::{AnyToolchainIssue, ToolchainIssue},
+    impl_display,
+    project::Project,
+    util,
+};
 use color_eyre::eyre::{Context, Result, bail, eyre};
+use thiserror::Error;
 use tracing::{debug, info, warn};
 use which::which;
 
@@ -41,6 +48,88 @@ const ANDROID_TARGETS: &[AndroidTargetConfig] = &[
     },
 ];
 
+#[derive(Clone, Copy, Debug)]
+pub struct AndroidBackend;
+
+impl_display!(AndroidBackend, "android");
+
+#[derive(Debug, Clone, Error)]
+pub enum AndroidToolchainIssue {
+    #[error("Android SDK tools (adb) were not found.")]
+    SdkMissing,
+    #[error("Android NDK was not detected.")]
+    NdkMissing,
+}
+
+impl ToolchainIssue for AndroidToolchainIssue {
+    fn suggestion(&self) -> String {
+        match self {
+            Self::SdkMissing => {
+                "Install Android Studio or add the command line tools to ANDROID_SDK_ROOT."
+                    .to_string()
+            }
+            Self::NdkMissing => "Install the Android NDK via the SDK manager.".to_string(),
+        }
+    }
+}
+
+impl Backend for AndroidBackend {
+    type ToolchainIssue = AnyToolchainIssue;
+
+    fn init(&self, _project: &Project, _dev: bool) -> color_eyre::eyre::Result<()> {
+        Ok(())
+    }
+
+    fn is_existing(&self, project: &Project) -> bool {
+        project.root().join("android").exists()
+    }
+
+    fn clean(&self, project: &Project) -> color_eyre::eyre::Result<()> {
+        let gradle_dir = project.root().join("android");
+        if !gradle_dir.exists() {
+            return Ok(());
+        }
+
+        let gradlew = if cfg!(target_os = "windows") {
+            "gradlew.bat"
+        } else {
+            "./gradlew"
+        };
+
+        let status = Command::new(gradlew)
+            .arg("clean")
+            .current_dir(&gradle_dir)
+            .status()
+            .context("failed to execute Gradle clean")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(eyre!("Gradle clean failed with status {status}"))
+        }
+    }
+
+    fn check_requirements(&self, _project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+        let mut issues = Vec::new();
+        if find_android_tool("adb").is_none() {
+            issues.push(AndroidToolchainIssue::SdkMissing);
+        }
+        if resolve_android_ndk_path().is_none() {
+            issues.push(AndroidToolchainIssue::NdkMissing);
+        }
+
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues
+                .into_iter()
+                .map(|issue| Box::new(issue) as AnyToolchainIssue)
+                .collect())
+        }
+    }
+}
+
+#[must_use]
 pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
     if let Ok(path) = which(tool) {
         return Some(path);
@@ -64,7 +153,7 @@ pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn android_sdk_roots() -> Vec<PathBuf> {
+fn android_sdk_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut push_root = |path: PathBuf| {
         if path.exists() && !roots.contains(&path) {
@@ -86,11 +175,13 @@ pub fn android_sdk_roots() -> Vec<PathBuf> {
     roots
 }
 
-pub fn resolve_android_sdk_path() -> Option<PathBuf> {
+#[must_use]
+pub(crate) fn resolve_android_sdk_path() -> Option<PathBuf> {
     android_sdk_roots().into_iter().next()
 }
 
-pub fn resolve_android_ndk_path() -> Option<PathBuf> {
+#[must_use]
+pub(crate) fn resolve_android_ndk_path() -> Option<PathBuf> {
     if let Ok(path) = env::var("ANDROID_NDK_HOME") {
         let path = PathBuf::from(path);
         if path.exists() {
@@ -107,7 +198,7 @@ pub fn resolve_android_ndk_path() -> Option<PathBuf> {
         let ndk_dir = sdk_root.join("ndk");
         if let Ok(entries) = fs::read_dir(&ndk_dir) {
             let mut candidates: Vec<PathBuf> = entries
-                .filter_map(|entry| entry.ok())
+                .filter_map(std::result::Result::ok)
                 .map(|entry| entry.path())
                 .filter(|path| path.is_dir())
                 .collect();
@@ -168,7 +259,7 @@ fn installed_rust_targets() -> Option<HashSet<String>> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(|line| line.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<HashSet<_>>();
     Some(targets)
 }
@@ -189,6 +280,10 @@ fn target_for_abi(abi: &str) -> Option<&'static AndroidTargetConfig> {
     }
 }
 
+/// Determine the preferred Rust targets for the connected Android device.
+///
+/// # Errors
+/// Returns an error if querying the device via `adb` fails.
 pub fn device_preferred_targets(
     adb_path: &Path,
     identifier: Option<&str>,
@@ -250,6 +345,8 @@ fn query_device_abis(adb_path: &Path, identifier: Option<&str>) -> Result<Vec<St
     Ok(abis)
 }
 
+#[must_use]
+/// Convert arbitrary bundle identifiers into valid Java package names.
 pub fn sanitize_package_name(input: &str) -> String {
     let mut parts = Vec::new();
     for raw in input.split('.') {
@@ -262,8 +359,7 @@ pub fn sanitize_package_name(input: &str) -> String {
             match ch {
                 'a'..='z' | '0'..='9' => segment.push(ch),
                 'A'..='Z' => segment.push(ch.to_ascii_lowercase()),
-                '_' => segment.push('_'),
-                '-' => segment.push('_'),
+                '_' | '-' => segment.push('_'),
                 _ => {
                     if ch.is_alphanumeric() {
                         segment.push(ch.to_ascii_lowercase());
@@ -276,8 +372,7 @@ pub fn sanitize_package_name(input: &str) -> String {
 
         if segment.is_empty() {
             segment.push('a');
-        } else {
-            let first = segment.chars().next().unwrap();
+        } else if let Some(first) = segment.chars().next() {
             if !first.is_ascii_alphabetic() && first != '_' {
                 segment.insert(0, 'a');
             }
@@ -310,11 +405,10 @@ fn detect_java_major(home: &Path) -> Option<u32> {
             let remainder = &line[start + 1..];
             if let Some(end) = remainder.find('"') {
                 let version = &remainder[..end];
-                let major_candidate = if let Some(rest) = version.strip_prefix("1.") {
-                    rest.split(|c: char| !c.is_ascii_digit()).next()
-                } else {
-                    version.split(|c: char| !c.is_ascii_digit()).next()
-                }?;
+                let major_candidate = version.strip_prefix("1.").map_or_else(
+                    || version.split(|c: char| !c.is_ascii_digit()).next(),
+                    |rest| rest.split(|c: char| !c.is_ascii_digit()).next(),
+                )?;
                 if let Ok(value) = major_candidate.parse::<u32>() {
                     return Some(value);
                 }
@@ -441,6 +535,10 @@ fn prepare_android_package(project_dir: &Path, bundle_identifier: &str) -> Resul
     Ok(sanitized)
 }
 
+/// Configure the environment so Cargo can link against the requested Android targets.
+///
+/// # Errors
+/// Returns an error if the Android NDK cannot be located.
 pub fn configure_rust_android_linker_env(desired_triples: &[&str]) -> Result<()> {
     let ndk_env = env::var("ANDROID_NDK_HOME")
         .ok()
@@ -585,9 +683,14 @@ fn api_level_candidates(min_api: u32) -> Vec<u32> {
     (min_api..=MAX_API).rev().collect()
 }
 
+#[allow(clippy::too_many_lines)]
+/// Build the Android APK using the generated Gradle project.
+///
+/// # Errors
+/// Returns an error if the Gradle invocation or Rust build fails.
 pub fn build_android_apk(
     project_dir: &Path,
-    android_config: &crate::config::Android,
+    android_config: &crate::project::Android,
     release: bool,
     skip_native: bool,
     hot_reload_enabled: bool,
@@ -626,7 +729,8 @@ pub fn build_android_apk(
                     let mut new_path = env::split_paths(&env::var_os("PATH").unwrap_or_default())
                         .collect::<Vec<_>>();
                     new_path.insert(0, toolchain_bin);
-                    let merged = env::join_paths(new_path).expect("failed to join PATH entries");
+                    let merged =
+                        env::join_paths(new_path).with_context(|| "failed to join PATH entries")?;
                     cmd.env("PATH", merged);
                 } else {
                     warn!(
@@ -720,7 +824,7 @@ pub fn build_android_apk(
     } else {
         "app-debug.apk"
     };
-    let apk_path = android_dir.join(format!("app/build/outputs/apk/{}/{}", profile, apk_name));
+    let apk_path = android_dir.join(format!("app/build/outputs/apk/{profile}/{apk_name}"));
     if !apk_path.exists() {
         bail!("APK not found at {}", apk_path.display());
     }
@@ -729,6 +833,10 @@ pub fn build_android_apk(
     Ok(apk_path)
 }
 
+/// Block until an Android device reports as ready via `adb`.
+///
+/// # Errors
+/// Returns an error if executing `adb wait-for-device` fails.
 pub fn wait_for_android_device(adb_path: &Path, identifier: Option<&str>) -> Result<()> {
     let mut wait_cmd = adb_command(adb_path, identifier);
     wait_cmd.arg("wait-for-device");
@@ -753,6 +861,7 @@ pub fn wait_for_android_device(adb_path: &Path, identifier: Option<&str>) -> Res
     Ok(())
 }
 
+#[must_use]
 pub fn adb_command(adb_path: &Path, identifier: Option<&str>) -> Command {
     let mut cmd = Command::new(adb_path);
     if let Some(id) = identifier {
@@ -762,16 +871,17 @@ pub fn adb_command(adb_path: &Path, identifier: Option<&str>) -> Command {
 }
 
 fn ensure_jvm_flag(existing: Option<String>, flag: &str) -> String {
-    if let Some(current) = existing {
-        let trimmed = current.trim();
-        if trimmed.split_whitespace().any(|token| token == flag) {
-            trimmed.to_string()
-        } else if trimmed.is_empty() {
-            flag.to_string()
-        } else {
-            format!("{trimmed} {flag}")
-        }
-    } else {
-        flag.to_string()
-    }
+    existing.map_or_else(
+        || flag.to_string(),
+        |current| {
+            let trimmed = current.trim();
+            if trimmed.split_whitespace().any(|token| token == flag) {
+                trimmed.to_string()
+            } else if trimmed.is_empty() {
+                flag.to_string()
+            } else {
+                format!("{trimmed} {flag}")
+            }
+        },
+    )
 }

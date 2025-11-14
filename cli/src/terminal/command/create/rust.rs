@@ -3,6 +3,13 @@ use std::{collections::HashMap, path::Path};
 
 use super::{ProjectDependencies, template};
 
+/// Create the Rust crate scaffolding for a `WaterUI` project.
+///
+/// # Errors
+/// Returns an error if any of the generated files cannot be written to disk.
+///
+/// # Panics
+/// Panics if required embedded templates are missing or contain invalid UTF-8.
 pub fn create_rust_sources(
     project_dir: &Path,
     crate_name: &str,
