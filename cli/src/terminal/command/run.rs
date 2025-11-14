@@ -10,6 +10,7 @@ use axum::{
 };
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
+use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use waterui_cli::{
     device::{
@@ -229,13 +230,31 @@ fn prompt_for_platform(config: &Config, devices: &[DeviceInfo]) -> Result<Platfo
     }
 
     let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
+    let default_index = preferred_platform_index(&options);
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a backend to run")
         .items(&labels)
-        .default(0)
+        .default(default_index)
         .interact()?;
 
     Ok(options[selection].0)
+}
+
+fn preferred_platform_index(options: &[(Platform, String)]) -> usize {
+    if options.is_empty() {
+        return 0;
+    }
+
+    if cfg!(target_os = "macos") {
+        if let Some(idx) = options
+            .iter()
+            .position(|(platform, _)| matches!(platform, Platform::Macos))
+        {
+            return idx;
+        }
+    }
+
+    0
 }
 
 fn find_device<'a>(devices: &'a [DeviceInfo], query: &str) -> Option<&'a DeviceInfo> {
@@ -270,6 +289,10 @@ fn toolchain_targets_for_platform(platform: Platform) -> Vec<CheckTarget> {
     targets
 }
 
+const fn platform_supports_native_hot_reload(platform: Platform) -> bool {
+    platform.is_apple_platform()
+}
+
 fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
     let normalized = crate_name.replace('-', "_");
@@ -290,7 +313,7 @@ fn run_platform(
     project: &Project,
     config: &Config,
     release: bool,
-    hot_reload: bool,
+    hot_reload_requested: bool,
 ) -> Result<()> {
     let project_dir = project.root();
     if let Err(report) =
@@ -310,8 +333,10 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(project_dir, config, release, hot_reload);
+        return run_web(project_dir, config, release, hot_reload_requested);
     }
+
+    let hot_reload = hot_reload_requested && platform_supports_native_hot_reload(platform);
 
     let server = if hot_reload {
         Some(Server::start(project_dir.to_path_buf())?)
@@ -321,43 +346,50 @@ fn run_platform(
 
     let hot_reload_port = server.as_ref().map(|s| s.address().port());
 
-    run_cargo_build(
-        project_dir,
-        &config.package.name,
-        release,
-        hot_reload,
-        hot_reload_port,
-    )?;
+    if hot_reload {
+        run_cargo_build(
+            project_dir,
+            &config.package.name,
+            release,
+            hot_reload,
+            hot_reload_port,
+        )?;
 
-    if let Some(server) = &server {
-        let library_path = hot_reload_library_path(project_dir, &config.package.name, release);
-        if library_path.exists() {
-            server.notify_native_reload(library_path);
+        if let Some(server_ref) = &server {
+            let library_path = hot_reload_library_path(project_dir, &config.package.name, release);
+            if library_path.exists() {
+                server_ref.notify_native_reload(library_path);
+            }
         }
     }
 
-    let watcher = if let Some(server) = server {
-        let mut watch_paths = vec![project_dir.join("src")];
-        for path in &config.hot_reload.watch {
-            watch_paths.push(project_dir.join(path));
+    let watcher = if hot_reload {
+        if let Some(server) = server {
+            let mut watch_paths = vec![project_dir.join("src")];
+            for path in &config.hot_reload.watch {
+                watch_paths.push(project_dir.join(path));
+            }
+
+            let project_dir_buf = project_dir.to_path_buf();
+            let package_name = config.package.name.clone();
+            let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+                run_cargo_build(
+                    &project_dir_buf,
+                    &package_name,
+                    release,
+                    hot_reload,
+                    hot_reload_port,
+                )?;
+                let library_path =
+                    hot_reload_library_path(&project_dir_buf, &package_name, release);
+                server.notify_native_reload(library_path);
+                Ok(())
+            });
+
+            Some(RebuildWatcher::new(watch_paths, &build_callback)?)
+        } else {
+            None
         }
-
-        let project_dir_buf = project_dir.to_path_buf();
-        let package_name = config.package.name.clone();
-        let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-            run_cargo_build(
-                &project_dir_buf,
-                &package_name,
-                release,
-                hot_reload,
-                hot_reload_port,
-            )?;
-            let library_path = hot_reload_library_path(&project_dir_buf, &package_name, release);
-            server.notify_native_reload(library_path);
-            Ok(())
-        });
-
-        Some(RebuildWatcher::new(watch_paths, &build_callback)?)
     } else {
         None
     };
@@ -444,23 +476,47 @@ fn convert_run_error(err: FailToRun) -> color_eyre::eyre::Report {
     match err {
         FailToRun::BuildError(message) => eyre!(message),
         FailToRun::RequirementNotMet(issues) => {
-            eyre!(render_toolchain_error("toolchain", &issues))
+            emit_toolchain_error("toolchain", &issues);
+            eyre!(
+                "toolchain requirements are not satisfied. Run `water doctor` for automatic fixes."
+            )
         }
         FailToRun::Other(report) => report,
     }
 }
 
-fn render_toolchain_error(label: &str, issues: &[AnyToolchainIssue]) -> String {
-    let mut message = format!("{} requirements are not satisfied:", label);
+fn emit_toolchain_error(label: &str, issues: &[AnyToolchainIssue]) {
+    if output::global_output_format().is_json() {
+        // JSON consumers rely on stderr being quiet, so let the structured error bubble up.
+        return;
+    }
+
+    eprintln!(
+        "{} {}",
+        style("Error:").red().bold(),
+        style(format!("{label} requirements are not satisfied"))
+            .red()
+            .bold()
+    );
+
     for issue in issues {
-        message.push_str(&format!("\n  - {issue}"));
-        let suggestion = issue.suggestion();
-        if !suggestion.trim().is_empty() {
-            message.push_str(&format!("\n    suggestion: {}", suggestion.trim()));
+        eprintln!("  {} {}", style("•").red(), style(issue).bold());
+        let suggestion_text = issue.suggestion();
+        let suggestion = suggestion_text.trim();
+        if !suggestion.is_empty() {
+            eprintln!(
+                "    {} {}",
+                style("suggestion:").dim(),
+                style(suggestion).dim()
+            );
         }
     }
-    message.push_str("\nRun `water doctor` for automatic fixes.");
-    message
+
+    eprintln!(
+        "  {} {}",
+        style("→").yellow(),
+        style("Run `water doctor` for automatic fixes.").yellow()
+    );
 }
 
 fn run_cargo_build(
