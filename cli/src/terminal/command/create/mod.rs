@@ -4,7 +4,7 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToUpperCamelCase};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::util;
 use serde::Serialize;
@@ -212,20 +212,25 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         args.backends.clone()
     };
 
-    info!("Application: {}", display_name);
-    info!("Author: {}", author);
-    info!("Crate name: {}", crate_name);
-    if selected_backends.contains(&BackendChoice::Swiftui) {
-        info!("Xcode scheme: {}", crate_name);
+    if !is_json {
+        use crate::ui;
+        ui::section("Project Configuration");
+        ui::kv("Application", &display_name);
+        ui::kv("Author", &author);
+        ui::kv("Crate name", &crate_name);
+        if selected_backends.contains(&BackendChoice::Swiftui) {
+            ui::kv("Xcode scheme", &crate_name);
+        }
+        ui::kv("Bundle ID", &bundle_identifier);
+        let backend_list = selected_backends
+            .iter()
+            .map(|choice| choice.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui::kv("Backends", &backend_list);
+        ui::kv("Location", project_dir.display().to_string());
+        ui::newline();
     }
-    info!("Bundle ID: {}", bundle_identifier);
-    let backend_list = selected_backends
-        .iter()
-        .map(|choice| choice.label())
-        .collect::<Vec<_>>()
-        .join(", ");
-    info!("Backends: {}", backend_list);
-    info!("Location: {}", project_dir.display());
 
     if !args.yes {
         let proceed = Confirm::with_theme(&theme)
@@ -302,13 +307,18 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
     }
 
     config.save(&project_dir)?;
-    info!("✅ Project created");
+
     if !is_json {
+        use crate::ui;
+        ui::success("Project created successfully!");
+        ui::newline();
         let current_dir = std::env::current_dir()?;
         let display_path = project_dir
             .strip_prefix(current_dir)
             .unwrap_or(&project_dir);
-        info!("Next steps:\n  cd {}\n  water run", display_path.display());
+        ui::section("Next Steps");
+        ui::step(format!("cd {}", display_path.display()));
+        ui::step("water run");
     }
 
     let report = build_report(
