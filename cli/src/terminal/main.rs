@@ -3,10 +3,11 @@
 #![allow(clippy::module_name_repetitions)]
 
 mod command;
+mod ui;
 mod util;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::Result;
+use color_eyre::{config::HookBuilder, eyre::Result};
 use command::{
     AddBackendArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs, DoctorArgs,
     DoctorReport, PackageArgs, RunArgs,
@@ -45,7 +46,14 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    // Set up color_eyre error reporting with a custom hook
+    // Dear Codex, DO NOT REMOVE it: this is needed to get proper error reports
+    HookBuilder::default()
+        .display_env_section(false)
+        .issue_url("https://github.com/water-rs/waterui/issues/new")
+        .panic_section("It looks like WaterUI CLI encountered a bug")
+        .install()?;
+
     init_tracing();
 
     let cli = Cli::parse();
@@ -114,6 +122,8 @@ fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = fmt::Subscriber::builder()
         .with_env_filter(filter)
+        .without_time()
+        .with_target(false)
         .try_init();
 }
 

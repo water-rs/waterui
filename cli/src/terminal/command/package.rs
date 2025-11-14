@@ -4,8 +4,8 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Result, bail, eyre};
 use dialoguer::{Select, theme::ColorfulTheme};
 use serde::Serialize;
-use tracing::info;
 
+use crate::ui;
 use waterui_cli::{
     output,
     platform::{
@@ -123,7 +123,9 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
                 let artifact = project
                     .package(&platform_impl, args.release)
                     .map_err(|err| eyre!(err))?;
-                info!("Android package ready: {}", artifact.display());
+                if !is_json {
+                    ui::success(format!("Android package ready: {}", artifact.display()));
+                }
                 artifacts.push(PackageArtifact {
                     platform: "android".to_string(),
                     path: artifact.display().to_string(),
@@ -139,7 +141,9 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
                 let artifact = project
                     .package(&platform_impl, args.release)
                     .map_err(|err| eyre!(err))?;
-                info!("iOS package ready: {}", artifact.display());
+                if !is_json {
+                    ui::success(format!("iOS package ready: {}", artifact.display()));
+                }
                 artifacts.push(PackageArtifact {
                     platform: "ios".to_string(),
                     path: artifact.display().to_string(),
