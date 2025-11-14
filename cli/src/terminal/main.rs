@@ -1,128 +1,251 @@
-mod add_backend;
-mod android;
-mod apple;
-mod clean;
-mod config;
-mod create;
-mod devices;
-mod doctor;
-mod output;
-mod package;
-mod platform;
-mod run;
-mod toolchain;
+//! `WaterUI` CLI executable.
+
+#![allow(clippy::module_name_repetitions)]
+
+mod command;
 mod util;
 
 use clap::{Parser, Subcommand};
-use color_eyre::{config::HookBuilder, eyre::Result};
-use output::OutputFormat;
-use std::process::ExitCode;
-use tracing_subscriber::{FmtSubscriber, filter::LevelFilter, fmt::format::FmtSpan};
+use color_eyre::eyre::Result;
+use command::{
+    AddBackendArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs, DoctorArgs,
+    DoctorReport, PackageArgs, RunArgs,
+};
+use dialoguer::Confirm;
+use tracing::{info, warn};
+use waterui_cli::output::{self, OutputFormat};
 
-pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
-pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_SWIFT_VERSION");
-
-#[derive(Parser)]
-#[command(name = "water")]
-#[command(about = "CLI of WaterUI", long_about = None)]
-#[command(version, author)]
+#[derive(Parser, Debug)]
+#[command(name = "water", version, about = "WaterUI command line interface")]
 struct Cli {
-    /// Increase output verbosity (-v, -vv)
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
-    verbose: u8,
-
-    /// Control the command output style
-    #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
-    format: OutputFormat,
-
-    /// Emit machine-readable JSON output (shorthand for --format json)
-    #[arg(long, global = true)]
+    /// Emit machine-readable JSON output
+    #[arg(long)]
     json: bool,
 
     #[command(subcommand)]
     command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
-    /// Interactively create a new WaterUI application project
-    Create(create::CreateArgs),
-    /// Build and run a WaterUI application with SwiftUI hot reload support
-    Run(run::RunArgs),
-    /// Check for potential problems with the development environment
-    Doctor(doctor::DoctorArgs),
-    /// Remove build artifacts and platform caches
-    Clean(clean::CleanArgs),
-    /// List available simulators and connected devices
-    Devices(devices::DevicesArgs),
-    /// Build distributable artifacts without launching them
-    Package(package::PackageArgs),
-    /// Add a new backend to an existing project
-    AddBackend(add_backend::AddBackendArgs),
+    /// Scaffold a new `WaterUI` project
+    Create(CreateArgs),
+    /// Run a `WaterUI` project
+    Run(RunArgs),
+    /// Package project artifacts
+    Package(PackageArgs),
+    /// Add an additional backend to an existing project
+    AddBackend(AddBackendArgs),
+    /// Clean build artifacts and caches
+    Clean(CleanArgs),
+    /// Diagnose toolchain issues
+    Doctor(DoctorArgs),
+    /// List available devices and simulators
+    Devices(DevicesArgs),
 }
 
-fn main() -> ExitCode {
-    match run_cli() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            util::print_error(err, None);
-            ExitCode::FAILURE
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    init_tracing();
+
+    let cli = Cli::parse();
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Human
+    };
+    output::set_global_output_format(format);
+
+    match cli.command {
+        Commands::Create(args) => {
+            let report = command::create::run(args)?;
+            emit_or_print(&report, format, |report| {
+                info!("Project created at {}", report.project_dir);
+                info!("Backends: {}", report.backends.join(", "));
+            })?;
+        }
+        Commands::Run(args) => {
+            command::run::run(args)?;
+        }
+        Commands::Package(args) => {
+            let report = command::package::run(args)?;
+            emit_or_print(&report, format, |report| {
+                if report.artifacts.is_empty() {
+                    info!("No artifacts produced.");
+                } else {
+                    info!("Artifacts:");
+                    for artifact in &report.artifacts {
+                        info!("  {} -> {}", artifact.platform, artifact.path);
+                    }
+                }
+            })?;
+        }
+        Commands::AddBackend(args) => {
+            let report = command::add_backend::run(args)?;
+            emit_or_print(&report, format, |report| {
+                info!(
+                    "Backend {} added. Updated config at {}",
+                    report.backend, report.config_path
+                );
+            })?;
+        }
+        Commands::Clean(mut args) => execute_clean(&mut args, format)?,
+        Commands::Doctor(args) => {
+            let report = command::doctor::run(args)?;
+            emit_or_print(&report, format, render_doctor_report)?;
+        }
+        Commands::Devices(args) => {
+            let devices = command::devices::run(args)?;
+            if format.is_json() {
+                output::emit_json(&devices)?;
+            } else if devices.is_empty() {
+                warn!("No devices detected. Connect a device or start a simulator.");
+            } else {
+                render_device_table(&devices);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn init_tracing() {
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = fmt::Subscriber::builder()
+        .with_env_filter(filter)
+        .try_init();
+}
+
+fn emit_or_print<T, F>(value: &T, format: OutputFormat, printer: F) -> Result<()>
+where
+    T: serde::Serialize,
+    F: FnOnce(&T),
+{
+    if format.is_json() {
+        output::emit_json(value)
+    } else {
+        printer(value);
+        Ok(())
+    }
+}
+
+fn execute_clean(args: &mut CleanArgs, format: OutputFormat) -> Result<()> {
+    loop {
+        let report = command::clean::run(args.clone());
+        match report.status {
+            CleanStatus::PendingConfirmation if !format.is_json() => {
+                render_pending_actions(&report);
+                let proceed = Confirm::new()
+                    .with_prompt("Continue with cleanup?")
+                    .default(false)
+                    .interact()?;
+                if proceed {
+                    args.yes = true;
+                    continue;
+                }
+                warn!("Cleanup aborted.");
+                return Ok(());
+            }
+            _ => {
+                emit_or_print(&report, format, render_clean_report)?;
+                return Ok(());
+            }
         }
     }
 }
 
-fn run_cli() -> Result<()> {
-    let cli = Cli::parse();
+fn render_pending_actions(report: &CleanReport) {
+    println!(
+        "The following cleanup actions will be performed in {}:",
+        report.workspace
+    );
+    for action in &report.actions {
+        println!("  - {}", action.description);
+    }
+}
 
-    HookBuilder::default()
-        .display_env_section(false)
-        .issue_url("https://github.com/water-rs/waterui/issues/new")
-        .panic_section("It looks like WaterUI CLI encountered a bug")
-        .install()?;
+fn render_clean_report(report: &CleanReport) {
+    println!("Cleanup status: {:?}", report.status);
+    for action in &report.actions {
+        let detail = action
+            .detail
+            .as_deref()
+            .map(|d| format!(" ({d})"))
+            .unwrap_or_default();
+        println!("  - {:?}: {}{}", action.result, action.description, detail);
+        if let Some(error) = &action.error {
+            println!("      error: {error}");
+        }
+    }
+    if report.status == CleanStatus::Error {
+        for error in &report.errors {
+            println!("Error: {error}");
+        }
+    }
+}
 
-    let format = if cli.json {
-        OutputFormat::Json
-    } else {
-        cli.format
-    };
+fn render_doctor_report(report: &DoctorReport) {
+    println!("Doctor status: {:?}", report.status);
+    for section in &report.sections {
+        for (idx, line) in section.render().iter().enumerate() {
+            if idx == 0 {
+                println!();
+            }
+            println!("{line}");
+        }
+    }
+    if let Some(fixes) = &report.applied_fixes {
+        if !fixes.is_empty() {
+            println!();
+            println!("Applied fixes:");
+            for fix in fixes {
+                println!("  - {} => {:?}", fix.description, fix.outcome);
+            }
+        }
+    }
+}
 
-    output::set_global_output_format(format);
+fn render_device_table(devices: &[waterui_cli::device::DeviceInfo]) {
+    use std::collections::BTreeMap;
+    use waterui_cli::device::DeviceKind;
 
-    let level = match cli.verbose {
-        0 => LevelFilter::INFO,
-        1 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
-    };
-
-    if format.is_json() {
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(level)
-            .with_span_events(FmtSpan::NONE)
-            .without_time()
-            .with_target(false)
-            .with_ansi(false)
-            .json()
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("setting default subscriber failed");
-    } else {
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(level)
-            .with_span_events(FmtSpan::NONE)
-            .without_time()
-            .with_target(false)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("setting default subscriber failed");
+    let mut grouped: BTreeMap<&str, Vec<&waterui_cli::device::DeviceInfo>> = BTreeMap::new();
+    for device in devices {
+        grouped.entry(&device.platform).or_default().push(device);
     }
 
-    match cli.command {
-        Commands::Create(args) => create::run(args),
-        Commands::Run(args) => run::run(args),
-        Commands::Doctor(args) => doctor::run(args),
-        Commands::Clean(args) => clean::run(args),
-        Commands::Devices(args) => devices::run(args),
-        Commands::Package(args) => package::run(args),
-        Commands::AddBackend(args) => add_backend::run(args),
+    for (idx, (platform, list)) in grouped.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+        println!("{platform}");
+
+        let mut items = list.clone();
+        items.sort_by(|a, b| {
+            let rank = |kind: &DeviceKind| match kind {
+                DeviceKind::Device => 0,
+                DeviceKind::Simulator => 1,
+                DeviceKind::Emulator => 2,
+            };
+            rank(&a.kind)
+                .cmp(&rank(&b.kind))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        for device in items {
+            let state = device.state.as_deref().unwrap_or_else(|| {
+                if device.kind == DeviceKind::Emulator {
+                    "stopped"
+                } else {
+                    "-"
+                }
+            });
+            println!("  • {} ({:?}, {})", device.name, device.kind, state);
+            println!("      id: {}", device.identifier);
+            if let Some(detail) = &device.detail {
+                println!("      {detail}");
+            }
+        }
     }
 }

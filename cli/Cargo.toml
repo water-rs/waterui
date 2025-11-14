@@ -41,6 +41,10 @@ tokio-tungstenite = "0.23"
 thiserror = "2.0.17"
 smol = "2.0.2"
 
+[[bin]]
+name = "water"
+path = "src/terminal/main.rs"
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 which = "8.0.0"

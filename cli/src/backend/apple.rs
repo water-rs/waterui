@@ -1,12 +1,30 @@
-use core::fmt::Display;
+use std::{
+    collections::VecDeque,
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread::sleep,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use color_eyre::{Section, eyre};
-use heck::{ToPascalCase, ToSnakeCase, ToUpperCamelCase};
+use color_eyre::{
+    Section,
+    eyre::{self, Context, Result as EyreResult, bail},
+};
+use heck::ToUpperCamelCase;
 use thiserror::Error;
+use which::which;
 
-use crate::{backend::Backend, doctor::ToolchainIssue, impl_display};
+use crate::{
+    backend::Backend,
+    doctor::{AnyToolchainIssue, ToolchainIssue},
+    impl_display,
+    project::{Project, Swift},
+    util,
+};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Apple;
 
 impl_display!(Apple, "apple");
@@ -31,50 +49,53 @@ impl ToolchainIssue for AppleToolchainIssue {
 }
 
 impl Backend for Apple {
-    type ToolchainIssue = AppleToolchainIssue;
+    type ToolchainIssue = AnyToolchainIssue;
 
-    fn init(&self, project: &crate::project::Project, dev: bool) -> eyre::Result<()> {
-        let bundle_identifier = format!(
-            "com.{}.{}",
-            project.author().to_snake_case(),
-            project.identifier()
-        );
-        init_backend(project, &bundle_identifier, dev)
+    fn init(&self, _project: &Project, _dev: bool) -> eyre::Result<()> {
+        Ok(())
     }
 
-    fn is_existing(&self, project: &crate::project::Project) -> bool {
-        todo!()
+    fn is_existing(&self, project: &Project) -> bool {
+        project.root().join("apple").exists()
     }
 
-    fn clean(&self, project: &crate::project::Project) -> eyre::Result<()> {
-        todo!()
+    fn clean(&self, project: &Project) -> eyre::Result<()> {
+        clean_project(project)
     }
 
-    fn check_requirements(
-        &self,
-        project: &crate::project::Project,
-    ) -> Result<(), Vec<Self::ToolchainIssue>> {
-        todo!()
+    fn check_requirements(&self, _: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+        let mut issues = Vec::new();
+
+        if cfg!(target_os = "macos") {
+            if which("xcodebuild").is_err() {
+                issues.push(AppleToolchainIssue::XcodeNotInstalled);
+            }
+
+            if which("xcode-select").is_err() {
+                issues.push(AppleToolchainIssue::CommandLineToolsNotInstalled);
+            }
+        } else {
+            issues.push(AppleToolchainIssue::XcodeNotInstalled);
+            issues.push(AppleToolchainIssue::CommandLineToolsNotInstalled);
+        }
+
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues
+                .into_iter()
+                .map(|issue| Box::new(issue) as AnyToolchainIssue)
+                .collect())
+        }
     }
 }
 
-fn init_backend(
-    project: &crate::project::Project,
-    bundle_identifier: &str,
-
-    dev: bool,
-) -> eyre::Result<()> {
-    // Implementation for initializing Apple backend
-
-    Ok(())
-}
-
-fn clean(project: &crate::project::Project) -> eyre::Result<()> {
+fn clean_project(project: &Project) -> eyre::Result<()> {
     // run command, clean xcode build artifacts
     let ident = project.identifier().to_upper_camel_case();
-    let status = std::process::Command::new("xcodebuild")
+    let status = Command::new("xcodebuild")
         .arg("-workspace")
-        .arg(format!("apple/{}.xcworkspace", ident))
+        .arg(format!("apple/{ident}.xcworkspace"))
         .arg("-scheme")
         .arg(ident)
         .arg("clean")
@@ -90,86 +111,162 @@ fn clean(project: &crate::project::Project) -> eyre::Result<()> {
     Ok(())
 }
 
-/*
-
-
-pub fn create_xcode_project(
-    project_dir: &Path,
-    app_name: &str,
-    app_display_name: &str,
-    crate_name: &str,
-    bundle_identifier: &str,
-    swift_dependency: &SwiftDependency,
-) -> Result<()> {
-    let apple_root = project_dir.join("apple");
-    let lib_name = crate_name.replace('-', "_");
-
-    let mut context = HashMap::new();
-    context.insert("APP_NAME", app_name.to_string());
-    context.insert("APP_DISPLAY_NAME", app_display_name.to_string());
-    context.insert("LIB_NAME", lib_name.to_string());
-    context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
-    context.insert("CRATE_NAME", crate_name.to_string());
-
-    let SwiftDependency::Git { version, branch } = swift_dependency;
-
-    let requirement = if let Some(version) = version {
-        format!(
-            "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
-        )
-    } else {
-        let branch = branch.as_deref().unwrap_or("main");
-        format!(
-            "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
-        )
-    };
-
-    context.insert(
-        "SWIFT_PACKAGE_REFERENCE_ENTRY",
-        r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */
-,"#
-            .to_string(),
-    );
-
-    let repo_url = std::env::var("WATERUI_SWIFT_BACKEND_URL")
-        .unwrap_or_else(|_| SWIFT_BACKEND_GIT_URL.to_string());
-
-    context.insert(
-        "SWIFT_PACKAGE_REFERENCE_SECTION",
-        format!(
-r#" /* Begin XCRemoteSwiftPackageReference section */
-D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */
- = {{
-            isa = XCRemoteSwiftPackageReference;
-            repositoryURL = "{}";
-            {}
-        }};
-/* End XCRemoteSwiftPackageReference section */
-"#,
-            repo_url, requirement
-        ),
-    );
-
-    let templates = &template::TEMPLATES_DIR;
-    let apple_template_dir = templates
-        .get_dir("apple")
-        .expect("apple template directory should exist");
-
-    template::process_template_directory(apple_template_dir, &apple_root, &context)?;
-
-    let build_script_path = apple_root.join("build-rust.sh");
-    #[cfg(unix)]
-    {
-        let mut perms = fs::metadata(&build_script_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&build_script_path, perms)?;
-    }
-
-    let xcconfig = apple_root.join("rust_build_info.xcconfig");
-    fs::write(xcconfig, "RUST_LIBRARY_PATH=\n")?;
-
-    Ok(())
+#[derive(Debug)]
+pub struct XcodeProject<'a> {
+    pub scheme: &'a str,
+    pub project_file: PathBuf,
 }
 
+/// Ensure the current host is macOS before running a feature.
+///
+/// # Errors
+/// Returns an error when invoked on non-macOS hosts.
+pub fn ensure_macos_host(feature: &str) -> EyreResult<()> {
+    if cfg!(target_os = "macos") {
+        Ok(())
+    } else {
+        bail!("{feature} requires macOS")
+    }
+}
 
-*/
+/// Locate the Xcode project described by the Swift configuration.
+///
+/// # Errors
+/// Returns an error if the expected project directory or file is missing.
+pub fn resolve_xcode_project<'a>(
+    project_dir: &Path,
+    swift_config: &'a Swift,
+) -> EyreResult<XcodeProject<'a>> {
+    let project_root = project_dir.join(&swift_config.project_path);
+    if !project_root.exists() {
+        bail!(
+            "Xcode project directory not found at {}. Did you run 'water create'?",
+            project_root.display()
+        );
+    }
+
+    let project_file = swift_config.project_file.as_ref().map_or_else(
+        || project_root.join(format!("{}.xcodeproj", swift_config.scheme)),
+        |custom| project_root.join(custom),
+    );
+
+    if !project_file.exists() {
+        bail!("Missing Xcode project: {}", project_file.display());
+    }
+
+    Ok(XcodeProject {
+        scheme: &swift_config.scheme,
+        project_file,
+    })
+}
+
+#[must_use]
+pub fn derived_data_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join(".waterui/DerivedData")
+}
+
+/// Ensure the derived data directory exists for Xcode builds.
+///
+/// # Errors
+/// Returns an error if the directory cannot be created.
+pub fn prepare_derived_data_dir(dir: &Path) -> EyreResult<()> {
+    util::ensure_directory(dir)
+}
+
+#[must_use]
+pub fn xcodebuild_base(
+    project: &XcodeProject<'_>,
+    configuration: &str,
+    derived_root: &Path,
+) -> Command {
+    let mut cmd = Command::new("xcodebuild");
+    cmd.arg("-project")
+        .arg(&project.project_file)
+        .arg("-scheme")
+        .arg(project.scheme)
+        .arg("-configuration")
+        .arg(configuration)
+        .arg("-derivedDataPath")
+        .arg(derived_root)
+        .arg("-allowProvisioningUpdates")
+        .arg("-allowProvisioningDeviceRegistration");
+    cmd
+}
+
+pub fn disable_code_signing(cmd: &mut Command) {
+    cmd.arg("CODE_SIGNING_ALLOWED=NO")
+        .arg("CODE_SIGNING_REQUIRED=NO")
+        .arg("CODE_SIGN_IDENTITY=-");
+}
+
+/// Run `xcodebuild` while streaming progress to a log file.
+///
+/// # Errors
+/// Returns an error if the process fails or if the log cannot be written.
+pub fn run_xcodebuild_with_progress(
+    mut cmd: Command,
+    description: &str,
+    log_dir: &Path,
+) -> EyreResult<PathBuf> {
+    util::ensure_directory(log_dir)?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let log_path = log_dir.join(format!("xcodebuild-{timestamp}.log"));
+
+    let log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)
+        .with_context(|| format!("failed to create {}", log_path.display()))?;
+    let log_clone = log_file
+        .try_clone()
+        .with_context(|| format!("failed to clone handle for {}", log_path.display()))?;
+    cmd.stdout(Stdio::from(log_clone));
+    cmd.stderr(Stdio::from(log_file));
+
+    let mut child = cmd.spawn().context("failed to invoke xcodebuild")?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        sleep(Duration::from_millis(150));
+    };
+
+    if status.success() {
+        Ok(log_path)
+    } else {
+        let mut err = eyre::eyre!(format!(
+            "xcodebuild failed with status {}. See log at {}",
+            status,
+            log_path.display()
+        ));
+        if let Ok(lines) = last_lines(&log_path, 80) {
+            if !lines.is_empty() {
+                let snippet = lines.join("\n");
+                err = err.with_section(move || {
+                    format!("{description} (last {} lines)\n{snippet}", lines.len())
+                });
+            }
+        }
+        Err(err)
+    }
+}
+
+fn last_lines(path: &Path, max_lines: usize) -> EyreResult<Vec<String>> {
+    let file =
+        File::open(path).with_context(|| format!("failed to open log file {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut buffer = VecDeque::with_capacity(max_lines);
+    for line in reader.lines() {
+        let line = line?;
+        if buffer.len() == max_lines {
+            buffer.pop_front();
+        }
+        buffer.push_back(line);
+    }
+    Ok(buffer.into_iter().collect())
+}
