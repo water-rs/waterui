@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use color_eyre::eyre::{self, bail};
+use color_eyre::eyre::{self, Context, bail};
 use heck::ToSnakeCase;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -11,6 +11,7 @@ use which::which;
 
 use crate::{
     backend::{AnyBackend, Backend, scan_backends},
+    device::Device,
     doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
 };
@@ -18,22 +19,47 @@ use crate::{
 #[derive(Debug)]
 pub struct Project {
     dir: PathBuf,
-    config: ProjectConfig,
+    config: Config,
     identifier: String,
 }
 
-/// Configuration for a `WaterUI` project.
-/// Usually loaded from a `Water.toml` file.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ProjectConfig {
-    app: ProjectConfigApp,
+/// Controls build and runtime behavior for `Project::run`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    /// Compile and package with release optimizations.
+    pub release: bool,
+    /// Hot reload configuration forwarded to platforms/devices.
+    pub hot_reload: HotReloadOptions,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ProjectConfigApp {
-    name: String,
-    author: String,
+impl RunOptions {
+    #[must_use]
+    pub const fn new(release: bool, hot_reload: HotReloadOptions) -> Self {
+        Self {
+            release,
+            hot_reload,
+        }
+    }
 }
+
+/// Toggle hot reload metadata generation and runtime wiring.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HotReloadOptions {
+    /// Whether hot reload support is enabled end-to-end.
+    pub enabled: bool,
+    /// TCP port used by the dev server, when enabled.
+    pub port: Option<u16>,
+}
+
+/// Structured description of a successful `Project::run`.
+#[derive(Debug)]
+pub struct RunReport {
+    /// Absolute path to the packaged artifact executed on the target device.
+    pub artifact: PathBuf,
+}
+
+/// Alias retained for backwards compatibility with the legacy CLI code.
+pub type ProjectConfig = Config;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -129,11 +155,16 @@ pub enum FailToRun {
 
 impl Project {
     /// Open a `WaterUI` project from the specified directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The `Water.toml` file cannot be read from the directory
+    /// - The TOML file cannot be parsed into a valid `ProjectConfig`
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
         let dir = dir.as_ref().to_path_buf();
-        let contents = std::fs::read_to_string(dir.join("Water.toml")).map_err(Error::IoError)?;
-        let config: ProjectConfig = toml::from_str(&contents).map_err(Error::TomlError)?;
-        let identifier = config.app.name.to_snake_case();
+        let config = Config::load(&dir).map_err(Error::Other)?;
+        let identifier = config.package.name.to_snake_case();
         Ok(Self {
             dir,
             config,
@@ -142,51 +173,93 @@ impl Project {
     }
 
     /// Run the project on the specified platform.
-    pub fn run(&self, platform: impl Platform) -> Result<(), FailToRun> {
+    ///
+    /// This will build the project in debug mode and launch it on the target platform.
+    /// # Errors
+    /// Returns `FailToRun` if any step of the run process fails.
+    pub fn run(&self, device: &impl Device, options: RunOptions) -> Result<RunReport, FailToRun> {
         check_requirements()?;
+        let platform = device.platform();
         platform.check_requirements(self)?;
 
-        self.build_rust(platform, false)?;
+        device.prepare(self, &options)?;
+        self.build_rust(platform, options.release)?;
 
-        // run the project on the specified platform
+        let app_path = platform.package(self, options.release)?;
 
-        todo!();
+        device.run(self, &app_path, &options)?;
 
-        Ok(())
+        Ok(RunReport { artifact: app_path })
     }
 
     /// Package the project for the specified platform.
-    pub fn package(&self, platform: impl Platform) -> Result<(), FailToPackage> {
+    ///
+    /// This will build the project in release mode and create a distributable package.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FailToPackage` if any step of the packaging process fails.
+    pub fn package(
+        &self,
+        platform: &impl Platform,
+        release: bool,
+    ) -> Result<PathBuf, FailToPackage> {
         check_requirements()?;
         platform.check_requirements(self)?;
 
-        self.build_rust(&platform, true)?;
+        self.build_rust(platform, release)?;
 
-        platform.package(self, true)?;
-        Ok(())
+        let artifact = platform.package(self, release)?;
+        Ok(artifact)
     }
 
+    /// Get the name of the project.
+    #[must_use]
     pub fn name(&self) -> &str {
-        &self.config.app.name
+        &self.config.package.name
     }
 
+    /// Get the unique identifier of the project.
+    #[must_use]
     pub fn identifier(&self) -> &str {
         &self.identifier
     }
 
+    /// Get the list of backends configured for the project.
+    #[must_use]
     pub fn backends(&self) -> Vec<AnyBackend> {
         scan_backends(self)
     }
 
-    pub const fn author(&self) -> &str {
-        self.config.app.author.as_str()
+    /// Access the parsed project configuration.
+    #[must_use]
+    pub const fn config(&self) -> &Config {
+        &self.config
     }
 
+    /// Get the author of the project.
+    #[must_use]
+    pub const fn author(&self) -> &str {
+        self.config.package.author.as_str()
+    }
+
+    /// Bundle identifier used for Apple/Android targets.
+    #[must_use]
+    pub fn bundle_identifier(&self) -> &str {
+        &self.config.package.bundle_identifier
+    }
+
+    /// Get the root directory of the project.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.dir
     }
 
-    pub fn add_backend(&self, backend: impl Backend, dev: bool) -> Result<(), Error> {
+    /// Add a backend to the project.
+    ////
+    /// # Errors
+    /// Returns an error if the backend already exists for the project.
+    pub fn add_backend<B: Backend>(&self, backend: B, dev: bool) -> Result<(), Error> {
         if backend.is_existing(self) {
             return Err(Error::BackendExists(backend.to_string()));
         }
@@ -194,7 +267,7 @@ impl Project {
         Ok(())
     }
 
-    fn build_rust(&self, platform: impl Platform, release: bool) -> eyre::Result<PathBuf> {
+    fn build_rust(&self, platform: &impl Platform, release: bool) -> eyre::Result<()> {
         let target_triple = platform.target_triple();
         // use cargo to build the project for the specified target
         let status = Command::new("cargo")
@@ -212,10 +285,113 @@ impl Project {
             bail!("Failed to build project for target {}", target_triple);
         }
 
-        Ok(PathBuf::from(format!(
-            "target/{}/{}",
-            target_triple,
-            if release { "release" } else { "debug" }
-        )))
+        Ok(())
     }
+}
+
+/// Configuration for a `WaterUI` project persisted to `Water.toml`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Config {
+    pub package: Package,
+    #[serde(default)]
+    pub backends: Backends,
+    #[serde(default)]
+    pub hot_reload: HotReload,
+}
+
+impl Config {
+    #[must_use]
+    pub fn new(package: Package) -> Self {
+        Self {
+            package,
+            backends: Backends::default(),
+            hot_reload: HotReload::default(),
+        }
+    }
+
+    /// Load the project configuration from disk.
+    ///
+    /// # Errors
+    /// Returns an error if `Water.toml` cannot be read or parsed.
+    pub fn load(root: &Path) -> eyre::Result<Self> {
+        let path = Self::path(root);
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))
+    }
+
+    /// Persist the configuration to `Water.toml`.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration file cannot be written.
+    pub fn save(&self, root: &Path) -> eyre::Result<()> {
+        let path = Self::path(root);
+        let contents = toml::to_string_pretty(self)?;
+        std::fs::write(&path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))
+    }
+
+    #[must_use]
+    pub fn path(root: &Path) -> PathBuf {
+        root.join("Water.toml")
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Package {
+    pub name: String,
+    pub display_name: String,
+    pub bundle_identifier: String,
+    #[serde(default)]
+    pub author: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Backends {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swift: Option<Swift>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android: Option<Android>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<Web>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Swift {
+    #[serde(default = "default_swift_project_path")]
+    pub project_path: String,
+    pub scheme: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_file: Option<String>,
+}
+
+fn default_swift_project_path() -> String {
+    "apple".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Android {
+    #[serde(default = "default_android_project_path")]
+    pub project_path: String,
+}
+
+fn default_android_project_path() -> String {
+    "android".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Web {
+    #[serde(default = "default_web_project_path")]
+    pub project_path: String,
+}
+
+fn default_web_project_path() -> String {
+    "web".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct HotReload {
+    /// Additional paths to watch for triggering rebuilds
+    #[serde(default)]
+    pub watch: Vec<String>,
 }

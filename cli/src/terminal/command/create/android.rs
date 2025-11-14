@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Context, Result, bail, eyre};
+use color_eyre::eyre::{Context, Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -9,7 +9,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::template;
 use crate::util;
+use waterui_cli::backend::android;
 
+/// Generate the Android Gradle project and associated template files.
+///
+/// # Errors
+/// Returns an error if any template cannot be written to the target project directory.
+///
+/// # Panics
+/// Panics when an expected bundled template is missing; this indicates a build-time bug.
+#[allow(clippy::too_many_lines)]
 pub fn create_android_project(
     project_dir: &Path,
     display_name: &str,
@@ -22,7 +31,7 @@ pub fn create_android_project(
 
     copy_android_backend(project_dir, use_dev_backend)?;
 
-    let android_package = crate::android::sanitize_package_name(bundle_identifier);
+    let android_package = android::sanitize_package_name(bundle_identifier);
 
     let mut context = HashMap::new();
     context.insert("APP_NAME", display_name.to_string());
@@ -128,7 +137,7 @@ pub fn create_android_project(
 
     // Process Java/Kotlin source with dynamic path
     let package_path = android_package.replace('.', "/");
-    let java_dir = main_dir.join(format!("java/{}", package_path));
+    let java_dir = main_dir.join(format!("java/{package_path}"));
     template::process_template_file(
         templates
             .get_file("android/app/src/main/java/MainActivity.kt.tpl")
@@ -217,10 +226,7 @@ fn copy_android_backend(project_dir: &Path, use_dev_backend: bool) -> Result<()>
     } else {
         let source = util::workspace_root().join("backends/android");
         if !source.exists() {
-            return Err(eyre!(
-                "Android backend sources not found at {}",
-                source.display()
-            ));
+            bail!("Android backend sources not found at {}", source.display());
         }
 
         copy_dir_filtered(&source, &destination)?;
@@ -261,7 +267,7 @@ fn clone_android_backend(destination: &Path) -> Result<()> {
         .arg(&repo_url)
         .arg(destination)
         .status()
-        .with_context(|| format!("failed to clone Android backend from {}", repo_url))?;
+        .with_context(|| format!("failed to clone Android backend from {repo_url}"))?;
 
     if !status.success() {
         if destination.exists() {
@@ -269,8 +275,7 @@ fn clone_android_backend(destination: &Path) -> Result<()> {
         }
         let code = status
             .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "terminated by signal".to_string());
+            .map_or_else(|| "terminated by signal".to_string(), |c| c.to_string());
         bail!(
             "git clone failed when fetching Android backend from {} (exit status: {})",
             repo_url,
