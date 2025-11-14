@@ -1,39 +1,13 @@
-use color_eyre::eyre::{Result, bail};
-use console::style;
-use core::fmt::Display;
-use heck::{AsKebabCase, AsPascalCase};
-use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use color_eyre::eyre::{Result, bail};
 use which::which;
 
-use crate::output;
-
-pub fn print_error(error: impl Display, hint: Option<&str>) {
-    if output::global_output_format().is_json() {
-        let mut value = json!({
-            "reason": "error",
-            "message": error.to_string(),
-        });
-        if let Some(hint) = hint {
-            value["hint"] = json!(hint);
-        }
-        println!("{}", value);
-        return;
-    }
-
-    let icon = style("✖").red();
-    eprintln!("{} {}", icon, style("Error").red().bold());
-    eprintln!("  {}", style(error.to_string()).red());
-    if let Some(hint) = hint {
-        eprintln!(
-            "  {} {}",
-            style("Hint:").yellow().bold(),
-            style(hint).yellow()
-        );
-    }
-}
-
+/// Return the workspace root for the CLI package.
+///
+/// # Panics
+/// Panics if the CLI manifest directory does not have a parent.
+#[must_use]
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -41,24 +15,10 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-pub fn kebab_case(name: &str) -> String {
-    let s = AsKebabCase(name).to_string();
-    if s.is_empty() {
-        "waterui-app".to_string()
-    } else {
-        s
-    }
-}
-
-pub fn pascal_case(name: &str) -> String {
-    let s = AsPascalCase(name).to_string();
-    if s.is_empty() {
-        "WaterUIApp".to_string()
-    } else {
-        s
-    }
-}
-
+/// Ensure a directory exists, creating missing parents when needed.
+///
+/// # Errors
+/// Returns an error if the directory cannot be created.
 pub fn ensure_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         std::fs::create_dir_all(path)?;
@@ -66,21 +26,14 @@ pub fn ensure_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Check whether a tool exists on the PATH and produce a helpful error otherwise.
+///
+/// # Errors
+/// Returns an error if the tool cannot be located.
 pub fn require_tool(tool: &str, hint: &str) -> Result<()> {
     if which(tool).is_ok() {
         Ok(())
     } else {
         bail!("{tool} not found. {hint}")
-    }
-}
-
-pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u16>) {
-    if enable {
-        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "0");
-        if let Some(port) = port {
-            cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
-        }
-    } else {
-        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "1");
     }
 }
