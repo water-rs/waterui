@@ -11,7 +11,7 @@ use crate::{
     backend::Backend,
     doctor::{AnyToolchainIssue, ToolchainIssue},
     impl_display,
-    project::Project,
+    project::{Android, Project},
     util,
 };
 use color_eyre::eyre::{Context, Result, bail, eyre};
@@ -23,6 +23,7 @@ struct AndroidTargetConfig {
     triple: &'static str,
     bin_prefix: &'static str,
     min_api: u32,
+    abi: &'static str,
 }
 
 const ANDROID_TARGETS: &[AndroidTargetConfig] = &[
@@ -30,21 +31,25 @@ const ANDROID_TARGETS: &[AndroidTargetConfig] = &[
         triple: "aarch64-linux-android",
         bin_prefix: "aarch64-linux-android",
         min_api: 21,
+        abi: "arm64-v8a",
     },
     AndroidTargetConfig {
         triple: "x86_64-linux-android",
         bin_prefix: "x86_64-linux-android",
         min_api: 21,
+        abi: "x86_64",
     },
     AndroidTargetConfig {
         triple: "armv7-linux-androideabi",
         bin_prefix: "armv7a-linux-androideabi",
         min_api: 19,
+        abi: "armeabi-v7a",
     },
     AndroidTargetConfig {
         triple: "i686-linux-android",
         bin_prefix: "i686-linux-android",
         min_api: 19,
+        abi: "x86",
     },
 ];
 
@@ -212,7 +217,7 @@ pub(crate) fn resolve_android_ndk_path() -> Option<PathBuf> {
     None
 }
 
-fn ndk_toolchain_bin(ndk_root: &Path) -> Option<PathBuf> {
+fn ndk_toolchain_bin(ndk_root: &Path) -> Option<(String, PathBuf)> {
     let host_tags: &[&str] = if cfg!(target_os = "macos") {
         &["darwin-arm64", "darwin-aarch64", "darwin-x86_64"]
     } else if cfg!(target_os = "linux") {
@@ -229,7 +234,7 @@ fn ndk_toolchain_bin(ndk_root: &Path) -> Option<PathBuf> {
             .join(tag)
             .join("bin");
         if candidate.exists() {
-            return Some(candidate);
+            return Some(((*tag).to_string(), candidate));
         }
     }
 
@@ -238,7 +243,11 @@ fn ndk_toolchain_bin(ndk_root: &Path) -> Option<PathBuf> {
         for entry in entries.flatten() {
             let candidate = entry.path().join("bin");
             if candidate.exists() {
-                return Some(candidate);
+                let host_tag = entry
+                    .file_name()
+                    .into_string()
+                    .unwrap_or_else(|_| "unknown".to_string());
+                return Some((host_tag, candidate));
             }
         }
     }
@@ -535,6 +544,241 @@ fn prepare_android_package(project_dir: &Path, bundle_identifier: &str) -> Resul
     Ok(sanitized)
 }
 
+#[derive(Debug)]
+pub struct AndroidNativeBuildOptions<'a> {
+    pub project_dir: &'a Path,
+    pub android_config: &'a Android,
+    pub crate_name: &'a str,
+    pub release: bool,
+    pub requested_triples: Option<Vec<String>>,
+    pub enable_sccache: bool,
+    pub enable_mold: bool,
+    pub hot_reload: bool,
+}
+
+#[derive(Debug)]
+pub struct AndroidNativeBuildReport {
+    pub profile: String,
+    pub targets: Vec<String>,
+    pub jni_libs_dir: PathBuf,
+}
+
+pub fn build_android_native_libraries(
+    opts: AndroidNativeBuildOptions<'_>,
+) -> Result<AndroidNativeBuildReport> {
+    let profile = if opts.release { "release" } else { "debug" };
+    let requested_refs: Option<Vec<&str>> = opts
+        .requested_triples
+        .as_ref()
+        .map(|items| items.iter().map(String::as_str).collect());
+    let selected_targets = determine_android_targets(requested_refs.as_deref())?;
+    if selected_targets.is_empty() {
+        bail!("No Android Rust targets selected for build.");
+    }
+
+    let triples: Vec<&str> = selected_targets
+        .iter()
+        .map(|target| target.triple)
+        .collect();
+    configure_rust_android_linker_env(&triples)?;
+
+    let ndk_path = env::var("ANDROID_NDK_HOME")
+        .map(PathBuf::from)
+        .map_err(|_| eyre!("ANDROID_NDK_HOME is not set after configuring the NDK"))?;
+    let (host_tag, _toolchain_bin) = ndk_toolchain_bin(&ndk_path)
+        .ok_or_else(|| eyre!("Unable to locate NDK LLVM toolchain binaries."))?;
+
+    let android_root = opts.project_dir.join(&opts.android_config.project_path);
+    let jni_dir = android_root.join("app/src/main/jniLibs");
+    util::ensure_directory(&jni_dir)?;
+
+    let crate_file = opts.crate_name.replace('-', "_");
+    let mut built = Vec::new();
+
+    for target in &selected_targets {
+        info!(
+            "Building Rust crate '{}' for target {}",
+            opts.crate_name, target.triple
+        );
+        let make_command = || {
+            let mut cmd = Command::new("cargo");
+            cmd.arg("build")
+                .arg("--package")
+                .arg(opts.crate_name)
+                .arg("--target")
+                .arg(target.triple);
+            if opts.release {
+                cmd.arg("--release");
+            }
+            cmd.current_dir(opts.project_dir);
+            util::configure_hot_reload_env(&mut cmd, opts.hot_reload, None);
+            cmd
+        };
+
+        let mut cmd = make_command();
+        let sccache_enabled =
+            util::configure_build_speedups(&mut cmd, opts.enable_sccache, opts.enable_mold);
+        let status = cmd.status().with_context(|| {
+            format!(
+                "failed to compile Rust crate {} for target {}",
+                opts.crate_name, target.triple
+            )
+        })?;
+
+        if !status.success() {
+            if sccache_enabled {
+                warn!(
+                    "cargo build failed for {} with sccache; retrying without cache",
+                    target.triple
+                );
+                let mut retry_cmd = make_command();
+                util::configure_build_speedups(&mut retry_cmd, false, opts.enable_mold);
+                let retry_status = retry_cmd.status().with_context(|| {
+                    format!(
+                        "failed to re-run cargo build for target {} without sccache",
+                        target.triple
+                    )
+                })?;
+                if !retry_status.success() {
+                    bail!(
+                        "cargo build failed for target {} (retry without sccache also failed)",
+                        target.triple
+                    );
+                }
+            } else {
+                bail!(
+                    "cargo build failed for target {} with status {}",
+                    target.triple,
+                    status
+                );
+            }
+        }
+
+        built.push(target.triple.to_string());
+        let source = opts
+            .project_dir
+            .join("target")
+            .join(target.triple)
+            .join(profile)
+            .join(format!("lib{crate_file}.so"));
+        if !source.exists() {
+            bail!(
+                "Rust shared library not found at {}. Did the build succeed?",
+                source.display()
+            );
+        }
+        let abi_dir = jni_dir.join(target.abi);
+        util::ensure_directory(&abi_dir)?;
+        let dest = abi_dir.join(format!("lib{crate_file}.so"));
+        fs::copy(&source, &dest).with_context(|| {
+            format!(
+                "failed to copy built library from {} to {}",
+                source.display(),
+                dest.display()
+            )
+        })?;
+        info!("→ Copied {}", dest.display());
+    }
+
+    if built.is_empty() {
+        bail!("No Android Rust targets were built.");
+    }
+
+    let libcxx_root = ndk_path
+        .join("toolchains/llvm/prebuilt")
+        .join(&host_tag)
+        .join("sysroot/usr/lib");
+    for target in &selected_targets {
+        let src = libcxx_root.join(target.triple).join("libc++_shared.so");
+        let abi_dir = jni_dir.join(target.abi);
+        let dst = abi_dir.join("libc++_shared.so");
+        if src.exists() {
+            fs::copy(&src, &dst).with_context(|| {
+                format!(
+                    "failed to copy libc++_shared.so from {} to {}",
+                    src.display(),
+                    dst.display()
+                )
+            })?;
+            info!("  → Copied libc++_shared.so for {}", target.abi);
+        } else {
+            warn!(
+                "libc++_shared.so not found for target {} at {}",
+                target.triple,
+                src.display()
+            );
+        }
+    }
+
+    info!("Rust libraries copied to {}", jni_dir.display());
+
+    Ok(AndroidNativeBuildReport {
+        profile: profile.to_string(),
+        targets: built,
+        jni_libs_dir: jni_dir,
+    })
+}
+
+fn determine_android_targets(
+    explicit: Option<&[&str]>,
+) -> Result<Vec<&'static AndroidTargetConfig>> {
+    if let Some(list) = explicit {
+        let mut selected = Vec::new();
+        for triple in list {
+            selected.push(resolve_android_target(triple)?);
+        }
+        return Ok(selected);
+    }
+
+    if let Ok(raw) = env::var("ANDROID_BUILD_TARGETS") {
+        if !raw.trim().is_empty() {
+            let parsed = parse_android_target_list(&raw)?;
+            if !parsed.is_empty() {
+                return Ok(parsed);
+            }
+        }
+    }
+
+    if let Some(installed) = installed_rust_targets() {
+        let mut selected = Vec::new();
+        for target in ANDROID_TARGETS {
+            if installed.contains(target.triple) {
+                selected.push(target);
+            }
+        }
+        if !selected.is_empty() {
+            return Ok(selected);
+        }
+    }
+
+    Ok(vec![
+        target_by_triple("aarch64-linux-android").expect("default Android target should exist"),
+    ])
+}
+
+fn parse_android_target_list(raw: &str) -> Result<Vec<&'static AndroidTargetConfig>> {
+    let mut targets = Vec::new();
+    for item in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        targets.push(resolve_android_target(trimmed)?);
+    }
+    Ok(targets)
+}
+
+fn resolve_android_target(triple: &str) -> Result<&'static AndroidTargetConfig> {
+    target_by_triple(triple).ok_or_else(|| {
+        let supported = ANDROID_TARGETS
+            .iter()
+            .map(|target| target.triple)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eyre!("Unsupported Android target '{triple}'. Supported targets: {supported}.")
+    })
+}
+
 /// Configure the environment so Cargo can link against the requested Android targets.
 ///
 /// # Errors
@@ -560,7 +804,7 @@ pub fn configure_rust_android_linker_env(desired_triples: &[&str]) -> Result<()>
         );
     }
 
-    let toolchain_bin = ndk_toolchain_bin(&ndk_path)
+    let (_toolchain_host_tag, toolchain_bin) = ndk_toolchain_bin(&ndk_path)
         .ok_or_else(|| eyre!("Unable to locate NDK LLVM toolchain binaries."))?;
 
     let mut path_entries =
@@ -690,68 +934,29 @@ fn api_level_candidates(min_api: u32) -> Vec<u32> {
 /// Returns an error if the Gradle invocation or Rust build fails.
 pub fn build_android_apk(
     project_dir: &Path,
-    android_config: &crate::project::Android,
+    android_config: &Android,
     release: bool,
     skip_native: bool,
     hot_reload_enabled: bool,
     bundle_identifier: &str,
+    crate_name: &str,
+    enable_sccache: bool,
+    mold_requested: bool,
 ) -> Result<PathBuf> {
     let _sanitized = prepare_android_package(project_dir, bundle_identifier)?;
-    let build_rust_script = project_dir.join("build-rust.sh");
-    if build_rust_script.exists() {
-        if skip_native {
-            info!("Skipping Android native build (requested via --skip-native)");
-        } else {
-            info!("Building Rust library for Android...");
-            let mut cmd = Command::new("bash");
-            cmd.arg(&build_rust_script);
-            if release {
-                cmd.arg("release");
-            } else {
-                cmd.arg("debug");
-            }
-            util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
-            cmd.current_dir(project_dir);
-            let ndk_env = env::var("ANDROID_NDK_HOME")
-                .ok()
-                .map(PathBuf::from)
-                .filter(|path| path.exists());
-            let ndk_path = ndk_env.clone().or_else(resolve_android_ndk_path);
-            if let Some(ndk_path) = ndk_path {
-                if ndk_env.is_none() {
-                    info!(
-                        "ANDROID_NDK_HOME not set; using auto-detected NDK at {}",
-                        ndk_path.display()
-                    );
-                }
-                cmd.env("ANDROID_NDK_HOME", &ndk_path);
-                if let Some(toolchain_bin) = ndk_toolchain_bin(&ndk_path) {
-                    let mut new_path = env::split_paths(&env::var_os("PATH").unwrap_or_default())
-                        .collect::<Vec<_>>();
-                    new_path.insert(0, toolchain_bin);
-                    let merged =
-                        env::join_paths(new_path).with_context(|| "failed to join PATH entries")?;
-                    cmd.env("PATH", merged);
-                } else {
-                    warn!(
-                        "Unable to locate NDK toolchain binaries under {}. \
-                         Ensure the llvm toolchain is installed.",
-                        ndk_path.display()
-                    );
-                }
-            } else {
-                warn!(
-                    "ANDROID_NDK_HOME not set and NDK could not be auto-detected. \
-                     build-rust.sh may fail if it requires the NDK."
-                );
-            }
-            let status = cmd.status().context("failed to run build-rust.sh")?;
-            if !status.success() {
-                bail!("build-rust.sh failed");
-            }
-        }
-    } else if !skip_native {
-        info!("No build-rust.sh script found. Skipping native build.");
+    if skip_native {
+        info!("Skipping Android native build (requested via --skip-native)");
+    } else {
+        build_android_native_libraries(AndroidNativeBuildOptions {
+            project_dir,
+            android_config,
+            crate_name,
+            release,
+            requested_triples: None,
+            enable_sccache,
+            enable_mold: mold_requested,
+            hot_reload: hot_reload_enabled,
+        })?;
     }
 
     info!("Building Android app with Gradle...");

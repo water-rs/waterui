@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashSet,
     fs,
@@ -15,7 +17,7 @@ use tracing::warn;
 use super::{
     add_backend,
     create::{
-        BackendChoice, DEFAULT_WATERUI_FFI_VERSION, SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX,
+        self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX,
         android::{
             self, clear_android_dev_commit, configure_android_local_properties,
             copy_android_backend, ensure_android_backend_release,
@@ -24,7 +26,7 @@ use super::{
         },
     },
 };
-use crate::ui;
+use crate::{ui, util};
 use toml::{Value, value::Table};
 use waterui_cli::{WATERUI_VERSION, output, project::Config};
 
@@ -139,7 +141,6 @@ pub fn upgrade(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
 pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
     let project_dir = args
         .project
-        .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let config = Config::load(&project_dir)?;
     let mut entries = Vec::new();
@@ -156,7 +157,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
             ffi_version: swift.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Swiftui)
                 .iter()
-                .map(|t| t.to_string())
+                .map(|t| (*t).to_string())
                 .collect(),
             project_path: swift.project_path.clone(),
         });
@@ -174,7 +175,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
             ffi_version: android.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Android)
                 .iter()
-                .map(|t| t.to_string())
+                .map(|t| (*t).to_string())
                 .collect(),
             project_path: android.project_path.clone(),
         });
@@ -188,7 +189,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
             ffi_version: web.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Web)
                 .iter()
-                .map(|t| t.to_string())
+                .map(|t| (*t).to_string())
                 .collect(),
             project_path: web.project_path.clone(),
         });
@@ -199,7 +200,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
     } else if !output::global_output_format().is_json() {
         ui::section("Configured Backends");
         for entry in &entries {
-            ui::kv("Backend", format!("{}", entry.backend));
+            ui::kv("Backend", &entry.backend);
             ui::kv(
                 "Version",
                 entry
@@ -285,6 +286,7 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
             ui::warning(&message);
         }
         report.message = Some(message);
+        sync_android_build_script(project_dir)?;
         return Ok(report);
     }
 
@@ -319,13 +321,13 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
         report.from_version = Some(current_version);
         report.to_version = Some(new_version.to_string());
         ui::success("Android backend updated");
+        sync_android_build_script(project_dir)?;
         return Ok(report);
     }
 
     if let Some(newer) = incompatible {
         let message = format!(
-            "A newer, potentially breaking Android backend (v{}) is available. Update the CLI to evaluate migrating.",
-            newer
+            "A newer, potentially breaking Android backend (v{newer}) is available. Update the CLI to evaluate migrating."
         );
         warn!("{message}");
         report.status = BackendUpdateStatus::Incompatible;
@@ -334,6 +336,7 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
         ui::info("Android backend is already up to date");
     }
 
+    sync_android_build_script(project_dir)?;
     Ok(report)
 }
 
@@ -370,6 +373,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         config.save(project_dir)?;
         report.status = BackendUpdateStatus::Updated;
         report.message = Some("Swift package requirement reset to the dev branch. Re-open Xcode to fetch the latest commit.".to_string());
+        sync_swift_build_script(project_dir)?;
         return Ok(report);
     }
 
@@ -400,6 +404,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         ui::success(
             "Swift backend updated. Open Xcode and resolve package dependencies to download the new version.",
         );
+        sync_swift_build_script(project_dir)?;
         return Ok(report);
     }
 
@@ -414,6 +419,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         ui::info("Swift backend is already up to date");
     }
 
+    sync_swift_build_script(project_dir)?;
     Ok(report)
 }
 
@@ -591,13 +597,13 @@ fn select_compatible_version(
         if candidate.major == current.major {
             if compatible
                 .as_ref()
-                .map_or(true, |best: &Version| candidate > best)
+                .is_none_or(|best: &Version| candidate > best)
             {
                 compatible = Some(candidate.clone());
             }
         } else if incompatible
             .as_ref()
-            .map_or(true, |best: &Version| candidate > best)
+            .is_none_or(|best: &Version| candidate > best)
         {
             incompatible = Some(candidate.clone());
         }
@@ -631,10 +637,7 @@ fn rewrite_swift_requirement(pbxproj: &Path, requirement: SwiftRequirement) -> R
         .find("};")
         .ok_or_else(|| eyre!("Malformed Swift package requirement block"))?;
     let block_end = req_idx + block_relative + 2;
-    let indent_start = contents[..req_idx]
-        .rfind('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
+    let indent_start = contents[..req_idx].rfind('\n').map_or(0, |idx| idx + 1);
     let indent = &contents[indent_start..req_idx];
     let replacement = match requirement {
         SwiftRequirement::Branch(branch) => format!(
@@ -790,8 +793,7 @@ fn ensure_backend_ffi_compat(
             manifest.set_dependency_version("waterui-ffi", &latest.to_string())?;
             manifest.save()?;
             Ok(DependencyUpgradeOutcome::Upgraded(format!(
-                "Updated waterui dependencies to v{}.",
-                latest
+                "Updated waterui dependencies to v{latest}."
             )))
         }
         DependencySpec::Git => Ok(DependencyUpgradeOutcome::Compatible),
@@ -821,13 +823,53 @@ fn latest_cli_waterui_version() -> Result<Version> {
         bail!("WATERUI_VERSION is not set. Upgrade requires a released CLI build.");
     }
     Version::parse(WATERUI_VERSION)
-        .with_context(|| format!("invalid WATERUI_VERSION value '{}'", WATERUI_VERSION))
+        .with_context(|| format!("invalid WATERUI_VERSION value '{WATERUI_VERSION}'"))
 }
 
-fn backend_targets(choice: BackendChoice) -> &'static [&'static str] {
+const fn backend_targets(choice: BackendChoice) -> &'static [&'static str] {
     match choice {
         BackendChoice::Android => &["Android"],
         BackendChoice::Swiftui => &["macOS", "iOS", "iPadOS", "watchOS", "tvOS", "visionOS"],
         BackendChoice::Web => &["Web"],
     }
+}
+
+fn sync_android_build_script(project_dir: &Path) -> Result<()> {
+    write_template_file(
+        "android/build-rust.sh.tpl",
+        &project_dir.join("build-rust.sh"),
+    )
+}
+
+fn sync_swift_build_script(project_dir: &Path) -> Result<()> {
+    write_template_file(
+        "apple/build-rust.sh.tpl",
+        &project_dir.join("apple/build-rust.sh"),
+    )
+}
+
+fn write_template_file(relative_path: &str, destination: &Path) -> Result<()> {
+    let template = create::template::TEMPLATES_DIR
+        .get_file(relative_path)
+        .ok_or_else(|| eyre!("Missing template asset {relative_path}"))?;
+    if let Some(parent) = destination.parent() {
+        util::ensure_directory(parent)?;
+    }
+    fs::write(destination, template.contents())?;
+    mark_executable(destination)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn mark_executable(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn mark_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }

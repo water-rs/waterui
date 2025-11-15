@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
-    fs::{File, OpenOptions},
+    env,
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -14,6 +15,7 @@ use color_eyre::{
 };
 use heck::ToUpperCamelCase;
 use thiserror::Error;
+use tracing::info;
 use which::which;
 
 use crate::{
@@ -197,6 +199,208 @@ pub fn disable_code_signing(cmd: &mut Command) {
     cmd.arg("CODE_SIGNING_ALLOWED=NO")
         .arg("CODE_SIGNING_REQUIRED=NO")
         .arg("CODE_SIGN_IDENTITY=-");
+}
+
+#[derive(Debug)]
+pub struct AppleRustBuildOptions<'a> {
+    pub project_dir: &'a Path,
+    pub crate_name: &'a str,
+    pub release: bool,
+    pub platform_name: Option<String>,
+    pub arch: Option<String>,
+    pub output_dir: Option<PathBuf>,
+    pub enable_sccache: bool,
+    pub enable_mold: bool,
+}
+
+#[derive(Debug)]
+pub struct AppleRustBuildReport {
+    pub target: String,
+    pub profile: String,
+    pub output_library: PathBuf,
+}
+
+pub fn build_apple_static_library(
+    opts: AppleRustBuildOptions<'_>,
+) -> EyreResult<AppleRustBuildReport> {
+    let profile = if opts.release { "release" } else { "debug" };
+    let env_platform = opts
+        .platform_name
+        .clone()
+        .or_else(|| env::var("PLATFORM_NAME").ok());
+    let env_arch = opts.arch.clone().or_else(|| env::var("ARCHS").ok());
+    let arch_token = env_arch
+        .as_deref()
+        .and_then(|value| value.split_whitespace().next())
+        .map_or_else(
+            || host_default_arch().to_string(),
+            std::string::ToString::to_string,
+        );
+    let platform_token = env_platform.as_deref().map(str::to_ascii_lowercase);
+    let platform_ref = platform_token.as_deref();
+    let target = resolve_apple_rust_target(platform_ref, arch_token.as_str());
+    info!(
+        "Building Rust crate '{}' for Apple target {} ({profile})",
+        opts.crate_name, target
+    );
+
+    ensure_rust_target_installed(target);
+
+    let make_command = || {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build")
+            .arg("--package")
+            .arg(opts.crate_name)
+            .arg("--target")
+            .arg(target);
+        if opts.release {
+            cmd.arg("--release");
+        }
+        cmd.current_dir(opts.project_dir);
+        cmd
+    };
+
+    let mut cmd = make_command();
+    let sccache_enabled =
+        util::configure_build_speedups(&mut cmd, opts.enable_sccache, opts.enable_mold);
+    let status = cmd.status().with_context(|| {
+        format!(
+            "failed to compile Rust crate {} for target {}",
+            opts.crate_name, target
+        )
+    })?;
+    if !status.success() {
+        if sccache_enabled {
+            let mut retry_cmd = make_command();
+            util::configure_build_speedups(&mut retry_cmd, false, opts.enable_mold);
+            let retry_status = retry_cmd.status().with_context(|| {
+                format!("failed to re-run cargo build for target {target} without sccache")
+            })?;
+            if !retry_status.success() {
+                bail!(
+                    "cargo build failed for target {} (retry without sccache also failed)",
+                    target
+                );
+            }
+        } else {
+            bail!(
+                "cargo build failed for target {} with status {}",
+                target,
+                status
+            );
+        }
+    }
+
+    let lib_name = opts.crate_name.replace('-', "_");
+    let rust_lib = opts
+        .project_dir
+        .join("target")
+        .join(target)
+        .join(profile)
+        .join(format!("lib{lib_name}.a"));
+    if !rust_lib.exists() {
+        bail!(
+            "Rust static library not found at {}. Did the build succeed?",
+            rust_lib.display()
+        );
+    }
+
+    let output_dir = if let Some(custom) = &opts.output_dir {
+        custom.clone()
+    } else if let Ok(env_dir) = env::var("BUILT_PRODUCTS_DIR") {
+        PathBuf::from(env_dir)
+    } else {
+        opts.project_dir.join("apple/build")
+    };
+    util::ensure_directory(&output_dir)?;
+
+    let output_library = output_dir.join(format!("lib{lib_name}.a"));
+    fs::copy(&rust_lib, &output_library).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            rust_lib.display(),
+            output_library.display()
+        )
+    })?;
+
+    let xcconfig = opts.project_dir.join("apple/rust_build_info.xcconfig");
+    let xcconfig_contents = format!("RUST_LIBRARY_PATH={}\n", rust_lib.display());
+    if let Some(parent) = xcconfig.parent() {
+        util::ensure_directory(parent)?;
+    }
+    fs::write(&xcconfig, xcconfig_contents)?;
+
+    Ok(AppleRustBuildReport {
+        target: target.to_string(),
+        profile: profile.to_string(),
+        output_library,
+    })
+}
+
+fn resolve_apple_rust_target(platform: Option<&str>, arch: &str) -> &'static str {
+    match platform {
+        Some("iphonesimulator") => {
+            if arch == "x86_64" {
+                "x86_64-apple-ios"
+            } else {
+                "aarch64-apple-ios-sim"
+            }
+        }
+        Some("iphoneos") => "aarch64-apple-ios",
+        Some("macosx") => {
+            if arch == "x86_64" {
+                "x86_64-apple-darwin"
+            } else {
+                "aarch64-apple-darwin"
+            }
+        }
+        Some("xrsimulator") => "aarch64-apple-ios-sim",
+        Some("xros") => "aarch64-apple-ios",
+        Some("watchsimulator") => "aarch64-apple-watchos-sim",
+        Some("watchos") => "aarch64-apple-watchos",
+        Some("appletvsimulator") => "aarch64-apple-tvos",
+        Some("appletvos") => "aarch64-apple-tvos",
+        _ => default_host_target(),
+    }
+}
+
+const fn default_host_target() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64-apple-darwin"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "aarch64-apple-darwin"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "aarch64-apple-darwin"
+    }
+}
+
+const fn host_default_arch() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "arm64"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "arm64"
+    }
+}
+
+fn ensure_rust_target_installed(target: &str) {
+    if which("rustup").is_err() {
+        return;
+    }
+    let _ = Command::new("rustup")
+        .args(["target", "add", target])
+        .status();
 }
 
 /// Run `xcodebuild` while streaming progress to a log file.

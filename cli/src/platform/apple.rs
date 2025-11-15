@@ -64,12 +64,12 @@ impl ApplePlatform {
     }
 
     #[must_use]
-    pub(crate) fn swift_config(&self) -> &Swift {
+    pub(crate) const fn swift_config(&self) -> &Swift {
         &self.swift
     }
 
     #[must_use]
-    pub(crate) fn target(&self) -> &AppleTarget {
+    pub(crate) const fn target(&self) -> &AppleTarget {
         &self.target
     }
 

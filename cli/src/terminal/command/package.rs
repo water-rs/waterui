@@ -119,7 +119,8 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
                         "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend.",
                     )
                 })?;
-                let platform_impl = AndroidPlatform::new(android_config, args.skip_native, false);
+                let platform_impl =
+                    AndroidPlatform::new(android_config, args.skip_native, false, true, false);
                 let artifact = project
                     .package(&platform_impl, args.release)
                     .map_err(|err| eyre!(err))?;

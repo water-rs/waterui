@@ -21,9 +21,9 @@ pub mod swift;
 pub mod template;
 pub mod web;
 
-pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
+pub const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
 #[allow(dead_code)]
-pub(crate) const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
+pub const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
 
 #[derive(Args, Debug, Default)]
 pub struct CreateArgs {
