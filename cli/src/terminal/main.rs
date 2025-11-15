@@ -133,6 +133,12 @@ fn main() -> Result<()> {
                     }
                 })?;
             }
+            BackendCommands::List(args) => {
+                let report = command::backend::list(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!("Configured backends: {}", report.entries.len());
+                })?;
+            }
         },
         Commands::Clean(mut args) => execute_clean(&mut args, format)?,
         Commands::Doctor(args) => {
