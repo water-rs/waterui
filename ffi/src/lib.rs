@@ -33,18 +33,82 @@ mod ty;
 pub mod views;
 use core::ptr::null_mut;
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, string::String};
 use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
 
 use crate::array::WuiArray;
+
+#[cfg(target_os = "android")]
+mod panic_hook {
+    use alloc::string::String;
+    use core::ffi::c_char;
+    use std::{backtrace::Backtrace, ffi::CString, sync::Once};
+
+    const ANDROID_LOG_ERROR: i32 = 6;
+    const TAG: &[u8] = b"WaterUI\0";
+    static INSTALL_HOOK: Once = Once::new();
+
+    extern "C" {
+        fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+    }
+
+    fn log_line(message: &str) {
+        if let Ok(cstr) = CString::new(message) {
+            unsafe {
+                __android_log_write(
+                    ANDROID_LOG_ERROR,
+                    TAG.as_ptr() as *const c_char,
+                    cstr.as_ptr(),
+                );
+            }
+        }
+    }
+
+    pub(crate) fn install() {
+        INSTALL_HOOK.call_once(|| {
+            std::panic::set_hook(Box::new(|info| {
+                let mut summary = String::from("Rust panic");
+                if let Some(location) = info.location() {
+                    use core::fmt::Write;
+                    let _ = write!(
+                        &mut summary,
+                        " at {}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    );
+                }
+                if let Some(message) = info.payload().downcast_ref::<&str>() {
+                    summary.push_str(": ");
+                    summary.push_str(message);
+                } else if let Some(message) = info.payload().downcast_ref::<String>() {
+                    summary.push_str(": ");
+                    summary.push_str(message);
+                }
+                log_line(&summary);
+                log_line("Backtrace:");
+                let backtrace = Backtrace::force_capture().to_string();
+                for line in backtrace.lines() {
+                    log_line(line);
+                }
+            }));
+        });
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+mod panic_hook {
+    pub(crate) fn install() {}
+}
 #[macro_export]
 macro_rules! export {
     () => {
         /// Initializes a new WaterUI environment
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
+            $crate::panic_hook::install();
             $crate::__init_executor();
             let env: waterui::Environment = init();
             $crate::IntoFFI::into_ffi(env)

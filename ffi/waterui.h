@@ -1,3 +1,8 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -275,30 +280,6 @@ typedef struct Computed_f64 Computed_f64;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_i32 Computed_i32;
-
-/**
- * An `Environment` stores a map of types to values.
- *
- * Each type can have at most one value in the environment. The environment
- * is used to pass contextual information from parent views to child views.
- *
- * # Examples
- *
- * ```
- * use waterui_core::Environment;
- *
- * let mut env = Environment::new();
- * env.insert(String::from("hello"));
- *
- * // Get the value back
- * assert_eq!(env.get::<String>(), Some(&String::from("hello")));
- *
- * // Remove the value
- * env.remove::<String>();
- * assert_eq!(env.get::<String>(), None);
- * ```
- */
-typedef struct Environment Environment;
 
 typedef struct WuiAction WuiAction;
 
@@ -918,9 +899,7 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  * initialized instances and that they remain valid for the duration of this function call.
  * The `view` pointer will be consumed and should not be used after this call.
  */
-struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct Environment *env);
-
-struct WuiAnyView *waterui_view_body_with_env(struct WuiAnyView *view, struct WuiEnv *env);
+struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env);
 
 /**
  * Gets the id of a view
@@ -2111,3 +2090,7 @@ void waterui_drop_computed_views(struct WuiComputed_AnyViews_AnyView *computed);
 WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
+
+#ifdef __cplusplus
+}
+#endif
