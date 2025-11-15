@@ -61,7 +61,13 @@ kotlin {
 }
 
 dependencies {
-    implementation("dev.waterui.android:runtime")
+    // Use GitHub dependency in dev mode, local backend otherwise
+    if (__USE_DEV_BACKEND__) {
+        // JitPack multi-module format: com.github.USER:REPO-SUBMODULE:BRANCH-SNAPSHOT
+        implementation("com.github.water-rs:android-backend-runtime:dev-SNAPSHOT")
+    } else {
+        implementation("dev.waterui.android:runtime")
+    }
 
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)

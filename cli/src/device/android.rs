@@ -1,6 +1,7 @@
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, thread, time::Duration};
 
 use color_eyre::eyre::{Context, Report, Result, bail};
+use console::style;
 
 use crate::{
     backend::android::{
@@ -8,9 +9,16 @@ use crate::{
         find_android_tool, sanitize_package_name, wait_for_android_device,
     },
     device::{Device, DeviceKind},
+    output,
     platform::android::AndroidPlatform,
     project::{Project, RunOptions},
 };
+use tracing::warn;
+
+const FALLBACK_LOG_LINE_LIMIT: usize = 200;
+const LOGCAT_CAPTURE_DELAY: Duration = Duration::from_secs(2);
+const LOGCAT_CAPTURE_ATTEMPTS: usize = 3;
+const LOGCAT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Represents the target Android device or emulator selected by the user.
 #[derive(Clone, Debug)]
@@ -74,6 +82,81 @@ impl AndroidDevice {
             .context("failed to launch Android emulator")?;
         Ok(())
     }
+
+    fn clear_logcat_buffer(&self) {
+        let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
+        cmd.args(["logcat", "-c"]);
+        match cmd.status() {
+            Ok(status) => {
+                if !status.success() {
+                    warn!("Failed to clear Android logcat buffer: {status}");
+                }
+            }
+            Err(err) => warn!("Unable to clear Android logcat buffer: {err:?}"),
+        }
+    }
+
+    fn capture_recent_logs(&self) -> Result<Option<String>> {
+        let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
+        cmd.args([
+            "logcat", "-b", "crash", "-b", "main", "-b", "system", "-d", "*:V",
+        ]);
+        let output = cmd
+            .output()
+            .context("failed to capture Android logcat output")?;
+        if !output.status.success() {
+            bail!("adb logcat exited with {}", output.status);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let trimmed = stdout.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        let limited = limit_log_lines(trimmed, FALLBACK_LOG_LINE_LIMIT);
+        Ok(Some(limited))
+    }
+
+    fn collect_log_capture(&self) -> Result<Option<String>> {
+        for attempt in 0..LOGCAT_CAPTURE_ATTEMPTS {
+            if let Some(capture) = self.capture_recent_logs()? {
+                return Ok(Some(capture));
+            }
+            if attempt + 1 < LOGCAT_CAPTURE_ATTEMPTS {
+                thread::sleep(LOGCAT_RETRY_DELAY);
+            }
+        }
+        Ok(None)
+    }
+
+    fn print_log_capture(&self, package: &str) -> Result<()> {
+        if output::global_output_format().is_json() {
+            return Ok(());
+        }
+
+        thread::sleep(LOGCAT_CAPTURE_DELAY);
+
+        if let Some(capture) = self.collect_log_capture()? {
+            let header = style(format!("Android warnings/errors ({package})"))
+                .yellow()
+                .bold();
+            let footer = style("End of Android logs").yellow();
+            println!();
+            println!("{header}");
+            println!("{capture}");
+            println!("{footer}");
+            println!();
+        } else {
+            println!(
+                "{} {}",
+                style("•").blue(),
+                format!(
+                    "Unable to capture recent Android warnings/errors for {package}. Try `adb logcat` for more details."
+                )
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Device for AndroidDevice {
@@ -97,6 +180,11 @@ impl Device for AndroidDevice {
             .to_str()
             .ok_or_else(|| Report::msg("APK path is not valid UTF-8"))?;
 
+        let capture_logs = !output::global_output_format().is_json();
+        if capture_logs {
+            self.clear_logcat_buffer();
+        }
+
         let mut install_cmd = adb_command(&self.adb_path, self.selection_identifier());
         install_cmd.args(["install", "-r", artifact_str]);
         let status = install_cmd.status().context("failed to install APK")?;
@@ -113,10 +201,25 @@ impl Device for AndroidDevice {
             bail!("Failed to launch Android activity");
         }
 
+        if capture_logs {
+            thread::sleep(LOGCAT_CAPTURE_DELAY);
+            if let Err(err) = self.print_log_capture(&sanitized) {
+                warn!("Unable to capture Android warnings/errors: {err:?}");
+            }
+        }
+
         Ok(())
     }
 
     fn platform(&self) -> &Self::Platform {
         &self.platform
     }
+}
+
+fn limit_log_lines(contents: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = contents.lines().collect();
+    if lines.len() <= max_lines {
+        return contents.to_string();
+    }
+    lines[lines.len() - max_lines..].join("\n")
 }
