@@ -9,7 +9,7 @@ use tracing::warn;
 use crate::util;
 use serde::Serialize;
 use waterui_cli::{
-    WATERUI_SWIFT_BACKEND_VERSION, WATERUI_VERSION, output,
+    WATERUI_ANDROID_BACKEND_VERSION, WATERUI_SWIFT_BACKEND_VERSION, WATERUI_VERSION, output,
     project::{Android, Config, Package, Swift, Web},
 };
 
@@ -19,9 +19,9 @@ pub mod swift;
 pub mod template;
 pub mod web;
 
-const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
+pub(crate) const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
 #[allow(dead_code)]
-const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
+pub(crate) const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
 
 #[derive(Args, Debug, Default)]
 pub struct CreateArgs {
@@ -261,6 +261,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         bundle_identifier: bundle_identifier.clone(),
         author,
     });
+    config.dev_dependencies = args.dev;
 
     let mut web_enabled = false;
     for backend in &selected_backends {
@@ -269,6 +270,8 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                 web::create_web_assets(&project_dir, &display_name)?;
                 config.backends.web = Some(Web {
                     project_path: "web".to_string(),
+                    version: None,
+                    dev: args.dev,
                 });
                 web_enabled = true;
             }
@@ -282,6 +285,12 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                 )?;
                 config.backends.android = Some(Android {
                     project_path: "android".to_string(),
+                    version: if args.dev || WATERUI_ANDROID_BACKEND_VERSION.is_empty() {
+                        None
+                    } else {
+                        Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
+                    },
+                    dev: args.dev,
                 });
             }
             BackendChoice::Swiftui => {
@@ -293,10 +302,19 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     &bundle_identifier,
                     &deps.swift,
                 )?;
+                let (version, branch) = match deps.swift {
+                    SwiftDependency::Git {
+                        ref version,
+                        ref branch,
+                    } => (version.clone(), branch.clone()),
+                };
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
                     scheme: crate_name.clone(),
                     project_file: Some(format!("{app_name}.xcodeproj")),
+                    version,
+                    branch,
+                    dev: args.dev,
                 });
             }
         }
