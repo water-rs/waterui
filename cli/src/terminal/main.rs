@@ -9,8 +9,8 @@ mod util;
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
 use command::{
-    BackendCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs, DoctorArgs,
-    DoctorReport, PackageArgs, RunArgs,
+    BackendCommands, BuildCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs,
+    DoctorArgs, DoctorReport, PackageArgs, RunArgs,
 };
 use dialoguer::Confirm;
 use tracing::{info, warn};
@@ -33,6 +33,11 @@ enum Commands {
     Create(CreateArgs),
     /// Run a `WaterUI` project
     Run(RunArgs),
+    /// Build native artifacts without launching them
+    Build {
+        #[command(subcommand)]
+        command: BuildCommands,
+    },
     /// Package project artifacts
     Package(PackageArgs),
     /// Manage project backends
@@ -75,6 +80,17 @@ fn main() -> Result<()> {
         }
         Commands::Run(args) => {
             command::run::run(args)?;
+        }
+        Commands::Build { command } => {
+            let report = command::build::run(command)?;
+            emit_or_print(&report, format, |report| {
+                info!(
+                    "Built {} artifact(s) for {} ({})",
+                    report.artifacts.len(),
+                    report.platform,
+                    report.profile
+                );
+            })?;
         }
         Commands::Package(args) => {
             let report = command::package::run(args)?;

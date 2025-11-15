@@ -14,10 +14,10 @@ use super::template;
 use crate::util;
 use waterui_cli::backend::android;
 
-pub(crate) const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
-pub(crate) const ANDROID_BACKEND_BRANCH: &str = "dev";
-pub(crate) const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
-pub(crate) const ANDROID_BACKEND_TAG_PREFIX: &str = "android-backend-v";
+pub const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
+pub const ANDROID_BACKEND_BRANCH: &str = "dev";
+pub const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
+pub const ANDROID_BACKEND_TAG_PREFIX: &str = "android-backend-v";
 const ANDROID_DEV_COMMIT_FILE: &str = ".waterui-dev-commit";
 
 /// Generate the Android Gradle project and associated template files.
@@ -244,7 +244,7 @@ fn should_use_remote_dev_backend() -> bool {
     )
 }
 
-pub(crate) fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
+pub fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
     let destination = project_dir.join("backends/android");
     if destination.exists() {
         fs::remove_dir_all(&destination).with_context(|| {
@@ -262,7 +262,7 @@ pub(crate) fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<
         );
     }
 
-    copy_dir_filtered(&source, &destination)?;
+    copy_dir_filtered(source, &destination)?;
 
     #[cfg(unix)]
     {
@@ -277,7 +277,7 @@ pub(crate) fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<
     Ok(())
 }
 
-pub(crate) fn configure_android_local_properties(project_dir: &Path) -> Result<()> {
+pub fn configure_android_local_properties(project_dir: &Path) -> Result<()> {
     let backend_dir = project_dir.join("backends/android");
     if !backend_dir.exists() {
         return Ok(());
@@ -311,7 +311,7 @@ fn escape_local_property_path(path: &Path) -> String {
     }
 }
 
-pub(crate) fn ensure_dev_android_backend_checkout() -> Result<PathBuf> {
+pub fn ensure_dev_android_backend_checkout() -> Result<PathBuf> {
     if let Ok(path) = env::var(ANDROID_BACKEND_OVERRIDE_ENV) {
         let path = PathBuf::from(path);
         if path.exists() {
@@ -434,7 +434,7 @@ fn update_dev_backend_repo(repo_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn ensure_android_backend_release(version: &str) -> Result<PathBuf> {
+pub fn ensure_android_backend_release(version: &str) -> Result<PathBuf> {
     util::require_tool(
         "git",
         "Install Git to download Android backend releases when using stable projects.",
@@ -520,7 +520,7 @@ fn dev_commit_path(project_dir: &Path) -> PathBuf {
         .join(ANDROID_DEV_COMMIT_FILE)
 }
 
-pub(crate) fn read_android_dev_commit(project_dir: &Path) -> Result<Option<String>> {
+pub fn read_android_dev_commit(project_dir: &Path) -> Result<Option<String>> {
     let path = dev_commit_path(project_dir);
     if !path.exists() {
         return Ok(None);
@@ -539,7 +539,7 @@ pub(crate) fn read_android_dev_commit(project_dir: &Path) -> Result<Option<Strin
     }
 }
 
-pub(crate) fn write_android_dev_commit(project_dir: &Path, commit: &str) -> Result<()> {
+pub fn write_android_dev_commit(project_dir: &Path, commit: &str) -> Result<()> {
     let path = dev_commit_path(project_dir);
     if let Some(parent) = path.parent() {
         util::ensure_directory(parent)?;
@@ -553,7 +553,7 @@ pub(crate) fn write_android_dev_commit(project_dir: &Path, commit: &str) -> Resu
     Ok(())
 }
 
-pub(crate) fn clear_android_dev_commit(project_dir: &Path) -> Result<()> {
+pub fn clear_android_dev_commit(project_dir: &Path) -> Result<()> {
     let path = dev_commit_path(project_dir);
     if path.exists() {
         fs::remove_file(&path).with_context(|| {
@@ -566,7 +566,7 @@ pub(crate) fn clear_android_dev_commit(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn git_head_commit(repo_dir: &Path) -> Option<String> {
+pub fn git_head_commit(repo_dir: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_dir)
