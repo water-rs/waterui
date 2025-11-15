@@ -31,6 +31,8 @@ pub mod id;
 pub mod reactive;
 mod ty;
 pub mod views;
+#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
+use core::ffi::CStr;
 use core::ptr::null_mut;
 
 use alloc::boxed::Box;
@@ -197,6 +199,44 @@ impl<T: IntoNullableFFI> IntoFFI for T {
 pub trait InvalidValue {
     fn invalid() -> Self;
 }
+
+#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_configure_hot_reload_endpoint(host: *const core::ffi::c_char, port: u16) {
+    if host.is_null() {
+        return;
+    }
+
+    // SAFETY: host is expected to be a valid null-terminated string supplied by the caller.
+    let host = unsafe { CStr::from_ptr(host) };
+    if let Ok(value) = host.to_str() {
+        waterui::hot_reload::configure_hot_reload_endpoint(value.to_string(), port);
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", not(waterui_enable_hot_reload)))]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_configure_hot_reload_endpoint(
+    _host: *const core::ffi::c_char,
+    _port: u16,
+) {
+}
+
+#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_configure_hot_reload_directory(path: *const core::ffi::c_char) {
+    if path.is_null() {
+        return;
+    }
+    let path = unsafe { CStr::from_ptr(path) };
+    if let Ok(value) = path.to_str() {
+        waterui::hot_reload::configure_hot_reload_directory(value.to_string());
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", not(waterui_enable_hot_reload)))]
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_configure_hot_reload_directory(_path: *const core::ffi::c_char) {}
 
 /// Defines a marker trait for types that should be treated as opaque when crossing FFI boundaries.
 ///
