@@ -14,6 +14,7 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use waterui_cli::{
+    backend::android::configure_rust_android_linker_env,
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
         DeviceKind, MacosDevice,
@@ -66,6 +67,8 @@ enum PlatformArg {
     #[value(alias = "vision")]
     Visionos,
     Android,
+    #[value(alias = "terminal")]
+    Tui,
 }
 
 impl From<PlatformArg> for PlatformKind {
@@ -79,6 +82,7 @@ impl From<PlatformArg> for PlatformKind {
             PlatformArg::Tvos => Self::Tvos,
             PlatformArg::Visionos => Self::Visionos,
             PlatformArg::Android => Self::Android,
+            PlatformArg::Tui => Self::Tui,
         }
     }
 }
@@ -210,6 +214,12 @@ fn prompt_for_backend(config: &Config) -> Result<BackendChoice> {
         options.push((
             BackendChoice::Platform(Platform::Android),
             "Android".to_string(),
+        ));
+    }
+    if config.backends.tui.is_some() {
+        options.push((
+            BackendChoice::Platform(Platform::Tui),
+            "Terminal (TUI)".to_string(),
         ));
     }
 
@@ -349,10 +359,22 @@ fn toolchain_targets_for_platform(platform: Platform) -> Vec<CheckTarget> {
 }
 
 const fn platform_supports_native_hot_reload(platform: Platform) -> bool {
-    platform.is_apple_platform()
+    platform.is_apple_platform() || matches!(platform, Platform::Android | Platform::Tui)
 }
 
-fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) -> PathBuf {
+fn hot_reload_target(platform: Platform) -> Option<String> {
+    match platform {
+        Platform::Android => Some("aarch64-linux-android".to_string()),
+        _ => None,
+    }
+}
+
+fn hot_reload_library_path(
+    project_dir: &Path,
+    crate_name: &str,
+    release: bool,
+    target_triple: Option<&str>,
+) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
     let normalized = crate_name.replace('-', "_");
     let filename = if cfg!(target_os = "windows") {
@@ -362,7 +384,11 @@ fn hot_reload_library_path(project_dir: &Path, crate_name: &str, release: bool) 
     } else {
         format!("lib{normalized}.so")
     };
-    project_dir.join("target").join(profile).join(filename)
+    let mut path = project_dir.join("target");
+    if let Some(target) = target_triple {
+        path = path.join(target);
+    }
+    path.join(profile).join(filename)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -377,6 +403,7 @@ fn run_platform(
     mold_requested: bool,
 ) -> Result<()> {
     let project_dir = project.root();
+    let hot_reload_target = hot_reload_target(platform);
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
     {
@@ -399,6 +426,11 @@ fn run_platform(
 
     let hot_reload_requested =
         hot_reload_requested && platform_supports_native_hot_reload(platform);
+    if platform == Platform::Android && hot_reload_requested {
+        if let Some(target) = hot_reload_target.as_deref() {
+            configure_rust_android_linker_env(&[target])?;
+        }
+    }
 
     let mut server = None;
     let mut hot_reload_enabled = false;
@@ -435,10 +467,16 @@ Use --no-hot-reload to skip this step."
             hot_reload_port,
             enable_sccache,
             mold_requested,
+            hot_reload_target.as_deref(),
         )?;
 
         if let Some(server_ref) = &server {
-            let library_path = hot_reload_library_path(project_dir, &config.package.name, release);
+            let library_path = hot_reload_library_path(
+                project_dir,
+                &config.package.name,
+                release,
+                hot_reload_target.as_deref(),
+            );
             if library_path.exists() {
                 server_ref.notify_native_reload(library_path);
             }
@@ -463,9 +501,14 @@ Use --no-hot-reload to skip this step."
                     hot_reload_port,
                     enable_sccache,
                     mold_requested,
+                    hot_reload_target.as_deref(),
                 )?;
-                let library_path =
-                    hot_reload_library_path(&project_dir_buf, &package_name, release);
+                let library_path = hot_reload_library_path(
+                    &project_dir_buf,
+                    &package_name,
+                    release,
+                    hot_reload_target.as_deref(),
+                );
                 server.notify_native_reload(library_path);
                 Ok(())
             });
@@ -681,6 +724,7 @@ fn run_cargo_build(
     hot_reload_port: Option<u16>,
     enable_sccache: bool,
     mold_requested: bool,
+    hot_reload_target: Option<&str>,
 ) -> Result<()> {
     if !output::global_output_format().is_json() {
         ui::step("Compiling Rust library...");
@@ -688,6 +732,9 @@ fn run_cargo_build(
     let make_command = || {
         let mut cmd = Command::new("cargo");
         cmd.arg("build").arg("--package").arg(package);
+        if let Some(target) = hot_reload_target {
+            cmd.arg("--target").arg(target);
+        }
         if release {
             cmd.arg("--release");
         }
@@ -913,7 +960,23 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
         return Ok(Vec::new());
     }
 
-    let mut candidates: Vec<DeviceInfo> = device::list_devices()?
+    let mut spinner = ui::spinner("Scanning Apple devices...");
+    let devices = match device::list_devices() {
+        Ok(list) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            list
+        }
+        Err(err) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            return Err(err);
+        }
+    };
+
+    let mut candidates: Vec<DeviceInfo> = devices
         .into_iter()
         .filter(|d| d.kind == DeviceKind::Simulator)
         .filter(|d| d.raw_platform.as_deref() == Some(raw_platform))
