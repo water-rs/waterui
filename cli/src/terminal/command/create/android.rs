@@ -18,6 +18,7 @@ pub(crate) const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/andro
 pub(crate) const ANDROID_BACKEND_BRANCH: &str = "dev";
 pub(crate) const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
 pub(crate) const ANDROID_BACKEND_TAG_PREFIX: &str = "android-backend-v";
+const ANDROID_DEV_COMMIT_FILE: &str = ".waterui-dev-commit";
 
 /// Generate the Android Gradle project and associated template files.
 ///
@@ -54,6 +55,15 @@ pub fn create_android_project(
         };
         copy_android_backend(project_dir, &backend_source)?;
         configure_android_local_properties(project_dir)?;
+        if dev_mode {
+            if let Some(commit) = git_head_commit(&backend_source) {
+                write_android_dev_commit(project_dir, &commit)?;
+            } else {
+                clear_android_dev_commit(project_dir)?;
+            }
+        } else {
+            clear_android_dev_commit(project_dir)?;
+        }
     }
 
     let android_package = android::sanitize_package_name(bundle_identifier);
@@ -169,13 +179,6 @@ pub fn create_android_project(
             .get_file("android/app/src/main/java/MainActivity.kt.tpl")
             .unwrap(),
         &java_dir.join("MainActivity.kt"),
-        &context,
-    )?;
-    template::process_template_file(
-        templates
-            .get_file("android/app/src/main/java/WaterUIApplication.kt.tpl")
-            .unwrap(),
-        &java_dir.join("WaterUIApplication.kt"),
         &context,
     )?;
 
@@ -508,4 +511,72 @@ fn should_skip(name: &str) -> bool {
             | ".idea"
             | ".git"
     )
+}
+
+fn dev_commit_path(project_dir: &Path) -> PathBuf {
+    project_dir
+        .join("backends")
+        .join("android")
+        .join(ANDROID_DEV_COMMIT_FILE)
+}
+
+pub(crate) fn read_android_dev_commit(project_dir: &Path) -> Result<Option<String>> {
+    let path = dev_commit_path(project_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read Android dev commit metadata at {}",
+            path.display()
+        )
+    })?;
+    let commit = contents.trim().to_string();
+    if commit.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(commit))
+    }
+}
+
+pub(crate) fn write_android_dev_commit(project_dir: &Path, commit: &str) -> Result<()> {
+    let path = dev_commit_path(project_dir);
+    if let Some(parent) = path.parent() {
+        util::ensure_directory(parent)?;
+    }
+    fs::write(&path, commit.trim()).with_context(|| {
+        format!(
+            "failed to record Android dev backend commit at {}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn clear_android_dev_commit(project_dir: &Path) -> Result<()> {
+    let path = dev_commit_path(project_dir);
+    if path.exists() {
+        fs::remove_file(&path).with_context(|| {
+            format!(
+                "failed to remove Android dev commit metadata at {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn git_head_commit(repo_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if hash.is_empty() { None } else { Some(hash) }
 }
