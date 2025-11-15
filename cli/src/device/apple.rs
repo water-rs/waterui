@@ -135,18 +135,12 @@ impl Device for AppleSimulatorDevice {
         let mut launch_cmd = Command::new("xcrun");
         launch_cmd.args(["simctl", "launch", "--terminate-running-process"]);
         if options.hot_reload.enabled {
-            launch_cmd.arg("--setenv");
-            launch_cmd.arg("WATERUI_DISABLE_HOT_RELOAD");
-            launch_cmd.arg("0");
+            launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "0");
             if let Some(port) = options.hot_reload.port {
-                launch_cmd.arg("--setenv");
-                launch_cmd.arg("WATERUI_HOT_RELOAD_PORT");
-                launch_cmd.arg(port.to_string());
+                launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT", port.to_string());
             }
         } else {
-            launch_cmd.arg("--setenv");
-            launch_cmd.arg("WATERUI_DISABLE_HOT_RELOAD");
-            launch_cmd.arg("1");
+            launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "1");
         }
         launch_cmd.args([device_name, bundle_id]);
         let status = launch_cmd.status().context("failed to launch app")?;
