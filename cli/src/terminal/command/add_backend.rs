@@ -105,10 +105,10 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
         }
         BackendChoice::Swiftui => {
             if config.backends.swift.is_some() {
-                bail!("SwiftUI backend already exists in this project.");
+                bail!("Apple backend already exists in this project.");
             }
             if !is_json {
-                ui::step("Adding SwiftUI backend...");
+                ui::step("Adding Apple backend...");
             }
             let app_name = {
                 let generated = config.package.display_name.to_upper_camel_case();
@@ -126,11 +126,12 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 &config.package.bundle_identifier,
                 &deps.swift,
             )?;
-            let (version, branch) = match deps.swift {
+            let (version, branch, revision) = match deps.swift {
                 create::SwiftDependency::Git {
                     ref version,
                     ref branch,
-                } => (version.clone(), branch.clone()),
+                    ref revision,
+                } => (version.clone(), branch.clone(), revision.clone()),
             };
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
@@ -138,11 +139,12 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 project_file: Some(format!("{app_name}.xcodeproj")),
                 version,
                 branch,
+                revision,
                 dev: args.dev,
                 ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
-                ui::success("SwiftUI backend added successfully");
+                ui::success("Apple backend added successfully");
             }
         }
     }

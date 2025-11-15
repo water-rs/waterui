@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use color_eyre::eyre::Result;
 
-use super::{SWIFT_BACKEND_GIT_URL, SwiftDependency, template};
+use super::{SwiftDependency, swift_backend_repo_url, template};
 
 /// Generate the Swift/Xcode portion of a `WaterUI` project.
 ///
@@ -33,21 +33,26 @@ pub fn create_xcode_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
 
-    let SwiftDependency::Git { version, branch } = swift_dependency;
+    let SwiftDependency::Git {
+        version,
+        branch,
+        revision,
+    } = swift_dependency;
 
-    let requirement = version.as_ref().map_or_else(
-        || {
-            let branch = branch.as_deref().unwrap_or("main");
-            format!(
-                "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
-            )
-        },
-        |version| {
-            format!(
-                "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
-            )
-        },
-    );
+    let requirement = if let Some(version) = version.as_ref() {
+        format!(
+            "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
+        )
+    } else if let Some(revision) = revision.as_ref() {
+        format!(
+            "requirement = {{\n\t\t\t\tkind = revision;\n\t\t\t\trevision = \"{revision}\";\n\t\t\t}};"
+        )
+    } else {
+        let branch = branch.as_deref().unwrap_or("main");
+        format!(
+            "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
+        )
+    };
 
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_ENTRY",
@@ -55,8 +60,7 @@ pub fn create_xcode_project(
             .to_string(),
     );
 
-    let repo_url = std::env::var("WATERUI_SWIFT_BACKEND_URL")
-        .unwrap_or_else(|_| SWIFT_BACKEND_GIT_URL.to_string());
+    let repo_url = swift_backend_repo_url();
 
     context.insert(
         "SWIFT_PACKAGE_REFERENCE_SECTION",

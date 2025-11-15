@@ -149,7 +149,11 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
         entries.push(BackendListEntry {
             backend: BackendChoice::Swiftui.label().to_string(),
             version: if swift.dev {
-                swift.branch.clone().or_else(|| Some("dev".to_string()))
+                swift
+                    .revision
+                    .clone()
+                    .or_else(|| swift.branch.clone())
+                    .or_else(|| Some("dev".to_string()))
             } else {
                 swift.version.clone()
             },
@@ -345,7 +349,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         .backends
         .swift
         .as_mut()
-        .ok_or_else(|| eyre!("SwiftUI backend is not configured for this project"))?;
+        .ok_or_else(|| eyre!("Apple backend is not configured for this project"))?;
 
     let mut report =
         BackendUpdateReport::new(BackendChoice::Swiftui, BackendUpdateStatus::UpToDate);
@@ -359,41 +363,83 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
     let use_dev_backend = swift_cfg.dev || config.dev_dependencies;
 
     if use_dev_backend {
-        ui::warning("Updating Swift dev backend. This may include breaking API changes.");
-        rewrite_swift_requirement(
-            &pbxproj,
-            SwiftRequirement::Branch(
-                swift_cfg
-                    .branch
-                    .clone()
-                    .unwrap_or_else(|| "dev".to_string()),
-            ),
-        )?;
+        ui::warning("Updating Apple dev backend. This may include breaking API changes.");
+        let branch = swift_cfg
+            .branch
+            .clone()
+            .unwrap_or_else(|| "dev".to_string());
+        let previous_revision = swift_cfg.revision.clone();
+        let revision = create::fetch_swift_branch_head(&branch).with_context(|| {
+            format!("failed to resolve latest Apple backend commit for branch '{branch}'")
+        })?;
+        rewrite_swift_requirement(&pbxproj, SwiftRequirement::Revision(revision.clone()))?;
         swift_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
+        swift_cfg.version = None;
+        swift_cfg.revision = Some(revision.clone());
+        swift_cfg.dev = true;
+        if swift_cfg.branch.is_none() {
+            swift_cfg.branch = Some(branch);
+        }
         config.save(project_dir)?;
-        report.status = BackendUpdateStatus::Updated;
-        report.message = Some("Swift package requirement reset to the dev branch. Re-open Xcode to fetch the latest commit.".to_string());
+        report.from_version = previous_revision.clone();
+        report.to_version = Some(revision.clone());
+        let (message, changed) = match previous_revision {
+            Some(prev) if prev == revision => (
+                format!(
+                    "Apple dev backend already pinned to commit {}. No changes applied.",
+                    short_commit(&revision)
+                ),
+                false,
+            ),
+            Some(prev) => (
+                format!(
+                    "Apple dev backend updated ({} → {}).",
+                    short_commit(&prev),
+                    short_commit(&revision)
+                ),
+                true,
+            ),
+            None => (
+                format!(
+                    "Apple dev backend pinned to commit {}.",
+                    short_commit(&revision)
+                ),
+                true,
+            ),
+        };
+        report.status = if changed {
+            BackendUpdateStatus::Updated
+        } else {
+            BackendUpdateStatus::UpToDate
+        };
+        report.message = Some(message.clone());
+        if changed {
+            ui::success(&message);
+        } else {
+            ui::info(&message);
+        }
         sync_swift_build_script(project_dir)?;
         return Ok(report);
     }
 
     let current_version = swift_cfg.version.clone().ok_or_else(|| {
-        eyre!("Swift backend version is unknown. Re-create the backend to refresh metadata.")
+        eyre!("Apple backend version is unknown. Re-create the backend to refresh metadata.")
     })?;
     let current_semver = Version::parse(&current_version)
-        .with_context(|| format!("failed to parse Swift backend version {current_version}"))?;
+        .with_context(|| format!("failed to parse Apple backend version {current_version}"))?;
 
     let available = fetch_repo_versions(SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX)?;
     let (candidate, incompatible) = select_compatible_version(&current_semver, &available);
 
     if let Some(new_version) = candidate {
         ui::step(format!(
-            "Updating Swift backend from v{current_semver} to v{new_version}"
+            "Updating Apple backend from v{current_semver} to v{new_version}"
         ));
         rewrite_swift_requirement(&pbxproj, SwiftRequirement::Release(new_version.to_string()))?;
         swift_cfg.version = Some(new_version.to_string());
         swift_cfg.dev = false;
         swift_cfg.branch = None;
+        swift_cfg.revision = None;
         if swift_cfg.ffi_version.is_none() {
             swift_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
         }
@@ -402,7 +448,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         report.from_version = Some(current_version);
         report.to_version = Some(new_version.to_string());
         ui::success(
-            "Swift backend updated. Open Xcode and resolve package dependencies to download the new version.",
+            "Apple backend updated. Open Xcode and resolve package dependencies to download the new version.",
         );
         sync_swift_build_script(project_dir)?;
         return Ok(report);
@@ -410,13 +456,13 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
 
     if let Some(newer) = incompatible {
         let message = format!(
-            "A newer Swift backend major version (v{newer}) is available but may be incompatible. Update the CLI or review release notes before upgrading."
+            "A newer Apple backend major version (v{newer}) is available but may be incompatible. Update the CLI or review release notes before upgrading."
         );
         warn!("{message}");
         report.status = BackendUpdateStatus::Incompatible;
         report.message = Some(message);
     } else {
-        ui::info("Swift backend is already up to date");
+        ui::info("Apple backend is already up to date");
     }
 
     sync_swift_build_script(project_dir)?;
@@ -486,7 +532,7 @@ fn upgrade_swift_backend(
         .backends
         .swift
         .as_mut()
-        .ok_or_else(|| eyre!("SwiftUI backend is not configured for this project"))?;
+        .ok_or_else(|| eyre!("Apple backend is not configured for this project"))?;
 
     if swift_cfg.dev || config.dev_dependencies {
         return update_swift_backend(project_dir, config);
@@ -496,7 +542,7 @@ fn upgrade_swift_backend(
     let latest = available
         .last()
         .cloned()
-        .ok_or_else(|| eyre!("No Swift backend releases available"))?;
+        .ok_or_else(|| eyre!("No Apple backend releases available"))?;
 
     let required_ffi = parse_ffi_requirement(swift_cfg.ffi_version.as_deref())?;
     let compatibility =
@@ -520,6 +566,7 @@ fn upgrade_swift_backend(
     swift_cfg.version = Some(latest.to_string());
     swift_cfg.dev = false;
     swift_cfg.branch = None;
+    swift_cfg.revision = None;
     swift_cfg.ffi_version = Some(required_ffi.to_string());
     config.save(project_dir)?;
 
@@ -529,7 +576,7 @@ fn upgrade_swift_backend(
     if let DependencyUpgradeOutcome::Upgraded(message) = compatibility {
         report.message = Some(message);
     }
-    ui::success("Swift backend requirement updated to the latest release");
+    ui::success("Apple backend requirement updated to the latest release");
     Ok(report)
 }
 
@@ -615,6 +662,7 @@ fn select_compatible_version(
 enum SwiftRequirement {
     Branch(String),
     Release(String),
+    Revision(String),
 }
 
 fn rewrite_swift_requirement(pbxproj: &Path, requirement: SwiftRequirement) -> Result<()> {
@@ -645,6 +693,9 @@ fn rewrite_swift_requirement(pbxproj: &Path, requirement: SwiftRequirement) -> R
         ),
         SwiftRequirement::Release(version) => format!(
             "{indent}requirement = {{\n{indent}\tkind = upToNextMajorVersion;\n{indent}\tminimumVersion = \"{version}\";\n{indent}}};\n"
+        ),
+        SwiftRequirement::Revision(revision) => format!(
+            "{indent}requirement = {{\n{indent}\tkind = revision;\n{indent}\trevision = \"{revision}\";\n{indent}}};\n"
         ),
     };
 
