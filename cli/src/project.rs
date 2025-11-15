@@ -58,6 +58,19 @@ pub struct RunReport {
     pub artifact: PathBuf,
 }
 
+/// Build/run lifecycle milestones surfaced while executing [`Project::run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStage {
+    /// Preparing the selected device or simulator.
+    PrepareDevice,
+    /// Compiling the Rust code via Cargo.
+    BuildRust,
+    /// Packaging/bundling for the target platform (e.g., Xcode build).
+    Package,
+    /// Launching the produced artifact on the device.
+    Launch,
+}
+
 /// Alias retained for backwards compatibility with the legacy CLI code.
 pub type ProjectConfig = Config;
 
@@ -178,15 +191,31 @@ impl Project {
     /// # Errors
     /// Returns `FailToRun` if any step of the run process fails.
     pub fn run(&self, device: &impl Device, options: RunOptions) -> Result<RunReport, FailToRun> {
+        self.run_with_observer(device, options, |_| {})
+    }
+
+    /// Run the project while reporting lifecycle milestones to the provided observer.
+    ///
+    /// This allows callers to react to stage transitions (e.g., updating UI progress).
+    pub fn run_with_observer<O: FnMut(RunStage)>(
+        &self,
+        device: &impl Device,
+        options: RunOptions,
+        mut observer: O,
+    ) -> Result<RunReport, FailToRun> {
         check_requirements()?;
         let platform = device.platform();
         platform.check_requirements(self)?;
 
+        observer(RunStage::PrepareDevice);
         device.prepare(self, &options)?;
+        observer(RunStage::BuildRust);
         self.build_rust(platform, options.release)?;
 
+        observer(RunStage::Package);
         let app_path = platform.package(self, options.release)?;
 
+        observer(RunStage::Launch);
         device.run(self, &app_path, &options)?;
 
         Ok(RunReport { artifact: app_path })
@@ -370,6 +399,8 @@ pub struct Swift {
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     #[serde(default)]
     pub dev: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
