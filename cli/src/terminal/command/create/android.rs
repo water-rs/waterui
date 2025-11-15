@@ -14,9 +14,10 @@ use super::template;
 use crate::util;
 use waterui_cli::backend::android;
 
-const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
-const ANDROID_BACKEND_BRANCH: &str = "dev";
-const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
+pub(crate) const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
+pub(crate) const ANDROID_BACKEND_BRANCH: &str = "dev";
+pub(crate) const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
+pub(crate) const ANDROID_BACKEND_TAG_PREFIX: &str = "android-backend-v";
 
 /// Generate the Android Gradle project and associated template files.
 ///
@@ -240,7 +241,7 @@ fn should_use_remote_dev_backend() -> bool {
     )
 }
 
-fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
+pub(crate) fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
     let destination = project_dir.join("backends/android");
     if destination.exists() {
         fs::remove_dir_all(&destination).with_context(|| {
@@ -273,7 +274,7 @@ fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
     Ok(())
 }
 
-fn configure_android_local_properties(project_dir: &Path) -> Result<()> {
+pub(crate) fn configure_android_local_properties(project_dir: &Path) -> Result<()> {
     let backend_dir = project_dir.join("backends/android");
     if !backend_dir.exists() {
         return Ok(());
@@ -307,7 +308,7 @@ fn escape_local_property_path(path: &Path) -> String {
     }
 }
 
-fn ensure_dev_android_backend_checkout() -> Result<PathBuf> {
+pub(crate) fn ensure_dev_android_backend_checkout() -> Result<PathBuf> {
     if let Ok(path) = env::var(ANDROID_BACKEND_OVERRIDE_ENV) {
         let path = PathBuf::from(path);
         if path.exists() {
@@ -357,8 +358,16 @@ fn clone_dev_backend_repo(destination: &Path) -> Result<()> {
 }
 
 fn dev_backend_cache_root() -> Result<PathBuf> {
+    backend_cache_root("dev-backends")
+}
+
+fn release_backend_cache_root() -> Result<PathBuf> {
+    backend_cache_root("releases/android")
+}
+
+fn backend_cache_root(subdir: &str) -> Result<PathBuf> {
     if let Some(home) = home_dir() {
-        let candidate = home.join(".waterui").join("dev-backends");
+        let candidate = home.join(".waterui").join(subdir);
         match util::ensure_directory(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(err) => {
@@ -376,7 +385,7 @@ fn dev_backend_cache_root() -> Result<PathBuf> {
     let fallback = util::workspace_root()
         .join("target")
         .join(".waterui")
-        .join("dev-backends");
+        .join(subdir);
     util::ensure_directory(&fallback)?;
     Ok(fallback)
 }
@@ -420,6 +429,38 @@ fn update_dev_backend_repo(repo_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn ensure_android_backend_release(version: &str) -> Result<PathBuf> {
+    util::require_tool(
+        "git",
+        "Install Git to download Android backend releases when using stable projects.",
+    )?;
+    let cache_root = release_backend_cache_root()?;
+    let checkout = cache_root.join(version);
+    if checkout.exists() {
+        return Ok(checkout);
+    }
+    if let Some(parent) = checkout.parent() {
+        util::ensure_directory(parent)?;
+    }
+    let tag = format!("{ANDROID_BACKEND_TAG_PREFIX}{version}");
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            &tag,
+            ANDROID_BACKEND_REPO,
+        ])
+        .arg(&checkout)
+        .status()
+        .context("failed to clone Android backend release")?;
+    if !status.success() {
+        bail!("`git clone` failed while downloading Android backend tag {tag}");
+    }
+    Ok(checkout)
 }
 
 fn copy_dir_filtered(src: &Path, dst: &Path) -> Result<()> {
