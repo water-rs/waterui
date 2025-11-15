@@ -8,7 +8,7 @@ use super::create::{self, BackendChoice, resolve_dependencies};
 use crate::ui;
 use serde::Serialize;
 use waterui_cli::{
-    output,
+    WATERUI_ANDROID_BACKEND_VERSION, output,
     project::{Android, Config, Swift, Web},
 };
 
@@ -56,6 +56,8 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             create::web::create_web_assets(&project_dir, &config.package.display_name)?;
             config.backends.web = Some(Web {
                 project_path: "web".to_string(),
+                version: None,
+                dev: args.dev,
             });
             if !config.hot_reload.watch.iter().any(|path| path == "web") {
                 config.hot_reload.watch.push("web".to_string());
@@ -88,6 +90,12 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             )?;
             config.backends.android = Some(Android {
                 project_path: "android".to_string(),
+                version: if args.dev || WATERUI_ANDROID_BACKEND_VERSION.is_empty() {
+                    None
+                } else {
+                    Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
+                },
+                dev: args.dev,
             });
             if !is_json {
                 ui::success("Android backend added successfully");
@@ -116,10 +124,19 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 &config.package.bundle_identifier,
                 &deps.swift,
             )?;
+            let (version, branch) = match deps.swift {
+                create::SwiftDependency::Git {
+                    ref version,
+                    ref branch,
+                } => (version.clone(), branch.clone()),
+            };
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
                 scheme: config.package.name.clone(),
                 project_file: Some(format!("{app_name}.xcodeproj")),
+                version,
+                branch,
+                dev: args.dev,
             });
             if !is_json {
                 ui::success("SwiftUI backend added successfully");
