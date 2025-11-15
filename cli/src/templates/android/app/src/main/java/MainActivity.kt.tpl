@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import dev.waterui.android.runtime.WaterUiRoot
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
+import dev.waterui.android.runtime.configureHotReloadEndpoint
 import java.lang.Runtime
 
 class MainActivity : ComponentActivity() {
@@ -45,6 +46,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val hotReloadDisabled = intent?.getBooleanExtra("WATERUI_DISABLE_HOT_RELOAD", false) ?: false
+        val hotReloadPort = intent?.getStringExtra("WATERUI_HOT_RELOAD_PORT")?.toIntOrNull()
+        val hotReloadHost = intent?.getStringExtra("WATERUI_HOT_RELOAD_HOST")
+        if (!hotReloadDisabled && hotReloadHost != null && hotReloadPort != null) {
+            configureHotReloadEndpoint(hotReloadHost, hotReloadPort)
+        }
 
         setContent {
             Log.i(TAG, "WATERUI_ROOT_READY")
