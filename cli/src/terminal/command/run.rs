@@ -32,7 +32,6 @@ type Platform = PlatformKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
-    env,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -171,6 +170,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         &config,
         args.release,
         !args.no_hot_reload,
+        !args.no_sccache,
         args.mold,
     )?;
 
@@ -372,6 +372,7 @@ fn run_platform(
     config: &Config,
     release: bool,
     hot_reload_requested: bool,
+    enable_sccache: bool,
     mold_requested: bool,
 ) -> Result<()> {
     let project_dir = project.root();
@@ -412,6 +413,7 @@ fn run_platform(
             release,
             hot_reload,
             hot_reload_port,
+            enable_sccache,
             mold_requested,
         )?;
 
@@ -439,6 +441,7 @@ fn run_platform(
                     release,
                     hot_reload,
                     hot_reload_port,
+                    enable_sccache,
                     mold_requested,
                 )?;
                 let library_path =
@@ -507,7 +510,13 @@ fn run_platform(
                 Some(name) => resolve_android_device(&name)?,
                 None => prompt_for_android_device()?,
             };
-            let platform_impl = AndroidPlatform::new(android_config.clone(), false, hot_reload);
+            let platform_impl = AndroidPlatform::new(
+                android_config,
+                false,
+                hot_reload,
+                enable_sccache,
+                mold_requested,
+            );
             let android_device = AndroidDevice::new(platform_impl, selection)?;
             run_on_device(project, android_device, run_options)?
         }
@@ -596,6 +605,7 @@ fn run_cargo_build(
     release: bool,
     hot_reload_enabled: bool,
     hot_reload_port: Option<u16>,
+    enable_sccache: bool,
     mold_requested: bool,
 ) -> Result<()> {
     if !output::global_output_format().is_json() {
@@ -613,7 +623,8 @@ fn run_cargo_build(
     };
 
     let mut cmd = make_command();
-    let sccache_enabled = configure_build_speedups(&mut cmd, true, mold_requested);
+    let sccache_enabled =
+        cli_util::configure_build_speedups(&mut cmd, enable_sccache, mold_requested);
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
@@ -625,7 +636,7 @@ fn run_cargo_build(
     if sccache_enabled {
         warn!("cargo build failed when using sccache; retrying without build cache");
         let mut retry_cmd = make_command();
-        configure_build_speedups(&mut retry_cmd, false, mold_requested);
+        cli_util::configure_build_speedups(&mut retry_cmd, false, mold_requested);
         debug!("Running command without sccache: {:?}", retry_cmd);
         let retry_status = retry_cmd.status().with_context(|| {
             format!(
@@ -773,74 +784,6 @@ fn build_web_app(
     }
 
     Ok(())
-}
-
-fn configure_build_speedups(cmd: &mut Command, enable_sccache: bool, enable_mold: bool) -> bool {
-    let sccache_enabled = if enable_sccache {
-        configure_sccache(cmd)
-    } else {
-        false
-    };
-    configure_mold(cmd, enable_mold);
-    sccache_enabled
-}
-
-fn configure_sccache(cmd: &mut Command) -> bool {
-    if env::var_os("RUSTC_WRAPPER").is_some() {
-        debug!("RUSTC_WRAPPER already set; not overriding with sccache");
-        return false;
-    }
-
-    which("sccache").map_or_else(
-        |_| {
-            warn!("`sccache` not found on PATH; proceeding without build cache");
-            false
-        },
-        |path| {
-            debug!("Enabling sccache for cargo builds");
-            cmd.env("RUSTC_WRAPPER", path);
-            true
-        },
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn configure_mold(cmd: &mut Command, enable: bool) {
-    if !enable {
-        return;
-    }
-
-    const MOLD_FLAG: &str = "-C link-arg=-fuse-ld=mold";
-
-    if env::var("RUSTFLAGS")
-        .map(|flags| flags.split_whitespace().any(|flag| flag == MOLD_FLAG))
-        .unwrap_or(false)
-    {
-        debug!("mold linker already enabled via RUSTFLAGS");
-        return;
-    }
-
-    match which("mold") {
-        Ok(_) => {
-            let mut flags = env::var("RUSTFLAGS").unwrap_or_default();
-            if !flags.trim().is_empty() {
-                flags.push(' ');
-            }
-            flags.push_str(MOLD_FLAG);
-            debug!("Using mold linker for faster linking");
-            cmd.env("RUSTFLAGS", flags);
-        }
-        Err(_) => {
-            warn!("`mold` linker not found; using system default linker");
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn configure_mold(_: &mut Command, enable: bool) {
-    if enable {
-        warn!("mold linker acceleration is only supported on Linux hosts");
-    }
 }
 
 fn apple_simulator_kind(platform: Platform) -> AppleSimulatorKind {
@@ -1012,7 +955,7 @@ fn announce_android_auto_choice(candidate: &DeviceInfo) {
     }
 
     let label = describe_android_candidate(candidate);
-    ui::info(format!("Using {}.", label));
+    ui::info(format!("Using {label}."));
 }
 
 fn describe_android_candidate(info: &DeviceInfo) -> String {
