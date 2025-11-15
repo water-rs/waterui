@@ -42,7 +42,8 @@ use crate::array::WuiArray;
 
 #[cfg(target_os = "android")]
 mod panic_hook {
-    use alloc::string::String;
+    use alloc::boxed::Box;
+    use alloc::string::{String, ToString};
     use core::ffi::c_char;
     use std::{backtrace::Backtrace, ffi::CString, sync::Once};
 
@@ -50,7 +51,7 @@ mod panic_hook {
     const TAG: &[u8] = b"WaterUI\0";
     static INSTALL_HOOK: Once = Once::new();
 
-    extern "C" {
+    unsafe extern "C" {
         fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
     }
 
