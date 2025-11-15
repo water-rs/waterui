@@ -416,7 +416,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         if changed {
             ui::success(&message);
         } else {
-            ui::info(&message);
+            ui::warning(&message);
         }
         sync_swift_build_script(project_dir)?;
         return Ok(report);
