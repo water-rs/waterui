@@ -17,8 +17,10 @@ use super::{
     create::{
         BackendChoice, DEFAULT_WATERUI_FFI_VERSION, SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX,
         android::{
-            self, configure_android_local_properties, copy_android_backend,
-            ensure_android_backend_release, ensure_dev_android_backend_checkout,
+            self, clear_android_dev_commit, configure_android_local_properties,
+            copy_android_backend, ensure_android_backend_release,
+            ensure_dev_android_backend_checkout, git_head_commit, read_android_dev_commit,
+            write_android_dev_commit,
         },
     },
 };
@@ -231,16 +233,58 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
 
     if use_dev_backend {
         ui::warning("Updating Android dev backend. This may include breaking changes.");
+        let previous_commit = read_android_dev_commit(project_dir)?;
         let source = ensure_dev_android_backend_checkout()?;
+        let new_commit = git_head_commit(&source);
         copy_android_backend(project_dir, &source)?;
         configure_android_local_properties(project_dir)?;
+        if let Some(commit) = &new_commit {
+            write_android_dev_commit(project_dir, commit)?;
+        } else {
+            clear_android_dev_commit(project_dir)?;
+        }
         android_cfg.dev = true;
         android_cfg.version = None;
         android_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
         config.save(project_dir)?;
-        report.status = BackendUpdateStatus::Updated;
-        report.message =
-            Some("Synchronized dev backend from the latest upstream commit.".to_string());
+        report.from_version = previous_commit.clone();
+        report.to_version = new_commit.clone();
+        let (message, changed) = match (&previous_commit, &new_commit) {
+            (Some(prev), Some(next)) if prev == next => (
+                format!(
+                    "Android dev backend already at commit {}. No changes applied.",
+                    short_commit(next)
+                ),
+                false,
+            ),
+            (Some(prev), Some(next)) => (
+                format!(
+                    "Android dev backend updated ({} → {}).",
+                    short_commit(prev),
+                    short_commit(next)
+                ),
+                true,
+            ),
+            (None, Some(next)) => (
+                format!(
+                    "Android dev backend pinned to commit {}.",
+                    short_commit(next)
+                ),
+                true,
+            ),
+            _ => (
+                "Synchronized dev backend from the latest upstream commit.".to_string(),
+                true,
+            ),
+        };
+        if changed {
+            report.status = BackendUpdateStatus::Updated;
+            ui::success(&message);
+        } else {
+            report.status = BackendUpdateStatus::UpToDate;
+            ui::warning(&message);
+        }
+        report.message = Some(message);
         return Ok(report);
     }
 
@@ -259,12 +303,12 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
 
     if let Some(new_version) = candidate {
         ui::step(format!(
-            "Updating Android backend from v{} to v{}",
-            current_semver, new_version
+            "Updating Android backend from v{current_semver} to v{new_version}"
         ));
         let source = ensure_android_backend_release(&new_version.to_string())?;
         copy_android_backend(project_dir, &source)?;
         configure_android_local_properties(project_dir)?;
+        clear_android_dev_commit(project_dir)?;
         android_cfg.version = Some(new_version.to_string());
         android_cfg.dev = false;
         if android_cfg.ffi_version.is_none() {
@@ -340,8 +384,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
 
     if let Some(new_version) = candidate {
         ui::step(format!(
-            "Updating Swift backend from v{} to v{}",
-            current_semver, new_version
+            "Updating Swift backend from v{current_semver} to v{new_version}"
         ));
         rewrite_swift_requirement(&pbxproj, SwiftRequirement::Release(new_version.to_string()))?;
         swift_cfg.version = Some(new_version.to_string());
@@ -362,8 +405,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
 
     if let Some(newer) = incompatible {
         let message = format!(
-            "A newer Swift backend major version (v{}) is available but may be incompatible. Update the CLI or review release notes before upgrading.",
-            newer
+            "A newer Swift backend major version (v{newer}) is available but may be incompatible. Update the CLI or review release notes before upgrading."
         );
         warn!("{message}");
         report.status = BackendUpdateStatus::Incompatible;
@@ -413,6 +455,7 @@ fn upgrade_android_backend(
     let previous_version = android_cfg.version.clone();
     copy_android_backend(project_dir, &release_path)?;
     configure_android_local_properties(project_dir)?;
+    clear_android_dev_commit(project_dir)?;
     android_cfg.version = Some(latest.to_string());
     android_cfg.dev = false;
     android_cfg.ffi_version = Some(required_ffi.to_string());
@@ -482,6 +525,10 @@ fn upgrade_swift_backend(
     }
     ui::success("Swift backend requirement updated to the latest release");
     Ok(report)
+}
+
+fn short_commit(hash: &str) -> String {
+    hash.chars().take(7).collect()
 }
 
 fn fetch_repo_versions(repo_url: &str, prefix: &str) -> Result<Vec<Version>> {
