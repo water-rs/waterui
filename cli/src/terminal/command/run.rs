@@ -141,8 +141,8 @@ pub fn run(args: RunArgs) -> Result<()> {
     }
 
     if platform.is_none() {
-        let available_devices = device::list_devices()?;
         if let Some(device_name) = &device {
+            let available_devices = device::list_devices()?;
             let selected_device =
                 find_device(&available_devices, device_name).ok_or_else(|| {
                     eyre!(
@@ -152,7 +152,8 @@ pub fn run(args: RunArgs) -> Result<()> {
                 })?;
             platform = Some(platform_from_device(selected_device)?);
         } else {
-            platform = Some(prompt_for_platform(&config, &available_devices)?);
+            let backend_choice = prompt_for_backend(&config)?;
+            platform = Some(resolve_backend_choice(backend_choice, &config)?);
         }
     }
 
@@ -170,59 +171,34 @@ pub fn run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn prompt_for_platform(config: &Config, devices: &[DeviceInfo]) -> Result<Platform> {
-    let mut options: Vec<(Platform, String)> = Vec::new();
+#[derive(Clone, Copy)]
+enum BackendChoice {
+    Platform(Platform),
+    AppleAggregate,
+}
+
+fn prompt_for_backend(config: &Config) -> Result<BackendChoice> {
+    let mut options: Vec<(BackendChoice, String)> = Vec::new();
 
     if config.backends.web.is_some() {
-        options.push((Platform::Web, "Web Browser".to_string()));
+        options.push((
+            BackendChoice::Platform(Platform::Web),
+            "Web Browser".to_string(),
+        ));
     }
 
     if config.backends.swift.is_some() {
-        options.push((Platform::Macos, "Apple: macOS".to_string()));
-
-        let mut has_ios = false;
-        let mut has_ipados = false;
-        let mut has_watchos = false;
-        let mut has_tvos = false;
-        let mut has_visionos = false;
-
-        for device in devices {
-            if let Ok(platform) = platform_from_device(device) {
-                match platform {
-                    Platform::Ios => has_ios = true,
-                    Platform::Ipados => has_ipados = true,
-                    Platform::Watchos => has_watchos = true,
-                    Platform::Tvos => has_tvos = true,
-                    Platform::Visionos => has_visionos = true,
-                    _ => {}
-                }
-            }
-        }
-
-        if has_ios {
-            options.push((Platform::Ios, "Apple: iOS".to_string()));
-        }
-        if has_ipados {
-            options.push((Platform::Ipados, "Apple: iPadOS".to_string()));
-        }
-        if has_watchos {
-            options.push((Platform::Watchos, "Apple: watchOS".to_string()));
-        }
-        if has_tvos {
-            options.push((Platform::Tvos, "Apple: tvOS".to_string()));
-        }
-        if has_visionos {
-            options.push((Platform::Visionos, "Apple: visionOS".to_string()));
-        }
+        options.push((
+            BackendChoice::AppleAggregate,
+            "Apple (macOS, iOS, watchOS)".to_string(),
+        ));
     }
 
     if config.backends.android.is_some() {
-        let has_android = devices
-            .iter()
-            .any(|device| matches!(platform_from_device(device), Ok(Platform::Android)));
-        if has_android {
-            options.push((Platform::Android, "Android".to_string()));
-        }
+        options.push((
+            BackendChoice::Platform(Platform::Android),
+            "Android".to_string(),
+        ));
     }
 
     if options.is_empty() {
@@ -231,32 +207,106 @@ fn prompt_for_platform(config: &Config, devices: &[DeviceInfo]) -> Result<Platfo
         );
     }
 
-    let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
-    let default_index = preferred_platform_index(&options);
+    let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a backend to run")
         .items(&labels)
-        .default(default_index)
+        .default(default_backend_index(&options))
         .interact()?;
 
     Ok(options[selection].0)
 }
 
-fn preferred_platform_index(options: &[(Platform, String)]) -> usize {
-    if options.is_empty() {
+fn resolve_backend_choice(choice: BackendChoice, config: &Config) -> Result<Platform> {
+    match choice {
+        BackendChoice::Platform(platform) => Ok(platform),
+        BackendChoice::AppleAggregate => prompt_for_apple_platform(config),
+    }
+}
+
+fn default_backend_index(options: &[(BackendChoice, String)]) -> usize {
+    if !cfg!(target_os = "macos") {
         return 0;
     }
 
-    if cfg!(target_os = "macos") {
-        if let Some(idx) = options
-            .iter()
-            .position(|(platform, _)| matches!(platform, Platform::Macos))
-        {
-            return idx;
+    options
+        .iter()
+        .position(|(choice, _)| matches!(choice, BackendChoice::AppleAggregate))
+        .unwrap_or(0)
+}
+
+fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
+    if config.backends.swift.is_none() {
+        bail!("Apple backend is not configured for this project.");
+    }
+
+    let mut spinner = ui::spinner("Scanning Apple devices...");
+    let devices = match device::list_devices() {
+        Ok(list) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            list
+        }
+        Err(err) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            return Err(err);
+        }
+    };
+    let mut has_ios = false;
+    let mut has_ipados = false;
+    let mut has_watchos = false;
+    let mut has_tvos = false;
+    let mut has_visionos = false;
+
+    for device in &devices {
+        if let Ok(platform) = platform_from_device(device) {
+            match platform {
+                Platform::Ios => has_ios = true,
+                Platform::Ipados => has_ipados = true,
+                Platform::Watchos => has_watchos = true,
+                Platform::Tvos => has_tvos = true,
+                Platform::Visionos => has_visionos = true,
+                _ => {}
+            }
         }
     }
 
-    0
+    let mut options: Vec<(Platform, String)> = vec![(Platform::Macos, "Apple: macOS".to_string())];
+    if has_ios {
+        options.push((Platform::Ios, "Apple: iOS".to_string()));
+    }
+    if has_ipados {
+        options.push((Platform::Ipados, "Apple: iPadOS".to_string()));
+    }
+    if has_watchos {
+        options.push((Platform::Watchos, "Apple: watchOS".to_string()));
+    }
+    if has_tvos {
+        options.push((Platform::Tvos, "Apple: tvOS".to_string()));
+    }
+    if has_visionos {
+        options.push((Platform::Visionos, "Apple: visionOS".to_string()));
+    }
+
+    if options.is_empty() {
+        bail!("No Apple targets detected. Connect a device or install a simulator.");
+    }
+
+    if options.len() == 1 {
+        return Ok(options[0].0);
+    }
+
+    let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select an Apple target")
+        .items(&labels)
+        .default(0)
+        .interact()?;
+
+    Ok(options[selection].0)
 }
 
 fn find_device<'a>(devices: &'a [DeviceInfo], query: &str) -> Option<&'a DeviceInfo> {
