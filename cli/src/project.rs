@@ -372,6 +372,8 @@ pub struct Swift {
     pub branch: Option<String>,
     #[serde(default)]
     pub dev: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ffi_version: Option<String>,
 }
 
 fn default_swift_project_path() -> String {
@@ -386,6 +388,8 @@ pub struct Android {
     pub version: Option<String>,
     #[serde(default)]
     pub dev: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ffi_version: Option<String>,
 }
 
 fn default_android_project_path() -> String {
@@ -400,6 +404,8 @@ pub struct Web {
     pub version: Option<String>,
     #[serde(default)]
     pub dev: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ffi_version: Option<String>,
 }
 
 fn default_web_project_path() -> String {
