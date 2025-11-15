@@ -106,6 +106,25 @@ behaviour with `--no-watch`. Pass `--release` for optimized builds once things
 are ready for profiling. JSON output requires supplying `--platform` or
 `--device` ahead of time to avoid interactive prompts.
 
+### Build Native Artifacts
+
+Use `water build` when you only need the platform-specific Rust outputs—for
+example when invoking Gradle/Xcode directly:
+
+```bash
+water build android --release
+water build apple --release
+```
+
+The command replaces the old `build-rust.sh` logic. Android builds compile the
+project crate for the requested ABIs and copy the `.so` files (plus the NDK
+`libc++_shared.so`) into `android/app/src/main/jniLibs/`. Apple builds emit the
+static library that the Xcode project links against and refresh
+`apple/rust_build_info.xcconfig`. Both subcommands honour `--no-sccache` and
+`--mold`, and they automatically read environment variables such as
+`ANDROID_BUILD_TARGETS`, `CONFIGURATION`, and `BUILT_PRODUCTS_DIR` when invoked
+from IDE build phases.
+
 ### Package Artifacts
 
 Produce platform bundles without launching them:
@@ -117,8 +136,8 @@ water package --platform ios --release
 
 Use `--all` to build every configured backend. Android builds respect
 `--skip-native` if you need to provide custom Rust artifacts instead of letting
-the CLI run `build-rust.sh`. JSON output requires specifying `--platform` or
-`--all` so the command can stay non-interactive.
+the CLI invoke `water build android` automatically. JSON output requires
+specifying `--platform` or `--all` so the command can stay non-interactive.
 
 ### Inspect and Fix Your Toolchain
 
