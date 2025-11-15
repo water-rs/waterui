@@ -20,6 +20,7 @@ pub use view::View;
 pub mod accessibility;
 #[doc(inline)]
 pub use waterui_derive::*;
+pub mod theme;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.
     //!
@@ -46,6 +47,10 @@ pub mod prelude {
     pub use navigation::*;
     pub use padding::*;
     pub use style::*;
+
+    pub use theme::{
+        self, Theme, ThemeColors, ThemeLayer, ThemeProvider, ThemeTypography, color as theme_color,
+    };
 
     pub use text::{
         TextConfig, font, highlight,
