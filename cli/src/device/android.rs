@@ -123,18 +123,15 @@ impl AndroidDevice {
         let start = Instant::now();
 
         loop {
-            match self.query_app_pid(package)? {
-                Some(_) => {
-                    seen_pid = true;
-                    last_seen = Instant::now();
+            if let Some(_) = self.query_app_pid(package)? {
+                seen_pid = true;
+                last_seen = Instant::now();
+            } else {
+                if seen_pid && last_seen.elapsed() > PID_DISAPPEAR_GRACE {
+                    break;
                 }
-                None => {
-                    if seen_pid && last_seen.elapsed() > PID_DISAPPEAR_GRACE {
-                        break;
-                    }
-                    if !seen_pid && start.elapsed() > PID_APPEAR_TIMEOUT {
-                        break;
-                    }
+                if !seen_pid && start.elapsed() > PID_APPEAR_TIMEOUT {
+                    break;
                 }
             }
 
