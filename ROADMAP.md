@@ -4,7 +4,7 @@
 
 - [x] Basic widgets: stack, text, scroll, form, ...
 - [x] SwiftUI backend
-- [x] MVP of gtk4 backend
+- [x] ~~MVP of gtk4 backend~~ (Warning: GTK4 backend is not supported no longer)
 - [x] Stabilized the design of the core
 
 ## 0.2.0 - Usable
@@ -17,7 +17,7 @@
   - [ ] Gesture integration: wire descriptors in [`src/gesture.rs`](src/gesture.rs) into remaining platform backends and ensure metadata propagation via [`src/view.rs`](src/view.rs).
 - [ ] Hot reload
   - [ ] Faster hot reload: reuse dev-server state in [`cli/src/run.rs`](cli/src/run.rs) to avoid full rebuilds.
-- [x] i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed.
+- [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
 - [ ] Styling (Theme system)
   - [ ] Theming primitives: design shared tokens for [`components/text`](components/text/) and [`components/layout`](components/layout/).
   - [ ] Runtime overrides: expose environment hooks once the dedicated `theme` module lands.

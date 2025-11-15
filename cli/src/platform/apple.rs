@@ -36,7 +36,7 @@ pub struct AppleSimulatorTarget {
     pub device_name: String,
 }
 
-/// High-level simulator families supported by the Swift backend.
+/// High-level simulator families supported by the Apple backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppleSimulatorKind {
     Ios,
