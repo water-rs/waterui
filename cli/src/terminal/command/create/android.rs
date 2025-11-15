@@ -1,8 +1,11 @@
 use color_eyre::eyre::{Context, Result, bail};
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use home::home_dir;
+use std::{
+    collections::HashMap,
+    env, fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -10,6 +13,10 @@ use std::os::unix::fs::PermissionsExt;
 use super::template;
 use crate::util;
 use waterui_cli::backend::android;
+
+const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
+const ANDROID_BACKEND_BRANCH: &str = "dev";
+const ANDROID_BACKEND_OVERRIDE_ENV: &str = "WATERUI_ANDROID_DEV_BACKEND_DIR";
 
 /// Generate the Android Gradle project and associated template files.
 ///
@@ -24,12 +31,29 @@ pub fn create_android_project(
     display_name: &str,
     crate_name: &str,
     bundle_identifier: &str,
-    use_dev_backend: bool,
+    dev_mode: bool,
 ) -> Result<()> {
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
 
-    copy_android_backend(project_dir, use_dev_backend)?;
+    let use_remote_dev_backend = dev_mode && should_use_remote_dev_backend();
+
+    if !use_remote_dev_backend {
+        let backend_source = if dev_mode {
+            ensure_dev_android_backend_checkout()?
+        } else {
+            let source = util::workspace_root().join("backends/android");
+            if !source.exists() {
+                bail!(
+                    "Android backend sources not found at {}. Make sure submodules are initialized.",
+                    source.display()
+                );
+            }
+            source
+        };
+        copy_android_backend(project_dir, &backend_source)?;
+        configure_android_local_properties(project_dir)?;
+    }
 
     let android_package = android::sanitize_package_name(bundle_identifier);
 
@@ -38,6 +62,7 @@ pub fn create_android_project(
     context.insert("CRATE_NAME", crate_name.to_string());
     context.insert("CRATE_NAME_SANITIZED", crate_name.replace('-', "_"));
     context.insert("BUNDLE_IDENTIFIER", android_package.clone());
+    context.insert("USE_DEV_BACKEND", use_remote_dev_backend.to_string());
 
     let templates = &template::TEMPLATES_DIR;
 
@@ -207,10 +232,15 @@ pub fn create_android_project(
     Ok(())
 }
 
-const ANDROID_BACKEND_GIT_URL: &str = "https://github.com/water-rs/android-backend.git";
-const ANDROID_BACKEND_DEV_BRANCH: &str = "dev";
+fn should_use_remote_dev_backend() -> bool {
+    matches!(
+        env::var("WATERUI_ANDROID_REMOTE_DEV_BACKEND")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        Ok(true)
+    )
+}
 
-fn copy_android_backend(project_dir: &Path, use_dev_backend: bool) -> Result<()> {
+fn copy_android_backend(project_dir: &Path, source: &Path) -> Result<()> {
     let destination = project_dir.join("backends/android");
     if destination.exists() {
         fs::remove_dir_all(&destination).with_context(|| {
@@ -221,16 +251,14 @@ fn copy_android_backend(project_dir: &Path, use_dev_backend: bool) -> Result<()>
         })?;
     }
 
-    if use_dev_backend {
-        clone_android_backend(&destination)?;
-    } else {
-        let source = util::workspace_root().join("backends/android");
-        if !source.exists() {
-            bail!("Android backend sources not found at {}", source.display());
-        }
-
-        copy_dir_filtered(&source, &destination)?;
+    if !source.exists() {
+        bail!(
+            "Android backend sources not found at {}. Ensure the backend repository is available.",
+            source.display()
+        );
     }
+
+    copy_dir_filtered(&source, &destination)?;
 
     #[cfg(unix)]
     {
@@ -245,42 +273,150 @@ fn copy_android_backend(project_dir: &Path, use_dev_backend: bool) -> Result<()>
     Ok(())
 }
 
-fn clone_android_backend(destination: &Path) -> Result<()> {
-    if let Some(parent) = destination.parent() {
-        util::ensure_directory(parent)?;
+fn configure_android_local_properties(project_dir: &Path) -> Result<()> {
+    let backend_dir = project_dir.join("backends/android");
+    if !backend_dir.exists() {
+        return Ok(());
+    }
+
+    let local_properties = backend_dir.join("local.properties");
+    if local_properties.exists() {
+        return Ok(());
+    }
+
+    if let Some(sdk_dir) = android::resolve_android_sdk_path() {
+        let escaped = escape_local_property_path(&sdk_dir);
+        let contents = format!("sdk.dir={escaped}\n");
+        fs::write(&local_properties, contents).with_context(|| {
+            format!(
+                "failed to write Android local.properties at {}",
+                local_properties.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn escape_local_property_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if cfg!(windows) {
+        raw.replace('\\', "\\\\")
+    } else {
+        raw.into_owned()
+    }
+}
+
+fn ensure_dev_android_backend_checkout() -> Result<PathBuf> {
+    if let Ok(path) = env::var(ANDROID_BACKEND_OVERRIDE_ENV) {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
+        bail!(
+            "WATERUI_ANDROID_DEV_BACKEND_DIR points to {}, but it does not exist.",
+            path.display()
+        );
     }
 
     util::require_tool(
         "git",
-        "Install Git to fetch the Android backend or rerun without --dev.",
+        "Install Git to download the Android backend sources when using --dev mode.",
     )?;
+    let cache_root = dev_backend_cache_root()?;
 
-    let repo_url = std::env::var("WATERUI_ANDROID_BACKEND_URL")
-        .unwrap_or_else(|_| ANDROID_BACKEND_GIT_URL.to_string());
+    let checkout = cache_root.join("android");
+    if checkout.exists() {
+        update_dev_backend_repo(&checkout)?;
+    } else {
+        clone_dev_backend_repo(&checkout)?;
+    }
+    Ok(checkout)
+}
+
+fn clone_dev_backend_repo(destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        util::ensure_directory(parent)?;
+    }
     let status = Command::new("git")
-        .arg("clone")
-        .arg("--depth")
-        .arg("1")
-        .arg("--branch")
-        .arg(ANDROID_BACKEND_DEV_BRANCH)
-        .arg("--single-branch")
-        .arg(&repo_url)
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            ANDROID_BACKEND_BRANCH,
+            ANDROID_BACKEND_REPO,
+        ])
         .arg(destination)
         .status()
-        .with_context(|| format!("failed to clone Android backend from {repo_url}"))?;
-
+        .context("failed to clone Android backend repository")?;
     if !status.success() {
-        if destination.exists() {
-            let _ = fs::remove_dir_all(destination);
+        bail!("`git clone` did not exit successfully when downloading the Android backend.");
+    }
+    Ok(())
+}
+
+fn dev_backend_cache_root() -> Result<PathBuf> {
+    if let Some(home) = home_dir() {
+        let candidate = home.join(".waterui").join("dev-backends");
+        match util::ensure_directory(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) => {
+                if let Some(io_err) = err.downcast_ref::<io::Error>() {
+                    if io_err.kind() != io::ErrorKind::PermissionDenied {
+                        return Err(err);
+                    }
+                } else {
+                    return Err(err);
+                }
+            }
         }
-        let code = status
-            .code()
-            .map_or_else(|| "terminated by signal".to_string(), |c| c.to_string());
-        bail!(
-            "git clone failed when fetching Android backend from {} (exit status: {})",
-            repo_url,
-            code
-        );
+    }
+
+    let fallback = util::workspace_root()
+        .join("target")
+        .join(".waterui")
+        .join("dev-backends");
+    util::ensure_directory(&fallback)?;
+    Ok(fallback)
+}
+
+fn update_dev_backend_repo(repo_dir: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .args(["fetch", "origin", ANDROID_BACKEND_BRANCH])
+        .current_dir(repo_dir)
+        .status()
+        .context("failed to fetch Android backend updates")?;
+    if !status.success() {
+        bail!("`git fetch` failed when updating the Android backend checkout.");
+    }
+
+    let status = Command::new("git")
+        .args(["checkout", ANDROID_BACKEND_BRANCH])
+        .current_dir(repo_dir)
+        .status()
+        .context("failed to checkout Android backend branch")?;
+    if !status.success() {
+        bail!("`git checkout` failed when switching Android backend branch.");
+    }
+
+    let reset_target = format!("origin/{ANDROID_BACKEND_BRANCH}");
+    let status = Command::new("git")
+        .args(["reset", "--hard", &reset_target])
+        .current_dir(repo_dir)
+        .status()
+        .context("failed to reset Android backend repository to origin")?;
+    if !status.success() {
+        bail!("`git reset --hard {reset_target}` failed for the Android backend checkout.");
+    }
+
+    let status = Command::new("git")
+        .args(["clean", "-fdx"])
+        .current_dir(repo_dir)
+        .status()
+        .context("failed to clean Android backend checkout")?;
+    if !status.success() {
+        bail!("`git clean -fdx` failed for the Android backend checkout.");
     }
 
     Ok(())
