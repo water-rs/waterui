@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         Arc,
@@ -176,7 +176,7 @@ impl Device for AndroidDevice {
         Ok(())
     }
 
-    fn run(&self, project: &Project, artifact: &Path, _options: &RunOptions) -> Result<()> {
+    fn run(&self, project: &Project, artifact: &Path, options: &RunOptions) -> Result<()> {
         let artifact_str = artifact
             .to_str()
             .ok_or_else(|| Report::msg("APK path is not valid UTF-8"))?;
@@ -198,8 +198,25 @@ impl Device for AndroidDevice {
         }
 
         let activity = format!("{sanitized}/.MainActivity");
+        let mut reverse_guard = None;
         let mut launch_cmd = adb_command(&self.adb_path, self.selection_identifier());
         launch_cmd.args(["shell", "am", "start", "-n", &activity]);
+        if options.hot_reload.enabled {
+            let port = options.hot_reload.port.ok_or_else(|| {
+                Report::msg("Hot reload server port missing; restart the CLI and try again.")
+            })?;
+            reverse_guard = Some(AdbReverseGuard::new(
+                &self.adb_path,
+                self.selection_identifier(),
+                port,
+            )?);
+            launch_cmd
+                .args(["--es", "WATERUI_HOT_RELOAD_HOST", "127.0.0.1"])
+                .args(["--es", "WATERUI_HOT_RELOAD_PORT", &port.to_string()])
+                .args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "false"]);
+        } else {
+            launch_cmd.args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "true"]);
+        }
         let status = launch_cmd.status().context("failed to launch app")?;
         if !status.success() {
             bail!("Failed to launch Android activity");
@@ -217,11 +234,57 @@ impl Device for AndroidDevice {
             stream.stop();
         }
 
+        drop(reverse_guard);
+
         Ok(())
     }
 
     fn platform(&self) -> &Self::Platform {
         &self.platform
+    }
+}
+
+struct AdbReverseGuard {
+    adb_path: PathBuf,
+    identifier: Option<String>,
+    port: u16,
+    active: bool,
+}
+
+impl AdbReverseGuard {
+    fn new(adb_path: &Path, identifier: Option<&str>, port: u16) -> Result<Self> {
+        let spec = format!("tcp:{port}");
+        let mut cmd = adb_command(adb_path, identifier);
+        cmd.args(["reverse", &spec, &spec]);
+        let status = cmd
+            .status()
+            .context("failed to configure adb reverse tunnel for hot reload")?;
+        if !status.success() {
+            bail!(
+                "adb reverse failed with status {} while enabling hot reload",
+                status
+            );
+        }
+
+        Ok(Self {
+            adb_path: adb_path.to_path_buf(),
+            identifier: identifier.map(|value| value.to_string()),
+            port,
+            active: true,
+        })
+    }
+}
+
+impl Drop for AdbReverseGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let spec = format!("tcp:{}", self.port);
+        let mut cmd = adb_command(&self.adb_path, self.identifier.as_deref());
+        cmd.args(["reverse", "--remove", &spec]);
+        let _ = cmd.status();
+        self.active = false;
     }
 }
 

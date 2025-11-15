@@ -347,8 +347,17 @@ impl Config {
     /// Returns an error if `Water.toml` cannot be read or parsed.
     pub fn load(root: &Path) -> eyre::Result<Self> {
         let path = Self::path(root);
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => bail!(
+                "No WaterUI project found in {} (missing {}). Run this command from a WaterUI project root or pass --project to point to one. Create a new project with `water init`.",
+                root.display(),
+                path.display()
+            ),
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to read {}", path.display()));
+            }
+        };
         toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))
     }
 
@@ -386,6 +395,8 @@ pub struct Backends {
     pub android: Option<Android>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<Web>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tui: Option<Tui>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -441,6 +452,18 @@ pub struct Web {
 
 fn default_web_project_path() -> String {
     "web".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tui {
+    #[serde(default = "default_tui_project_path")]
+    pub project_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+fn default_tui_project_path() -> String {
+    "tui".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
