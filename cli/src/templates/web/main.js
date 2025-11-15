@@ -30,7 +30,7 @@ async function bootstrap() {
 }
 
 function connect_hot_reload() {
-    const ws = new WebSocket(`ws://127.0.0.1:${HOT_RELOAD_PORT}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${HOT_RELOAD_PORT}/hot-reload-web`);
     ws.onmessage = (event) => {
         if (event.data === "reload") {
             location.reload();

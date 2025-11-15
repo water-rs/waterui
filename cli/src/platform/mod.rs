@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 pub mod android;
 pub mod apple;
+pub mod tui;
 
 use color_eyre::eyre;
 use serde::Serialize;
@@ -64,6 +65,7 @@ pub enum PlatformKind {
     Tvos,
     Visionos,
     Android,
+    Tui,
 }
 
 impl PlatformKind {

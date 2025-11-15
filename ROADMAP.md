@@ -17,8 +17,6 @@
 - [ ] Hot reload
 - [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
 - [ ] Styling (Theme system)
-  - [ ] Theming primitives: design shared tokens for [`components/text`](components/text/) and [`components/layout`](components/layout/).
-  - [ ] Runtime overrides: expose environment hooks once the dedicated `theme` module lands.
 - [ ] Document all completed features in our book (👷WIP)
 
 ## 0.3.0 - Practical
