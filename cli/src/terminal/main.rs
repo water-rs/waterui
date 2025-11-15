@@ -116,6 +116,23 @@ fn main() -> Result<()> {
                     }
                 })?;
             }
+            BackendCommands::Upgrade(args) => {
+                let report = command::backend::upgrade(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Backend {} upgrade status: {:?}",
+                        report.backend, report.status
+                    );
+                    if let Some(from) = &report.from_version {
+                        if let Some(to) = &report.to_version {
+                            info!("Version: {from} -> {to}");
+                        }
+                    }
+                    if let Some(message) = &report.message {
+                        info!("{message}");
+                    }
+                })?;
+            }
         },
         Commands::Clean(mut args) => execute_clean(&mut args, format)?,
         Commands::Doctor(args) => {
