@@ -36,3 +36,6 @@ required-features = ["cbindgen"]
 
 [features]
 default = []
+
+[target.'cfg(not(target_os="android"))'.dependencies]
+miette = { version = "7", features = ["fancy"] }
