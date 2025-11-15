@@ -1,3 +1,20 @@
+//! The resolver pattern powers WaterUI's dynamic configuration story.
+//!
+//! Instead of hard-coding primitive values, UI-facing types expose lightweight
+//! wrappers that implement [`Resolvable`]. When a widget needs an actual value,
+//! it calls [`Resolvable::resolve`] with an [`Environment`], receiving a
+//! [`Signal`](nami::Signal) that stays up-to-date as the environment changes.
+//!
+//! Two prominent examples are:
+//! - Fonts (`components/text/src/font.rs`), where `Font` resolves to a
+//!   `ResolvedFont` so typography can react to user themes or platform scales.
+//! - Colors (`utils/color/src/lib.rs`), where `Color` resolves into
+//!   `ResolvedColor`, letting themes swap palettes, blend values, or add opacity
+//!   without rebuilding widgets.
+//!
+//! This module defines the abstractions—[`Resolvable`], [`AnyResolvable`],
+//! and [`Map`]—that make it easy for domain crates to plug into the same flow.
+
 use alloc::boxed::Box;
 use core::fmt::Debug;
 

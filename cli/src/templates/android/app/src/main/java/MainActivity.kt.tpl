@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
         val hotReloadPort = intent?.getStringExtra("WATERUI_HOT_RELOAD_PORT")?.toIntOrNull()
         val hotReloadHost = intent?.getStringExtra("WATERUI_HOT_RELOAD_HOST")
         if (!hotReloadDisabled && hotReloadHost != null && hotReloadPort != null) {
+            configureHotReloadDirectory(codeCacheDir.absolutePath)
             configureHotReloadEndpoint(hotReloadHost, hotReloadPort)
         }
 
