@@ -7,7 +7,6 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:name=".WaterUIApplication"
         android:theme="@style/Theme.WaterUIApp">
         <activity
             android:name=".MainActivity"

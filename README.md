@@ -97,6 +97,20 @@ opening Android Studio. To try it end-to-end:
 Gradle will output a ready-to-install APK at
 `android-demo/android/app/build/outputs/apk/debug/app-debug.apk`.
 
+### 🤖 Automating CLI Usage
+
+When running `water` from non-interactive environments (CI, scripts, or LLM agents), always pick your targets explicitly:
+
+1. List the available runtimes with `water devices --format json` (or omit `--format` for a human-readable table).
+2. Choose a name/identifier from that list and pass it to the run command, e.g.
+   ```bash
+   WATERUI_ANDROID_DEV_BACKEND_DIR=backends/android \
+     water run android --project target/debug/water-demo --device Pixel_8_Pro_API_36
+   ```
+3. Provide `--platform` for non-device targets (e.g., `water run --platform web`) to avoid interactive backend prompts.
+
+If you omit `--device` in a non-interactive shell, the CLI now exits with a descriptive error instead of guessing a target. This keeps automation deterministic and mirrors the manual workflow.
+
 ## 📝 Rich Text & Markdown
 
 `WaterUI` includes native support for styled text and Markdown rendering. Use
@@ -198,6 +212,13 @@ cargo build --all-features --workspace
 
 # Run tests
 cargo test --all-features --workspace
+
+## ⚡ Build Acceleration
+
+- `sccache` is recommended on every platform; the CLI automatically uses it when available and you can install it in one step with `water doctor --fix`.
+- Pass `--no-sccache` to `water run` if you ever need to debug without the cache.
+- Linux developers can opt into the experimental `mold` linker by adding `--mold` to `water run …`; the CLI will append the right `RUSTFLAGS` when `mold` is installed.
+- `water doctor --fix` also attempts to install `mold` (via apt/dnf/pacman/brew) whenever the tool is missing on supported hosts.
 
 # Check code quality
 cargo clippy --all-targets --all-features --workspace -- -D warnings

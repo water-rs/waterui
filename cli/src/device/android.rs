@@ -1,4 +1,14 @@
-use std::{path::Path, process::Command, thread, time::Duration};
+use std::{
+    io::{BufRead, BufReader},
+    path::Path,
+    process::{Child, ChildStdout, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use color_eyre::eyre::{Context, Report, Result, bail};
 use console::style;
@@ -13,12 +23,9 @@ use crate::{
     platform::android::AndroidPlatform,
     project::{Project, RunOptions},
 };
-use tracing::warn;
-
-const FALLBACK_LOG_LINE_LIMIT: usize = 200;
-const LOGCAT_CAPTURE_DELAY: Duration = Duration::from_secs(2);
-const LOGCAT_CAPTURE_ATTEMPTS: usize = 3;
-const LOGCAT_RETRY_DELAY: Duration = Duration::from_secs(1);
+const PID_APPEAR_TIMEOUT: Duration = Duration::from_secs(10);
+const PID_DISAPPEAR_GRACE: Duration = Duration::from_secs(2);
+const APP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Represents the target Android device or emulator selected by the user.
 #[derive(Clone, Debug)]
@@ -83,79 +90,76 @@ impl AndroidDevice {
         Ok(())
     }
 
-    fn clear_logcat_buffer(&self) {
+    fn clear_logcat_buffer(&self) -> Result<()> {
         let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
         cmd.args(["logcat", "-c"]);
-        match cmd.status() {
-            Ok(status) => {
-                if !status.success() {
-                    warn!("Failed to clear Android logcat buffer: {status}");
-                }
-            }
-            Err(err) => warn!("Unable to clear Android logcat buffer: {err:?}"),
+        let status = cmd
+            .status()
+            .context("failed to clear Android logcat buffer")?;
+        if !status.success() {
+            bail!("ADB failed while clearing logcat buffer: {status}");
         }
+        Ok(())
     }
 
-    fn capture_recent_logs(&self) -> Result<Option<String>> {
+    fn start_log_stream(&self, package: &str) -> Result<AndroidLogcatStream> {
         let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
         cmd.args([
-            "logcat", "-b", "crash", "-b", "main", "-b", "system", "-d", "*:V",
+            "logcat", "-b", "crash", "-b", "main", "-b", "system", "-v", "time",
         ]);
-        let output = cmd
-            .output()
-            .context("failed to capture Android logcat output")?;
-        if !output.status.success() {
-            bail!("adb logcat exited with {}", output.status);
+        cmd.stdout(Stdio::piped());
+        let mut child = cmd.spawn().context("failed to start adb logcat")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Report::msg("failed to capture adb logcat output"))?;
+
+        Ok(AndroidLogcatStream::new(package, child, stdout))
+    }
+
+    fn wait_for_app_exit(&self, package: &str) -> Result<()> {
+        let mut seen_pid = false;
+        let mut last_seen = Instant::now();
+        let start = Instant::now();
+
+        loop {
+            match self.query_app_pid(package)? {
+                Some(_) => {
+                    seen_pid = true;
+                    last_seen = Instant::now();
+                }
+                None => {
+                    if seen_pid && last_seen.elapsed() > PID_DISAPPEAR_GRACE {
+                        break;
+                    }
+                    if !seen_pid && start.elapsed() > PID_APPEAR_TIMEOUT {
+                        break;
+                    }
+                }
+            }
+
+            thread::sleep(APP_EXIT_POLL_INTERVAL);
         }
 
+        Ok(())
+    }
+
+    fn query_app_pid(&self, package: &str) -> Result<Option<String>> {
+        let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
+        cmd.args(["shell", "pidof", package]);
+        let output = cmd
+            .output()
+            .context("failed to query application PID via adb")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let trimmed = stdout.trim();
         if trimmed.is_empty() {
-            return Ok(None);
-        }
-        let limited = limit_log_lines(trimmed, FALLBACK_LOG_LINE_LIMIT);
-        Ok(Some(limited))
-    }
-
-    fn collect_log_capture(&self) -> Result<Option<String>> {
-        for attempt in 0..LOGCAT_CAPTURE_ATTEMPTS {
-            if let Some(capture) = self.capture_recent_logs()? {
-                return Ok(Some(capture));
-            }
-            if attempt + 1 < LOGCAT_CAPTURE_ATTEMPTS {
-                thread::sleep(LOGCAT_RETRY_DELAY);
-            }
-        }
-        Ok(None)
-    }
-
-    fn print_log_capture(&self, package: &str) -> Result<()> {
-        if output::global_output_format().is_json() {
-            return Ok(());
-        }
-
-        thread::sleep(LOGCAT_CAPTURE_DELAY);
-
-        if let Some(capture) = self.collect_log_capture()? {
-            let header = style(format!("Android warnings/errors ({package})"))
-                .yellow()
-                .bold();
-            let footer = style("End of Android logs").yellow();
-            println!();
-            println!("{header}");
-            println!("{capture}");
-            println!("{footer}");
-            println!();
+            Ok(None)
         } else {
-            println!(
-                "{} {}",
-                style("•").blue(),
-                format!(
-                    "Unable to capture recent Android warnings/errors for {package}. Try `adb logcat` for more details."
-                )
-            );
+            Ok(Some(trimmed.to_string()))
         }
-        Ok(())
     }
 }
 
@@ -180,10 +184,14 @@ impl Device for AndroidDevice {
             .to_str()
             .ok_or_else(|| Report::msg("APK path is not valid UTF-8"))?;
 
+        let sanitized = sanitize_package_name(project.bundle_identifier());
         let capture_logs = !output::global_output_format().is_json();
-        if capture_logs {
-            self.clear_logcat_buffer();
-        }
+        let mut log_stream = if capture_logs {
+            self.clear_logcat_buffer()?;
+            Some(self.start_log_stream(&sanitized)?)
+        } else {
+            None
+        };
 
         let mut install_cmd = adb_command(&self.adb_path, self.selection_identifier());
         install_cmd.args(["install", "-r", artifact_str]);
@@ -192,7 +200,6 @@ impl Device for AndroidDevice {
             bail!("Failed to install APK on target device");
         }
 
-        let sanitized = sanitize_package_name(project.bundle_identifier());
         let activity = format!("{sanitized}/.MainActivity");
         let mut launch_cmd = adb_command(&self.adb_path, self.selection_identifier());
         launch_cmd.args(["shell", "am", "start", "-n", &activity]);
@@ -201,11 +208,16 @@ impl Device for AndroidDevice {
             bail!("Failed to launch Android activity");
         }
 
-        if capture_logs {
-            thread::sleep(LOGCAT_CAPTURE_DELAY);
-            if let Err(err) = self.print_log_capture(&sanitized) {
-                warn!("Unable to capture Android warnings/errors: {err:?}");
-            }
+        if let Some(stream) = log_stream.as_mut() {
+            println!(
+                "{} {}",
+                style("•").blue(),
+                format!(
+                    "Streaming Android warnings/errors for {sanitized}. Close the app or press Ctrl+C to stop."
+                )
+            );
+            self.wait_for_app_exit(&sanitized)?;
+            stream.stop();
         }
 
         Ok(())
@@ -216,10 +228,108 @@ impl Device for AndroidDevice {
     }
 }
 
-fn limit_log_lines(contents: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = contents.lines().collect();
-    if lines.len() <= max_lines {
-        return contents.to_string();
+struct AndroidLogcatStream {
+    child: Child,
+    stop_flag: Arc<AtomicBool>,
+    join_handle: Option<thread::JoinHandle<()>>,
+    footer_printed: bool,
+}
+
+impl AndroidLogcatStream {
+    fn new(package: &str, child: Child, stdout: ChildStdout) -> Self {
+        let header = style(format!("Android warnings/errors ({package})"))
+            .yellow()
+            .bold();
+        println!();
+        println!("{header}");
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let reader_flag = Arc::clone(&stop_flag);
+        let package = package.to_string();
+
+        let handle = thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if reader_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Ok(line) = line else {
+                    break;
+                };
+                if is_relevant_android_log_line(&line, &package) {
+                    if is_trigger_line(&line) {
+                        println!("{}", style(line).red().bold());
+                    } else {
+                        println!("{}", style(line).yellow());
+                    }
+                }
+            }
+        });
+
+        Self {
+            child,
+            stop_flag,
+            join_handle: Some(handle),
+            footer_printed: false,
+        }
     }
-    lines[lines.len() - max_lines..].join("\n")
+
+    fn stop(&mut self) {
+        if self.footer_printed {
+            return;
+        }
+        self.footer_printed = true;
+        self.stop_flag.store(true, Ordering::Relaxed);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.join_handle.take() {
+            let _ = handle.join();
+        }
+        let footer = style("End of Android logs").yellow();
+        println!("{footer}");
+        println!();
+    }
+}
+
+impl Drop for AndroidLogcatStream {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn is_relevant_android_log_line(line: &str, package: &str) -> bool {
+    if !package.is_empty() && line.contains(package) {
+        return true;
+    }
+    let lower = line.to_ascii_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "fatal exception",
+        "fatal signal",
+        "sigabrt",
+        "sigsegv",
+        "abort message",
+        "unsatisfiedlinkerror",
+        "androidruntime",
+        "beginning of crash",
+        "waterui",
+        "panic",
+        "waterui_root_ready",
+    ];
+    KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+fn is_trigger_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    const TRIGGERS: &[&str] = &[
+        "fatal exception",
+        "fatal signal",
+        "sigabrt",
+        "sigsegv",
+        "abort message",
+        "unsatisfiedlinkerror",
+        "androidruntime",
+        "panic",
+        "waterui_root_ready",
+    ];
+    TRIGGERS.iter().any(|kw| lower.contains(kw))
 }

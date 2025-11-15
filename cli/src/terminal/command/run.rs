@@ -1,4 +1,5 @@
 use crate::{ui, util};
+use atty::{self, Stream};
 use axum::{
     Router,
     extract::{
@@ -104,6 +105,10 @@ pub struct RunArgs {
     #[arg(long)]
     no_sccache: bool,
 
+    /// Enable experimental mold linker integration (Linux hosts only)
+    #[arg(long)]
+    mold: bool,
+
     /// Disable hot reloading
     #[arg(long)]
     no_hot_reload: bool,
@@ -166,6 +171,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         &config,
         args.release,
         !args.no_hot_reload,
+        args.mold,
     )?;
 
     Ok(())
@@ -366,6 +372,7 @@ fn run_platform(
     config: &Config,
     release: bool,
     hot_reload_requested: bool,
+    mold_requested: bool,
 ) -> Result<()> {
     let project_dir = project.root();
     if let Err(report) =
@@ -405,6 +412,7 @@ fn run_platform(
             release,
             hot_reload,
             hot_reload_port,
+            mold_requested,
         )?;
 
         if let Some(server_ref) = &server {
@@ -431,6 +439,7 @@ fn run_platform(
                     release,
                     hot_reload,
                     hot_reload_port,
+                    mold_requested,
                 )?;
                 let library_path =
                     hot_reload_library_path(&project_dir_buf, &package_name, release);
@@ -587,6 +596,7 @@ fn run_cargo_build(
     release: bool,
     hot_reload_enabled: bool,
     hot_reload_port: Option<u16>,
+    mold_requested: bool,
 ) -> Result<()> {
     if !output::global_output_format().is_json() {
         ui::step("Compiling Rust library...");
@@ -603,7 +613,7 @@ fn run_cargo_build(
     };
 
     let mut cmd = make_command();
-    let sccache_enabled = configure_build_speedups(&mut cmd, true);
+    let sccache_enabled = configure_build_speedups(&mut cmd, true, mold_requested);
     debug!("Running command: {:?}", cmd);
     let status = cmd
         .status()
@@ -615,7 +625,7 @@ fn run_cargo_build(
     if sccache_enabled {
         warn!("cargo build failed when using sccache; retrying without build cache");
         let mut retry_cmd = make_command();
-        configure_build_speedups(&mut retry_cmd, false);
+        configure_build_speedups(&mut retry_cmd, false, mold_requested);
         debug!("Running command without sccache: {:?}", retry_cmd);
         let retry_status = retry_cmd.status().with_context(|| {
             format!(
@@ -765,14 +775,13 @@ fn build_web_app(
     Ok(())
 }
 
-fn configure_build_speedups(cmd: &mut Command, enable_sccache: bool) -> bool {
+fn configure_build_speedups(cmd: &mut Command, enable_sccache: bool, enable_mold: bool) -> bool {
     let sccache_enabled = if enable_sccache {
         configure_sccache(cmd)
     } else {
         false
     };
-    #[cfg(target_os = "linux")]
-    configure_mold(cmd);
+    configure_mold(cmd, enable_mold);
     sccache_enabled
 }
 
@@ -796,7 +805,11 @@ fn configure_sccache(cmd: &mut Command) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn configure_mold(cmd: &mut Command) {
+fn configure_mold(cmd: &mut Command, enable: bool) {
+    if !enable {
+        return;
+    }
+
     const MOLD_FLAG: &str = "-C link-arg=-fuse-ld=mold";
 
     if env::var("RUSTFLAGS")
@@ -820,6 +833,13 @@ fn configure_mold(cmd: &mut Command) {
         Err(_) => {
             warn!("`mold` linker not found; using system default linker");
         }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_mold(_: &mut Command, enable: bool) {
+    if enable {
+        warn!("mold linker acceleration is only supported on Linux hosts");
     }
 }
 
@@ -903,7 +923,21 @@ fn prompt_for_apple_device(platform: Platform) -> Result<String> {
 }
 
 fn prompt_for_android_device() -> Result<AndroidSelection> {
-    let devices = device::list_devices()?;
+    let mut spinner = ui::spinner("Scanning Android devices...");
+    let devices = match device::list_devices() {
+        Ok(list) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            list
+        }
+        Err(err) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            return Err(err);
+        }
+    };
     let mut candidates: Vec<DeviceInfo> = devices
         .into_iter()
         .filter(|d| {
@@ -934,6 +968,19 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
         }
     });
 
+    let interactive = atty::is(Stream::Stdin) && atty::is(Stream::Stdout);
+
+    if !interactive {
+        bail!(
+            "Cannot prompt for Android devices in non-interactive mode. Run `water devices` to list targets and pass --device <name> to `water run android`."
+        );
+    }
+
+    if candidates.len() == 1 {
+        announce_android_auto_choice(&candidates[0]);
+        return Ok(selection_from_device_info(&candidates[0]));
+    }
+
     let theme = ColorfulTheme::default();
     let options: Vec<String> = candidates
         .iter()
@@ -956,14 +1003,42 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
         .default(0)
         .interact()?;
 
-    Ok(AndroidSelection {
-        name: candidates[selection].name.clone(),
-        identifier: match candidates[selection].kind {
-            DeviceKind::Device => Some(candidates[selection].identifier.clone()),
-            _ => None,
+    Ok(selection_from_device_info(&candidates[selection]))
+}
+
+fn announce_android_auto_choice(candidate: &DeviceInfo) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+
+    let label = describe_android_candidate(candidate);
+    ui::info(format!("Using {}.", label));
+}
+
+fn describe_android_candidate(info: &DeviceInfo) -> String {
+    let kind = match info.kind {
+        DeviceKind::Device => "device",
+        DeviceKind::Emulator => "emulator",
+        DeviceKind::Simulator => "simulator",
+    };
+    match &info.state {
+        Some(state) if !state.is_empty() => {
+            format!("{} ({kind}, {state})", info.name)
+        }
+        _ => format!("{} ({kind})", info.name),
+    }
+}
+
+fn selection_from_device_info(info: &DeviceInfo) -> AndroidSelection {
+    AndroidSelection {
+        name: info.name.clone(),
+        identifier: if info.kind == DeviceKind::Device {
+            Some(info.identifier.clone())
+        } else {
+            None
         },
-        kind: candidates[selection].kind.clone(),
-    })
+        kind: info.kind.clone(),
+    }
 }
 
 fn resolve_android_device(name: &str) -> Result<AndroidSelection> {

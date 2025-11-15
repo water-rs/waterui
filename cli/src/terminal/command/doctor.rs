@@ -45,14 +45,10 @@ pub fn run(args: DoctorArgs) -> Result<DoctorReport> {
     };
 
     let applied_fixes = if args.fix {
-        if has_failures {
-            Some(toolchain::apply_fixes(
-                fix_suggestions.clone(),
-                FixMode::Automatic,
-            )?)
-        } else {
-            Some(Vec::new())
-        }
+        Some(toolchain::apply_fixes(
+            fix_suggestions.clone(),
+            FixMode::Automatic,
+        )?)
     } else {
         None
     };
