@@ -10,13 +10,9 @@ if ! command -v water >/dev/null 2>&1; then
 fi
 
 CONFIGURATION_VALUE="${CONFIGURATION:-Debug}"
-CLI_ARGS=()
+set -- build apple --project "$PROJECT_ROOT"
 if [ "$CONFIGURATION_VALUE" = "Release" ]; then
-    CLI_ARGS+=(--release)
+    set -- "$@" --release
 fi
 
-if [ "${#CLI_ARGS[@]}" -gt 0 ]; then
-    exec water build apple --project "$PROJECT_ROOT" "${CLI_ARGS[@]}"
-else
-    exec water build apple --project "$PROJECT_ROOT"
-fi
+exec water "$@"
