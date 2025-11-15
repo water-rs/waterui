@@ -13,6 +13,8 @@ use waterui_cli::{
     project::{Android, Config, Package, Swift, Web},
 };
 
+pub const DEFAULT_WATERUI_FFI_VERSION: &str = "0.1.0";
+
 pub mod android;
 pub mod rust;
 pub mod swift;
@@ -272,6 +274,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     project_path: "web".to_string(),
                     version: None,
                     dev: args.dev,
+                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
                 web_enabled = true;
             }
@@ -291,6 +294,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                         Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
                     },
                     dev: args.dev,
+                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
             }
             BackendChoice::Swiftui => {
@@ -315,6 +319,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     version,
                     branch,
                     dev: args.dev,
+                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
             }
         }
