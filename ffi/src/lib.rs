@@ -54,8 +54,8 @@ mod panic_hook {
         fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
     }
 
-    fn log_line(message: &str) {
-        if let Ok(cstr) = CString::new(message) {
+    fn log_line(line: &str) {
+        if let Ok(cstr) = CString::new(line) {
             unsafe {
                 __android_log_write(
                     ANDROID_LOG_ERROR,
@@ -66,33 +66,77 @@ mod panic_hook {
         }
     }
 
+    /// Pretty-print header line
+    fn header(text: &str) {
+        log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        log_line(text);
+        log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    }
+
+    /// Pretty-print code snippet (no color)
+    fn code_frame(line_num: usize, src_line: &str, caret_pos: Option<usize>) {
+        if let Some(pos) = caret_pos {
+            log_line(&format!("❯ {:>4} │ {}", line_num, src_line));
+            log_line(&format!("     │ {}^", " ".repeat(pos)));
+        } else {
+            log_line(&format!("  {:>4} │ {}", line_num, src_line));
+        }
+    }
+
     pub(crate) fn install() {
         INSTALL_HOOK.call_once(|| {
             std::panic::set_hook(Box::new(|info| {
-                let mut summary = String::from("Rust panic");
-                if let Some(location) = info.location() {
+                // ───────────── SUMMARY ─────────────
+                let mut title = String::from("Rust panic");
+                if let Some(loc) = info.location() {
                     use core::fmt::Write;
                     let _ = write!(
-                        &mut summary,
+                        &mut title,
                         " at {}:{}:{}",
-                        location.file(),
-                        location.line(),
-                        location.column()
+                        loc.file(),
+                        loc.line(),
+                        loc.column()
                     );
                 }
-                if let Some(message) = info.payload().downcast_ref::<&str>() {
-                    summary.push_str(": ");
-                    summary.push_str(message);
-                } else if let Some(message) = info.payload().downcast_ref::<String>() {
-                    summary.push_str(": ");
-                    summary.push_str(message);
+                header(&title);
+
+                // ───────────── MESSAGE ─────────────
+                if let Some(msg) = info.payload().downcast_ref::<&str>() {
+                    log_line(msg);
+                } else if let Some(msg) = info.payload().downcast_ref::<String>() {
+                    log_line(msg);
                 }
-                log_line(&summary);
+
+                // ───────────── SOURCE CONTEXT ─────────────
+                if let Some(loc) = info.location() {
+                    if let Ok(source) = std::fs::read_to_string(loc.file()) {
+                        let lines: Vec<&str> = source.split('\n').collect();
+
+                        let line_idx = loc.line() as usize - 1;
+
+                        let start = line_idx.saturating_sub(2);
+                        let end = (line_idx + 2).min(lines.len() - 1);
+
+                        log_line("");
+                        for idx in start..=end {
+                            if idx == line_idx {
+                                code_frame(idx + 1, lines[idx], Some(loc.column() as usize - 1));
+                            } else {
+                                code_frame(idx + 1, lines[idx], None);
+                            }
+                        }
+                        log_line("");
+                    }
+                }
+
+                // ───────────── BACKTRACE ─────────────
                 log_line("Backtrace:");
-                let backtrace = Backtrace::force_capture().to_string();
-                for line in backtrace.lines() {
+                let bt = Backtrace::force_capture().to_string();
+                for line in bt.lines() {
                     log_line(line);
                 }
+
+                log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             }));
         });
     }
@@ -100,7 +144,21 @@ mod panic_hook {
 
 #[cfg(not(target_os = "android"))]
 mod panic_hook {
-    pub(crate) fn install() {}
+    use alloc::boxed::Box;
+    use miette::{MietteHandlerOpts, set_hook};
+
+    pub(crate) fn install() {
+        set_hook(Box::new(|_| {
+            Box::new(
+                MietteHandlerOpts::new()
+                    .color(true)
+                    .unicode(true)
+                    .context_lines(4)
+                    .build(),
+            )
+        }))
+        .unwrap();
+    }
 }
 #[macro_export]
 macro_rules! export {
@@ -108,8 +166,7 @@ macro_rules! export {
         /// Initializes a new WaterUI environment
         #[unsafe(no_mangle)]
         pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
-            $crate::panic_hook::install();
-            $crate::__init_executor();
+            $crate::__init();
             let env: waterui::Environment = init();
             $crate::IntoFFI::into_ffi(env)
         }
@@ -124,7 +181,8 @@ macro_rules! export {
 }
 
 #[doc(hidden)]
-pub fn __init_executor() {
+pub fn __init() {
+    panic_hook::install();
     init_global_executor(native_executor::NativeExecutor);
     init_local_executor(native_executor::NativeExecutor);
 }
