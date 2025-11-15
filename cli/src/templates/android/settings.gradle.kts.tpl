@@ -15,14 +15,23 @@ dependencyResolutionManagement {
         google()
         maven { url = uri("https://dl.google.com/dl/android/maven2/") }
         mavenCentral()
+        // Add Maven repository for dev dependencies if using --dev mode
+        if (__USE_DEV_BACKEND__) {
+            maven {
+                url = uri("https://jitpack.io")
+            }
+        }
     }
 }
 
 rootProject.name = "__APP_NAME__"
 include(":app")
 
-includeBuild("../backends/android") {
-    dependencySubstitution {
-        substitute(module("dev.waterui.android:runtime")).using(project(":runtime"))
+// In dev mode, use GitHub dependency; otherwise use local backend
+if (!__USE_DEV_BACKEND__) {
+    includeBuild("../backends/android") {
+        dependencySubstitution {
+            substitute(module("dev.waterui.android:runtime")).using(project(":runtime"))
+        }
     }
 }
