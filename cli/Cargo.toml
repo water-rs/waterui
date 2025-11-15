@@ -39,6 +39,7 @@ tungstenite = "0.23"
 tokio-tungstenite = "0.23"
 thiserror = "2.0.17"
 smol = "2.0.2"
+atty = "0.2.14"
 
 [[bin]]
 name = "water"
