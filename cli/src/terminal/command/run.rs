@@ -24,7 +24,7 @@ use waterui_cli::{
     },
     output,
     platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
-    project::{Config, FailToRun, HotReloadOptions, Project, RunOptions},
+    project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunStage},
     util as cli_util,
 };
 type Platform = PlatformKind;
@@ -32,6 +32,7 @@ type Platform = PlatformKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     collections::HashSet,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -161,6 +162,11 @@ pub fn run(args: RunArgs) -> Result<()> {
         }
     }
 
+    if matches!(platform, Some(Platform::Watchos)) {
+        warn!("watchOS support is not available yet.");
+        bail!("watchOS backend is not supported yet.");
+    }
+
     let platform = platform.ok_or_else(|| eyre!("No platform selected"))?;
 
     run_platform(
@@ -196,7 +202,7 @@ fn prompt_for_backend(config: &Config) -> Result<BackendChoice> {
     if config.backends.swift.is_some() {
         options.push((
             BackendChoice::AppleAggregate,
-            "Apple (macOS, iOS, watchOS)".to_string(),
+            "Apple (macOS, iOS, iPadOS, tvOS, visionOS)".to_string(),
         ));
     }
 
@@ -263,7 +269,6 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
     };
     let mut has_ios = false;
     let mut has_ipados = false;
-    let mut has_watchos = false;
     let mut has_tvos = false;
     let mut has_visionos = false;
 
@@ -272,7 +277,6 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
             match platform {
                 Platform::Ios => has_ios = true,
                 Platform::Ipados => has_ipados = true,
-                Platform::Watchos => has_watchos = true,
                 Platform::Tvos => has_tvos = true,
                 Platform::Visionos => has_visionos = true,
                 _ => {}
@@ -286,9 +290,6 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
     }
     if has_ipados {
         options.push((Platform::Ipados, "Apple: iPadOS".to_string()));
-    }
-    if has_watchos {
-        options.push((Platform::Watchos, "Apple: watchOS".to_string()));
     }
     if has_tvos {
         options.push((Platform::Tvos, "Apple: tvOS".to_string()));
@@ -396,22 +397,41 @@ fn run_platform(
         return run_web(project_dir, config, release, hot_reload_requested);
     }
 
-    let hot_reload = hot_reload_requested && platform_supports_native_hot_reload(platform);
+    let hot_reload_requested =
+        hot_reload_requested && platform_supports_native_hot_reload(platform);
 
-    let server = if hot_reload {
-        Some(Server::start(project_dir.to_path_buf())?)
-    } else {
-        None
-    };
+    let mut server = None;
+    let mut hot_reload_enabled = false;
+    if hot_reload_requested {
+        match Server::start(project_dir.to_path_buf()) {
+            Ok(instance) => {
+                hot_reload_enabled = true;
+                server = Some(instance);
+            }
+            Err(err) => {
+                if err
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|io_err| io_err.kind() == io::ErrorKind::PermissionDenied)
+                {
+                    ui::warning(format!(
+                        "Hot reload disabled: could not bind local server ({err}). \
+Use --no-hot-reload to skip this step."
+                    ));
+                } else {
+                    return Err(err);
+                }
+            }
+        }
+    }
 
     let hot_reload_port = server.as_ref().map(|s| s.address().port());
 
-    if hot_reload {
+    if hot_reload_enabled {
         run_cargo_build(
             project_dir,
             &config.package.name,
             release,
-            hot_reload,
+            hot_reload_enabled,
             hot_reload_port,
             enable_sccache,
             mold_requested,
@@ -425,7 +445,7 @@ fn run_platform(
         }
     }
 
-    let watcher = if hot_reload {
+    let watcher = if hot_reload_enabled {
         if let Some(server) = server {
             let mut watch_paths = vec![project_dir.join("src")];
             for path in &config.hot_reload.watch {
@@ -439,7 +459,7 @@ fn run_platform(
                     &project_dir_buf,
                     &package_name,
                     release,
-                    hot_reload,
+                    hot_reload_enabled,
                     hot_reload_port,
                     enable_sccache,
                     mold_requested,
@@ -461,7 +481,7 @@ fn run_platform(
     let run_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
-            enabled: hot_reload,
+            enabled: hot_reload_enabled,
             port: hot_reload_port,
         },
     };
@@ -470,14 +490,16 @@ fn run_platform(
         Platform::Macos => {
             let swift_config = config.backends.swift.clone().ok_or_else(|| {
                 eyre!(
-                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
+                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Apple backend."
                 )
             })?;
             if !output::global_output_format().is_json() {
                 ui::info(format!("Xcode scheme: {}", swift_config.scheme));
             }
+            let scheme_name = swift_config.scheme.clone();
+            let spinner_msg = apple_build_progress_message(Platform::Macos, &scheme_name, None);
             let device_impl = MacosDevice::new(swift_config);
-            run_on_device(project, device_impl, run_options)?
+            run_with_package_spinner(project, device_impl, run_options, spinner_msg)?
         }
         Platform::Ios
         | Platform::Ipados
@@ -486,7 +508,7 @@ fn run_platform(
         | Platform::Visionos => {
             let swift_config = config.backends.swift.clone().ok_or_else(|| {
                 eyre!(
-                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the SwiftUI backend."
+                    "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Apple backend."
                 )
             })?;
             if !output::global_output_format().is_json() {
@@ -497,8 +519,16 @@ fn run_platform(
                 Some(name) => name,
                 None => prompt_for_apple_device(platform)?,
             };
+            let scheme_name = swift_config.scheme.clone();
+            let target_label = format!(
+                "{} ({})",
+                device_name,
+                apple_platform_display_name(platform)
+            );
+            let spinner_msg =
+                apple_build_progress_message(platform, &scheme_name, Some(target_label.as_str()));
             let simulator = AppleSimulatorDevice::new(swift_config, simulator_kind, device_name);
-            run_on_device(project, simulator, run_options)?
+            run_with_package_spinner(project, simulator, run_options, spinner_msg)?
         }
         Platform::Android => {
             let android_config = config.backends.android.clone().ok_or_else(|| {
@@ -513,7 +543,7 @@ fn run_platform(
             let platform_impl = AndroidPlatform::new(
                 android_config,
                 false,
-                hot_reload,
+                hot_reload_enabled,
                 enable_sccache,
                 mold_requested,
             );
@@ -526,7 +556,7 @@ fn run_platform(
     if !output::global_output_format().is_json() {
         ui::success(format!("Application built: {}", artifact.display()));
 
-        if hot_reload {
+        if hot_reload_enabled {
             ui::info("App launched with hot reload enabled");
             ui::plain("Press Ctrl+C to stop the watcher");
         } else {
@@ -534,7 +564,7 @@ fn run_platform(
         }
     }
 
-    if hot_reload {
+    if hot_reload_enabled {
         wait_for_interrupt()?;
     }
 
@@ -546,10 +576,54 @@ fn run_on_device<D>(project: &Project, device: D, options: RunOptions) -> Result
 where
     D: Device,
 {
+    run_on_device_with_observer(project, device, options, |_| {})
+}
+
+fn run_on_device_with_observer<D, O>(
+    project: &Project,
+    device: D,
+    options: RunOptions,
+    observer: O,
+) -> Result<PathBuf>
+where
+    D: Device,
+    O: FnMut(RunStage),
+{
     project
-        .run(&device, options)
+        .run_with_observer(&device, options, observer)
         .map(|report| report.artifact)
         .map_err(convert_run_error)
+}
+
+fn run_with_package_spinner<D>(
+    project: &Project,
+    device: D,
+    options: RunOptions,
+    spinner_msg: String,
+) -> Result<PathBuf>
+where
+    D: Device,
+{
+    let mut spinner_guard: Option<ui::SpinnerGuard> = None;
+    let result = run_on_device_with_observer(project, device, options, |stage| match stage {
+        RunStage::Package => {
+            if spinner_guard.is_none() {
+                spinner_guard = ui::spinner(spinner_msg.clone());
+            }
+        }
+        RunStage::Launch => {
+            if let Some(guard) = spinner_guard.take() {
+                guard.finish();
+            }
+        }
+        _ => {}
+    });
+
+    if let Some(guard) = spinner_guard.take() {
+        guard.finish();
+    }
+
+    result
 }
 
 fn convert_run_error(err: FailToRun) -> color_eyre::eyre::Report {
@@ -820,6 +894,19 @@ const fn apple_platform_display_name(platform: Platform) -> &'static str {
     }
 }
 
+fn apple_build_progress_message(
+    platform: Platform,
+    scheme: &str,
+    explicit_target: Option<&str>,
+) -> String {
+    if let Some(target) = explicit_target {
+        format!("Building Xcode project \"{scheme}\" for {target}...")
+    } else {
+        let platform_name = apple_platform_display_name(platform);
+        format!("Building Xcode project \"{scheme}\" for {platform_name}...")
+    }
+}
+
 fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
     let raw_platform = apple_simulator_platform_id(platform);
     if raw_platform.is_empty() {
@@ -1048,34 +1135,62 @@ impl Server {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let (startup_tx, startup_rx) =
+            std::sync::mpsc::channel::<std::result::Result<SocketAddr, io::Error>>();
 
         let thread = thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            rt.block_on(async {
+            rt.block_on(async move {
                 let app = Router::new()
                     .route("/hot-reload-native", get(native_ws_handler))
                     .route("/hot-reload-web", get(web_ws_handler))
                     .fallback_service(ServeDir::new(static_path))
                     .with_state(app_state);
 
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
-                startup_tx.send(addr).unwrap();
+                let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+                    Ok(listener) => listener,
+                    Err(err) => {
+                        let _ = startup_tx.send(Err(err));
+                        return;
+                    }
+                };
+                let addr = match listener.local_addr() {
+                    Ok(addr) => addr,
+                    Err(err) => {
+                        let _ = startup_tx.send(Err(err));
+                        return;
+                    }
+                };
+                let _ = startup_tx.send(Ok(addr));
 
-                axum::serve(listener, app)
+                if let Err(err) = axum::serve(listener, app)
                     .with_graceful_shutdown(async {
                         shutdown_rx.await.ok();
                     })
                     .await
-                    .unwrap();
+                {
+                    warn!("hot reload server shutdown unexpectedly: {err:?}");
+                }
             });
         });
 
-        let address = startup_rx.recv()?;
+        let startup_result = match startup_rx.recv() {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = thread.join();
+                bail!("hot reload server failed to report its status");
+            }
+        };
+        let address = match startup_result {
+            Ok(addr) => addr,
+            Err(err) => {
+                let _ = thread.join();
+                return Err(err).context("failed to bind hot reload server socket");
+            }
+        };
 
         Ok(Self {
             address,

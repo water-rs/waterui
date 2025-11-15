@@ -161,7 +161,7 @@ fn build_apple(args: AppleBuildArgs) -> Result<BuildReport> {
     let config = project.config();
     if config.backends.swift.is_none() {
         bail!(
-            "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Swift backend."
+            "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Apple backend."
         );
     }
 
