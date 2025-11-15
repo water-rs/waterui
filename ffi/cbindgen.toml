@@ -1,5 +1,11 @@
 language = "C"
 
+header = """
+#ifdef __cplusplus
+extern "C" {
+#endif
+"""
+
 after_includes = """
 typedef void *NonNull;
 
@@ -25,6 +31,9 @@ WuiEnv* waterui_init(void);
 
 WuiAnyView* waterui_main(void);
 
+#ifdef __cplusplus
+}
+#endif
 """
 
 [export.rename]
@@ -45,5 +54,4 @@ include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text",
 
 [parse.expand]
 crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","nami"]
-
 
