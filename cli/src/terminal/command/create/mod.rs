@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use clap::{Args, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToUpperCamelCase};
 use tracing::warn;
@@ -71,7 +72,7 @@ impl BackendChoice {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Web => "Web",
-            Self::Swiftui => "SwiftUI",
+            Self::Swiftui => "Apple",
             Self::Android => "Android",
         }
     }
@@ -306,11 +307,12 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     &bundle_identifier,
                     &deps.swift,
                 )?;
-                let (version, branch) = match deps.swift {
+                let (version, branch, revision) = match deps.swift {
                     SwiftDependency::Git {
                         ref version,
                         ref branch,
-                    } => (version.clone(), branch.clone()),
+                        ref revision,
+                    } => (version.clone(), branch.clone(), revision.clone()),
                 };
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
@@ -318,6 +320,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     project_file: Some(format!("{app_name}.xcodeproj")),
                     version,
                     branch,
+                    revision,
                     dev: args.dev,
                     ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
@@ -419,6 +422,7 @@ pub enum SwiftDependency {
     Git {
         version: Option<String>,
         branch: Option<String>,
+        revision: Option<String>,
     },
 }
 
@@ -429,6 +433,8 @@ pub enum SwiftDependency {
 /// Returns an error if the crates index cannot be queried.
 pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
     if dev {
+        let branch = "dev";
+        let revision = fetch_swift_branch_head(branch)?;
         let rust_toml =
             r#"waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
 waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
@@ -437,7 +443,8 @@ waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
             rust_toml,
             swift: SwiftDependency::Git {
                 version: None,
-                branch: Some("dev".to_string()),
+                branch: Some(branch.to_string()),
+                revision: Some(revision),
             },
         });
     }
@@ -462,8 +469,38 @@ waterui-ffi = "{waterui_version}""#
         swift: SwiftDependency::Git {
             version: Some(swift_backend_version.to_string()),
             branch: None,
+            revision: None,
         },
     })
+}
+
+pub fn swift_backend_repo_url() -> String {
+    std::env::var("WATERUI_SWIFT_BACKEND_URL").unwrap_or_else(|_| SWIFT_BACKEND_GIT_URL.to_string())
+}
+
+pub fn fetch_swift_branch_head(branch: &str) -> Result<String> {
+    let repo_url = swift_backend_repo_url();
+    git_ls_remote(&repo_url, branch)
+}
+
+fn git_ls_remote(repo_url: &str, reference: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["ls-remote", repo_url, reference])
+        .output()
+        .with_context(|| format!("failed to query '{reference}' from {repo_url}"))?;
+    if !output.status.success() {
+        bail!(
+            "git ls-remote for {repo_url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let hash = stdout
+        .lines()
+        .find_map(|line| line.split('\t').next().map(str::to_string))
+        .filter(|hash| !hash.is_empty())
+        .ok_or_else(|| eyre!("reference '{reference}' not found in {repo_url}"))?;
+    Ok(hash)
 }
 
 fn prepare_directory(project_dir: &Path) -> Result<()> {
