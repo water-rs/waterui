@@ -131,9 +131,9 @@ fn build_actions(workspace: &Path) -> Vec<Action> {
     directories.extend(android_dirs);
 
     let apple_dirs = [
-        workspace.join("demo/apple/build"),
-        workspace.join("demo/apple/DerivedData"),
-        workspace.join("demo/apple/.swiftpm"),
+        workspace.join("backends/apple/.build"),
+        workspace.join("backends/apple/DerivedData"),
+        workspace.join("backends/apple/.swiftpm"),
     ];
     directories.extend(apple_dirs);
 
