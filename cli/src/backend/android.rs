@@ -176,7 +176,7 @@ fn android_sdk_roots() -> Vec<PathBuf> {
 }
 
 #[must_use]
-pub(crate) fn resolve_android_sdk_path() -> Option<PathBuf> {
+pub fn resolve_android_sdk_path() -> Option<PathBuf> {
     android_sdk_roots().into_iter().next()
 }
 
