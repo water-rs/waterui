@@ -4,7 +4,7 @@ use clap::Args;
 use color_eyre::eyre::{Result, bail};
 use heck::ToUpperCamelCase;
 
-use super::create::{self, BackendChoice, resolve_dependencies};
+use super::create::{self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, resolve_dependencies};
 use crate::ui;
 use serde::Serialize;
 use waterui_cli::{
@@ -58,6 +58,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 project_path: "web".to_string(),
                 version: None,
                 dev: args.dev,
+                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !config.hot_reload.watch.iter().any(|path| path == "web") {
                 config.hot_reload.watch.push("web".to_string());
@@ -96,6 +97,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                     Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
                 },
                 dev: args.dev,
+                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
                 ui::success("Android backend added successfully");
@@ -137,6 +139,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 version,
                 branch,
                 dev: args.dev,
+                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
                 ui::success("SwiftUI backend added successfully");
