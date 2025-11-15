@@ -11,7 +11,7 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use super::template;
-use crate::util;
+use crate::{ui, util};
 use waterui_cli::backend::android;
 
 pub const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
@@ -342,21 +342,19 @@ fn clone_dev_backend_repo(destination: &Path) -> Result<()> {
     if let Some(parent) = destination.parent() {
         util::ensure_directory(parent)?;
     }
-    let status = Command::new("git")
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            ANDROID_BACKEND_BRANCH,
-            ANDROID_BACKEND_REPO,
-        ])
-        .arg(destination)
-        .status()
-        .context("failed to clone Android backend repository")?;
-    if !status.success() {
-        bail!("`git clone` did not exit successfully when downloading the Android backend.");
-    }
+    run_git_command(
+        "Downloading Android dev backend sources",
+        "`git clone` did not exit successfully when downloading the Android backend.",
+        |cmd| {
+            cmd.arg("clone")
+                .arg("--depth")
+                .arg("1")
+                .arg("--branch")
+                .arg(ANDROID_BACKEND_BRANCH)
+                .arg(ANDROID_BACKEND_REPO)
+                .arg(destination);
+        },
+    )?;
     Ok(())
 }
 
@@ -393,43 +391,76 @@ fn backend_cache_root(subdir: &str) -> Result<PathBuf> {
     Ok(fallback)
 }
 
-fn update_dev_backend_repo(repo_dir: &Path) -> Result<()> {
-    let status = Command::new("git")
-        .args(["fetch", "origin", ANDROID_BACKEND_BRANCH])
-        .current_dir(repo_dir)
-        .status()
-        .context("failed to fetch Android backend updates")?;
-    if !status.success() {
-        bail!("`git fetch` failed when updating the Android backend checkout.");
+fn run_git_command(
+    action: impl Into<String>,
+    failure_message: impl Into<String>,
+    configure: impl FnOnce(&mut Command),
+) -> Result<()> {
+    let action = action.into();
+    let failure_message = failure_message.into();
+    ui::step(&action);
+    let mut command = Command::new("git");
+    configure(&mut command);
+    let output = command
+        .output()
+        .with_context(|| format!("failed to invoke git to {action}"))?;
+    if output.status.success() {
+        return Ok(());
     }
 
-    let status = Command::new("git")
-        .args(["checkout", ANDROID_BACKEND_BRANCH])
-        .current_dir(repo_dir)
-        .status()
-        .context("failed to checkout Android backend branch")?;
-    if !status.success() {
-        bail!("`git checkout` failed when switching Android backend branch.");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut details = stderr.trim().to_string();
+    if details.is_empty() {
+        details = stdout.trim().to_string();
     }
+    if details.is_empty() {
+        bail!(failure_message);
+    }
+    bail!("{}: {}", failure_message, details);
+}
+
+fn update_dev_backend_repo(repo_dir: &Path) -> Result<()> {
+    run_git_command(
+        "Fetching Android dev backend updates",
+        "`git fetch` failed when updating the Android backend checkout.",
+        |cmd| {
+            cmd.arg("fetch")
+                .arg("origin")
+                .arg(ANDROID_BACKEND_BRANCH)
+                .current_dir(repo_dir);
+        },
+    )?;
+
+    run_git_command(
+        "Switching Android dev backend branch",
+        "`git checkout` failed when switching Android backend branch.",
+        |cmd| {
+            cmd.arg("checkout")
+                .arg(ANDROID_BACKEND_BRANCH)
+                .current_dir(repo_dir);
+        },
+    )?;
 
     let reset_target = format!("origin/{ANDROID_BACKEND_BRANCH}");
-    let status = Command::new("git")
-        .args(["reset", "--hard", &reset_target])
-        .current_dir(repo_dir)
-        .status()
-        .context("failed to reset Android backend repository to origin")?;
-    if !status.success() {
-        bail!("`git reset --hard {reset_target}` failed for the Android backend checkout.");
-    }
+    run_git_command(
+        "Resetting Android dev backend to origin",
+        format!("`git reset --hard {reset_target}` failed for the Android backend checkout."),
+        |cmd| {
+            cmd.arg("reset")
+                .arg("--hard")
+                .arg(&reset_target)
+                .current_dir(repo_dir);
+        },
+    )?;
 
-    let status = Command::new("git")
-        .args(["clean", "-fdx"])
-        .current_dir(repo_dir)
-        .status()
-        .context("failed to clean Android backend checkout")?;
-    if !status.success() {
-        bail!("`git clean -fdx` failed for the Android backend checkout.");
-    }
+    run_git_command(
+        "Cleaning Android dev backend checkout",
+        "`git clean -fdx` failed for the Android backend checkout.",
+        |cmd| {
+            cmd.arg("clean").arg("-fdx").current_dir(repo_dir);
+        },
+    )?;
 
     Ok(())
 }
@@ -448,21 +479,20 @@ pub fn ensure_android_backend_release(version: &str) -> Result<PathBuf> {
         util::ensure_directory(parent)?;
     }
     let tag = format!("{ANDROID_BACKEND_TAG_PREFIX}{version}");
-    let status = Command::new("git")
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            &tag,
-            ANDROID_BACKEND_REPO,
-        ])
-        .arg(&checkout)
-        .status()
-        .context("failed to clone Android backend release")?;
-    if !status.success() {
-        bail!("`git clone` failed while downloading Android backend tag {tag}");
-    }
+    let message = format!("Downloading Android backend release {version}");
+    run_git_command(
+        message,
+        format!("`git clone` failed while downloading Android backend tag {tag}"),
+        |cmd| {
+            cmd.arg("clone")
+                .arg("--depth")
+                .arg("1")
+                .arg("--branch")
+                .arg(&tag)
+                .arg(ANDROID_BACKEND_REPO)
+                .arg(&checkout);
+        },
+    )?;
     Ok(checkout)
 }
 
