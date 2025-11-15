@@ -33,7 +33,7 @@ mod ty;
 pub mod views;
 use core::ptr::null_mut;
 
-use alloc::{boxed::Box, string::String};
+use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
@@ -54,8 +54,8 @@ mod panic_hook {
         fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
     }
 
-    fn log_line(line: &str) {
-        if let Ok(cstr) = CString::new(line) {
+    fn log_line(message: &str) {
+        if let Ok(cstr) = CString::new(message) {
             unsafe {
                 __android_log_write(
                     ANDROID_LOG_ERROR,
@@ -66,77 +66,33 @@ mod panic_hook {
         }
     }
 
-    /// Pretty-print header line
-    fn header(text: &str) {
-        log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log_line(text);
-        log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    }
-
-    /// Pretty-print code snippet (no color)
-    fn code_frame(line_num: usize, src_line: &str, caret_pos: Option<usize>) {
-        if let Some(pos) = caret_pos {
-            log_line(&format!("❯ {:>4} │ {}", line_num, src_line));
-            log_line(&format!("     │ {}^", " ".repeat(pos)));
-        } else {
-            log_line(&format!("  {:>4} │ {}", line_num, src_line));
-        }
-    }
-
     pub(crate) fn install() {
         INSTALL_HOOK.call_once(|| {
             std::panic::set_hook(Box::new(|info| {
-                // ───────────── SUMMARY ─────────────
-                let mut title = String::from("Rust panic");
-                if let Some(loc) = info.location() {
+                let mut summary = String::from("Rust panic");
+                if let Some(location) = info.location() {
                     use core::fmt::Write;
                     let _ = write!(
-                        &mut title,
+                        &mut summary,
                         " at {}:{}:{}",
-                        loc.file(),
-                        loc.line(),
-                        loc.column()
+                        location.file(),
+                        location.line(),
+                        location.column()
                     );
                 }
-                header(&title);
-
-                // ───────────── MESSAGE ─────────────
-                if let Some(msg) = info.payload().downcast_ref::<&str>() {
-                    log_line(msg);
-                } else if let Some(msg) = info.payload().downcast_ref::<String>() {
-                    log_line(msg);
+                if let Some(message) = info.payload().downcast_ref::<&str>() {
+                    summary.push_str(": ");
+                    summary.push_str(message);
+                } else if let Some(message) = info.payload().downcast_ref::<String>() {
+                    summary.push_str(": ");
+                    summary.push_str(message);
                 }
-
-                // ───────────── SOURCE CONTEXT ─────────────
-                if let Some(loc) = info.location() {
-                    if let Ok(source) = std::fs::read_to_string(loc.file()) {
-                        let lines: Vec<&str> = source.split('\n').collect();
-
-                        let line_idx = loc.line() as usize - 1;
-
-                        let start = line_idx.saturating_sub(2);
-                        let end = (line_idx + 2).min(lines.len() - 1);
-
-                        log_line("");
-                        for idx in start..=end {
-                            if idx == line_idx {
-                                code_frame(idx + 1, lines[idx], Some(loc.column() as usize - 1));
-                            } else {
-                                code_frame(idx + 1, lines[idx], None);
-                            }
-                        }
-                        log_line("");
-                    }
-                }
-
-                // ───────────── BACKTRACE ─────────────
+                log_line(&summary);
                 log_line("Backtrace:");
-                let bt = Backtrace::force_capture().to_string();
-                for line in bt.lines() {
+                let backtrace = Backtrace::force_capture().to_string();
+                for line in backtrace.lines() {
                     log_line(line);
                 }
-
-                log_line("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             }));
         });
     }
@@ -181,6 +137,7 @@ macro_rules! export {
 }
 
 #[doc(hidden)]
+#[inline(always)]
 pub fn __init() {
     panic_hook::install();
     init_global_executor(native_executor::NativeExecutor);
