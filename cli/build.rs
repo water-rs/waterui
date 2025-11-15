@@ -9,6 +9,7 @@ fn main() {
 
     emit_waterui_version();
     emit_swift_backend_version();
+    emit_android_backend_version();
 }
 
 fn emit_waterui_version() {
@@ -40,6 +41,24 @@ fn emit_swift_backend_version() {
             "cargo:warning=No stable version tag found for 'waterui-backend-swift'. Use `water create --dev` until a release is cut."
         );
         println!("cargo:rustc-env=WATERUI_BACKEND_SWIFT_VERSION=");
+    }
+}
+
+fn emit_android_backend_version() {
+    let repo_path = Path::new("../backends/android");
+    let version = git_tag_version(
+        Path::new(repo_path),
+        "waterui-backend-android",
+        "android-backend-v*",
+    );
+
+    if let Some(version) = version {
+        println!("cargo:rustc-env=WATERUI_BACKEND_ANDROID_VERSION={version}");
+    } else {
+        eprintln!(
+            "cargo:warning=No stable version tag found for 'waterui-backend-android'. Use `water create --dev` until a release is cut."
+        );
+        println!("cargo:rustc-env=WATERUI_BACKEND_ANDROID_VERSION=");
     }
 }
 

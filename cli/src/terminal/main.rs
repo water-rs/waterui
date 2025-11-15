@@ -9,7 +9,7 @@ mod util;
 use clap::{Parser, Subcommand};
 use color_eyre::{config::HookBuilder, eyre::Result};
 use command::{
-    AddBackendArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs, DoctorArgs,
+    BackendCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs, DoctorArgs,
     DoctorReport, PackageArgs, RunArgs,
 };
 use dialoguer::Confirm;
@@ -35,8 +35,9 @@ enum Commands {
     Run(RunArgs),
     /// Package project artifacts
     Package(PackageArgs),
-    /// Add an additional backend to an existing project
-    AddBackend(AddBackendArgs),
+    /// Manage project backends
+    #[command(subcommand)]
+    Backend(BackendCommands),
     /// Clean build artifacts and caches
     Clean(CleanArgs),
     /// Diagnose toolchain issues
@@ -88,15 +89,34 @@ fn main() -> Result<()> {
                 }
             })?;
         }
-        Commands::AddBackend(args) => {
-            let report = command::add_backend::run(args)?;
-            emit_or_print(&report, format, |report| {
-                info!(
-                    "Backend {} added. Updated config at {}",
-                    report.backend, report.config_path
-                );
-            })?;
-        }
+        Commands::Backend(subcommand) => match subcommand {
+            BackendCommands::Add(args) => {
+                let report = command::add_backend::run(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Backend {} added. Updated config at {}",
+                        report.backend, report.config_path
+                    );
+                })?;
+            }
+            BackendCommands::Update(args) => {
+                let report = command::backend::update(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Backend {} update status: {:?}",
+                        report.backend, report.status
+                    );
+                    if let Some(from) = &report.from_version {
+                        if let Some(to) = &report.to_version {
+                            info!("Version: {from} -> {to}");
+                        }
+                    }
+                    if let Some(message) = &report.message {
+                        info!("{message}");
+                    }
+                })?;
+            }
+        },
         Commands::Clean(mut args) => execute_clean(&mut args, format)?,
         Commands::Doctor(args) => {
             let report = command::doctor::run(args)?;
