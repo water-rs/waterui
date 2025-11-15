@@ -24,6 +24,14 @@ Every WaterUI application is just a normal Rust crate (it has its own `Cargo.tom
 2. Depends on `waterui-ffi` for the `waterui_ffi::export!()` macro, which expands to the `#[no_mangle] extern "C"` entry points `waterui_init` and `waterui_main`.
 3. Re-exports those entry points so any native shell (Android, Apple, web) can call straight into the Rust code.
 
-The CLI scaffolds a `build-rust.sh` next to each project. When you run `water run android`/`water package android`, the CLI executes that script before Gradle so Cargo builds **the project crate** (not the helper crate) for every requested Android ABI. The built `.so` is copied into `android/app/src/main/jniLibs/` and loaded by the Android runtime, which expects the exported `waterui_init`/`waterui_main` symbols documented above. Apple backends follow the same pattern: Xcode runs the generated `build-rust.sh`, links the resulting static library, and calls the exported functions via `waterui.h`.
+The CLI now exposes `water build <platform>` to produce these native artifacts.
+When you run `water run android`/`water package android`, it invokes
+`water build android` before Gradle so Cargo builds **the project crate** (not
+the helper crate) for every requested Android ABI. The built `.so` is copied
+into `android/app/src/main/jniLibs/` and loaded by the Android runtime, which
+expects the exported `waterui_init`/`waterui_main` symbols documented above.
+Apple backends follow the same pattern: Xcode runs the tiny wrapper script that
+executes `water build apple`, links the resulting static library, and calls the
+exported functions via `waterui.h`.
 
 Because the project crate owns the exports, any change you make to `init()`/`main()` is automatically available to every platform shell—there is no need to edit `waterui-ffi` itself, and you should never build `waterui-ffi` as a standalone artifact.
