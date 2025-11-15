@@ -131,9 +131,10 @@ impl Progress {
     }
 
     /// Creates an infinite progress indicator, typically shown as an indeterminate spinner.
+    /// Note: This uses `f32::INFINITY` as the progress value.
     #[must_use]
     pub fn infinity() -> Self {
-        Self::new(f32::NAN)
+        Self::new(f32::INFINITY)
     }
 
     /// Sets a custom label for the progress indicator.
