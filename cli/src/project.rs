@@ -297,6 +297,8 @@ pub struct Config {
     pub backends: Backends,
     #[serde(default)]
     pub hot_reload: HotReload,
+    #[serde(default)]
+    pub dev_dependencies: bool,
 }
 
 impl Config {
@@ -306,6 +308,7 @@ impl Config {
             package,
             backends: Backends::default(),
             hot_reload: HotReload::default(),
+            dev_dependencies: false,
         }
     }
 
@@ -363,6 +366,12 @@ pub struct Swift {
     pub scheme: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub dev: bool,
 }
 
 fn default_swift_project_path() -> String {
@@ -373,6 +382,10 @@ fn default_swift_project_path() -> String {
 pub struct Android {
     #[serde(default = "default_android_project_path")]
     pub project_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub dev: bool,
 }
 
 fn default_android_project_path() -> String {
@@ -383,6 +396,10 @@ fn default_android_project_path() -> String {
 pub struct Web {
     #[serde(default = "default_web_project_path")]
     pub project_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub dev: bool,
 }
 
 fn default_web_project_path() -> String {
