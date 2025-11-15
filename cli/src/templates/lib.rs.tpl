@@ -1,4 +1,6 @@
 use waterui::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use waterui::hot_reload::Hotreload;
 
 pub fn init() -> Environment {
     Environment::new()
@@ -20,7 +22,7 @@ pub fn main() -> impl View {
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    scroll(
+    let view = scroll(
         vstack((
             // App header
             vstack((
@@ -64,7 +66,12 @@ pub fn main() -> impl View {
             "Built with WaterUI - Cross-platform Reactive UI Framework",
         ))
         .padding_with(EdgeInsets::all(100.0)),
-    )
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let view = Hotreload::new(view);
+
+    view
 }
 
 waterui_ffi::export!();
