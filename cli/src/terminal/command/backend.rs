@@ -31,6 +31,7 @@ pub enum BackendCommands {
     Add(add_backend::AddBackendArgs),
     Update(BackendUpdateArgs),
     Upgrade(BackendUpdateArgs),
+    List(BackendListArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -42,6 +43,13 @@ pub struct BackendUpdateArgs {
     /// Automatically confirm prompts (useful for JSON/non-interactive modes)
     #[arg(long)]
     pub yes: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct BackendListArgs {
+    /// Project directory (defaults to current working directory)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +85,23 @@ impl BackendUpdateReport {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct BackendListEntry {
+    pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub dev: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ffi_version: Option<String>,
+    pub targets: Vec<String>,
+    pub project_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackendListReport {
+    pub entries: Vec<BackendListEntry>,
+}
+
 pub fn update(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
     let project_dir = args
         .project
@@ -107,6 +132,90 @@ pub fn upgrade(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
         BackendChoice::Swiftui => upgrade_swift_backend(&project_dir, &mut config, &args),
         BackendChoice::Web => bail!("Web backend upgrade is not supported yet."),
     }
+}
+
+pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
+    let project_dir = args
+        .project
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
+    let config = Config::load(&project_dir)?;
+    let mut entries = Vec::new();
+
+    if let Some(swift) = config.backends.swift.as_ref() {
+        entries.push(BackendListEntry {
+            backend: BackendChoice::Swiftui.label().to_string(),
+            version: if swift.dev {
+                swift.branch.clone().or_else(|| Some("dev".to_string()))
+            } else {
+                swift.version.clone()
+            },
+            dev: swift.dev || config.dev_dependencies,
+            ffi_version: swift.ffi_version.clone(),
+            targets: backend_targets(BackendChoice::Swiftui)
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
+            project_path: swift.project_path.clone(),
+        });
+    }
+
+    if let Some(android) = config.backends.android.as_ref() {
+        entries.push(BackendListEntry {
+            backend: BackendChoice::Android.label().to_string(),
+            version: if android.dev {
+                Some("dev".to_string())
+            } else {
+                android.version.clone()
+            },
+            dev: android.dev || config.dev_dependencies,
+            ffi_version: android.ffi_version.clone(),
+            targets: backend_targets(BackendChoice::Android)
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
+            project_path: android.project_path.clone(),
+        });
+    }
+
+    if let Some(web) = config.backends.web.as_ref() {
+        entries.push(BackendListEntry {
+            backend: BackendChoice::Web.label().to_string(),
+            version: web.version.clone(),
+            dev: web.dev || config.dev_dependencies,
+            ffi_version: web.ffi_version.clone(),
+            targets: backend_targets(BackendChoice::Web)
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
+            project_path: web.project_path.clone(),
+        });
+    }
+
+    if entries.is_empty() && !output::global_output_format().is_json() {
+        ui::warning("No backends are configured for this project.");
+    } else if !output::global_output_format().is_json() {
+        ui::section("Configured Backends");
+        for entry in &entries {
+            ui::kv("Backend", format!("{}", entry.backend));
+            ui::kv(
+                "Version",
+                entry
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            );
+            ui::kv("Dev install", entry.dev.to_string());
+            if let Some(ffi) = &entry.ffi_version {
+                ui::kv("waterui-ffi", ffi);
+            }
+            ui::kv("Targets", entry.targets.join(", "));
+            ui::kv("Path", &entry.project_path);
+            ui::newline();
+        }
+    }
+
+    Ok(BackendListReport { entries })
 }
 
 fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<BackendUpdateReport> {
@@ -666,4 +775,12 @@ fn latest_cli_waterui_version() -> Result<Version> {
     }
     Version::parse(WATERUI_VERSION)
         .with_context(|| format!("invalid WATERUI_VERSION value '{}'", WATERUI_VERSION))
+}
+
+fn backend_targets(choice: BackendChoice) -> &'static [&'static str] {
+    match choice {
+        BackendChoice::Android => &["Android"],
+        BackendChoice::Swiftui => &["macOS", "iOS", "iPadOS", "watchOS", "tvOS", "visionOS"],
+        BackendChoice::Web => &["Web"],
+    }
 }
