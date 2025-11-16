@@ -4,7 +4,7 @@ mod enabled {
     use executor_core::{Task, spawn_local};
     use libloading::Library;
     use log::{debug, warn};
-    use serde_json::json;
+    use serde_json::{Map, Number, Value};
     use std::panic::{self, PanicInfo};
     use std::sync::mpsc;
     use std::{
@@ -114,12 +114,12 @@ mod enabled {
 
         let (mut socket, _) = connect(url)?;
         if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-            let _ = stream.get_mut().set_nonblocking(true);
+            let _ = stream.set_nonblocking(true);
         }
 
         loop {
             while let Ok(text) = outbound_rx.try_recv() {
-                if let Err(err) = socket.write_message(Message::Text(text)) {
+                if let Err(err) = socket.send(Message::Text(text.into())) {
                     warn!("Failed to forward message to CLI: {err}");
                     return Err(err.into());
                 }
@@ -131,7 +131,7 @@ mod enabled {
                     trigger.trigger_reload(lib_path);
                 }
                 Ok(Message::Ping(payload)) => {
-                    let _ = socket.write_message(Message::Pong(payload));
+                    let _ = socket.send(Message::Pong(payload));
                 }
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
@@ -257,9 +257,8 @@ mod enabled {
     fn report_panic(info: &PanicInfo) {
         if let Some(sender) = outbound_sender() {
             let event = ClientEvent::from_panic(info);
-            if let Ok(text) = serde_json::to_string(&event) {
-                let _ = sender.send(text);
-            }
+            let text = event.into_json_string();
+            let _ = sender.send(text);
         }
     }
 
@@ -274,10 +273,8 @@ mod enabled {
             .or_else(endpoint_from_env)
     }
 
-    #[derive(Serialize)]
-    #[serde(tag = "type")]
+    #[derive(Debug)]
     enum ClientEvent {
-        #[serde(rename = "panic")]
         Panic(PanicReport),
     }
 
@@ -285,9 +282,24 @@ mod enabled {
         fn from_panic(info: &PanicInfo) -> Self {
             Self::Panic(PanicReport::from(info))
         }
+
+        fn into_json_string(self) -> String {
+            self.into_json_value().to_string()
+        }
+
+        fn into_json_value(self) -> Value {
+            let mut event = Map::with_capacity(2);
+            match self {
+                Self::Panic(report) => {
+                    event.insert("type".into(), Value::String("panic".into()));
+                    event.insert("panic".into(), report.into_json_value());
+                }
+            }
+            Value::Object(event)
+        }
     }
 
-    #[derive(Serialize)]
+    #[derive(Debug)]
     struct PanicReport {
         message: String,
         location: Option<PanicLocation>,
@@ -310,11 +322,38 @@ mod enabled {
         }
     }
 
-    #[derive(Serialize)]
+    impl PanicReport {
+        fn into_json_value(self) -> Value {
+            let mut panic_obj = Map::with_capacity(4);
+            panic_obj.insert("message".into(), Value::String(self.message));
+            if let Some(location) = self.location {
+                panic_obj.insert("location".into(), location.into_json_value());
+            }
+            if let Some(thread) = self.thread {
+                panic_obj.insert("thread".into(), Value::String(thread));
+            }
+            if let Some(backtrace) = self.backtrace {
+                panic_obj.insert("backtrace".into(), Value::String(backtrace));
+            }
+            Value::Object(panic_obj)
+        }
+    }
+
+    #[derive(Debug)]
     struct PanicLocation {
         file: String,
         line: u32,
         column: u32,
+    }
+
+    impl PanicLocation {
+        fn into_json_value(self) -> Value {
+            let mut map = Map::with_capacity(3);
+            map.insert("file".into(), Value::String(self.file));
+            map.insert("line".into(), Value::Number(Number::from(self.line)));
+            map.insert("column".into(), Value::Number(Number::from(self.column)));
+            Value::Object(map)
+        }
     }
 
     fn panic_message(info: &PanicInfo<'_>) -> String {
