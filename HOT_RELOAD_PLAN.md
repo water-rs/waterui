@@ -29,8 +29,7 @@
 - [ ] Ensure template + runtime docs explain the sandbox-friendly directory requirement.
 
 ### 5. TUI Backend
-- [ ] Introduce CLI platform option (e.g., `--platform tui`) with hot reload support (server + watcher already reuse native path).
-- [ ] Create a sample entry that wraps root view with `Hotreload` and listens to CLI in the same filesystem.
+- _(Deferred)_ CLI/runtime integration paused per request; revisit once higher-priority backends are complete.
 
 ### 6. Web Backend
 - [ ] Current behavior reloads the entire page via WebSocket; acceptable short-term. (Future: fine-grained module reload.)
@@ -42,7 +41,6 @@
 
 ## Immediate Next Steps
 
-1. Extend CLI hot reload server support to Android and TUI; ensure `waterui_enable_hot_reload` env var is set appropriately per target triple.
-2. Implement Android hot reload client (OkHttp + `System.load`) and surface state updates in Compose runtime.
-3. Add Swift `HotReloadController` for simulator builds.
-4. Wire CLI to pass host/port via env vars / intent extras / `SIMCTL_CHILD_*` for each platform.
+1. Extend CLI hot reload server support to Android (done) and document TUI deferral; ensure `waterui_enable_hot_reload` env var is set appropriately per target triple.
+2. Keep hot reload logic expressed in Rust (`Hotreload` + `Dynamic`) so native hosts only forward endpoint metadata and storage paths.
+3. Document Apple simulator-only behaviour (physical devices/release builds must never set `waterui_enable_hot_reload`).
