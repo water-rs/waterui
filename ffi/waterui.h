@@ -1045,6 +1045,19 @@ void waterui_drop_computed_color(struct WuiComputed_Color *computed);
  */
 struct WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                         const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *
+waterui_theme_color_background(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *
+waterui_theme_color_surface(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *
+waterui_theme_color_surface_variant(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *waterui_theme_color_border(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *waterui_theme_color_foreground(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *
+waterui_theme_color_muted_foreground(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *waterui_theme_color_accent(const struct WuiEnv *env);
+struct WuiComputed_ResolvedColor *
+waterui_theme_color_accent_foreground(const struct WuiEnv *env);
 
 /**
  * # Safety
@@ -1284,6 +1297,12 @@ void waterui_drop_computed_resolved_font(struct WuiComputed_ResolvedFont *comput
 
 struct WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                       const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_body(const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_title(const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_headline(const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_subheadline(const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv *env);
+struct WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
 
 /**
  * # Safety
