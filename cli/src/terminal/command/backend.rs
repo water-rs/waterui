@@ -115,7 +115,7 @@ pub fn update(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
 
     match args.backend {
         BackendChoice::Android => update_android_backend(&project_dir, &mut config),
-        BackendChoice::Swiftui => update_swift_backend(&project_dir, &mut config),
+        BackendChoice::Apple => update_swift_backend(&project_dir, &mut config),
         BackendChoice::Web => {
             bail!(
                 "Web backend update is not supported yet. Please update the CLI when a new template is available."
@@ -133,7 +133,7 @@ pub fn upgrade(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
 
     match args.backend {
         BackendChoice::Android => upgrade_android_backend(&project_dir, &mut config, &args),
-        BackendChoice::Swiftui => upgrade_swift_backend(&project_dir, &mut config, &args),
+        BackendChoice::Apple => upgrade_swift_backend(&project_dir, &mut config, &args),
         BackendChoice::Web => bail!("Web backend upgrade is not supported yet."),
     }
 }
@@ -147,7 +147,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
 
     if let Some(swift) = config.backends.swift.as_ref() {
         entries.push(BackendListEntry {
-            backend: BackendChoice::Swiftui.label().to_string(),
+            backend: BackendChoice::Apple.label().to_string(),
             version: if swift.dev {
                 swift
                     .revision
@@ -159,7 +159,7 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
             },
             dev: swift.dev || config.dev_dependencies,
             ffi_version: swift.ffi_version.clone(),
-            targets: backend_targets(BackendChoice::Swiftui)
+            targets: backend_targets(BackendChoice::Apple)
                 .iter()
                 .map(|t| (*t).to_string())
                 .collect(),
@@ -351,8 +351,7 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         .as_mut()
         .ok_or_else(|| eyre!("Apple backend is not configured for this project"))?;
 
-    let mut report =
-        BackendUpdateReport::new(BackendChoice::Swiftui, BackendUpdateStatus::UpToDate);
+    let mut report = BackendUpdateReport::new(BackendChoice::Apple, BackendUpdateStatus::UpToDate);
     let project_path = project_dir.join(&swift_cfg.project_path);
     let project_file = swift_cfg
         .project_file
@@ -546,10 +545,10 @@ fn upgrade_swift_backend(
 
     let required_ffi = parse_ffi_requirement(swift_cfg.ffi_version.as_deref())?;
     let compatibility =
-        ensure_backend_ffi_compat(project_dir, &required_ffi, args, BackendChoice::Swiftui)?;
+        ensure_backend_ffi_compat(project_dir, &required_ffi, args, BackendChoice::Apple)?;
     if let DependencyUpgradeOutcome::Cancelled(message) = compatibility {
         let mut report =
-            BackendUpdateReport::new(BackendChoice::Swiftui, BackendUpdateStatus::Skipped);
+            BackendUpdateReport::new(BackendChoice::Apple, BackendUpdateStatus::Skipped);
         report.message = Some(message);
         return Ok(report);
     }
@@ -570,7 +569,7 @@ fn upgrade_swift_backend(
     swift_cfg.ffi_version = Some(required_ffi.to_string());
     config.save(project_dir)?;
 
-    let mut report = BackendUpdateReport::new(BackendChoice::Swiftui, BackendUpdateStatus::Updated);
+    let mut report = BackendUpdateReport::new(BackendChoice::Apple, BackendUpdateStatus::Updated);
     report.from_version = previous_version;
     report.to_version = Some(latest.to_string());
     if let DependencyUpgradeOutcome::Upgraded(message) = compatibility {
@@ -880,7 +879,7 @@ fn latest_cli_waterui_version() -> Result<Version> {
 const fn backend_targets(choice: BackendChoice) -> &'static [&'static str] {
     match choice {
         BackendChoice::Android => &["Android"],
-        BackendChoice::Swiftui => &["macOS", "iOS", "iPadOS", "watchOS", "tvOS", "visionOS"],
+        BackendChoice::Apple => &["macOS", "iOS", "iPadOS", "watchOS", "tvOS", "visionOS"],
         BackendChoice::Web => &["Web"],
     }
 }
