@@ -29,6 +29,7 @@ pub mod event;
 pub mod gesture;
 pub mod id;
 pub mod reactive;
+pub mod theme;
 mod ty;
 pub mod views;
 #[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
