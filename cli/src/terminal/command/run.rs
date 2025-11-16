@@ -67,8 +67,6 @@ enum PlatformArg {
     #[value(alias = "vision")]
     Visionos,
     Android,
-    #[value(alias = "terminal")]
-    Tui,
 }
 
 impl From<PlatformArg> for PlatformKind {
@@ -82,7 +80,6 @@ impl From<PlatformArg> for PlatformKind {
             PlatformArg::Tvos => Self::Tvos,
             PlatformArg::Visionos => Self::Visionos,
             PlatformArg::Android => Self::Android,
-            PlatformArg::Tui => Self::Tui,
         }
     }
 }
@@ -216,12 +213,6 @@ fn prompt_for_backend(config: &Config) -> Result<BackendChoice> {
             "Android".to_string(),
         ));
     }
-    if config.backends.tui.is_some() {
-        options.push((
-            BackendChoice::Platform(Platform::Tui),
-            "Terminal (TUI)".to_string(),
-        ));
-    }
 
     if options.is_empty() {
         bail!(
@@ -263,17 +254,28 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
     }
 
     let mut spinner = ui::spinner("Scanning Apple devices...");
+    let scan_started = Instant::now();
+    debug!("Starting Apple device scan for prompt_for_apple_platform");
     let devices = match device::list_devices() {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Apple device scan for prompt_for_apple_platform completed in {:?} with {} device(s)",
+                scan_started.elapsed(),
+                list.len()
+            );
             list
         }
         Err(err) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Apple device scan for prompt_for_apple_platform failed after {:?}: {err:?}",
+                scan_started.elapsed()
+            );
             return Err(err);
         }
     };
@@ -359,7 +361,7 @@ fn toolchain_targets_for_platform(platform: Platform) -> Vec<CheckTarget> {
 }
 
 const fn platform_supports_native_hot_reload(platform: Platform) -> bool {
-    platform.is_apple_platform() || matches!(platform, Platform::Android | Platform::Tui)
+    platform.is_apple_platform() || matches!(platform, Platform::Android)
 }
 
 fn hot_reload_target(platform: Platform) -> Option<String> {
@@ -961,17 +963,28 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
     }
 
     let mut spinner = ui::spinner("Scanning Apple devices...");
+    let scan_started = Instant::now();
+    debug!("Starting Apple device scan for apple_simulator_candidates ({platform:?})");
     let devices = match device::list_devices() {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Apple device scan for apple_simulator_candidates ({platform:?}) completed in {:?} with {} device(s)",
+                scan_started.elapsed(),
+                list.len()
+            );
             list
         }
         Err(err) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Apple device scan for apple_simulator_candidates ({platform:?}) failed after {:?}: {err:?}",
+                scan_started.elapsed()
+            );
             return Err(err);
         }
     };
@@ -1017,17 +1030,28 @@ fn prompt_for_apple_device(platform: Platform) -> Result<String> {
 
 fn prompt_for_android_device() -> Result<AndroidSelection> {
     let mut spinner = ui::spinner("Scanning Android devices...");
+    let scan_started = Instant::now();
+    debug!("Starting Android device scan for prompt_for_android_device");
     let devices = match device::list_devices() {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Android device scan for prompt_for_android_device completed in {:?} with {} device(s)",
+                scan_started.elapsed(),
+                list.len()
+            );
             list
         }
         Err(err) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
             }
+            debug!(
+                "Android device scan for prompt_for_android_device failed after {:?}: {err:?}",
+                scan_started.elapsed()
+            );
             return Err(err);
         }
     };
