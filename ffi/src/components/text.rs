@@ -1,7 +1,10 @@
 use crate::array::WuiArray;
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use crate::{IntoFFI, WuiEnv, WuiStr, ffi_computed, ffi_reactive};
+use crate::{
+    IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive,
+    ffi_watcher_ctor,
+};
 use alloc::vec::Vec;
 use waterui::view::ConfigurableView;
 use waterui_text::font::{Font, FontWeight, ResolvedFont};
@@ -13,6 +16,14 @@ into_ffi! {
     pub struct WuiResolvedFont {
         size: f32,
         weight: WuiFontWeight,
+    }
+}
+
+impl IntoRust for WuiResolvedFont {
+    type Rust = ResolvedFont;
+    unsafe fn into_rust(self) -> Self::Rust {
+        let weight = unsafe { self.weight.into_rust() };
+        ResolvedFont::new(self.size, weight)
     }
 }
 
@@ -76,6 +87,7 @@ impl IntoFFI for StyledStr {
 }
 
 ffi_computed!(StyledStr, WuiStyledStr);
+ffi_watcher_ctor!(StyledStr, WuiStyledStr);
 
 into_ffi! {
     TextConfig,
@@ -97,6 +109,8 @@ impl IntoFFI for Text {
 native_view!(Text, WuiText);
 
 ffi_computed!(ResolvedFont, WuiResolvedFont);
+ffi_computed_ctor!(ResolvedFont, WuiResolvedFont);
+ffi_watcher_ctor!(ResolvedFont, WuiResolvedFont);
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn waterui_resolve_font(

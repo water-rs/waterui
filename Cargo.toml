@@ -4,9 +4,8 @@ members = [
     "core",
     "components/*",
     "utils/*",
-    "backends/web",
     "backends/tui",
-    "render_utils",
+    "backends/hydrolysis",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
     "demo",
@@ -75,13 +74,15 @@ waterui-navigation = { version = "0.1.0", path = "components/navigation" }
 waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
 waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-tui = { version = "0.1.0", path = "backends/tui" }
-waterui-render-utils = { version = "0.1.0", path = "render_utils" }
+hydrolysis = { version = "0.1.0", path = "backends/hydrolysis" }
 waterui = { version = "0.1.0", path = "." }
 waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0"
 time = "0.3"
+tiny-skia = "0.11"
+vello = "0.2"
 
 [dependencies]
 nami.workspace = true
@@ -104,6 +105,7 @@ libloading = "0.8"
 tungstenite = "0.28.0"
 thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4"] }
+serde_json = "1.0"
 
 [features]
 default = []
