@@ -52,7 +52,7 @@ pub struct CreateArgs {
     #[arg(short, long)]
     pub yes: bool,
 
-    /// Backends to include (android, web, swiftui). Can be provided multiple times or as a comma-separated list.
+    /// Backends to include (android, web, apple). Can be provided multiple times or as a comma-separated list.
     #[arg(long = "backend", value_enum, value_delimiter = ',', num_args = 1..)]
     pub backends: Vec<BackendChoice>,
 }
@@ -61,8 +61,8 @@ pub struct CreateArgs {
 pub enum BackendChoice {
     #[clap(name = "web")]
     Web,
-    #[clap(name = "swiftui")]
-    Swiftui,
+    #[clap(name = "apple")]
+    Apple,
     #[clap(name = "android")]
     Android,
 }
@@ -72,7 +72,7 @@ impl BackendChoice {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Web => "Web",
-            Self::Swiftui => "Apple",
+            Self::Apple => "Apple",
             Self::Android => "Android",
         }
     }
@@ -175,7 +175,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
     let selected_backends: Vec<BackendChoice> = if args.backends.is_empty() {
         let available_backends = [
             BackendChoice::Web,
-            BackendChoice::Swiftui,
+            BackendChoice::Apple,
             BackendChoice::Android,
         ];
         let defaults = vec![true; available_backends.len()];
@@ -221,7 +221,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         ui::kv("Application", &display_name);
         ui::kv("Author", &author);
         ui::kv("Crate name", &crate_name);
-        if selected_backends.contains(&BackendChoice::Swiftui) {
+        if selected_backends.contains(&BackendChoice::Apple) {
             ui::kv("Xcode scheme", &crate_name);
         }
         ui::kv("Bundle ID", &bundle_identifier);
@@ -298,7 +298,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
             }
-            BackendChoice::Swiftui => {
+            BackendChoice::Apple => {
                 swift::create_xcode_project(
                     &project_dir,
                     &app_name,
