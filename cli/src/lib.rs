@@ -6,6 +6,7 @@
 pub mod platform;
 
 pub mod backend;
+pub mod crash;
 pub mod device;
 pub mod doctor;
 pub(crate) mod installer;
