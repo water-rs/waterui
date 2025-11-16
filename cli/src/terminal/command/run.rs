@@ -299,12 +299,23 @@ fn prompt_for_backend(config: &Config) -> Result<BackendChoice> {
         );
     }
 
+    let default_index = default_backend_index(&options);
     let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select a backend to run")
-        .items(&labels)
-        .default(default_backend_index(&options))
-        .interact()?;
+    let selection = if is_interactive_terminal() {
+        Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a backend to run")
+            .items(&labels)
+            .default(default_index)
+            .interact()?
+    } else {
+        if !output::global_output_format().is_json() {
+            ui::info(format!(
+                "Non-interactive terminal detected; using {}.",
+                options[default_index].1
+            ));
+        }
+        default_index
+    };
 
     Ok(options[selection].0)
 }
@@ -398,11 +409,21 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
     }
 
     let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select an Apple target")
-        .items(&labels)
-        .default(0)
-        .interact()?;
+    let selection = if is_interactive_terminal() {
+        Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select an Apple target")
+            .items(&labels)
+            .default(0)
+            .interact()?
+    } else {
+        if !output::global_output_format().is_json() {
+            ui::info(format!(
+                "Non-interactive terminal detected; using {}.",
+                options[0].1
+            ));
+        }
+        0
+    };
 
     Ok(options[selection].0)
 }
@@ -1134,6 +1155,24 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
 
 fn prompt_for_apple_device(platform: Platform) -> Result<String> {
     let candidates = apple_simulator_candidates(platform)?;
+    if candidates.len() == 1 {
+        announce_apple_auto_choice(
+            &candidates[0],
+            platform,
+            AutoSelectionReason::SingleCandidate,
+        );
+        return Ok(candidates[0].name.clone());
+    }
+
+    if !is_interactive_terminal() {
+        announce_apple_auto_choice(
+            &candidates[0],
+            platform,
+            AutoSelectionReason::NonInteractive,
+        );
+        return Ok(candidates[0].name.clone());
+    }
+
     let theme = ColorfulTheme::default();
     let options: Vec<String> = candidates
         .iter()
@@ -1211,16 +1250,13 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
         }
     });
 
-    let interactive = atty::is(Stream::Stdin) && atty::is(Stream::Stdout);
-
-    if !interactive {
-        bail!(
-            "Cannot prompt for Android devices in non-interactive mode. Run `water devices` to list targets and pass --device <name> to `water run android`."
-        );
+    if candidates.len() == 1 {
+        announce_android_auto_choice(&candidates[0], AutoSelectionReason::SingleCandidate);
+        return Ok(selection_from_device_info(&candidates[0]));
     }
 
-    if candidates.len() == 1 {
-        announce_android_auto_choice(&candidates[0]);
+    if !is_interactive_terminal() {
+        announce_android_auto_choice(&candidates[0], AutoSelectionReason::NonInteractive);
         return Ok(selection_from_device_info(&candidates[0]));
     }
 
@@ -1249,13 +1285,13 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
     Ok(selection_from_device_info(&candidates[selection]))
 }
 
-fn announce_android_auto_choice(candidate: &DeviceInfo) {
+fn announce_android_auto_choice(candidate: &DeviceInfo, reason: AutoSelectionReason) {
     if output::global_output_format().is_json() {
         return;
     }
 
     let label = describe_android_candidate(candidate);
-    ui::info(format!("Using {label}."));
+    ui::info(format!("{} {label}.", reason.message_prefix()));
 }
 
 fn describe_android_candidate(info: &DeviceInfo) -> String {
@@ -1282,6 +1318,43 @@ fn selection_from_device_info(info: &DeviceInfo) -> AndroidSelection {
         },
         kind: info.kind.clone(),
     }
+}
+
+fn announce_apple_auto_choice(
+    candidate: &DeviceInfo,
+    platform: Platform,
+    reason: AutoSelectionReason,
+) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+
+    let platform_name = apple_platform_display_name(platform);
+    ui::info(format!(
+        "{} {} for {}.",
+        reason.message_prefix(),
+        candidate.name,
+        platform_name
+    ));
+}
+
+#[derive(Copy, Clone)]
+enum AutoSelectionReason {
+    SingleCandidate,
+    NonInteractive,
+}
+
+impl AutoSelectionReason {
+    const fn message_prefix(self) -> &'static str {
+        match self {
+            Self::SingleCandidate => "Using",
+            Self::NonInteractive => "Non-interactive terminal detected; using",
+        }
+    }
+}
+
+fn is_interactive_terminal() -> bool {
+    atty::is(Stream::Stdin) && atty::is(Stream::Stdout)
 }
 
 fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
