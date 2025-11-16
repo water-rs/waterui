@@ -3,9 +3,9 @@ package __BUNDLE_IDENTIFIER__
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import dev.waterui.android.runtime.WaterUiRoot
+import dev.waterui.android.runtime.WaterUiRootView
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
+import dev.waterui.android.runtime.configureHotReloadDirectory
 import dev.waterui.android.runtime.configureHotReloadEndpoint
 import java.lang.Runtime
 
@@ -55,9 +55,8 @@ class MainActivity : ComponentActivity() {
             configureHotReloadEndpoint(hotReloadHost, hotReloadPort)
         }
 
-        setContent {
-            Log.i(TAG, "WATERUI_ROOT_READY")
-            WaterUiRoot()
-        }
+        val rootView = WaterUiRootView(this)
+        setContentView(rootView)
+        Log.i(TAG, "WATERUI_ROOT_READY")
     }
 }
