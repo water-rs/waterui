@@ -1,0 +1,33 @@
+[package]
+name = "hydrolysis"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui-core.workspace = true
+log.workspace = true
+nami.workspace = true
+tiny-skia = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+waterui-color.workspace = true
+waterui-text.workspace = true
+waterui-layout.workspace = true
+waterui.workspace = true
+waterui-controls.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = ["dep:tiny-skia"]
+gpu = ["dep:vello", "dep:wgpu"]
+
+[lints]
+workspace = true

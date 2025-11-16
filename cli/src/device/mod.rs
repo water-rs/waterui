@@ -7,6 +7,7 @@ use which::which;
 
 use crate::{
     backend,
+    crash::CrashReport,
     platform::{AnyPlatform, Platform},
     project::{Project, RunOptions},
 };
@@ -26,8 +27,13 @@ pub trait Device: Send + Sync {
     /// Run the packaged application artifact on this device.
     ///
     /// # Errors
-    /// Returns an error if launching fails.
-    fn run(&self, project: &Project, artifact: &Path, options: &RunOptions) -> eyre::Result<()>;
+    /// Returns an error if launching fails. On success, returns an optional CrashReport if the app crashed during monitoring.
+    fn run(
+        &self,
+        project: &Project,
+        artifact: &Path,
+        options: &RunOptions,
+    ) -> eyre::Result<Option<CrashReport>>;
     fn platform(&self) -> &Self::Platform;
 }
 

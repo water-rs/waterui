@@ -11,9 +11,11 @@ use which::which;
 
 use crate::{
     backend::{AnyBackend, Backend, scan_backends},
+    crash::CrashReport,
     device::Device,
     doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
+    util,
 };
 
 #[derive(Debug)]
@@ -52,10 +54,12 @@ pub struct HotReloadOptions {
 }
 
 /// Structured description of a successful `Project::run`.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct RunReport {
     /// Absolute path to the packaged artifact executed on the target device.
     pub artifact: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_report: Option<CrashReport>,
 }
 
 /// Build/run lifecycle milestones surfaced while executing [`Project::run`].
@@ -210,15 +214,18 @@ impl Project {
         observer(RunStage::PrepareDevice);
         device.prepare(self, &options)?;
         observer(RunStage::BuildRust);
-        self.build_rust(platform, options.release)?;
+        self.build_rust(platform, options.release, options.hot_reload)?;
 
         observer(RunStage::Package);
         let app_path = platform.package(self, options.release)?;
 
         observer(RunStage::Launch);
-        device.run(self, &app_path, &options)?;
+        let crash_report = device.run(self, &app_path, &options)?;
 
-        Ok(RunReport { artifact: app_path })
+        Ok(RunReport {
+            artifact: app_path,
+            crash_report,
+        })
     }
 
     /// Package the project for the specified platform.
@@ -236,7 +243,7 @@ impl Project {
         check_requirements()?;
         platform.check_requirements(self)?;
 
-        self.build_rust(platform, release)?;
+        self.build_rust(platform, release, HotReloadOptions::default())?;
 
         let artifact = platform.package(self, release)?;
         Ok(artifact)
@@ -296,7 +303,12 @@ impl Project {
         Ok(())
     }
 
-    fn build_rust(&self, platform: &impl Platform, release: bool) -> eyre::Result<()> {
+    fn build_rust(
+        &self,
+        platform: &impl Platform,
+        release: bool,
+        hot_reload: HotReloadOptions,
+    ) -> eyre::Result<()> {
         let target_triple = platform.target_triple();
         // use cargo to build the project for the specified target
         let mut cmd = Command::new("cargo");
@@ -308,6 +320,7 @@ impl Project {
         if release {
             cmd.arg("--release");
         }
+        util::configure_hot_reload_env(&mut cmd, hot_reload.enabled, hot_reload.port);
         let status = cmd.status()?;
 
         if !status.success() {

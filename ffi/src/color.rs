@@ -1,4 +1,7 @@
-use crate::{IntoFFI, WuiEnv, ffi_computed, ffi_reactive, reactive::WuiComputed};
+use crate::{
+    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive, ffi_watcher_ctor,
+    reactive::WuiComputed,
+};
 
 use waterui::Color;
 use waterui_color::ResolvedColor;
@@ -18,12 +21,28 @@ into_ffi!(
         green: f32,
         blue: f32,
         opacity: f32,
+        headroom: f32,
     }
 );
+
+impl IntoRust for WuiResolvedColor {
+    type Rust = ResolvedColor;
+    unsafe fn into_rust(self) -> Self::Rust {
+        ResolvedColor {
+            red: self.red,
+            green: self.green,
+            blue: self.blue,
+            opacity: self.opacity,
+            headroom: self.headroom,
+        }
+    }
+}
 
 ffi_view!(Color, *mut WuiColor);
 
 ffi_computed!(ResolvedColor, WuiResolvedColor);
+ffi_watcher_ctor!(ResolvedColor, WuiResolvedColor);
+ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
 ffi_reactive!(Color, *mut WuiColor);
 

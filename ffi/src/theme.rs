@@ -1,48 +1,63 @@
-use crate::reactive::WuiComputed;
-use crate::{IntoFFI, WuiEnv};
-use waterui::SignalExt;
-use waterui::theme::color;
+use alloc::boxed::Box;
+
+use crate::{WuiEnv, reactive::WuiComputed};
+use waterui::theme::{self, color, install_color_signal_for, install_typography_signal_for};
 use waterui_color::ResolvedColor;
-use waterui_text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title};
+use waterui_text::font::{Body, Caption, Headline, ResolvedFont, Subheadline, Title};
 
-macro_rules! theme_color_fn {
-    ($name:ident, $token:ty) => {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedColor> {
-            let env = &*env;
-            let computed = <$token>::default().resolve(env).computed();
-            computed.into_ffi()
-        }
-    };
+fn take_computed<T>(ptr: *mut WuiComputed<T>) -> Option<waterui::Computed<T>> {
+    unsafe { ptr.as_mut().map(|_| Box::from_raw(ptr).0) }
 }
 
-macro_rules! theme_font_fn {
-    ($name:ident, $token:ty) => {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedFont> {
-            let env = &*env;
-            let token: $token = $token;
-            let computed = token.resolve(env).computed();
-            computed.into_ffi()
-        }
-    };
+fn install_color_token<T>(env: &mut waterui::Environment, ptr: *mut WuiComputed<ResolvedColor>)
+where
+    T: theme::ThemeColorKey,
+{
+    if let Some(computed) = take_computed(ptr) {
+        install_color_signal_for::<T>(env, computed);
+    }
 }
 
-theme_color_fn!(waterui_theme_color_background, color::Background);
-theme_color_fn!(waterui_theme_color_surface, color::Surface);
-theme_color_fn!(waterui_theme_color_surface_variant, color::SurfaceVariant);
-theme_color_fn!(waterui_theme_color_border, color::Border);
-theme_color_fn!(waterui_theme_color_foreground, color::Foreground);
-theme_color_fn!(waterui_theme_color_muted_foreground, color::MutedForeground);
-theme_color_fn!(waterui_theme_color_accent, color::Accent);
-theme_color_fn!(
-    waterui_theme_color_accent_foreground,
-    color::AccentForeground
-);
+fn install_font_token<T>(env: &mut waterui::Environment, ptr: *mut WuiComputed<ResolvedFont>)
+where
+    T: 'static,
+{
+    if let Some(computed) = take_computed(ptr) {
+        install_typography_signal_for::<T>(env, computed);
+    }
+}
 
-theme_font_fn!(waterui_theme_font_body, Body);
-theme_font_fn!(waterui_theme_font_title, Title);
-theme_font_fn!(waterui_theme_font_headline, Headline);
-theme_font_fn!(waterui_theme_font_subheadline, Subheadline);
-theme_font_fn!(waterui_theme_font_caption, Caption);
-theme_font_fn!(waterui_theme_font_footnote, Footnote);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_theme(
+    env: *mut WuiEnv,
+    background: *mut WuiComputed<ResolvedColor>,
+    surface: *mut WuiComputed<ResolvedColor>,
+    surface_variant: *mut WuiComputed<ResolvedColor>,
+    border: *mut WuiComputed<ResolvedColor>,
+    foreground: *mut WuiComputed<ResolvedColor>,
+    muted_foreground: *mut WuiComputed<ResolvedColor>,
+    accent: *mut WuiComputed<ResolvedColor>,
+    accent_foreground: *mut WuiComputed<ResolvedColor>,
+    body: *mut WuiComputed<ResolvedFont>,
+    title: *mut WuiComputed<ResolvedFont>,
+    headline: *mut WuiComputed<ResolvedFont>,
+    subheadline: *mut WuiComputed<ResolvedFont>,
+    caption: *mut WuiComputed<ResolvedFont>,
+) {
+    let env = unsafe { &mut *env };
+    // Store a Theme baseline so queries like `theme(env)` still succeed.
+    env.insert(theme::Theme::light());
+    install_color_token::<color::Background>(env, background);
+    install_color_token::<color::Surface>(env, surface);
+    install_color_token::<color::SurfaceVariant>(env, surface_variant);
+    install_color_token::<color::Border>(env, border);
+    install_color_token::<color::Foreground>(env, foreground);
+    install_color_token::<color::MutedForeground>(env, muted_foreground);
+    install_color_token::<color::Accent>(env, accent);
+    install_color_token::<color::AccentForeground>(env, accent_foreground);
+    install_font_token::<Body>(env, body);
+    install_font_token::<Title>(env, title);
+    install_font_token::<Headline>(env, headline);
+    install_font_token::<Subheadline>(env, subheadline);
+    install_font_token::<Caption>(env, caption);
+}
