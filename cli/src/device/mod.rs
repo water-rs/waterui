@@ -113,7 +113,7 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
     }
 
     let output = Command::new("xcrun")
-        .args(["xcdevice", "list"])
+        .args(["xcdevice", "list", "--timeout=1"])
         .output()
         .context("failed to execute xcrun xcdevice list")?;
     if !output.status.success() {
