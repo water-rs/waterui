@@ -1,8 +1,7 @@
-//! Render utilities for handling view dispatching.
+//! View dispatching helpers shared by every renderer pipeline.
 //!
-//! This crate provides utilities for rendering backends to dispatch view types
-//! to appropriate rendering handlers. It includes a generic view dispatcher
-//! that can register handlers for specific view types and route them during rendering.
+//! The dispatcher maps [`AnyView`](waterui_core::AnyView) instances to backend-specific handlers.
+//! Hydrolysis uses it while parsing the public view tree into render nodes.
 
 use core::{any::TypeId, fmt::Debug};
 use std::collections::HashMap;
@@ -13,14 +12,19 @@ use waterui_core::{AnyView, Environment, View};
 type HandlerFn<T, C, R> = Box<dyn Fn(&mut T, C, AnyView, &Environment) -> R>;
 
 /// A dispatcher that can register and dispatch views based on their types.
+#[derive(Default)]
 pub struct ViewDispatcher<T, C, R> {
     state: T,
     map: HashMap<TypeId, HandlerFn<T, C, R>>,
 }
 
-impl<T: Default, C, R> Default for ViewDispatcher<T, C, R> {
-    fn default() -> Self {
-        Self::new(T::default())
+impl<T: Default, C, R> ViewDispatcher<T, C, R> {
+    /// Creates a new [`ViewDispatcher`] with the given default state.
+    pub fn new() -> Self {
+        Self {
+            state: T::default(),
+            map: HashMap::new(),
+        }
     }
 }
 
@@ -36,8 +40,8 @@ impl<T, C, R> Debug for ViewDispatcher<T, C, R> {
 }
 
 impl<T, C, R> ViewDispatcher<T, C, R> {
-    /// Creates a new [`ViewDispatcher`] with the given state.
-    pub fn new(state: T) -> Self {
+    /// Creates a new [`ViewDispatcher`] with the provided state.
+    pub fn with_state(state: T) -> Self {
         Self {
             state,
             map: HashMap::new(),

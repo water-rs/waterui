@@ -33,7 +33,20 @@ pub enum AppleTarget {
 #[derive(Clone, Debug)]
 pub struct AppleSimulatorTarget {
     pub kind: AppleSimulatorKind,
-    pub device_name: String,
+    pub device_identifier: String,
+    pub reference_is_udid: bool,
+}
+
+impl AppleSimulatorTarget {
+    #[must_use]
+    pub fn reference(&self) -> &str {
+        &self.device_identifier
+    }
+
+    #[must_use]
+    pub const fn destination_selector(&self) -> &'static str {
+        if self.reference_is_udid { "id" } else { "name" }
+    }
 }
 
 /// High-level simulator families supported by the Apple backend.
@@ -162,9 +175,10 @@ impl Platform for ApplePlatform {
             }
             AppleTarget::Simulator(sim) => {
                 build_cmd.arg("-destination").arg(format!(
-                    "platform={},name={}",
+                    "platform={},{}={}",
                     sim.kind.destination_label(),
-                    sim.device_name
+                    sim.destination_selector(),
+                    sim.reference()
                 ));
                 disable_code_signing(&mut build_cmd);
             }
