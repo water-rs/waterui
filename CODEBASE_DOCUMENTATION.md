@@ -175,6 +175,19 @@ Each backend consumes the shared renderer utilities in `render_utils` and platfo
 
 ---
 
+## Hot Reload Integration Notes
+
+All hot reload logic is implemented inside Rust (`waterui::hot_reload::Hotreload`). Native shells (Android, macOS, simulator targets) have only two responsibilities:
+
+1. **Endpoint injection** – call `waterui_configure_hot_reload_endpoint(host, port)` (exposed as `configureHotReloadEndpoint` in Kotlin/Swift). This tells the Rust client which `ws://host:port/hot-reload-native` endpoint the CLI is serving so it can stream updated shared libraries. On Android emulators/devices, the CLI performs `adb reverse tcp:PORT PORT`, then passes `host=127.0.0.1` through the launch intent.
+2. **Writable/executable directory** – call `waterui_configure_hot_reload_directory(path)` when the default temp directory is not writable/executable (e.g., Android). Point it at `context.codeCacheDir` or an equivalent cache folder so the Rust runtime can write updated `.so` files before `dlopen`.
+
+If a runtime is linked against an older Rust crate that does not yet export `waterui_configure_hot_reload_directory`, the JNI bridge treats it as optional: the call becomes a no-op and Rust falls back to its built-in temp directory.
+
+In all cases the host platform should **not** create its own WebSocket loop or call `dlopen` directly—those steps remain in Rust to keep the policy consistent across macOS, iOS simulator, Android, and future targets.
+
+---
+
 ## FFI Interface
 
 The [`ffi`](ffi/src/lib.rs) crate defines traits such as `IntoFFI`, `IntoRust`, and `OpaqueType` for bridging Rust types into stable C ABI representations. The exported `waterui_init`/`waterui_main` functions bootstrap the runtime, initialize executors, and convert Rust views (`AnyView`) into opaque pointers that native shells consume. This crate is `no_std`, enabling integration with restricted environments.
