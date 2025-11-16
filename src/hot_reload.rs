@@ -4,15 +4,20 @@ mod enabled {
     use executor_core::{Task, spawn_local};
     use libloading::Library;
     use log::{debug, warn};
+    use serde::Serialize;
+    use std::panic::{self, PanicInfo};
+    use std::sync::mpsc;
     use std::{
+        backtrace::Backtrace,
         fs::File,
-        io::Write,
+        io::{self, Write},
         path::{Path, PathBuf},
-        sync::{Mutex, OnceLock},
-        thread::spawn,
+        sync::{Mutex, Once, OnceLock},
+        thread,
+        time::Duration,
     };
     use thiserror::Error;
-    use tungstenite::connect;
+    use tungstenite::{Message, connect, stream::MaybeTlsStream};
     use waterui_core::{AnyView, Dynamic, View, event::Associated};
 
     /// A view that can be hot-reloaded at runtime.
@@ -45,10 +50,16 @@ mod enabled {
             })
             .detach();
 
+            install_panic_forwarder();
             if let Some(endpoint) = endpoint {
-                // Start the hot-reload daemon in a separate thread
-                spawn(move || {
-                    if let Err(err) = hot_reload_daemon(&trigger, &endpoint) {
+                let daemon_trigger = trigger.clone();
+                let daemon_endpoint = endpoint.clone();
+                let (outbound_tx, outbound_rx) = mpsc::channel();
+                register_outbound_sender(outbound_tx);
+                thread::spawn(move || {
+                    let result = hot_reload_daemon(daemon_trigger, daemon_endpoint, outbound_rx);
+                    clear_outbound_sender();
+                    if let Err(err) = result {
                         warn!("Failed to launch hot reload daemon: {err}");
                     }
                 });
@@ -94,19 +105,42 @@ mod enabled {
     }
 
     fn hot_reload_daemon(
-        trigger: &HotReloadTrigger,
-        endpoint: &HotReloadEndpoint,
+        trigger: HotReloadTrigger,
+        endpoint: HotReloadEndpoint,
+        outbound_rx: mpsc::Receiver<String>,
     ) -> Result<(), Error> {
         // The app is the client, connecting to the CLI.
         let url = format!("ws://{}:{}/hot-reload-native", endpoint.host, endpoint.port);
 
         let (mut socket, _) = connect(url)?;
+        if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
+            let _ = stream.get_mut().set_nonblocking(true);
+        }
 
-        while let Ok(msg) = socket.read() {
-            if msg.is_binary() {
-                let data = msg.into_data();
-                let lib_path = create_library(&data);
-                trigger.trigger_reload(lib_path);
+        loop {
+            while let Ok(text) = outbound_rx.try_recv() {
+                if let Err(err) = socket.write_message(Message::Text(text)) {
+                    warn!("Failed to forward message to CLI: {err}");
+                    return Err(err.into());
+                }
+            }
+
+            match socket.read_message() {
+                Ok(Message::Binary(data)) => {
+                    let lib_path = create_library(&data);
+                    trigger.trigger_reload(lib_path);
+                }
+                Ok(Message::Ping(payload)) => {
+                    let _ = socket.write_message(Message::Pong(payload));
+                }
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(ref err)) if err.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(tungstenite::Error::AlreadyClosed)
+                | Err(tungstenite::Error::ConnectionClosed) => break,
+                Err(err) => return Err(err.into()),
             }
         }
 
@@ -159,6 +193,8 @@ mod enabled {
 
     static HOT_RELOAD_OVERRIDE: OnceLock<Mutex<Option<HotReloadEndpoint>>> = OnceLock::new();
     static HOT_RELOAD_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    static OUTBOUND_CHANNEL: OnceLock<Mutex<Option<mpsc::Sender<String>>>> = OnceLock::new();
+    static PANIC_FORWARDER: Once = Once::new();
 
     /// Configure the hot reload endpoint programmatically.
     ///
@@ -188,6 +224,45 @@ mod enabled {
         *guard = Some(path.into());
     }
 
+    fn register_outbound_sender(sender: mpsc::Sender<String>) {
+        let slot = OUTBOUND_CHANNEL.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().expect("outbound sender mutex poisoned");
+        *guard = Some(sender);
+    }
+
+    fn clear_outbound_sender() {
+        if let Some(slot) = OUTBOUND_CHANNEL.get() {
+            if let Ok(mut guard) = slot.lock() {
+                guard.take();
+            }
+        }
+    }
+
+    fn outbound_sender() -> Option<mpsc::Sender<String>> {
+        OUTBOUND_CHANNEL
+            .get()
+            .and_then(|slot| slot.lock().ok().and_then(|sender| sender.clone()))
+    }
+
+    fn install_panic_forwarder() {
+        PANIC_FORWARDER.call_once(|| {
+            let previous_hook = panic::take_hook();
+            panic::set_hook(Box::new(move |info| {
+                report_panic(info);
+                previous_hook(info);
+            }));
+        });
+    }
+
+    fn report_panic(info: &PanicInfo) {
+        if let Some(sender) = outbound_sender() {
+            let event = ClientEvent::from_panic(info);
+            if let Ok(text) = serde_json::to_string(&event) {
+                let _ = sender.send(text);
+            }
+        }
+    }
+
     fn resolve_endpoint() -> Option<HotReloadEndpoint> {
         if hot_reload_disabled() {
             return None;
@@ -197,6 +272,59 @@ mod enabled {
             .get()
             .and_then(|slot| slot.lock().ok().and_then(|cfg| cfg.clone()))
             .or_else(endpoint_from_env)
+    }
+
+    #[derive(Serialize)]
+    #[serde(tag = "type")]
+    enum ClientEvent {
+        #[serde(rename = "panic")]
+        Panic(PanicReport),
+    }
+
+    impl ClientEvent {
+        fn from_panic(info: &PanicInfo) -> Self {
+            Self::Panic(PanicReport::from(info))
+        }
+    }
+
+    #[derive(Serialize)]
+    struct PanicReport {
+        message: String,
+        location: Option<PanicLocation>,
+        thread: Option<String>,
+        backtrace: Option<String>,
+    }
+
+    impl From<&PanicInfo<'_>> for PanicReport {
+        fn from(info: &PanicInfo<'_>) -> Self {
+            Self {
+                message: panic_message(info),
+                location: info.location().map(|loc| PanicLocation {
+                    file: loc.file().to_string(),
+                    line: loc.line(),
+                    column: loc.column(),
+                }),
+                thread: thread::current().name().map(ToString::to_string),
+                backtrace: Some(Backtrace::force_capture().to_string()),
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    struct PanicLocation {
+        file: String,
+        line: u32,
+        column: u32,
+    }
+
+    fn panic_message(info: &PanicInfo<'_>) -> String {
+        if let Some(message) = info.payload().downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = info.payload().downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "Unknown panic payload".to_string()
+        }
     }
 
     fn endpoint_from_env() -> Option<HotReloadEndpoint> {
