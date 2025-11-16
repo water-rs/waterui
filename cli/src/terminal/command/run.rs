@@ -13,6 +13,11 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::{self, File},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use waterui_cli::{
     backend::android::configure_rust_android_linker_env,
     device::{
@@ -25,7 +30,7 @@ use waterui_cli::{
     },
     output,
     platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
-    project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunStage},
+    project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
     util as cli_util,
 };
 type Platform = PlatformKind;
@@ -40,7 +45,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc,
+        mpsc::{self, TryRecvError},
     },
     thread,
     time::{Duration, Instant},
@@ -84,11 +89,42 @@ impl From<PlatformArg> for PlatformKind {
     }
 }
 
+impl From<PlatformKind> for PlatformArg {
+    fn from(kind: PlatformKind) -> Self {
+        match kind {
+            PlatformKind::Web => Self::Web,
+            PlatformKind::Macos => Self::Macos,
+            PlatformKind::Ios => Self::Ios,
+            PlatformKind::Ipados => Self::Ipados,
+            PlatformKind::Watchos => Self::Watchos,
+            PlatformKind::Tvos => Self::Tvos,
+            PlatformKind::Visionos => Self::Visionos,
+            PlatformKind::Android => Self::Android,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum RunTarget {
+    Platform(PlatformArg),
+    Again,
+}
+
+fn parse_run_target(value: &str) -> Result<RunTarget, String> {
+    if value.eq_ignore_ascii_case("again") {
+        return Ok(RunTarget::Again);
+    }
+
+    PlatformArg::from_str(value, true)
+        .map(RunTarget::Platform)
+        .map_err(|_| format!("Invalid platform '{value}'. Use a platform name or 'again'."))
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
-    /// Platform to run on
-    #[arg(value_enum)]
-    platform: Option<PlatformArg>,
+    /// Platform to run on (or `again` to repeat the previous `water run`)
+    #[arg(value_name = "PLATFORM|again", value_parser = parse_run_target)]
+    platform: Option<RunTarget>,
 
     /// Device to run on (e.g. a simulator name or device UDID)
     #[arg(long)]
@@ -125,6 +161,14 @@ pub struct RunArgs {
 /// Panics if the current working directory cannot be determined when `--project` is not set.
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: RunArgs) -> Result<()> {
+    if matches!(args.platform, Some(RunTarget::Again)) {
+        run_again(args)
+    } else {
+        run_fresh(args)
+    }
+}
+
+fn run_fresh(mut args: RunArgs) -> Result<()> {
     let project_dir = args
         .project
         .clone()
@@ -137,10 +181,19 @@ pub fn run(args: RunArgs) -> Result<()> {
         ui::section(format!("Running: {}", config.package.display_name));
     }
 
-    let mut platform = args.platform.map(PlatformKind::from);
+    let had_explicit_platform = matches!(args.platform, Some(RunTarget::Platform(_)));
+    let mut platform = match args.platform.take() {
+        Some(RunTarget::Platform(arg)) => Some(PlatformKind::from(arg)),
+        Some(RunTarget::Again) => unreachable!("run_again handled earlier"),
+        None => None,
+    };
     let device = args.device.clone();
+    let release = args.release;
+    let enable_sccache = !args.no_sccache;
+    let mold_requested = args.mold;
+    let hot_reload_requested = !args.no_hot_reload;
 
-    if is_json && args.platform.is_none() && device.is_none() {
+    if is_json && !had_explicit_platform && device.is_none() {
         bail!(
             "JSON output requires specifying --platform or --device to avoid interactive prompts."
         );
@@ -175,13 +228,39 @@ pub fn run(args: RunArgs) -> Result<()> {
         device,
         &project,
         &config,
-        args.release,
-        !args.no_hot_reload,
-        !args.no_sccache,
-        args.mold,
+        release,
+        hot_reload_requested,
+        enable_sccache,
+        mold_requested,
     )?;
 
     Ok(())
+}
+
+fn run_again(args: RunArgs) -> Result<()> {
+    if args.device.is_some() || args.release || args.no_sccache || args.mold || args.no_hot_reload {
+        bail!(
+            "`water run again` does not accept additional options. Re-run the original command without extra flags."
+        );
+    }
+
+    let project_dir = args
+        .project
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
+    let project = Project::open(&project_dir)?;
+    let snapshot = load_last_run(&project)?;
+    let replay_args = RunArgs {
+        platform: Some(RunTarget::Platform(snapshot.platform.into())),
+        device: snapshot.device.clone(),
+        project: args.project,
+        release: snapshot.release,
+        no_sccache: !snapshot.enable_sccache,
+        mold: snapshot.mold,
+        no_hot_reload: !snapshot.hot_reload,
+    };
+
+    run_fresh(replay_args)
 }
 
 #[derive(Clone, Copy)]
@@ -396,7 +475,7 @@ fn hot_reload_library_path(
 #[allow(clippy::too_many_lines)]
 fn run_platform(
     platform: Platform,
-    device: Option<String>,
+    mut device: Option<String>,
     project: &Project,
     config: &Config,
     release: bool,
@@ -405,6 +484,7 @@ fn run_platform(
     mold_requested: bool,
 ) -> Result<()> {
     let project_dir = project.root();
+    let mut recorded_device = device.clone();
     let hot_reload_target = hot_reload_target(platform);
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
@@ -436,10 +516,12 @@ fn run_platform(
 
     let mut server = None;
     let mut hot_reload_enabled = false;
+    let mut connection_events: Option<NativeConnectionEvents> = None;
     if hot_reload_requested {
         match Server::start(project_dir.to_path_buf()) {
             Ok(instance) => {
                 hot_reload_enabled = true;
+                connection_events = Some(instance.connection_events());
                 server = Some(instance);
             }
             Err(err) => {
@@ -531,7 +613,7 @@ Use --no-hot-reload to skip this step."
         },
     };
 
-    let artifact = match platform {
+    let run_report = match platform {
         Platform::Macos => {
             let swift_config = config.backends.swift.clone().ok_or_else(|| {
                 eyre!(
@@ -560,10 +642,11 @@ Use --no-hot-reload to skip this step."
                 ui::info(format!("Xcode scheme: {}", swift_config.scheme));
             }
             let simulator_kind = apple_simulator_kind(platform);
-            let device_name = match device {
+            let device_name = match device.take() {
                 Some(name) => name,
                 None => prompt_for_apple_device(platform)?,
             };
+            recorded_device = Some(device_name.clone());
             let scheme_name = swift_config.scheme.clone();
             let target_label = format!(
                 "{} ({})",
@@ -581,10 +664,15 @@ Use --no-hot-reload to skip this step."
                     "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend."
                 )
             })?;
-            let selection = match device {
+            let selection = match device.take() {
                 Some(name) => resolve_android_device(&name)?,
                 None => prompt_for_android_device()?,
             };
+            let stored_id = selection
+                .identifier
+                .clone()
+                .unwrap_or(selection.name.clone());
+            recorded_device = Some(stored_id);
             let platform_impl = AndroidPlatform::new(
                 android_config,
                 false,
@@ -598,8 +686,26 @@ Use --no-hot-reload to skip this step."
         Platform::Web => unreachable!(),
     };
 
+    if let Err(err) = persist_last_run(
+        project,
+        LastRunSnapshot {
+            platform,
+            device: recorded_device,
+            release,
+            hot_reload: hot_reload_requested,
+            enable_sccache,
+            mold: mold_requested,
+            timestamp: current_timestamp(),
+        },
+    ) {
+        warn!("Failed to record last run configuration: {err:?}");
+    }
+
     if !output::global_output_format().is_json() {
-        ui::success(format!("Application built: {}", artifact.display()));
+        ui::success(format!(
+            "Application built: {}",
+            run_report.artifact.display()
+        ));
 
         if hot_reload_enabled {
             ui::info("App launched with hot reload enabled");
@@ -610,14 +716,41 @@ Use --no-hot-reload to skip this step."
     }
 
     if hot_reload_enabled {
-        wait_for_interrupt()?;
+        if let Some(events) = &connection_events {
+            if !output::global_output_format().is_json() {
+                ui::info("Waiting for the app to connect to the hot reload server…");
+            }
+            wait_for_hot_reload_connection(events)?;
+        }
+        match wait_for_interrupt(connection_events)? {
+            WaitOutcome::Interrupted => {}
+            WaitOutcome::ConnectionLost(reason) => {
+                bail!(format_connection_loss_message(reason));
+            }
+        }
     }
 
     drop(watcher);
+    if let Some(crash) = &run_report.crash_report {
+        if !output::global_output_format().is_json() {
+            ui::warning(format!(
+                "App crashed — logs saved to {}",
+                crash.log_path.display()
+            ));
+            if let Some(summary) = &crash.summary {
+                ui::plain(format!("Crash summary: {summary}"));
+            }
+        }
+    }
+
+    if output::global_output_format().is_json() {
+        output::emit_json(&run_report)?;
+    }
+
     Ok(())
 }
 
-fn run_on_device<D>(project: &Project, device: D, options: RunOptions) -> Result<PathBuf>
+fn run_on_device<D>(project: &Project, device: D, options: RunOptions) -> Result<RunReport>
 where
     D: Device,
 {
@@ -629,14 +762,13 @@ fn run_on_device_with_observer<D, O>(
     device: D,
     options: RunOptions,
     observer: O,
-) -> Result<PathBuf>
+) -> Result<RunReport>
 where
     D: Device,
     O: FnMut(RunStage),
 {
     project
         .run_with_observer(&device, options, observer)
-        .map(|report| report.artifact)
         .map_err(convert_run_error)
 }
 
@@ -645,7 +777,7 @@ fn run_with_package_spinner<D>(
     device: D,
     options: RunOptions,
     spinner_msg: String,
-) -> Result<PathBuf>
+) -> Result<RunReport>
 where
     D: Device,
 {
@@ -859,7 +991,12 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
         ui::plain("Press Ctrl+C to stop the server");
     }
 
-    wait_for_interrupt()?;
+    match wait_for_interrupt(None)? {
+        WaitOutcome::Interrupted => {}
+        WaitOutcome::ConnectionLost(reason) => {
+            bail!(format_connection_loss_message(reason));
+        }
+    }
 
     if hot_reload {
         if let Ok(template_content) =
@@ -920,18 +1057,6 @@ fn apple_simulator_kind(platform: Platform) -> AppleSimulatorKind {
     }
 }
 
-fn wait_for_interrupt() -> Result<()> {
-    let (tx, rx) = mpsc::channel();
-    ctrlc::set_handler(move || {
-        let _ = tx.send(());
-    })
-    .context("failed to install Ctrl+C handler")?;
-
-    // Block until interrupt signal received
-    let _ = rx.recv();
-    Ok(())
-}
-
 const fn apple_platform_display_name(platform: Platform) -> &'static str {
     match platform {
         Platform::Ios => "iOS",
@@ -948,12 +1073,13 @@ fn apple_build_progress_message(
     scheme: &str,
     explicit_target: Option<&str>,
 ) -> String {
-    if let Some(target) = explicit_target {
-        format!("Building Xcode project \"{scheme}\" for {target}...")
-    } else {
-        let platform_name = apple_platform_display_name(platform);
-        format!("Building Xcode project \"{scheme}\" for {platform_name}...")
-    }
+    explicit_target.map_or_else(
+        || {
+            let platform_name = apple_platform_display_name(platform);
+            format!("Building Xcode project \"{scheme}\" for {platform_name}...")
+        },
+        |target| format!("Building Xcode project \"{scheme}\" for {target}..."),
+    )
 }
 
 fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
@@ -1203,6 +1329,7 @@ enum HotReloadMessage {
 #[derive(Clone)]
 struct AppState {
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
+    connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
 }
 
 #[derive(Clone)]
@@ -1211,13 +1338,16 @@ struct Server {
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
+    connection_events: NativeConnectionEvents,
 }
 
 impl Server {
     fn start(static_path: PathBuf) -> Result<Self> {
         let (hot_reload_tx, _) = broadcast::channel(16);
+        let (connection_event_tx, connection_event_rx) = mpsc::channel();
         let app_state = AppState {
             hot_reload_tx: hot_reload_tx.clone(),
+            connection_event_tx: connection_event_tx.clone(),
         };
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1264,6 +1394,7 @@ impl Server {
             });
         });
 
+        let connection_events = NativeConnectionEvents::new(connection_event_rx);
         let startup_result = match startup_rx.recv() {
             Ok(result) => result,
             Err(_) => {
@@ -1284,6 +1415,7 @@ impl Server {
             shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
             thread: Arc::new(Mutex::new(Some(thread))),
             hot_reload_tx,
+            connection_events,
         })
     }
 
@@ -1297,6 +1429,10 @@ impl Server {
 
     fn notify_web_reload(&self) {
         let _ = self.hot_reload_tx.send(HotReloadMessage::Web);
+    }
+
+    fn connection_events(&self) -> NativeConnectionEvents {
+        self.connection_events.clone()
     }
 }
 
@@ -1322,13 +1458,56 @@ async fn native_ws_handler(
 
 async fn handle_native_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.hot_reload_tx.subscribe();
-    while let Ok(msg) = rx.recv().await {
-        if let HotReloadMessage::Native(path) = msg {
-            if let Ok(data) = std::fs::read(path) {
-                if socket.send(AxumMessage::Binary(data)).await.is_err() {
-                    break;
+    let _ = state
+        .connection_event_tx
+        .send(NativeConnectionEvent::Connected);
+    loop {
+        tokio::select! {
+            Some(msg) = socket.recv() => {
+                match msg {
+                    Ok(AxumMessage::Text(payload)) => {
+                        handle_native_client_message(&payload);
+                    }
+                    Ok(AxumMessage::Close(frame)) => {
+                        let reason = NativeDisconnectReason::Graceful(frame.map(|f| f.code.into()));
+                        let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
+                        break;
+                    }
+                    Ok(AxumMessage::Ping(payload)) => {
+                        let _ = socket.send(AxumMessage::Pong(payload)).await;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        let reason = NativeDisconnectReason::Abnormal(err.to_string());
+                        let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
+                        break;
+                    }
                 }
             }
+            msg = rx.recv() => {
+                match msg {
+                    Ok(HotReloadMessage::Native(path)) => {
+                        match std::fs::read(path) {
+                            Ok(data) => {
+                                if let Err(err) = socket.send(AxumMessage::Binary(data)).await {
+                                    let reason = NativeDisconnectReason::Abnormal(err.to_string());
+                                    let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                warn!("Failed to read hot reload artifact: {err:?}");
+                            }
+                        }
+                    }
+                    Ok(HotReloadMessage::Web) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("Missed {skipped} hot reload updates (CLI lagged behind)");
+                    }
+                }
+            }
+            else => break,
         }
     }
 }
@@ -1347,6 +1526,140 @@ async fn handle_web_socket(mut socket: WebSocket, state: AppState) {
                 .is_err()
         {
             break;
+        }
+    }
+}
+
+const LAST_RUN_FILE: &str = "last-run.json";
+
+#[derive(Debug, Clone)]
+struct LastRunSnapshot {
+    platform: Platform,
+    device: Option<String>,
+    release: bool,
+    hot_reload: bool,
+    enable_sccache: bool,
+    mold: bool,
+    timestamp: u64,
+}
+
+fn persist_last_run(project: &Project, snapshot: LastRunSnapshot) -> Result<()> {
+    let path = last_run_path(project);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::create(&path)?;
+    let record: SerializableLastRunSnapshot = snapshot.into();
+    serde_json::to_writer_pretty(file, &record)?;
+    Ok(())
+}
+
+fn load_last_run(project: &Project) -> Result<LastRunSnapshot> {
+    let path = last_run_path(project);
+    let file = File::open(&path).with_context(|| {
+        format!(
+            "No previous run recorded for {}. Run `water run` first.",
+            project.root().display()
+        )
+    })?;
+    let record: SerializableLastRunSnapshot = serde_json::from_reader(file).with_context(|| {
+        format!(
+            "Failed to parse last run configuration at {}",
+            path.display()
+        )
+    })?;
+    Ok(record.into())
+}
+
+fn last_run_path(project: &Project) -> PathBuf {
+    project.root().join(".waterui").join(LAST_RUN_FILE)
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializableLastRunSnapshot {
+    platform: StoredPlatform,
+    device: Option<String>,
+    release: bool,
+    hot_reload: bool,
+    enable_sccache: bool,
+    mold: bool,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredPlatform {
+    Web,
+    Macos,
+    Ios,
+    Ipados,
+    Watchos,
+    Tvos,
+    Visionos,
+    Android,
+}
+
+impl From<Platform> for StoredPlatform {
+    fn from(platform: Platform) -> Self {
+        match platform {
+            Platform::Web => StoredPlatform::Web,
+            Platform::Macos => StoredPlatform::Macos,
+            Platform::Ios => StoredPlatform::Ios,
+            Platform::Ipados => StoredPlatform::Ipados,
+            Platform::Watchos => StoredPlatform::Watchos,
+            Platform::Tvos => StoredPlatform::Tvos,
+            Platform::Visionos => StoredPlatform::Visionos,
+            Platform::Android => StoredPlatform::Android,
+        }
+    }
+}
+
+impl From<StoredPlatform> for Platform {
+    fn from(value: StoredPlatform) -> Self {
+        match value {
+            StoredPlatform::Web => Platform::Web,
+            StoredPlatform::Macos => Platform::Macos,
+            StoredPlatform::Ios => Platform::Ios,
+            StoredPlatform::Ipados => Platform::Ipados,
+            StoredPlatform::Watchos => Platform::Watchos,
+            StoredPlatform::Tvos => Platform::Tvos,
+            StoredPlatform::Visionos => Platform::Visionos,
+            StoredPlatform::Android => Platform::Android,
+        }
+    }
+}
+
+impl From<LastRunSnapshot> for SerializableLastRunSnapshot {
+    fn from(value: LastRunSnapshot) -> Self {
+        Self {
+            platform: StoredPlatform::from(value.platform),
+            device: value.device,
+            release: value.release,
+            hot_reload: value.hot_reload,
+            enable_sccache: value.enable_sccache,
+            mold: value.mold,
+            timestamp: value.timestamp,
+        }
+    }
+}
+
+impl From<SerializableLastRunSnapshot> for LastRunSnapshot {
+    fn from(value: SerializableLastRunSnapshot) -> Self {
+        Self {
+            platform: value.platform.into(),
+            device: value.device,
+            release: value.release,
+            hot_reload: value.hot_reload,
+            enable_sccache: value.enable_sccache,
+            mold: value.mold,
+            timestamp: value.timestamp,
         }
     }
 }
@@ -1425,6 +1738,181 @@ impl Drop for RebuildWatcher {
         self.signal.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum NativeClientEvent {
+    #[serde(rename = "panic")]
+    Panic(NativePanicReport),
+}
+
+#[derive(Debug, Deserialize)]
+struct NativePanicReport {
+    message: String,
+    location: Option<NativePanicLocation>,
+    thread: Option<String>,
+    backtrace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativePanicLocation {
+    file: String,
+    line: u32,
+    column: u32,
+}
+
+fn handle_native_client_message(payload: &str) {
+    match serde_json::from_str::<NativeClientEvent>(payload) {
+        Ok(NativeClientEvent::Panic(report)) => emit_remote_panic(report),
+        Err(err) => {
+            warn!("Failed to parse native client message ({err}): {payload}");
+        }
+    }
+}
+
+fn emit_remote_panic(report: NativePanicReport) {
+    if output::global_output_format().is_json() {
+        warn!("App panic: {:?}", report);
+        return;
+    }
+
+    ui::warning("App panic reported via hot reload");
+    ui::kv("Message", &report.message);
+    if let Some(thread) = report.thread {
+        ui::kv("Thread", thread);
+    }
+    if let Some(location) = report.location {
+        let formatted = format!("{}:{}:{}", location.file, location.line, location.column);
+        ui::kv("Location", &formatted);
+    }
+    if let Some(backtrace) = report.backtrace {
+        ui::kv("Backtrace", "");
+        for line in backtrace.lines() {
+            ui::plain(format!("    {line}"));
+        }
+    }
+
+    ui::plain("  Hint: fix the panic above, save, and WaterUI will rebuild automatically.");
+}
+
+#[derive(Clone)]
+struct NativeConnectionEvents {
+    receiver: Arc<Mutex<mpsc::Receiver<NativeConnectionEvent>>>,
+}
+
+impl NativeConnectionEvents {
+    fn new(receiver: mpsc::Receiver<NativeConnectionEvent>) -> Self {
+        Self {
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
+
+    fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<NativeConnectionEvent, mpsc::RecvTimeoutError> {
+        self.receiver.lock().unwrap().recv_timeout(timeout)
+    }
+
+    fn try_recv(&self) -> Result<NativeConnectionEvent, TryRecvError> {
+        self.receiver.lock().unwrap().try_recv()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum NativeConnectionEvent {
+    Connected,
+    Disconnected(NativeDisconnectReason),
+}
+
+#[derive(Clone, Debug)]
+enum NativeDisconnectReason {
+    Graceful(Option<u16>),
+    Abnormal(String),
+}
+
+enum WaitOutcome {
+    Interrupted,
+    ConnectionLost(NativeDisconnectReason),
+}
+
+const HOT_RELOAD_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()> {
+    let deadline = Instant::now() + HOT_RELOAD_CONNECTION_TIMEOUT;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!(
+                "App failed to establish a hot reload WebSocket connection. Confirm it launched and can reach the CLI."
+            );
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        match events.recv_timeout(remaining) {
+            Ok(NativeConnectionEvent::Connected) => return Ok(()),
+            Ok(NativeConnectionEvent::Disconnected(reason)) => {
+                bail!(format_connection_loss_message(reason));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Hot reload server shut down before the app connected. Restart `water run`.");
+            }
+        }
+    }
+}
+
+fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Result<WaitOutcome> {
+    let (tx, rx) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = tx.send(());
+    })
+    .context("failed to install Ctrl+C handler")?;
+
+    loop {
+        if let Some(events) = &connection_events {
+            match events.try_recv() {
+                Ok(NativeConnectionEvent::Connected) => {}
+                Ok(NativeConnectionEvent::Disconnected(reason)) => {
+                    return Ok(WaitOutcome::ConnectionLost(reason));
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    return Ok(WaitOutcome::ConnectionLost(
+                        NativeDisconnectReason::Abnormal(
+                            "Hot reload server stopped unexpectedly".to_string(),
+                        ),
+                    ));
+                }
+            }
+        }
+
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(()) => return Ok(WaitOutcome::Interrupted),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(WaitOutcome::Interrupted),
+        }
+    }
+}
+
+fn format_connection_loss_message(reason: NativeDisconnectReason) -> String {
+    match reason {
+        NativeDisconnectReason::Graceful(code) => {
+            if let Some(code) = code {
+                format!("Hot reload connection closed by the app (close code {code}).")
+            } else {
+                "Hot reload connection closed by the app.".to_string()
+            }
+        }
+        NativeDisconnectReason::Abnormal(details) => {
+            let detail = details.trim();
+            if detail.is_empty() {
+                "Hot reload connection failed. The app likely crashed.".to_string()
+            } else {
+                format!("Hot reload connection failed ({detail}). The app likely crashed.")
+            }
         }
     }
 }

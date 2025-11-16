@@ -1,5 +1,7 @@
 use std::{
-    io::{BufRead, BufReader},
+    collections::VecDeque,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
@@ -7,7 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use color_eyre::eyre::{Context, Report, Result, bail};
@@ -18,14 +20,17 @@ use crate::{
         adb_command, configure_rust_android_linker_env, device_preferred_targets,
         find_android_tool, sanitize_package_name, wait_for_android_device,
     },
+    crash::CrashReport,
     device::{Device, DeviceKind},
     output,
-    platform::android::AndroidPlatform,
+    platform::{PlatformKind, android::AndroidPlatform},
     project::{Project, RunOptions},
+    util,
 };
 const PID_APPEAR_TIMEOUT: Duration = Duration::from_secs(10);
 const PID_DISAPPEAR_GRACE: Duration = Duration::from_secs(2);
 const APP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const LOG_EXCERPT_LINES: usize = 20;
 
 /// Represents the target Android device or emulator selected by the user.
 #[derive(Clone, Debug)]
@@ -102,7 +107,11 @@ impl AndroidDevice {
         Ok(())
     }
 
-    fn start_log_stream(&self, package: &str) -> Result<AndroidLogcatStream> {
+    fn start_crash_collector(
+        &self,
+        project: &Project,
+        package: &str,
+    ) -> Result<AndroidCrashCollector> {
         let mut cmd = adb_command(&self.adb_path, self.selection_identifier());
         cmd.args([
             "logcat", "-b", "crash", "-b", "main", "-b", "system", "-v", "time",
@@ -114,7 +123,32 @@ impl AndroidDevice {
             .take()
             .ok_or_else(|| Report::msg("failed to capture adb logcat output"))?;
 
-        Ok(AndroidLogcatStream::new(package, child, stdout))
+        let log_dir = project.root().join(".waterui/logs");
+        util::ensure_directory(&log_dir)?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let logfile = log_dir.join(format!("android-crash-{package}-{timestamp}.log"));
+        let file = File::create(&logfile).context("failed to create Android crash log")?;
+        let show_lines = !output::global_output_format().is_json();
+
+        if show_lines {
+            let header = style(format!("Android warnings/errors ({package})"))
+                .yellow()
+                .bold();
+            println!();
+            println!("{header}");
+        }
+
+        Ok(AndroidCrashCollector::new(
+            child,
+            stdout,
+            file,
+            logfile,
+            package.to_string(),
+            show_lines,
+        ))
     }
 
     fn wait_for_app_exit(&self, package: &str) -> Result<()> {
@@ -176,19 +210,19 @@ impl Device for AndroidDevice {
         Ok(())
     }
 
-    fn run(&self, project: &Project, artifact: &Path, options: &RunOptions) -> Result<()> {
+    fn run(
+        &self,
+        project: &Project,
+        artifact: &Path,
+        options: &RunOptions,
+    ) -> Result<Option<CrashReport>> {
         let artifact_str = artifact
             .to_str()
             .ok_or_else(|| Report::msg("APK path is not valid UTF-8"))?;
 
         let sanitized = sanitize_package_name(project.bundle_identifier());
-        let capture_logs = !output::global_output_format().is_json();
-        let mut log_stream = if capture_logs {
-            self.clear_logcat_buffer()?;
-            Some(self.start_log_stream(&sanitized)?)
-        } else {
-            None
-        };
+        self.clear_logcat_buffer()?;
+        let crash_collector = self.start_crash_collector(project, &sanitized)?;
 
         let mut install_cmd = adb_command(&self.adb_path, self.selection_identifier());
         install_cmd.args(["install", "-r", artifact_str]);
@@ -222,7 +256,7 @@ impl Device for AndroidDevice {
             bail!("Failed to launch Android activity");
         }
 
-        if let Some(stream) = log_stream.as_mut() {
+        if !output::global_output_format().is_json() {
             println!(
                 "{} {}",
                 style("•").blue(),
@@ -230,13 +264,18 @@ impl Device for AndroidDevice {
                     "Streaming Android warnings/errors for {sanitized}. Close the app or press Ctrl+C to stop."
                 )
             );
-            self.wait_for_app_exit(&sanitized)?;
-            stream.stop();
         }
+        self.wait_for_app_exit(&sanitized)?;
+        let crash_report = crash_collector.finish(
+            PlatformKind::Android,
+            Some(self.selection.name.clone()),
+            self.selection.identifier.clone(),
+            sanitized,
+        )?;
 
         drop(reverse_guard);
 
-        Ok(())
+        Ok(crash_report)
     }
 
     fn platform(&self) -> &Self::Platform {
@@ -288,27 +327,34 @@ impl Drop for AdbReverseGuard {
     }
 }
 
-struct AndroidLogcatStream {
+struct AndroidCrashCollector {
     child: Child,
     stop_flag: Arc<AtomicBool>,
-    join_handle: Option<thread::JoinHandle<()>>,
+    join_handle: Option<thread::JoinHandle<LogCaptureResult>>,
+    log_path: PathBuf,
+    show_lines: bool,
     footer_printed: bool,
 }
 
-impl AndroidLogcatStream {
-    fn new(package: &str, child: Child, stdout: ChildStdout) -> Self {
-        let header = style(format!("Android warnings/errors ({package})"))
-            .yellow()
-            .bold();
-        println!();
-        println!("{header}");
-
+impl AndroidCrashCollector {
+    fn new(
+        child: Child,
+        stdout: ChildStdout,
+        file: File,
+        log_path: PathBuf,
+        package: String,
+        show_lines: bool,
+    ) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let reader_flag = Arc::clone(&stop_flag);
-        let package = package.to_string();
 
         let handle = thread::spawn(move || {
             let reader = BufReader::new(stdout);
+            let mut writer = BufWriter::new(file);
+            let mut crash_detected = false;
+            let mut summary = None;
+            let mut excerpt: VecDeque<String> = VecDeque::new();
+
             for line in reader.lines() {
                 if reader_flag.load(Ordering::Relaxed) {
                     break;
@@ -316,13 +362,39 @@ impl AndroidLogcatStream {
                 let Ok(line) = line else {
                     break;
                 };
-                if is_relevant_android_log_line(&line, &package) {
+
+                let _ = writeln!(writer, "{line}");
+
+                if show_lines && is_relevant_android_log_line(&line, &package) {
                     if is_trigger_line(&line) {
-                        println!("{}", style(line).red().bold());
+                        println!("{}", style(&line).red().bold());
                     } else {
-                        println!("{}", style(line).yellow());
+                        println!("{}", style(&line).yellow());
                     }
                 }
+
+                if is_trigger_line(&line) {
+                    crash_detected = true;
+                    if summary.is_none() {
+                        summary = Some(line.clone());
+                    }
+                }
+
+                excerpt.push_back(line);
+                if excerpt.len() > LOG_EXCERPT_LINES {
+                    excerpt.pop_front();
+                }
+            }
+
+            let _ = writer.flush();
+            LogCaptureResult {
+                crash_detected,
+                summary,
+                log_excerpt: if excerpt.is_empty() {
+                    None
+                } else {
+                    Some(excerpt.into_iter().collect::<Vec<_>>().join("\n"))
+                },
             }
         });
 
@@ -330,31 +402,74 @@ impl AndroidLogcatStream {
             child,
             stop_flag,
             join_handle: Some(handle),
+            log_path,
+            show_lines,
             footer_printed: false,
         }
     }
 
-    fn stop(&mut self) {
-        if self.footer_printed {
-            return;
+    fn finish(
+        mut self,
+        platform: PlatformKind,
+        device_name: Option<String>,
+        device_identifier: Option<String>,
+        app_identifier: String,
+    ) -> Result<Option<CrashReport>> {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+
+        let result = self
+            .join_handle
+            .take()
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
+
+        if self.show_lines {
+            let footer = style("End of Android logs").yellow();
+            println!("{footer}");
+            println!();
+            self.footer_printed = true;
         }
-        self.footer_printed = true;
+
+        if result.crash_detected {
+            Ok(Some(CrashReport::new(
+                platform,
+                device_name,
+                device_identifier,
+                app_identifier,
+                self.log_path.clone(),
+                result.summary,
+                result.log_excerpt,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Drop for AndroidCrashCollector {
+    fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(handle) = self.join_handle.take() {
             let _ = handle.join();
         }
-        let footer = style("End of Android logs").yellow();
-        println!("{footer}");
-        println!();
+        if self.show_lines && !self.footer_printed {
+            let footer = style("End of Android logs").yellow();
+            println!("{footer}");
+            println!();
+            self.footer_printed = true;
+        }
     }
 }
 
-impl Drop for AndroidLogcatStream {
-    fn drop(&mut self) {
-        self.stop();
-    }
+#[derive(Default)]
+struct LogCaptureResult {
+    crash_detected: bool,
+    summary: Option<String>,
+    log_excerpt: Option<String>,
 }
 
 fn is_relevant_android_log_line(line: &str, package: &str) -> bool {

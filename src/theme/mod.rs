@@ -8,7 +8,10 @@
 use core::marker::PhantomData;
 
 use nami::Computed;
-use waterui_core::{Environment, env::WithEnv};
+use waterui_core::{
+    Environment,
+    env::{Store, WithEnv},
+};
 
 use crate::{
     View,
@@ -74,6 +77,10 @@ impl Theme {
             self.typography = typography;
         }
         self
+    }
+
+    pub fn install(self, env: &mut Environment) {
+        todo!()
     }
 }
 
@@ -399,20 +406,36 @@ pub mod color {
     );
 }
 
-fn install_color<T>(env: Environment, colors: &ThemeColors, parent: &Environment) -> Environment
+fn install_color<T>(env: &mut Environment, colors: &ThemeColors, parent: &Environment)
 where
     T: ThemeColorKey,
 {
     let computed = T::select(colors).clone().resolve(parent);
-    env.with(ThemeColorValue::<T>::new(computed))
+    env.insert(ThemeColorValue::<T>::new(computed));
 }
 
-fn install_typography<T>(env: Environment, font: &Font, parent: &Environment) -> Environment
+fn install_typography<T>(env: &mut Environment, font: &Font, parent: &Environment)
 where
     T: 'static,
 {
     let resolved = font.clone().resolve(parent);
-    env.store::<T, Computed<ResolvedFont>>(resolved)
+    env.insert(Store::<T, Computed<ResolvedFont>>::new(resolved));
+}
+
+/// Installs an explicit resolved color signal for the given token.
+pub fn install_color_signal_for<T>(env: &mut Environment, value: Computed<ResolvedColor>)
+where
+    T: ThemeColorKey,
+{
+    env.insert(ThemeColorValue::<T>::new(value));
+}
+
+/// Installs an explicit resolved typography signal for the given token.
+pub fn install_typography_signal_for<T>(env: &mut Environment, value: Computed<ResolvedFont>)
+where
+    T: 'static,
+{
+    env.insert(Store::<T, Computed<ResolvedFont>>::new(value));
 }
 
 /// Provides a theme to child views.
@@ -437,22 +460,21 @@ impl<V: View> View for ThemeProvider<V> {
     fn body(self, env: &Environment) -> impl View {
         let base = theme(env);
         let applied = base.layer(self.layer);
-        let mut themed_env = env.clone().with(applied.clone());
-        themed_env = install_color::<color::Background>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::Surface>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::SurfaceVariant>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::Border>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::Foreground>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::MutedForeground>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::Accent>(themed_env, applied.colors(), env);
-        themed_env = install_color::<color::AccentForeground>(themed_env, applied.colors(), env);
-        themed_env = install_typography::<Body>(themed_env, applied.typography().body(), env);
-        themed_env = install_typography::<Title>(themed_env, applied.typography().title(), env);
-        themed_env =
-            install_typography::<Headline>(themed_env, applied.typography().headline(), env);
-        themed_env =
-            install_typography::<Subheadline>(themed_env, applied.typography().subheadline(), env);
-        themed_env = install_typography::<Caption>(themed_env, applied.typography().caption(), env);
+        let mut themed_env = env.clone();
+        themed_env.insert(applied.clone());
+        install_color::<color::Background>(&mut themed_env, applied.colors(), env);
+        install_color::<color::Surface>(&mut themed_env, applied.colors(), env);
+        install_color::<color::SurfaceVariant>(&mut themed_env, applied.colors(), env);
+        install_color::<color::Border>(&mut themed_env, applied.colors(), env);
+        install_color::<color::Foreground>(&mut themed_env, applied.colors(), env);
+        install_color::<color::MutedForeground>(&mut themed_env, applied.colors(), env);
+        install_color::<color::Accent>(&mut themed_env, applied.colors(), env);
+        install_color::<color::AccentForeground>(&mut themed_env, applied.colors(), env);
+        install_typography::<Body>(&mut themed_env, applied.typography().body(), env);
+        install_typography::<Title>(&mut themed_env, applied.typography().title(), env);
+        install_typography::<Headline>(&mut themed_env, applied.typography().headline(), env);
+        install_typography::<Subheadline>(&mut themed_env, applied.typography().subheadline(), env);
+        install_typography::<Caption>(&mut themed_env, applied.typography().caption(), env);
         WithEnv::new(self.content, themed_env)
     }
 }
