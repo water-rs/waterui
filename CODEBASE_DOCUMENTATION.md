@@ -159,6 +159,11 @@ The `waterui-layout` crate covers containers, stacks, scrolling, and sizing. Com
 
 ## Backend Implementations
 
+- **Android** – Compose runtime hosted in `backends/android/runtime`. The CLI injects `WATERUI_HOT_RELOAD_HOST/PORT` via intent extras and performs `adb reverse`. The Kotlin code’s only hot reload duties are calling `configureHotReloadEndpoint` and pointing `configureHotReloadDirectory` at `codeCacheDir`; all WebSocket, `.so` download, and `dlopen` logic lives in Rust’s `Hotreload` view.
+- **Apple** – The Swift package in `backends/apple` renders the Rust view tree via SwiftUI. Simulator/macOS debug builds enable hot reload by wrapping `waterui_main` with `Hotreload::new(...)` and letting Rust manage the WebSocket/dlopen loop. Release/physical-device targets never define `waterui_enable_hot_reload`, so the App Store-friendly binaries are free of `dlopen`.
+- **Web** – The experimental WASM backend recreates `pkg/app.js` on rebuilds. Hot reload is handled by `cli/src/templates/web/main.js`, which listens on `/hot-reload-web` and refreshes the page when the CLI broadcasts a change.
+- **TUI** – The terminal backend in `backends/tui` provides a renderer (`TuiApp`, `Renderer`, `Terminal`) but is not yet wired into the CLI for hot reload or scaffolding. TUI work is intentionally paused until the core native backends are complete.
+
 Backend crates receive FFI structs and render native widgets:
 
 - **`backends/android`**: Android shell integrating with Gradle; documentation and status live in `PLAN.md` and `IMPLEMENTATION_STATUS.md`.
