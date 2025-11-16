@@ -103,7 +103,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 ui::success("Android backend added successfully");
             }
         }
-        BackendChoice::Swiftui => {
+        BackendChoice::Apple => {
             if config.backends.swift.is_some() {
                 bail!("Apple backend already exists in this project.");
             }

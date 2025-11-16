@@ -25,6 +25,8 @@ use crate::Environment;
 /// A trait for types that can be resolved to a value in a given environment.
 ///
 /// This trait enables reactive values that depend on environmental context.
+///
+/// In convention, Resolvable type should have a same output for a same environment.
 pub trait Resolvable: Debug + Clone {
     /// The type of the resolved value.
     type Resolved;

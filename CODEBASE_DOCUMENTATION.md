@@ -52,8 +52,8 @@ waterui/
 │   ├── navigation/      # Navigation views built on `raw_view!`
 │   └── text/            # Text primitives and macros
 ├── utils/               # Shared utilities (`str`, `color`, `url`)
-├── backends/            # Platform renderers (android, apple, tui, web)
-├── render_utils/        # Shared renderer helpers
+├── backends/            # Platform renderers (android, apple, tui, web, hydrolysis)
+│   └── hydrolysis/      # Hydrolysis self-drawn engine
 ├── window/              # Window system abstractions
 ├── ffi/                 # Cross-language interface definitions
 ├── derive/              # Procedural macros for component derive impls
@@ -171,7 +171,7 @@ Backend crates receive FFI structs and render native widgets:
 - **`backends/tui`**: Terminal UI backend scaffolding (`Cargo.toml`, roadmap `PLAN.md`).
 - **`backends/web`**: WebAssembly backend using `wasm-bindgen`, `web-sys`, and `js-sys` for DOM interaction.
 
-Each backend consumes the shared renderer utilities in `render_utils` and platform-agnostic window abstractions in `window`.
+Each backend uses Hydrolysis—the project’s single self-drawn renderer—and the platform-agnostic window abstractions in `window`.
 
 ---
 

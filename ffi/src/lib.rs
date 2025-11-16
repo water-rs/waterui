@@ -164,16 +164,16 @@ pub fn __init() {
 ///     }
 /// }
 /// ```
-pub trait IntoFFI {
+pub trait IntoFFI: 'static {
     /// The FFI-compatible type that this Rust type converts to.
-    type FFI;
+    type FFI: 'static;
 
     /// Converts this Rust type into its FFI-compatible representation.
     fn into_ffi(self) -> Self::FFI;
 }
 
-pub trait IntoNullableFFI {
-    type FFI;
+pub trait IntoNullableFFI: 'static {
+    type FFI: 'static;
     fn into_ffi(self) -> Self::FFI;
     fn null() -> Self::FFI;
 }
@@ -257,7 +257,7 @@ pub extern "C" fn waterui_configure_hot_reload_directory(_path: *const core::ffi
 /// // By marking this as OpaqueType, foreign code only needs to deal with opaque pointers
 /// impl OpaqueType for MyInternalStruct {}
 /// ```
-pub trait OpaqueType {}
+pub trait OpaqueType: 'static {}
 
 impl<T: OpaqueType> IntoNullableFFI for T {
     type FFI = *mut T;

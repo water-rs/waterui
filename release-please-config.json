@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    "backends/android": {
+      "component": "android-backend",
+      "package-name": "android-backend",
+      "release-type": "simple",
+      "changelog-path": "backends/android/CHANGELOG.md",
+      "tag-name": "android-backend-v${version}",
+      "extra-files": [
+        {
+          "type": "plain-text",
+          "path": "backends/android/version.txt"
+        }
+      ]
+    }
+  }
+}
