@@ -864,6 +864,10 @@ typedef struct WuiWatcher_____WuiAnyViews {
   void (*drop)(void*);
 } WuiWatcher_____WuiAnyViews;
 
+void waterui_configure_hot_reload_endpoint(const char *_host, uint16_t _port);
+
+void waterui_configure_hot_reload_directory(const char *_path);
+
 /**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
