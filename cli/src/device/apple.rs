@@ -4,6 +4,8 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, Report, Result, bail};
+use serde_json::Value;
+use tracing::debug;
 use which::which;
 
 use crate::{
@@ -114,9 +116,17 @@ impl Device for AppleSimulatorDevice {
         let target = self.simulator_target();
         let device_name = &target.device_name;
 
-        let mut boot_cmd = Command::new("xcrun");
-        boot_cmd.args(["simctl", "boot", device_name]);
-        let _ = boot_cmd.status();
+        let already_booted = simulator_current_state(device_name)?
+            .as_deref()
+            .map_or(false, |state| state == "Booted");
+
+        if already_booted {
+            debug!("Simulator {device_name} is already booted; skipping boot step");
+        } else {
+            let mut boot_cmd = Command::new("xcrun");
+            boot_cmd.args(["simctl", "boot", device_name]);
+            let _ = boot_cmd.status();
+        }
 
         let artifact_str = artifact
             .to_str()
@@ -166,6 +176,47 @@ fn debug_launch_simulator_app() -> Result<()> {
         .status()
         .context("failed to open Simulator app")?;
     Ok(())
+}
+
+fn simulator_current_state(device_reference: &str) -> Result<Option<String>> {
+    let output = Command::new("xcrun")
+        .args(["simctl", "list", "-j", "devices"])
+        .output()
+        .context("failed to query simulator list")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    let devices = match value.get("devices").and_then(Value::as_object) {
+        Some(devices) => devices,
+        None => return Ok(None),
+    };
+
+    for entries in devices.values() {
+        if let Some(array) = entries.as_array() {
+            for entry in array {
+                let udid = entry
+                    .get("udid")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let matches_reference = (!udid.is_empty()
+                    && udid.eq_ignore_ascii_case(device_reference))
+                    || name == device_reference;
+                if matches_reference {
+                    if let Some(state) = entry.get("state").and_then(Value::as_str) {
+                        return Ok(Some(state.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn require_tool(tool: &str, hint: &str) -> Result<()> {
