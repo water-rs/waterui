@@ -63,14 +63,44 @@ pub struct DeviceInfo {
     pub detail: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DevicePlatformFilter {
+    #[default]
+    All,
+    Apple,
+    Android,
+}
+
+impl DevicePlatformFilter {
+    const fn includes_apple(self) -> bool {
+        matches!(self, Self::All | Self::Apple)
+    }
+
+    const fn includes_android(self) -> bool {
+        matches!(self, Self::All | Self::Android)
+    }
+}
+
 /// Collect a combined view of connected simulators and devices.
 ///
 /// # Errors
 /// Returns an error if querying connected devices fails.
 pub fn list_devices() -> Result<Vec<DeviceInfo>> {
+    list_devices_filtered(DevicePlatformFilter::All)
+}
+
+/// Collect devices filtered by platform family.
+///
+/// # Errors
+/// Returns an error if querying connected devices fails.
+pub fn list_devices_filtered(filter: DevicePlatformFilter) -> Result<Vec<DeviceInfo>> {
     let mut devices = Vec::new();
-    devices.extend(apple_devices()?);
-    devices.extend(android_devices()?);
+    if filter.includes_apple() {
+        devices.extend(apple_devices()?);
+    }
+    if filter.includes_android() {
+        devices.extend(android_devices()?);
+    }
     Ok(devices)
 }
 

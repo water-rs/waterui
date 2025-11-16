@@ -17,7 +17,7 @@ use waterui_cli::{
     backend::android::configure_rust_android_linker_env,
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
-        DeviceKind, MacosDevice,
+        DeviceKind, DevicePlatformFilter, MacosDevice,
     },
     doctor::{
         AnyToolchainIssue,
@@ -256,7 +256,7 @@ fn prompt_for_apple_platform(config: &Config) -> Result<Platform> {
     let mut spinner = ui::spinner("Scanning Apple devices...");
     let scan_started = Instant::now();
     debug!("Starting Apple device scan for prompt_for_apple_platform");
-    let devices = match device::list_devices() {
+    let devices = match device::list_devices_filtered(DevicePlatformFilter::Apple) {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
@@ -965,7 +965,7 @@ fn apple_simulator_candidates(platform: Platform) -> Result<Vec<DeviceInfo>> {
     let mut spinner = ui::spinner("Scanning Apple devices...");
     let scan_started = Instant::now();
     debug!("Starting Apple device scan for apple_simulator_candidates ({platform:?})");
-    let devices = match device::list_devices() {
+    let devices = match device::list_devices_filtered(DevicePlatformFilter::Apple) {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
@@ -1032,7 +1032,7 @@ fn prompt_for_android_device() -> Result<AndroidSelection> {
     let mut spinner = ui::spinner("Scanning Android devices...");
     let scan_started = Instant::now();
     debug!("Starting Android device scan for prompt_for_android_device");
-    let devices = match device::list_devices() {
+    let devices = match device::list_devices_filtered(DevicePlatformFilter::Android) {
         Ok(list) => {
             if let Some(spinner_guard) = spinner.take() {
                 spinner_guard.finish();
@@ -1159,7 +1159,7 @@ fn selection_from_device_info(info: &DeviceInfo) -> AndroidSelection {
 }
 
 fn resolve_android_device(name: &str) -> Result<AndroidSelection> {
-    let devices = device::list_devices()?;
+    let devices = device::list_devices_filtered(DevicePlatformFilter::Android)?;
     if let Some(device) = devices
         .iter()
         .find(|d| d.identifier == name || d.name == name)
