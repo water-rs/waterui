@@ -4,7 +4,7 @@ mod enabled {
     use executor_core::{Task, spawn_local};
     use libloading::Library;
     use log::{debug, warn};
-    use serde::Serialize;
+    use serde_json::json;
     use std::panic::{self, PanicInfo};
     use std::sync::mpsc;
     use std::{

@@ -77,6 +77,21 @@ pub struct Store<K, V> {
     value: V,
 }
 
+impl<K, V> Store<K, V> {
+    #[must_use]
+    pub const fn new(value: V) -> Self {
+        Self {
+            key: PhantomData,
+            value,
+        }
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> &V {
+        &self.value
+    }
+}
+
 impl Environment {
     /// Creates a new empty environment.
     #[must_use]
