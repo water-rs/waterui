@@ -104,3 +104,21 @@ theme_font_fn!(waterui_theme_font_headline, Headline);
 theme_font_fn!(waterui_theme_font_subheadline, Subheadline);
 theme_font_fn!(waterui_theme_font_caption, Caption);
 theme_font_fn!(waterui_theme_font_footnote, Footnote);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WuiEnv;
+
+    #[test]
+    fn background_color_computed_is_readable() {
+        let env = WuiEnv(waterui::Environment::new());
+        let ptr = unsafe { waterui_theme_color_background(&env) };
+        assert!(!ptr.is_null());
+        let value = unsafe { crate::color::waterui_read_computed_resolved_color(ptr) };
+        assert!(value.opacity >= 0.0);
+        unsafe {
+            crate::color::waterui_drop_computed_resolved_color(ptr);
+        }
+    }
+}
