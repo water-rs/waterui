@@ -2262,6 +2262,34 @@ void waterui_env_install_theme(struct WuiEnv *env,
                                struct WuiComputed_ResolvedFont *subheadline,
                                struct WuiComputed_ResolvedFont *caption);
 
+struct WuiComputed_ResolvedColor *waterui_theme_color_background(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_surface(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_surface_variant(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_border(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_foreground(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_muted_foreground(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_accent(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedColor *waterui_theme_color_accent_foreground(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_body(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_title(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_headline(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_subheadline(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv *env);
+
+struct WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
+
 /**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
