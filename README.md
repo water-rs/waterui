@@ -4,221 +4,129 @@
 [![docs.rs](https://docs.rs/waterui/badge.svg)](https://docs.rs/waterui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern, cross-platform UI framework for Rust that delivers true native rendering with reactive state management.
+A modern, cross-platform UI framework for Rust, designed for building reactive, performant, and beautiful applications.
+
+WaterUI combines the safety and speed of Rust with a declarative, component-based architecture inspired by modern web frameworks. It offers true native rendering on Apple and Android, a powerful self-drawn renderer for desktop, and even a terminal backend, all powered by a fine-grained reactive system.
+
+## ✨ Features
+
+- **Declarative & Reactive**: Build complex UIs with simple, reusable components. State management is handled by a fine-grained reactivity system, ensuring your UI always stays in sync with your data.
+- **Truly Cross-Platform**:
+    - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
+    - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated (Vello/wgpu) and CPU-based (tiny-skia) backends for high-performance, consistent rendering on desktop platforms (Windows, macOS, Linux).
+    - **Terminal**: A TUI backend for building fast, responsive terminal applications.
+- **Powerful CLI**: A dedicated `water` command-line tool to create, run, build, and package your applications, with integrated hot-reloading.
+- **Modern Component Library**: A rich set of pre-built components for layouts, controls, forms, text, and more.
+- **Type-Safe & Safe**: Leverage Rust's powerful type system and memory safety guarantees from your UI to your data logic.
 
 ## 🚀 Quick Start
 
-Add `WaterUI` to your `Cargo.toml`:
-
+Add `waterui` and its dependencies to your `Cargo.toml`:
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.1.0" # Replace with the latest version
 ```
+> Or use `waterui = { git = "https://github.com/water-rs/waterui", branch = "main" }` for the latest development version.
 
 Create your first reactive counter:
 
 ```rust
 use waterui::prelude::*;
-use waterui_core::binding;
-use waterui_layout::stack::{hstack, vstack};
-use waterui::component::button;
-use waterui::Binding;
-use waterui_core::SignalExt;
 
-pub fn counter() -> impl View {
-    let count: Binding<i32> = binding(0);
-    let doubled = count.clone().map(|value| value * 2);
-
-    let increment_button = {
-        let count = count.clone();
-        button("Increment").action(move || count.set(count.get() + 1))
-    };
-
-    let reset_button = {
-        let count = count.clone();
-        button("Reset").action(move || count.set(0))
-    };
+fn counter_app() -> impl View {
+    let count = Binding::new(0);
 
     vstack((
-        text!("Count: {count}"),
-        text!("Doubled: {doubled}"),
-        hstack((increment_button, reset_button)),
+        text!("Count: {}", count),
+        hstack((
+            button("Increment").on_tap({
+                let count = count.clone();
+                move || count.set(count.get() + 1)
+            }),
+            button("Reset").on_tap(move || count.set(0)),
+        ))
+        .spacing(10.0),
     ))
+    .padding_with(16.0)
 }
 ```
-
-## 📱 Android CLI Workflow
-
-`WaterUI` ships a CLI that can scaffold and package Android applications without
-opening Android Studio. To try it end-to-end:
-
-1. **Install the Android command-line tools** (example for Linux):
-
-   ```bash
-   mkdir -p "$HOME/android-sdk" && cd "$HOME/android-sdk"
-   curl -O https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-   unzip commandlinetools-linux-11076708_latest.zip
-   mkdir -p cmdline-tools/latest
-   mv cmdline-tools/* cmdline-tools/latest/
-   ```
-
-2. **Install the required SDK components**:
-
-   ```bash
-   cmdline-tools/latest/bin/sdkmanager \
-     --sdk_root="$HOME/android-sdk" \
-     "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-   yes | cmdline-tools/latest/bin/sdkmanager --sdk_root="$HOME/android-sdk" --licenses
-   ```
-
-3. **Expose the SDK to the CLI**:
-
-   ```bash
-   export ANDROID_SDK_ROOT="$HOME/android-sdk"
-   export ANDROID_HOME="$HOME/android-sdk"
-   ```
-
-4. **Create and package a project**:
-
-   ```bash
-   cargo run -p waterui-cli -- create \
-     --name "Android Demo" \
-     --directory android-demo \
-     --bundle-identifier com.example.androiddemo \
-     --backend android \
-     --yes --dev
-
-   TERM=dumb cargo run -p waterui-cli -- package \
-     android \
-     --project android-demo \
-     --skip-native
-   ```
-
-Gradle will output a ready-to-install APK at
-`android-demo/android/app/build/outputs/apk/debug/app-debug.apk`.
-
-### 🤖 Automating CLI Usage
-
-When running `water` from non-interactive environments (CI, scripts, or LLM agents), always pick your targets explicitly:
-
-1. List the available runtimes with `water devices --format json` (or omit `--format` for a human-readable table).
-2. Choose a name/identifier from that list and pass it to the run command, e.g.
-   ```bash
-   WATERUI_ANDROID_DEV_BACKEND_DIR=backends/android \
-     water run android --project target/debug/water-demo --device Pixel_8_Pro_API_36
-   ```
-3. Provide `--platform` for non-device targets (e.g., `water run --platform web`) to avoid interactive backend prompts.
-
-If you omit `--device` in a non-interactive shell, the CLI now exits with a descriptive error instead of guessing a target. This keeps automation deterministic and mirrors the manual workflow.
-
-## 📝 Rich Text & Markdown
-
-`WaterUI` includes native support for styled text and Markdown rendering. Use
-`StyledStr::from_markdown` for inline formatting, or render full documents with
-`RichText::from_markdown`:
-
-```rust
-use waterui::widget::RichText;
-use waterui::View;
-
-pub fn release_notes() -> impl View {
-    RichText::from_markdown(
-        r"# What's new
-
-- **Rich text** rendering
-- Inline _emphasis_
-- Tables and images
-",)
-}
-```
-
-## ✨ Features
-
-- **🎯 True Native Rendering** - Uses `SwiftUI` on Apple platforms (macOS, iOS, visionOS, watchOS, widgets!)
-- **⚡ Fine-Grained Reactivity** - Vue-like reactive updates without virtual DOM overhead
-- **🔒 Type Safety** - Leverage Rust's powerful type system from UI to data
-- **🔄 Declarative & Reactive** - Familiar API for `SwiftUI` and React developers
-- **🌐 Cross-Platform** - Multiple backends: `SwiftUI`, GTK4, Web, and more planned
-- **🚫 No-std Support** - Deploy to embedded environments
-- **🎨 Composable Architecture** - Build complex UIs from simple, reusable components
+This example creates a simple view with a counter that can be incremented or reset. The `text!` macro automatically updates the displayed count whenever the `count` binding changes.
 
 ## 📦 Architecture
 
-`WaterUI` follows a modular architecture with clear separation of concerns:
+WaterUI is built with a modular architecture to ensure clear separation of concerns and maximum flexibility.
 
-- **Core Framework** (`waterui-core`) - View trait, Environment system, reactive state
-- **Component Libraries** - Text, Layout, Forms, Media, Navigation components
-- **Platform Backends** - `SwiftUI`, GTK4, Web renderers
-- **Utilities** - String handling, color management, cross-platform tools
+- **`waterui`**: The main crate, which provides the prelude and re-exports key components.
+- **`waterui-core`**: The heart of the framework, containing the `View` trait, the reactive state system (powered by `nami`), and the environment system.
+- **`components/`**: A collection of component libraries, including:
+    - `waterui-layout`: Stacks (`HStack`, `VStack`, `ZStack`), grids, and other layout primitives.
+    - `waterui-controls`: Interactive components like `Button`, `Slider`, `TextField`, and `Toggle`.
+    - `waterui-text`: Styled text, fonts, and Markdown rendering.
+    - `waterui-form`: Form building utilities, including a derive macro for easy form creation.
+    - `waterui-graphics`: 2D drawing canvas and shape primitives.
+- **`backends/`**: Platform-specific renderers.
+    - **`apple`**: SwiftUI backend for macOS, iOS, visionOS, etc.
+    - **`android`**: Jetpack Compose backend.
+    - **`hydrolysis`**: A self-drawn renderer with GPU (Vello) and CPU (tiny-skia) implementations (Very early stage...DO NOT use it...).
+    - **`tui`**: Terminal UI backend (WIP).
+- **`cli/`**: The `water` command-line interface for managing your projects.
+- **`ffi/`**: A C-compatible Foreign Function Interface that bridges the Rust core with native backends (Swift/Kotlin).
+
+## CLI Workflow
+
+WaterUI ships with a powerful CLI (`water`) to streamline your development process.
+
+### Create a Project
+Scaffold a new project with your chosen backends:
+```bash
+water create --name "My App" --backend apple --backend android
+```
+
+### Run with Hot Reload
+Build, run, and hot-reload your app on a connected device, simulator, or emulator:
+```bash
+# The CLI will prompt you to select a target
+water run
+
+# Or specify a target directly
+water run --platform ios --device "iPhone 15 Pro"
+```
+The CLI watches for file changes and automatically rebuilds and reloads your application.
+
+### Other Commands
+- `water build`: Build native libraries for a specific platform.
+- `water package`: Package your application for distribution.
+- `water devices`: List available devices, simulators, and emulators.
+- `water doctor`: Check your development environment for any issues.
+- `water clean`: Clean all build artifacts.
+
+For more details, run `water --help` or see the [CLI README](./cli/README.md).
 
 ## 🛣️ Roadmap
 
-**Current Version: 0.1.0** - First glance ✅
-
-- ✅ Basic widgets: stack, text, scroll, form
-- ✅ `SwiftUI` backend
-- ✅ MVP of GTK4 backend
-- ✅ Stabilized core design
-
-**Next: 0.2.0** - Usable
-
-- 🔧 Memory leak fixes
-- 🔧 Stabilized layout system
-- 🔧 Android backend MVP
-- 🔧 CLI tooling
-- 🔧 Gesture support
-- 🔧 Hot reload
-- 🔧 Internationalization (i18n)
-- 🔧 Styling system
-
-**Future Milestones:**
-
-- **0.3.0** - Media widgets, Canvas API, Platform-specific APIs
-- **0.4.0** - Self-rendering backend MVP
-- **0.5.0** - Rich text and markdown support
-- **0.6.0+** - Enhanced self-rendering, developer tools, animations
-
-[View full roadmap →](./ROADMAP.md)
-
-## 🎮 Examples & Demos
-
-**`SwiftUI` Backend Demo**\
-Native macOS/iOS applications → [View Demo](./demo)
-
-**GTK4 Backend Examples**\
-Cross-platform desktop apps → [View Examples](./backends/gtk4/examples/)
-
-## 📚 Documentation
-
-- **[Tutorial Book](https://water-rs.github.io/waterui/)** - Learn `WaterUI` step by step
-- **[API Reference (Latest)](https://water-rs.github.io/waterui/api)** - Development docs
-- **[API Reference (docs.rs)](https://docs.rs/waterui)** - Stable release docs
+- **Component Library Expansion**: Add more advanced components like tables, trees, and charts.
+- **Renderer Maturation**: Continue to develop `Hydrolysis` with a focus on performance and broader platform support (including Windows).
+- **Animation API**: Introduce a declarative animation and transition system.
+- **Accessibility**: Enhance accessibility features across all backends.
+- **Documentation**: Improve tutorials, guides, and API documentation.
 
 ## 🤝 Contributing
 
-We welcome contributions! `WaterUI` is in active development and there's plenty to work on:
+We welcome contributions! `WaterUI` is in active development and there's plenty to work on. Please check the `ROADMAP.md` and open issues to see where you can help.
 
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes** and add tests
-4. **Run the linter**: `cargo clippy --all-targets --all-features --workspace -- -D warnings`
-5. **Submit a pull request**
+1.  **Fork the repository**
+2.  **Create a feature branch**: `git checkout -b feature/amazing-feature`
+3.  **Make your changes** and add tests
+4.  **Run the linter**: `cargo clippy --all-targets --all-features --workspace -- -D warnings`
+5.  **Submit a pull request**
 
 ### Development Commands
-
 ```bash
 # Build all crates
 cargo build --all-features --workspace
 
 # Run tests
 cargo test --all-features --workspace
-
-## ⚡ Build Acceleration
-
-- `sccache` is recommended on every platform; the CLI automatically uses it when available and you can install it in one step with `water doctor --fix`.
-- Pass `--no-sccache` to `water run` if you ever need to debug without the cache.
-- Linux developers can opt into the experimental `mold` linker by adding `--mold` to `water run …`; the CLI will append the right `RUSTFLAGS` when `mold` is installed.
-- `water doctor --fix` also attempts to install `mold` (via apt/dnf/pacman/brew) whenever the tool is missing on supported hosts.
 
 # Check code quality
 cargo clippy --all-targets --all-features --workspace -- -D warnings
