@@ -92,3 +92,8 @@ binary and run it on the Android emulator/simulator.
      backend artifacts) or `cargo update -p waterui -p waterui-ffi` inside your
      generated app so it tracks the newly published commits.
    - Keep this checklist handy so you don’t forget the `dev`-branch-first rule.
+6. **FFI header regeneration**
+   - Never edit the generated headers manually. Run
+     `cargo run -p waterui-ffi --bin generate_header --features cbindgen` (see
+     `ffi/generate_header.rs`) to refresh `ffi/waterui.h` plus both backend copies
+     before committing/pushing changes that touch FFI symbols.
