@@ -33,7 +33,7 @@
 
 use core::future::Future;
 
-use executor_core::{Task, spawn_local};
+use executor_core::{Task, spawn};
 use waterui_core::{
     AnyView, Environment, View,
     handler::{AnyViewBuilder, ViewBuilder},
@@ -262,7 +262,7 @@ where
         handler.set(self.loading);
 
         let new_env = env.clone();
-        spawn_local(async move {
+        spawn(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
         })
