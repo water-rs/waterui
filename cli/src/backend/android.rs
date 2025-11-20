@@ -449,6 +449,17 @@ fn prefer_java_home() -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
+        // Prefer the JBR that ships with Android Studio if present.
+        const ANDROID_STUDIO_JBRS: &[&str] = &[
+            "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
+            "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home",
+        ];
+        for candidate in ANDROID_STUDIO_JBRS {
+            if let Some(home) = check_candidate(Some(PathBuf::from(candidate))) {
+                return Some(home);
+            }
+        }
+
         const CANDIDATES: &[&str] = &["17", "21", "20", "19", "18"];
         for version in CANDIDATES {
             let output = Command::new("/usr/libexec/java_home")
