@@ -842,32 +842,37 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
 }
 
 fn check_java_environment() -> RowOutcome {
-    let java_env = env::var("JAVA_HOME").ok();
-    // Try env, then PATH, then Android Studio's bundled JBR on macOS.
-    let java_version_cmd = java_env
-        .map_or_else(
-            || which("java").ok().map(|_| Command::new("java")),
-            |java_home| {
-                let java_exe = Path::new(&java_home).join("bin/java");
-                java_exe.exists().then(|| Command::new(java_exe))
-            },
-        )
-        .or_else(|| {
-            #[cfg(target_os = "macos")]
-            {
-                const ANDROID_STUDIO_JBRS: &[&str] = &[
-                    "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
-                    "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home/bin/java",
-                ];
-                for candidate in ANDROID_STUDIO_JBRS {
-                    let path = Path::new(candidate);
-                    if path.exists() {
-                        return Some(Command::new(path));
-                    }
-                }
-            }
-            None
-        });
+    // Prefer Android Studio's bundled JBR on macOS, then JAVA_HOME, then PATH.
+    let mut java_candidates: Vec<Box<dyn Fn() -> Option<Command>>> = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        const ANDROID_STUDIO_JBRS: &[&str] = &[
+            "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
+            "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home/bin/java",
+        ];
+        for candidate in ANDROID_STUDIO_JBRS {
+            let path = PathBuf::from(candidate);
+            java_candidates.push(Box::new(move || path.exists().then(|| Command::new(&path))));
+        }
+    }
+
+    if let Some(home) = env::var("JAVA_HOME").ok() {
+        java_candidates.push(Box::new(move || {
+            let java_exe = Path::new(&home).join("bin/java");
+            java_exe.exists().then(|| Command::new(java_exe))
+        }));
+    }
+
+    java_candidates.push(Box::new(|| which("java").ok().map(Command::new)));
+
+    let mut java_version_cmd = None;
+    for factory in java_candidates {
+        if let Some(cmd) = factory() {
+            java_version_cmd = Some(cmd);
+            break;
+        }
+    }
 
     java_version_cmd.map_or_else(
         || {
