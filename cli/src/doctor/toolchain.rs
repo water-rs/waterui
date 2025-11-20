@@ -843,13 +843,31 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
 
 fn check_java_environment() -> RowOutcome {
     let java_env = env::var("JAVA_HOME").ok();
-    let java_version_cmd = java_env.map_or_else(
-        || which("java").ok().map(|_| Command::new("java")),
-        |java_home| {
-            let java_exe = Path::new(&java_home).join("bin/java");
-            java_exe.exists().then(|| Command::new(java_exe))
-        },
-    );
+    // Try env, then PATH, then Android Studio's bundled JBR on macOS.
+    let java_version_cmd = java_env
+        .map_or_else(
+            || which("java").ok().map(|_| Command::new("java")),
+            |java_home| {
+                let java_exe = Path::new(&java_home).join("bin/java");
+                java_exe.exists().then(|| Command::new(java_exe))
+            },
+        )
+        .or_else(|| {
+            #[cfg(target_os = "macos")]
+            {
+                const ANDROID_STUDIO_JBRS: &[&str] = &[
+                    "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
+                    "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home/bin/java",
+                ];
+                for candidate in ANDROID_STUDIO_JBRS {
+                    let path = Path::new(candidate);
+                    if path.exists() {
+                        return Some(Command::new(path));
+                    }
+                }
+            }
+            None
+        });
 
     java_version_cmd.map_or_else(
         || {
@@ -872,15 +890,25 @@ fn check_java_environment() -> RowOutcome {
         },
         |mut cmd| match cmd.arg("-version").output() {
             Ok(output) => {
-                let version_info = String::from_utf8_lossy(&output.stderr);
-                version_info.lines().next().map_or_else(
-                    || RowOutcome::new(Row::warn("Could not determine Java version")),
-                    |line| {
-                        RowOutcome::new(
-                            Row::pass("Java detected").with_detail(line.trim().to_string()),
-                        )
-                    },
-                )
+                let payload = if output.stderr.is_empty() {
+                    &output.stdout
+                } else {
+                    &output.stderr
+                };
+                let line = String::from_utf8_lossy(payload)
+                    .lines()
+                    .next()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                if output.status.success() {
+                    RowOutcome::new(Row::pass("Java detected").with_detail(line))
+                } else {
+                    RowOutcome::new(
+                        Row::fail("Java not usable")
+                            .with_detail(format!("`java -version` failed: {line}")),
+                    )
+                }
             }
             Err(err) => RowOutcome::new(
                 Row::warn("Failed to read Java version")
