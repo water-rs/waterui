@@ -40,6 +40,7 @@ tokio-tungstenite = "0.23"
 thiserror = "2.0.17"
 smol = "2.0.2"
 atty = "0.2.14"
+pathdiff = "0.2.1"
 
 [[bin]]
 name = "water"
