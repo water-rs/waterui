@@ -8,6 +8,12 @@ A modern, cross-platform UI framework for Rust, designed for building reactive, 
 
 WaterUI combines the safety and speed of Rust with a declarative, component-based architecture inspired by modern web frameworks. It offers true native rendering on Apple and Android, a powerful self-drawn renderer for desktop, and even a terminal backend, all powered by a fine-grained reactive system.
 
+## 📖 Documentations
+
+Read our latest documentation [https://docs.rs/waterui/latest](here)!
+
+Read our offical book [https://book.waterui.dev](here)!
+
 ## ✨ Features
 
 - **Declarative & Reactive**: Build complex UIs with simple, reusable components. State management is handled by a fine-grained reactivity system, ensuring your UI always stays in sync with your data.
