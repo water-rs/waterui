@@ -196,7 +196,7 @@ pub(crate) fn resolve_android_ndk_path() -> Option<PathBuf> {
 
     for sdk_root in android_sdk_roots() {
         let ndk_bundle = sdk_root.join("ndk-bundle");
-        if ndk_bundle.exists() {
+        if ndk_bundle.exists() && ndk_toolchain_bin(&ndk_bundle).is_some() {
             return Some(ndk_bundle);
         }
 
@@ -208,8 +208,10 @@ pub(crate) fn resolve_android_ndk_path() -> Option<PathBuf> {
                 .filter(|path| path.is_dir())
                 .collect();
             candidates.sort_by(|a, b| b.cmp(a));
-            if let Some(candidate) = candidates.into_iter().next() {
-                return Some(candidate);
+            for candidate in candidates {
+                if ndk_toolchain_bin(&candidate).is_some() {
+                    return Some(candidate);
+                }
             }
         }
     }
