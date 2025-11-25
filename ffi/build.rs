@@ -1,5 +1,3 @@
-//! Build script configuring compile-time options for `WaterUI`.
-
 use std::env;
 
 fn main() {
