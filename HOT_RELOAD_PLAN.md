@@ -15,7 +15,6 @@
 - [ ] Provide per-platform hot reload enablement (Android ✅, TUI pending) in `platform_supports_native_hot_reload` and `run_platform`.
 - [x] Start hot reload server for Android (with `adb reverse` or similar) and pass host/port info to the app.
 - [ ] Support TUI platform runner that launches `waterui_tui` example, attaches `Hotreload` view, and points to CLI server.
-- [ ] For Apple simulator/dev macOS: ensure Rust builds emit `Hotreload::new(...)` (already in template) and that `WATERUI_ENABLE_HOT_RELOAD` is only set for simulator/debug artifacts so device/release binaries never include dlopen logic.
 - [ ] Manage incremental rebuilds per platform (native cdylib vs wasm).
 - [ ] Document that physical iOS devices cannot use hot reload due to code signing.
 
