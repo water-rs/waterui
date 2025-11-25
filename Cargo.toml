@@ -84,7 +84,7 @@ wgpu = "27.0"
 time = "0.3"
 tiny-skia = "0.11"
 vello = "0.2"
-zenwave = { git = "https://github.com/zen-rs/zenwave", rev = "e3c2b763a1a7e09c37c3711819a8c006c2037cfe" }
+zenwave = { git = "https://github.com/zen-rs/zenwave" }
 
 [dependencies]
 nami.workspace = true
