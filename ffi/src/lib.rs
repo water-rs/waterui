@@ -124,16 +124,25 @@ mod panic_hook {
 macro_rules! export {
     () => {
         /// Initializes a new WaterUI environment
+        ///
+        /// # Safety
+        ///
+        /// This function must be called on main thread.
         #[unsafe(no_mangle)]
-        pub extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
-            $crate::__init();
+        pub unsafe extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
+            unsafe {
+                $crate::__init();
+            }
             let env: waterui::Environment = init();
             $crate::IntoFFI::into_ffi(env)
         }
 
         /// Creates the main view for the WaterUI application
+        ///
+        /// # Safety
+        /// This function must be called on main thread.
         #[unsafe(no_mangle)]
-        pub extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
+        pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
             let view = main();
             $crate::IntoFFI::into_ffi(AnyView::new(view))
         }
@@ -142,11 +151,13 @@ macro_rules! export {
 
 #[doc(hidden)]
 #[inline(always)]
-pub fn __init() {
+pub unsafe fn __init() {
     panic_hook::install();
     #[cfg(target_os = "android")]
-    native_executor::android::register_android_main_thread()
-        .expect("Failed to register Android main thread");
+    unsafe {
+        native_executor::android::register_android_main_thread()
+            .expect("Failed to register Android main thread");
+    }
     init_global_executor(native_executor::NativeExecutor::new());
     init_local_executor(native_executor::NativeExecutor::new());
 }
