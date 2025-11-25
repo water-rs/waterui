@@ -1,24 +1,23 @@
 #[cfg(waterui_enable_hot_reload)]
 mod enabled {
-    use async_channel::Sender;
-    use executor_core::{Task, spawn_local};
+    use async_channel::{Receiver, Sender};
+    use executor_core::spawn_local;
+    use futures::{FutureExt, pin_mut};
     use libloading::Library;
     use log::{debug, warn};
     use serde_json::{Map, Number, Value};
     use std::panic::{self, PanicInfo};
-    use std::sync::mpsc;
     use std::{
         backtrace::Backtrace,
         fs::File,
-        io::{self, Write},
+        io::Write,
         path::{Path, PathBuf},
         sync::{Mutex, Once, OnceLock},
         thread,
-        time::Duration,
     };
     use thiserror::Error;
-    use tungstenite::{Message, connect, stream::MaybeTlsStream};
     use waterui_core::{AnyView, Dynamic, View, event::Associated};
+    use zenwave::websocket::{self, WebSocketError, WebSocketMessage};
 
     /// A view that can be hot-reloaded at runtime.
     #[derive(Debug)]
@@ -54,15 +53,17 @@ mod enabled {
             if let Some(endpoint) = endpoint {
                 let daemon_trigger = trigger.clone();
                 let daemon_endpoint = endpoint.clone();
-                let (outbound_tx, outbound_rx) = mpsc::channel();
+                let (outbound_tx, outbound_rx) = async_channel::unbounded();
                 register_outbound_sender(outbound_tx);
-                thread::spawn(move || {
-                    let result = hot_reload_daemon(daemon_trigger, daemon_endpoint, outbound_rx);
+                spawn_local(async move {
+                    let result =
+                        hot_reload_daemon(daemon_trigger, daemon_endpoint, outbound_rx).await;
                     clear_outbound_sender();
                     if let Err(err) = result {
                         warn!("Failed to launch hot reload daemon: {err}");
                     }
-                });
+                })
+                .detach();
             } else {
                 debug!("Hot reload endpoint not available; running without watcher");
             }
@@ -74,7 +75,7 @@ mod enabled {
     #[derive(Debug, Error)]
     pub enum Error {
         #[error("Failed to connect to hot-reload server: {0}")]
-        FailedToConnect(#[from] tungstenite::Error),
+        FailedToConnect(#[from] WebSocketError),
         #[error("Hot reload port not set")]
         HotReloadPortNotSet,
     }
@@ -104,43 +105,62 @@ mod enabled {
         }
     }
 
-    fn hot_reload_daemon(
+    async fn hot_reload_daemon(
         trigger: HotReloadTrigger,
         endpoint: HotReloadEndpoint,
-        outbound_rx: mpsc::Receiver<String>,
+        mut outbound_rx: Receiver<String>,
     ) -> Result<(), Error> {
         // The app is the client, connecting to the CLI.
         let url = format!("ws://{}:{}/hot-reload-native", endpoint.host, endpoint.port);
 
-        let (mut socket, _) = connect(url)?;
-        if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-            let _ = stream.set_nonblocking(true);
-        }
+        let mut socket = websocket::connect(url).await?;
+        let mut outbound_closed = false;
 
         loop {
-            while let Ok(text) = outbound_rx.try_recv() {
-                if let Err(err) = socket.send(Message::Text(text.into())) {
-                    warn!("Failed to forward message to CLI: {err}");
-                    return Err(err.into());
+            if outbound_closed || outbound_rx.is_closed() {
+                match socket.recv().await {
+                    Ok(Some(WebSocketMessage::Binary(data))) => {
+                        let lib_path = create_library(&data);
+                        trigger.trigger_reload(lib_path);
+                    }
+                    Ok(Some(WebSocketMessage::Text(_))) => {}
+                    Ok(None) => break,
+                    Err(err) => return Err(err.into()),
                 }
+                continue;
             }
 
-            match socket.read_message() {
-                Ok(Message::Binary(data)) => {
-                    let lib_path = create_library(&data);
-                    trigger.trigger_reload(lib_path);
+            let outbound = outbound_rx.recv().fuse();
+            let inbound = socket.recv().fuse();
+            pin_mut!(outbound, inbound);
+
+            futures::select_biased! {
+                outbound_msg = outbound => {
+                    match outbound_msg {
+                        Ok(text) => {
+                            if let Err(err) = socket.send_text(text).await {
+                                warn!("Failed to forward message to CLI: {err}");
+                                return Err(err.into());
+                            }
+                        }
+                        Err(_) => {
+                            outbound_closed = true;
+                        }
+                    }
                 }
-                Ok(Message::Ping(payload)) => {
-                    let _ = socket.send(Message::Pong(payload));
+                inbound_msg = inbound => {
+                    match inbound_msg {
+                        Ok(Some(WebSocketMessage::Binary(data))) => {
+                            let lib_path = create_library(&data);
+                            trigger.trigger_reload(lib_path);
+                        }
+                        Ok(Some(WebSocketMessage::Text(_))) => {
+                            // Ignore text frames for now.
+                        }
+                        Ok(None) => break,
+                        Err(err) => return Err(err.into()),
+                    }
                 }
-                Ok(Message::Close(_)) => break,
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(ref err)) if err.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(tungstenite::Error::AlreadyClosed)
-                | Err(tungstenite::Error::ConnectionClosed) => break,
-                Err(err) => return Err(err.into()),
             }
         }
 
@@ -193,7 +213,7 @@ mod enabled {
 
     static HOT_RELOAD_OVERRIDE: OnceLock<Mutex<Option<HotReloadEndpoint>>> = OnceLock::new();
     static HOT_RELOAD_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-    static OUTBOUND_CHANNEL: OnceLock<Mutex<Option<mpsc::Sender<String>>>> = OnceLock::new();
+    static OUTBOUND_CHANNEL: OnceLock<Mutex<Option<Sender<String>>>> = OnceLock::new();
     static PANIC_FORWARDER: Once = Once::new();
 
     /// Configure the hot reload endpoint programmatically.
@@ -224,7 +244,7 @@ mod enabled {
         *guard = Some(path.into());
     }
 
-    fn register_outbound_sender(sender: mpsc::Sender<String>) {
+    fn register_outbound_sender(sender: Sender<String>) {
         let slot = OUTBOUND_CHANNEL.get_or_init(|| Mutex::new(None));
         let mut guard = slot.lock().expect("outbound sender mutex poisoned");
         *guard = Some(sender);
@@ -238,7 +258,7 @@ mod enabled {
         }
     }
 
-    fn outbound_sender() -> Option<mpsc::Sender<String>> {
+    fn outbound_sender() -> Option<Sender<String>> {
         OUTBOUND_CHANNEL
             .get()
             .and_then(|slot| slot.lock().ok().and_then(|sender| sender.clone()))
@@ -258,7 +278,7 @@ mod enabled {
         if let Some(sender) = outbound_sender() {
             let event = ClientEvent::from_panic(info);
             let text = event.into_json_string();
-            let _ = sender.send(text);
+            let _ = sender.send_blocking(text);
         }
     }
 
