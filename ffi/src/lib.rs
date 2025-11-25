@@ -219,6 +219,8 @@ pub trait InvalidValue {
 #[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_configure_hot_reload_endpoint(host: *const core::ffi::c_char, port: u16) {
+    use alloc::string::ToString;
+    use core::ffi::CStr;
     if host.is_null() {
         return;
     }
