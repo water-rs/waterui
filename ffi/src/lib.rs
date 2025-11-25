@@ -243,6 +243,8 @@ pub extern "C" fn waterui_configure_hot_reload_endpoint(
 #[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_configure_hot_reload_directory(path: *const core::ffi::c_char) {
+    use alloc::string::ToString;
+    use core::ffi::CStr;
     if path.is_null() {
         return;
     }
