@@ -54,7 +54,7 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-executor-core = { version = "0.6.0", features = ["std"]}
+executor-core = { git = "https://github.com/lexoliu/executor-core", features = ["std"], branch = "dev"}
 nami = { version = "0.9.0" }
 nami-core = { version = "0.3.0" }
 log = "0.4.28"
