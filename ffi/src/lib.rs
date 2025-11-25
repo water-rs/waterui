@@ -144,6 +144,7 @@ macro_rules! export {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
             let view = main();
+            let view = waterui::hot_reload::Hotreload::new(view);
             $crate::IntoFFI::into_ffi(AnyView::new(view))
         }
     };

@@ -68,9 +68,6 @@ pub fn main() -> impl View {
         .padding_with(EdgeInsets::all(100.0)),
     );
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let view = Hotreload::new(view);
-
     view
 }
 
