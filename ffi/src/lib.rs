@@ -144,8 +144,11 @@ macro_rules! export {
 #[inline(always)]
 pub fn __init() {
     panic_hook::install();
-    init_global_executor(native_executor::NativeExecutor);
-    init_local_executor(native_executor::NativeExecutor);
+    #[cfg(target_os = "android")]
+    native_executor::android::register_android_main_thread()
+        .expect("Failed to register Android main thread");
+    init_global_executor(native_executor::NativeExecutor::new());
+    init_local_executor(native_executor::NativeExecutor::new());
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
