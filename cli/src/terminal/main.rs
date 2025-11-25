@@ -7,11 +7,15 @@ mod ui;
 mod util;
 
 use clap::{Parser, Subcommand};
-use color_eyre::{config::HookBuilder, eyre::Result};
+use color_eyre::{
+    config::HookBuilder,
+    eyre::{Report, Result},
+};
 use command::{
     BackendCommands, BuildCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs, DevicesArgs,
     DoctorArgs, DoctorReport, PackageArgs, RunArgs,
 };
+use console::style;
 use dialoguer::Confirm;
 use tracing::{info, warn};
 use waterui_cli::output::{self, OutputFormat};
@@ -51,7 +55,14 @@ enum Commands {
     Devices(DevicesArgs),
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run_cli() {
+        render_friendly_error(&error);
+        std::process::exit(1);
+    }
+}
+
+fn run_cli() -> Result<()> {
     // Set up color_eyre error reporting with a custom hook
     // Dear Codex, DO NOT REMOVE it: this is needed to get proper error reports
     HookBuilder::default()
@@ -197,6 +208,103 @@ where
         printer(value);
         Ok(())
     }
+}
+
+fn render_friendly_error(error: &Report) {
+    let messages = collect_error_messages(error);
+    let mut suggestions = derive_suggestions(&messages);
+
+    if output::global_output_format().is_json() {
+        if let Some(message) = messages.first() {
+            eprintln!("Error: {message}");
+        }
+        for suggestion in suggestions.drain(..) {
+            eprintln!("Hint: {suggestion}");
+        }
+        return;
+    }
+
+    if let Some(message) = messages.first() {
+        eprintln!("{} {}", style("Error:").red().bold(), style(message).red());
+    } else {
+        eprintln!(
+            "{} {}",
+            style("Error:").red().bold(),
+            style("unexpected failure").red()
+        );
+    }
+
+    if messages.len() > 1 {
+        eprintln!(
+            "{} {}",
+            style("Caused by:").dim(),
+            style(&messages[1]).dim()
+        );
+        for message in messages.iter().skip(2) {
+            eprintln!("    - {}", style(message).dim());
+        }
+    }
+
+    if let Some(hint) = suggestions.first() {
+        eprintln!(
+            "{} {}",
+            style("Hint:").yellow().bold(),
+            style(hint).yellow()
+        );
+        for hint in suggestions.iter().skip(1) {
+            eprintln!("    - {}", style(hint).yellow());
+        }
+    }
+}
+
+fn collect_error_messages(error: &Report) -> Vec<String> {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .map(|message| {
+            message
+                .trim()
+                .trim_start_matches("Error:")
+                .trim()
+                .to_string()
+        })
+        .filter(|message| !message.is_empty())
+        .fold(Vec::new(), |mut messages, message| {
+            if messages
+                .last()
+                .map_or(true, |previous| previous != &message)
+            {
+                messages.push(message);
+            }
+            messages
+        })
+}
+
+fn derive_suggestions(messages: &[String]) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    let lowered: Vec<String> = messages.iter().map(|msg| msg.to_lowercase()).collect();
+
+    if lowered
+        .iter()
+        .any(|msg| msg.contains("toolchain requirement"))
+    {
+        suggestions.push("Run `water doctor` to diagnose and fix toolchain issues.".to_string());
+    }
+
+    if lowered.iter().any(|msg| msg.contains("not found")) {
+        suggestions
+            .push("Install the missing tool or ensure it is available on your PATH.".to_string());
+    }
+
+    if suggestions.is_empty() {
+        suggestions.push(
+            "Re-run with `-vv` for verbose logs and retry after addressing the error above."
+                .to_string(),
+        );
+    }
+
+    suggestions.dedup();
+    suggestions
 }
 
 fn execute_clean(args: &mut CleanArgs, format: OutputFormat) -> Result<()> {
