@@ -97,3 +97,9 @@ binary and run it on the Android emulator/simulator.
      `cargo run -p waterui-ffi --bin generate_header --features cbindgen` (see
      `ffi/generate_header.rs`) to refresh `ffi/waterui.h` plus both backend copies
      before committing/pushing changes that touch FFI symbols.
+
+## Runtime guardrails
+
+- WaterUI UI code must stay on the main thread. Do **not** use `std::thread::spawn`
+  in-app; schedule background work with `executor_core::spawn` and main-thread UI
+  tasks with `executor_core::spawn_local` to avoid cross-thread panics.

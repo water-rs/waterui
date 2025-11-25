@@ -55,6 +55,7 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 [workspace.dependencies]
 executor-core = { git = "https://github.com/lexoliu/executor-core", features = ["std"], branch = "dev"}
+futures = "0.3"
 nami = { version = "0.9.0" }
 nami-core = { version = "0.3.0" }
 log = "0.4.28"
@@ -83,6 +84,7 @@ wgpu = "27.0"
 time = "0.3"
 tiny-skia = "0.11"
 vello = "0.2"
+zenwave = { git = "https://github.com/zen-rs/zenwave", rev = "e3c2b763a1a7e09c37c3711819a8c006c2037cfe" }
 
 [dependencies]
 nami.workspace = true
@@ -96,16 +98,17 @@ waterui-color.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
 executor-core.workspace = true
+futures.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 log.workspace = true
 pulldown-cmark = "0.13"
 waterui-derive.workspace = true
 async-channel = "1.9"
 libloading = "0.8"
-tungstenite = "0.28.0"
 thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4"] }
 serde_json = "1.0"
+zenwave.workspace = true
 
 [features]
 default = []
