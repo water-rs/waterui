@@ -1,7 +1,7 @@
 #[cfg(waterui_enable_hot_reload)]
 mod enabled {
     use async_channel::Sender;
-    use executor_core::{Task, spawn};
+    use executor_core::{Task, spawn_local};
     use libloading::Library;
     use log::{debug, warn};
     use serde_json::{Map, Number, Value};
@@ -42,7 +42,7 @@ mod enabled {
             let trigger = HotReloadTrigger::new(sender);
             let endpoint = resolve_endpoint();
 
-            spawn(async move {
+            spawn_local(async move {
                 while let Ok(path) = receiver.recv().await {
                     let new_view = unsafe { reload("waterui_main", &path) };
                     handler.set(new_view);
