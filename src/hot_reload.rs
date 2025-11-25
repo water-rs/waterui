@@ -1,4 +1,3 @@
-#[cfg(waterui_enable_hot_reload)]
 mod enabled {
     use async_channel::{Receiver, Sender};
     use executor_core::spawn_local;
@@ -131,8 +130,7 @@ mod enabled {
             }
 
             let outbound = outbound_rx.recv().fuse();
-            let inbound = socket.recv().fuse();
-            pin_mut!(outbound, inbound);
+            pin_mut!(outbound);
 
             futures::select_biased! {
                 outbound_msg = outbound => {
@@ -148,7 +146,7 @@ mod enabled {
                         }
                     }
                 }
-                inbound_msg = inbound => {
+                inbound_msg = socket.recv().fuse() => {
                     match inbound_msg {
                         Ok(Some(WebSocketMessage::Binary(data))) => {
                             let lib_path = create_library(&data);
