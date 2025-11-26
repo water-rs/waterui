@@ -11,11 +11,17 @@ mod enabled {
     //!   message + truncated stack snippet for app-side logs, while the CLI renders the rich view.
     //! - `CliForwardLayer` forwards tracing output (including sanitized panic logs) over the websocket.
     //!
+    //! Log-level control notes:
+    //! - System logs (stderr/logcat/simulator logs) follow the platform’s own filters/environment;
+    //!   CLI flags do **not** alter them. Hot reload/websocket filtering is the only scope affected
+    //!   by the CLI `--log-filter` flag.
+    //!
     //! This keeps device logs clean while enabling the CLI to show a detailed, pretty panic report.
     use async_channel::{Receiver, Sender};
     use executor_core::spawn_local;
     use futures::{FutureExt, pin_mut};
     use libloading::Library;
+    use serde::Deserialize;
     use serde_json::{Map, Number, Value};
     use std::panic::{self, PanicInfo};
     use std::{
@@ -23,13 +29,16 @@ mod enabled {
         fs::File,
         io::{self, Write},
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{Mutex, Once, OnceLock},
         thread,
     };
     use thiserror::Error;
+    use tracing::level_filters::LevelFilter;
     use tracing::{Level, debug, warn};
     use tracing_subscriber::{
         EnvFilter, Layer,
+        filter::FilterExt,
         fmt::{
             self, FormatEvent, FormatFields,
             format::{DefaultFields, Format},
@@ -44,6 +53,7 @@ mod enabled {
     use zenwave::websocket::{self, WebSocketError, WebSocketMessage};
 
     const TRACING_PREFIX: &str = "[waterui::tracing]";
+    const DEFAULT_CLI_LOG_LEVEL: LevelFilter = LevelFilter::INFO;
 
     /// A view that can be hot-reloaded at runtime.
     #[derive(Debug)]
@@ -162,7 +172,9 @@ mod enabled {
                     let lib_path = create_library(&data);
                     trigger.trigger_reload(lib_path);
                 }
-                Ok(Some(WebSocketMessage::Text(_))) => {}
+                Ok(Some(WebSocketMessage::Text(text))) => {
+                    handle_server_message(&text);
+                }
                 Ok(None) => {
                     break;
                 }
@@ -222,6 +234,7 @@ mod enabled {
     static HOT_RELOAD_DIR_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
     static OUTBOUND_CHANNEL: OnceLock<Mutex<Option<Sender<String>>>> = OnceLock::new();
     static PANIC_FORWARDER: Once = Once::new();
+    static CLI_LOG_LEVEL: OnceLock<Arc<Mutex<LevelFilter>>> = OnceLock::new();
 
     /// Configure the hot reload endpoint programmatically.
     ///
@@ -271,6 +284,42 @@ mod enabled {
             .and_then(|slot| slot.lock().ok().and_then(|sender| sender.clone()))
     }
 
+    fn cli_log_level_handle() -> Arc<Mutex<LevelFilter>> {
+        CLI_LOG_LEVEL
+            .get_or_init(|| Arc::new(Mutex::new(DEFAULT_CLI_LOG_LEVEL)))
+            .clone()
+    }
+
+    fn current_cli_log_level() -> LevelFilter {
+        cli_log_level_handle()
+            .lock()
+            .map(|level| *level)
+            .unwrap_or(DEFAULT_CLI_LOG_LEVEL)
+    }
+
+    fn update_cli_log_level(level: &str) {
+        let parsed = LevelFilter::from_str(level).unwrap_or(DEFAULT_CLI_LOG_LEVEL);
+        if let Ok(mut guard) = cli_log_level_handle().lock() {
+            *guard = parsed;
+        }
+    }
+
+    const fn level_allows(filter: LevelFilter, level: &Level) -> bool {
+        match filter {
+            LevelFilter::OFF => false,
+            LevelFilter::ERROR => matches!(level, Level::ERROR),
+            LevelFilter::WARN => matches!(level, Level::ERROR | Level::WARN),
+            LevelFilter::INFO => matches!(level, Level::ERROR | Level::WARN | Level::INFO),
+            LevelFilter::DEBUG => {
+                matches!(
+                    level,
+                    Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG
+                )
+            }
+            LevelFilter::TRACE => true,
+        }
+    }
+
     fn install_panic_forwarder() {
         PANIC_FORWARDER.call_once(|| {
             let previous_hook = panic::take_hook();
@@ -284,7 +333,7 @@ mod enabled {
     fn install_tracing_forwarder() {
         static TRACING_SETUP: Once = Once::new();
         TRACING_SETUP.call_once(|| {
-            let filter =
+            let system_filter =
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
             let event_formatter = PanicAwareFormatter::new();
             let console_layer = fmt::layer()
@@ -292,10 +341,10 @@ mod enabled {
                 .with_writer(PrefixedMakeWriter)
                 .with_ansi(false)
                 .without_time()
-                .with_target(true);
+                .with_target(true)
+                .with_filter(system_filter);
             let cli_layer = CliForwardLayer::new(event_formatter);
             let mut registry = tracing_subscriber::registry()
-                .with(filter)
                 .with(cli_layer)
                 .with(console_layer);
             #[cfg(target_os = "android")]
@@ -447,11 +496,15 @@ mod enabled {
     #[derive(Clone)]
     struct CliForwardLayer {
         formatter: PanicAwareFormatter,
+        level: Arc<Mutex<LevelFilter>>,
     }
 
     impl CliForwardLayer {
         fn new(formatter: PanicAwareFormatter) -> Self {
-            Self { formatter }
+            Self {
+                formatter,
+                level: cli_log_level_handle(),
+            }
         }
     }
 
@@ -463,6 +516,13 @@ mod enabled {
             let Some(sender) = outbound_sender() else {
                 return;
             };
+            let level = match self.level.lock() {
+                Ok(level) => *level,
+                Err(_) => DEFAULT_CLI_LOG_LEVEL,
+            };
+            if !level_allows(level, event.metadata().level()) {
+                return;
+            }
             let mut rendered = Vec::new();
             if self
                 .formatter
@@ -617,6 +677,23 @@ mod enabled {
         message: String,
         level: Level,
         target: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ServerMessage {
+        #[serde(rename = "type")]
+        kind: String,
+        filter: Option<String>,
+    }
+
+    fn handle_server_message(text: &str) {
+        if let Ok(message) = serde_json::from_str::<ServerMessage>(text) {
+            if message.kind == "log_filter" {
+                if let Some(filter) = message.filter {
+                    update_cli_log_level(&filter);
+                }
+            }
+        }
     }
 
     impl LogEvent {
