@@ -15,6 +15,7 @@ use std::{
 use color_eyre::eyre::{Context, Report, Result, bail};
 use console::style;
 
+use crate::WATERUI_TRACING_PREFIX;
 use crate::{
     backend::android::{
         adb_command, configure_rust_android_linker_env, device_preferred_targets,
@@ -24,10 +25,9 @@ use crate::{
     device::{Device, DeviceKind},
     output,
     platform::{PlatformKind, android::AndroidPlatform},
-        project::{Project, RunOptions},
-        util,
-    };
-use crate::WATERUI_TRACING_PREFIX;
+    project::{Project, RunOptions},
+    util,
+};
 const PID_APPEAR_TIMEOUT: Duration = Duration::from_secs(10);
 const PID_DISAPPEAR_GRACE: Duration = Duration::from_secs(2);
 const APP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -253,8 +253,7 @@ impl Device for AndroidDevice {
             launch_cmd.args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "true"]);
         }
         if let Some(filter) = &options.log_filter {
-            launch_cmd
-                .args(["--es", "WATERUI_LOG_FILTER", filter]);
+            launch_cmd.args(["--es", "WATERUI_LOG_FILTER", filter]);
         }
         let status = launch_cmd.status().context("failed to launch app")?;
         if !status.success() {
