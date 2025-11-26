@@ -10,7 +10,7 @@ use thiserror::Error;
 use which::which;
 
 use crate::{
-    backend::{AnyBackend, Backend, scan_backends},
+    backend::{self, AnyBackend, Backend, scan_backends},
     crash::CrashReport,
     device::Device,
     doctor::{AnyToolchainIssue, ToolchainIssue},
@@ -313,6 +313,10 @@ impl Project {
         hot_reload: HotReloadOptions,
     ) -> eyre::Result<()> {
         let target_triple = platform.target_triple();
+        if target_triple.contains("android") {
+            backend::android::configure_rust_android_linker_env(&[target_triple])?;
+            backend::android::prepare_cmake_env(&[target_triple])?;
+        }
         // use cargo to build the project for the specified target
         let mut cmd = Command::new("cargo");
         cmd.arg("build")
