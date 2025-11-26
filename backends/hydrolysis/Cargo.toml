@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-log.workspace = true
+tracing.workspace = true
 nami.workspace = true
 tiny-skia = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
