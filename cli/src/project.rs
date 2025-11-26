@@ -26,12 +26,14 @@ pub struct Project {
 }
 
 /// Controls build and runtime behavior for `Project::run`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     /// Compile and package with release optimizations.
     pub release: bool,
     /// Hot reload configuration forwarded to platforms/devices.
     pub hot_reload: HotReloadOptions,
+    /// Log filter (RUST_LOG syntax) forwarded to hot reload clients.
+    pub log_filter: Option<String>,
 }
 
 impl RunOptions {
@@ -40,6 +42,7 @@ impl RunOptions {
         Self {
             release,
             hot_reload,
+            log_filter: None,
         }
     }
 }
