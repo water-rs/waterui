@@ -811,6 +811,10 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
     let env_status = evaluate_android_env();
     outcomes.extend(env_status.rows);
 
+    let ndk_path = env_status
+        .ndk
+        .clone()
+        .or_else(backend::android::resolve_ndk_path);
     let sdk = env_status.root.clone().map(AndroidSdk::new);
 
     if let Some(sdk_ref) = sdk.as_ref() {
@@ -818,6 +822,9 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
     }
 
     outcomes.push(check_android_cmake(sdk.as_ref()));
+    if let Some(ndk) = ndk_path.as_ref() {
+        outcomes.push(check_android_ndk_toolchain(sdk.as_ref(), ndk));
+    }
 
     if which("rustup").is_ok() {
         let output = Command::new("rustup")
@@ -940,6 +947,7 @@ fn check_android_tool(name: &str, help: &str) -> RowOutcome {
 
 struct AndroidEnvStatus {
     root: Option<PathBuf>,
+    ndk: Option<PathBuf>,
     rows: Vec<RowOutcome>,
 }
 
@@ -961,14 +969,14 @@ fn evaluate_android_env() -> AndroidEnvStatus {
         )
     });
 
-    let _ndk = check_env_path(
+    let ndk = check_env_path(
         &mut rows,
         "ANDROID_NDK_HOME",
         false,
         "Set ANDROID_NDK_HOME to the Android NDK directory (usually inside the SDK's ndk folder).",
     );
 
-    AndroidEnvStatus { root, rows }
+    AndroidEnvStatus { root, ndk, rows }
 }
 
 fn check_env_path(
@@ -1017,7 +1025,7 @@ fn check_env_path(
 fn auto_detect_android_path(name: &str) -> Option<PathBuf> {
     match name {
         "ANDROID_SDK_ROOT" | "ANDROID_HOME" => backend::android::resolve_android_sdk_path(),
-        "ANDROID_NDK_HOME" => backend::android::resolve_android_ndk_path(),
+        "ANDROID_NDK_HOME" => backend::android::resolve_ndk_path(),
         _ => None,
     }
 }
@@ -1144,6 +1152,63 @@ fn check_android_cmake(sdk: Option<&AndroidSdk>) -> RowOutcome {
         RowOutcome::with_fix(row, fix)
     } else {
         RowOutcome::new(row)
+    }
+}
+
+fn check_android_ndk_toolchain(sdk: Option<&AndroidSdk>, ndk_path: &Path) -> RowOutcome {
+    match backend::android::ndk_toolchain_bin(ndk_path) {
+        Some((host_tag, bin_dir)) => {
+            let clang_present = fs::read_dir(&bin_dir)
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .find(|name| {
+                            name.starts_with("aarch64-linux-android")
+                                && name.contains("-clang")
+                                && !name.contains("clang++")
+                        })
+                })
+                .is_some();
+
+            if clang_present {
+                RowOutcome::new(
+                    Row::pass("Android NDK clang toolchain available")
+                        .with_indent(1)
+                        .with_detail(format!("Host {host_tag}, {}", bin_dir.display())),
+                )
+            } else {
+                let row = Row::fail("Android NDK clang for aarch64 not found")
+                    .with_indent(1)
+                    .with_detail(format!(
+                        "Missing aarch64-linux-android*-clang under {}",
+                        bin_dir.display()
+                    ));
+                if let Some(fix) = sdk.and_then(|sdk| {
+                    sdk.install_fix("android-ndk", "Install Android NDK", &["ndk;26.1.10909125"])
+                }) {
+                    RowOutcome::with_fix(row, fix)
+                } else {
+                    RowOutcome::new(row)
+                }
+            }
+        }
+        None => {
+            let row = Row::fail("Android NDK LLVM toolchain not found")
+                .with_indent(1)
+                .with_detail(format!(
+                    "Missing prebuilt toolchain under {}",
+                    ndk_path.display()
+                ));
+            if let Some(fix) = sdk.and_then(|sdk| {
+                sdk.install_fix("android-ndk", "Install Android NDK", &["ndk;26.1.10909125"])
+            }) {
+                RowOutcome::with_fix(row, fix)
+            } else {
+                RowOutcome::new(row)
+            }
+        }
     }
 }
 
