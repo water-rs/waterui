@@ -338,7 +338,7 @@ fn install_tracing_forwarder() {
             .with(console_layer);
         #[cfg(target_os = "android")]
         {
-            registry = registry.with(tracing_android::AndroidLayer::default());
+            registry = registry.with(tracing_android::layer("WaterUI"));
         }
         if registry.try_init().is_err() {
             eprintln!("WaterUI tracing forwarder failed to initialize; logs may be missing.");
