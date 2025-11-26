@@ -13,7 +13,7 @@ categories = ["gui"]
 [dependencies]
 waterui-core.workspace = true
 hydrolysis.workspace = true
-log.workspace = true
+tracing.workspace = true
 waterui.workspace = true
 waterui-text.workspace = true
 waterui-layout.workspace = true
