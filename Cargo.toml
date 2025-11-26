@@ -85,6 +85,7 @@ time = "0.3"
 tiny-skia = "0.11"
 vello = "0.2"
 zenwave = { git = "https://github.com/zen-rs/zenwave" }
+tracing-panic = "0.1.2"
 
 [dependencies]
 nami.workspace = true
@@ -101,6 +102,9 @@ executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 tracing.workspace = true
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+tracing-android = "0.1.3"
+tracing-panic = "0.1.2"
 pulldown-cmark = "0.13"
 waterui-derive.workspace = true
 async-channel = "1.9"
