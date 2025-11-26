@@ -935,6 +935,9 @@ fn run_cargo_build(
         .status()
         .with_context(|| format!("failed to run cargo build in {}", project_dir.display()))?;
     if status.success() {
+        if hot_reload_enabled && hot_reload_target.is_some() {
+            ensure_cdylib(project_dir, package, release, hot_reload_target)?;
+        }
         return Ok(());
     }
 
@@ -951,11 +954,99 @@ fn run_cargo_build(
         })?;
         if retry_status.success() {
             info!("cargo build succeeded after disabling sccache");
+            if hot_reload_enabled && hot_reload_target.is_some() {
+                ensure_cdylib(project_dir, package, release, hot_reload_target)?;
+            }
             return Ok(());
         }
     }
 
     bail!("cargo build failed");
+}
+
+fn ensure_cdylib(
+    project_dir: &Path,
+    package: &str,
+    release: bool,
+    hot_reload_target: Option<&str>,
+) -> Result<()> {
+    let expected = hot_reload_library_path(project_dir, package, release, hot_reload_target);
+    if expected.exists() {
+        return Ok(());
+    }
+
+    debug!(
+        "Hot reload library missing at {}; forcing cargo rustc --crate-type cdylib",
+        expected.display()
+    );
+
+    let mut cmd = Command::new("cargo");
+    cmd.arg("rustc").arg("--package").arg(package).arg("--lib");
+    if let Some(target) = hot_reload_target {
+        cmd.arg("--target").arg(target);
+    }
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.arg("--");
+    cmd.arg("--crate-type").arg("cdylib");
+    cmd.current_dir(project_dir);
+    debug!("Running command: {:?}", cmd);
+    let status = cmd.status().with_context(|| {
+        format!(
+            "failed to run cargo rustc to force cdylib in {}",
+            project_dir.display()
+        )
+    })?;
+    if !status.success() {
+        bail!("cargo rustc --crate-type cdylib failed");
+    }
+
+    if expected.exists() {
+        return Ok(());
+    }
+
+    let profile = if release { "release" } else { "debug" };
+    let mut deps_dir = project_dir.join("target");
+    if let Some(target) = hot_reload_target {
+        deps_dir.push(target);
+    }
+    deps_dir.push(profile);
+    deps_dir.push("deps");
+
+    let normalized = package.replace('-', "_");
+    let dylib_suffix = if cfg!(target_os = "windows") {
+        ".dll"
+    } else if cfg!(target_os = "macos") {
+        ".dylib"
+    } else {
+        ".so"
+    };
+
+    if let Ok(entries) = fs::read_dir(&deps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with(&format!("lib{normalized}")) && name.ends_with(dylib_suffix) {
+                    if let Some(parent) = expected.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::copy(&path, &expected)?;
+                    debug!(
+                        "Copied cdylib from {} to {}",
+                        path.display(),
+                        expected.display()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    bail!(
+        "Failed to locate generated cdylib after forcing build; expected {}",
+        expected.display()
+    );
 }
 
 fn indent_lines(text: &str, indent: &str) -> String {
@@ -1536,6 +1627,7 @@ impl Server {
     }
 
     fn notify_native_reload(&self, path: PathBuf) {
+        debug!("Queueing native hot reload artifact: {}", path.display());
         let _ = self.hot_reload_tx.send(HotReloadMessage::Native(path));
     }
 
@@ -1607,7 +1699,7 @@ async fn handle_native_socket(mut socket: WebSocket, state: AppState) {
             msg = rx.recv() => {
                 match msg {
                     Ok(HotReloadMessage::Native(path)) => {
-                        match std::fs::read(path) {
+                        match std::fs::read(&path) {
                             Ok(data) => {
                                 if let Err(err) = socket.send(AxumMessage::Binary(data)).await {
                                     let reason = NativeDisconnectReason::Abnormal(err.to_string());
@@ -1616,7 +1708,12 @@ async fn handle_native_socket(mut socket: WebSocket, state: AppState) {
                                 }
                             }
                             Err(err) => {
-                                warn!("Failed to read hot reload artifact: {err:?}");
+                                let exists = path.exists();
+                                warn!(
+                                    "Failed to read hot reload artifact at {} (exists: {}): {err:?}",
+                                    path.display(),
+                                    exists
+                                );
                             }
                         }
                     }
