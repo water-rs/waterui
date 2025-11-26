@@ -1,70 +1,104 @@
 name: CI
+
 on:
   push:
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.png"
-      - "**/*.jpg"
+    branches: ["**"]
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.png"
-      - "**/*.jpg"
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-checks:
-    name: Rust Lint & Format
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: ci-ubuntu
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
-
-      - name: Verify C header
-        run: |
-          cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
-          git diff --exit-code ffi/waterui.h
-
-  rust-test:
-    name: Rust Tests
-    needs: rust-checks
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
       - uses: dtolnay/rust-toolchain@nightly
-      - name: Cache cargo
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-      - name: Run tests
-        run: cargo test --all --all-features --workspace
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu
+      - run: cargo build --target wasm32-unknown-unknown --features std
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@master
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  unused-deps:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu
+      - uses: taiki-e/install-action@cargo-machete
+      - run: cargo machete
+
+  feature-checks:
+    name: Features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-ubuntu
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --each-feature --no-dev-deps
+      - run: cargo hack check --feature-powerset --no-dev-deps
+
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml

@@ -1,0 +1,75 @@
+[workspace]
+pr_draft = false
+changelog_config = "cliff.toml"
+pr_labels = ["release"]
+git_release_name = "{{ crate_name }}-v{{ version }}"
+commit_message = "chore(release): {{ crate_name }} v{{ version }} [skip ci]"
+publish = true
+git_tag_enable = true
+changelog_update = true
+
+[[package]]
+name = "waterui"
+git_release_name = "v{{ version }}"
+git_tag_name = "v{{ version }}"
+
+[[package.files_to_update]]
+path = "README.md"
+search = 'waterui = "[0-9]+\\.[0-9]+(\\.[0-9]+)?"'
+replace = 'waterui = "{{ version }}"'
+
+[[package]]
+name = "waterui-core"
+git_tag_name = "core-v{{ version }}"
+
+[[package]]
+name = "waterui-text"
+git_tag_name = "text-v{{ version }}"
+
+[[package]]
+name = "waterui-layout"
+git_tag_name = "layout-v{{ version }}"
+
+[[package]]
+name = "waterui-form"
+git_tag_name = "form-v{{ version }}"
+
+[[package]]
+name = "waterui-controls"
+git_tag_name = "controls-v{{ version }}"
+
+[[package]]
+name = "waterui-graphics"
+git_tag_name = "graphics-v{{ version }}"
+
+[[package]]
+name = "waterui-media"
+git_tag_name = "media-v{{ version }}"
+
+[[package]]
+name = "waterui-navigation"
+git_tag_name = "navigation-v{{ version }}"
+
+[[package]]
+name = "waterui-str"
+git_tag_name = "str-v{{ version }}"
+
+[[package]]
+name = "waterui-color"
+git_tag_name = "color-v{{ version }}"
+
+[[package]]
+name = "waterui-url"
+git_tag_name = "url-v{{ version }}"
+
+[[package]]
+name = "waterui-derive"
+git_tag_name = "derive-v{{ version }}"
+
+[[package]]
+name = "waterui-ffi"
+git_tag_name = "ffi-v{{ version }}"
+
+[[package]]
+name = "waterui-cli"
+git_tag_name = "cli-v{{ version }}"
