@@ -36,6 +36,7 @@ mod enabled {
     use thiserror::Error;
     use tracing::level_filters::LevelFilter;
     use tracing::{Level, debug, warn};
+    use tracing_subscriber::fmt::FmtContext;
     use tracing_subscriber::{
         EnvFilter, Layer,
         filter::FilterExt,
