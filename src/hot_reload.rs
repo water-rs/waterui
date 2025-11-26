@@ -333,14 +333,26 @@ fn install_tracing_forwarder() {
             .with_ansi(false)
             .with_filter(system_filter);
         let cli_layer = CliForwardLayer::new(event_formatter);
-        let mut registry = tracing_subscriber::registry()
-            .with(cli_layer)
-            .with(console_layer);
+
         #[cfg(target_os = "android")]
-        {
-            registry = registry.with(tracing_android::layer("WaterUI"));
-        }
-        if registry.try_init().is_err() {
+        let result = {
+            let registry = tracing_subscriber::registry()
+                .with(cli_layer)
+                .with(console_layer);
+            if let Ok(android_layer) = tracing_android::layer("WaterUI") {
+                registry.with(android_layer).try_init()
+            } else {
+                registry.try_init()
+            }
+        };
+
+        #[cfg(not(target_os = "android"))]
+        let result = tracing_subscriber::registry()
+            .with(cli_layer)
+            .with(console_layer)
+            .try_init();
+
+        if result.is_err() {
             eprintln!("WaterUI tracing forwarder failed to initialize; logs may be missing.");
         }
     });
