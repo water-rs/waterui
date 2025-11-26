@@ -17,6 +17,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 use which::which;
 
+use crate::WATERUI_TRACING_PREFIX;
 use crate::{
     backend::apple::ensure_macos_host,
     crash::CrashReport,
@@ -29,7 +30,6 @@ use crate::{
     project::{Project, RunOptions, Swift},
     util,
 };
-use crate::WATERUI_TRACING_PREFIX;
 
 const APPLE_CRASH_OBSERVATION: Duration = Duration::from_secs(8);
 const APPLE_LOG_EXCERPT_LINES: usize = 32;

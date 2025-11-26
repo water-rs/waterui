@@ -88,7 +88,8 @@ pub fn ensure_ready(mode: CheckMode, targets: &[CheckTarget]) -> Result<()> {
         message.push_str("\n  - ");
         message.push_str(&failure);
     }
-    message.push_str("\nRun `water doctor` for a full report.");
+    message
+        .push_str("\nRun `water doctor --fix` to try automatic fixes, then re-run this command.");
 
     bail!(message);
 }
@@ -810,10 +811,13 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
     let env_status = evaluate_android_env();
     outcomes.extend(env_status.rows);
 
-    if let Some(root) = env_status.root {
-        let sdk = AndroidSdk::new(root);
-        outcomes.extend(sdk.check_components()?);
+    let sdk = env_status.root.clone().map(AndroidSdk::new);
+
+    if let Some(sdk_ref) = sdk.as_ref() {
+        outcomes.extend(sdk_ref.check_components()?);
     }
+
+    outcomes.push(check_android_cmake(sdk.as_ref()));
 
     if which("rustup").is_ok() {
         let output = Command::new("rustup")
@@ -1099,6 +1103,126 @@ fn java_install_fix() -> Option<FixSuggestion> {
     None
 }
 
+fn check_android_cmake(sdk: Option<&AndroidSdk>) -> RowOutcome {
+    if let Ok(path) = which("cmake") {
+        return RowOutcome::new(
+            Row::pass("`cmake` available")
+                .with_indent(1)
+                .with_detail(path.display().to_string()),
+        );
+    }
+
+    if let Some(sdk) = sdk {
+        if let Some(path) = sdk.find_cmake() {
+            return RowOutcome::new(
+                Row::pass("`cmake` available (Android SDK)")
+                    .with_indent(1)
+                    .with_detail(path.display().to_string()),
+            );
+        }
+
+        let row = Row::fail("`cmake` not found for Android builds")
+            .with_indent(1)
+            .with_detail("Install CMake via sdkmanager or make it available on PATH.");
+        if let Some(fix) = sdk.install_fix(
+            "android-cmake",
+            "Install CMake via sdkmanager",
+            &["cmake;3.22.1"],
+        ) {
+            return RowOutcome::with_fix(row, fix);
+        }
+        if let Some(fix) = cmake_fix_suggestion() {
+            return RowOutcome::with_fix(row, fix);
+        }
+        return RowOutcome::new(row);
+    }
+
+    let row = Row::fail("`cmake` not found for Android builds")
+        .with_indent(1)
+        .with_detail("Install CMake via your package manager or the Android SDK.");
+    if let Some(fix) = cmake_fix_suggestion() {
+        RowOutcome::with_fix(row, fix)
+    } else {
+        RowOutcome::new(row)
+    }
+}
+
+fn cmake_fix_suggestion() -> Option<FixSuggestion> {
+    if which("brew").is_ok() {
+        return Some(FixSuggestion::new(
+            "cmake-install-brew".into(),
+            "Install CMake via Homebrew".into(),
+            vec!["brew".into(), "install".into(), "cmake".into()],
+        ));
+    }
+
+    if which("apt-get").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["apt-get", "install", "-y", "cmake"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "cmake-install-apt".into(),
+            "Install CMake via apt".into(),
+            command,
+        ));
+    }
+
+    if which("dnf").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["dnf", "install", "-y", "cmake"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "cmake-install-dnf".into(),
+            "Install CMake via dnf".into(),
+            command,
+        ));
+    }
+
+    if which("pacman").is_ok() {
+        let mut command = Vec::new();
+        if which("sudo").is_ok() {
+            command.push("sudo".into());
+        }
+        command.extend(
+            ["pacman", "-S", "--noconfirm", "cmake"]
+                .into_iter()
+                .map(String::from),
+        );
+        return Some(FixSuggestion::new(
+            "cmake-install-pacman".into(),
+            "Install CMake via pacman".into(),
+            command,
+        ));
+    }
+
+    if cfg!(target_os = "windows") && which("choco").is_ok() {
+        return Some(FixSuggestion::new(
+            "cmake-install-choco".into(),
+            "Install CMake via Chocolatey".into(),
+            vec![
+                "choco".into(),
+                "install".into(),
+                "cmake".into(),
+                "-y".into(),
+            ],
+        ));
+    }
+
+    None
+}
+
 struct AndroidSdk {
     root: PathBuf,
     sdkmanager: Option<PathBuf>,
@@ -1251,6 +1375,10 @@ impl AndroidSdk {
         }
     }
 
+    fn find_cmake(&self) -> Option<PathBuf> {
+        find_sdk_cmake(&self.root)
+    }
+
     fn install_fix(
         &self,
         id: &str,
@@ -1273,6 +1401,35 @@ fn first_child_dir(path: &Path) -> Option<PathBuf> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|candidate| candidate.is_dir())
+}
+
+fn find_sdk_cmake(root: &Path) -> Option<PathBuf> {
+    let cmake_dir = root.join("cmake");
+    let mut candidates = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&cmake_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                candidates.push(path);
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.cmp(a));
+
+    for dir in candidates {
+        let binary = if cfg!(windows) {
+            dir.join("bin/cmake.exe")
+        } else {
+            dir.join("bin/cmake")
+        };
+        if binary.exists() {
+            return Some(binary);
+        }
+    }
+
+    None
 }
 
 fn locate_sdkmanager(root: &Path) -> Option<PathBuf> {
