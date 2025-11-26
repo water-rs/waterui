@@ -1,5 +1,17 @@
 #[cfg(waterui_enable_hot_reload)]
 mod enabled {
+    //! Hot reload client + log/panic forwarding.
+    //!
+    //! Panic/Tracing pipeline overview:
+    //! - `ffi` installs `tracing_panic::panic_hook` so panics become tracing events (for stderr/logcat).
+    //! - This module installs its own panic hook once (`PANIC_FORWARDER`), sending a structured
+    //!   `NativeClientEvent::Panic` over the hot-reload websocket, then delegating to the previous
+    //!   hook (tracing_panic) so logs still flow.
+    //! - `PanicAwareFormatter` rewrites panic tracing events into a minimal, source-path-free
+    //!   message + truncated stack snippet for app-side logs, while the CLI renders the rich view.
+    //! - `CliForwardLayer` forwards tracing output (including sanitized panic logs) over the websocket.
+    //!
+    //! This keeps device logs clean while enabling the CLI to show a detailed, pretty panic report.
     use async_channel::{Receiver, Sender};
     use executor_core::spawn_local;
     use futures::{FutureExt, pin_mut};
@@ -9,15 +21,29 @@ mod enabled {
     use std::{
         backtrace::Backtrace,
         fs::File,
-        io::Write,
+        io::{self, Write},
         path::{Path, PathBuf},
         sync::{Mutex, Once, OnceLock},
         thread,
     };
     use thiserror::Error;
-    use tracing::{debug, warn};
+    use tracing::{Level, debug, warn};
+    use tracing_subscriber::{
+        EnvFilter, Layer,
+        fmt::{
+            self, FormatEvent, FormatFields,
+            format::{DefaultFields, Format},
+            writer::MakeWriter,
+        },
+        layer::Context,
+        prelude::*,
+        registry::LookupSpan,
+        util::SubscriberInitExt,
+    };
     use waterui_core::{AnyView, Dynamic, View, event::Associated};
     use zenwave::websocket::{self, WebSocketError, WebSocketMessage};
+
+    const TRACING_PREFIX: &str = "[waterui::tracing]";
 
     /// A view that can be hot-reloaded at runtime.
     #[derive(Debug)]
@@ -50,6 +76,7 @@ mod enabled {
             .detach();
 
             install_panic_forwarder();
+            install_tracing_forwarder();
             if let Some(endpoint) = endpoint {
                 let daemon_trigger = trigger.clone();
                 let daemon_endpoint = endpoint.clone();
@@ -254,12 +281,230 @@ mod enabled {
         });
     }
 
+    fn install_tracing_forwarder() {
+        static TRACING_SETUP: Once = Once::new();
+        TRACING_SETUP.call_once(|| {
+            let filter =
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+            let event_formatter = PanicAwareFormatter::new();
+            let console_layer = fmt::layer()
+                .event_format(event_formatter.clone())
+                .with_writer(PrefixedMakeWriter)
+                .with_ansi(false)
+                .without_time()
+                .with_target(true);
+            let cli_layer = CliForwardLayer::new(event_formatter);
+            let mut registry = tracing_subscriber::registry()
+                .with(filter)
+                .with(cli_layer)
+                .with(console_layer);
+            #[cfg(target_os = "android")]
+            {
+                registry = registry.with(tracing_android::AndroidLayer::default());
+            }
+            if registry.try_init().is_err() {
+                eprintln!("WaterUI tracing forwarder failed to initialize; logs may be missing.");
+            }
+        });
+    }
+
+    #[derive(Clone, Default)]
+    struct PrefixedMakeWriter;
+
+    impl<'a> MakeWriter<'a> for PrefixedMakeWriter {
+        type Writer = PrefixedWriter<std::io::Stderr>;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            PrefixedWriter::new(std::io::stderr())
+        }
+    }
+
+    struct PrefixedWriter<W> {
+        inner: W,
+        wrote_prefix: bool,
+    }
+
+    impl<W> PrefixedWriter<W> {
+        const fn new(inner: W) -> Self {
+            Self {
+                inner,
+                wrote_prefix: false,
+            }
+        }
+
+        fn write_prefix(&mut self) -> io::Result<()> {
+            if self.wrote_prefix {
+                return Ok(());
+            }
+            self.wrote_prefix = true;
+            self.inner.write_all(TRACING_PREFIX.as_bytes())
+        }
+    }
+
+    impl<W: Write> Write for PrefixedWriter<W> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.write_prefix()?;
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    #[derive(Clone)]
+    struct PanicAwareFormatter {
+        default: Format<DefaultFields>,
+    }
+
+    impl PanicAwareFormatter {
+        fn new() -> Self {
+            Self {
+                default: fmt::format().with_ansi(false).without_time(),
+            }
+        }
+
+        fn render_panic(&self, fields: &PanicFields) -> String {
+            let mut parts = Vec::new();
+            let message = fields
+                .message
+                .as_deref()
+                .unwrap_or("panic occurred without message");
+            parts.push(format!("PANIC: {message}"));
+            if let Some(backtrace) = fields.backtrace.as_deref() {
+                let mut lines = backtrace.lines().take(MAX_PANIC_LINES);
+                let snippet: Vec<_> = lines.by_ref().collect();
+                if !snippet.is_empty() {
+                    parts.push("Stack:".to_string());
+                    parts.extend(snippet.iter().map(|line| format!("  {line}")));
+                    if backtrace.lines().count() > MAX_PANIC_LINES {
+                        parts.push("  ... (truncated)".to_string());
+                    }
+                }
+            }
+            parts.join("\n")
+        }
+    }
+
+    impl<S, N> FormatEvent<S, N> for PanicAwareFormatter
+    where
+        S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+        N: for<'writer> FormatFields<'writer> + 'static,
+    {
+        fn format_event(
+            &self,
+            ctx: &FmtContext<'_, S, N>,
+            writer: &mut dyn Write,
+            event: &tracing::Event<'_>,
+        ) -> fmt::Result {
+            if is_panic_event(event.metadata()) {
+                let mut visitor = PanicVisitor::default();
+                event.record(&mut visitor);
+                let rendered = self.render_panic(&visitor.fields);
+                write!(writer, "{rendered}")
+            } else {
+                self.default.format_event(ctx, writer, event)
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct PanicFields {
+        message: Option<String>,
+        backtrace: Option<String>,
+    }
+
+    #[derive(Default)]
+    struct PanicVisitor {
+        fields: PanicFields,
+    }
+
+    impl tracing::field::Visit for PanicVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+            match field.name() {
+                "message" => self.fields.message = Some(format!("{value:?}")),
+                "backtrace" => self.fields.backtrace = Some(format!("{value:?}")),
+                _ => {}
+            }
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            match field.name() {
+                "message" => self.fields.message = Some(value.to_string()),
+                "backtrace" => self.fields.backtrace = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    const MAX_PANIC_LINES: usize = 8;
+
+    fn is_panic_event(metadata: &tracing::Metadata<'_>) -> bool {
+        let target = metadata.target();
+        target.contains("panic")
+    }
+
+    #[derive(Clone)]
+    struct CliForwardLayer {
+        formatter: PanicAwareFormatter,
+    }
+
+    impl CliForwardLayer {
+        fn new(formatter: PanicAwareFormatter) -> Self {
+            Self { formatter }
+        }
+    }
+
+    impl<S> Layer<S> for CliForwardLayer
+    where
+        S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+            let Some(sender) = outbound_sender() else {
+                return;
+            };
+            let mut rendered = Vec::new();
+            if self
+                .formatter
+                .format_event(&FmtContext::new(&ctx, event), &mut rendered, event)
+                .is_err()
+            {
+                return;
+            }
+            let rendered = String::from_utf8_lossy(&rendered);
+            let message = rendered.trim_end_matches('\n').to_string();
+            let event = ClientEvent::log(
+                LogEvent::new(
+                    message,
+                    event.metadata().level(),
+                    Some(event.metadata().target().to_string()),
+                ),
+                TRACING_PREFIX,
+            );
+            let text = event.into_json_string();
+            let _ = sender.send_blocking(text);
+        }
+    }
+
     fn report_panic(info: &PanicInfo) {
+        log_panic_via_tracing(info);
         if let Some(sender) = outbound_sender() {
             let event = ClientEvent::from_panic(info);
             let text = event.into_json_string();
             let _ = sender.send_blocking(text);
         }
+    }
+
+    fn log_panic_via_tracing(info: &PanicInfo) {
+        let message = panic_message(info);
+        let thread_name = thread::current().name().unwrap_or("unnamed");
+        let backtrace = Backtrace::force_capture().to_string();
+        tracing::error!(
+            target: "waterui::panic",
+            message = %message,
+            thread = thread_name,
+            backtrace = %backtrace
+        );
     }
 
     fn resolve_endpoint() -> Option<HotReloadEndpoint> {
@@ -276,11 +521,18 @@ mod enabled {
     #[derive(Debug)]
     enum ClientEvent {
         Panic(PanicReport),
+        Log(LogEvent),
     }
 
     impl ClientEvent {
         fn from_panic(info: &PanicInfo) -> Self {
             Self::Panic(PanicReport::from(info))
+        }
+
+        fn log(event: LogEvent, prefix: &str) -> Self {
+            let mut event = event;
+            event.apply_prefix(prefix);
+            Self::Log(event)
         }
 
         fn into_json_string(self) -> String {
@@ -293,6 +545,10 @@ mod enabled {
                 Self::Panic(report) => {
                     event.insert("type".into(), Value::String("panic".into()));
                     event.insert("panic".into(), report.into_json_value());
+                }
+                Self::Log(log) => {
+                    event.insert("type".into(), Value::String("log".into()));
+                    event.insert("log".into(), log.into_json_value());
                 }
             }
             Value::Object(event)
@@ -352,6 +608,43 @@ mod enabled {
             map.insert("file".into(), Value::String(self.file));
             map.insert("line".into(), Value::Number(Number::from(self.line)));
             map.insert("column".into(), Value::Number(Number::from(self.column)));
+            Value::Object(map)
+        }
+    }
+
+    #[derive(Debug)]
+    struct LogEvent {
+        message: String,
+        level: Level,
+        target: Option<String>,
+    }
+
+    impl LogEvent {
+        fn new(message: String, level: &Level, target: Option<String>) -> Self {
+            Self {
+                message,
+                level: *level,
+                target,
+            }
+        }
+
+        fn apply_prefix(&mut self, prefix: &str) {
+            if self.message.starts_with(prefix) {
+                return;
+            }
+            self.message = format!("{prefix} {}", self.message);
+        }
+
+        fn into_json_value(self) -> Value {
+            let mut map = Map::with_capacity(3);
+            map.insert("message".into(), Value::String(self.message));
+            map.insert(
+                "level".into(),
+                Value::String(self.level.as_str().to_string()),
+            );
+            if let Some(target) = self.target {
+                map.insert("target".into(), Value::String(target));
+            }
             Value::Object(map)
         }
     }
