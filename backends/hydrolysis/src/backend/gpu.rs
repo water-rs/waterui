@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use log::error;
+use tracing::error;
 use vello::{
     Renderer, RendererError, RendererOptions, Scene as VelloScene, SceneBuilder,
     kurbo::{Affine, Rect as KurboRect},

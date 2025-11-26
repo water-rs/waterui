@@ -4,7 +4,6 @@ mod enabled {
     use executor_core::spawn_local;
     use futures::{FutureExt, pin_mut};
     use libloading::Library;
-    use log::{debug, warn};
     use serde_json::{Map, Number, Value};
     use std::panic::{self, PanicInfo};
     use std::{
@@ -16,6 +15,7 @@ mod enabled {
         thread,
     };
     use thiserror::Error;
+    use tracing::{debug, warn};
     use waterui_core::{AnyView, Dynamic, View, event::Associated};
     use zenwave::websocket::{self, WebSocketError, WebSocketMessage};
 
