@@ -490,19 +490,32 @@ fn hot_reload_library_path(
     target_triple: Option<&str>,
 ) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
-    let normalized = crate_name.replace('-', "_");
-    let filename = if cfg!(target_os = "windows") {
-        format!("{normalized}.dll")
-    } else if cfg!(target_os = "macos") {
-        format!("lib{normalized}.dylib")
-    } else {
-        format!("lib{normalized}.so")
-    };
+    let filename = dylib_filename(crate_name, target_triple);
     let mut path = project_dir.join("target");
     if let Some(target) = target_triple {
         path = path.join(target);
     }
     path.join(profile).join(filename)
+}
+
+fn dylib_filename(crate_name: &str, target_triple: Option<&str>) -> String {
+    let normalized = crate_name.replace('-', "_");
+    let target = target_triple.unwrap_or_else(|| std::env::consts::OS);
+
+    let target_lower = target.to_ascii_lowercase();
+    let (prefix, suffix) = if target_lower.contains("windows") {
+        ("", "dll")
+    } else if target_lower.contains("darwin")
+        || target_lower.contains("apple")
+        || target_lower.contains("ios")
+        || target_lower.contains("macos")
+    {
+        ("lib", "dylib")
+    } else {
+        ("lib", "so")
+    };
+
+    format!("{prefix}{normalized}.{suffix}")
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1014,20 +1027,25 @@ fn ensure_cdylib(
     deps_dir.push(profile);
     deps_dir.push("deps");
 
+    let filename = dylib_filename(package, hot_reload_target);
+    let suffix = filename
+        .rsplit('.')
+        .next()
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
+    let prefix = if filename.starts_with("lib") { "lib" } else { "" };
     let normalized = package.replace('-', "_");
-    let dylib_suffix = if cfg!(target_os = "windows") {
-        ".dll"
-    } else if cfg!(target_os = "macos") {
-        ".dylib"
-    } else {
-        ".so"
-    };
 
     if let Ok(entries) = fs::read_dir(&deps_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with(&format!("lib{normalized}")) && name.ends_with(dylib_suffix) {
+                let has_prefix = if prefix.is_empty() {
+                    name.starts_with(&normalized)
+                } else {
+                    name.starts_with(&format!("{prefix}{normalized}"))
+                };
+                if has_prefix && name.ends_with(&suffix) {
                     if let Some(parent) = expected.parent() {
                         fs::create_dir_all(parent)?;
                     }
