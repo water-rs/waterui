@@ -20,6 +20,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use waterui_cli::{
+    WATERUI_TRACING_PREFIX,
     backend::android::configure_rust_android_linker_env,
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
@@ -32,7 +33,7 @@ use waterui_cli::{
     output,
     platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
     project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
-    util as cli_util, WATERUI_TRACING_PREFIX,
+    util as cli_util,
 };
 type Platform = PlatformKind;
 
@@ -533,7 +534,13 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(project_dir, config, release, hot_reload_requested, log_filter);
+        return run_web(
+            project_dir,
+            config,
+            release,
+            hot_reload_requested,
+            log_filter,
+        );
     }
 
     let hot_reload_requested =
