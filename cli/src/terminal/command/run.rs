@@ -19,8 +19,9 @@ use std::{
 use tokio::fs as tokio_fs;
 use waterui_cli::{
     WATERUI_TRACING_PREFIX,
-    backend::android::{
-        clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env,
+    backend::{
+        self,
+        android::{clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env},
     },
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
@@ -982,6 +983,7 @@ fn ensure_cdylib(
 ) -> Result<()> {
     let expected = hot_reload_library_path(project_dir, package, release, hot_reload_target);
     if expected.exists() {
+        strip_artifact_if_needed(&expected, hot_reload_target);
         return Ok(());
     }
 
@@ -1015,6 +1017,7 @@ fn ensure_cdylib(
     }
 
     if expected.exists() {
+        strip_artifact_if_needed(&expected, hot_reload_target);
         return Ok(());
     }
 
@@ -1058,6 +1061,7 @@ fn ensure_cdylib(
                         path.display(),
                         expected.display()
                     );
+                    strip_artifact_if_needed(&expected, hot_reload_target);
                     return Ok(());
                 }
             }
@@ -1068,6 +1072,73 @@ fn ensure_cdylib(
         "Failed to locate generated cdylib after forcing build; expected {}",
         expected.display()
     );
+}
+
+fn strip_artifact_if_needed(path: &Path, target_triple: Option<&str>) {
+    // Only try to strip Android artifacts to shrink websocket payloads.
+    if !target_triple.is_some_and(|t| t.contains("android")) {
+        return;
+    }
+
+    if !path.exists() {
+        return;
+    }
+
+    let before = path.metadata().ok().map(|m| m.len()).unwrap_or(0);
+    if let Some(strip) = find_llvm_strip() {
+        let status = Command::new(strip).arg(path).status().map_err(|e| {
+            debug!("Failed to run llvm-strip: {e}");
+            e
+        });
+        if let Ok(status) = status {
+            if status.success() {
+                let after = path.metadata().ok().map(|m| m.len()).unwrap_or(before);
+                info!(
+                    "Stripped hot reload artifact ({} -> {} bytes)",
+                    before, after
+                );
+                return;
+            }
+        }
+    }
+
+    debug!(
+        "llvm-strip not found or failed; skipping strip for {}",
+        path.display()
+    );
+}
+
+fn find_llvm_strip() -> Option<PathBuf> {
+    if let Ok(path) = which("llvm-strip") {
+        return Some(path);
+    }
+
+    if let Some(ndk_root) = backend::android::resolve_ndk_path() {
+        let host_tag = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            "darwin-arm64"
+        } else if cfg!(target_os = "macos") {
+            "darwin-x86_64"
+        } else if cfg!(target_os = "linux") {
+            "linux-x86_64"
+        } else if cfg!(target_os = "windows") {
+            "windows-x86_64"
+        } else {
+            "unknown"
+        };
+
+        let candidate = ndk_root
+            .join("toolchains")
+            .join("llvm")
+            .join("prebuilt")
+            .join(host_tag)
+            .join("bin")
+            .join("llvm-strip");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn configure_hot_reload_build_profile(cmd: &mut Command, release: bool) {
@@ -1585,23 +1656,21 @@ impl Server {
 
         let (startup_tx, startup_rx) =
             std::sync::mpsc::channel::<std::result::Result<SocketAddr, io::Error>>();
-
-        let address = reserve_loopback_addr()?;
-        // Safe because the address string is well-formed and under our control.
-        unsafe {
-            std::env::set_var("SKYZEN_ADDRESS", address.to_string());
-        }
-
         let thread = thread::spawn(move || {
             skyzen_runtime::init_logging();
             let router = build_hot_reload_router(app_state, static_path);
+            let address = reserve_loopback_addr().expect("Failed to reserve loopback address");
+            // Safe because the address string is well-formed and under our control.
+            unsafe {
+                std::env::set_var("SKYZEN_ADDRESS", address.to_string());
+            }
             let _ = startup_tx.send(Ok(address));
             skyzen_runtime::launch(move || async { router });
         });
 
         let connection_events = NativeConnectionEvents::new(connection_event_rx);
         let startup_result = match startup_rx.recv() {
-            Ok(result) => result.map(|_| address),
+            Ok(result) => result,
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::Other,
                 "hot reload server failed to report its status",
