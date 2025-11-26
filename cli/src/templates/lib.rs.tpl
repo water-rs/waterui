@@ -1,6 +1,4 @@
 use waterui::prelude::*;
-#[cfg(not(target_arch = "wasm32"))]
-use waterui::hot_reload::Hotreload;
 
 pub fn init() -> Environment {
     Environment::new()
