@@ -21,7 +21,10 @@ use std::{
 };
 use waterui_cli::{
     WATERUI_TRACING_PREFIX,
-    backend::android::configure_rust_android_linker_env,
+    backend::{
+        self,
+        android::{clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env},
+    },
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
         DeviceKind, DevicePlatformFilter, MacosDevice,
@@ -898,6 +901,15 @@ fn run_cargo_build(
     mold_requested: bool,
     hot_reload_target: Option<&str>,
 ) -> Result<()> {
+    if let Some(target) = hot_reload_target {
+        if target.contains("android") {
+            configure_rust_android_linker_env(&[target])?;
+            prepare_cmake_env(&[target])?;
+            let profile = if release { "release" } else { "debug" };
+            clean_aws_lc_cmake_cache(project_dir, target, profile);
+        }
+    }
+
     if !output::global_output_format().is_json() {
         ui::step("Compiling Rust library...");
     }
