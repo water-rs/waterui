@@ -14,6 +14,7 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::{
     fs::{self, File},
     time::{SystemTime, UNIX_EPOCH},
@@ -126,6 +127,10 @@ pub struct RunArgs {
     #[arg(value_name = "PLATFORM|again", value_parser = parse_run_target)]
     platform: Option<RunTarget>,
 
+    /// Log filter (RUST_LOG syntax) for logs forwarded to the CLI
+    #[arg(long, value_name = "RUST_LOG")]
+    log_filter: Option<String>,
+
     /// Device to run on (e.g. a simulator name or device UDID)
     #[arg(long)]
     device: Option<String>,
@@ -192,6 +197,7 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
     let enable_sccache = !args.no_sccache;
     let mold_requested = args.mold;
     let hot_reload_requested = !args.no_hot_reload;
+    let log_filter = args.log_filter.clone();
 
     if is_json && !had_explicit_platform && device.is_none() {
         bail!(
@@ -232,6 +238,7 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         hot_reload_requested,
         enable_sccache,
         mold_requested,
+        log_filter,
     )?;
 
     Ok(())
@@ -252,6 +259,7 @@ fn run_again(args: RunArgs) -> Result<()> {
     let snapshot = load_last_run(&project)?;
     let replay_args = RunArgs {
         platform: Some(RunTarget::Platform(snapshot.platform.into())),
+        log_filter: None,
         device: snapshot.device.clone(),
         project: args.project,
         release: snapshot.release,
@@ -503,6 +511,7 @@ fn run_platform(
     hot_reload_requested: bool,
     enable_sccache: bool,
     mold_requested: bool,
+    log_filter: Option<String>,
 ) -> Result<()> {
     let project_dir = project.root();
     let mut recorded_device = device.clone();
@@ -524,7 +533,7 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(project_dir, config, release, hot_reload_requested);
+        return run_web(project_dir, config, release, hot_reload_requested, log_filter);
     }
 
     let hot_reload_requested =
@@ -539,7 +548,7 @@ fn run_platform(
     let mut hot_reload_enabled = false;
     let mut connection_events: Option<NativeConnectionEvents> = None;
     if hot_reload_requested {
-        match Server::start(project_dir.to_path_buf()) {
+        match Server::start(project_dir.to_path_buf(), log_filter.clone()) {
             Ok(instance) => {
                 hot_reload_enabled = true;
                 connection_events = Some(instance.connection_events());
@@ -632,6 +641,7 @@ Use --no-hot-reload to skip this step."
             enabled: hot_reload_enabled,
             port: hot_reload_port,
         },
+        log_filter: log_filter.clone(),
     };
 
     let run_report = match platform {
@@ -936,7 +946,13 @@ fn indent_lines(text: &str, indent: &str) -> String {
         .join("\n")
 }
 
-fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool) -> Result<()> {
+fn run_web(
+    project_dir: &Path,
+    config: &Config,
+    release: bool,
+    hot_reload: bool,
+    log_filter: Option<String>,
+) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
         eyre!("Web backend not configured for this project. Add it to Water.toml or recreate the project with the web backend.")
     })?;
@@ -964,7 +980,7 @@ fn run_web(project_dir: &Path, config: &Config, release: bool, hot_reload: bool)
         false,
     )?;
 
-    let server = Server::start(web_dir.clone())?;
+    let server = Server::start(web_dir.clone(), log_filter)?;
     let address = server.address();
     let url = format!("http://{address}/");
 
@@ -1403,6 +1419,7 @@ enum HotReloadMessage {
 struct AppState {
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
+    log_filter: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1412,15 +1429,17 @@ struct Server {
     thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_events: NativeConnectionEvents,
+    log_filter: Option<String>,
 }
 
 impl Server {
-    fn start(static_path: PathBuf) -> Result<Self> {
+    fn start(static_path: PathBuf, log_filter: Option<String>) -> Result<Self> {
         let (hot_reload_tx, _) = broadcast::channel(16);
         let (connection_event_tx, connection_event_rx) = mpsc::channel();
         let app_state = AppState {
             hot_reload_tx: hot_reload_tx.clone(),
             connection_event_tx: connection_event_tx.clone(),
+            log_filter: log_filter.clone(),
         };
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1489,6 +1508,7 @@ impl Server {
             thread: Arc::new(Mutex::new(Some(thread))),
             hot_reload_tx,
             connection_events,
+            log_filter,
         })
     }
 
@@ -1530,6 +1550,14 @@ async fn native_ws_handler(
 }
 
 async fn handle_native_socket(mut socket: WebSocket, state: AppState) {
+    if let Some(filter) = &state.log_filter {
+        let message = json!({
+            "type": "log_filter",
+            "filter": filter,
+        })
+        .to_string();
+        let _ = socket.send(AxumMessage::Text(message)).await;
+    }
     let mut rx = state.hot_reload_tx.subscribe();
     let _ = state
         .connection_event_tx
