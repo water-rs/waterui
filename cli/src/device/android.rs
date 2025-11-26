@@ -252,6 +252,10 @@ impl Device for AndroidDevice {
         } else {
             launch_cmd.args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "true"]);
         }
+        if let Some(filter) = &options.log_filter {
+            launch_cmd
+                .args(["--es", "WATERUI_LOG_FILTER", filter]);
+        }
         let status = launch_cmd.status().context("failed to launch app")?;
         if !status.success() {
             bail!("Failed to launch Android activity");

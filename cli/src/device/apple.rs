@@ -83,6 +83,9 @@ impl Device for MacosDevice {
             }
             let mut cmd = Command::new(&executable);
             util::configure_hot_reload_env(&mut cmd, true, options.hot_reload.port);
+            if let Some(filter) = &options.log_filter {
+                cmd.env("RUST_LOG", filter);
+            }
             cmd.spawn()
                 .context("failed to launch macOS app executable")?;
         } else {
@@ -221,6 +224,9 @@ impl Device for AppleSimulatorDevice {
             launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "1");
             launch_cmd.env_remove("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST");
             launch_cmd.env_remove("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT");
+        }
+        if let Some(filter) = &options.log_filter {
+            launch_cmd.env("SIMCTL_CHILD_RUST_LOG", filter);
         }
         launch_cmd.args([device_reference, &bundle_id]);
         let status = launch_cmd.status().context("failed to launch app")?;
