@@ -100,7 +100,7 @@ waterui-form.workspace = true
 waterui-controls.workspace = true
 executor-core.workspace = true
 futures.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 tracing-android = "0.1.3"
@@ -117,8 +117,7 @@ zenwave.workspace = true
 [features]
 default = []
 std = []
-all = ["serde", "std"]
-serde = ["dep:serde", "waterui-core/serde"]
+all = ["std"]
 
 
 [lints]
