@@ -8,7 +8,7 @@ use which::which;
 use crate::{
     backend,
     crash::CrashReport,
-    platform::{AnyPlatform, Platform},
+    platform::Platform,
     project::{Project, RunOptions},
 };
 
@@ -18,7 +18,7 @@ pub use android::{AndroidDevice, AndroidSelection};
 pub use apple::{AppleSimulatorDevice, MacosDevice};
 
 pub trait Device: Send + Sync {
-    type Platform: Platform;
+    type Platform: Platform + Clone;
     /// Perform any per-run setup (toolchain configuration, emulator launch, etc.).
     ///
     /// # Errors
@@ -34,14 +34,21 @@ pub trait Device: Send + Sync {
         artifact: &Path,
         options: &RunOptions,
     ) -> eyre::Result<Option<CrashReport>>;
-    fn platform(&self) -> &Self::Platform;
+    /// Returns a clone of the platform configuration.
+    /// Call this after `prepare()` to get device-specific configuration
+    /// like detected target architecture for Android.
+    fn platform(&self) -> Self::Platform;
 }
 
-pub type AnyDevice = Box<dyn Device<Platform = AnyPlatform>>;
+// Note: AnyDevice/AnyPlatform cannot be used with the current trait design
+// because Platform requires Clone, which Box<dyn ...> doesn't satisfy.
+// When device scanning is implemented, consider using an enum dispatch pattern.
+//
+// pub type AnyDevice = Box<dyn Device<Platform = AnyPlatform>>;
 
 /// Scan for all available devices.
 #[must_use]
-pub fn scan() -> Vec<AnyDevice> {
+pub fn scan() -> Vec<Box<dyn std::any::Any>> {
     todo!("device scanning not implemented")
 }
 
