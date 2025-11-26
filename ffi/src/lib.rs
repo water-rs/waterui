@@ -15,7 +15,7 @@
 
 #![no_std]
 extern crate alloc;
-#[cfg(target_os = "android")]
+#[cfg(feature = "std")]
 extern crate std;
 #[macro_use]
 mod macros;
@@ -43,83 +43,14 @@ use waterui_core::Metadata;
 
 use crate::array::WuiArray;
 
-#[cfg(target_os = "android")]
-mod panic_hook {
-    use alloc::boxed::Box;
-    use alloc::string::{String, ToString};
-    use core::ffi::c_char;
-    use std::{backtrace::Backtrace, ffi::CString, sync::Once};
-
-    const ANDROID_LOG_ERROR: i32 = 6;
-    const TAG: &[u8] = b"WaterUI\0";
-    static INSTALL_HOOK: Once = Once::new();
-
-    unsafe extern "C" {
-        fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
-    }
-
-    fn log_line(message: &str) {
-        if let Ok(cstr) = CString::new(message) {
-            unsafe {
-                __android_log_write(
-                    ANDROID_LOG_ERROR,
-                    TAG.as_ptr() as *const c_char,
-                    cstr.as_ptr(),
-                );
-            }
-        }
-    }
-
-    pub(crate) fn install() {
-        INSTALL_HOOK.call_once(|| {
-            std::panic::set_hook(Box::new(|info| {
-                let mut summary = String::from("Rust panic");
-                if let Some(location) = info.location() {
-                    use core::fmt::Write;
-                    let _ = write!(
-                        &mut summary,
-                        " at {}:{}:{}",
-                        location.file(),
-                        location.line(),
-                        location.column()
-                    );
-                }
-                if let Some(message) = info.payload().downcast_ref::<&str>() {
-                    summary.push_str(": ");
-                    summary.push_str(message);
-                } else if let Some(message) = info.payload().downcast_ref::<String>() {
-                    summary.push_str(": ");
-                    summary.push_str(message);
-                }
-                log_line(&summary);
-                log_line("Backtrace:");
-                let backtrace = Backtrace::force_capture().to_string();
-                for line in backtrace.lines() {
-                    log_line(line);
-                }
-            }));
-        });
-    }
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+fn install_panic_hook() {
+    // Route panics through tracing; pretty rendering lives in the CLI.
+    std::panic::set_hook(Box::new(tracing_panic::panic_hook));
 }
 
-#[cfg(not(target_os = "android"))]
-mod panic_hook {
-    use alloc::boxed::Box;
-    use miette::{MietteHandlerOpts, set_hook};
-
-    pub(crate) fn install() {
-        set_hook(Box::new(|_| {
-            Box::new(
-                MietteHandlerOpts::new()
-                    .color(true)
-                    .unicode(true)
-                    .context_lines(4)
-                    .build(),
-            )
-        }))
-        .unwrap();
-    }
-}
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
+fn install_panic_hook() {}
 #[macro_export]
 macro_rules! export {
     () => {
@@ -150,10 +81,12 @@ macro_rules! export {
     };
 }
 
+/// # Safety
+/// You have to ensure this is only called once, and on main thread.
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __init() {
-    panic_hook::install();
+    install_panic_hook();
     #[cfg(target_os = "android")]
     unsafe {
         native_executor::android::register_android_main_thread()

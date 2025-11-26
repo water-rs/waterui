@@ -31,7 +31,7 @@ use waterui_cli::{
     output,
     platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
     project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
-    util as cli_util,
+    util as cli_util, WATERUI_TRACING_PREFIX,
 };
 type Platform = PlatformKind;
 
@@ -1820,6 +1820,8 @@ impl Drop for RebuildWatcher {
 enum NativeClientEvent {
     #[serde(rename = "panic")]
     Panic(NativePanicReport),
+    #[serde(rename = "log")]
+    Log(NativeLogEvent),
 }
 
 #[derive(Debug, Deserialize)]
@@ -1828,6 +1830,13 @@ struct NativePanicReport {
     location: Option<NativePanicLocation>,
     thread: Option<String>,
     backtrace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeLogEvent {
+    message: String,
+    level: String,
+    target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1840,6 +1849,7 @@ struct NativePanicLocation {
 fn handle_native_client_message(payload: &str) {
     match serde_json::from_str::<NativeClientEvent>(payload) {
         Ok(NativeClientEvent::Panic(report)) => emit_remote_panic(report),
+        Ok(NativeClientEvent::Log(event)) => emit_remote_log(event),
         Err(err) => {
             warn!("Failed to parse native client message ({err}): {payload}");
         }
@@ -1869,6 +1879,26 @@ fn emit_remote_panic(report: NativePanicReport) {
     }
 
     ui::plain("  Hint: fix the panic above, save, and WaterUI will rebuild automatically.");
+}
+
+fn emit_remote_log(event: NativeLogEvent) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+    let target = event.target.unwrap_or_default();
+    let message = event
+        .message
+        .trim()
+        .trim_start_matches(WATERUI_TRACING_PREFIX)
+        .trim_start();
+    if target.is_empty() {
+        println!("{} [{}] {}", WATERUI_TRACING_PREFIX, event.level, message);
+    } else {
+        println!(
+            "{} [{}] {} ({})",
+            WATERUI_TRACING_PREFIX, event.level, message, target
+        );
+    }
 }
 
 #[derive(Clone)]
