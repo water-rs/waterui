@@ -106,7 +106,7 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use task::task;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
 pub mod hot_reload;
 
 mod entry;
