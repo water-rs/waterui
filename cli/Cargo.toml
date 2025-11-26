@@ -41,7 +41,7 @@ smol = "2.0.2"
 atty = "0.2.14"
 pathdiff = "0.2.1"
 zenwave.workspace = true
-skyzen = { path = "/Users/lexoliu/.cargo/git/checkouts/skyzen-eb59f14612d62f47/0b60c4e", default-features = true, features = ["websocket", "rt"] }
+skyzen = { git = "https://github.com/zen-rs/skyzen" , default-features = true, features = ["websocket", "rt"] }
 
 [[bin]]
 name = "water"
