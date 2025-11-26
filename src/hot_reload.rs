@@ -117,55 +117,36 @@ mod enabled {
         let mut outbound_closed = false;
 
         loop {
-            if outbound_closed || outbound_rx.is_closed() {
-                match socket.recv().await {
-                    Ok(Some(WebSocketMessage::Binary(data))) => {
-                        let lib_path = create_library(&data);
-                        trigger.trigger_reload(lib_path);
+            if !outbound_closed && !outbound_rx.is_closed() {
+                while let Ok(text) = outbound_rx.try_recv() {
+                    if let Err(err) = socket.send_text(text).await {
+                        warn!("Failed to forward message to CLI: {err}");
+                        return Err(err.into());
                     }
-                    Ok(Some(WebSocketMessage::Text(_))) => {}
-                    Ok(None) => break,
-                    Err(err) => return Err(err.into()),
                 }
-                continue;
+
+                if outbound_rx.is_closed() {
+                    outbound_closed = true;
+                }
             }
 
-            let outbound = outbound_rx.recv().fuse();
-            pin_mut!(outbound);
-
-            futures::select_biased! {
-                outbound_msg = outbound => {
-                    match outbound_msg {
-                        Ok(text) => {
-                            if let Err(err) = socket.send_text(text).await {
-                                warn!("Failed to forward message to CLI: {err}");
-                                return Err(err.into());
-                            }
-                        }
-                        Err(_) => {
-                            outbound_closed = true;
-                        }
-                    }
+            match socket.recv().await {
+                Ok(Some(WebSocketMessage::Binary(data))) => {
+                    let lib_path = create_library(&data);
+                    trigger.trigger_reload(lib_path);
                 }
-                inbound_msg = socket.recv().fuse() => {
-                    match inbound_msg {
-                        Ok(Some(WebSocketMessage::Binary(data))) => {
-                            let lib_path = create_library(&data);
-                            trigger.trigger_reload(lib_path);
-                        }
-                        Ok(Some(WebSocketMessage::Text(_))) => {
-                            // Ignore text frames for now.
-                        }
-                        Ok(None) => break,
-                        Err(err) => return Err(err.into()),
-                    }
+                Ok(Some(WebSocketMessage::Text(_))) => {}
+                Ok(None) => {
+                    break;
+                }
+                Err(err) => {
+                    return Err(err.into());
                 }
             }
         }
 
         Ok(())
     }
-
     fn library_name() -> String {
         // generate a uuid for the library name
         let uuid = uuid::Uuid::new_v4();
