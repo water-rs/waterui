@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, Context, bail};
 use heck::ToSnakeCase;
@@ -10,12 +7,11 @@ use thiserror::Error;
 use which::which;
 
 use crate::{
-    backend::{self, AnyBackend, Backend, scan_backends},
+    backend::{AnyBackend, Backend, scan_backends},
     crash::CrashReport,
     device::Device,
     doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
-    util,
 };
 
 #[derive(Debug)]
@@ -211,13 +207,22 @@ impl Project {
         mut observer: O,
     ) -> Result<RunReport, FailToRun> {
         check_requirements()?;
+
+        // First check requirements with the initial platform
         let platform = device.platform();
         platform.check_requirements(self)?;
 
+        // Prepare device - this may detect device-specific information
+        // like target architecture for Android devices
         observer(RunStage::PrepareDevice);
         device.prepare(self, &options)?;
-        observer(RunStage::BuildRust);
-        self.build_rust(platform, options.release, options.hot_reload)?;
+
+        // Get platform again after prepare() to pick up any
+        // device-specific configuration (e.g., detected target architecture)
+        let platform = device.platform();
+
+        // Note: Rust build is handled by platform.package() which has
+        // incremental compilation. No need for separate build step.
 
         observer(RunStage::Package);
         let app_path = platform.package(self, options.release)?;
@@ -233,7 +238,9 @@ impl Project {
 
     /// Package the project for the specified platform.
     ///
-    /// This will build the project in release mode and create a distributable package.
+    /// This will build the project and create a distributable package.
+    /// The platform implementation handles both Rust compilation and
+    /// platform-specific packaging in a single step.
     ///
     /// # Errors
     ///
@@ -246,8 +253,7 @@ impl Project {
         check_requirements()?;
         platform.check_requirements(self)?;
 
-        self.build_rust(platform, release, HotReloadOptions::default())?;
-
+        // Platform::package() handles Rust compilation and packaging together
         let artifact = platform.package(self, release)?;
         Ok(artifact)
     }
@@ -303,37 +309,6 @@ impl Project {
             return Err(Error::BackendExists(backend.to_string()));
         }
         backend.init(self, dev)?;
-        Ok(())
-    }
-
-    fn build_rust(
-        &self,
-        platform: &impl Platform,
-        release: bool,
-        hot_reload: HotReloadOptions,
-    ) -> eyre::Result<()> {
-        let target_triple = platform.target_triple();
-        if target_triple.contains("android") {
-            backend::android::configure_rust_android_linker_env(&[target_triple])?;
-            backend::android::prepare_cmake_env(&[target_triple])?;
-        }
-        // use cargo to build the project for the specified target
-        let mut cmd = Command::new("cargo");
-        cmd.arg("build")
-            .arg("--manifest-path")
-            .arg(self.root().join("Cargo.toml"))
-            .arg("--target")
-            .arg(target_triple);
-        if release {
-            cmd.arg("--release");
-        }
-        util::configure_hot_reload_env(&mut cmd, hot_reload.enabled, hot_reload.port);
-        let status = cmd.status()?;
-
-        if !status.success() {
-            bail!("Failed to build project for target {}", target_triple);
-        }
-
         Ok(())
     }
 }
