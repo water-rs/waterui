@@ -1,35 +1,26 @@
 use crate::{ui, util};
 use atty::{self, Stream};
-use bytes::Bytes;
 use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use futures_util::{SinkExt, StreamExt};
-use hyper::{
-    Method,
-    Request as HyperRequest,
-    Response as HyperResponse,
-    StatusCode,
-    body::Incoming as IncomingBody,
-    header,
-    server::conn::http1,
-    service::service_fn,
-};
-use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
-use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use skyzen::{
+    CreateRouteNode, Route, StaticDir,
+    runtime::native as skyzen_runtime,
+    websocket::{WebSocket, WebSocketMessage},
+};
 use std::{
-    convert::Infallible,
     fs::{self, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::{fs as tokio_fs, net::TcpListener};
+use tokio::fs as tokio_fs;
 use waterui_cli::{
     WATERUI_TRACING_PREFIX,
-    backend::{
-        android::{clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env},
+    backend::android::{
+        clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env,
     },
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
@@ -61,17 +52,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, oneshot};
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::{
-        Message as TungsteniteMessage,
-        protocol::Role,
-        handshake::derive_accept_key,
-    },
-};
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
-use zenwave::websocket::WebSocketMessage;
 
 use which::which;
 
@@ -1579,75 +1561,56 @@ struct ServerState {
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
     log_filter: Option<String>,
-    static_root: PathBuf,
-    canonical_root: PathBuf,
 }
 
 #[derive(Clone)]
 struct Server {
     address: SocketAddr,
-    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_events: NativeConnectionEvents,
 }
 
-type ResponseBody = BoxBody<Bytes, Infallible>;
-type HttpRequest = HyperRequest<IncomingBody>;
-type HttpResponse = HyperResponse<ResponseBody>;
-type HotReloadSocket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
+type HotReloadSocket = WebSocket;
 
 impl Server {
     fn start(static_path: PathBuf, log_filter: Option<String>) -> Result<Self> {
-        let canonical_root = fs::canonicalize(&static_path).unwrap_or(static_path.clone());
         let (hot_reload_tx, _) = broadcast::channel(16);
         let (connection_event_tx, connection_event_rx) = mpsc::channel();
         let app_state = Arc::new(ServerState {
             hot_reload_tx: hot_reload_tx.clone(),
             connection_event_tx: connection_event_tx.clone(),
             log_filter: log_filter.clone(),
-            static_root: static_path,
-            canonical_root,
         });
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let (startup_tx, startup_rx) =
             std::sync::mpsc::channel::<std::result::Result<SocketAddr, io::Error>>();
 
+        let address = reserve_loopback_addr()?;
+        // Safe because the address string is well-formed and under our control.
+        unsafe {
+            std::env::set_var("SKYZEN_ADDRESS", address.to_string());
+        }
+
         let thread = thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                if let Err(err) =
-                    run_hot_reload_server(app_state, shutdown_rx, startup_tx).await
-                {
-                    warn!("hot reload server shutdown unexpectedly: {err:?}");
-                }
-            });
+            skyzen_runtime::init_logging();
+            let router = build_hot_reload_router(app_state, static_path);
+            let _ = startup_tx.send(Ok(address));
+            skyzen_runtime::launch(move || async { router });
         });
 
         let connection_events = NativeConnectionEvents::new(connection_event_rx);
         let startup_result = match startup_rx.recv() {
-            Ok(result) => result,
-            Err(_) => {
-                let _ = thread.join();
-                bail!("hot reload server failed to report its status");
-            }
+            Ok(result) => result.map(|_| address),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "hot reload server failed to report its status",
+            )),
         };
-        let address = match startup_result {
-            Ok(addr) => addr,
-            Err(err) => {
-                let _ = thread.join();
-                return Err(err).context("failed to bind hot reload server socket");
-            }
-        };
+        let address = startup_result.context("failed to bind hot reload server socket")?;
 
         Ok(Self {
             address,
-            shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
             thread: Arc::new(Mutex::new(Some(thread))),
             hot_reload_tx,
             connection_events,
@@ -1674,166 +1637,31 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let shutdown_handle = self.shutdown_tx.lock().unwrap().take();
-        if let Some(tx) = shutdown_handle {
-            let _ = tx.send(());
-        }
         let thread_handle = self.thread.lock().unwrap().take();
-        if let Some(thread) = thread_handle {
-            thread.join().unwrap();
-        }
+        drop(thread_handle);
     }
 }
 
-async fn run_hot_reload_server(
-    state: Arc<ServerState>,
-    mut shutdown_rx: oneshot::Receiver<()>,
-    startup_tx: std::sync::mpsc::Sender<std::result::Result<SocketAddr, io::Error>>,
-) -> Result<(), io::Error> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+fn reserve_loopback_addr() -> Result<SocketAddr> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
-    let _ = startup_tx.send(Ok(addr));
-
-    loop {
-        tokio::select! {
-            _ = &mut shutdown_rx => break,
-            accept_result = listener.accept() => {
-                match accept_result {
-                    Ok((stream, _)) => {
-                        let connection_state = state.clone();
-                        tokio::spawn(async move {
-                            if let Err(err) = serve_connection(stream, connection_state).await {
-                                warn!("hot reload connection failed: {err:?}");
-                            }
-                        });
-                    }
-                    Err(err) => warn!("hot reload accept error: {err:?}"),
-                }
-            }
-        }
-    }
-
-    Ok(())
+    drop(listener);
+    Ok(addr)
 }
 
-async fn serve_connection(stream: tokio::net::TcpStream, state: Arc<ServerState>) -> Result<(), hyper::Error> {
-    let io = TokioIo::new(stream);
-    let service = service_fn(move |req: HttpRequest| {
-        let handler_state = state.clone();
-        async move { handle_request(req, handler_state).await }
-    });
-
-    http1::Builder::new()
-        .serve_connection(io, service)
-        .with_upgrades()
-        .await
-}
-
-async fn handle_request(
-    req: HttpRequest,
+fn build_hot_reload_router(
     state: Arc<ServerState>,
-) -> Result<HttpResponse, Infallible> {
-    let path = req.uri().path().to_owned();
-    let response = match path.as_str() {
-        "/hot-reload-native" => handle_native_upgrade(req, state),
-        "/hot-reload-web" => handle_web_upgrade(req, state),
-        _ => serve_static(req, state).await,
-    };
+    static_path: PathBuf,
+) -> skyzen::routing::Router {
+    let native_state = state.clone();
+    let web_state = state.clone();
 
-    Ok(response)
-}
-
-fn handle_native_upgrade(req: HttpRequest, state: Arc<ServerState>) -> HttpResponse {
-    if !is_websocket_upgrade(&req) {
-        return bad_request_response("WebSocket upgrade required");
-    }
-
-    match websocket_handshake_response(&req) {
-        Ok(response) => {
-            let log_state = state.clone();
-            tokio::spawn(async move {
-                match hyper::upgrade::on(req).await {
-                    Ok(upgraded) => {
-                        let io = TokioIo::new(upgraded);
-                        let socket =
-                            WebSocketStream::from_raw_socket(io, Role::Server, None).await;
-                        handle_native_socket(socket, log_state).await;
-                    }
-                    Err(err) => warn!("Failed to upgrade native websocket: {err:?}"),
-                }
-            });
-            response
-        }
-        Err(message) => {
-            warn!("Rejecting websocket upgrade: {message}");
-            bad_request_response("Invalid websocket upgrade request")
-        }
-    }
-}
-
-fn handle_web_upgrade(req: HttpRequest, state: Arc<ServerState>) -> HttpResponse {
-    if !is_websocket_upgrade(&req) {
-        return bad_request_response("WebSocket upgrade required");
-    }
-
-    match websocket_handshake_response(&req) {
-        Ok(response) => {
-            tokio::spawn(async move {
-                match hyper::upgrade::on(req).await {
-                    Ok(upgraded) => {
-                        let io = TokioIo::new(upgraded);
-                        let socket =
-                            WebSocketStream::from_raw_socket(io, Role::Server, None).await;
-                        handle_web_socket(socket, state).await;
-                    }
-                    Err(err) => warn!("Failed to upgrade web websocket: {err:?}"),
-                }
-            });
-            response
-        }
-        Err(message) => {
-            warn!("Rejecting websocket upgrade: {message}");
-            bad_request_response("Invalid websocket upgrade request")
-        }
-    }
-}
-
-fn websocket_handshake_response(req: &HttpRequest) -> std::result::Result<HttpResponse, &'static str> {
-    let key = req
-        .headers()
-        .get(header::SEC_WEBSOCKET_KEY)
-        .ok_or("missing Sec-WebSocket-Key")?;
-    let accept_key = derive_accept_key(key.as_bytes());
-    HyperResponse::builder()
-        .status(StatusCode::SWITCHING_PROTOCOLS)
-        .header(header::CONNECTION, "Upgrade")
-        .header(header::UPGRADE, "websocket")
-        .header(header::SEC_WEBSOCKET_ACCEPT, accept_key)
-        .body(Empty::new().boxed())
-        .map_err(|_| "failed to build websocket response")
-}
-
-fn is_websocket_upgrade(req: &HttpRequest) -> bool {
-    req.method() == Method::GET
-        && header_contains(req.headers(), header::CONNECTION, "upgrade")
-        && header_equals(req.headers(), header::UPGRADE, "websocket")
-        && req.headers().contains_key(header::SEC_WEBSOCKET_KEY)
-}
-
-fn header_equals(headers: &hyper::HeaderMap, name: header::HeaderName, value: &str) -> bool {
-    headers
-        .get(name)
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h.eq_ignore_ascii_case(value))
-        .unwrap_or(false)
-}
-
-fn header_contains(headers: &hyper::HeaderMap, name: header::HeaderName, needle: &str) -> bool {
-    headers
-        .get(name)
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h.to_ascii_lowercase().contains(&needle.to_ascii_lowercase()))
-        .unwrap_or(false)
+    Route::new((
+        "/hot-reload-native".ws(move |socket| handle_native_socket(socket, native_state.clone())),
+        "/hot-reload-web".ws(move |socket| handle_web_socket(socket, web_state.clone())),
+        StaticDir::new("/", static_path),
+    ))
+    .build()
 }
 
 async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerState>) {
@@ -1843,9 +1671,7 @@ async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerStat
             "filter": filter,
         })
         .to_string();
-        let _ = socket
-            .send(to_tungstenite(WebSocketMessage::text(message)))
-            .await;
+        let _ = socket.send(WebSocketMessage::Text(message.into())).await;
     }
 
     let mut rx = state.hot_reload_tx.subscribe();
@@ -1856,19 +1682,20 @@ async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerStat
         tokio::select! {
             Some(msg) = socket.next() => {
                 match msg {
-                    Ok(TungsteniteMessage::Text(payload)) => {
+                    Ok(WebSocketMessage::Text(payload)) => {
                         handle_native_client_message(&payload);
                     }
-                    Ok(TungsteniteMessage::Close(frame)) => {
+                    Ok(WebSocketMessage::Close(frame)) => {
                         let reason = NativeDisconnectReason::Graceful(frame.map(|f| f.code.into()));
                         let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
                         break;
                     }
-                    Ok(TungsteniteMessage::Ping(payload)) => {
-                        let _ = socket.send(TungsteniteMessage::Pong(payload)).await;
+                    Ok(WebSocketMessage::Ping(payload)) => {
+                        let _ = socket.send(WebSocketMessage::Pong(payload)).await;
                     }
-                    Ok(TungsteniteMessage::Binary(_)) | Ok(TungsteniteMessage::Pong(_)) => {}
-                    Ok(TungsteniteMessage::Frame(_)) => {}
+                    Ok(WebSocketMessage::Binary(_))
+                    | Ok(WebSocketMessage::Pong(_))
+                    | Ok(WebSocketMessage::Frame(_)) => {}
                     Err(err) => {
                         let reason = NativeDisconnectReason::Abnormal(err.to_string());
                         let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
@@ -1886,7 +1713,7 @@ async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerStat
                                     path.display(),
                                     data.len()
                                 );
-                                if let Err(err) = socket.send(TungsteniteMessage::Binary(data)).await {
+                                if let Err(err) = socket.send(WebSocketMessage::Binary(data.into())).await {
                                     let reason = NativeDisconnectReason::Abnormal(err.to_string());
                                     let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
                                     break;
@@ -1919,95 +1746,12 @@ async fn handle_web_socket(mut socket: HotReloadSocket, state: Arc<ServerState>)
     while let Ok(msg) = rx.recv().await {
         if matches!(msg, HotReloadMessage::Web)
             && socket
-                .send(TungsteniteMessage::Text("reload".to_string()))
+                .send(WebSocketMessage::Text("reload".to_string().into()))
                 .await
                 .is_err()
         {
             break;
         }
-    }
-}
-
-async fn serve_static(req: HttpRequest, state: Arc<ServerState>) -> HttpResponse {
-    let request_path = req.uri().path();
-    let Some(mut resolved) = resolve_static_path(&state, request_path) else {
-        return not_found_response();
-    };
-
-    let metadata = match tokio_fs::metadata(&resolved).await {
-        Ok(meta) => meta,
-        Err(_) => return not_found_response(),
-    };
-
-    if metadata.is_dir() {
-        resolved = resolved.join("index.html");
-    }
-
-    match tokio_fs::read(&resolved).await {
-        Ok(contents) => {
-            let mut builder = HyperResponse::builder().status(StatusCode::OK);
-            if let Some(mime) = mime_guess::from_path(&resolved).first() {
-                builder = builder.header(header::CONTENT_TYPE, mime.as_ref());
-            }
-            builder
-                .body(Full::from(contents).boxed())
-                .unwrap_or_else(|_| internal_error_response())
-        }
-        Err(err) => {
-            if err.kind() == io::ErrorKind::NotFound {
-                not_found_response()
-            } else {
-                warn!("Failed to read static file {}: {err:?}", resolved.display());
-                internal_error_response()
-            }
-        }
-    }
-}
-
-fn resolve_static_path(state: &ServerState, uri_path: &str) -> Option<PathBuf> {
-    let mut clean = PathBuf::new();
-    for component in Path::new(uri_path).components() {
-        match component {
-            std::path::Component::RootDir | std::path::Component::CurDir => {}
-            std::path::Component::Normal(part) => clean.push(part),
-            std::path::Component::ParentDir => return None,
-            _ => return None,
-        }
-    }
-
-    let candidate = state.static_root.join(clean);
-    let canonical = candidate.canonicalize().ok()?;
-    if canonical.starts_with(&state.canonical_root) {
-        Some(canonical)
-    } else {
-        None
-    }
-}
-
-fn not_found_response() -> HttpResponse {
-    text_response(StatusCode::NOT_FOUND, "Not Found")
-}
-
-fn bad_request_response(message: &str) -> HttpResponse {
-    text_response(StatusCode::BAD_REQUEST, message)
-}
-
-fn internal_error_response() -> HttpResponse {
-    text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-}
-
-fn text_response(status: StatusCode, body: &str) -> HttpResponse {
-    HyperResponse::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::from(body.to_owned()).boxed())
-        .unwrap()
-}
-
-fn to_tungstenite(message: WebSocketMessage) -> TungsteniteMessage {
-    match message {
-        WebSocketMessage::Text(text) => TungsteniteMessage::Text(text.as_str().to_owned()),
-        WebSocketMessage::Binary(bytes) => TungsteniteMessage::Binary(bytes.to_vec()),
     }
 }
 
