@@ -18,6 +18,7 @@ pub mod util;
 pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
 pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_SWIFT_VERSION");
 pub const WATERUI_ANDROID_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_ANDROID_VERSION");
+pub const WATERUI_TRACING_PREFIX: &str = "[waterui::tracing]";
 
 #[macro_use]
 mod macros {
