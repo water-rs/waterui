@@ -20,11 +20,14 @@ pub struct AndroidPlatform {
     hot_reload: bool,
     enable_sccache: bool,
     mold_requested: bool,
+    /// Target triples to build for. If None, builds for all installed targets.
+    /// When running on a specific device, this should contain only the device's architecture.
+    target_triples: Option<Vec<String>>,
 }
 
 impl AndroidPlatform {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         config: Android,
         skip_native: bool,
         hot_reload: bool,
@@ -38,7 +41,15 @@ impl AndroidPlatform {
             hot_reload,
             enable_sccache,
             mold_requested,
+            target_triples: None,
         }
+    }
+
+    /// Set the target triples to build for (typically from device detection).
+    #[must_use]
+    pub fn with_targets(mut self, targets: Option<Vec<String>>) -> Self {
+        self.target_triples = targets;
+        self
     }
 }
 
@@ -65,6 +76,7 @@ impl Platform for AndroidPlatform {
             &project.config().package.name,
             self.enable_sccache,
             self.mold_requested,
+            self.target_triples.clone(),
         )
     }
 
