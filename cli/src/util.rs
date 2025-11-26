@@ -16,6 +16,7 @@ pub fn ensure_directory(path: &Path) -> Result<()> {
 }
 
 /// Inject standard environment variables that toggle `WaterUI` hot reload at runtime.
+/// Also sets the `--cfg waterui_enable_hot_reload` compile-time flag via RUSTFLAGS.
 pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u16>) {
     if enable {
         cmd.env("WATERUI_DISABLE_HOT_RELOAD", "0");
@@ -23,6 +24,18 @@ pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u1
         cmd.env("WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
         if let Some(port) = port {
             cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
+        }
+
+        // Set compile-time cfg flag
+        let mut rustflags: Vec<String> = env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| flags.split_whitespace().map(ToString::to_string).collect())
+            .unwrap_or_default();
+
+        const HOT_RELOAD_CFG: &str = "--cfg=waterui_enable_hot_reload";
+        if !rustflags.iter().any(|f| f == HOT_RELOAD_CFG) {
+            rustflags.push(HOT_RELOAD_CFG.to_string());
+            cmd.env("RUSTFLAGS", rustflags.join(" "));
         }
     } else {
         cmd.env("WATERUI_DISABLE_HOT_RELOAD", "1");
