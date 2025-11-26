@@ -1,3 +1,4 @@
+#[cfg(waterui_enable_hot_reload)]
 mod enabled {
     use async_channel::{Receiver, Sender};
     use executor_core::spawn_local;
