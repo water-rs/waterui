@@ -115,8 +115,8 @@ impl Device for MacosDevice {
         Ok(crash_report)
     }
 
-    fn platform(&self) -> &Self::Platform {
-        &self.platform
+    fn platform(&self) -> Self::Platform {
+        self.platform.clone()
     }
 }
 
@@ -249,8 +249,8 @@ impl Device for AppleSimulatorDevice {
         Ok(crash_report)
     }
 
-    fn platform(&self) -> &Self::Platform {
-        &self.platform
+    fn platform(&self) -> Self::Platform {
+        self.platform.clone()
     }
 }
 

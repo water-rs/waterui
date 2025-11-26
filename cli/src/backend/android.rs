@@ -1168,6 +1168,10 @@ pub fn clean_aws_lc_cmake_cache(project_dir: &Path, target: &str, profile: &str)
 // ============================================================================
 
 /// Build the Android APK using the generated Gradle project.
+///
+/// # Arguments
+/// * `target_triples` - If provided, only build for these specific architectures.
+///   When None, builds for all installed Android targets.
 pub fn build_android_apk(
     project_dir: &Path,
     android_config: &Android,
@@ -1178,6 +1182,7 @@ pub fn build_android_apk(
     crate_name: &str,
     enable_sccache: bool,
     mold_requested: bool,
+    target_triples: Option<Vec<String>>,
 ) -> Result<PathBuf> {
     prepare_android_package(project_dir, bundle_identifier)?;
 
@@ -1189,7 +1194,7 @@ pub fn build_android_apk(
             android_config,
             crate_name,
             release,
-            requested_triples: None,
+            requested_triples: target_triples,
             enable_sccache,
             enable_mold: mold_requested,
             hot_reload: hot_reload_enabled,

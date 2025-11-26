@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -41,9 +41,11 @@ pub struct AndroidSelection {
     pub kind: DeviceKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AndroidDevice {
     platform: AndroidPlatform,
+    /// Detected device target architectures, set during prepare()
+    detected_targets: RwLock<Option<Vec<String>>>,
     selection: AndroidSelection,
     adb_path: std::path::PathBuf,
     emulator_path: Option<std::path::PathBuf>,
@@ -63,6 +65,7 @@ impl AndroidDevice {
         let emulator_path = find_android_tool("emulator");
         Ok(Self {
             platform,
+            detected_targets: RwLock::new(None),
             selection,
             adb_path,
             emulator_path,
@@ -208,6 +211,11 @@ impl Device for AndroidDevice {
             .context("Failed to determine device CPU architecture")?;
         configure_rust_android_linker_env(&targets)
             .context("Failed to configure Android NDK toolchain for Rust builds")?;
+
+        // Store detected targets to pass to platform.package() later
+        *self.detected_targets.write().unwrap() =
+            Some(targets.iter().map(|s| (*s).to_string()).collect());
+
         Ok(())
     }
 
@@ -282,8 +290,9 @@ impl Device for AndroidDevice {
         Ok(crash_report)
     }
 
-    fn platform(&self) -> &Self::Platform {
-        &self.platform
+    fn platform(&self) -> Self::Platform {
+        let targets = self.detected_targets.read().unwrap().clone();
+        self.platform.clone().with_targets(targets)
     }
 }
 
