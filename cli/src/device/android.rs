@@ -24,9 +24,10 @@ use crate::{
     device::{Device, DeviceKind},
     output,
     platform::{PlatformKind, android::AndroidPlatform},
-    project::{Project, RunOptions},
-    util,
-};
+        project::{Project, RunOptions},
+        util,
+    };
+use crate::WATERUI_TRACING_PREFIX;
 const PID_APPEAR_TIMEOUT: Duration = Duration::from_secs(10);
 const PID_DISAPPEAR_GRACE: Duration = Duration::from_secs(2);
 const APP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -365,7 +366,10 @@ impl AndroidCrashCollector {
 
                 let _ = writeln!(writer, "{line}");
 
-                if show_lines && is_relevant_android_log_line(&line, &package) {
+                if show_lines
+                    && is_relevant_android_log_line(&line, &package)
+                    && !is_forwarded_tracing_line(&line)
+                {
                     if is_trigger_line(&line) {
                         println!("{}", style(&line).red().bold());
                     } else {
@@ -507,4 +511,8 @@ fn is_trigger_line(line: &str) -> bool {
         "waterui_root_ready",
     ];
     TRIGGERS.iter().any(|kw| lower.contains(kw))
+}
+
+fn is_forwarded_tracing_line(line: &str) -> bool {
+    line.contains(WATERUI_TRACING_PREFIX)
 }
