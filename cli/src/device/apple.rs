@@ -29,6 +29,7 @@ use crate::{
     project::{Project, RunOptions, Swift},
     util,
 };
+use crate::WATERUI_TRACING_PREFIX;
 
 const APPLE_CRASH_OBSERVATION: Duration = Duration::from_secs(8);
 const APPLE_LOG_EXCERPT_LINES: usize = 32;
@@ -347,7 +348,10 @@ impl AppleCrashCollector {
                     .and_then(|value| value.get("eventMessage").and_then(Value::as_str))
                     .unwrap_or(&line);
 
-                if show_lines && is_relevant_apple_log_line(message) {
+                if show_lines
+                    && is_relevant_apple_log_line(message)
+                    && !is_forwarded_tracing_line(message)
+                {
                     println!("{message}");
                 }
 
@@ -488,6 +492,10 @@ fn is_crash_event(parsed: Option<&Value>, message: &str) -> bool {
         }
     }
     is_relevant_apple_log_line(message)
+}
+
+fn is_forwarded_tracing_line(message: &str) -> bool {
+    message.contains(WATERUI_TRACING_PREFIX)
 }
 
 fn debug_launch_simulator_app() -> Result<()> {
