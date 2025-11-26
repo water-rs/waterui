@@ -32,8 +32,12 @@ semver = "1.0.27"
 webbrowser = "1.0.5"
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.7.5", features = ["ws"] }
-tower-http = { version = "0.5.2", features = ["fs"] }
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.18", features = ["http1", "server", "tokio"] }
+http-body-util = "0.1.3"
+mime_guess = "2.0.5"
+bytes = "1.9.0"
+futures-util = "0.3.31"
 indexmap = "2.6.0"
 tungstenite = "0.23"
 tokio-tungstenite = "0.23"
@@ -41,6 +45,7 @@ thiserror = "2.0.17"
 smol = "2.0.2"
 atty = "0.2.14"
 pathdiff = "0.2.1"
+zenwave.workspace = true
 
 [[bin]]
 name = "water"
