@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 clap = { version = "4.5.49", features = ["derive"] }
+const_format = "0.2"
 console = "0.16.1"
 ctrlc = "3.5.0"
 dialoguer = "0.12.0"
