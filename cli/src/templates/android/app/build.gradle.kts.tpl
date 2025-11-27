@@ -3,6 +3,75 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// =============================================================================
+// WaterUI Rust Build Integration
+// =============================================================================
+// This task builds the Rust library using `water build android`.
+// It runs before the Android build and copies the .so files to jniLibs.
+
+val buildRustLibraries by tasks.registering(Exec::class) {
+    description = "Build WaterUI Rust libraries using water CLI"
+    group = "build"
+
+    // Find the project root (parent of android directory)
+    val projectRoot = rootProject.projectDir.parentFile
+
+    workingDir = projectRoot
+
+    // Determine build type from Gradle's build variant
+    val isRelease = gradle.startParameter.taskNames.any {
+        it.contains("Release", ignoreCase = true)
+    }
+
+    // Build command: water build android [--release] [--targets ...]
+    val waterCmd = if (System.getProperty("os.name").lowercase().contains("windows")) {
+        listOf("cmd", "/c", "water")
+    } else {
+        listOf("water")
+    }
+
+    val args = mutableListOf<String>()
+    args.addAll(waterCmd)
+    args.add("build")
+    args.add("android")
+    args.add("--project")
+    args.add(projectRoot.absolutePath)
+
+    if (isRelease) {
+        args.add("--release")
+    }
+
+    // Optional: Filter targets based on ABI splits or connected device
+    // For faster builds during development, you can specify a single target:
+    // args.add("--targets")
+    // args.add("aarch64-linux-android")
+
+    commandLine = args
+
+    // Environment variables for hot reload (set by water run)
+    environment("WATERUI_HOT_RELOAD", System.getenv("WATERUI_HOT_RELOAD") ?: "false")
+    System.getenv("WATERUI_HOT_RELOAD_PORT")?.let {
+        environment("WATERUI_HOT_RELOAD_PORT", it)
+    }
+
+    // Only run if source files changed
+    inputs.dir(projectRoot.resolve("src"))
+    inputs.file(projectRoot.resolve("Cargo.toml"))
+    outputs.dir(projectRoot.resolve("android/app/src/main/jniLibs"))
+}
+
+// Hook into Android build - run Rust build before compiling
+tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.configureEach {
+    dependsOn(buildRustLibraries)
+}
+
+// Also run before native library packaging
+tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders") }.configureEach {
+    dependsOn(buildRustLibraries)
+}
+
+// =============================================================================
+
 android {
     namespace = "__BUNDLE_IDENTIFIER__"
     compileSdk = 34

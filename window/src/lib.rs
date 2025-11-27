@@ -15,7 +15,7 @@ use waterui_core::{AnyView, Str};
 /// A `Window` contains all the information needed to create and manage
 /// a window, including its title, dimensions, and content.
 #[derive(Debug)]
-#[allow(dead_code)] // These will be used by window managers
+ // These will be used by window managers
 pub struct Window {
     /// The window's title.
     title: Computed<Str>,
