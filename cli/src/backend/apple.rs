@@ -244,8 +244,6 @@ pub fn build_apple_static_library(
         opts.crate_name, target
     );
 
-    ensure_rust_target_installed(target);
-
     let make_command = || {
         let mut cmd = Command::new("cargo");
         cmd.arg("build")
@@ -392,15 +390,6 @@ const fn host_default_arch() -> &'static str {
     {
         "arm64"
     }
-}
-
-fn ensure_rust_target_installed(target: &str) {
-    if which("rustup").is_err() {
-        return;
-    }
-    let _ = Command::new("rustup")
-        .args(["target", "add", target])
-        .status();
 }
 
 /// Run `xcodebuild` while streaming progress to a log file.

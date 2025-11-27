@@ -8,24 +8,54 @@ use serde::Serialize;
 
 use crate::{
     backend::{AnyBackend, Backend},
+    build::BuildOptions,
     doctor::{AnyToolchainIssue, ToolchainIssue},
     project::Project,
 };
 
+/// Platform abstraction for building and packaging WaterUI apps.
+///
+/// Implementations handle platform-specific build and packaging logic.
+/// Build OPTIONS (release, hot_reload, sccache) are passed via `BuildOptions`
+/// to avoid parameter duplication across platforms.
 pub trait Platform: Send + Sync {
     type ToolchainIssue: ToolchainIssue;
     type Backend: Backend;
 
     fn target_triple(&self) -> &'static str;
+
     /// Check if the required toolchain and dependencies are installed for this platform.
+    ///
     /// # Errors
     /// Returns a list of issues found during the check.
     fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>>;
 
     /// Package the project for distribution on this platform.
+    ///
+    /// **Deprecated**: Use `package_with_options` instead to avoid parameter duplication.
+    ///
     /// # Errors
     /// Returns an error if the packaging process fails.
     fn package(&self, project: &Project, release: bool) -> eyre::Result<PathBuf>;
+
+    /// Package the project with unified build options.
+    ///
+    /// This is the preferred method that uses `BuildOptions` instead of
+    /// scattered parameters like `release`, `hot_reload`, `sccache`.
+    ///
+    /// Default implementation calls `package()` for backwards compatibility.
+    ///
+    /// # Errors
+    /// Returns an error if the packaging process fails.
+    fn package_with_options(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+    ) -> eyre::Result<PathBuf> {
+        // Default: delegate to legacy method
+        self.package(project, options.is_release())
+    }
+
     fn backend(&self) -> &Self::Backend;
 }
 
@@ -43,6 +73,14 @@ impl<T: Platform> Platform for &T {
 
     fn package(&self, project: &Project, release: bool) -> eyre::Result<PathBuf> {
         (*self).package(project, release)
+    }
+
+    fn package_with_options(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+    ) -> eyre::Result<PathBuf> {
+        (*self).package_with_options(project, options)
     }
 
     fn backend(&self) -> &Self::Backend {
