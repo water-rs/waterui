@@ -6,10 +6,33 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../Cargo.toml");
     println!("cargo:rerun-if-changed=../backends/apple/Package.swift");
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=../.git/refs/heads");
 
     emit_waterui_version();
     emit_swift_backend_version();
     emit_android_backend_version();
+    emit_git_commit_hash();
+}
+
+fn emit_git_commit_hash() {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !hash.is_empty() {
+                println!("cargo:rustc-env=GIT_COMMIT_HASH={hash}");
+            } else {
+                println!("cargo:rustc-env=GIT_COMMIT_HASH=unknown");
+            }
+        }
+        _ => {
+            println!("cargo:rustc-env=GIT_COMMIT_HASH=unknown");
+        }
+    }
 }
 
 fn emit_waterui_version() {
