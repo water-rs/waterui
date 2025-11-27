@@ -63,7 +63,7 @@ impl Selected {
     }
 }
 
-#[allow(dead_code)]
+
 struct WithContinuationFuture<F, T> {
     f: F,
     state: SharedContinuationState<T>,

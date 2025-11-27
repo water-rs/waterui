@@ -340,9 +340,9 @@ where
     F: Fn(T) -> V,
     V: View,
 {
-    #[allow(dead_code)]
+    
     data: T,
-    #[allow(dead_code)]
+    
     generator: Rc<F>,
 }
 
