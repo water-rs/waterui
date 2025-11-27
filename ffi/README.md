@@ -35,3 +35,74 @@ executes `water build apple`, links the resulting static library, and calls the
 exported functions via `waterui.h`.
 
 Because the project crate owns the exports, any change you make to `init()`/`main()` is automatically available to every platform shell—there is no need to edit `waterui-ffi` itself, and you should never build `waterui-ffi` as a standalone artifact.
+
+## Native Backend Render Pipeline
+
+Native backends (Android, Apple, etc.) must follow a specific initialization sequence when rendering WaterUI views. The order is critical because some operations depend on the Rust runtime being properly initialized.
+
+### Required Sequence
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. waterui_init()                                                   │
+│    - Initializes panic hooks and global executors                   │
+│    - Returns an Environment pointer                                 │
+│    - MUST be called first before any other waterui_* functions      │
+├─────────────────────────────────────────────────────────────────────┤
+│ 2. waterui_env_install_theme(env, colors..., fonts...)              │
+│    - Injects native theme colors and fonts as reactive signals      │
+│    - Reads system/Material Design colors and passes them to Rust    │
+│    - Optional but recommended for proper theming                    │
+├─────────────────────────────────────────────────────────────────────┤
+│ 3. waterui_main()                                                   │
+│    - Creates the root view tree (AnyView)                           │
+│    - May create reactive Bindings that depend on the executor       │
+│    - MUST be called AFTER waterui_init()                            │
+├─────────────────────────────────────────────────────────────────────┤
+│ 4. Render Loop (for each view)                                      │
+│    a. waterui_view_id(view) → Get the type name                     │
+│    b. Check if it's a "raw view" (Text, Button, Color, etc.)        │
+│       - If raw: waterui_force_as_*(view) → Extract native data      │
+│       - If composite: waterui_view_body(view, env) → Get body view  │
+│    c. Render the native widget or recurse into body                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Raw Views vs Composite Views
+
+WaterUI distinguishes between two kinds of views:
+
+- **Raw Views**: Leaf components that map directly to native widgets. Examples: `Text`, `Button`, `Color`, `TextField`, `Toggle`, `Slider`, `Stepper`, `Progress`, `Spacer`, `Picker`, `ScrollView`, `RendererView`.
+
+- **Composite Views**: User-defined views that have a `body()` method returning other views. When you encounter a view that isn't in the raw view registry, call `waterui_view_body(view, env)` to get its body and continue rendering recursively.
+
+### Type ID Functions
+
+Each raw view type has a corresponding ID function:
+
+| Function                         | View Type      |
+|----------------------------------|----------------|
+| `waterui_text_id()`              | Text           |
+| `waterui_button_id()`            | Button         |
+| `waterui_color_id()`             | Color          |
+| `waterui_text_field_id()`        | TextField      |
+| `waterui_toggle_id()`            | Toggle         |
+| `waterui_slider_id()`            | Slider         |
+| `waterui_stepper_id()`           | Stepper        |
+| `waterui_progress_id()`          | Progress       |
+| `waterui_spacer_id()`            | Spacer         |
+| `waterui_picker_id()`            | Picker         |
+| `waterui_scroll_view_id()`       | ScrollView     |
+| `waterui_dynamic_id()`           | Dynamic        |
+| `waterui_layout_container_id()`  | LayoutContainer|
+| `waterui_fixed_container_id()`   | FixedContainer |
+| `waterui_renderer_view_id()`     | RendererView   |
+| `waterui_empty_id()`             | EmptyView      |
+
+### Common Pitfalls
+
+1. **Calling `waterui_main()` before `waterui_init()`**: This causes reactive signals to be created without a properly initialized executor, leading to silent failures where components don't render or update correctly.
+
+2. **Not installing theme before rendering**: While optional, failing to call `waterui_env_install_theme()` means the Rust side will use fallback colors/fonts, which may not match the native platform's appearance.
+
+3. **Memory leaks**: Always call the corresponding `waterui_drop_*()` functions when disposing of native handles (views, environments, bindings, etc.).
