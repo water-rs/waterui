@@ -251,26 +251,15 @@ impl ToolchainIssue for ApplePlatformIssue {
                     .to_string()
             }
             Self::MissingRustTarget { target } => {
-                format!("Install the missing target with `rustup target add {target}`.")
+                crate::installer::rust_target_suggestion(target)
             }
         }
     }
 
     fn fix(&self) -> color_eyre::eyre::Result<()> {
         match self {
-            Self::MissingRustTarget { target } => {
-                let mut cmd = Command::new("rustup");
-                cmd.args(["target", "add", target]);
-                let status = cmd.status()?;
-                if status.success() {
-                    Ok(())
-                } else {
-                    bail!("`rustup target add {target}` failed with status {status}");
-                }
-            }
-            Self::RustupMissing => {
-                bail!("`rustup` is missing and cannot be installed automatically.")
-            }
+            Self::MissingRustTarget { target } => crate::installer::rust_target(target),
+            Self::RustupMissing => crate::installer::rust_toolchain(),
         }
     }
 }
@@ -280,6 +269,11 @@ fn verify_rust_target_installed(target: &'static str) -> Result<(), ApplePlatfor
         return Err(ApplePlatformIssue::RustupMissing);
     }
 
+    if crate::installer::is_rust_target_installed(target) {
+        return Ok(());
+    }
+
+    // Double-check with direct query for more detailed error
     let output = Command::new("rustup")
         .args(["target", "list", "--installed"])
         .output()

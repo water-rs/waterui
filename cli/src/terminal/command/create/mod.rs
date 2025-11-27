@@ -23,7 +23,7 @@ pub mod template;
 pub mod web;
 
 pub const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
-#[allow(dead_code)]
+
 pub const SWIFT_TAG_PREFIX: &str = "apple-backend-v";
 
 #[derive(Args, Debug, Default)]

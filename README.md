@@ -8,11 +8,10 @@ A modern, cross-platform UI framework for Rust, designed for building reactive, 
 
 WaterUI combines the safety and speed of Rust with a declarative, component-based architecture inspired by modern web frameworks. It offers true native rendering on Apple and Android, a powerful self-drawn renderer for desktop, and even a terminal backend, all powered by a fine-grained reactive system.
 
-## 📖 Documentations
+## 📖 Documentation
 
-Read our latest documentation [https://docs.rs/waterui/latest](here)!
-
-Read our offical book [https://book.waterui.dev](here)!
+- 📚 [API Documentation](https://docs.rs/waterui/latest) - Complete API reference
+- 📖 [Official Book](https://book.waterui.dev) - Guides and tutorials
 
 ## ✨ Features
 
@@ -97,14 +96,26 @@ water run
 # Or specify a target directly
 water run --platform ios --device "iPhone 15 Pro"
 ```
-The CLI watches for file changes and automatically rebuilds and reloads your application.
+
+**Developer Experience Features:**
+- 🔄 **Hot Reload**: File changes trigger automatic rebuilds and live updates
+- 🐛 **Live Panic Reporting**: Rust panics are captured and displayed with colorful, formatted output
+- 📋 **Crash Collection**: Native crashes are automatically captured with log excerpts
+- 📡 **Remote Logging**: App logs stream directly to your terminal
 
 ### Other Commands
-- `water build`: Build native libraries for a specific platform.
-- `water package`: Package your application for distribution.
-- `water devices`: List available devices, simulators, and emulators.
-- `water doctor`: Check your development environment for any issues.
-- `water clean`: Clean all build artifacts.
+- `water build`: Build native libraries for a specific platform (called by Xcode/Gradle)
+- `water package`: Package your application for distribution
+- `water devices`: List available devices, simulators, and emulators
+- `water doctor`: Check and auto-fix your development environment
+- `water clean`: Clean all build artifacts
+
+### JSON Output for Automation
+All commands support `--json` for machine-readable output, making it easy to integrate with CI/CD pipelines or LLM agents:
+```bash
+water doctor --json
+water devices --json
+```
 
 For more details, run `water --help` or see the [CLI README](./cli/README.md).
 

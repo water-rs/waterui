@@ -10,7 +10,7 @@ use crate::{DrawCommand, LayoutCtx, LayoutResult, NodeSignal, RenderCtx, RenderN
 
 /// Simplified slider node (placeholder visuals until a real skin exists).
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub struct SliderNode {
     range: (f64, f64),
     binding: Binding<f64>,
@@ -48,7 +48,7 @@ impl RenderNode for SliderNode {
 
 /// Placeholder toggle node (draws checkboxes until skins are ready).
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub struct ToggleNode {
     binding: Binding<bool>,
     value: NodeSignal<bool>,
@@ -79,7 +79,7 @@ impl RenderNode for ToggleNode {
 
 /// Placeholder node for numeric steppers.
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub struct StepperNode {
     binding: Binding<i32>,
     step: NodeSignal<i32>,
@@ -116,7 +116,7 @@ impl RenderNode for StepperNode {
 
 /// Placeholder node for text fields.
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub struct TextFieldNode {
     binding: Binding<Str>,
     value: NodeSignal<Str>,
