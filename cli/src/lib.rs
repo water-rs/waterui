@@ -1,15 +1,34 @@
 //! `WaterUI` CLI library
+//!
 //! This crate provides core functionality for the `WaterUI` command-line interface (CLI) tool.
 //! It includes modules for managing projects, installing dependencies, and interacting with different platforms.
+//!
+//! # Architecture
+//!
+//! The CLI is designed as a library with a terminal frontend:
+//!
+//! - **Library modules** (`backend`, `platform`, `device`, `project`, `build`) contain the core logic
+//! - **Terminal frontend** (`cli/src/terminal/`) provides the user interface
+//!
+//! ## Key Concepts
+//!
+//! - **`BuildContext`** - Unified build configuration (release mode, hot reload, speedups)
+//! - **`BuildCoordinator`** - Tracks build state to avoid redundant builds
+//! - **`Platform`** - Abstracts platform-specific build and packaging
+//! - **`Device`** - Abstracts device-specific deployment and running
+//! - **`Backend`** - Handles project initialization and requirements checking
+//! - **`ToolchainIssue`** - Represents problems that `water doctor` can diagnose/fix
+
 #![allow(missing_docs)]
 
 pub mod platform;
 
 pub mod backend;
+pub mod build;
 pub mod crash;
 pub mod device;
 pub mod doctor;
-pub(crate) mod installer;
+pub mod installer;
 pub mod output;
 pub mod package;
 pub mod project;
