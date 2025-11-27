@@ -21,7 +21,7 @@ use waterui_cli::{
     WATERUI_TRACING_PREFIX,
     backend::{
         self,
-        android::{clean_aws_lc_cmake_cache, configure_rust_android_linker_env, prepare_cmake_env},
+        android::{configure_rust_android_linker_env, prepare_cmake_env},
     },
     device::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
@@ -724,13 +724,7 @@ Use --no-hot-reload to skip this step."
                 .clone()
                 .unwrap_or(selection.name.clone());
             recorded_device = Some(stored_id);
-            let platform_impl = AndroidPlatform::new(
-                android_config,
-                false,
-                hot_reload_enabled,
-                enable_sccache,
-                mold_requested,
-            );
+            let platform_impl = AndroidPlatform::new(android_config);
             let android_device = AndroidDevice::new(platform_impl, selection)?;
             run_on_device(project, android_device, run_options)?
         }
@@ -915,8 +909,6 @@ fn run_cargo_build(
         if target.contains("android") {
             configure_rust_android_linker_env(&[target])?;
             prepare_cmake_env(&[target])?;
-            let profile = if release { "release" } else { "debug" };
-            clean_aws_lc_cmake_cache(project_dir, target, profile);
         }
     }
 

@@ -76,20 +76,33 @@ pub enum AndroidToolchainIssue {
     NdkMissing,
     #[error("CMake was not found.")]
     CmakeMissing,
+    #[error("Java was not found.")]
+    JavaMissing,
+    #[error("Rust target `{0}` is not installed.")]
+    RustTargetMissing(String),
 }
 
 impl ToolchainIssue for AndroidToolchainIssue {
     fn suggestion(&self) -> String {
         match self {
             Self::SdkMissing => {
-                "Install Android Studio or add the command line tools to ANDROID_SDK_ROOT."
+                "Install Android Studio or set ANDROID_SDK_ROOT to your SDK installation."
                     .to_string()
             }
-            Self::NdkMissing => "Install the Android NDK via the SDK manager.".to_string(),
-            Self::CmakeMissing => {
-                "Install CMake via Android SDK Manager (SDK Tools → CMake) or run `brew install cmake`."
-                    .to_string()
+            Self::NdkMissing => {
+                "Install the Android NDK via SDK Manager or set ANDROID_NDK_HOME.".to_string()
             }
+            Self::CmakeMissing => crate::installer::cmake_suggestion(),
+            Self::JavaMissing => crate::installer::java_suggestion(),
+            Self::RustTargetMissing(target) => crate::installer::rust_target_suggestion(target),
+        }
+    }
+
+    fn fix(&self) -> color_eyre::eyre::Result<()> {
+        match self {
+            Self::RustTargetMissing(target) => crate::installer::rust_target(target),
+            Self::JavaMissing => crate::installer::java_jdk(),
+            _ => bail!("No automatic fix available for this issue."),
         }
     }
 }
@@ -133,14 +146,34 @@ impl Backend for AndroidBackend {
     fn check_requirements(&self, _project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
         let mut issues = Vec::new();
 
+        // Check Android SDK (adb)
         if find_android_tool("adb").is_none() {
             issues.push(AndroidToolchainIssue::SdkMissing);
         }
+
+        // Check Android NDK
         if resolve_ndk_path().is_none() {
             issues.push(AndroidToolchainIssue::NdkMissing);
         }
+
+        // Check CMake
         if resolve_cmake_path().is_none() {
             issues.push(AndroidToolchainIssue::CmakeMissing);
+        }
+
+        // Check Java (required for Gradle)
+        if !is_java_available() {
+            issues.push(AndroidToolchainIssue::JavaMissing);
+        }
+
+        // Check required Rust target
+        // On ARM64 hosts (Apple Silicon, ARM Linux), aarch64-linux-android is essential
+        if cfg!(target_arch = "aarch64") {
+            if !is_rust_target_installed("aarch64-linux-android") {
+                issues.push(AndroidToolchainIssue::RustTargetMissing(
+                    "aarch64-linux-android".to_string(),
+                ));
+            }
         }
 
         if issues.is_empty() {
@@ -152,6 +185,39 @@ impl Backend for AndroidBackend {
                 .collect())
         }
     }
+}
+
+/// Check if Java is available for Gradle builds.
+fn is_java_available() -> bool {
+    // Check JAVA_HOME first
+    if let Ok(home) = env::var("JAVA_HOME") {
+        let java_path = std::path::Path::new(&home).join("bin/java");
+        if java_path.exists() {
+            return true;
+        }
+    }
+
+    // Check Android Studio's bundled JBR on macOS
+    #[cfg(target_os = "macos")]
+    {
+        const ANDROID_STUDIO_JBRS: &[&str] = &[
+            "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
+            "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home/bin/java",
+        ];
+        for path in ANDROID_STUDIO_JBRS {
+            if std::path::Path::new(path).exists() {
+                return true;
+            }
+        }
+    }
+
+    // Check PATH
+    which("java").is_ok()
+}
+
+/// Check if a Rust target is installed.
+fn is_rust_target_installed(target: &str) -> bool {
+    crate::installer::is_rust_target_installed(target)
 }
 
 // ============================================================================
@@ -959,8 +1025,6 @@ pub fn build_android_native_libraries(
             opts.crate_name, target.triple
         );
 
-        clean_aws_lc_cmake_cache(opts.project_dir, target.triple, profile);
-
         let build_result = build_single_target(
             opts.project_dir,
             opts.crate_name,
@@ -977,7 +1041,7 @@ pub fn build_android_native_libraries(
             bail!("cargo build failed for target {}", target.triple);
         }
 
-        // Copy built library
+        // Copy built library to jniLibs
         let source = opts
             .project_dir
             .join("target")
@@ -1137,32 +1201,6 @@ fn build_single_target(
     Ok(false)
 }
 
-/// Clean aws-lc-sys CMake cache to prevent stale build issues.
-pub fn clean_aws_lc_cmake_cache(project_dir: &Path, target: &str, profile: &str) {
-    let build_root = project_dir
-        .join("target")
-        .join(target)
-        .join(profile)
-        .join("build");
-
-    if let Ok(entries) = fs::read_dir(&build_root) {
-        for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("aws-lc-sys-")
-            {
-                if let Err(err) = fs::remove_dir_all(entry.path()) {
-                    warn!(
-                        "Failed to clear aws-lc-sys cache {}: {err}",
-                        entry.path().display()
-                    );
-                }
-            }
-        }
-    }
-}
-
 // ============================================================================
 // APK Build
 // ============================================================================
@@ -1172,34 +1210,28 @@ pub fn clean_aws_lc_cmake_cache(project_dir: &Path, target: &str, profile: &str)
 /// # Arguments
 /// * `target_triples` - If provided, only build for these specific architectures.
 ///   When None, builds for all installed Android targets.
+/// Build Android APK using Gradle.
+///
+/// # Architecture
+///
+/// This function does NOT build Rust libraries directly. Instead:
+/// 1. The Gradle build script (`build.gradle.kts`) calls `water build android`
+/// 2. `water build android` compiles Rust and copies `.so` files to `jniLibs/`
+/// 3. Gradle packages everything into the APK
+///
+/// This design enables two ways to build WaterUI apps:
+/// - **CLI**: `water run` → checks preconditions → runs Gradle → launches device
+/// - **IDE**: Click "Run" in Android Studio → Gradle runs → calls `water build` → launches
+///
+/// Both paths use the same `water build android` command for Rust compilation.
 pub fn build_android_apk(
     project_dir: &Path,
     android_config: &Android,
     release: bool,
-    skip_native: bool,
     hot_reload_enabled: bool,
     bundle_identifier: &str,
-    crate_name: &str,
-    enable_sccache: bool,
-    mold_requested: bool,
-    target_triples: Option<Vec<String>>,
 ) -> Result<PathBuf> {
     prepare_android_package(project_dir, bundle_identifier)?;
-
-    if skip_native {
-        info!("Skipping Android native build (requested via --skip-native)");
-    } else {
-        build_android_native_libraries(AndroidNativeBuildOptions {
-            project_dir,
-            android_config,
-            crate_name,
-            release,
-            requested_triples: target_triples,
-            enable_sccache,
-            enable_mold: mold_requested,
-            hot_reload: hot_reload_enabled,
-        })?;
-    }
 
     info!("Building Android app with Gradle...");
 

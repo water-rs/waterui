@@ -97,16 +97,16 @@ RUN yes | sdkmanager --licenses > /dev/null 2>&1 || true \
 RUN mkdir -p ${CARGO_HOME} && \
     printf '%s\n' \
     '[target.aarch64-linux-android]' \
-    'linker = "/opt/android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"' \
+    "linker = \"${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang\"" \
     '' \
     '[target.armv7-linux-androideabi]' \
-    'linker = "/opt/android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang"' \
+    "linker = \"${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang\"" \
     '' \
     '[target.x86_64-linux-android]' \
-    'linker = "/opt/android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"' \
+    "linker = \"${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang\"" \
     '' \
     '[target.i686-linux-android]' \
-    'linker = "/opt/android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang"' \
+    "linker = \"${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android24-clang\"" \
     >> ${CARGO_HOME}/config.toml
 
 # Pre-warm sccache by compiling waterui and waterui-ffi for all targets
