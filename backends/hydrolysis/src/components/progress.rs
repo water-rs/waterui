@@ -12,7 +12,7 @@ use crate::{
 
 /// Placeholder node for `Progress` views.
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub struct ProgressNode {
     value: NodeSignal<f64>,
     style: ProgressStyle,

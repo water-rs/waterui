@@ -1,3 +1,9 @@
+//! Package command for building distributable artifacts.
+//!
+//! This command creates platform-specific packages (APK for Android, IPA for iOS).
+//! The Rust library is built automatically by the platform's build system
+//! (Gradle calls `water build android`, Xcode calls `water build apple`).
+
 use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
@@ -32,10 +38,6 @@ pub struct PackageArgs {
     /// Build in release mode
     #[arg(long)]
     pub release: bool,
-
-    /// Skip running the generated build-rust.sh script for Android projects
-    #[arg(long)]
-    pub skip_native: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -54,6 +56,14 @@ impl PackagePlatform {
 }
 
 /// Package the configured targets for distribution.
+///
+/// # Architecture
+///
+/// This command does NOT build Rust libraries directly. Instead:
+/// - For Android: Gradle's build script calls `water build android`
+/// - For iOS: Xcode's build phase calls `water build apple`
+///
+/// This ensures a single source of truth for Rust compilation.
 ///
 /// # Errors
 /// Returns an error if user input fails, required backends are missing, or packaging fails.
@@ -116,11 +126,11 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
             PackagePlatform::Android => {
                 let android_config = config.backends.android.clone().ok_or_else(|| {
                     eyre!(
-                        "Android backend not configured for this project. Add it to Water.toml or recreate the project with the Android backend.",
+                        "Android backend not configured for this project. \
+                         Add it to Water.toml or recreate the project with the Android backend.",
                     )
                 })?;
-                let platform_impl =
-                    AndroidPlatform::new(android_config, args.skip_native, false, true, false);
+                let platform_impl = AndroidPlatform::new(android_config);
                 let artifact = project
                     .package(&platform_impl, args.release)
                     .map_err(|err| eyre!(err))?;
@@ -135,7 +145,8 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
             PackagePlatform::Ios => {
                 let swift_config = config.backends.swift.clone().ok_or_else(|| {
                     eyre!(
-                        "Apple backend not configured for this project. Add it to Water.toml or recreate the project with the Apple backend.",
+                        "Apple backend not configured for this project. \
+                         Add it to Water.toml or recreate the project with the Apple backend.",
                     )
                 })?;
                 let platform_impl = ApplePlatform::new(swift_config, AppleTarget::IosDevice);
@@ -156,21 +167,21 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
     let report = PackageReport {
         project_dir: project_dir.display().to_string(),
         release: args.release,
-        skip_native: args.skip_native,
         artifacts,
     };
 
     Ok(report)
 }
 
+/// Report of packaging results.
 #[derive(Debug, Serialize)]
 pub struct PackageReport {
     pub project_dir: String,
     pub release: bool,
-    pub skip_native: bool,
     pub artifacts: Vec<PackageArtifact>,
 }
 
+/// A single packaged artifact.
 #[derive(Debug, Serialize)]
 pub struct PackageArtifact {
     pub platform: String,
