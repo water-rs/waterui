@@ -32,7 +32,7 @@ impl Path {
 
     /// Internal function to convert our Path to a Vello-compatible `BezPath`.
     /// This is kept private to avoid exposing backend details.
-    #[allow(dead_code)]
+    
     pub(crate) fn to_kurbo(&self) -> kurbo::BezPath {
         let mut bez_path = BezPath::new();
         for command in &self.0 {
