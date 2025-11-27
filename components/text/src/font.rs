@@ -71,7 +71,6 @@ pub trait CustomFont: Debug + Clone {
     fn resolve(&self, env: &Environment) -> ResolvedFont;
 }
 
-
 trait CustomFontImpl {
     fn resolve(&self, env: &Environment) -> ResolvedFont;
     fn box_clone(&self) -> Box<dyn CustomFontImpl>;
