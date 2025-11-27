@@ -20,8 +20,14 @@ use dialoguer::Confirm;
 use tracing::{info, warn};
 use waterui_cli::output::{self, OutputFormat};
 
+const VERSION: &str = {
+    const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const GIT_HASH: &str = env!("GIT_COMMIT_HASH");
+    const_format::concatcp!(PKG_VERSION, " (", GIT_HASH, ")")
+};
+
 #[derive(Parser, Debug)]
-#[command(name = "water", version, about = "WaterUI command line interface")]
+#[command(name = "water", version = VERSION, about = "WaterUI command line interface")]
 struct Cli {
     /// Emit machine-readable JSON output
     #[arg(long)]
