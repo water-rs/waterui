@@ -2190,12 +2190,19 @@ fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()>
 
 fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Result<WaitOutcome> {
     let (tx, rx) = mpsc::channel();
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupt_flag = interrupted.clone();
     ctrlc::set_handler(move || {
+        interrupt_flag.store(true, Ordering::Relaxed);
         let _ = tx.send(());
     })
     .context("failed to install Ctrl+C handler")?;
 
     loop {
+        if interrupted.load(Ordering::Relaxed) {
+            return Ok(WaitOutcome::Interrupted);
+        }
+
         if let Some(events) = &connection_events {
             match events.try_recv() {
                 Ok(NativeConnectionEvent::Connected) => {}
@@ -2204,6 +2211,9 @@ fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Resu
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    if interrupted.load(Ordering::Relaxed) {
+                        return Ok(WaitOutcome::Interrupted);
+                    }
                     return Ok(WaitOutcome::ConnectionLost(
                         NativeDisconnectReason::Abnormal(
                             "Hot reload server stopped unexpectedly".to_string(),
