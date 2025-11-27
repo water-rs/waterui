@@ -1,7 +1,7 @@
 /// A search bar component for filtering and finding content.
 ///
 /// This is currently under development and not yet fully implemented.
-#[allow(dead_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SearchBar<C, F, V> {
     data: C,
@@ -12,7 +12,7 @@ pub struct SearchBar<C, F, V> {
 /// Trait for search query operations.
 ///
 /// This is currently under development and not yet fully implemented.
-#[allow(dead_code)]
+
 trait Query {
     fn query();
 }

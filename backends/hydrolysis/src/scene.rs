@@ -73,6 +73,6 @@ pub enum DrawCommand {
         size: f32,
     },
     /// Reserved for future commands (gradients, images, strokes, etc.).
-    #[allow(dead_code)]
+    
     Placeholder(&'static str),
 }
