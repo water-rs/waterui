@@ -49,7 +49,7 @@ pub mod prelude {
     pub use style::*;
 
     pub use theme::{
-        self, Theme, ThemeColors, ThemeLayer, ThemeProvider, ThemeTypography, color as theme_color,
+        self, Theme, ColorSettings, FontSettings, ColorScheme, ThemeProvider, color as theme_color,
     };
 
     pub use text::{
