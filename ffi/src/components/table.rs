@@ -6,7 +6,7 @@ use waterui::{
 use waterui_core::Native;
 
 use crate::{
-    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed, ffi_watcher_ctor,
+    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed,
     reactive::WuiComputed, views::WuiAnyViews,
 };
 
@@ -18,7 +18,6 @@ into_ffi! {
 }
 
 ffi_computed!(Vec<TableColumn>, WuiArray<WuiTableColumn>, table_cols);
-ffi_watcher_ctor!(Vec<TableColumn>, WuiArray<WuiTableColumn>, table_cols);
 
 #[repr(C)]
 pub struct WuiTableColumn {
