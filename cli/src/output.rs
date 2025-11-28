@@ -1,6 +1,9 @@
 use std::{
     io::{self, IsTerminal, Write},
-    sync::{OnceLock, atomic::{AtomicBool, Ordering}},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use color_eyre::eyre::Result;
@@ -405,11 +408,7 @@ impl StructuredError {
     /// Create from a color_eyre Report.
     #[must_use]
     pub fn from_report(report: &color_eyre::eyre::Report) -> Self {
-        let causes: Vec<String> = report
-            .chain()
-            .skip(1)
-            .map(|e| e.to_string())
-            .collect();
+        let causes: Vec<String> = report.chain().skip(1).map(|e| e.to_string()).collect();
 
         Self {
             message: report.to_string(),
