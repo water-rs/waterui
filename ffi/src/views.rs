@@ -3,7 +3,7 @@ use waterui::{
     views::{AnyViews, Views},
 };
 
-use crate::{IntoFFI, WuiAnyView, ffi_computed, ffi_watcher_ctor, id::WuiId};
+use crate::{IntoFFI, WuiAnyView, ffi_computed, id::WuiId};
 
 opaque!(WuiAnyViews, AnyViews<AnyView>, anyviews);
 
@@ -47,4 +47,3 @@ pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> u
 }
 
 ffi_computed!(AnyViews<AnyView>, *mut WuiAnyViews, views);
-ffi_watcher_ctor!(AnyViews<AnyView>, *mut WuiAnyViews, views);
