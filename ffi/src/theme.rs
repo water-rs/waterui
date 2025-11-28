@@ -48,9 +48,13 @@
 
 use alloc::boxed::Box;
 
-use crate::{IntoFFI, WuiEnv, reactive::WuiComputed};
-use nami::{Signal, SignalExt};
-use waterui::theme::{self, color, install_color_signal, install_font_signal, install_color_scheme};
+use crate::color::WuiResolvedColor;
+use crate::components::text::WuiResolvedFont;
+use crate::{IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, reactive::WuiComputed};
+use nami::SignalExt;
+use waterui::theme::{
+    self, color, install_color_scheme, install_color_signal, install_font_signal,
+};
 use waterui_color::ResolvedColor;
 use waterui_core::resolve::Resolvable;
 use waterui_text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title};
@@ -89,6 +93,25 @@ impl From<theme::ColorScheme> for WuiColorScheme {
     }
 }
 
+impl IntoFFI for theme::ColorScheme {
+    type FFI = WuiColorScheme;
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+impl IntoRust for WuiColorScheme {
+    type Rust = theme::ColorScheme;
+    unsafe fn into_rust(self) -> Self::Rust {
+        self.into()
+    }
+}
+
+// Generate FFI support for ColorScheme computed signals
+// This enables native backends to create reactive ColorScheme signals with callbacks
+ffi_computed!(theme::ColorScheme, WuiColorScheme, color_scheme);
+ffi_computed_ctor!(theme::ColorScheme, WuiColorScheme, color_scheme);
+
 /// Creates a constant color scheme signal.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_computed_color_scheme_constant(
@@ -96,25 +119,6 @@ pub extern "C" fn waterui_computed_color_scheme_constant(
 ) -> *mut WuiComputed<theme::ColorScheme> {
     let computed = waterui::Computed::constant(scheme.into());
     computed.into_ffi()
-}
-
-/// Reads the current value from a color scheme signal.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_read_computed_color_scheme(
-    ptr: *const WuiComputed<theme::ColorScheme>,
-) -> WuiColorScheme {
-    let computed = unsafe { &*ptr };
-    computed.0.get().into()
-}
-
-/// Drops a color scheme computed signal.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_computed_color_scheme(
-    ptr: *mut WuiComputed<theme::ColorScheme>,
-) {
-    if !ptr.is_null() {
-        drop(unsafe { Box::from_raw(ptr) });
-    }
 }
 
 /// Installs a color scheme signal into the environment.
@@ -190,12 +194,18 @@ pub unsafe extern "C" fn waterui_theme_install_color(
     match slot {
         WuiColorSlot::Background => install_color_signal::<color::Background>(env, computed),
         WuiColorSlot::Surface => install_color_signal::<color::Surface>(env, computed),
-        WuiColorSlot::SurfaceVariant => install_color_signal::<color::SurfaceVariant>(env, computed),
+        WuiColorSlot::SurfaceVariant => {
+            install_color_signal::<color::SurfaceVariant>(env, computed)
+        }
         WuiColorSlot::Border => install_color_signal::<color::Border>(env, computed),
         WuiColorSlot::Foreground => install_color_signal::<color::Foreground>(env, computed),
-        WuiColorSlot::MutedForeground => install_color_signal::<color::MutedForeground>(env, computed),
+        WuiColorSlot::MutedForeground => {
+            install_color_signal::<color::MutedForeground>(env, computed)
+        }
         WuiColorSlot::Accent => install_color_signal::<color::Accent>(env, computed),
-        WuiColorSlot::AccentForeground => install_color_signal::<color::AccentForeground>(env, computed),
+        WuiColorSlot::AccentForeground => {
+            install_color_signal::<color::AccentForeground>(env, computed)
+        }
     }
 }
 
@@ -492,5 +502,95 @@ mod tests {
         unsafe {
             crate::color::waterui_drop_computed_resolved_color(queried);
         }
+    }
+}
+
+// ============================================================================
+// Watcher call functions for native-controlled reactive signals
+// ============================================================================
+
+use crate::reactive::WuiWatcher;
+
+/// Calls a ColorScheme watcher with the given value.
+/// Used by native code to notify Rust when color scheme changes.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
+    watcher: *const WuiWatcher<theme::ColorScheme>,
+    value: WuiColorScheme,
+) {
+    unsafe {
+        let rust_value: theme::ColorScheme = value.into();
+        let metadata = waterui::reactive::watcher::Metadata::default();
+        (*watcher).call(rust_value, metadata);
+    }
+}
+
+/// Drops a ColorScheme watcher.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
+    watcher: *mut WuiWatcher<theme::ColorScheme>,
+) {
+    unsafe {
+        drop(Box::from_raw(watcher));
+    }
+}
+
+/// Calls a ResolvedColor watcher with the given value.
+/// Used by native code to notify Rust when a color value changes.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
+    watcher: *const WuiWatcher<ResolvedColor>,
+    value: WuiResolvedColor,
+) {
+    unsafe {
+        let rust_value = value.into_rust();
+        let metadata = waterui::reactive::watcher::Metadata::default();
+        (*watcher).call(rust_value, metadata);
+    }
+}
+
+/// Drops a ResolvedColor watcher.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
+    watcher: *mut WuiWatcher<ResolvedColor>,
+) {
+    unsafe {
+        drop(Box::from_raw(watcher));
+    }
+}
+
+/// Calls a ResolvedFont watcher with the given value.
+/// Used by native code to notify Rust when a font value changes.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
+    watcher: *const WuiWatcher<ResolvedFont>,
+    value: WuiResolvedFont,
+) {
+    unsafe {
+        let rust_value = value.into_rust();
+        let metadata = waterui::reactive::watcher::Metadata::default();
+        (*watcher).call(rust_value, metadata);
+    }
+}
+
+/// Drops a ResolvedFont watcher.
+/// # Safety
+/// The watcher pointer must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
+    watcher: *mut WuiWatcher<ResolvedFont>,
+) {
+    unsafe {
+        drop(Box::from_raw(watcher));
     }
 }
