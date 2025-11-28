@@ -213,10 +213,62 @@ When using Cursor AI, delegate to Gemini for:
 - Generating initial drafts of repetitive code
 - Getting quick explanations of unfamiliar code sections
 - **Background code analysis** (run as subagent)
+- **Debugging complex issues** - analyze crash logs, trace code paths
+- **Researching topics** - understanding reactive systems, FFI patterns, etc.
 
 Keep in Cursor:
 - Actual code editing and modifications
 - Complex reasoning and architecture decisions
 - Tasks requiring high accuracy
 - Interactive debugging and problem-solving
+
+## Lessons Learned (from debugging sessions)
+
+### 1. Verify Gemini's Analysis Before Applying Fixes
+
+Gemini may identify the wrong root cause. In one session, Gemini suggested:
+- **Wrong**: "Re-entrancy deadlock from synchronous callbacks during watch() registration"
+- **Actual**: nami's `watch()` doesn't call callbacks on registration; initial values use `get()`
+
+**Best Practice**: Ask the domain expert (user) to verify Gemini's hypothesis before implementing fixes.
+
+### 2. Use Gemini for Targeted Analysis
+
+Good use cases:
+```bash
+# Analyze specific code paths
+./subagent run-file flow-analysis ./file.cpp "Trace the flow from function A to B"
+
+# Identify patterns
+./subagent run-dir patterns ./src "*.rs" "Find all places where X happens"
+
+# Debug specific issues  
+./subagent run crash-debug "Analyze this ANR: [paste logs]. What could cause it?"
+```
+
+### 3. Gemini's Strengths in Debugging
+
+- **Identifying feedback loops**: Correctly identified WuiBinding.set() missing equality check
+- **Understanding FFI patterns**: Good at tracing C++ ↔ Rust ↔ Kotlin boundaries
+- **Reading large codebases**: Can quickly scan thousands of lines for patterns
+
+### 4. When Gemini Gets It Wrong
+
+Signs that Gemini's analysis may be incorrect:
+- Fix doesn't change behavior
+- Suggestion contradicts framework documentation
+- Multiple "fixes" in same area with no improvement
+
+**Response**: Ask user to clarify framework behavior, then re-analyze with correct assumptions.
+
+### 5. Parallel Analysis Pattern
+
+For complex bugs, launch multiple analysis tasks:
+```bash
+./subagent run rust-side "Analyze Rust reactive system for deadlocks"
+./subagent run jni-side "Analyze JNI bridge for blocking calls"
+./subagent run kotlin-side "Analyze Android reactive code for loops"
+./subagent wait-all
+# Compare results to find consistent patterns
+```
 
