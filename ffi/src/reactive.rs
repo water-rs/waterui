@@ -55,7 +55,11 @@ where
     type Guard = BoxWatcherGuard;
     fn get(&self) -> Self::Output {
         unsafe {
-            let ffi_value = (self.get)(self.data as *const ());
+            // self.data is Rc<*mut ()>*, dereference to get the original native pointer
+            let rc = Rc::from_raw(self.data as *const *mut ());
+            let native_data = *rc;
+            let _ = Rc::into_raw(rc); // don't drop the Rc
+            let ffi_value = (self.get)(native_data as *const ());
             ffi_value.into_rust()
         }
     }
@@ -65,7 +69,11 @@ where
         let watcher = watcher.into_ffi();
 
         unsafe {
-            let guard_ptr = (self.watch)(self.data as *const (), watcher);
+            // self.data is Rc<*mut ()>*, dereference to get the original native pointer
+            let rc = Rc::from_raw(self.data as *const *mut ());
+            let native_data = *rc;
+            let _ = Rc::into_raw(rc); // don't drop the Rc
+            let guard_ptr = (self.watch)(native_data as *const (), watcher);
             (*Box::from_raw(guard_ptr)).0
         }
     }
@@ -78,7 +86,8 @@ impl<T: IntoFFI> FFIComputed<T> {
         watch: unsafe extern "C" fn(*const (), *mut WuiWatcher<T>) -> *mut WuiWatcherGuard,
         drop: unsafe extern "C" fn(*mut ()),
     ) -> Self {
-        let data = Rc::into_raw(Rc::new(data)) as *mut (); // manage data with Rc
+        // Wrap the native data pointer in an Rc for reference counting during clones
+        let data = Rc::into_raw(Rc::new(data)) as *mut ();
         Self {
             data,
             get,
@@ -91,7 +100,7 @@ impl<T: IntoFFI> FFIComputed<T> {
 impl<T: IntoFFI> Clone for FFIComputed<T> {
     fn clone(&self) -> Self {
         unsafe {
-            let rc = Rc::from_raw(self.data);
+            let rc = Rc::from_raw(self.data as *const *mut ());
             let cloned_data = Rc::into_raw(rc.clone()) as *mut ();
             let _ = Rc::into_raw(rc); // prevent dropping the original Rc
             Self {
@@ -107,8 +116,13 @@ impl<T: IntoFFI> Clone for FFIComputed<T> {
 impl<T: IntoFFI> Drop for FFIComputed<T> {
     fn drop(&mut self) {
         unsafe {
-            (self.drop)(self.data);
-            let _ = Rc::from_raw(self.data); // decrement Rc count
+            let rc = Rc::from_raw(self.data as *const *mut ());
+            // Only call native drop when this is the last reference
+            if Rc::strong_count(&rc) == 1 {
+                let native_data = *rc;
+                (self.drop)(native_data);
+            }
+            // rc drops here, decrementing count
         }
     }
 }
@@ -310,13 +324,24 @@ macro_rules! ffi_binding {
                 binding: *const waterui_core::Binding<$ty>,
                 watcher: *mut $crate::reactive::WuiWatcher<$ty>,
             ) -> *mut $crate::reactive::WuiWatcherGuard {
+                use waterui::Signal;
+                use core::cell::Cell;
+                use alloc::rc::Rc;
+
+                // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
+                let is_setting_up = Rc::new(Cell::new(true));
+                let is_setting_up_clone = is_setting_up.clone();
+
                 unsafe {
-                    use waterui::Signal;
                     let guard = (*binding).watch(move |ctx| {
+                        if is_setting_up_clone.get() {
+                            return; // Skip synchronous callback during setup
+                        }
                         let metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
                         (*watcher).call(value, metadata);
                     });
+                    is_setting_up.set(false);
                     guard.into_ffi()
                 }
             }
