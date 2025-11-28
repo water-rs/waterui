@@ -1,6 +1,7 @@
 pub mod add_backend;
 pub mod backend;
 pub mod build;
+pub mod capture;
 pub mod clean;
 pub mod create;
 pub mod devices;
@@ -10,6 +11,7 @@ pub mod run;
 
 pub use backend::BackendCommands;
 pub use build::BuildCommands;
+pub use capture::CaptureArgs;
 pub use clean::{CleanArgs, CleanReport, CleanStatus};
 pub use create::CreateArgs;
 pub use devices::DevicesArgs;

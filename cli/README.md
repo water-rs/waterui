@@ -76,6 +76,7 @@ All commands share a couple of helpful flags:
 | `water package` | Produce distributable artifacts without launching them. | `--platform`, `--all`, `--release`, `--project` |
 | `water doctor` | Check (and optionally fix) toolchain prerequisites. | `--fix` |
 | `water devices` | List available simulators, emulators, and devices. |  |
+| `water capture` | Capture a screenshot from a simulator or device. | `--device`, `--platform`, `-o/--output` |
 | `water clean` | Remove Cargo, Gradle, Xcode, and workspace caches. | `-y/--yes` |
 | `water add-backend` | Add an additional backend to an existing project. | `--project`, `--dev` |
 
@@ -191,6 +192,38 @@ water devices --json
 
 The JSON output is useful for automation—e.g. selecting the first available
 device inside a script. Without `--json`, the CLI prints a human-readable table.
+
+### Capture Screenshots
+
+```bash
+water capture --device "iPhone 16 Pro" -o screenshot.png
+water capture --device "emulator-5554" -o android-screenshot.png
+water capture --device "My Device" --platform android -o screenshot.png
+```
+
+Capture a screenshot from any running simulator or connected device. The
+`--device` flag accepts either the device name (e.g., `iPhone 16 Pro`) or its
+identifier (e.g., `emulator-5554` for Android emulators). The output defaults
+to `screenshot.png` in the current directory if `-o` is omitted.
+
+If the device name exists on multiple platforms (e.g., both Apple and Android),
+use `--platform apple` or `--platform android` to disambiguate.
+
+This command is particularly useful for:
+
+- **LLM Agents**: Capture visual state for debugging or verification
+- **CI/CD Pipelines**: Generate screenshots for visual regression testing
+- **Documentation**: Automate screenshot generation for docs
+
+JSON output includes the device name, platform, and output path:
+
+```json
+{
+  "device": "sdk gphone64 arm64",
+  "platform": "Android",
+  "output_path": "screenshot.png"
+}
+```
 
 ### Clean Build Artifacts
 
