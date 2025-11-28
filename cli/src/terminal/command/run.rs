@@ -941,6 +941,12 @@ fn run_cargo_build(
         if hot_reload_enabled && hot_reload_target.is_some() {
             ensure_cdylib(project_dir, package, release, hot_reload_target)?;
         }
+        // For Android, copy the .so to jniLibs so Gradle can package it
+        if let Some(target) = hot_reload_target {
+            if target.contains("android") {
+                copy_android_library_to_jnilibs(project_dir, package, release, target)?;
+            }
+        }
         return Ok(());
     }
 
@@ -1064,6 +1070,55 @@ fn ensure_cdylib(
         "Failed to locate generated cdylib after forcing build; expected {}",
         expected.display()
     );
+}
+
+/// Copy the compiled Android .so library to jniLibs so Gradle can package it.
+/// This ensures the APK contains the native library even if Gradle's buildRustLibraries
+/// task is skipped or doesn't run.
+fn copy_android_library_to_jnilibs(
+    project_dir: &Path,
+    package: &str,
+    release: bool,
+    target: &str,
+) -> Result<()> {
+    let profile = if release { "release" } else { "debug" };
+    let crate_file = package.replace('-', "_");
+    let source = project_dir
+        .join("target")
+        .join(target)
+        .join(profile)
+        .join(format!("lib{crate_file}.so"));
+
+    if !source.exists() {
+        debug!(
+            "Android library not found at {}; skipping jniLibs copy",
+            source.display()
+        );
+        return Ok(());
+    }
+
+    // Map target triple to Android ABI
+    let abi = match target {
+        "aarch64-linux-android" => "arm64-v8a",
+        "armv7-linux-androideabi" => "armeabi-v7a",
+        "x86_64-linux-android" => "x86_64",
+        "i686-linux-android" => "x86",
+        _ => {
+            debug!("Unknown Android target {target}; skipping jniLibs copy");
+            return Ok(());
+        }
+    };
+
+    let jni_dir = project_dir.join("android/app/src/main/jniLibs").join(abi);
+    fs::create_dir_all(&jni_dir)
+        .with_context(|| format!("failed to create jniLibs directory {}", jni_dir.display()))?;
+
+    let dest = jni_dir.join(format!("lib{crate_file}.so"));
+    fs::copy(&source, &dest)
+        .with_context(|| format!("failed to copy library to {}", dest.display()))?;
+
+    debug!("Copied Android library to {}", dest.display());
+    Ok(())
 }
 
 fn strip_artifact_if_needed(path: &Path, target_triple: Option<&str>) {
