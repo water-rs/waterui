@@ -1078,10 +1078,16 @@ fn strip_artifact_if_needed(path: &Path, target_triple: Option<&str>) {
 
     let before = path.metadata().ok().map(|m| m.len()).unwrap_or(0);
     if let Some(strip) = find_llvm_strip() {
-        let status = Command::new(strip).arg(path).status().map_err(|e| {
-            debug!("Failed to run llvm-strip: {e}");
-            e
-        });
+        // Use --strip-debug to only remove debug symbols while preserving the
+        // dynamic symbol table needed for FFI exports (dlopen/dlsym)
+        let status = Command::new(strip)
+            .arg("--strip-debug")
+            .arg(path)
+            .status()
+            .map_err(|e| {
+                debug!("Failed to run llvm-strip: {e}");
+                e
+            });
         if let Ok(status) = status {
             if status.success() {
                 let after = path.metadata().ok().map(|m| m.len()).unwrap_or(before);
