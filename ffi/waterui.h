@@ -233,150 +233,6 @@ typedef struct Binding_f64 Binding_f64;
  */
 typedef struct Binding_i32 Binding_i32;
 
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_AnyView Computed_AnyView;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_AnyViews_AnyView Computed_AnyViews_AnyView;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Color Computed_Color;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_ColorScheme Computed_ColorScheme;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Font Computed_Font;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Id Computed_Id;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_ResolvedColor Computed_ResolvedColor;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_ResolvedFont Computed_ResolvedFont;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Str Computed_Str;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_StyledStr Computed_StyledStr;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Vec_TableColumn Computed_Vec_TableColumn;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_Video Computed_Video;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_bool Computed_bool;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_f32 Computed_f32;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_f64 Computed_f64;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_i32 Computed_i32;
-
 typedef struct WuiAction WuiAction;
 
 typedef struct WuiAnyView WuiAnyView;
@@ -997,7 +853,7 @@ struct WuiResolvedColor waterui_read_computed_resolved_color(const struct WuiCom
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const struct Computed_ResolvedColor *computed,
+struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const struct WuiComputed_ResolvedColor *computed,
                                                               struct WuiWatcher_ResolvedColor *watcher);
 
 /**
@@ -1078,7 +934,7 @@ struct WuiColor *waterui_read_computed_color(const struct WuiComputed_Color *com
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_color(const struct Computed_Color *computed,
+struct WuiWatcherGuard *waterui_watch_computed_color(const struct WuiComputed_Color *computed,
                                                      struct WuiWatcher_Color *watcher);
 
 /**
@@ -1244,7 +1100,7 @@ struct WuiStyledStr waterui_read_computed_styled_str(const struct WuiComputed_St
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_styled_str(const struct Computed_StyledStr *computed,
+struct WuiWatcherGuard *waterui_watch_computed_styled_str(const struct WuiComputed_StyledStr *computed,
                                                           struct WuiWatcher_StyledStr *watcher);
 
 /**
@@ -1314,7 +1170,7 @@ struct WuiFont *waterui_read_computed_font(const struct WuiComputed_Font *comput
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_font(const struct Computed_Font *computed,
+struct WuiWatcherGuard *waterui_watch_computed_font(const struct WuiComputed_Font *computed,
                                                     struct WuiWatcher_Font *watcher);
 
 /**
@@ -1363,7 +1219,7 @@ struct WuiResolvedFont waterui_read_computed_resolved_font(const struct WuiCompu
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const struct Computed_ResolvedFont *computed,
+struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const struct WuiComputed_ResolvedFont *computed,
                                                              struct WuiWatcher_ResolvedFont *watcher);
 
 /**
@@ -1567,7 +1423,7 @@ struct WuiArray_WuiTableColumn waterui_read_computed_table_cols(const struct Wui
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_Vec_TableColumn *computed,
+struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct WuiComputed_Vec_TableColumn *computed,
                                                           struct WuiWatcher_Vec_TableColumn *watcher);
 
 /**
@@ -1717,7 +1573,7 @@ struct WuiId waterui_read_computed_id(const struct WuiComputed_Id *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_id(const struct Computed_Id *computed,
+struct WuiWatcherGuard *waterui_watch_computed_id(const struct WuiComputed_Id *computed,
                                                   struct WuiWatcher_Id *watcher);
 
 /**
@@ -1799,7 +1655,7 @@ struct WuiStr waterui_read_computed_str(const struct WuiComputed_Str *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_str(const struct Computed_Str *computed,
+struct WuiWatcherGuard *waterui_watch_computed_str(const struct WuiComputed_Str *computed,
                                                    struct WuiWatcher_Str *watcher);
 
 /**
@@ -1869,7 +1725,7 @@ struct WuiAnyView *waterui_read_computed_any_view(const struct WuiComputed_AnyVi
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_any_view(const struct Computed_AnyView *computed,
+struct WuiWatcherGuard *waterui_watch_computed_any_view(const struct WuiComputed_AnyView *computed,
                                                         struct WuiWatcher_AnyView *watcher);
 
 /**
@@ -1939,7 +1795,7 @@ int32_t waterui_read_computed_i32(const struct WuiComputed_i32 *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_i32(const struct Computed_i32 *computed,
+struct WuiWatcherGuard *waterui_watch_computed_i32(const struct WuiComputed_i32 *computed,
                                                    struct WuiWatcher_i32 *watcher);
 
 /**
@@ -2009,7 +1865,7 @@ bool waterui_read_computed_bool(const struct WuiComputed_bool *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_bool(const struct Computed_bool *computed,
+struct WuiWatcherGuard *waterui_watch_computed_bool(const struct WuiComputed_bool *computed,
                                                     struct WuiWatcher_bool *watcher);
 
 /**
@@ -2079,7 +1935,7 @@ float waterui_read_computed_f32(const struct WuiComputed_f32 *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_f32(const struct Computed_f32 *computed,
+struct WuiWatcherGuard *waterui_watch_computed_f32(const struct WuiComputed_f32 *computed,
                                                    struct WuiWatcher_f32 *watcher);
 
 /**
@@ -2147,7 +2003,7 @@ double waterui_read_computed_f64(const struct WuiComputed_f64 *computed);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_f64(const struct Computed_f64 *computed,
+struct WuiWatcherGuard *waterui_watch_computed_f64(const struct WuiComputed_f64 *computed,
                                                    struct WuiWatcher_f64 *watcher);
 
 /**
@@ -2187,7 +2043,7 @@ struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(const struct Wu
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_picker_items(const struct Computed_Vec_PickerItem_Id *computed,
+struct WuiWatcherGuard *waterui_watch_computed_picker_items(const struct WuiComputed_Vec_PickerItem_Id *computed,
                                                             struct WuiWatcher_Vec_PickerItem_Id *watcher);
 
 /**
@@ -2227,7 +2083,7 @@ struct WuiVideo waterui_read_computed_video(const struct WuiComputed_Video *comp
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_video(const struct Computed_Video *computed,
+struct WuiWatcherGuard *waterui_watch_computed_video(const struct WuiComputed_Video *computed,
                                                      struct WuiWatcher_Video *watcher);
 
 /**
@@ -2267,7 +2123,7 @@ struct WuiLivePhotoSource waterui_read_computed_live_photo_source(const struct W
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const struct Computed_LivePhotoSource *computed,
+struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const struct WuiComputed_LivePhotoSource *computed,
                                                                  struct WuiWatcher_LivePhotoSource *watcher);
 
 /**
@@ -2315,7 +2171,7 @@ enum WuiColorScheme waterui_read_computed_color_scheme(const struct WuiComputed_
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_color_scheme(const struct Computed_ColorScheme *computed,
+struct WuiWatcherGuard *waterui_watch_computed_color_scheme(const struct WuiComputed_ColorScheme *computed,
                                                             struct WuiWatcher_ColorScheme *watcher);
 
 /**
@@ -2544,7 +2400,7 @@ struct WuiAnyViews *waterui_read_computed_views(const struct WuiComputed_AnyView
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_views(const struct Computed_AnyViews_AnyView *computed,
+struct WuiWatcherGuard *waterui_watch_computed_views(const struct WuiComputed_AnyViews_AnyView *computed,
                                                      struct WuiWatcher_AnyViews_AnyView *watcher);
 
 /**
