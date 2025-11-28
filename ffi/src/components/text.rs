@@ -3,7 +3,6 @@ use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
 use crate::{
     IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive,
-    ffi_watcher_ctor,
 };
 use alloc::vec::Vec;
 use waterui::view::ConfigurableView;
@@ -87,7 +86,6 @@ impl IntoFFI for StyledStr {
 }
 
 ffi_computed!(StyledStr, WuiStyledStr);
-ffi_watcher_ctor!(StyledStr, WuiStyledStr);
 
 into_ffi! {
     TextConfig,
@@ -110,7 +108,6 @@ native_view!(Text, WuiText);
 
 ffi_computed!(ResolvedFont, WuiResolvedFont);
 ffi_computed_ctor!(ResolvedFont, WuiResolvedFont);
-ffi_watcher_ctor!(ResolvedFont, WuiResolvedFont);
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn waterui_resolve_font(
