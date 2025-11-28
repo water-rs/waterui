@@ -151,10 +151,71 @@ pub struct WuiBinding<T: 'static>(pub(crate) waterui::Binding<T>);
 
 impl<T> OpaqueType for WuiBinding<T> {}
 
+/// Generates computed FFI support for read-only reactive types.
+///
+/// Generates:
+/// - `waterui_read_computed_{ident}` - read current value
+/// - `waterui_watch_computed_{ident}` - subscribe to changes
+/// - `waterui_drop_computed_{ident}` - cleanup
+/// - `waterui_clone_computed_{ident}` - clone signal
+/// - `waterui_new_watcher_{ident}` - create watcher
+///
+/// For types that also need native-controlled signal constructors,
+/// additionally invoke `ffi_computed_ctor!`.
 #[macro_export]
-macro_rules! ffi_watcher_ctor {
+macro_rules! ffi_computed {
     ($ty:ty,$ffi:ty, $ident:tt) => {
         paste::paste!{
+            /// Reads the current value from a computed
+            /// # Safety
+            /// The computed pointer must be valid and point to a properly initialized computed object.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_read_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> $ffi {
+                use waterui::Signal;
+                unsafe { $crate::IntoFFI::into_ffi((&(*computed)).get()) }
+            }
+
+            /// Watches for changes in a computed
+            /// # Safety
+            /// The computed pointer must be valid and point to a properly initialized computed object.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_watch_computed_ $ident >](
+                computed: *const waterui_core::Computed<$ty>,
+                watcher: *mut $crate::reactive::WuiWatcher<$ty>,
+            ) -> *mut $crate::reactive::WuiWatcherGuard {
+                use waterui::Signal;
+                unsafe {
+                    let guard = (*computed).watch(move |ctx| {
+                        let metadata = ctx.metadata().clone();
+                        let value = ctx.into_value();
+                        (*watcher).call(value, metadata);
+                    });
+                    $crate::IntoFFI::into_ffi(guard)
+                }
+            }
+
+            /// Drops a computed
+            /// # Safety
+            /// The caller must ensure that `computed` is a valid pointer.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_drop_computed_ $ident >](computed: *mut $crate::reactive::WuiComputed<$ty>) {
+                unsafe { drop(alloc::boxed::Box::from_raw(computed)); }
+            }
+
+            /// Clones a computed
+            /// # Safety
+            /// The caller must ensure that `computed` is a valid pointer.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [< waterui_clone_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> *mut $crate::reactive::WuiComputed<$ty> {
+                unsafe {
+                    let cloned = (*computed).clone();
+                    $crate::IntoFFI::into_ffi(cloned)
+                }
+            }
+
+            /// Creates a watcher from native callbacks.
+            /// # Safety
+            /// All function pointers must be valid.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_new_watcher_ $ident >](
                 data: *mut (),
@@ -170,25 +231,30 @@ macro_rules! ffi_watcher_ctor {
                     <$ty as $crate::IntoFFI>::FFI,
                     *mut $crate::reactive::WuiWatcherMetadata,
                 ) = unsafe { core::mem::transmute(call) };
-                let watcher = unsafe {
-                    $crate::reactive::WuiWatcher::new(data, call, drop)
-                };
+                let watcher = unsafe { $crate::reactive::WuiWatcher::new(data, call, drop) };
                 Box::into_raw(Box::new(watcher))
             }
         }
     };
 
-    ($ty:ty,$ffi:ty) =>{
-        paste::paste!{
-            $crate::ffi_watcher_ctor!($ty,$ffi,[<$ty:snake>]);
+    ($ty:ty,$ffi:ty) => {
+        paste::paste! {
+            $crate::ffi_computed!($ty, $ffi, [<$ty:snake>]);
         }
     }
 }
 
+/// Generates the native-controlled computed constructor.
+///
+/// Generates `waterui_new_computed_{ident}` for creating signals from native callbacks.
+/// Requires the FFI type to implement `IntoRust`.
 #[macro_export]
 macro_rules! ffi_computed_ctor {
     ($ty:ty,$ffi:ty, $ident:tt) => {
         paste::paste!{
+            /// Creates a computed signal from native callbacks.
+            /// # Safety
+            /// All function pointers must be valid and follow the expected calling conventions.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_new_computed_ $ident >](
                 data: *mut (),
@@ -208,9 +274,9 @@ macro_rules! ffi_computed_ctor {
         }
     };
 
-    ($ty:ty,$ffi:ty) =>{
-        paste::paste!{
-            $crate::ffi_computed_ctor!($ty,$ffi,[<$ty:snake>]);
+    ($ty:ty,$ffi:ty) => {
+        paste::paste! {
+            $crate::ffi_computed_ctor!($ty, $ffi, [<$ty:snake>]);
         }
     }
 }
@@ -253,7 +319,6 @@ macro_rules! ffi_binding {
                     });
                     guard.into_ffi()
                 }
-
             }
             /// Drops a binding
             /// # Safety
@@ -264,9 +329,6 @@ macro_rules! ffi_binding {
                     drop(alloc::boxed::Box::from_raw(binding));
                 }
             }
-
-            $crate::ffi_watcher_ctor!($ty,$ffi,$ident);
-            $crate::ffi_computed_ctor!($ty,$ffi,$ident);
         }
     };
 
@@ -277,89 +339,19 @@ macro_rules! ffi_binding {
     }
 }
 
-#[macro_export]
-macro_rules! ffi_computed {
-    ($ty:ty,$ffi:ty, $ident:tt) => {
-
-        paste::paste!{
-            #[unsafe(no_mangle)]
-        /// Reads the current value from a computed
-        ///
-        /// # Safety
-        ///
-        /// The computed pointer must be valid and point to a properly initialized computed object.
-        pub unsafe extern "C" fn [< waterui_read_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> $ffi {
-            use waterui::Signal;
-            unsafe{
-                $crate::IntoFFI::into_ffi((&(*computed)).get())
-            }
-        }
-
-        /// Watches for changes in a computed
-        ///
-        /// # Safety
-        ///
-        /// The computed pointer must be valid and point to a properly initialized computed object.
-        /// The watcher must be a valid callback function.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn [< waterui_watch_computed_ $ident >](
-            computed: *const waterui_core::Computed<$ty>,
-            watcher: *mut $crate::reactive::WuiWatcher<$ty>,
-        ) -> *mut $crate::reactive::WuiWatcherGuard {
-            use waterui::Signal;
-            unsafe {
-                let guard = (*computed).watch(move |ctx| {
-                    let metadata = ctx.metadata().clone();
-                    let value = ctx.into_value();
-                    (*watcher).call(value, metadata);
-                });
-                $crate::IntoFFI::into_ffi(guard)
-            }
-        }
-
-        /// Drops a computed
-        /// # Safety
-        /// The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn [< waterui_drop_computed_ $ident >](computed: *mut $crate::reactive::WuiComputed<$ty>) {
-            unsafe {
-                drop(alloc::boxed::Box::from_raw(computed));
-            }
-        }
-
-        /// Clones a computed
-        /// # Safety
-        /// The caller must ensure that `computed` is a valid pointer obtained from the
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn [< waterui_clone_computed_ $ident >](computed: *const $crate::reactive::WuiComputed<$ty>) -> *mut $crate::reactive::WuiComputed<$ty> {
-            unsafe {
-                let cloned = (*computed).clone();
-                $crate::IntoFFI::into_ffi(cloned)
-            }
-        }
-    }
-
-    };
-
-    ($ty:ty,$ffi:ty) =>{
-        paste::paste!{
-            $crate::ffi_computed!($ty,$ffi,[<$ty:snake>]);
-        }
-    }
-}
-
+/// Generates both binding and computed FFI support.
+///
+/// Use this for types that need two-way reactive binding support.
 #[macro_export]
 macro_rules! ffi_reactive {
     ($ty:ty,$ffi:ty, $ident:tt) => {
-        paste::paste! {
-            $crate::ffi_binding!($ty,$ffi, $ident);
-            $crate::ffi_computed!($ty,$ffi, $ident);
-        }
+        $crate::ffi_binding!($ty, $ffi, $ident);
+        $crate::ffi_computed!($ty, $ffi, $ident);
     };
 
     ($ty:ty,$ffi:ty) => {
         paste::paste! {
-            $crate::ffi_reactive!($ty,$ffi,[<$ty:snake>]);
+            $crate::ffi_reactive!($ty, $ffi, [<$ty:snake>]);
         }
     };
 }
@@ -376,15 +368,11 @@ ffi_reactive!(f32, f32);
 
 ffi_reactive!(f64, f64);
 
-// Computed<Vec<PickerItem<Id>>>,
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
-ffi_watcher_ctor!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
 ffi_computed!(Video, WuiVideo);
-ffi_watcher_ctor!(Video, WuiVideo);
 
 ffi_computed!(LivePhotoSource, WuiLivePhotoSource);
-ffi_watcher_ctor!(LivePhotoSource, WuiLivePhotoSource);
 
 pub struct WuiWatcher<T: IntoFFI>(watcher::Watcher<T>);
 
