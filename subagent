@@ -1,0 +1,479 @@
+#!/bin/bash
+# Subagent Manager - Manage background Gemini tasks
+# Usage: ./subagent <command> [args]
+
+SUBAGENT_DIR="${SUBAGENT_DIR:-$HOME/.subagents}"
+mkdir -p "$SUBAGENT_DIR"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+usage() {
+    echo "Subagent Manager - Control background Gemini tasks"
+    echo ""
+    echo "Usage: ./subagent <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  run <name> <prompt>     Launch a new subagent with given name and prompt"
+    echo "  run-file <name> <file> <prompt>  Launch subagent with file content as context"
+    echo "  run-dir <name> <dir> <glob> <prompt>  Launch subagent analyzing files in directory"
+    echo "  status [name]           Show status of all or specific subagent"
+    echo "  wait <name>             Wait for a specific subagent to complete"
+    echo "  wait-any                Wait for any subagent to complete"
+    echo "  wait-all                Wait for all subagents to complete"
+    echo "  result <name>           Show the result of a completed subagent"
+    echo "  tail <name>             Tail the output of a running subagent"
+    echo "  kill <name>             Kill a running subagent"
+    echo "  clean                   Remove all completed subagent data"
+    echo "  list                    List all subagents"
+    echo ""
+    echo "Examples:"
+    echo "  ./subagent run bugfind 'Find bugs in this Rust code'"
+    echo "  ./subagent run-dir analysis ./src '*.rs' 'Analyze architecture'"
+    echo "  ./subagent wait bugfind"
+    echo "  ./subagent result bugfind"
+}
+
+get_agent_dir() {
+    echo "$SUBAGENT_DIR/$1"
+}
+
+is_running() {
+    local name="$1"
+    local pidfile="$(get_agent_dir "$name")/pid"
+    if [[ -f "$pidfile" ]]; then
+        local pid=$(cat "$pidfile")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_status() {
+    local name="$1"
+    local dir="$(get_agent_dir "$name")"
+    if [[ ! -d "$dir" ]]; then
+        echo "not_found"
+    elif is_running "$name"; then
+        echo "running"
+    elif [[ -f "$dir/exit_code" ]]; then
+        local code=$(cat "$dir/exit_code")
+        if [[ "$code" == "0" ]]; then
+            echo "completed"
+        else
+            echo "failed"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+cmd_run() {
+    local name="$1"
+    local prompt="$2"
+    
+    if [[ -z "$name" || -z "$prompt" ]]; then
+        echo "Usage: ./subagent run <name> <prompt>"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    mkdir -p "$dir"
+    
+    if is_running "$name"; then
+        echo -e "${YELLOW}Warning: Subagent '$name' is already running${NC}"
+        exit 1
+    fi
+    
+    echo "$prompt" > "$dir/prompt"
+    echo "$(date -Iseconds)" > "$dir/started"
+    rm -f "$dir/exit_code" "$dir/finished"
+    
+    # Run gemini in background
+    (
+        gemini -s "$prompt" > "$dir/output.txt" 2>&1
+        echo $? > "$dir/exit_code"
+        echo "$(date -Iseconds)" > "$dir/finished"
+    ) &
+    
+    echo $! > "$dir/pid"
+    echo -e "${GREEN}✓ Launched subagent '$name' (PID: $!)${NC}"
+}
+
+cmd_run_file() {
+    local name="$1"
+    local file="$2"
+    local prompt="$3"
+    
+    if [[ -z "$name" || -z "$file" || -z "$prompt" ]]; then
+        echo "Usage: ./subagent run-file <name> <file> <prompt>"
+        exit 1
+    fi
+    
+    if [[ ! -f "$file" ]]; then
+        echo -e "${RED}Error: File '$file' not found${NC}"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    mkdir -p "$dir"
+    
+    if is_running "$name"; then
+        echo -e "${YELLOW}Warning: Subagent '$name' is already running${NC}"
+        exit 1
+    fi
+    
+    echo "$prompt" > "$dir/prompt"
+    echo "$file" > "$dir/input_file"
+    echo "$(date -Iseconds)" > "$dir/started"
+    rm -f "$dir/exit_code" "$dir/finished"
+    
+    # Run gemini with file content
+    (
+        cat "$file" | gemini -s -p "$prompt" > "$dir/output.txt" 2>&1
+        echo $? > "$dir/exit_code"
+        echo "$(date -Iseconds)" > "$dir/finished"
+    ) &
+    
+    echo $! > "$dir/pid"
+    echo -e "${GREEN}✓ Launched subagent '$name' with file '$file' (PID: $!)${NC}"
+}
+
+cmd_run_dir() {
+    local name="$1"
+    local target_dir="$2"
+    local glob="$3"
+    local prompt="$4"
+    
+    if [[ -z "$name" || -z "$target_dir" || -z "$glob" || -z "$prompt" ]]; then
+        echo "Usage: ./subagent run-dir <name> <dir> <glob> <prompt>"
+        exit 1
+    fi
+    
+    if [[ ! -d "$target_dir" ]]; then
+        echo -e "${RED}Error: Directory '$target_dir' not found${NC}"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    mkdir -p "$dir"
+    
+    if is_running "$name"; then
+        echo -e "${YELLOW}Warning: Subagent '$name' is already running${NC}"
+        exit 1
+    fi
+    
+    echo "$prompt" > "$dir/prompt"
+    echo "$target_dir ($glob)" > "$dir/input_dir"
+    echo "$(date -Iseconds)" > "$dir/started"
+    rm -f "$dir/exit_code" "$dir/finished"
+    
+    # Run gemini with directory content
+    (
+        find "$target_dir" -name "$glob" -exec echo "=== {} ===" \; -exec cat {} \; | \
+            gemini -s -p "$prompt" > "$dir/output.txt" 2>&1
+        echo $? > "$dir/exit_code"
+        echo "$(date -Iseconds)" > "$dir/finished"
+    ) &
+    
+    echo $! > "$dir/pid"
+    echo -e "${GREEN}✓ Launched subagent '$name' analyzing '$target_dir' (PID: $!)${NC}"
+}
+
+cmd_status() {
+    local name="$1"
+    
+    if [[ -n "$name" ]]; then
+        local status=$(get_status "$name")
+        local dir="$(get_agent_dir "$name")"
+        
+        case "$status" in
+            "not_found")
+                echo -e "${RED}Subagent '$name' not found${NC}"
+                ;;
+            "running")
+                local pid=$(cat "$dir/pid")
+                local started=$(cat "$dir/started")
+                echo -e "${BLUE}● $name${NC} [running] (PID: $pid, started: $started)"
+                ;;
+            "completed")
+                local finished=$(cat "$dir/finished")
+                echo -e "${GREEN}✓ $name${NC} [completed] (finished: $finished)"
+                ;;
+            "failed")
+                local code=$(cat "$dir/exit_code")
+                echo -e "${RED}✗ $name${NC} [failed] (exit code: $code)"
+                ;;
+            *)
+                echo -e "${YELLOW}? $name${NC} [unknown]"
+                ;;
+        esac
+    else
+        # Show all
+        local found=0
+        for agent_dir in "$SUBAGENT_DIR"/*/; do
+            if [[ -d "$agent_dir" ]]; then
+                local agent_name=$(basename "$agent_dir")
+                cmd_status "$agent_name"
+                found=1
+            fi
+        done
+        if [[ $found -eq 0 ]]; then
+            echo "No subagents found"
+        fi
+    fi
+}
+
+cmd_wait() {
+    local name="$1"
+    
+    if [[ -z "$name" ]]; then
+        echo "Usage: ./subagent wait <name>"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    local pidfile="$dir/pid"
+    
+    if [[ ! -f "$pidfile" ]]; then
+        echo -e "${RED}Subagent '$name' not found${NC}"
+        exit 1
+    fi
+    
+    local pid=$(cat "$pidfile")
+    
+    if ! is_running "$name"; then
+        echo -e "${GREEN}Subagent '$name' already completed${NC}"
+        return 0
+    fi
+    
+    echo -e "${BLUE}Waiting for subagent '$name' (PID: $pid)...${NC}"
+    
+    # Wait for process
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 0.5
+    done
+    
+    local status=$(get_status "$name")
+    if [[ "$status" == "completed" ]]; then
+        echo -e "${GREEN}✓ Subagent '$name' completed successfully${NC}"
+    else
+        echo -e "${RED}✗ Subagent '$name' failed${NC}"
+    fi
+}
+
+cmd_wait_any() {
+    local pids=()
+    local names=()
+    
+    for agent_dir in "$SUBAGENT_DIR"/*/; do
+        if [[ -d "$agent_dir" ]]; then
+            local agent_name=$(basename "$agent_dir")
+            if is_running "$agent_name"; then
+                local pid=$(cat "$agent_dir/pid")
+                pids+=("$pid")
+                names+=("$agent_name")
+            fi
+        fi
+    done
+    
+    if [[ ${#pids[@]} -eq 0 ]]; then
+        echo "No running subagents"
+        return 0
+    fi
+    
+    echo -e "${BLUE}Waiting for any of ${#pids[@]} subagents...${NC}"
+    
+    while true; do
+        for i in "${!pids[@]}"; do
+            if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+                echo -e "${GREEN}✓ Subagent '${names[$i]}' finished${NC}"
+                return 0
+            fi
+        done
+        sleep 0.5
+    done
+}
+
+cmd_wait_all() {
+    local count=0
+    
+    for agent_dir in "$SUBAGENT_DIR"/*/; do
+        if [[ -d "$agent_dir" ]]; then
+            local agent_name=$(basename "$agent_dir")
+            if is_running "$agent_name"; then
+                ((count++))
+            fi
+        fi
+    done
+    
+    if [[ $count -eq 0 ]]; then
+        echo "No running subagents"
+        return 0
+    fi
+    
+    echo -e "${BLUE}Waiting for $count subagents...${NC}"
+    
+    for agent_dir in "$SUBAGENT_DIR"/*/; do
+        if [[ -d "$agent_dir" ]]; then
+            local agent_name=$(basename "$agent_dir")
+            if is_running "$agent_name"; then
+                cmd_wait "$agent_name"
+            fi
+        fi
+    done
+    
+    echo -e "${GREEN}✓ All subagents completed${NC}"
+}
+
+cmd_result() {
+    local name="$1"
+    
+    if [[ -z "$name" ]]; then
+        echo "Usage: ./subagent result <name>"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    local output="$dir/output.txt"
+    
+    if [[ ! -f "$output" ]]; then
+        echo -e "${RED}No output found for subagent '$name'${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}=== Result from subagent '$name' ===${NC}"
+    cat "$output"
+}
+
+cmd_tail() {
+    local name="$1"
+    
+    if [[ -z "$name" ]]; then
+        echo "Usage: ./subagent tail <name>"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    local output="$dir/output.txt"
+    
+    if [[ ! -f "$output" ]]; then
+        echo -e "${RED}No output found for subagent '$name'${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}Tailing output from subagent '$name' (Ctrl+C to stop)...${NC}"
+    tail -f "$output"
+}
+
+cmd_kill() {
+    local name="$1"
+    
+    if [[ -z "$name" ]]; then
+        echo "Usage: ./subagent kill <name>"
+        exit 1
+    fi
+    
+    local dir="$(get_agent_dir "$name")"
+    local pidfile="$dir/pid"
+    
+    if [[ ! -f "$pidfile" ]]; then
+        echo -e "${RED}Subagent '$name' not found${NC}"
+        exit 1
+    fi
+    
+    local pid=$(cat "$pidfile")
+    
+    if ! is_running "$name"; then
+        echo -e "${YELLOW}Subagent '$name' is not running${NC}"
+        return 0
+    fi
+    
+    kill "$pid" 2>/dev/null
+    echo "130" > "$dir/exit_code"
+    echo "$(date -Iseconds)" > "$dir/finished"
+    echo -e "${GREEN}✓ Killed subagent '$name'${NC}"
+}
+
+cmd_clean() {
+    local count=0
+    
+    for agent_dir in "$SUBAGENT_DIR"/*/; do
+        if [[ -d "$agent_dir" ]]; then
+            local agent_name=$(basename "$agent_dir")
+            if ! is_running "$agent_name"; then
+                rm -rf "$agent_dir"
+                ((count++))
+            fi
+        fi
+    done
+    
+    echo -e "${GREEN}✓ Cleaned $count completed subagents${NC}"
+}
+
+cmd_list() {
+    echo -e "${BLUE}Subagents:${NC}"
+    cmd_status
+}
+
+# Main
+case "${1:-}" in
+    run)
+        shift
+        cmd_run "$@"
+        ;;
+    run-file)
+        shift
+        cmd_run_file "$@"
+        ;;
+    run-dir)
+        shift
+        cmd_run_dir "$@"
+        ;;
+    status)
+        shift
+        cmd_status "$@"
+        ;;
+    wait)
+        shift
+        cmd_wait "$@"
+        ;;
+    wait-any)
+        cmd_wait_any
+        ;;
+    wait-all)
+        cmd_wait_all
+        ;;
+    result)
+        shift
+        cmd_result "$@"
+        ;;
+    tail)
+        shift
+        cmd_tail "$@"
+        ;;
+    kill)
+        shift
+        cmd_kill "$@"
+        ;;
+    clean)
+        cmd_clean
+        ;;
+    list)
+        cmd_list
+        ;;
+    -h|--help|help|"")
+        usage
+        ;;
+    *)
+        echo -e "${RED}Unknown command: $1${NC}"
+        usage
+        exit 1
+        ;;
+esac
+
