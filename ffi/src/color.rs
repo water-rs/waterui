@@ -1,5 +1,5 @@
 use crate::{
-    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive, ffi_watcher_ctor,
+    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive,
     reactive::WuiComputed,
 };
 
@@ -41,7 +41,6 @@ impl IntoRust for WuiResolvedColor {
 ffi_view!(Color, *mut WuiColor);
 
 ffi_computed!(ResolvedColor, WuiResolvedColor);
-ffi_watcher_ctor!(ResolvedColor, WuiResolvedColor);
 ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
 ffi_reactive!(Color, *mut WuiColor);
