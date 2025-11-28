@@ -1113,24 +1113,31 @@ fn copy_android_library_to_jnilibs(
     fs::create_dir_all(&jni_dir)
         .with_context(|| format!("failed to create jniLibs directory {}", jni_dir.display()))?;
 
-    // Copy the main library
-    let dest = jni_dir.join(format!("lib{crate_file}.so"));
+    // Copy the main library with standardized name (libwaterui_app.so)
+    // This convention allows the Android backend to always load "waterui_app"
+    // regardless of the actual crate name
+    let dest = jni_dir.join("libwaterui_app.so");
     fs::copy(&source, &dest)
         .with_context(|| format!("failed to copy library to {}", dest.display()))?;
-    debug!("Copied Android library to {}", dest.display());
+    debug!(
+        "Copied Android library {} -> {}",
+        source.display(),
+        dest.display()
+    );
 
     // Also copy libc++_shared.so from NDK - required for C++ runtime
     if let Some(ndk_path) = backend::android::resolve_ndk_path() {
         // Find the prebuilt directory - NDK uses darwin-x86_64 even on Apple Silicon
         let prebuilt_base = ndk_path.join("toolchains/llvm/prebuilt");
         let host_tags = [
-            "darwin-x86_64",   // macOS (including Apple Silicon via Rosetta)
-            "darwin-arm64",    // macOS native arm64 (some newer NDKs)
-            "linux-x86_64",    // Linux
-            "windows-x86_64",  // Windows
+            "darwin-x86_64",  // macOS (including Apple Silicon via Rosetta)
+            "darwin-arm64",   // macOS native arm64 (some newer NDKs)
+            "linux-x86_64",   // Linux
+            "windows-x86_64", // Windows
         ];
-        
-        let libcxx_src = host_tags.iter()
+
+        let libcxx_src = host_tags
+            .iter()
             .map(|tag| {
                 prebuilt_base
                     .join(tag)
@@ -1142,8 +1149,12 @@ fn copy_android_library_to_jnilibs(
 
         if let Some(libcxx_src) = libcxx_src {
             let libcxx_dst = jni_dir.join("libc++_shared.so");
-            fs::copy(&libcxx_src, &libcxx_dst)
-                .with_context(|| format!("failed to copy libc++_shared.so to {}", libcxx_dst.display()))?;
+            fs::copy(&libcxx_src, &libcxx_dst).with_context(|| {
+                format!(
+                    "failed to copy libc++_shared.so to {}",
+                    libcxx_dst.display()
+                )
+            })?;
             debug!("Copied libc++_shared.so to {}", libcxx_dst.display());
         } else {
             warn!("libc++_shared.so not found in NDK for target {}", target);
