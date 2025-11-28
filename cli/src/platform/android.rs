@@ -89,11 +89,7 @@ impl Platform for AndroidPlatform {
     ///
     /// This is the preferred method that uses `BuildOptions` instead of
     /// scattered parameters.
-    fn package_with_options(
-        &self,
-        project: &Project,
-        options: &BuildOptions,
-    ) -> Result<PathBuf> {
+    fn package_with_options(&self, project: &Project, options: &BuildOptions) -> Result<PathBuf> {
         // Gradle's build script calls `water build android` internally,
         // handling all build options via environment variables.
         build_android_apk(
