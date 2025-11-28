@@ -263,6 +263,14 @@ typedef struct Computed_Color Computed_Color;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_ColorScheme Computed_ColorScheme;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Font Computed_Font;
 
 /**
@@ -454,6 +462,8 @@ typedef struct WuiWatcher_AnyView WuiWatcher_AnyView;
 typedef struct WuiWatcher_AnyViews_AnyView WuiWatcher_AnyViews_AnyView;
 
 typedef struct WuiWatcher_Color WuiWatcher_Color;
+
+typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
 
 typedef struct WuiWatcher_Font WuiWatcher_Font;
 
@@ -977,20 +987,15 @@ struct WuiStr waterui_color_id(void);
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiResolvedColor waterui_read_computed_resolved_color(const struct WuiComputed_ResolvedColor *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const struct Computed_ResolvedColor *computed,
                                                               struct WuiWatcher_ResolvedColor *watcher);
@@ -998,23 +1003,33 @@ struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const struct Compu
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_resolved_color(struct WuiComputed_ResolvedColor *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_ResolvedColor *waterui_clone_computed_resolved_color(const struct WuiComputed_ResolvedColor *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_ResolvedColor *waterui_new_watcher_resolved_color(void *data,
                                                                     void (*call)(void*,
                                                                                  struct WuiResolvedColor,
                                                                                  struct WuiWatcherMetadata*),
                                                                     void (*drop)(void*));
 
+/**
+ * Creates a computed signal from native callbacks.
+ * # Safety
+ * All function pointers must be valid and follow the expected calling conventions.
+ */
 struct WuiComputed_ResolvedColor *waterui_new_computed_resolved_color(void *data,
                                                                       struct WuiResolvedColor (*get)(const void*),
                                                                       struct WuiWatcherGuard *(*watch)(const void*,
@@ -1051,34 +1066,17 @@ struct WuiWatcherGuard *waterui_watch_binding_color(const struct Binding_Color *
  */
 void waterui_drop_binding_color(struct WuiBinding_Color *binding);
 
-struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
-                                                   void (*call)(void*,
-                                                                struct WuiColor*,
-                                                                struct WuiWatcherMetadata*),
-                                                   void (*drop)(void*));
-
-struct WuiComputed_Color *waterui_new_computed_color(void *data,
-                                                     struct WuiColor *(*get)(const void*),
-                                                     struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                      struct WuiWatcher_Color*),
-                                                     void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiColor *waterui_read_computed_color(const struct WuiComputed_Color *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_color(const struct Computed_Color *computed,
                                                      struct WuiWatcher_Color *watcher);
@@ -1086,16 +1084,27 @@ struct WuiWatcherGuard *waterui_watch_computed_color(const struct Computed_Color
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_color(struct WuiComputed_Color *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Color *waterui_clone_computed_color(const struct WuiComputed_Color *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
+                                                   void (*call)(void*,
+                                                                struct WuiColor*,
+                                                                struct WuiWatcherMetadata*),
+                                                   void (*drop)(void*));
 
 /**
  * Resolves a color in the given environment.
@@ -1225,20 +1234,15 @@ void waterui_drop_font(struct WuiFont *value);
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiStyledStr waterui_read_computed_styled_str(const struct WuiComputed_StyledStr *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_styled_str(const struct Computed_StyledStr *computed,
                                                           struct WuiWatcher_StyledStr *watcher);
@@ -1246,17 +1250,22 @@ struct WuiWatcherGuard *waterui_watch_computed_styled_str(const struct Computed_
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_styled_str(struct WuiComputed_StyledStr *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_StyledStr *waterui_clone_computed_styled_str(const struct WuiComputed_StyledStr *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_StyledStr *waterui_new_watcher_styled_str(void *data,
                                                             void (*call)(void*,
                                                                          struct WuiStyledStr,
@@ -1293,34 +1302,17 @@ struct WuiWatcherGuard *waterui_watch_binding_font(const struct Binding_Font *bi
  */
 void waterui_drop_binding_font(struct WuiBinding_Font *binding);
 
-struct WuiWatcher_Font *waterui_new_watcher_font(void *data,
-                                                 void (*call)(void*,
-                                                              struct WuiFont*,
-                                                              struct WuiWatcherMetadata*),
-                                                 void (*drop)(void*));
-
-struct WuiComputed_Font *waterui_new_computed_font(void *data,
-                                                   struct WuiFont *(*get)(const void*),
-                                                   struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                    struct WuiWatcher_Font*),
-                                                   void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiFont *waterui_read_computed_font(const struct WuiComputed_Font *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_font(const struct Computed_Font *computed,
                                                     struct WuiWatcher_Font *watcher);
@@ -1328,16 +1320,27 @@ struct WuiWatcherGuard *waterui_watch_computed_font(const struct Computed_Font *
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_font(struct WuiComputed_Font *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Font *waterui_clone_computed_font(const struct WuiComputed_Font *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Font *waterui_new_watcher_font(void *data,
+                                                 void (*call)(void*,
+                                                              struct WuiFont*,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
 
 /**
  * # Safety
@@ -1350,20 +1353,15 @@ struct WuiStr waterui_text_id(void);
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiResolvedFont waterui_read_computed_resolved_font(const struct WuiComputed_ResolvedFont *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const struct Computed_ResolvedFont *computed,
                                                              struct WuiWatcher_ResolvedFont *watcher);
@@ -1371,28 +1369,38 @@ struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const struct Comput
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_resolved_font(struct WuiComputed_ResolvedFont *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_ResolvedFont *waterui_clone_computed_resolved_font(const struct WuiComputed_ResolvedFont *computed);
 
-struct WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
-                                                                    struct WuiResolvedFont (*get)(const void*),
-                                                                    struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                                     struct WuiWatcher_ResolvedFont*),
-                                                                    void (*drop)(void*));
-
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_ResolvedFont *waterui_new_watcher_resolved_font(void *data,
                                                                   void (*call)(void*,
                                                                                struct WuiResolvedFont,
                                                                                struct WuiWatcherMetadata*),
                                                                   void (*drop)(void*));
+
+/**
+ * Creates a computed signal from native callbacks.
+ * # Safety
+ * All function pointers must be valid and follow the expected calling conventions.
+ */
+struct WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
+                                                                    struct WuiResolvedFont (*get)(const void*),
+                                                                    struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                                     struct WuiWatcher_ResolvedFont*),
+                                                                    void (*drop)(void*));
 
 struct WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                       const struct WuiEnv *env);
@@ -1549,20 +1557,15 @@ void waterui_list_item_call_delete(struct WuiListItem *item,
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiArray_WuiTableColumn waterui_read_computed_table_cols(const struct WuiComputed_Vec_TableColumn *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_Vec_TableColumn *computed,
                                                           struct WuiWatcher_Vec_TableColumn *watcher);
@@ -1570,17 +1573,22 @@ struct WuiWatcherGuard *waterui_watch_computed_table_cols(const struct Computed_
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_table_cols(struct WuiComputed_Vec_TableColumn *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Vec_TableColumn *waterui_clone_computed_table_cols(const struct WuiComputed_Vec_TableColumn *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_Vec_TableColumn *waterui_new_watcher_table_cols(void *data,
                                                                   void (*call)(void*,
                                                                                struct WuiArray_WuiTableColumn,
@@ -1697,34 +1705,17 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const struct Binding_Id *bindin
  */
 void waterui_drop_binding_id(struct WuiBinding_Id *binding);
 
-struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
-                                             void (*call)(void*,
-                                                          struct WuiId,
-                                                          struct WuiWatcherMetadata*),
-                                             void (*drop)(void*));
-
-struct WuiComputed_Id *waterui_new_computed_id(void *data,
-                                               struct WuiId (*get)(const void*),
-                                               struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                struct WuiWatcher_Id*),
-                                               void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiId waterui_read_computed_id(const struct WuiComputed_Id *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_id(const struct Computed_Id *computed,
                                                   struct WuiWatcher_Id *watcher);
@@ -1732,16 +1723,27 @@ struct WuiWatcherGuard *waterui_watch_computed_id(const struct Computed_Id *comp
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_id(struct WuiComputed_Id *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Id *waterui_clone_computed_id(const struct WuiComputed_Id *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
+                                             void (*call)(void*,
+                                                          struct WuiId,
+                                                          struct WuiWatcherMetadata*),
+                                             void (*drop)(void*));
 
 /**
  * # Safety
@@ -1785,34 +1787,17 @@ struct WuiWatcherGuard *waterui_watch_binding_str(const struct Binding_Str *bind
  */
 void waterui_drop_binding_str(struct WuiBinding_Str *binding);
 
-struct WuiWatcher_Str *waterui_new_watcher_str(void *data,
-                                               void (*call)(void*,
-                                                            struct WuiStr,
-                                                            struct WuiWatcherMetadata*),
-                                               void (*drop)(void*));
-
-struct WuiComputed_Str *waterui_new_computed_str(void *data,
-                                                 struct WuiStr (*get)(const void*),
-                                                 struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                  struct WuiWatcher_Str*),
-                                                 void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiStr waterui_read_computed_str(const struct WuiComputed_Str *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_str(const struct Computed_Str *computed,
                                                    struct WuiWatcher_Str *watcher);
@@ -1820,16 +1805,27 @@ struct WuiWatcherGuard *waterui_watch_computed_str(const struct Computed_Str *co
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_str(struct WuiComputed_Str *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Str *waterui_clone_computed_str(const struct WuiComputed_Str *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Str *waterui_new_watcher_str(void *data,
+                                               void (*call)(void*,
+                                                            struct WuiStr,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -1861,34 +1857,17 @@ struct WuiWatcherGuard *waterui_watch_binding_any_view(const struct Binding_AnyV
  */
 void waterui_drop_binding_any_view(struct WuiBinding_AnyView *binding);
 
-struct WuiWatcher_AnyView *waterui_new_watcher_any_view(void *data,
-                                                        void (*call)(void*,
-                                                                     struct WuiAnyView*,
-                                                                     struct WuiWatcherMetadata*),
-                                                        void (*drop)(void*));
-
-struct WuiComputed_AnyView *waterui_new_computed_any_view(void *data,
-                                                          struct WuiAnyView *(*get)(const void*),
-                                                          struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                           struct WuiWatcher_AnyView*),
-                                                          void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiAnyView *waterui_read_computed_any_view(const struct WuiComputed_AnyView *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_any_view(const struct Computed_AnyView *computed,
                                                         struct WuiWatcher_AnyView *watcher);
@@ -1896,16 +1875,27 @@ struct WuiWatcherGuard *waterui_watch_computed_any_view(const struct Computed_An
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_any_view(struct WuiComputed_AnyView *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_AnyView *waterui_clone_computed_any_view(const struct WuiComputed_AnyView *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_AnyView *waterui_new_watcher_any_view(void *data,
+                                                        void (*call)(void*,
+                                                                     struct WuiAnyView*,
+                                                                     struct WuiWatcherMetadata*),
+                                                        void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -1937,34 +1927,17 @@ struct WuiWatcherGuard *waterui_watch_binding_i32(const struct Binding_i32 *bind
  */
 void waterui_drop_binding_i32(struct WuiBinding_i32 *binding);
 
-struct WuiWatcher_i32 *waterui_new_watcher_i32(void *data,
-                                               void (*call)(void*,
-                                                            int32_t,
-                                                            struct WuiWatcherMetadata*),
-                                               void (*drop)(void*));
-
-struct WuiComputed_i32 *waterui_new_computed_i32(void *data,
-                                                 int32_t (*get)(const void*),
-                                                 struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                  struct WuiWatcher_i32*),
-                                                 void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 int32_t waterui_read_computed_i32(const struct WuiComputed_i32 *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_i32(const struct Computed_i32 *computed,
                                                    struct WuiWatcher_i32 *watcher);
@@ -1972,16 +1945,27 @@ struct WuiWatcherGuard *waterui_watch_computed_i32(const struct Computed_i32 *co
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_i32(struct WuiComputed_i32 *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_i32 *waterui_clone_computed_i32(const struct WuiComputed_i32 *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_i32 *waterui_new_watcher_i32(void *data,
+                                               void (*call)(void*,
+                                                            int32_t,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -2013,34 +1997,17 @@ struct WuiWatcherGuard *waterui_watch_binding_bool(const struct Binding_bool *bi
  */
 void waterui_drop_binding_bool(struct WuiBinding_bool *binding);
 
-struct WuiWatcher_bool *waterui_new_watcher_bool(void *data,
-                                                 void (*call)(void*,
-                                                              bool,
-                                                              struct WuiWatcherMetadata*),
-                                                 void (*drop)(void*));
-
-struct WuiComputed_bool *waterui_new_computed_bool(void *data,
-                                                   bool (*get)(const void*),
-                                                   struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                    struct WuiWatcher_bool*),
-                                                   void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 bool waterui_read_computed_bool(const struct WuiComputed_bool *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_bool(const struct Computed_bool *computed,
                                                     struct WuiWatcher_bool *watcher);
@@ -2048,16 +2015,27 @@ struct WuiWatcherGuard *waterui_watch_computed_bool(const struct Computed_bool *
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_bool(struct WuiComputed_bool *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_bool *waterui_clone_computed_bool(const struct WuiComputed_bool *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_bool *waterui_new_watcher_bool(void *data,
+                                                 void (*call)(void*,
+                                                              bool,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -2089,32 +2067,17 @@ struct WuiWatcherGuard *waterui_watch_binding_f32(const struct Binding_f32 *bind
  */
 void waterui_drop_binding_f32(struct WuiBinding_f32 *binding);
 
-struct WuiWatcher_f32 *waterui_new_watcher_f32(void *data,
-                                               void (*call)(void*, float, struct WuiWatcherMetadata*),
-                                               void (*drop)(void*));
-
-struct WuiComputed_f32 *waterui_new_computed_f32(void *data,
-                                                 float (*get)(const void*),
-                                                 struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                  struct WuiWatcher_f32*),
-                                                 void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 float waterui_read_computed_f32(const struct WuiComputed_f32 *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_f32(const struct Computed_f32 *computed,
                                                    struct WuiWatcher_f32 *watcher);
@@ -2122,16 +2085,25 @@ struct WuiWatcherGuard *waterui_watch_computed_f32(const struct Computed_f32 *co
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_f32(struct WuiComputed_f32 *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_f32 *waterui_clone_computed_f32(const struct WuiComputed_f32 *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_f32 *waterui_new_watcher_f32(void *data,
+                                               void (*call)(void*, float, struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -2163,34 +2135,17 @@ struct WuiWatcherGuard *waterui_watch_binding_f64(const struct Binding_f64 *bind
  */
 void waterui_drop_binding_f64(struct WuiBinding_f64 *binding);
 
-struct WuiWatcher_f64 *waterui_new_watcher_f64(void *data,
-                                               void (*call)(void*,
-                                                            double,
-                                                            struct WuiWatcherMetadata*),
-                                               void (*drop)(void*));
-
-struct WuiComputed_f64 *waterui_new_computed_f64(void *data,
-                                                 double (*get)(const void*),
-                                                 struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                  struct WuiWatcher_f64*),
-                                                 void (*drop)(void*));
-
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 double waterui_read_computed_f64(const struct WuiComputed_f64 *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_f64(const struct Computed_f64 *computed,
                                                    struct WuiWatcher_f64 *watcher);
@@ -2198,33 +2153,39 @@ struct WuiWatcherGuard *waterui_watch_computed_f64(const struct Computed_f64 *co
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_f64(struct WuiComputed_f64 *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_f64 *waterui_clone_computed_f64(const struct WuiComputed_f64 *computed);
 
 /**
- * Reads the current value from a computed
- *
+ * Creates a watcher from native callbacks.
  * # Safety
- *
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_f64 *waterui_new_watcher_f64(void *data,
+                                               void (*call)(void*,
+                                                            double,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(const struct WuiComputed_Vec_PickerItem_Id *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_picker_items(const struct Computed_Vec_PickerItem_Id *computed,
                                                             struct WuiWatcher_Vec_PickerItem_Id *watcher);
@@ -2232,17 +2193,22 @@ struct WuiWatcherGuard *waterui_watch_computed_picker_items(const struct Compute
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_picker_items(struct WuiComputed_Vec_PickerItem_Id *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Vec_PickerItem_Id *waterui_clone_computed_picker_items(const struct WuiComputed_Vec_PickerItem_Id *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(void *data,
                                                                       void (*call)(void*,
                                                                                    struct WuiArray_WuiPickerItem,
@@ -2251,20 +2217,15 @@ struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(void *data
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiVideo waterui_read_computed_video(const struct WuiComputed_Video *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_video(const struct Computed_Video *computed,
                                                      struct WuiWatcher_Video *watcher);
@@ -2272,17 +2233,22 @@ struct WuiWatcherGuard *waterui_watch_computed_video(const struct Computed_Video
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_video(struct WuiComputed_Video *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_Video *waterui_clone_computed_video(const struct WuiComputed_Video *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
                                                    void (*call)(void*,
                                                                 struct WuiVideo,
@@ -2291,20 +2257,15 @@ struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiLivePhotoSource waterui_read_computed_live_photo_source(const struct WuiComputed_LivePhotoSource *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const struct Computed_LivePhotoSource *computed,
                                                                  struct WuiWatcher_LivePhotoSource *watcher);
@@ -2312,17 +2273,22 @@ struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const struct Co
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_live_photo_source(struct WuiComputed_LivePhotoSource *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_LivePhotoSource *waterui_clone_computed_live_photo_source(const struct WuiComputed_LivePhotoSource *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_LivePhotoSource *waterui_new_watcher_live_photo_source(void *data,
                                                                          void (*call)(void*,
                                                                                       struct WuiLivePhotoSource,
@@ -2338,19 +2304,60 @@ struct WuiWatcher_LivePhotoSource *waterui_new_watcher_live_photo_source(void *d
 struct WuiWatcherGuard *waterui_new_watcher_guard(void *data, void (*drop)(void*));
 
 /**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiColorScheme waterui_read_computed_color_scheme(const struct WuiComputed_ColorScheme *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_color_scheme(const struct Computed_ColorScheme *computed,
+                                                            struct WuiWatcher_ColorScheme *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_color_scheme(struct WuiComputed_ColorScheme *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+struct WuiComputed_ColorScheme *waterui_clone_computed_color_scheme(const struct WuiComputed_ColorScheme *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_ColorScheme *waterui_new_watcher_color_scheme(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiColorScheme,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
+ * Creates a computed signal from native callbacks.
+ * # Safety
+ * All function pointers must be valid and follow the expected calling conventions.
+ */
+struct WuiComputed_ColorScheme *waterui_new_computed_color_scheme(void *data,
+                                                                  enum WuiColorScheme (*get)(const void*),
+                                                                  struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                                   struct WuiWatcher_ColorScheme*),
+                                                                  void (*drop)(void*));
+
+/**
  * Creates a constant color scheme signal.
  */
 struct WuiComputed_ColorScheme *waterui_computed_color_scheme_constant(enum WuiColorScheme scheme);
-
-/**
- * Reads the current value from a color scheme signal.
- */
-enum WuiColorScheme waterui_read_computed_color_scheme(const struct WuiComputed_ColorScheme *ptr);
-
-/**
- * Drops a color scheme computed signal.
- */
-void waterui_drop_computed_color_scheme(struct WuiComputed_ColorScheme *ptr);
 
 /**
  * Installs a color scheme signal into the environment.
@@ -2448,6 +2455,54 @@ struct WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv 
 struct WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
 
 /**
+ * Calls a ColorScheme watcher with the given value.
+ * Used by native code to notify Rust when color scheme changes.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_call_watcher_color_scheme(const struct WuiWatcher_ColorScheme *watcher,
+                                       enum WuiColorScheme value);
+
+/**
+ * Drops a ColorScheme watcher.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_drop_watcher_color_scheme(struct WuiWatcher_ColorScheme *watcher);
+
+/**
+ * Calls a ResolvedColor watcher with the given value.
+ * Used by native code to notify Rust when a color value changes.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_call_watcher_resolved_color(const struct WuiWatcher_ResolvedColor *watcher,
+                                         struct WuiResolvedColor value);
+
+/**
+ * Drops a ResolvedColor watcher.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_drop_watcher_resolved_color(struct WuiWatcher_ResolvedColor *watcher);
+
+/**
+ * Calls a ResolvedFont watcher with the given value.
+ * Used by native code to notify Rust when a font value changes.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_call_watcher_resolved_font(const struct WuiWatcher_ResolvedFont *watcher,
+                                        struct WuiResolvedFont value);
+
+/**
+ * Drops a ResolvedFont watcher.
+ * # Safety
+ * The watcher pointer must be valid.
+ */
+void waterui_drop_watcher_resolved_font(struct WuiWatcher_ResolvedFont *watcher);
+
+/**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
@@ -2479,20 +2534,15 @@ uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
 
 /**
  * Reads the current value from a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiAnyViews *waterui_read_computed_views(const struct WuiComputed_AnyViews_AnyView *computed);
 
 /**
  * Watches for changes in a computed
- *
  * # Safety
- *
  * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_computed_views(const struct Computed_AnyViews_AnyView *computed,
                                                      struct WuiWatcher_AnyViews_AnyView *watcher);
@@ -2500,17 +2550,22 @@ struct WuiWatcherGuard *waterui_watch_computed_views(const struct Computed_AnyVi
 /**
  * Drops a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the corresponding FFI function.
+ * The caller must ensure that `computed` is a valid pointer.
  */
 void waterui_drop_computed_views(struct WuiComputed_AnyViews_AnyView *computed);
 
 /**
  * Clones a computed
  * # Safety
- * The caller must ensure that `computed` is a valid pointer obtained from the
+ * The caller must ensure that `computed` is a valid pointer.
  */
 struct WuiComputed_AnyViews_AnyView *waterui_clone_computed_views(const struct WuiComputed_AnyViews_AnyView *computed);
 
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
 struct WuiWatcher_AnyViews_AnyView *waterui_new_watcher_views(void *data,
                                                               void (*call)(void*,
                                                                            struct WuiAnyViews*,
