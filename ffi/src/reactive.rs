@@ -180,12 +180,12 @@ macro_rules! ffi_computed {
             /// The computed pointer must be valid and point to a properly initialized computed object.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_watch_computed_ $ident >](
-                computed: *const waterui_core::Computed<$ty>,
+                computed: *const $crate::reactive::WuiComputed<$ty>,
                 watcher: *mut $crate::reactive::WuiWatcher<$ty>,
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
                 unsafe {
-                    let guard = (*computed).watch(move |ctx| {
+                    let guard = (&*computed).watch(move |ctx| {
                         let metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
                         (*watcher).call(value, metadata);
