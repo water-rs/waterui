@@ -79,11 +79,102 @@ Users can implement `Layout` to create custom container layouts. However, **raw 
 
 ---
 
-## Raw View Layout Behaviors
+## View Categories
 
-Raw views have predefined layout behaviors that **must be consistent across all backends**. Backend maintainers must implement these behaviors exactly as specified.
+WaterUI views fall into three categories based on how their size is determined:
+
+### 1. Expansion Behavior Categories
+
+All views fall into one of three expansion categories:
+
+#### Category A: Content-Sized (Hugging)
+
+Views that measure to their intrinsic content size. They do NOT expand to fill available space.
+
+| View | Size Determined By |
+|------|-------------------|
+| **Text** | Text content + font metrics |
+| **Image** | Image dimensions (with aspect ratio) |
+| **Button** | Label content + padding |
+| **Stepper** | Label + controls |
+| **Toggle** | Label + switch |
+| **Picker** (menu style) | Selected value + indicator |
+
+#### Category B: Axis-Expanding
+
+Views that expand along ONE axis but use intrinsic size on the other.
+
+| View | Expands | Fixed |
+|------|---------|-------|
+| **TextField** | Width (fills container) | Height (single line) |
+| **Slider** | Width (fills container) | Height (track height) |
+| **ProgressView** (linear) | Width (fills container) | Height (bar height) |
+| **Divider** | Cross-axis (fills container) | Main-axis (1pt) |
+
+#### Category C: Greedy (Fully Expanding)
+
+Views that expand to fill ALL available space in both dimensions.
+
+| View | Behavior |
+|------|----------|
+| **Color** | Fills width AND height |
+| **Spacer** | Reports zero size, marked `stretch: true`, parent distributes remaining space |
+| **ProgressView** (circular) | Fixed size (platform-native spinner) |
+
+**Note**: Circular ProgressView is an exception - it uses fixed platform-native size, not expanding.
+
+### 2. Measurement Behavior Summary
+
+| Category | Width Proposal `None` | Height Proposal `None` |
+|----------|----------------------|------------------------|
+| **Content-Sized** | Intrinsic width | Intrinsic height |
+| **Axis-Expanding** | Fill available | Intrinsic height (or vice versa) |
+| **Greedy** | Fill available | Fill available |
+
+### 3. Wrapper Components (Visual Styling)
+
+These components have **specified layout behavior** (from categories above) but **platform-specific visual styling**.
+
+| Component | Category | Platform Freedom |
+|-----------|----------|------------------|
+| **Button** | Content-Sized | Padding, corners, colors, pressed state |
+| **TextField** | Axis-Expanding (width) | Border style, clear button, cursor |
+| **Stepper** | Content-Sized | Button styling, spacing |
+| **Picker** | Content-Sized | Dropdown/wheel/segmented style |
+| **Toggle** | Content-Sized | Switch size, track/thumb styling |
+| **Slider** | Axis-Expanding (width) | Track height, thumb size |
+| **ProgressView** | Linear: Axis-Expanding / Circular: Fixed | Bar/spinner style, colors |
+
+**Common Rules**:
+- Minimum touch target: 44pt (accessibility)
+- Respect explicit frame modifiers
+- Platform chrome adds to content size
+
+### 4. Layout Containers (Fully Specified)
+
+Pure layout containers with algorithms implemented in Rust. No platform-specific behavior.
+
+| Container | Algorithm |
+|-----------|-----------|
+| **HStack** | Horizontal arrangement with spacing |
+| **VStack** | Vertical arrangement with spacing |
+| **ZStack** | Overlay with alignment |
+| **Grid** | Row/column grid |
+| **Overlay** | Base + overlay layers |
+| **Padding** | Inset content |
+| **Frame** | Size constraints |
+
+---
+
+## Category A: Content-Sized Views
+
+These views measure to their intrinsic content size and do NOT expand to fill available space.
 
 ### Text
+
+**Category**: Content-Sized
+
+**Size Calculation**: Measured dynamically from text content and font metrics.
 
 **Expansion Priority**: Width → Height → Overflow
 
@@ -91,36 +182,19 @@ Raw views have predefined layout behaviors that **must be consistent across all 
 2. **Height Expansion**: When width is constrained, text wraps and expands vertically
 3. **Overflow**: When both dimensions are constrained, text truncates with ellipsis
 
-**Measurement Behavior**:
-
 | Proposal | Behavior |
 |----------|----------|
-| `width: None` | Measure to intrinsic width, capped by parent's available space; wrap if needed |
-| `width: Some(w)` | Constrain to width `w`, wrap text as needed |
-| `width: Infinity` | Measure to intrinsic single-line width (no wrapping) |
+| `width: None` | Measure intrinsic width, wrap at parent's available space |
+| `width: Some(w)` | Constrain to width `w`, wrap as needed |
+| `width: Infinity` | Single-line intrinsic width (no wrapping) |
 | `height: None` | Expand to fit wrapped content |
 | `height: Some(h)` | Constrain to height `h`, truncate if needed |
 
-**Default Properties**:
-- `minWidth`: 0
-- `maxWidth`: Infinity
-- `minHeight`: Single line height
-- `maxHeight`: Infinity
-
-### Button
-
-**Behavior**: Hugs content with minimum touch target size
-
-| Proposal | Behavior |
-|----------|----------|
-| `width: None` | Fit content width, minimum 44pt touch target |
-| `width: Some(w)` | Use width `w` |
-| `height: None` | Fit content height, minimum 44pt touch target |
-| `height: Some(h)` | Use height `h` |
-
 ### Image
 
-**Behavior**: Maintains aspect ratio by default
+**Category**: Content-Sized
+
+**Size Calculation**: Derived from image dimensions with aspect ratio preservation.
 
 | Proposal | Behavior |
 |----------|----------|
@@ -129,40 +203,162 @@ Raw views have predefined layout behaviors that **must be consistent across all 
 | `width: None, height: Some(h)` | Scale to height, maintain aspect ratio |
 | `width: Some(w), height: Some(h)` | Fit within bounds, maintain aspect ratio |
 
-### Spacer
+### Button
 
-**Behavior**: Zero intrinsic size, expands to fill available space
+**Category**: Content-Sized
 
-| Proposal | Behavior |
-|----------|----------|
-| Any | Reports zero size but marks `stretch: true` |
-
-Spacers are detected by parent layouts and receive proportional share of remaining space.
-
-### Color
-
-**Behavior**: Filled rectangle that expands to fill available space (like SwiftUI's `Color`)
+**Layout**: Wraps label content with padding.
 
 | Proposal | Behavior |
 |----------|----------|
-| `width: None` | Expand to fill available width |
-| `width: Some(w)` | Use width `w` |
-| `width: Infinity` | Expand to maximum available width |
-| `height: None` | Expand to fill available height |
-| `height: Some(h)` | Use height `h` |
-| `height: Infinity` | Expand to maximum available height |
+| `width: None` | Label width + padding, minimum 44pt |
+| `height: None` | Label height + padding, minimum 44pt |
+| Explicit | Use specified size |
 
-**Default Properties**:
-- `minWidth`: 0
-- `maxWidth`: Infinity
-- `minHeight`: 0
-- `maxHeight`: Infinity
+**Platform Freedom**: Background style, corner radius, pressed state, ripple/highlight effects.
 
-**Note**: Color is a "greedy" view - it will expand to fill all available space unless constrained by frame modifiers. This is consistent with SwiftUI's `Color` behavior.
+### Stepper
+
+**Category**: Content-Sized
+
+**Layout**: Label + control group (decrement, value, increment).
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | Label width + control group width |
+| `height: None` | Max of label height and control height (minimum 44pt) |
+
+### Toggle
+
+**Category**: Content-Sized
+
+**Layout**: Label + switch control.
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | Label width + switch width + spacing |
+| `height: None` | Max of label height and switch height |
+
+**Platform Freedom**: Switch size is platform-native (not customizable for consistency).
+
+### Picker (Menu Style)
+
+**Category**: Content-Sized
+
+**Layout**: Selected value + dropdown indicator.
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | Selected value width + indicator |
+| `height: None` | Content height, minimum 44pt |
 
 ---
 
-## Container Layout Behaviors
+## Category B: Axis-Expanding Views
+
+These views expand along ONE axis but use intrinsic size on the other.
+
+### TextField
+
+**Category**: Axis-Expanding (Width)
+
+**Expands**: Width (fills available space)
+**Fixed**: Height (single line + padding)
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | **Expand to fill available width** |
+| `height: None` | Single line height + padding |
+
+**Platform Freedom**: Border style, placeholder styling, clear button, cursor appearance.
+
+### Slider
+
+**Category**: Axis-Expanding (Width)
+
+**Expands**: Width (fills available space)
+**Fixed**: Height (track + thumb)
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | **Expand to fill available width** |
+| `height: None` | Platform-native track + thumb height |
+
+**Platform Freedom**: Track height, thumb size, colors.
+
+### ProgressView (Linear)
+
+**Category**: Axis-Expanding (Width)
+
+**Expands**: Width (fills available space)
+**Fixed**: Height (bar height)
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | **Expand to fill available width** |
+| `height: None` | Platform-native bar height |
+
+**Platform Freedom**: Bar height, colors, animation.
+
+### Divider
+
+**Category**: Axis-Expanding (Cross-axis)
+
+**Expands**: Cross-axis (perpendicular to parent stack direction)
+**Fixed**: Main-axis (1pt thickness)
+
+| Context | Behavior |
+|---------|----------|
+| In HStack | Expands height, 1pt width |
+| In VStack | Expands width, 1pt height |
+
+---
+
+## Category C: Greedy Views
+
+These views expand to fill ALL available space.
+
+### Color
+
+**Category**: Greedy
+
+**Expands**: Both width AND height
+
+| Proposal | Behavior |
+|----------|----------|
+| `width: None` | **Expand to fill available width** |
+| `height: None` | **Expand to fill available height** |
+| Explicit | Use specified size |
+
+**Note**: Color is a "greedy" view that fills available space unless constrained by frame modifiers.
+
+### Spacer
+
+**Category**: Greedy (Special)
+
+**Behavior**: Reports zero intrinsic size but marked `stretch: true`. Parent layout distributes remaining space proportionally among spacers.
+
+| Context | Behavior |
+|---------|----------|
+| In HStack | Expands width, zero height |
+| In VStack | Expands height, zero width |
+| Standalone | Zero size |
+
+**Key Difference from Color**: Spacer doesn't expand in the cross-axis. In VStack, Spacer expands height but NOT width, allowing VStack to size to its content width.
+
+### ProgressView (Circular)
+
+**Category**: Fixed Size (Exception)
+
+**Size**: Platform-native spinner size (not expanding)
+
+| Proposal | Behavior |
+|----------|----------|
+| Any | Use fixed platform-native size |
+
+---
+
+## Layout Containers
 
 All container layouts are implemented in Rust and shared across backends.
 
@@ -178,17 +374,33 @@ All container layouts are implemented in Rust and shared across backends.
 - Width: `None` (child decides)
 - Height: Parent's height proposal
 
+**Size Calculation**:
+- Width: Sum of non-stretchy children + spacing. If has stretchy children, uses parent's width.
+- Height: Max height of **non-stretchy** children's intrinsic sizes. Stretchy children (Spacer) don't contribute to height.
+
+**Alignment**: Default is `VerticalAlignment::Center` - each child is centered vertically within the HStack's bounds based on the child's measured height.
+
+**Important**: HStack proposes `None` for both dimensions to children, so children measure to their intrinsic size. This allows vertical alignment to work correctly.
+
 ### VStack (Vertical Stack)
 
 **Algorithm**:
-1. Propose `None` height to all children (measure intrinsic)
+1. Propose parent's width to all children (for text wrapping)
 2. Sum non-stretchy children heights + spacing
 3. Distribute remaining height among stretchy children
 4. Place children top-to-bottom with spacing
 
 **Child Proposal**:
-- Width: Parent's width proposal
+- Width: Parent's width proposal (for text wrapping)
 - Height: `None` (child decides)
+
+**Size Calculation**:
+- Width: Max width of **non-stretchy** children's intrinsic sizes. Stretchy children (Spacer) don't contribute to width.
+- Height: Sum of non-stretchy children + spacing. If has stretchy children, uses parent's height.
+
+**Alignment**: Default is `HorizontalAlignment::Center` - each child is centered horizontally within the VStack's bounds based on the child's measured width.
+
+**Important**: VStack proposes `None` for width to children, so children measure to their intrinsic width. This allows center alignment to work correctly. Children that want to expand (like TextField) should have a minimum intrinsic width.
 
 ### ZStack (Overlay Stack)
 
