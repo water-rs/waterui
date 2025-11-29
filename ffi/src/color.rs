@@ -1,18 +1,11 @@
 use crate::{
-    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive,
-    reactive::WuiComputed,
+    IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive, reactive::WuiComputed,
 };
 
 use waterui::Color;
 use waterui_color::ResolvedColor;
 
 opaque!(WuiColor, Color);
-
-pub enum WuiColorspace {
-    Srgb,
-    DisplayP3,
-    Oklch,
-}
 
 into_ffi!(
     ResolvedColor,
