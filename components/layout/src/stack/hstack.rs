@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    ChildMetadata, Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer,
-    stack::VerticalAlignment,
+    ChildMetadata, ChildPlacement, Container, Layout, LayoutContext, Point, ProposalSize, Rect,
+    SafeAreaInsets, Size, container::FixedContainer, stack::VerticalAlignment,
 };
 
 /// A horizontal stack that arranges its children in a horizontal line.
@@ -27,11 +27,21 @@ pub struct HStackLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for HStackLayout {
-    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
+    fn propose(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Vec<ProposalSize> {
         vec![ProposalSize::new(None, parent.height); children.len()]
     }
 
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         if children.is_empty() {
             return Size::new(0.0, 0.0);
         }
@@ -74,7 +84,8 @@ impl Layout for HStackLayout {
         bound: Rect,
         _proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         if children.is_empty() {
             return vec![];
         }
@@ -101,6 +112,7 @@ impl Layout for HStackLayout {
 
         let mut placements = Vec::with_capacity(children.len());
         let mut current_x = bound.origin().x;
+        let mut remaining_safe_area = context.safe_area.clone();
 
         for (i, child) in children.iter().enumerate() {
             if i > 0 {
@@ -125,9 +137,33 @@ impl Layout for HStackLayout {
 
             let origin = Point::new(current_x, y);
             let size = Size::new(child_width, child_height);
-            placements.push(Rect::new(origin, size));
+            let rect = Rect::new(origin, size);
 
+            // Calculate safe area for this child:
+            // - First child gets leading safe area
+            // - Last child gets trailing safe area
+            // - All children get top/bottom safe area
+            let child_safe_area = SafeAreaInsets {
+                top: remaining_safe_area.top,
+                bottom: remaining_safe_area.bottom,
+                leading: if i == 0 { remaining_safe_area.leading } else { 0.0 },
+                trailing: if i == children.len() - 1 {
+                    remaining_safe_area.trailing
+                } else {
+                    0.0
+                },
+            };
+
+            let child_context = LayoutContext {
+                safe_area: child_safe_area,
+                ignores_safe_area: context.ignores_safe_area,
+            };
+
+            placements.push(ChildPlacement::new(rect, child_context));
             current_x += child_width;
+
+            // Consume leading safe area after first child
+            remaining_safe_area.leading = 0.0;
         }
 
         placements
