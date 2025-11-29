@@ -5,7 +5,7 @@ use core::num::NonZeroUsize;
 use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size,
+    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -33,7 +33,12 @@ impl GridLayout {
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
     /// Propose a size to each child cell.
-    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
+    fn propose(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Vec<ProposalSize> {
         if children.is_empty() {
             return vec![];
         }
@@ -52,7 +57,12 @@ impl Layout for GridLayout {
     }
 
     /// Calculate the total size required by the grid.
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
@@ -84,13 +94,18 @@ impl Layout for GridLayout {
         bound: Rect,
         _proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         if children.is_empty() || !bound.width().is_finite() {
             // A grid cannot be placed in an infinitely wide space. Return zero-rects.
-            return vec![Rect::new(Point::zero(), Size::zero()); children.len()];
+            return vec![
+                ChildPlacement::with_empty_context(Rect::new(Point::zero(), Size::zero()));
+                children.len()
+            ];
         }
 
         let num_columns = self.columns.get();
+        let num_rows = children.len().div_ceil(num_columns);
 
         // Pre-calculate the height of each row by finding the tallest child in that row.
         let row_heights: Vec<f32> = children
@@ -106,14 +121,19 @@ impl Layout for GridLayout {
         let total_h_spacing = self.spacing.width * (num_columns - 1) as f32;
         let column_width = ((bound.width() - total_h_spacing) / num_columns as f32).max(0.0);
 
-        let mut final_rects = Vec::with_capacity(children.len());
+        let mut placements = Vec::with_capacity(children.len());
         let mut cursor_y = bound.y();
 
         for (row_index, row_children) in children.chunks(num_columns).enumerate() {
             let row_height = row_heights.get(row_index).copied().unwrap_or(0.0);
             let mut cursor_x = bound.x();
+            let is_first_row = row_index == 0;
+            let is_last_row = row_index == num_rows - 1;
 
-            for child in row_children {
+            for (col_index, child) in row_children.iter().enumerate() {
+                let is_first_col = col_index == 0;
+                let is_last_col = col_index == num_columns - 1;
+
                 let cell_frame = Rect::new(
                     Point::new(cursor_x, cursor_y),
                     Size::new(column_width, row_height),
@@ -141,7 +161,37 @@ impl Layout for GridLayout {
                     VerticalAlignment::Bottom => cell_frame.max_y() - child_size.height,
                 };
 
-                final_rects.push(Rect::new(Point::new(child_x, child_y), child_size));
+                // Grid distributes safe area to edge cells
+                let child_context = LayoutContext {
+                    safe_area: crate::SafeAreaInsets {
+                        top: if is_first_row {
+                            context.safe_area.top
+                        } else {
+                            0.0
+                        },
+                        bottom: if is_last_row {
+                            context.safe_area.bottom
+                        } else {
+                            0.0
+                        },
+                        leading: if is_first_col {
+                            context.safe_area.leading
+                        } else {
+                            0.0
+                        },
+                        trailing: if is_last_col {
+                            context.safe_area.trailing
+                        } else {
+                            0.0
+                        },
+                    },
+                    ignores_safe_area: context.ignores_safe_area,
+                };
+
+                placements.push(ChildPlacement::new(
+                    Rect::new(Point::new(child_x, child_y), child_size),
+                    child_context,
+                ));
 
                 cursor_x += column_width + self.spacing.width;
             }
@@ -149,7 +199,7 @@ impl Layout for GridLayout {
             cursor_y += row_height + self.spacing.height;
         }
 
-        final_rects
+        placements
     }
 }
 

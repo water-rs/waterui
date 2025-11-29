@@ -15,7 +15,7 @@ class MainActivity : ComponentActivity() {
 
         init {
             loadWaterUiLibraries()
-            bootstrapWaterUiRuntime("__CRATE_NAME_SANITIZED__")
+            bootstrapWaterUiRuntime()
         }
 
         private fun loadWaterUiLibraries() {
