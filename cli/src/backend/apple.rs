@@ -131,6 +131,17 @@ pub fn ensure_macos_host(feature: &str) -> EyreResult<()> {
     }
 }
 
+fn ensure_cmake_available_for_apple() -> EyreResult<()> {
+    if which("cmake").is_ok() {
+        return Ok(());
+    }
+
+    bail!(
+        "CMake is required to build the Apple Rust static library but was not found on PATH. \
+         Run `water doctor --fix` (Swift section) or install it via `brew install cmake`."
+    )
+}
+
 /// Locate the Xcode project described by the Swift configuration.
 ///
 /// # Errors
@@ -223,6 +234,8 @@ pub struct AppleRustBuildReport {
 pub fn build_apple_static_library(
     opts: AppleRustBuildOptions<'_>,
 ) -> EyreResult<AppleRustBuildReport> {
+    ensure_cmake_available_for_apple()?;
+
     let profile = if opts.release { "release" } else { "debug" };
     let env_platform = opts
         .platform_name
