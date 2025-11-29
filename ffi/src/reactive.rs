@@ -20,6 +20,7 @@ opaque!(WuiWatcherMetadata, Metadata, watcher_metadata);
 
 opaque!(WuiWatcherGuard, BoxWatcherGuard);
 
+#[repr(transparent)]
 pub struct WuiComputed<T>(pub(crate) waterui::Computed<T>);
 
 impl<T> WuiComputed<T>
@@ -161,6 +162,7 @@ impl<T> Deref for WuiBinding<T> {
     }
 }
 
+#[repr(transparent)]
 pub struct WuiBinding<T: 'static>(pub(crate) waterui::Binding<T>);
 
 impl<T> OpaqueType for WuiBinding<T> {}
@@ -321,7 +323,7 @@ macro_rules! ffi_binding {
             /// The watcher must be a valid callback function.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_watch_binding_ $ident >](
-                binding: *const waterui_core::Binding<$ty>,
+                binding: *const $crate::reactive::WuiBinding<$ty>,
                 watcher: *mut $crate::reactive::WuiWatcher<$ty>,
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
@@ -399,6 +401,7 @@ ffi_computed!(Video, WuiVideo);
 
 ffi_computed!(LivePhotoSource, WuiLivePhotoSource);
 
+#[repr(transparent)]
 pub struct WuiWatcher<T: IntoFFI>(watcher::Watcher<T>);
 
 impl<T: IntoFFI> WuiWatcher<T> {
