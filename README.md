@@ -86,6 +86,12 @@ Scaffold a new project with your chosen backends:
 water create --name "My App" --backend apple --backend android
 ```
 
+**For framework developers**: Use `--dev` with `--waterui-path` for instant feedback:
+```bash
+water create --name "My App" --dev --waterui-path /path/to/waterui
+```
+This creates a project with path-based dependencies, so changes to WaterUI are immediately reflected without running `cargo update`.
+
 ### Run with Hot Reload
 Build, run, and hot-reload your app on a connected device, simulator, or emulator:
 ```bash
