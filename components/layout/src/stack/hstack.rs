@@ -33,6 +33,13 @@ impl Layout for HStackLayout {
         children: &[ChildMetadata],
         _context: &LayoutContext,
     ) -> Vec<ProposalSize> {
+        // Per LAYOUT_SPEC.md:
+        // - Width: None (child decides)
+        // - Height: Parent's height proposal
+        //
+        // This allows:
+        // - Children to measure intrinsic width (for sizing)
+        // - Vertically-expanding views to fill available height
         vec![ProposalSize::new(None, parent.height); children.len()]
     }
 
@@ -68,13 +75,21 @@ impl Layout for HStackLayout {
             intrinsic_width
         };
 
+        // Calculate intrinsic height as the maximum height of NON-STRETCHY children.
+        // Stretchy children (like Spacer) don't contribute to HStack's height.
+        // This allows center alignment to work correctly.
         let max_height = children
             .iter()
+            .filter(|c| !c.stretch())
             .map(|c| c.proposal().height.unwrap_or(0.0))
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        let final_height = parent.height.unwrap_or(max_height);
+        // Use intrinsic height, but cap at parent's proposed height if any
+        let final_height = match parent.height {
+            Some(proposed) => max_height.min(proposed),
+            None => max_height,
+        };
 
         Size::new(final_width, final_height)
     }
