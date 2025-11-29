@@ -56,7 +56,7 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use waterui_core::{Dynamic,binding,Binding};
+//! use waterui_core::{Dynamic, binding, Binding};
 //!
 //! // Create a reactive state container
 //! let counter: Binding<i32> = binding(0);
@@ -74,12 +74,14 @@
 //!
 //! The plugin interface enables framework extensions without modifying core code:
 //!
-//! ```rust,ignore
+//! ```rust
+//! use waterui_core::{plugin::Plugin, Environment};
 //!
-//! pub trait Plugin: Sized + 'static {
-//!     fn install(self, env: &mut Environment);
-//!     fn uninstall(self, env: &mut Environment);
-//! }
+//! struct MyPlugin;
+//! impl Plugin for MyPlugin {}
+//!
+//! let mut env = Environment::new();
+//! MyPlugin.install(&mut env);
 //! ```
 //!
 //! This enables modular functionality like theming, localization, and platform-specific features.

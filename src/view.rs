@@ -93,6 +93,14 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `background` - The background to apply
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Hello").background(Color::RED);
+    /// ```
     fn background(self, background: impl Into<Background>) -> Metadata<Background> {
         Metadata::new(self, background.into())
     }
@@ -206,6 +214,14 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds default padding to this view.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Hello").padding();
+    /// ```
     fn padding(self) -> Padding {
         Padding::new(EdgeInsets::default(), self)
     }
@@ -254,6 +270,14 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `action` - The action to execute when the tap gesture is recognized
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Click me").on_tap(|| println!("Clicked!"));
+    /// ```
     fn on_tap<P: 'static>(
         self,
         action: impl HandlerFn<P, ()> + 'static,
