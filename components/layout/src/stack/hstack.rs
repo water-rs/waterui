@@ -135,7 +135,13 @@ impl Layout for HStackLayout {
             }
 
             let child_proposal = child.proposal();
-            let child_height = child_proposal.height.unwrap_or(0.0);
+            // Clamp infinite heights to parent's bounds - INFINITY means "fill available"
+            let raw_height = child_proposal.height.unwrap_or(0.0);
+            let child_height = if raw_height.is_infinite() {
+                bound.height()
+            } else {
+                raw_height
+            };
             let child_width = if child.stretch() {
                 stretchy_child_width
             } else {
@@ -161,7 +167,11 @@ impl Layout for HStackLayout {
             let child_safe_area = SafeAreaInsets {
                 top: remaining_safe_area.top,
                 bottom: remaining_safe_area.bottom,
-                leading: if i == 0 { remaining_safe_area.leading } else { 0.0 },
+                leading: if i == 0 {
+                    remaining_safe_area.leading
+                } else {
+                    0.0
+                },
                 trailing: if i == children.len() - 1 {
                     remaining_safe_area.trailing
                 } else {
