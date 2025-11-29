@@ -19,7 +19,6 @@ WaterUI combines the safety and speed of Rust with a declarative, component-base
 - **Truly Cross-Platform**:
     - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
     - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated (Vello/wgpu) and CPU-based (tiny-skia) backends for high-performance, consistent rendering on desktop platforms (Windows, macOS, Linux).
-    - **Terminal**: A TUI backend for building fast, responsive terminal applications.
 - **Powerful CLI**: A dedicated `water` command-line tool to create, run, build, and package your applications, with integrated hot-reloading.
 - **Modern Component Library**: A rich set of pre-built components for layouts, controls, forms, text, and more.
 - **Type-Safe & Safe**: Leverage Rust's powerful type system and memory safety guarantees from your UI to your data logic.
