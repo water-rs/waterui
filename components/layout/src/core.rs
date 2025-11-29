@@ -94,10 +94,26 @@ impl SafeAreaInsets {
     #[must_use]
     pub fn without(&self, edges: SafeAreaEdges) -> Self {
         Self {
-            top: if edges.contains(SafeAreaEdges::TOP) { 0.0 } else { self.top },
-            bottom: if edges.contains(SafeAreaEdges::BOTTOM) { 0.0 } else { self.bottom },
-            leading: if edges.contains(SafeAreaEdges::LEADING) { 0.0 } else { self.leading },
-            trailing: if edges.contains(SafeAreaEdges::TRAILING) { 0.0 } else { self.trailing },
+            top: if edges.contains(SafeAreaEdges::TOP) {
+                0.0
+            } else {
+                self.top
+            },
+            bottom: if edges.contains(SafeAreaEdges::BOTTOM) {
+                0.0
+            } else {
+                self.bottom
+            },
+            leading: if edges.contains(SafeAreaEdges::LEADING) {
+                0.0
+            } else {
+                self.leading
+            },
+            trailing: if edges.contains(SafeAreaEdges::TRAILING) {
+                0.0
+            } else {
+                self.trailing
+            },
         }
     }
 
@@ -202,7 +218,7 @@ impl ChildMetadata {
 pub trait Layout: Debug {
     /// Proposes sizes for each child based on the parent's proposal and the
     /// metadata collected during the previous frame.
-    /// 
+    ///
     /// The `context` contains safe area information for this container.
     fn propose(
         &mut self,
@@ -213,7 +229,7 @@ pub trait Layout: Debug {
 
     /// Computes the layout's own size after its children have answered the
     /// proposals created in [`propose`](Self::propose).
-    /// 
+    ///
     /// The `context` contains safe area information for this container.
     fn size(
         &mut self,
@@ -224,7 +240,7 @@ pub trait Layout: Debug {
 
     /// Places children within the final bounds chosen by the parent and
     /// returns the rectangles they should occupy along with their layout contexts.
-    /// 
+    ///
     /// Each child receives its own `LayoutContext` which may have different
     /// safe area values (e.g., first child in VStack gets top safe area,
     /// last child gets bottom safe area).
@@ -252,7 +268,7 @@ impl ChildPlacement {
     pub const fn new(rect: Rect, context: LayoutContext) -> Self {
         Self { rect, context }
     }
-    
+
     /// Creates a child placement with empty context (no safe area)
     #[must_use]
     pub fn with_empty_context(rect: Rect) -> Self {
