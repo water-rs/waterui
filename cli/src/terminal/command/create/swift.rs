@@ -33,47 +33,62 @@ pub fn create_xcode_project(
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
 
-    let SwiftDependency::Git {
-        version,
-        branch,
-        revision,
-    } = swift_dependency;
+    let (package_reference_entry, package_reference_section) = match swift_dependency {
+        SwiftDependency::Local { path } => {
+            // Local package - use XCLocalSwiftPackageReference
+            let local_path = pathdiff::diff_paths(path, &apple_root)
+                .unwrap_or_else(|| path.clone());
+            (
+                r#"D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "waterui-swift" */,"#.to_string(),
+                format!(
+                    r#"/* Begin XCLocalSwiftPackageReference section */
+        D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "waterui-swift" */ = {{
+            isa = XCLocalSwiftPackageReference;
+            relativePath = "{}";
+        }};
+/* End XCLocalSwiftPackageReference section */"#,
+                    local_path.display()
+                ),
+            )
+        }
+        SwiftDependency::Git {
+            version,
+            branch,
+            revision,
+        } => {
+            let requirement = if let Some(version) = version.as_ref() {
+                format!(
+                    "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
+                )
+            } else if let Some(revision) = revision.as_ref() {
+                format!(
+                    "requirement = {{\n\t\t\t\tkind = revision;\n\t\t\t\trevision = \"{revision}\";\n\t\t\t}};"
+                )
+            } else {
+                let branch = branch.as_deref().unwrap_or("main");
+                format!(
+                    "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
+                )
+            };
 
-    let requirement = if let Some(version) = version.as_ref() {
-        format!(
-            "requirement = {{ \n\t\t\t\tkind = upToNextMajorVersion;\n\t\t\t\tminimumVersion = \"{version}\";\n\t\t\t\t}}"
-        )
-    } else if let Some(revision) = revision.as_ref() {
-        format!(
-            "requirement = {{\n\t\t\t\tkind = revision;\n\t\t\t\trevision = \"{revision}\";\n\t\t\t}};"
-        )
-    } else {
-        let branch = branch.as_deref().unwrap_or("main");
-        format!(
-            "requirement = {{\n\t\t\t\tkind = branch;\n\t\t\t\tbranch = \"{branch}\";\n\t\t\t}};"
-        )
-    };
-
-    context.insert(
-        "SWIFT_PACKAGE_REFERENCE_ENTRY",
-        r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */,"#
-            .to_string(),
-    );
-
-    let repo_url = swift_backend_repo_url();
-
-    context.insert(
-        "SWIFT_PACKAGE_REFERENCE_SECTION",
-        format!(
-            r#"/* Begin XCRemoteSwiftPackageReference section */
+            let repo_url = swift_backend_repo_url();
+            (
+                r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */,"#.to_string(),
+                format!(
+                    r#"/* Begin XCRemoteSwiftPackageReference section */
         D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */ = {{
             isa = XCRemoteSwiftPackageReference;
             repositoryURL = "{repo_url}";
             {requirement}
         }};
 /* End XCRemoteSwiftPackageReference section */"#
-        ),
-    );
+                ),
+            )
+        }
+    };
+
+    context.insert("SWIFT_PACKAGE_REFERENCE_ENTRY", package_reference_entry);
+    context.insert("SWIFT_PACKAGE_REFERENCE_SECTION", package_reference_section);
 
     let templates = &template::TEMPLATES_DIR;
     let apple_template_dir = templates
