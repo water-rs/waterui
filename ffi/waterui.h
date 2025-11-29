@@ -385,6 +385,11 @@ typedef struct Computed_f64 Computed_f64;
  */
 typedef struct Computed_i32 Computed_i32;
 
+/**
+ * Safe area insets in points, relative to the container bounds
+ */
+typedef struct SafeAreaInsets SafeAreaInsets;
+
 typedef struct WuiAction WuiAction;
 
 typedef struct WuiAnyView WuiAnyView;
@@ -572,6 +577,31 @@ typedef struct WuiArray_WuiChildMetadata {
   struct WuiArrayVTable_WuiChildMetadata vtable;
 } WuiArray_WuiChildMetadata;
 
+/**
+ * FFI representation of safe area insets
+ */
+typedef struct WuiSafeAreaInsets {
+  float top;
+  float bottom;
+  float leading;
+  float trailing;
+} WuiSafeAreaInsets;
+
+/**
+ * FFI representation of safe area edges (bitflags)
+ */
+typedef struct WuiSafeAreaEdges {
+  uint8_t bits;
+} WuiSafeAreaEdges;
+
+/**
+ * FFI representation of layout context
+ */
+typedef struct WuiLayoutContext {
+  struct WuiSafeAreaInsets safe_area;
+  struct WuiSafeAreaEdges ignores_safe_area;
+} WuiLayoutContext;
+
 typedef struct WuiSize {
   float width;
   float height;
@@ -592,15 +622,23 @@ typedef struct WuiRect {
   struct WuiSize size;
 } WuiRect;
 
-typedef struct WuiArraySlice_WuiRect {
-  struct WuiRect *head;
-  uintptr_t len;
-} WuiArraySlice_WuiRect;
+/**
+ * FFI representation of child placement (rect + context)
+ */
+typedef struct WuiChildPlacement {
+  struct WuiRect rect;
+  struct WuiLayoutContext context;
+} WuiChildPlacement;
 
-typedef struct WuiArrayVTable_WuiRect {
+typedef struct WuiArraySlice_WuiChildPlacement {
+  struct WuiChildPlacement *head;
+  uintptr_t len;
+} WuiArraySlice_WuiChildPlacement;
+
+typedef struct WuiArrayVTable_WuiChildPlacement {
   void (*drop)(void*);
-  struct WuiArraySlice_WuiRect (*slice)(const void*);
-} WuiArrayVTable_WuiRect;
+  struct WuiArraySlice_WuiChildPlacement (*slice)(const void*);
+} WuiArrayVTable_WuiChildPlacement;
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
@@ -609,10 +647,10 @@ typedef struct WuiArrayVTable_WuiRect {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
-typedef struct WuiArray_WuiRect {
+typedef struct WuiArray_WuiChildPlacement {
   NonNull data;
-  struct WuiArrayVTable_WuiRect vtable;
-} WuiArray_WuiRect;
+  struct WuiArrayVTable_WuiChildPlacement vtable;
+} WuiArray_WuiChildPlacement;
 
 typedef struct WuiButton {
   struct WuiAnyView *label;
@@ -905,6 +943,8 @@ typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
+
+
 void waterui_configure_hot_reload_endpoint(const char *_host, uint16_t _port);
 
 void waterui_configure_hot_reload_directory(const char *_path);
@@ -1171,7 +1211,8 @@ struct WuiStr waterui_layout_container_id(void);
  */
 struct WuiArray_WuiProposalSize waterui_layout_propose(struct WuiLayout *layout,
                                                        struct WuiProposalSize parent,
-                                                       struct WuiArray_WuiChildMetadata children);
+                                                       struct WuiArray_WuiChildMetadata children,
+                                                       struct WuiLayoutContext context);
 
 /**
  * Calculates the size required by the layout based on parent constraints and child metadata.
@@ -1183,7 +1224,8 @@ struct WuiArray_WuiProposalSize waterui_layout_propose(struct WuiLayout *layout,
  */
 struct WuiSize waterui_layout_size(struct WuiLayout *layout,
                                    struct WuiProposalSize parent,
-                                   struct WuiArray_WuiChildMetadata children);
+                                   struct WuiArray_WuiChildMetadata children,
+                                   struct WuiLayoutContext context);
 
 /**
  * # Safety
@@ -1202,10 +1244,11 @@ struct WuiStr waterui_scroll_view_id(void);
  * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
  * The caller must ensure the layout object remains valid for the duration of this call.
  */
-struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
-                                             struct WuiRect bound,
-                                             struct WuiProposalSize proposal,
-                                             struct WuiArray_WuiChildMetadata children);
+struct WuiArray_WuiChildPlacement waterui_layout_place(struct WuiLayout *layout,
+                                                       struct WuiRect bound,
+                                                       struct WuiProposalSize proposal,
+                                                       struct WuiArray_WuiChildMetadata children,
+                                                       struct WuiLayoutContext context);
 
 /**
  * # Safety

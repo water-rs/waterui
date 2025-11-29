@@ -11,8 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer,
-    stack::Alignment,
+    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    container::FixedContainer, stack::Alignment,
 };
 
 /// Layout used by [`Overlay`] to keep the base child's size authoritative while
@@ -68,13 +68,23 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
-    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize> {
+    fn propose(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Vec<ProposalSize> {
         // Forward the parent's proposal verbatim. The overlay only cares about two
         // children, but extra entries are handled gracefully.
         vec![parent; children.len()]
     }
 
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         // Overlay size is driven entirely by the base child (index 0). If the base
         // provides no intrinsic size, fall back to the parent's constraints.
         let base_width = children
@@ -99,15 +109,22 @@ impl Layout for OverlayLayout {
         bounds: Rect,
         _proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         if children.is_empty() {
             return Vec::new();
         }
 
         let mut placements = Vec::with_capacity(children.len());
 
-        // Base child always fills the container's bounds.
-        placements.push(bounds.clone());
+        // Base child always fills the container's bounds and gets full safe area.
+        placements.push(ChildPlacement::new(
+            bounds.clone(),
+            LayoutContext {
+                safe_area: context.safe_area.clone(),
+                ignores_safe_area: context.ignores_safe_area,
+            },
+        ));
 
         for child in children.iter().skip(1) {
             let width = child
@@ -122,7 +139,14 @@ impl Layout for OverlayLayout {
                 .max(0.0);
             let size = Size::new(width, height);
             let origin = self.aligned_origin(&bounds, &size);
-            placements.push(Rect::new(origin, size));
+            // Overlay children also get the full safe area since they occupy the same space
+            placements.push(ChildPlacement::new(
+                Rect::new(origin, size),
+                LayoutContext {
+                    safe_area: context.safe_area.clone(),
+                    ignores_safe_area: context.ignores_safe_area,
+                },
+            ));
         }
 
         placements
