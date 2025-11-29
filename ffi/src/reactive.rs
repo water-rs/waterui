@@ -401,7 +401,6 @@ ffi_computed!(Video, WuiVideo);
 
 ffi_computed!(LivePhotoSource, WuiLivePhotoSource);
 
-#[repr(transparent)]
 pub struct WuiWatcher<T: IntoFFI>(watcher::Watcher<T>);
 
 impl<T: IntoFFI> WuiWatcher<T> {
