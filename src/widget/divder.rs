@@ -4,6 +4,8 @@
 //! that can be used to create a clear distinction between different sections
 //! or elements in a user interface.
 
+use core::f32;
+
 use waterui_color::Color;
 use waterui_core::View;
 
@@ -16,6 +18,8 @@ pub struct Divider;
 
 impl View for Divider {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Color::srgb_f32(0.8, 0.8, 0.8).height(1.0)
+        Color::srgb_f32(0.8, 0.8, 0.8)
+            .height(1.0)
+            .width(f32::INFINITY)
     }
 }
