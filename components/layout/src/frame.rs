@@ -8,7 +8,7 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    ChildMetadata, Layout, Point, ProposalSize, Rect, Size,
+    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -27,7 +27,12 @@ pub struct FrameLayout {
 
 impl Layout for FrameLayout {
     /// Proposes a size to the child, taking the frame's constraints into account.
-    fn propose(&mut self, parent: ProposalSize, _children: &[ChildMetadata]) -> Vec<ProposalSize> {
+    fn propose(
+        &mut self,
+        parent: ProposalSize,
+        _children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Vec<ProposalSize> {
         // A Frame passes a modified proposal to its single child.
         // It uses its own ideal dimensions if they exist, otherwise it passes the parent's proposal.
         // This is then clamped by the frame's min/max constraints.
@@ -50,7 +55,12 @@ impl Layout for FrameLayout {
     }
 
     /// Determines the size of the frame itself.
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         // The frame's size is determined by its child's measured size,
         // but overridden by its own ideal dimensions and clamped by its min/max.
 
@@ -87,7 +97,8 @@ impl Layout for FrameLayout {
         bound: Rect,
         _proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         let child = children
             .first()
             .expect("FrameLayout expects exactly one child");
@@ -112,7 +123,14 @@ impl Layout for FrameLayout {
 
         let child_origin = Point::new(child_x, child_y);
 
-        vec![Rect::new(child_origin, child_size)]
+        // Frame passes safe area through unchanged
+        vec![ChildPlacement::new(
+            Rect::new(child_origin, child_size),
+            LayoutContext {
+                safe_area: context.safe_area.clone(),
+                ignores_safe_area: context.ignores_safe_area,
+            },
+        )]
     }
 }
 
