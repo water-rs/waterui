@@ -5,7 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer, stack::Alignment,
+    ChildPlacement, Container, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    container::FixedContainer, stack::Alignment,
 };
 
 /// Stacks an arbitrary number of children with a shared alignment.
@@ -26,6 +27,7 @@ impl Layout for ZStackLayout {
         &mut self,
         parent: ProposalSize,
         children: &[crate::ChildMetadata],
+        _context: &LayoutContext,
     ) -> Vec<ProposalSize> {
         // For ZStack, we propose the parent's size to each child
         // Each child gets to size itself based on the full available space
@@ -33,7 +35,12 @@ impl Layout for ZStackLayout {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    fn size(&mut self, parent: ProposalSize, children: &[crate::ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[crate::ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         // ZStack's size is determined by the largest child
         // We find the maximum width and height among all children
         let mut max_width: f32 = 0.0;
@@ -73,13 +80,14 @@ impl Layout for ZStackLayout {
         bound: Rect,
         _proposal: ProposalSize,
         children: &[crate::ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         // ZStack places all children within the same bounds, positioned according to alignment
         if children.is_empty() {
             return Vec::new();
         }
 
-        let mut rects = Vec::with_capacity(children.len());
+        let mut placements = Vec::with_capacity(children.len());
 
         for child in children {
             // Each child gets sized to its ideal size, but constrained by the ZStack bounds
@@ -98,13 +106,18 @@ impl Layout for ZStackLayout {
             // Position the child within the ZStack bounds according to alignment
             let (x, y) = self.calculate_position(&bound, &Size::new(child_width, child_height));
 
-            rects.push(Rect::new(
-                Point::new(x, y),
-                Size::new(child_width, child_height),
-            ));
+            let rect = Rect::new(Point::new(x, y), Size::new(child_width, child_height));
+
+            // All children in ZStack get the full safe area (they all occupy the same space)
+            let child_context = LayoutContext {
+                safe_area: context.safe_area.clone(),
+                ignores_safe_area: context.ignores_safe_area,
+            };
+
+            placements.push(ChildPlacement::new(rect, child_context));
         }
 
-        rects
+        placements
     }
 }
 
