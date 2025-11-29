@@ -129,7 +129,13 @@ impl Layout for VStackLayout {
             }
 
             let child_proposal = child.proposal();
-            let child_width = child_proposal.width.unwrap_or(0.0);
+            // Clamp infinite widths to parent's bounds - INFINITY means "fill available"
+            let raw_width = child_proposal.width.unwrap_or(0.0);
+            let child_width = if raw_width.is_infinite() {
+                bound.width()
+            } else {
+                raw_width
+            };
             let child_height = if child.stretch() {
                 stretchy_child_height
             } else {
