@@ -3,7 +3,10 @@
 use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{ChildMetadata, Layout, Point, ProposalSize, Rect, Size, container::FixedContainer};
+use crate::{
+    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect,
+    SafeAreaInsets, Size, container::FixedContainer,
+};
 
 /// Layout that insets its single child by the configured edge values.
 #[derive(Debug, Clone)]
@@ -16,6 +19,7 @@ impl Layout for PaddingLayout {
         &mut self,
         parent: ProposalSize,
         children: &[crate::ChildMetadata],
+        _context: &LayoutContext,
     ) -> Vec<ProposalSize> {
         if children.is_empty() {
             return vec![];
@@ -36,7 +40,12 @@ impl Layout for PaddingLayout {
         vec![child_proposal]
     }
 
-    fn size(&mut self, _parent: ProposalSize, children: &[crate::ChildMetadata]) -> Size {
+    fn size(
+        &mut self,
+        _parent: ProposalSize,
+        children: &[crate::ChildMetadata],
+        _context: &LayoutContext,
+    ) -> Size {
         // The child's size is the base for our size calculation.
         let child_size = match children.first() {
             Some(child) => child.proposal(),
@@ -56,7 +65,8 @@ impl Layout for PaddingLayout {
         bound: Rect,
         _proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect> {
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement> {
         if children.is_empty() {
             return vec![];
         }
@@ -72,7 +82,21 @@ impl Layout for PaddingLayout {
             (bound.height() - vertical_padding).max(0.0),
         );
 
-        vec![Rect::new(child_origin, child_size)]
+        // Reduce safe area by the padding amount (padding consumes safe area)
+        let child_safe_area = SafeAreaInsets {
+            top: (context.safe_area.top - self.edges.top).max(0.0),
+            bottom: (context.safe_area.bottom - self.edges.bottom).max(0.0),
+            leading: (context.safe_area.leading - self.edges.leading).max(0.0),
+            trailing: (context.safe_area.trailing - self.edges.trailing).max(0.0),
+        };
+
+        vec![ChildPlacement::new(
+            Rect::new(child_origin, child_size),
+            LayoutContext {
+                safe_area: child_safe_area,
+                ignores_safe_area: context.ignores_safe_area,
+            },
+        )]
     }
 }
 
