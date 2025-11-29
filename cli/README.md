@@ -70,7 +70,7 @@ All commands share a couple of helpful flags:
 
 | Command | Purpose | Common Flags |
 | --- | --- | --- |
-| `water create` | Scaffold a new WaterUI project interactively or from flags. | `--name`, `--directory`, `--backend`, `--dev`, `--yes` |
+| `water create` | Scaffold a new WaterUI project interactively or from flags. | `--name`, `--directory`, `--backend`, `--dev`, `--waterui-path`, `--yes` |
 | `water run` | Build and hot-reload the app on a selected backend. | `--platform`, `--project`, `--device`, `--release`, `--no-hot-reload` |
 | `water build` | Build native Rust libraries for a platform (used by IDE build scripts). | `android`, `apple`, `--release`, `--targets` |
 | `water package` | Produce distributable artifacts without launching them. | `--platform`, `--all`, `--release`, `--project` |
@@ -103,6 +103,53 @@ created projects include:
 Pass `--dev` to use the latest framework sources directly from Git while new
 releases are being cut. When running with `--json`, also supply `--yes` (and
 any other configuration flags) so the command can stay non-interactive.
+
+#### Local Dev Mode (Recommended for Framework Development)
+
+When working on WaterUI itself, use local dev mode for instant feedback:
+
+```bash
+water create --name "My App" --dev --waterui-path /path/to/waterui
+```
+
+Or interactively—when you use `--dev` without `--waterui-path`, the CLI will
+prompt you for the local WaterUI repository path.
+
+**Benefits of local dev mode:**
+
+- **Instant feedback**: Changes to WaterUI or its backends are immediately
+  reflected—no need to run `water backend update` or `cargo update`.
+- **Direct path dependencies**: Cargo.toml uses `path = "..."` instead of git
+  dependencies, enabling seamless iteration.
+- **Symlink-free**: Gradle and Xcode reference the backends directly from your
+  WaterUI repository, keeping your project clean.
+
+**Requirements:**
+
+The WaterUI repository path must contain:
+- `backends/android/` - The Android backend (git submodule)
+- `backends/apple/` - The Apple/SwiftUI backend (git submodule)
+
+Initialize submodules if needed:
+
+```bash
+cd /path/to/waterui
+git submodule update --init --recursive
+```
+
+**Updating backends in local dev mode:**
+
+Since backends are referenced directly from your WaterUI repository, simply pull
+the latest changes:
+
+```bash
+cd /path/to/waterui
+git pull
+git submodule update --recursive
+```
+
+Note: `water backend update` is not available in local dev mode—the CLI will
+display instructions for updating via git instead.
 
 ### Run with Hot Reload
 
