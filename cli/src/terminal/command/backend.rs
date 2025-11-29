@@ -111,8 +111,24 @@ pub fn update(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
         .project
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
-    let mut config = Config::load(&project_dir)?;
+    let config = Config::load(&project_dir)?;
 
+    // Block backend update for local dev mode
+    if config.waterui_path.is_some() {
+        bail!(
+            "Backend update is not available for projects using local dev mode.\n\n\
+             Your project is configured with a local WaterUI repository path at:\n  {}\n\n\
+             In local dev mode, backends are referenced directly from the WaterUI repository.\n\
+             To update backends, simply pull the latest changes in your WaterUI repository:\n\n\
+             cd {}\n\
+             git pull\n\
+             git submodule update --recursive",
+            config.waterui_path.as_ref().unwrap(),
+            config.waterui_path.as_ref().unwrap()
+        );
+    }
+
+    let mut config = config;
     match args.backend {
         BackendChoice::Android => update_android_backend(&project_dir, &mut config),
         BackendChoice::Apple => update_swift_backend(&project_dir, &mut config),
@@ -129,8 +145,24 @@ pub fn upgrade(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
         .project
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
-    let mut config = Config::load(&project_dir)?;
+    let config = Config::load(&project_dir)?;
 
+    // Block backend upgrade for local dev mode
+    if config.waterui_path.is_some() {
+        bail!(
+            "Backend upgrade is not available for projects using local dev mode.\n\n\
+             Your project is configured with a local WaterUI repository path at:\n  {}\n\n\
+             In local dev mode, backends are referenced directly from the WaterUI repository.\n\
+             To update backends, simply pull the latest changes in your WaterUI repository:\n\n\
+             cd {}\n\
+             git pull\n\
+             git submodule update --recursive",
+            config.waterui_path.as_ref().unwrap(),
+            config.waterui_path.as_ref().unwrap()
+        );
+    }
+
+    let mut config = config;
     match args.backend {
         BackendChoice::Android => upgrade_android_backend(&project_dir, &mut config, &args),
         BackendChoice::Apple => upgrade_swift_backend(&project_dir, &mut config, &args),
