@@ -4,7 +4,10 @@ use clap::Args;
 use color_eyre::eyre::{Result, bail};
 use heck::ToUpperCamelCase;
 
-use super::create::{self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, resolve_dependencies};
+use super::create::{
+    self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, ValidatedWaterUIPath,
+    resolve_dependencies_with_path, validate_waterui_path,
+};
 use crate::ui;
 use serde::Serialize;
 use waterui_cli::{
@@ -41,7 +44,16 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let mut config = Config::load(&project_dir)?;
 
-    let deps = resolve_dependencies(args.dev)?;
+    // Use the stored waterui_path from config for dev mode
+    let validated_waterui_path: Option<ValidatedWaterUIPath> =
+        if let Some(ref path_str) = config.waterui_path {
+            Some(validate_waterui_path(&PathBuf::from(path_str))?)
+        } else {
+            None
+        };
+
+    let use_dev = args.dev || config.dev_dependencies;
+    let deps = resolve_dependencies_with_path(use_dev, validated_waterui_path.as_ref())?;
 
     let is_json = output::global_output_format().is_json();
 
@@ -57,7 +69,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             config.backends.web = Some(Web {
                 project_path: "web".to_string(),
                 version: None,
-                dev: args.dev,
+                dev: use_dev,
                 ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !config.hot_reload.watch.iter().any(|path| path == "web") {
@@ -87,16 +99,17 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 &app_name,
                 &config.package.name,
                 &config.package.bundle_identifier,
-                args.dev,
+                use_dev,
+                deps.local_waterui_path.as_ref(),
             )?;
             config.backends.android = Some(Android {
                 project_path: "android".to_string(),
-                version: if args.dev || WATERUI_ANDROID_BACKEND_VERSION.is_empty() {
+                version: if use_dev || WATERUI_ANDROID_BACKEND_VERSION.is_empty() {
                     None
                 } else {
                     Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
                 },
-                dev: args.dev,
+                dev: use_dev,
                 ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
@@ -126,12 +139,15 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 &config.package.bundle_identifier,
                 &deps.swift,
             )?;
-            let (version, branch, revision) = match deps.swift {
+            let (version, branch, revision, local_path) = match &deps.swift {
                 create::SwiftDependency::Git {
-                    ref version,
-                    ref branch,
-                    ref revision,
-                } => (version.clone(), branch.clone(), revision.clone()),
+                    version,
+                    branch,
+                    revision,
+                } => (version.clone(), branch.clone(), revision.clone(), None),
+                create::SwiftDependency::Local { path } => {
+                    (None, None, None, Some(path.display().to_string()))
+                }
             };
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
@@ -140,7 +156,8 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 version,
                 branch,
                 revision,
-                dev: args.dev,
+                local_path,
+                dev: use_dev,
                 ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {

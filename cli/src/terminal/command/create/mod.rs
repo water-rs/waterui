@@ -14,6 +14,17 @@ use waterui_cli::{
     project::{Android, Config, Package, Swift, Web},
 };
 
+/// Validated WaterUI repository path for dev mode.
+#[derive(Debug, Clone)]
+pub struct ValidatedWaterUIPath {
+    /// The root path to the WaterUI repository.
+    pub root: PathBuf,
+    /// Path to the Android backend within the repository.
+    pub android_backend: PathBuf,
+    /// Path to the Apple backend within the repository.
+    pub apple_backend: PathBuf,
+}
+
 pub const DEFAULT_WATERUI_FFI_VERSION: &str = "0.1.0";
 
 pub mod android;
@@ -47,6 +58,10 @@ pub struct CreateArgs {
     /// Use the development version of `WaterUI` from GitHub
     #[arg(long)]
     pub dev: bool,
+
+    /// Path to local WaterUI repository for dev mode (contains backends/android and backends/apple as submodules)
+    #[arg(long)]
+    pub waterui_path: Option<PathBuf>,
 
     /// Accept defaults without confirmation
     #[arg(short, long)]
@@ -97,7 +112,40 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
 
     let theme = ColorfulTheme::default();
 
-    let deps = resolve_dependencies(args.dev)?;
+    // Handle local WaterUI path for dev mode
+    let validated_waterui_path = if args.dev {
+        let waterui_path = if let Some(path) = args.waterui_path.clone() {
+            path
+        } else if args.yes {
+            // In non-interactive mode, dev without path falls back to git dependencies
+            PathBuf::new()
+        } else {
+            use crate::ui;
+            ui::info("Dev mode requires a local WaterUI repository path for instant feedback.");
+            ui::info(
+                "The repository should have backends/android and backends/apple as submodules.",
+            );
+            ui::newline();
+
+            let default_path = std::env::current_dir().expect("failed to get current directory");
+
+            Input::with_theme(&theme)
+                .with_prompt("WaterUI repository path")
+                .default(default_path.display().to_string())
+                .interact_text()
+                .map(PathBuf::from)?
+        };
+
+        if waterui_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(validate_waterui_path(&waterui_path)?)
+        }
+    } else {
+        None
+    };
+
+    let deps = resolve_dependencies_with_path(args.dev, validated_waterui_path.as_ref())?;
 
     let display_name = if let Some(name) = args.name.clone() {
         name
@@ -265,6 +313,9 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         author,
     });
     config.dev_dependencies = args.dev;
+    if let Some(ref validated_path) = validated_waterui_path {
+        config.waterui_path = Some(validated_path.root.display().to_string());
+    }
 
     let mut web_enabled = false;
     for backend in &selected_backends {
@@ -286,6 +337,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     &crate_name,
                     &bundle_identifier,
                     args.dev,
+                    deps.local_waterui_path.as_ref(),
                 )?;
                 config.backends.android = Some(Android {
                     project_path: "android".to_string(),
@@ -307,12 +359,15 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     &bundle_identifier,
                     &deps.swift,
                 )?;
-                let (version, branch, revision) = match deps.swift {
+                let (version, branch, revision, local_path) = match &deps.swift {
                     SwiftDependency::Git {
-                        ref version,
-                        ref branch,
-                        ref revision,
-                    } => (version.clone(), branch.clone(), revision.clone()),
+                        version,
+                        branch,
+                        revision,
+                    } => (version.clone(), branch.clone(), revision.clone(), None),
+                    SwiftDependency::Local { path } => {
+                        (None, None, None, Some(path.display().to_string()))
+                    }
                 };
                 config.backends.swift = Some(Swift {
                     project_path: "apple".to_string(),
@@ -321,6 +376,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     version,
                     branch,
                     revision,
+                    local_path,
                     dev: args.dev,
                     ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
@@ -411,28 +467,123 @@ fn build_report(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProjectDependencies {
     rust_toml: String,
     pub swift: SwiftDependency,
+    /// If set, the local path to the WaterUI repository for dev mode.
+    pub local_waterui_path: Option<ValidatedWaterUIPath>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SwiftDependency {
     Git {
         version: Option<String>,
         branch: Option<String>,
         revision: Option<String>,
     },
+    Local {
+        path: PathBuf,
+    },
 }
 
-#[allow(clippy::const_is_empty)]
-/// Resolve the template dependencies used when rendering new projects.
+/// Validate that the given path is a valid WaterUI repository with android and apple backends.
 ///
 /// # Errors
-/// Returns an error if the crates index cannot be queried.
-pub fn resolve_dependencies(dev: bool) -> Result<ProjectDependencies> {
+/// Returns an error if the path doesn't exist or doesn't contain the required backend directories.
+pub fn validate_waterui_path(path: &Path) -> Result<ValidatedWaterUIPath> {
+    let path = path.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve WaterUI repository path: {}",
+            path.display()
+        )
+    })?;
+
+    if !path.exists() {
+        bail!("WaterUI repository path does not exist: {}", path.display());
+    }
+
+    if !path.is_dir() {
+        bail!(
+            "WaterUI repository path is not a directory: {}",
+            path.display()
+        );
+    }
+
+    // Check for backends/android
+    let android_backend = path.join("backends/android");
+    if !android_backend.exists() || !android_backend.is_dir() {
+        bail!(
+            "Invalid WaterUI repository: missing backends/android directory at {}.\n\
+             Make sure git submodules are initialized with: git submodule update --init --recursive",
+            path.display()
+        );
+    }
+
+    // Check for backends/apple
+    let apple_backend = path.join("backends/apple");
+    if !apple_backend.exists() || !apple_backend.is_dir() {
+        bail!(
+            "Invalid WaterUI repository: missing backends/apple directory at {}.\n\
+             Make sure git submodules are initialized with: git submodule update --init --recursive",
+            path.display()
+        );
+    }
+
+    // Verify that the android backend has essential files
+    let android_build_gradle = android_backend.join("build.gradle.kts");
+    if !android_build_gradle.exists() {
+        bail!(
+            "Invalid Android backend: missing build.gradle.kts at {}.\n\
+             The backends/android submodule may not be properly initialized.",
+            android_backend.display()
+        );
+    }
+
+    // Verify that the apple backend has essential files
+    let apple_package_swift = apple_backend.join("Package.swift");
+    if !apple_package_swift.exists() {
+        bail!(
+            "Invalid Apple backend: missing Package.swift at {}.\n\
+             The backends/apple submodule may not be properly initialized.",
+            apple_backend.display()
+        );
+    }
+
+    Ok(ValidatedWaterUIPath {
+        root: path,
+        android_backend,
+        apple_backend,
+    })
+}
+
+/// Resolve the template dependencies with an optional local WaterUI path for dev mode.
+///
+/// # Errors
+/// Returns an error if the crates index cannot be queried or if the local path is invalid.
+#[allow(clippy::const_is_empty)]
+pub fn resolve_dependencies_with_path(
+    dev: bool,
+    waterui_path: Option<&ValidatedWaterUIPath>,
+) -> Result<ProjectDependencies> {
     if dev {
+        if let Some(validated_path) = waterui_path {
+            // Local dev mode - use path dependencies
+            let root_path = validated_path.root.display();
+            let rust_toml = format!(
+                r#"waterui = {{ path = "{root_path}" }}
+waterui-ffi = {{ path = "{root_path}/ffi" }}"#
+            );
+            return Ok(ProjectDependencies {
+                rust_toml,
+                swift: SwiftDependency::Local {
+                    path: validated_path.apple_backend.clone(),
+                },
+                local_waterui_path: Some(validated_path.clone()),
+            });
+        }
+
+        // Remote dev mode - use git dependencies
         let branch = "dev";
         let revision = fetch_swift_branch_head(branch)?;
         let rust_toml =
@@ -446,6 +597,7 @@ waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
                 branch: Some(branch.to_string()),
                 revision: Some(revision),
             },
+            local_waterui_path: None,
         });
     }
 
@@ -471,6 +623,7 @@ waterui-ffi = "{waterui_version}""#
             branch: None,
             revision: None,
         },
+        local_waterui_path: None,
     })
 }
 

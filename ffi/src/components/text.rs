@@ -87,17 +87,6 @@ impl IntoFFI for StyledStr {
 
 ffi_computed!(StyledStr, WuiStyledStr);
 
-// Debug: Add logging for styled_str reads
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_debug_read_styled_str(computed: *const crate::reactive::WuiComputed<StyledStr>) -> WuiStyledStr {
-    use waterui::Signal;
-    let value = unsafe { (&*computed).get() };
-    let text: String = value.chunks().map(|(s, _)| s.as_str()).collect();
-    android_logger::log(android_logger::Level::Debug, "WaterUI.FFI", &format!("read_styled_str: text='{}'", text));
-    crate::IntoFFI::into_ffi(value)
-}
-
 into_ffi! {
     TextConfig,
     pub struct WuiText {
