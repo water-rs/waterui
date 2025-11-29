@@ -9,6 +9,144 @@ use core::fmt::Debug;
 
 use alloc::vec::Vec;
 
+// ============================================================================
+// Safe Area Types
+// ============================================================================
+
+bitflags::bitflags! {
+    /// Edges that can be selectively ignored for safe area
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct SafeAreaEdges: u8 {
+        /// Top edge
+        const TOP = 0b0001;
+        /// Bottom edge
+        const BOTTOM = 0b0010;
+        /// Leading edge (left in LTR, right in RTL)
+        const LEADING = 0b0100;
+        /// Trailing edge (right in LTR, left in RTL)
+        const TRAILING = 0b1000;
+        /// Both horizontal edges
+        const HORIZONTAL = Self::LEADING.bits() | Self::TRAILING.bits();
+        /// Both vertical edges
+        const VERTICAL = Self::TOP.bits() | Self::BOTTOM.bits();
+        /// All edges
+        const ALL = Self::HORIZONTAL.bits() | Self::VERTICAL.bits();
+    }
+}
+
+/// Safe area insets in points, relative to the container bounds
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SafeAreaInsets {
+    /// Top inset in points
+    pub top: f32,
+    /// Bottom inset in points
+    pub bottom: f32,
+    /// Leading inset in points (left in LTR)
+    pub leading: f32,
+    /// Trailing inset in points (right in LTR)
+    pub trailing: f32,
+}
+
+impl SafeAreaInsets {
+    /// Zero insets
+    pub const ZERO: Self = Self {
+        top: 0.0,
+        bottom: 0.0,
+        leading: 0.0,
+        trailing: 0.0,
+    };
+
+    /// Creates new safe area insets
+    #[must_use]
+    pub const fn new(top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
+        Self {
+            top,
+            bottom,
+            leading,
+            trailing,
+        }
+    }
+
+    /// Inset a rect by the safe area
+    #[must_use]
+    pub fn inset(&self, rect: &Rect) -> Rect {
+        Rect::new(
+            Point::new(rect.x() + self.leading, rect.y() + self.top),
+            Size::new(
+                (rect.width() - self.leading - self.trailing).max(0.0),
+                (rect.height() - self.top - self.bottom).max(0.0),
+            ),
+        )
+    }
+
+    /// Combine with another safe area (takes max of each edge)
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            top: self.top.max(other.top),
+            bottom: self.bottom.max(other.bottom),
+            leading: self.leading.max(other.leading),
+            trailing: self.trailing.max(other.trailing),
+        }
+    }
+
+    /// Zero out specific edges
+    #[must_use]
+    pub fn without(&self, edges: SafeAreaEdges) -> Self {
+        Self {
+            top: if edges.contains(SafeAreaEdges::TOP) { 0.0 } else { self.top },
+            bottom: if edges.contains(SafeAreaEdges::BOTTOM) { 0.0 } else { self.bottom },
+            leading: if edges.contains(SafeAreaEdges::LEADING) { 0.0 } else { self.leading },
+            trailing: if edges.contains(SafeAreaEdges::TRAILING) { 0.0 } else { self.trailing },
+        }
+    }
+
+    /// Check if all insets are zero
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.top == 0.0 && self.bottom == 0.0 && self.leading == 0.0 && self.trailing == 0.0
+    }
+}
+
+/// Context passed to layout operations containing safe area and other layout state
+#[derive(Debug, Clone, Default)]
+pub struct LayoutContext {
+    /// Safe area insets relative to this container's bounds
+    pub safe_area: SafeAreaInsets,
+    /// Which safe area edges this container ignores
+    pub ignores_safe_area: SafeAreaEdges,
+}
+
+impl LayoutContext {
+    /// Creates a new layout context with the given safe area
+    #[must_use]
+    pub const fn new(safe_area: SafeAreaInsets) -> Self {
+        Self {
+            safe_area,
+            ignores_safe_area: SafeAreaEdges::empty(),
+        }
+    }
+
+    /// Creates a layout context with zero safe area
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            safe_area: SafeAreaInsets::ZERO,
+            ignores_safe_area: SafeAreaEdges::empty(),
+        }
+    }
+
+    /// Returns the effective safe area (considering ignored edges)
+    #[must_use]
+    pub fn effective_safe_area(&self) -> SafeAreaInsets {
+        self.safe_area.without(self.ignores_safe_area)
+    }
+}
+
+// ============================================================================
+// Child Metadata
+// ============================================================================
+
 /// Backend-supplied metrics that describe how a child responded to a layout
 /// proposal.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -64,20 +202,65 @@ impl ChildMetadata {
 pub trait Layout: Debug {
     /// Proposes sizes for each child based on the parent's proposal and the
     /// metadata collected during the previous frame.
-    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize>;
+    /// 
+    /// The `context` contains safe area information for this container.
+    fn propose(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        context: &LayoutContext,
+    ) -> Vec<ProposalSize>;
 
     /// Computes the layout's own size after its children have answered the
     /// proposals created in [`propose`](Self::propose).
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size;
+    /// 
+    /// The `context` contains safe area information for this container.
+    fn size(
+        &mut self,
+        parent: ProposalSize,
+        children: &[ChildMetadata],
+        context: &LayoutContext,
+    ) -> Size;
 
     /// Places children within the final bounds chosen by the parent and
-    /// returns the rectangles they should occupy.
+    /// returns the rectangles they should occupy along with their layout contexts.
+    /// 
+    /// Each child receives its own `LayoutContext` which may have different
+    /// safe area values (e.g., first child in VStack gets top safe area,
+    /// last child gets bottom safe area).
     fn place(
         &mut self,
         bound: Rect,
         proposal: ProposalSize,
         children: &[ChildMetadata],
-    ) -> Vec<Rect>;
+        context: &LayoutContext,
+    ) -> Vec<ChildPlacement>;
+}
+
+/// Result of placing a child view
+#[derive(Debug, Clone)]
+pub struct ChildPlacement {
+    /// The rectangle where the child should be placed
+    pub rect: Rect,
+    /// The layout context for the child (with updated safe area)
+    pub context: LayoutContext,
+}
+
+impl ChildPlacement {
+    /// Creates a new child placement
+    #[must_use]
+    pub const fn new(rect: Rect, context: LayoutContext) -> Self {
+        Self { rect, context }
+    }
+    
+    /// Creates a child placement with empty context (no safe area)
+    #[must_use]
+    pub fn with_empty_context(rect: Rect) -> Self {
+        Self {
+            rect,
+            context: LayoutContext::empty(),
+        }
+    }
 }
 
 /// Axis-aligned rectangle relative to its parent.
