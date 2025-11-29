@@ -323,6 +323,10 @@ pub struct Config {
     pub hot_reload: HotReload,
     #[serde(default)]
     pub dev_dependencies: bool,
+    /// Path to local WaterUI repository for dev mode.
+    /// When set, all dependencies use local paths instead of git/crates.io.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waterui_path: Option<String>,
 }
 
 impl Config {
@@ -333,6 +337,7 @@ impl Config {
             backends: Backends::default(),
             hot_reload: HotReload::default(),
             dev_dependencies: false,
+            waterui_path: None,
         }
     }
 
@@ -407,6 +412,9 @@ pub struct Swift {
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// Local path to the Apple backend for local dev mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
     #[serde(default)]
     pub dev: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
