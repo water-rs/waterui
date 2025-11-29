@@ -627,7 +627,31 @@ fn check_swift() -> SectionOutcome {
         "xcrun",
         "Install Xcode and command line tools (xcode-select --install)",
     ));
+    outcome.push_outcome(check_apple_cmake());
     outcome
+}
+
+fn check_apple_cmake() -> RowOutcome {
+    match which("cmake") {
+        Ok(path) => RowOutcome::new(
+            Row::pass("`cmake` available for Apple builds")
+                .with_indent(1)
+                .with_detail(path.display().to_string()),
+        ),
+        Err(_) => {
+            let row = Row::fail("`cmake` not found for Apple builds")
+                .with_indent(1)
+                .with_detail(
+                    "Install CMake so `water build apple` can compile dependencies. \
+                     Run `water doctor --fix` or `brew install cmake`.",
+                );
+            if let Some(fix) = cmake_fix_suggestion() {
+                RowOutcome::with_fix(row, fix)
+            } else {
+                RowOutcome::new(row)
+            }
+        }
+    }
 }
 
 fn check_android(mode: CheckMode) -> SectionOutcome {

@@ -47,7 +47,7 @@ cargo run -p waterui-cli -- <command> [flags]
   stable` keeps you current).
 - Git (used by the build script to resolve framework versions).
 - Platform tooling for the backends you intend to use:
-  - **Apple platforms:** macOS host with Xcode + command line tools.
+  - **Apple platforms:** macOS host with Xcode + command line tools + CMake (`brew install cmake`).
   - **Android:** Android SDK, NDK, CMake, JDK 17+, and either an emulator or a connected device.
   - **Web:** a modern browser (the CLI spins up a local development server).
 
