@@ -131,28 +131,6 @@ For more details, run `water --help` or see the [CLI README](./cli/README.md).
 
 We welcome contributions! `WaterUI` is in active development and there's plenty to work on. Please check the `ROADMAP.md` and open issues to see where you can help.
 
-1.  **Fork the repository**
-2.  **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3.  **Make your changes** and add tests
-4.  **Run the linter**: `cargo clippy --all-targets --all-features --workspace -- -D warnings`
-5.  **Submit a pull request**
-
-### Development Commands
-```bash
-# Build all crates
-cargo build --all-features --workspace
-
-# Run tests
-cargo test --all-features --workspace
-
-# Check code quality
-cargo clippy --all-targets --all-features --workspace -- -D warnings
-cargo fmt --all -- --check
-
-# Generate docs
-cargo doc --all-features --no-deps --workspace
-```
-
 ## 🏗️ Project Status
 
 **⚠️ Early Development** - `WaterUI` is in active early development. APIs may change as we stabilize the framework. We're working towards production-ready releases with comprehensive platform support.
