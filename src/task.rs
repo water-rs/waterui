@@ -74,8 +74,9 @@ impl<V: View, G: WatcherGuard> View for OnChange<V, G> {
 /// # Example
 ///
 /// ```rust
-/// # use waterui::prelude::*;
-/// use nami::binding;
+/// use waterui::prelude::*;
+/// use waterui::reactive::binding;
+///
 /// let counter = binding(0);
 /// let view = task(
 ///     text("Hello World"),
