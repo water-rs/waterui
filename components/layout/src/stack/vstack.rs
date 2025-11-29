@@ -26,6 +26,14 @@ impl Layout for VStackLayout {
         children: &[ChildMetadata],
         _context: &LayoutContext,
     ) -> Vec<ProposalSize> {
+        // Per LAYOUT_SPEC.md:
+        // - Width: Parent's width proposal (for text wrapping and axis-expanding views)
+        // - Height: None (child decides)
+        //
+        // This allows:
+        // - Text to wrap at available space
+        // - Axis-expanding views (TextField, Slider) to fill available width
+        // - Content-sized views to measure intrinsic and be centered
         vec![ProposalSize::new(parent.width, None); children.len()]
     }
 
@@ -61,13 +69,21 @@ impl Layout for VStackLayout {
             intrinsic_height
         };
 
+        // Calculate intrinsic width as the maximum width of NON-STRETCHY children.
+        // Stretchy children (like Spacer) don't contribute to VStack's width.
+        // This allows center alignment to work correctly.
         let max_width = children
             .iter()
+            .filter(|c| !c.stretch())
             .map(|c| c.proposal().width.unwrap_or(0.0))
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        let final_width = parent.width.unwrap_or(max_width);
+        // Use intrinsic width, but cap at parent's proposed width if any
+        let final_width = match parent.width {
+            Some(proposed) => max_width.min(proposed),
+            None => max_width,
+        };
 
         Size::new(final_width, final_height)
     }
