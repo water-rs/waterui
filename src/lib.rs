@@ -85,7 +85,10 @@ pub use waterui_core::{
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::reactive::binding;
+///
 /// let name = binding("World");
 /// let greeting = text!("Hello, {}!", name);
 /// ```
