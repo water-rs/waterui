@@ -10,7 +10,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use super::template;
+use super::{ValidatedWaterUIPath, template};
 use crate::{ui, util};
 use waterui_cli::backend::android;
 
@@ -34,13 +34,30 @@ pub fn create_android_project(
     crate_name: &str,
     bundle_identifier: &str,
     dev_mode: bool,
+    local_waterui_path: Option<&ValidatedWaterUIPath>,
 ) -> Result<()> {
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
 
-    let use_remote_dev_backend = dev_mode && should_use_remote_dev_backend();
+    // Determine which backend mode to use:
+    // 1. Local dev mode (waterui_path provided) - reference backend directly from waterui repo
+    // 2. Remote dev mode (JitPack) - no local backend needed
+    // 3. Normal mode - copy backend to backends/android
+    let use_local_dev_backend = local_waterui_path.is_some();
+    let use_remote_dev_backend =
+        dev_mode && should_use_remote_dev_backend() && !use_local_dev_backend;
 
-    if !use_remote_dev_backend {
+    // Calculate the path to the Android backend for Gradle's includeBuild
+    let android_backend_path = if let Some(validated_path) = local_waterui_path {
+        // Local dev mode: use absolute path to waterui repo's backend
+        // No need to copy anything - Gradle will reference the backend directly
+        validated_path.android_backend.display().to_string()
+    } else if use_remote_dev_backend {
+        // Remote dev mode: no includeBuild needed (uses JitPack)
+        // This value won't be used in the template when USE_REMOTE_DEV_BACKEND is true
+        String::new()
+    } else {
+        // Normal mode: copy backend and use relative path
         let backend_source = if dev_mode {
             ensure_dev_android_backend_checkout()?
         } else {
@@ -53,8 +70,10 @@ pub fn create_android_project(
             }
             source
         };
+
         copy_android_backend(project_dir, &backend_source)?;
         configure_android_local_properties(project_dir)?;
+
         if dev_mode {
             if let Some(commit) = git_head_commit(&backend_source) {
                 write_android_dev_commit(project_dir, &commit)?;
@@ -64,7 +83,10 @@ pub fn create_android_project(
         } else {
             clear_android_dev_commit(project_dir)?;
         }
-    }
+
+        // Relative path from android/ to backends/android
+        "../backends/android".to_string()
+    };
 
     let android_package = android::sanitize_package_name(bundle_identifier);
 
@@ -73,7 +95,8 @@ pub fn create_android_project(
     context.insert("CRATE_NAME", crate_name.to_string());
     context.insert("CRATE_NAME_SANITIZED", crate_name.replace('-', "_"));
     context.insert("BUNDLE_IDENTIFIER", android_package.clone());
-    context.insert("USE_DEV_BACKEND", use_remote_dev_backend.to_string());
+    context.insert("USE_REMOTE_DEV_BACKEND", use_remote_dev_backend.to_string());
+    context.insert("ANDROID_BACKEND_PATH", android_backend_path);
 
     let templates = &template::TEMPLATES_DIR;
 
