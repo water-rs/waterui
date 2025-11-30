@@ -1,286 +1,131 @@
 //! Core layout primitives used by layout components.
 //!
-//! The layout system follows a simple two-pass protocol: first ask children how
-//! large they would like to be given a [`ProposalSize`], then place them within
-//! the final [`Size`]. This module defines the traits and helper types that are
-//! shared by layout implementations across backends.
+//! The layout system uses a negotiation-based protocol where layouts can query
+//! children multiple times with different proposals to determine optimal sizing.
+//! This is inspired by SwiftUI's "parent proposes, child chooses" model.
+//!
+//! # Architecture
+//!
+//! - [`SubView`]: A proxy trait that allows layouts to query child sizes
+//! - [`Layout`]: The core trait implemented by layout containers (VStack, HStack, etc.)
+//!
+//! # Example
+//!
+//! ```ignore
+//! impl Layout for VStackLayout {
+//!     fn size_that_fits(&self, proposal: ProposalSize, children: &mut [&mut dyn SubView]) -> Size {
+//!         // Query each child for its ideal size
+//!         let sizes: Vec<Size> = children
+//!             .iter_mut()
+//!             .map(|c| c.size_that_fits(ProposalSize::new(proposal.width, None)))
+//!             .collect();
+//!         // Calculate total size...
+//!     }
+//! }
+//! ```
 
 use core::fmt::Debug;
 
 use alloc::vec::Vec;
 
 // ============================================================================
-// Safe Area Types
+// SubView Trait - Child View Proxy
 // ============================================================================
 
-bitflags::bitflags! {
-    /// Edges that can be selectively ignored for safe area
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub struct SafeAreaEdges: u8 {
-        /// Top edge
-        const TOP = 0b0001;
-        /// Bottom edge
-        const BOTTOM = 0b0010;
-        /// Leading edge (left in LTR, right in RTL)
-        const LEADING = 0b0100;
-        /// Trailing edge (right in LTR, left in RTL)
-        const TRAILING = 0b1000;
-        /// Both horizontal edges
-        const HORIZONTAL = Self::LEADING.bits() | Self::TRAILING.bits();
-        /// Both vertical edges
-        const VERTICAL = Self::TOP.bits() | Self::BOTTOM.bits();
-        /// All edges
-        const ALL = Self::HORIZONTAL.bits() | Self::VERTICAL.bits();
-    }
-}
+/// A proxy for querying child view sizes during layout.
+///
+/// This trait allows layout containers to negotiate with children by asking
+/// "if I propose this size, how big would you be?" multiple times with
+/// different proposals.
+///
+/// # Caching
+///
+/// Implementations should cache results for the same proposal to avoid
+/// redundant measurements. The FFI layer provides [`CachedSubView`] which
+/// handles caching automatically.
+pub trait SubView {
+    /// Query the child's size for a given proposal.
+    ///
+    /// This method may be called multiple times with different proposals
+    /// to probe the child's flexibility:
+    ///
+    /// - `ProposalSize::new(None, None)` - ideal/intrinsic size
+    /// - `ProposalSize::new(Some(0.0), None)` - minimum width
+    /// - `ProposalSize::new(Some(f32::INFINITY), None)` - maximum width
+    /// - `ProposalSize::new(Some(200.0), None)` - constrained width
+    fn size_that_fits(&mut self, proposal: ProposalSize) -> Size;
 
-/// Safe area insets in points, relative to the container bounds
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SafeAreaInsets {
-    /// Top inset in points
-    pub top: f32,
-    /// Bottom inset in points
-    pub bottom: f32,
-    /// Leading inset in points (left in LTR)
-    pub leading: f32,
-    /// Trailing inset in points (right in LTR)
-    pub trailing: f32,
-}
+    /// Whether this view stretches to fill available space.
+    ///
+    /// Stretch views (like `Spacer`, `Color`) expand to consume remaining
+    /// space after non-stretch views are measured.
+    fn is_stretch(&self) -> bool;
 
-impl SafeAreaInsets {
-    /// Zero insets
-    pub const ZERO: Self = Self {
-        top: 0.0,
-        bottom: 0.0,
-        leading: 0.0,
-        trailing: 0.0,
-    };
-
-    /// Creates new safe area insets
-    #[must_use]
-    pub const fn new(top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
-        Self {
-            top,
-            bottom,
-            leading,
-            trailing,
-        }
-    }
-
-    /// Inset a rect by the safe area
-    #[must_use]
-    pub fn inset(&self, rect: &Rect) -> Rect {
-        Rect::new(
-            Point::new(rect.x() + self.leading, rect.y() + self.top),
-            Size::new(
-                (rect.width() - self.leading - self.trailing).max(0.0),
-                (rect.height() - self.top - self.bottom).max(0.0),
-            ),
-        )
-    }
-
-    /// Combine with another safe area (takes max of each edge)
-    #[must_use]
-    pub fn union(&self, other: &Self) -> Self {
-        Self {
-            top: self.top.max(other.top),
-            bottom: self.bottom.max(other.bottom),
-            leading: self.leading.max(other.leading),
-            trailing: self.trailing.max(other.trailing),
-        }
-    }
-
-    /// Zero out specific edges
-    #[must_use]
-    pub fn without(&self, edges: SafeAreaEdges) -> Self {
-        Self {
-            top: if edges.contains(SafeAreaEdges::TOP) {
-                0.0
-            } else {
-                self.top
-            },
-            bottom: if edges.contains(SafeAreaEdges::BOTTOM) {
-                0.0
-            } else {
-                self.bottom
-            },
-            leading: if edges.contains(SafeAreaEdges::LEADING) {
-                0.0
-            } else {
-                self.leading
-            },
-            trailing: if edges.contains(SafeAreaEdges::TRAILING) {
-                0.0
-            } else {
-                self.trailing
-            },
-        }
-    }
-
-    /// Check if all insets are zero
-    #[must_use]
-    pub fn is_zero(&self) -> bool {
-        self.top == 0.0 && self.bottom == 0.0 && self.leading == 0.0 && self.trailing == 0.0
-    }
-}
-
-/// Context passed to layout operations containing safe area and other layout state
-#[derive(Debug, Clone, Default)]
-pub struct LayoutContext {
-    /// Safe area insets relative to this container's bounds
-    pub safe_area: SafeAreaInsets,
-    /// Which safe area edges this container ignores
-    pub ignores_safe_area: SafeAreaEdges,
-}
-
-impl LayoutContext {
-    /// Creates a new layout context with the given safe area
-    #[must_use]
-    pub const fn new(safe_area: SafeAreaInsets) -> Self {
-        Self {
-            safe_area,
-            ignores_safe_area: SafeAreaEdges::empty(),
-        }
-    }
-
-    /// Creates a layout context with zero safe area
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self {
-            safe_area: SafeAreaInsets::ZERO,
-            ignores_safe_area: SafeAreaEdges::empty(),
-        }
-    }
-
-    /// Returns the effective safe area (considering ignored edges)
-    #[must_use]
-    pub fn effective_safe_area(&self) -> SafeAreaInsets {
-        self.safe_area.without(self.ignores_safe_area)
-    }
+    /// Layout priority for space distribution.
+    ///
+    /// Higher priority views are measured first and get space preference.
+    fn priority(&self) -> i32;
 }
 
 // ============================================================================
-// Child Metadata
+// Layout Trait - Container Layout
 // ============================================================================
 
-/// Backend-supplied metrics that describe how a child responded to a layout
-/// proposal.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ChildMetadata {
-    proposal: ProposalSize,
-    priority: u8,
-    stretch: bool,
-}
-
-impl ChildMetadata {
-    /// Creates a metadata instance describing a single child.
-    #[must_use]
-    pub const fn new(proposal: ProposalSize, priority: u8, stretch: bool) -> Self {
-        Self {
-            proposal,
-            priority,
-            stretch,
-        }
-    }
-
-    /// Returns the proposal that originated this metadata.
-    #[must_use]
-    pub const fn proposal(&self) -> &ProposalSize {
-        &self.proposal
-    }
-
-    /// Shortcut for the proposed height.
-    #[must_use]
-    pub const fn proposal_height(&self) -> Option<f32> {
-        self.proposal.height
-    }
-
-    /// Shortcut for the proposed width.
-    #[must_use]
-    pub const fn proposal_width(&self) -> Option<f32> {
-        self.proposal.width
-    }
-
-    /// Priority hints future layout scheduling (unused for now).
-    #[must_use]
-    pub const fn priority(&self) -> u8 {
-        self.priority
-    }
-
-    /// Whether the child is willing to expand beyond its intrinsic size.
-    #[must_use]
-    pub const fn stretch(&self) -> bool {
-        self.stretch
-    }
-}
-
-/// Behaviour shared by all layout containers.
+/// A layout algorithm for arranging child views.
+///
+/// Layouts receive a size proposal from their parent, query their children
+/// to determine sizes, and then place children within the final bounds.
+///
+/// # Two-Phase Layout
+///
+/// 1. **Sizing** ([`size_that_fits`](Self::size_that_fits)): Determine how big
+///    this container should be given a proposal
+/// 2. **Placement** ([`place`](Self::place)): Position children within the
+///    final bounds
+///
+/// # Note on Safe Area
+///
+/// Safe area handling is intentionally **not** part of the Layout trait.
+/// Safe area is a platform-specific concept handled by backends. Views can
+/// use the `IgnoresSafeArea` metadata to opt out of safe area insets.
 pub trait Layout: Debug {
-    /// Proposes sizes for each child based on the parent's proposal and the
-    /// metadata collected during the previous frame.
+    /// Calculate the size this layout wants given a proposal.
     ///
-    /// The `context` contains safe area information for this container.
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ProposalSize>;
-
-    /// Computes the layout's own size after its children have answered the
-    /// proposals created in [`propose`](Self::propose).
+    /// The layout can query children multiple times with different proposals
+    /// to determine optimal sizing.
     ///
-    /// The `context` contains safe area information for this container.
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
+    /// # Arguments
+    ///
+    /// * `proposal` - The size proposed by the parent
+    /// * `children` - Mutable references to child proxies for size queries
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size;
 
-    /// Places children within the final bounds chosen by the parent and
-    /// returns the rectangles they should occupy along with their layout contexts.
+    /// Place children within the given bounds.
     ///
-    /// Each child receives its own `LayoutContext` which may have different
-    /// safe area values (e.g., first child in VStack gets top safe area,
-    /// last child gets bottom safe area).
+    /// Called after sizing is complete. Returns a rect for each child
+    /// specifying its position and size within `bounds`.
+    ///
+    /// # Arguments
+    ///
+    /// * `bounds` - The rectangle this layout should fill
+    /// * `children` - Mutable references to child proxies (may query sizes again)
     fn place(
-        &mut self,
-        bound: Rect,
-        proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement>;
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect>;
 }
 
-/// Result of placing a child view
-#[derive(Debug, Clone)]
-pub struct ChildPlacement {
-    /// The rectangle where the child should be placed
-    pub rect: Rect,
-    /// The layout context for the child (with updated safe area)
-    pub context: LayoutContext,
-}
-
-impl ChildPlacement {
-    /// Creates a new child placement
-    #[must_use]
-    pub const fn new(rect: Rect, context: LayoutContext) -> Self {
-        Self { rect, context }
-    }
-
-    /// Creates a child placement with empty context (no safe area)
-    #[must_use]
-    pub fn with_empty_context(rect: Rect) -> Self {
-        Self {
-            rect,
-            context: LayoutContext::empty(),
-        }
-    }
-}
+// ============================================================================
+// Geometry Types
+// ============================================================================
 
 /// Axis-aligned rectangle relative to its parent.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
     origin: Point,
     size: Size,
@@ -293,7 +138,16 @@ impl Rect {
         Self { origin, size }
     }
 
-    /// Returns the rectangle's origin.
+    /// Creates a rectangle from origin (0, 0) with the given size.
+    #[must_use]
+    pub const fn from_size(size: Size) -> Self {
+        Self {
+            origin: Point::zero(),
+            size,
+        }
+    }
+
+    /// Returns the rectangle's origin (top-left corner).
     #[must_use]
     pub const fn origin(&self) -> Point {
         self.origin
@@ -305,12 +159,13 @@ impl Rect {
         &self.size
     }
 
-    /// Returns the rectangle's x-coordinate.
+    /// Returns the rectangle's x-coordinate (left edge).
     #[must_use]
     pub const fn x(&self) -> f32 {
         self.origin.x
     }
-    /// Returns the rectangle's y-coordinate.
+
+    /// Returns the rectangle's y-coordinate (top edge).
     #[must_use]
     pub const fn y(&self) -> f32 {
         self.origin.y
@@ -321,56 +176,79 @@ impl Rect {
     pub const fn width(&self) -> f32 {
         self.size.width
     }
+
     /// Returns the rectangle's height.
     #[must_use]
     pub const fn height(&self) -> f32 {
         self.size.height
     }
-    /// Returns the rectangle's maximum x-coordinate.
+
+    /// Returns the minimum x-coordinate (left edge).
+    #[must_use]
+    pub const fn min_x(&self) -> f32 {
+        self.origin.x
+    }
+
+    /// Returns the minimum y-coordinate (top edge).
+    #[must_use]
+    pub const fn min_y(&self) -> f32 {
+        self.origin.y
+    }
+
+    /// Returns the maximum x-coordinate (right edge).
     #[must_use]
     pub const fn max_x(&self) -> f32 {
         self.origin.x + self.size.width
     }
-    /// Returns the rectangle's maximum y-coordinate.
+
+    /// Returns the maximum y-coordinate (bottom edge).
     #[must_use]
     pub const fn max_y(&self) -> f32 {
         self.origin.y + self.size.height
     }
-    /// Returns the rectangle's midpoint x-coordinate.
+
+    /// Returns the midpoint x-coordinate.
     #[must_use]
     pub const fn mid_x(&self) -> f32 {
         self.origin.x + self.size.width / 2.0
     }
-    /// Returns the rectangle's midpoint y-coordinate.
+
+    /// Returns the midpoint y-coordinate.
     #[must_use]
     pub const fn mid_y(&self) -> f32 {
         self.origin.y + self.size.height / 2.0
     }
-    /// Returns the rectangle's minimum x-coordinate.
+
+    /// Returns the center point of the rectangle.
     #[must_use]
-    pub const fn min_x(&self) -> f32 {
-        self.origin.x - self.size.width
+    pub const fn center(&self) -> Point {
+        Point::new(self.mid_x(), self.mid_y())
     }
-    /// Returns the rectangle's minimum y-coordinate.
+
+    /// Inset the rectangle by the given amounts on each edge.
     #[must_use]
-    pub const fn min_y(&self) -> f32 {
-        self.origin.y - self.size.height
+    pub fn inset(&self, top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
+        Self::new(
+            Point::new(self.origin.x + leading, self.origin.y + top),
+            Size::new(
+                (self.size.width - leading - trailing).max(0.0),
+                (self.size.height - top - bottom).max(0.0),
+            ),
+        )
     }
 }
 
-/// Two-dimensional size expressed in absolute pixels.
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+// ============================================================================
+// Size
+// ============================================================================
+
+/// Two-dimensional size expressed in points.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Default)]
 pub struct Size {
-    /// The width in pixels.
+    /// The width in points.
     pub width: f32,
-    /// The height in pixels.
+    /// The height in points.
     pub height: f32,
-}
-
-impl Default for Size {
-    fn default() -> Self {
-        Self::zero()
-    }
 }
 
 impl Size {
@@ -388,14 +266,24 @@ impl Size {
             height: 0.0,
         }
     }
+
+    /// Returns true if both dimensions are zero.
+    #[must_use]
+    pub const fn is_zero(&self) -> bool {
+        self.width == 0.0 && self.height == 0.0
+    }
 }
 
+// ============================================================================
+// Point
+// ============================================================================
+
 /// Absolute coordinate relative to a parent layout's origin.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Point {
-    /// The x-coordinate in pixels.
+    /// The x-coordinate in points.
     pub x: f32,
-    /// The y-coordinate in pixels.
+    /// The y-coordinate in points.
     pub y: f32,
 }
 
@@ -413,21 +301,128 @@ impl Point {
     }
 }
 
-/// Soft constraint describing the desired size for a layout or subview.
-#[derive(Clone, Debug, PartialEq, Default)]
+// ============================================================================
+// ProposalSize
+// ============================================================================
+
+/// A size proposal from parent to child during layout negotiation.
+///
+/// Each dimension can be:
+/// - `None` - "Tell me your ideal size" (unspecified)
+/// - `Some(0.0)` - "Tell me your minimum size"
+/// - `Some(f32::INFINITY)` - "Tell me your maximum size"
+/// - `Some(value)` - "I suggest you use this size"
+///
+/// Children are free to return any size; the proposal is just a suggestion.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct ProposalSize {
-    /// Width constraint: `Some(f32)` for exact value, None for unconstrained, [`f32::INFINITY`] for infinite
+    /// Width proposal: `None` = unspecified, `Some(f32)` = suggested width
     pub width: Option<f32>,
-    /// Height constraint: `Some(f32)` for exact value, None for unconstrained, [`f32::INFINITY`] for infinite
+    /// Height proposal: `None` = unspecified, `Some(f32)` = suggested height
     pub height: Option<f32>,
 }
 
 impl ProposalSize {
-    /// Creates a [`ProposalSize`] from optional width and height hints.
+    /// Creates a [`ProposalSize`] from optional width and height.
+    #[must_use]
     pub fn new(width: impl Into<Option<f32>>, height: impl Into<Option<f32>>) -> Self {
         Self {
             width: width.into(),
             height: height.into(),
         }
+    }
+
+    /// Unspecified proposal - asks for ideal/intrinsic size.
+    pub const UNSPECIFIED: Self = Self {
+        width: None,
+        height: None,
+    };
+
+    /// Zero proposal - asks for minimum size.
+    pub const ZERO: Self = Self {
+        width: Some(0.0),
+        height: Some(0.0),
+    };
+
+    /// Infinite proposal - asks for maximum size.
+    pub const INFINITY: Self = Self {
+        width: Some(f32::INFINITY),
+        height: Some(f32::INFINITY),
+    };
+
+    /// Returns the width or a default value if unspecified.
+    #[must_use]
+    pub fn width_or(&self, default: f32) -> f32 {
+        self.width.unwrap_or(default)
+    }
+
+    /// Returns the height or a default value if unspecified.
+    #[must_use]
+    pub fn height_or(&self, default: f32) -> f32 {
+        self.height.unwrap_or(default)
+    }
+
+    /// Replace only the width, keeping the height.
+    #[must_use]
+    pub const fn with_width(self, width: Option<f32>) -> Self {
+        Self {
+            width,
+            height: self.height,
+        }
+    }
+
+    /// Replace only the height, keeping the width.
+    #[must_use]
+    pub const fn with_height(self, height: Option<f32>) -> Self {
+        Self {
+            width: self.width,
+            height,
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rect_geometry() {
+        let rect = Rect::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+
+        assert_eq!(rect.min_x(), 10.0);
+        assert_eq!(rect.min_y(), 20.0);
+        assert_eq!(rect.max_x(), 110.0);
+        assert_eq!(rect.max_y(), 70.0);
+        assert_eq!(rect.mid_x(), 60.0);
+        assert_eq!(rect.mid_y(), 45.0);
+        assert_eq!(rect.width(), 100.0);
+        assert_eq!(rect.height(), 50.0);
+    }
+
+    #[test]
+    fn test_rect_inset() {
+        let rect = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let inset = rect.inset(10.0, 10.0, 20.0, 20.0);
+
+        assert_eq!(inset.x(), 20.0);
+        assert_eq!(inset.y(), 10.0);
+        assert_eq!(inset.width(), 60.0);
+        assert_eq!(inset.height(), 80.0);
+    }
+
+    #[test]
+    fn test_proposal_size() {
+        let proposal = ProposalSize::new(Some(100.0), None);
+
+        assert_eq!(proposal.width_or(0.0), 100.0);
+        assert_eq!(proposal.height_or(50.0), 50.0);
+
+        let with_height = proposal.with_height(Some(200.0));
+        assert_eq!(with_height.width, Some(100.0));
+        assert_eq!(with_height.height, Some(200.0));
     }
 }
