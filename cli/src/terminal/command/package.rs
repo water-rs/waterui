@@ -44,6 +44,7 @@ pub struct PackageArgs {
 pub enum PackagePlatform {
     Android,
     Ios,
+    Macos,
 }
 
 impl PackagePlatform {
@@ -51,6 +52,7 @@ impl PackagePlatform {
         match self {
             Self::Android => "Android",
             Self::Ios => "iOS",
+            Self::Macos => "macOS",
         }
     }
 }
@@ -161,6 +163,25 @@ pub fn run(args: PackageArgs) -> Result<PackageReport> {
                     path: artifact.display().to_string(),
                 });
             }
+            PackagePlatform::Macos => {
+                let swift_config = config.backends.swift.clone().ok_or_else(|| {
+                    eyre!(
+                        "Apple backend not configured for this project. \
+                         Add it to Water.toml or recreate the project with the Apple backend.",
+                    )
+                })?;
+                let platform_impl = ApplePlatform::new(swift_config, AppleTarget::Macos);
+                let artifact = project
+                    .package(&platform_impl, args.release)
+                    .map_err(|err| eyre!(err))?;
+                if !is_json {
+                    ui::success(format!("macOS package ready: {}", artifact.display()));
+                }
+                artifacts.push(PackageArtifact {
+                    platform: "macos".to_string(),
+                    path: artifact.display().to_string(),
+                });
+            }
         }
     }
 
@@ -195,6 +216,7 @@ fn available_platforms(config: &Config) -> Vec<PackagePlatform> {
     }
     if config.backends.swift.is_some() {
         platforms.push(PackagePlatform::Ios);
+        platforms.push(PackagePlatform::Macos);
     }
     platforms
 }

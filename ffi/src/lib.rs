@@ -43,9 +43,38 @@ use waterui_core::Metadata;
 
 use crate::array::WuiArray;
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "std",
+    not(target_arch = "wasm32"),
+    not(waterui_enable_hot_reload)
+))]
 fn install_panic_hook() {
-    // Route panics through tracing; pretty rendering lives in the CLI.
+    // For non-hot-reload builds, initialize a simple tracing subscriber.
+    // Hot reload builds use their own subscriber in hot_reload.rs.
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = fmt::Subscriber::builder()
+        .with_env_filter(filter)
+        .without_time()
+        .with_target(false)
+        .try_init();
+
+    // Route panics through tracing
+    std::panic::set_hook(Box::new(tracing_panic::panic_hook));
+}
+
+#[cfg(all(
+    feature = "std",
+    not(target_arch = "wasm32"),
+    waterui_enable_hot_reload
+))]
+fn install_panic_hook() {
+    // Hot reload mode: Do NOT initialize subscriber here.
+    // The subscriber is initialized in hot_reload.rs (install_tracing_forwarder)
+    // with CLI forwarding support.
+    //
+    // We only set the panic hook to route panics through tracing.
+    // The actual tracing subscriber will be set up by hot_reload later.
     std::panic::set_hook(Box::new(tracing_panic::panic_hook));
 }
 

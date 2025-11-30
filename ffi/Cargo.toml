@@ -29,6 +29,7 @@ wgpu.workspace = true
 paste = "1.0.15"
 tracing.workspace = true
 tracing-panic.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 
 [[bin]]
