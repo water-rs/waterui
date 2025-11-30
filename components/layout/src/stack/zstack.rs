@@ -5,9 +5,14 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    ChildPlacement, Container, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    Container, Layout, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer, stack::Alignment,
 };
+
+/// Cached measurement for a child during layout
+struct ChildMeasurement {
+    size: Size,
+}
 
 /// Stacks an arbitrary number of children with a shared alignment.
 ///
@@ -23,52 +28,44 @@ pub struct ZStackLayout {
 }
 
 impl Layout for ZStackLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[crate::ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // For ZStack, we propose the parent's size to each child
-        // Each child gets to size itself based on the full available space
-        vec![parent; children.len()]
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[crate::ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size {
+        if children.is_empty() {
+            return Size::zero();
+        }
+
+        // Measure each child with the parent's proposal
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(proposal),
+            })
+            .collect();
+
         // ZStack's size is determined by the largest child
-        // We find the maximum width and height among all children
-        let mut max_width: f32 = 0.0;
-        let mut max_height: f32 = 0.0;
+        let max_width = measurements
+            .iter()
+            .map(|m| m.size.width)
+            .filter(|w| w.is_finite())
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0);
 
-        for child in children {
-            if let Some(width) = child.proposal_width() {
-                max_width = max_width.max(width);
-            }
-            if let Some(height) = child.proposal_height() {
-                max_height = max_height.max(height);
-            }
-        }
-
-        // If no children have explicit sizes, use parent constraints
-        if max_width == 0.0 {
-            max_width = parent.width.unwrap_or(0.0);
-        }
-        if max_height == 0.0 {
-            max_height = parent.height.unwrap_or(0.0);
-        }
+        let max_height = measurements
+            .iter()
+            .map(|m| m.size.height)
+            .filter(|h| h.is_finite())
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0);
 
         // Respect parent constraints - don't exceed them
-        let final_width = parent
+        let final_width = proposal
             .width
             .map_or(max_width, |parent_width| max_width.min(parent_width));
 
-        let final_height = parent
+        let final_height = proposal
             .height
             .map_or(max_height, |parent_height| max_height.min(parent_height));
 
@@ -76,48 +73,48 @@ impl Layout for ZStackLayout {
     }
 
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[crate::ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
-        // ZStack places all children within the same bounds, positioned according to alignment
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         if children.is_empty() {
-            return Vec::new();
+            return vec![];
         }
 
-        let mut placements = Vec::with_capacity(children.len());
+        // Re-measure children with the bounds as proposal
+        let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
 
-        for child in children {
-            // Each child gets sized to its ideal size, but constrained by the ZStack bounds
-            let child_width = child
-                .proposal_width()
-                .unwrap_or_else(|| bound.width())
-                .min(bound.width())
-                .max(0.0);
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+            })
+            .collect();
 
-            let child_height = child
-                .proposal_height()
-                .unwrap_or_else(|| bound.height())
-                .min(bound.height())
-                .max(0.0);
+        // Place each child according to alignment
+        let mut rects = Vec::with_capacity(children.len());
 
-            // Position the child within the ZStack bounds according to alignment
-            let (x, y) = self.calculate_position(&bound, &Size::new(child_width, child_height));
-
-            let rect = Rect::new(Point::new(x, y), Size::new(child_width, child_height));
-
-            // All children in ZStack get the full safe area (they all occupy the same space)
-            let child_context = LayoutContext {
-                safe_area: context.safe_area.clone(),
-                ignores_safe_area: context.ignores_safe_area,
+        for measurement in &measurements {
+            // Handle infinite dimensions (axis-expanding views)
+            let child_width = if measurement.size.width.is_infinite() {
+                bounds.width()
+            } else {
+                measurement.size.width.min(bounds.width())
             };
 
-            placements.push(ChildPlacement::new(rect, child_context));
+            let child_height = if measurement.size.height.is_infinite() {
+                bounds.height()
+            } else {
+                measurement.size.height.min(bounds.height())
+            };
+
+            let child_size = Size::new(child_width, child_height);
+            let (x, y) = self.calculate_position(&bounds, &child_size);
+
+            rects.push(Rect::new(Point::new(x, y), child_size));
         }
 
-        placements
+        rects
     }
 }
 
@@ -248,5 +245,78 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Container::new(self.layout, self.contents)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            false
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_zstack_size_multiple_children() {
+        let layout = ZStackLayout {
+            alignment: Alignment::Center,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(50.0, 30.0),
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(80.0, 40.0),
+        };
+        let mut child3 = MockSubView {
+            size: Size::new(60.0, 60.0),
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2, &mut child3];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        // ZStack takes the max width and max height
+        assert_eq!(size.width, 80.0);
+        assert_eq!(size.height, 60.0);
+    }
+
+    #[test]
+    fn test_zstack_placement_center() {
+        let layout = ZStackLayout {
+            alignment: Alignment::Center,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(40.0, 20.0),
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(60.0, 40.0),
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let rects = layout.place(bounds, &mut children);
+
+        // Child 1: centered in 100x100
+        assert_eq!(rects[0].x(), 30.0); // (100 - 40) / 2
+        assert_eq!(rects[0].y(), 40.0); // (100 - 20) / 2
+
+        // Child 2: centered in 100x100
+        assert_eq!(rects[1].x(), 20.0); // (100 - 60) / 2
+        assert_eq!(rects[1].y(), 30.0); // (100 - 40) / 2
     }
 }
