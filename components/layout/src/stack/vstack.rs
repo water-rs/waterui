@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    ChildMetadata, ChildPlacement, Container, Layout, LayoutContext, Point, ProposalSize, Rect,
-    SafeAreaInsets, Size, container::FixedContainer, stack::HorizontalAlignment,
+    Container, Layout, Point, ProposalSize, Rect, Size,
+    container::FixedContainer, stack::HorizontalAlignment, SubView,
 };
 
 /// Layout engine shared by the public [`VStack`] view.
@@ -18,41 +18,41 @@ pub struct VStackLayout {
     pub spacing: f32,
 }
 
+/// Cached measurement for a child during layout
+struct ChildMeasurement {
+    size: Size,
+    is_stretch: bool,
+}
+
 #[allow(clippy::cast_precision_loss)]
 impl Layout for VStackLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // Per LAYOUT_SPEC.md:
-        // - Width: Parent's width proposal (for text wrapping and axis-expanding views)
-        // - Height: None (child decides)
-        //
-        // This allows:
-        // - Text to wrap at available space
-        // - Axis-expanding views (TextField, Slider) to fill available width
-        // - Content-sized views to measure intrinsic and be centered
-        vec![ProposalSize::new(parent.width, None); children.len()]
-    }
-
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size {
         if children.is_empty() {
-            return Size::new(0.0, 0.0);
+            return Size::zero();
         }
 
-        let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
+        // Measure each child with parent's width (for text wrapping) and unspecified height
+        let child_proposal = ProposalSize::new(proposal.width, None);
 
-        let non_stretchy_height: f32 = children
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+                is_stretch: child.is_stretch(),
+            })
+            .collect();
+
+        let has_stretch = measurements.iter().any(|m| m.is_stretch);
+
+        // Height: sum of non-stretch children + spacing
+        let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().height.unwrap_or(0.0))
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.height)
             .sum();
 
         let total_spacing = if children.len() > 1 {
@@ -61,26 +61,22 @@ impl Layout for VStackLayout {
             0.0
         };
 
-        let intrinsic_height = non_stretchy_height + total_spacing;
-
-        let final_height = if has_stretchy_children {
-            parent.height.unwrap_or(intrinsic_height)
+        let intrinsic_height = non_stretch_height + total_spacing;
+        let final_height = if has_stretch {
+            proposal.height.unwrap_or(intrinsic_height)
         } else {
             intrinsic_height
         };
 
-        // Calculate intrinsic width as the maximum width of NON-STRETCHY children.
-        // Stretchy children (like Spacer) don't contribute to VStack's width.
-        // This allows center alignment to work correctly.
-        let max_width = children
+        // Width: max of non-stretch children
+        let max_width = measurements
             .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().width.unwrap_or(0.0))
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.width)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        // Use intrinsic width, but cap at parent's proposed width if any
-        let final_width = match parent.width {
+        let final_width = match proposal.width {
             Some(proposed) => max_width.min(proposed),
             None => max_width,
         };
@@ -89,21 +85,31 @@ impl Layout for VStackLayout {
     }
 
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
 
-        let stretchy_children_count = children.iter().filter(|c| c.stretch()).count();
-        let non_stretchy_height: f32 = children
+        // Measure children again (will be cached by SubView implementation)
+        let child_proposal = ProposalSize::new(Some(bounds.width()), None);
+
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+                is_stretch: child.is_stretch(),
+            })
+            .collect();
+
+        // Calculate stretch child height
+        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
+        let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().height.unwrap_or(0.0))
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.height)
             .sum();
 
         let total_spacing = if children.len() > 1 {
@@ -112,76 +118,51 @@ impl Layout for VStackLayout {
             0.0
         };
 
-        let remaining_height = bound.height() - non_stretchy_height - total_spacing;
-        let stretchy_child_height = if stretchy_children_count > 0 {
-            (remaining_height / stretchy_children_count as f32).max(0.0)
+        let remaining_height = bounds.height() - non_stretch_height - total_spacing;
+        let stretch_height = if stretch_count > 0 {
+            (remaining_height / stretch_count as f32).max(0.0)
         } else {
             0.0
         };
 
-        let mut placements = Vec::with_capacity(children.len());
-        let mut current_y = bound.origin().y;
-        let mut remaining_safe_area = context.safe_area.clone();
+        // Place children
+        let mut rects = Vec::with_capacity(children.len());
+        let mut current_y = bounds.y();
 
-        for (i, child) in children.iter().enumerate() {
+        for (i, measurement) in measurements.iter().enumerate() {
             if i > 0 {
                 current_y += self.spacing;
             }
 
-            let child_proposal = child.proposal();
-            // Clamp infinite widths to parent's bounds - INFINITY means "fill available"
-            let raw_width = child_proposal.width.unwrap_or(0.0);
-            let child_width = if raw_width.is_infinite() {
-                bound.width()
+            // Handle infinite width (axis-expanding views) and clamp to bounds
+            let child_width = if measurement.size.width.is_infinite() {
+                bounds.width()
             } else {
-                raw_width
+                // Clamp child width to bounds - child can't be wider than container
+                measurement.size.width.min(bounds.width())
             };
-            let child_height = if child.stretch() {
-                stretchy_child_height
+
+            let child_height = if measurement.is_stretch {
+                stretch_height
             } else {
-                child_proposal.height.unwrap_or(0.0)
+                measurement.size.height
             };
 
             let x = match self.alignment {
-                HorizontalAlignment::Leading => bound.origin().x,
-                HorizontalAlignment::Center => {
-                    bound.origin().x + (bound.width() - child_width) / 2.0
-                }
-                HorizontalAlignment::Trailing => bound.origin().x + bound.width() - child_width,
+                HorizontalAlignment::Leading => bounds.x(),
+                HorizontalAlignment::Center => bounds.x() + (bounds.width() - child_width) / 2.0,
+                HorizontalAlignment::Trailing => bounds.x() + bounds.width() - child_width,
             };
 
-            let origin = Point::new(x, current_y);
-            let size = Size::new(child_width, child_height);
-            let rect = Rect::new(origin, size);
+            rects.push(Rect::new(
+                Point::new(x, current_y),
+                Size::new(child_width, child_height),
+            ));
 
-            // Calculate safe area for this child:
-            // - First child gets top safe area
-            // - Last child gets bottom safe area
-            // - All children get leading/trailing safe area
-            let child_safe_area = SafeAreaInsets {
-                top: if i == 0 { remaining_safe_area.top } else { 0.0 },
-                bottom: if i == children.len() - 1 {
-                    remaining_safe_area.bottom
-                } else {
-                    0.0
-                },
-                leading: remaining_safe_area.leading,
-                trailing: remaining_safe_area.trailing,
-            };
-
-            let child_context = LayoutContext {
-                safe_area: child_safe_area,
-                ignores_safe_area: context.ignores_safe_area,
-            };
-
-            placements.push(ChildPlacement::new(rect, child_context));
             current_y += child_height;
-
-            // Consume top safe area after first child
-            remaining_safe_area.top = 0.0;
         }
 
-        placements
+        rects
     }
 }
 
@@ -202,6 +183,7 @@ impl<C: TupleViews> VStack<(C,)> {
         }
     }
 }
+
 impl<C, F, V> VStack<ForEach<C, F, V>>
 where
     C: Collection,
@@ -264,5 +246,107 @@ where
 impl<C: TupleViews + 'static> View for VStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+        is_stretch: bool,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            self.is_stretch
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_vstack_size_two_children() {
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(100.0, 30.0),
+            is_stretch: false,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(80.0, 40.0),
+            is_stretch: false,
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        assert_eq!(size.width, 100.0); // max width
+        assert_eq!(size.height, 80.0); // 30 + 10 + 40
+    }
+
+    #[test]
+    fn test_vstack_with_spacer() {
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Center,
+            spacing: 0.0,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(100.0, 30.0),
+            is_stretch: false,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            is_stretch: true,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(100.0, 30.0),
+            is_stretch: false,
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+        // With specified height, spacer should expand
+        let size = layout.size_that_fits(
+            ProposalSize::new(None, Some(200.0)),
+            &mut children,
+        );
+
+        assert_eq!(size.height, 200.0);
+
+        // Place should distribute remaining space to spacer
+        let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
+
+        // Need fresh references
+        let mut child1 = MockSubView {
+            size: Size::new(100.0, 30.0),
+            is_stretch: false,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            is_stretch: true,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(100.0, 30.0),
+            is_stretch: false,
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+        let rects = layout.place(bounds, &mut children);
+
+        assert_eq!(rects[0].height(), 30.0);
+        assert_eq!(rects[1].height(), 140.0); // 200 - 30 - 30
+        assert_eq!(rects[2].height(), 30.0);
+        assert_eq!(rects[2].y(), 170.0); // 30 + 140
     }
 }

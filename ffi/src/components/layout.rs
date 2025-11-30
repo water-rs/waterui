@@ -1,7 +1,6 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
-    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, Rect, SafeAreaEdges,
-    SafeAreaInsets, ScrollView, Size,
+    Layout, Point, ProposalSize, Rect, ScrollView, Size, SubView,
     container::{Container as LayoutContainer, FixedContainer},
     scroll::Axis,
 };
@@ -59,17 +58,21 @@ impl IntoFFI for LayoutContainer {
     }
 }
 
+// ============================================================================
+// ProposalSize FFI
+// ============================================================================
+
 #[derive(Clone, Default)]
 #[repr(C)]
 pub struct WuiProposalSize {
-    width: f32, // May be f32::NAN
+    width: f32, // May be f32::NAN for unspecified
     height: f32,
 }
 
 impl IntoRust for WuiProposalSize {
-    type Rust = waterui_layout::ProposalSize;
+    type Rust = ProposalSize;
     unsafe fn into_rust(self) -> Self::Rust {
-        waterui_layout::ProposalSize {
+        ProposalSize {
             width: if self.width.is_nan() {
                 None
             } else {
@@ -84,7 +87,7 @@ impl IntoRust for WuiProposalSize {
     }
 }
 
-impl IntoFFI for waterui_layout::ProposalSize {
+impl IntoFFI for ProposalSize {
     type FFI = WuiProposalSize;
     fn into_ffi(self) -> Self::FFI {
         WuiProposalSize {
@@ -94,190 +97,71 @@ impl IntoFFI for waterui_layout::ProposalSize {
     }
 }
 
-#[derive(Default, Clone)]
+// ============================================================================
+// SubView FFI Proxy
+// ============================================================================
+
+/// VTable for SubView operations.
+///
+/// This structure contains function pointers that allow native code to implement
+/// the SubView protocol. The native backend provides these callbacks to participate
+/// in layout negotiation.
 #[repr(C)]
-pub struct WuiChildMetadata {
-    proposal: WuiProposalSize,
-    priority: u8,
-    stretch: bool,
+pub struct WuiSubViewVTable {
+    /// Measures the child view given a size proposal.
+    /// Called potentially multiple times with different proposals during layout.
+    pub measure:
+        unsafe extern "C" fn(context: *mut core::ffi::c_void, proposal: WuiProposalSize) -> WuiSize,
+    /// Cleans up the context when the subview is no longer needed.
+    /// Called when the WuiSubView is dropped.
+    pub drop: unsafe extern "C" fn(context: *mut core::ffi::c_void),
 }
 
-impl IntoFFI for ChildMetadata {
-    type FFI = WuiChildMetadata;
-    fn into_ffi(self) -> Self::FFI {
-        WuiChildMetadata {
-            proposal: self.proposal().clone().into_ffi(),
-            priority: self.priority(),
-            stretch: self.stretch(),
-        }
+/// FFI representation of a SubView proxy.
+///
+/// This allows native code to participate in the layout negotiation protocol
+/// by providing callbacks that can be called multiple times with different proposals.
+///
+/// # Memory Management
+///
+/// The `context` pointer is owned by this struct. When the `WuiSubView` is dropped,
+/// the `vtable.drop` function will be called to clean up the context.
+#[repr(C)]
+pub struct WuiSubView {
+    /// Opaque context pointer (e.g., child view reference, cached data)
+    pub context: *mut core::ffi::c_void,
+    /// VTable containing measure and drop functions
+    pub vtable: WuiSubViewVTable,
+    /// Whether this view stretches to fill available space (like Spacer)
+    pub is_stretch: bool,
+    /// Layout priority (higher = measured first, gets space preference)
+    pub priority: i32,
+}
+
+impl Drop for WuiSubView {
+    fn drop(&mut self) {
+        unsafe { (self.vtable.drop)(self.context) }
     }
 }
 
-impl IntoRust for WuiChildMetadata {
-    type Rust = ChildMetadata;
-    unsafe fn into_rust(self) -> Self::Rust {
-        ChildMetadata::new(
-            unsafe { self.proposal.into_rust() },
-            self.priority,
-            self.stretch,
-        )
+impl SubView for WuiSubView {
+    fn size_that_fits(&mut self, proposal: ProposalSize) -> Size {
+        let result = unsafe { (self.vtable.measure)(self.context, proposal.into_ffi()) };
+        unsafe { result.into_rust() }
+    }
+
+    fn is_stretch(&self) -> bool {
+        self.is_stretch
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
     }
 }
 
 // ============================================================================
-// Safe Area FFI Types
+// Geometry Types
 // ============================================================================
-
-/// FFI representation of safe area insets
-#[derive(Clone, Default)]
-#[repr(C)]
-pub struct WuiSafeAreaInsets {
-    pub top: f32,
-    pub bottom: f32,
-    pub leading: f32,
-    pub trailing: f32,
-}
-
-impl IntoFFI for SafeAreaInsets {
-    type FFI = WuiSafeAreaInsets;
-    fn into_ffi(self) -> Self::FFI {
-        WuiSafeAreaInsets {
-            top: self.top,
-            bottom: self.bottom,
-            leading: self.leading,
-            trailing: self.trailing,
-        }
-    }
-}
-
-impl IntoRust for WuiSafeAreaInsets {
-    type Rust = SafeAreaInsets;
-    unsafe fn into_rust(self) -> Self::Rust {
-        SafeAreaInsets {
-            top: self.top,
-            bottom: self.bottom,
-            leading: self.leading,
-            trailing: self.trailing,
-        }
-    }
-}
-
-/// FFI representation of safe area edges (bitflags)
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
-pub struct WuiSafeAreaEdges {
-    pub bits: u8,
-}
-
-impl IntoFFI for SafeAreaEdges {
-    type FFI = WuiSafeAreaEdges;
-    fn into_ffi(self) -> Self::FFI {
-        WuiSafeAreaEdges { bits: self.bits() }
-    }
-}
-
-impl IntoRust for WuiSafeAreaEdges {
-    type Rust = SafeAreaEdges;
-    unsafe fn into_rust(self) -> Self::Rust {
-        SafeAreaEdges::from_bits_truncate(self.bits)
-    }
-}
-
-/// FFI representation of layout context
-#[derive(Clone, Default)]
-#[repr(C)]
-pub struct WuiLayoutContext {
-    pub safe_area: WuiSafeAreaInsets,
-    pub ignores_safe_area: WuiSafeAreaEdges,
-}
-
-impl IntoFFI for LayoutContext {
-    type FFI = WuiLayoutContext;
-    fn into_ffi(self) -> Self::FFI {
-        WuiLayoutContext {
-            safe_area: self.safe_area.into_ffi(),
-            ignores_safe_area: self.ignores_safe_area.into_ffi(),
-        }
-    }
-}
-
-impl IntoRust for WuiLayoutContext {
-    type Rust = LayoutContext;
-    unsafe fn into_rust(self) -> Self::Rust {
-        LayoutContext {
-            safe_area: unsafe { self.safe_area.into_rust() },
-            ignores_safe_area: unsafe { self.ignores_safe_area.into_rust() },
-        }
-    }
-}
-
-/// FFI representation of child placement (rect + context)
-#[repr(C)]
-pub struct WuiChildPlacement {
-    pub rect: WuiRect,
-    pub context: WuiLayoutContext,
-}
-
-impl IntoFFI for ChildPlacement {
-    type FFI = WuiChildPlacement;
-    fn into_ffi(self) -> Self::FFI {
-        WuiChildPlacement {
-            rect: self.rect.into_ffi(),
-            context: self.context.into_ffi(),
-        }
-    }
-}
-
-/// Proposes sizes for children based on parent constraints and child metadata.
-///
-/// # Safety
-///
-/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
-/// The caller must ensure the layout object remains valid for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_propose(
-    layout: *mut WuiLayout,
-    parent: WuiProposalSize,
-    children: WuiArray<WuiChildMetadata>,
-    context: WuiLayoutContext,
-) -> WuiArray<WuiProposalSize> {
-    // But the returned array is allocated by Rust, so caller needs to free it
-    // Convert FFI types to Rust types
-    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
-    let parent = unsafe { parent.into_rust() };
-    let context = unsafe { context.into_rust() };
-
-    let children = unsafe { children.into_rust() };
-
-    let proposals = layout.propose(parent, &children, &context);
-
-    proposals.into_ffi()
-}
-
-/// Calculates the size required by the layout based on parent constraints and child metadata.
-///
-/// # Safety
-///
-/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
-/// The caller must ensure the layout object remains valid for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_size(
-    layout: *mut WuiLayout,
-    parent: WuiProposalSize,
-    children: WuiArray<WuiChildMetadata>,
-    context: WuiLayoutContext,
-) -> WuiSize {
-    // Convert FFI types to Rust types
-    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
-    let parent = unsafe { parent.into_rust() };
-    let context = unsafe { context.into_rust() };
-
-    let children = unsafe { children.into_rust() };
-
-    let size = layout.size(parent, &children, &context);
-
-    size.into_ffi()
-}
 
 into_ffi! {Point,
     pub struct WuiPoint {
@@ -287,29 +171,42 @@ into_ffi! {Point,
 }
 
 impl IntoRust for WuiPoint {
-    type Rust = waterui_layout::Point;
+    type Rust = Point;
     unsafe fn into_rust(self) -> Self::Rust {
-        waterui_layout::Point {
+        Point {
             x: self.x,
             y: self.y,
         }
     }
 }
 
+into_ffi! {Size,
+    pub struct WuiSize {
+        width: f32,
+        height: f32,
+    }
+}
+
 impl IntoRust for WuiSize {
-    type Rust = waterui_layout::Size;
+    type Rust = Size;
     unsafe fn into_rust(self) -> Self::Rust {
-        waterui_layout::Size {
+        Size {
             width: self.width,
             height: self.height,
         }
     }
 }
 
+#[repr(C)]
+pub struct WuiRect {
+    origin: WuiPoint,
+    size: WuiSize,
+}
+
 impl IntoRust for WuiRect {
-    type Rust = waterui_layout::Rect;
+    type Rust = Rect;
     unsafe fn into_rust(self) -> Self::Rust {
-        unsafe { waterui_layout::Rect::new(self.origin.into_rust(), self.size.into_rust()) }
+        unsafe { Rect::new(self.origin.into_rust(), self.size.into_rust()) }
     }
 }
 
@@ -323,18 +220,76 @@ impl IntoFFI for Rect {
     }
 }
 
-into_ffi! {Size,
-    pub struct WuiSize {
-        width: f32,
-        height: f32,
-    }
+// ============================================================================
+// Layout API Functions
+// ============================================================================
+
+/// Calculates the size required by the layout given a proposal and child proxies.
+///
+/// This function implements the new SubView-based negotiation protocol where
+/// layouts can query children multiple times with different proposals.
+///
+/// # Safety
+///
+/// - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+/// - The `children` array must contain valid `WuiSubView` entries.
+/// - The measure callbacks in each child must be safe to call.
+/// - The `children` array will be consumed and dropped after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_size_that_fits(
+    layout: *mut WuiLayout,
+    proposal: WuiProposalSize,
+    mut children: WuiArray<WuiSubView>,
+) -> WuiSize {
+    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
+    let proposal = unsafe { proposal.into_rust() };
+
+    // Get mutable slice of WuiSubView and create trait object references
+    let children_slice = children.as_mut_slice();
+    let mut subview_refs: Vec<&mut dyn SubView> = children_slice
+        .iter_mut()
+        .map(|s| s as &mut dyn SubView)
+        .collect();
+
+    let size = layout.size_that_fits(proposal, &mut subview_refs);
+    size.into_ffi()
+    // children array is dropped here, calling drop on each WuiSubView
 }
 
-#[repr(C)]
-pub struct WuiRect {
-    origin: WuiPoint,
-    size: WuiSize,
+/// Places child views within the specified bounds.
+///
+/// Returns an array of Rect values representing the position and size of each child.
+///
+/// # Safety
+///
+/// - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+/// - The `children` array must contain valid `WuiSubView` entries.
+/// - The measure callbacks in each child must be safe to call.
+/// - The `children` array will be consumed and dropped after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_place(
+    layout: *mut WuiLayout,
+    bounds: WuiRect,
+    mut children: WuiArray<WuiSubView>,
+) -> WuiArray<WuiRect> {
+    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
+    let bounds = unsafe { bounds.into_rust() };
+
+    // Get mutable slice of WuiSubView and create trait object references
+    let children_slice = children.as_mut_slice();
+    let mut subview_refs: Vec<&mut dyn SubView> = children_slice
+        .iter_mut()
+        .map(|s| s as &mut dyn SubView)
+        .collect();
+
+    let rects = layout.place(bounds, &mut subview_refs);
+    rects.into_ffi()
+    // children array is dropped here, calling drop on each WuiSubView
 }
+
+// ============================================================================
+// ScrollView
+// ============================================================================
 
 into_ffi! {Axis,All,
     pub enum WuiAxis {
@@ -362,31 +317,3 @@ impl IntoFFI for ScrollView {
 }
 
 ffi_view!(ScrollView, WuiScrollView);
-
-/// Places child views within the specified bounds based on layout constraints and child metadata.
-///
-/// # Safety
-///
-/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
-/// The caller must ensure the layout object remains valid for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_place(
-    layout: *mut WuiLayout,
-    bound: WuiRect,
-    proposal: WuiProposalSize,
-    children: WuiArray<WuiChildMetadata>,
-    context: WuiLayoutContext,
-) -> WuiArray<WuiChildPlacement> {
-    // But the returned array is allocated by Rust, so caller needs to free it
-    // Convert FFI types to Rust types
-    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
-    let bound = unsafe { bound.into_rust() };
-    let proposal = unsafe { proposal.into_rust() };
-    let context = unsafe { context.into_rust() };
-
-    let children = unsafe { children.into_rust() };
-
-    let placements = layout.place(bound, proposal, &children, &context);
-
-    placements.into_ffi()
-}
