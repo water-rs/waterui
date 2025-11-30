@@ -16,11 +16,13 @@ pub struct WuiFixedContainer {
     contents: WuiArray<*mut WuiAnyView>,
 }
 
+// `Spacer` is a raw view, it stretches to fill available space.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_spacer_id() -> WuiStr {
     core::any::type_name::<waterui::component::spacer::Spacer>().into_ffi()
 }
 
+// `Divider` is a raw view, it stretches to fill available space in width.
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_divider_id() -> WuiStr {
     core::any::type_name::<waterui::widget::Divider>().into_ffi()
