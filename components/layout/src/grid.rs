@@ -5,10 +5,15 @@ use core::num::NonZeroUsize;
 use waterui_core::{AnyView, Environment, View, view::TupleViews};
 
 use crate::{
-    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    Layout, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
+
+/// Cached measurement for a child during layout
+struct ChildMeasurement {
+    size: Size,
+}
 
 /// The core layout engine for a `Grid`.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
@@ -32,36 +37,10 @@ impl GridLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
-    /// Propose a size to each child cell.
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        if children.is_empty() {
-            return vec![];
-        }
-
-        // Calculate the width available for each column.
-        // A Grid requires a defined width from its parent to function correctly.
-        let child_width = parent.width.map(|w| {
-            let total_spacing = self.spacing.width * (self.columns.get() - 1) as f32;
-            ((w - total_spacing) / self.columns.get() as f32).max(0.0)
-        });
-
-        // Grids are vertically unconstrained during the proposal phase.
-        // Each child is asked for its ideal height given the calculated column width.
-        let child_proposal = ProposalSize::new(child_width, None);
-        vec![child_proposal; children.len()]
-    }
-
-    /// Calculate the total size required by the grid.
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size {
         if children.is_empty() {
             return Size::zero();
@@ -70,81 +49,113 @@ impl Layout for GridLayout {
         let num_columns = self.columns.get();
         let num_rows = children.len().div_ceil(num_columns);
 
+        // Calculate the width available for each column.
+        // A Grid requires a defined width from its parent to function correctly.
+        let child_width = proposal.width.map(|w| {
+            let total_spacing = self.spacing.width * (num_columns - 1) as f32;
+            ((w - total_spacing) / num_columns as f32).max(0.0)
+        });
+
+        // Grids are vertically unconstrained during the proposal phase.
+        // Each child is asked for its ideal height given the calculated column width.
+        let child_proposal = ProposalSize::new(child_width, None);
+
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+            })
+            .collect();
+
         // The grid's height is the sum of the tallest item in each row, plus vertical spacing.
         let mut total_height = 0.0;
-        for row_children in children.chunks(num_columns) {
+        for row_children in measurements.chunks(num_columns) {
             let row_height = row_children
                 .iter()
-                .map(|c| c.proposal_height().unwrap_or(0.0))
-                .fold(0.0, f32::max); // Find the max height in the row
+                .map(|m| m.size.height)
+                .filter(|h| h.is_finite())
+                .fold(0.0, f32::max);
             total_height += row_height;
         }
 
         total_height += self.spacing.height * (num_rows.saturating_sub(1) as f32);
 
         // A Grid's width is defined by its parent. If not, it has no intrinsic width.
-        let final_width = parent.width.unwrap_or(0.0);
+        let final_width = proposal.width.unwrap_or(0.0);
 
         Size::new(final_width, total_height)
     }
 
-    /// Place each child within its calculated cell in the grid.
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
-        if children.is_empty() || !bound.width().is_finite() {
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
+        if children.is_empty() || !bounds.width().is_finite() {
             // A grid cannot be placed in an infinitely wide space. Return zero-rects.
             return vec![
-                ChildPlacement::with_empty_context(Rect::new(Point::zero(), Size::zero()));
+                Rect::new(Point::zero(), Size::zero());
                 children.len()
             ];
         }
 
         let num_columns = self.columns.get();
-        let num_rows = children.len().div_ceil(num_columns);
+
+        // Calculate column width
+        let total_h_spacing = self.spacing.width * (num_columns - 1) as f32;
+        let column_width = ((bounds.width() - total_h_spacing) / num_columns as f32).max(0.0);
+
+        // Measure all children with the column width constraint
+        let child_proposal = ProposalSize::new(Some(column_width), None);
+
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+            })
+            .collect();
 
         // Pre-calculate the height of each row by finding the tallest child in that row.
-        let row_heights: Vec<f32> = children
+        let row_heights: Vec<f32> = measurements
             .chunks(num_columns)
             .map(|row_children| {
                 row_children
                     .iter()
-                    .map(|c| c.proposal_height().unwrap_or(0.0))
+                    .map(|m| m.size.height)
+                    .filter(|h| h.is_finite())
                     .fold(0.0, f32::max)
             })
             .collect();
 
-        let total_h_spacing = self.spacing.width * (num_columns - 1) as f32;
-        let column_width = ((bound.width() - total_h_spacing) / num_columns as f32).max(0.0);
-
         let mut placements = Vec::with_capacity(children.len());
-        let mut cursor_y = bound.y();
+        let mut cursor_y = bounds.y();
 
-        for (row_index, row_children) in children.chunks(num_columns).enumerate() {
+        for (row_index, row_measurements) in measurements.chunks(num_columns).enumerate() {
             let row_height = row_heights.get(row_index).copied().unwrap_or(0.0);
-            let mut cursor_x = bound.x();
-            let is_first_row = row_index == 0;
-            let is_last_row = row_index == num_rows - 1;
+            let mut cursor_x = bounds.x();
 
-            for (col_index, child) in row_children.iter().enumerate() {
-                let is_first_col = col_index == 0;
-                let is_last_col = col_index == num_columns - 1;
-
+            for measurement in row_measurements {
                 let cell_frame = Rect::new(
                     Point::new(cursor_x, cursor_y),
                     Size::new(column_width, row_height),
                 );
 
-                let child_size = Size::new(
-                    child.proposal_width().unwrap_or(0.0),
-                    child.proposal_height().unwrap_or(0.0),
-                );
+                // Handle infinite dimensions
+                let child_width = if measurement.size.width.is_infinite() {
+                    column_width
+                } else {
+                    measurement.size.width
+                };
 
-                // Align the child within its cell (same logic as Frame layout)
+                let child_height = if measurement.size.height.is_infinite() {
+                    row_height
+                } else {
+                    measurement.size.height
+                };
+
+                let child_size = Size::new(child_width, child_height);
+
+                // Align the child within its cell
                 let child_x = match self.alignment.horizontal() {
                     HorizontalAlignment::Leading => cell_frame.x(),
                     HorizontalAlignment::Center => {
@@ -161,37 +172,7 @@ impl Layout for GridLayout {
                     VerticalAlignment::Bottom => cell_frame.max_y() - child_size.height,
                 };
 
-                // Grid distributes safe area to edge cells
-                let child_context = LayoutContext {
-                    safe_area: crate::SafeAreaInsets {
-                        top: if is_first_row {
-                            context.safe_area.top
-                        } else {
-                            0.0
-                        },
-                        bottom: if is_last_row {
-                            context.safe_area.bottom
-                        } else {
-                            0.0
-                        },
-                        leading: if is_first_col {
-                            context.safe_area.leading
-                        } else {
-                            0.0
-                        },
-                        trailing: if is_last_col {
-                            context.safe_area.trailing
-                        } else {
-                            0.0
-                        },
-                    },
-                    ignores_safe_area: context.ignores_safe_area,
-                };
-
-                placements.push(ChildPlacement::new(
-                    Rect::new(Point::new(child_x, child_y), child_size),
-                    child_context,
-                ));
+                placements.push(Rect::new(Point::new(child_x, child_y), child_size));
 
                 cursor_x += column_width + self.spacing.width;
             }
@@ -295,4 +276,81 @@ pub fn grid(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Grid {
 /// This is a convenience function for creating `GridRow` instances.
 pub fn row(contents: impl TupleViews) -> GridRow {
     GridRow::new(contents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::num::NonZeroUsize;
+
+    struct MockSubView {
+        size: Size,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            false
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_grid_size_2x2() {
+        let layout = GridLayout::new(
+            NonZeroUsize::new(2).unwrap(),
+            Size::new(10.0, 10.0),
+            Alignment::Center,
+        );
+
+        let mut child1 = MockSubView { size: Size::new(50.0, 30.0) };
+        let mut child2 = MockSubView { size: Size::new(50.0, 40.0) };
+        let mut child3 = MockSubView { size: Size::new(50.0, 20.0) };
+        let mut child4 = MockSubView { size: Size::new(50.0, 50.0) };
+
+        let mut children: Vec<&mut dyn SubView> = vec![
+            &mut child1, &mut child2,
+            &mut child3, &mut child4,
+        ];
+
+        let size = layout.size_that_fits(
+            ProposalSize::new(Some(200.0), None),
+            &mut children,
+        );
+
+        // Width is parent-proposed
+        assert_eq!(size.width, 200.0);
+        // Height: row1 max(30, 40) + spacing + row2 max(20, 50) = 40 + 10 + 50 = 100
+        assert_eq!(size.height, 100.0);
+    }
+
+    #[test]
+    fn test_grid_placement() {
+        let layout = GridLayout::new(
+            NonZeroUsize::new(2).unwrap(),
+            Size::new(10.0, 10.0),
+            Alignment::TopLeading,
+        );
+
+        let mut child1 = MockSubView { size: Size::new(40.0, 30.0) };
+        let mut child2 = MockSubView { size: Size::new(40.0, 30.0) };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let rects = layout.place(bounds, &mut children);
+
+        // Column width: (100 - 10) / 2 = 45
+        // Child 1 at (0, 0)
+        assert_eq!(rects[0].x(), 0.0);
+        assert_eq!(rects[0].y(), 0.0);
+
+        // Child 2 at (45 + 10, 0) = (55, 0)
+        assert_eq!(rects[1].x(), 55.0);
+        assert_eq!(rects[1].y(), 0.0);
+    }
 }
