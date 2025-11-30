@@ -151,10 +151,6 @@ pub struct RunArgs {
     /// Enable experimental mold linker integration (Linux hosts only)
     #[arg(long)]
     mold: bool,
-
-    /// Disable hot reloading
-    #[arg(long)]
-    no_hot_reload: bool,
 }
 
 /// Build and launch a `WaterUI` project for the selected platform.
@@ -197,7 +193,6 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
     let release = args.release;
     let enable_sccache = !args.no_sccache;
     let mold_requested = args.mold;
-    let hot_reload_requested = !args.no_hot_reload;
     let log_filter = args.log_filter.clone();
 
     if is_json && !had_explicit_platform && device.is_none() {
@@ -236,7 +231,6 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         &project,
         &config,
         release,
-        hot_reload_requested,
         enable_sccache,
         mold_requested,
         log_filter,
@@ -246,7 +240,7 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
 }
 
 fn run_again(args: RunArgs) -> Result<()> {
-    if args.device.is_some() || args.release || args.no_sccache || args.mold || args.no_hot_reload {
+    if args.device.is_some() || args.release || args.no_sccache || args.mold {
         bail!(
             "`water run again` does not accept additional options. Re-run the original command without extra flags."
         );
@@ -266,7 +260,6 @@ fn run_again(args: RunArgs) -> Result<()> {
         release: snapshot.release,
         no_sccache: !snapshot.enable_sccache,
         mold: snapshot.mold,
-        no_hot_reload: !snapshot.hot_reload,
     };
 
     run_fresh(replay_args)
@@ -522,7 +515,6 @@ fn run_platform(
     project: &Project,
     config: &Config,
     release: bool,
-    hot_reload_requested: bool,
     enable_sccache: bool,
     mold_requested: bool,
     log_filter: Option<String>,
@@ -547,55 +539,57 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(
-            project_dir,
-            config,
-            release,
-            hot_reload_requested,
-            log_filter,
-        );
+        return run_web(project_dir, config, release, log_filter);
     }
 
-    let hot_reload_requested =
-        hot_reload_requested && platform_supports_native_hot_reload(platform);
-    if platform == Platform::Android && hot_reload_requested {
+    // Hot reload is always enabled for native platforms that support it
+    let hot_reload_enabled = platform_supports_native_hot_reload(platform);
+    if platform == Platform::Android && hot_reload_enabled {
         if let Some(target) = hot_reload_target.as_deref() {
             configure_rust_android_linker_env(&[target])?;
         }
     }
 
-    let mut server = None;
-    let mut hot_reload_enabled = false;
-    let mut connection_events: Option<NativeConnectionEvents> = None;
-    if hot_reload_requested {
-        match Server::start(project_dir.to_path_buf(), log_filter.clone()) {
-            Ok(instance) => {
-                hot_reload_enabled = true;
-                connection_events = Some(instance.connection_events());
-                server = Some(instance);
-            }
-            Err(err) => {
-                if err
-                    .downcast_ref::<io::Error>()
-                    .is_some_and(|io_err| io_err.kind() == io::ErrorKind::PermissionDenied)
-                {
-                    ui::warning(format!(
-                        "Hot reload disabled: could not bind local server ({err}). \
-Use --no-hot-reload to skip this step."
-                    ));
-                } else {
-                    return Err(err);
-                }
-            }
-        }
+    let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
+        .context("Failed to start hot reload server")?;
+    let connection_events = server.connection_events();
+    let hot_reload_port = Some(server.address().port());
+
+    // Build the Rust library
+    run_cargo_build(
+        project_dir,
+        &config.package.name,
+        release,
+        hot_reload_enabled,
+        hot_reload_port,
+        enable_sccache,
+        mold_requested,
+        hot_reload_target.as_deref(),
+    )?;
+
+    // Notify initial library if it exists
+    let library_path = hot_reload_library_path(
+        project_dir,
+        &config.package.name,
+        release,
+        hot_reload_target.as_deref(),
+    );
+    if library_path.exists() {
+        server.notify_native_reload(library_path);
     }
 
-    let hot_reload_port = server.as_ref().map(|s| s.address().port());
+    // Set up file watcher for hot reload
+    let mut watch_paths = vec![project_dir.join("src")];
+    for path in &config.hot_reload.watch {
+        watch_paths.push(project_dir.join(path));
+    }
 
-    if hot_reload_enabled {
+    let project_dir_buf = project_dir.to_path_buf();
+    let package_name = config.package.name.clone();
+    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
         run_cargo_build(
-            project_dir,
-            &config.package.name,
+            &project_dir_buf,
+            &package_name,
             release,
             hot_reload_enabled,
             hot_reload_port,
@@ -603,57 +597,17 @@ Use --no-hot-reload to skip this step."
             mold_requested,
             hot_reload_target.as_deref(),
         )?;
+        let library_path = hot_reload_library_path(
+            &project_dir_buf,
+            &package_name,
+            release,
+            hot_reload_target.as_deref(),
+        );
+        server.notify_native_reload(library_path);
+        Ok(())
+    });
 
-        if let Some(server_ref) = &server {
-            let library_path = hot_reload_library_path(
-                project_dir,
-                &config.package.name,
-                release,
-                hot_reload_target.as_deref(),
-            );
-            if library_path.exists() {
-                server_ref.notify_native_reload(library_path);
-            }
-        }
-    }
-
-    let watcher = if hot_reload_enabled {
-        if let Some(server) = server {
-            let mut watch_paths = vec![project_dir.join("src")];
-            for path in &config.hot_reload.watch {
-                watch_paths.push(project_dir.join(path));
-            }
-
-            let project_dir_buf = project_dir.to_path_buf();
-            let package_name = config.package.name.clone();
-            let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-                run_cargo_build(
-                    &project_dir_buf,
-                    &package_name,
-                    release,
-                    hot_reload_enabled,
-                    hot_reload_port,
-                    enable_sccache,
-                    mold_requested,
-                    hot_reload_target.as_deref(),
-                )?;
-                let library_path = hot_reload_library_path(
-                    &project_dir_buf,
-                    &package_name,
-                    release,
-                    hot_reload_target.as_deref(),
-                );
-                server.notify_native_reload(library_path);
-                Ok(())
-            });
-
-            Some(RebuildWatcher::new(watch_paths, &build_callback)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
 
     let run_options = RunOptions {
         release,
@@ -737,7 +691,6 @@ Use --no-hot-reload to skip this step."
             platform,
             device: recorded_device,
             release,
-            hot_reload: hot_reload_requested,
             enable_sccache,
             mold: mold_requested,
             timestamp: current_timestamp(),
@@ -751,27 +704,21 @@ Use --no-hot-reload to skip this step."
             "Application built: {}",
             run_report.artifact.display()
         ));
-
-        if hot_reload_enabled {
-            ui::info("App launched with hot reload enabled");
-            ui::plain("Press Ctrl+C to stop the watcher");
-        } else {
-            ui::info("App launched successfully");
-        }
+        ui::info("App launched with hot reload enabled");
+        ui::plain("Press Ctrl+C to stop the watcher");
     }
 
-    if hot_reload_enabled {
-        if let Some(events) = &connection_events {
-            if !output::global_output_format().is_json() {
-                ui::info("Waiting for the app to connect to the hot reload server…");
-            }
-            wait_for_hot_reload_connection(events)?;
-        }
-        match wait_for_interrupt(connection_events)? {
-            WaitOutcome::Interrupted => {}
-            WaitOutcome::ConnectionLost(reason) => {
-                bail!(format_connection_loss_message(reason));
-            }
+    // Wait for app to connect to hot reload server
+    if !output::global_output_format().is_json() {
+        ui::info("Waiting for the app to connect to the hot reload server…");
+    }
+    wait_for_hot_reload_connection(&connection_events)?;
+
+    // Wait for user interrupt or connection loss
+    match wait_for_interrupt(Some(connection_events))? {
+        WaitOutcome::Interrupted => {}
+        WaitOutcome::ConnectionLost(reason) => {
+            bail!(format_connection_loss_message(reason));
         }
     }
 
@@ -1258,7 +1205,6 @@ fn run_web(
     project_dir: &Path,
     config: &Config,
     release: bool,
-    hot_reload: bool,
     log_filter: Option<String>,
 ) -> Result<()> {
     let web_config = config.backends.web.as_ref().ok_or_else(|| {
@@ -1292,38 +1238,35 @@ fn run_web(
     let address = server.address();
     let url = format!("http://{address}/");
 
-    let watcher = if hot_reload {
-        let main_js_path = web_dir.join("main.js");
-        let main_js_template = std::fs::read_to_string(&main_js_path)?;
-        let main_js = main_js_template.replace("__HOT_RELOAD_PORT__", &address.port().to_string());
-        std::fs::write(&main_js_path, main_js)?;
+    // Hot reload is always enabled - set up file watcher
+    let main_js_path = web_dir.join("main.js");
+    let main_js_template = std::fs::read_to_string(&main_js_path)?;
+    let main_js = main_js_template.replace("__HOT_RELOAD_PORT__", &address.port().to_string());
+    std::fs::write(&main_js_path, main_js)?;
 
-        let mut watch_paths = vec![project_dir.join("src")];
-        for path in &config.hot_reload.watch {
-            watch_paths.push(project_dir.join(path));
-        }
+    let mut watch_paths = vec![project_dir.join("src")];
+    for path in &config.hot_reload.watch {
+        watch_paths.push(project_dir.join(path));
+    }
 
-        let project_dir_buf = project_dir.to_path_buf();
-        let package_name = config.package.name.clone();
-        let web_dir_buf = web_dir.clone();
-        let wasm_pack_path = wasm_pack;
-        let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-            build_web_app(
-                project_dir_buf.as_path(),
-                &package_name,
-                web_dir_buf.as_path(),
-                release,
-                wasm_pack_path.as_path(),
-                false,
-            )?;
-            server.notify_web_reload();
-            Ok(())
-        });
+    let project_dir_buf = project_dir.to_path_buf();
+    let package_name = config.package.name.clone();
+    let web_dir_buf = web_dir.clone();
+    let wasm_pack_path = wasm_pack;
+    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+        build_web_app(
+            project_dir_buf.as_path(),
+            &package_name,
+            web_dir_buf.as_path(),
+            release,
+            wasm_pack_path.as_path(),
+            false,
+        )?;
+        server.notify_web_reload();
+        Ok(())
+    });
 
-        Some(RebuildWatcher::new(watch_paths, &build_callback)?)
-    } else {
-        None
-    };
+    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
 
     if output::global_output_format().is_json() {
         let _ = webbrowser::open(&url);
@@ -1343,12 +1286,11 @@ fn run_web(
         }
     }
 
-    if hot_reload {
-        if let Ok(template_content) =
-            std::fs::read_to_string(project_dir.join("cli/src/templates/web/main.js"))
-        {
-            let _ = std::fs::write(web_dir.join("main.js"), template_content);
-        }
+    // Restore original main.js template
+    if let Ok(template_content) =
+        std::fs::read_to_string(project_dir.join("cli/src/templates/web/main.js"))
+    {
+        let _ = std::fs::write(web_dir.join("main.js"), template_content);
     }
 
     drop(watcher);
@@ -1927,7 +1869,6 @@ struct LastRunSnapshot {
     platform: Platform,
     device: Option<String>,
     release: bool,
-    hot_reload: bool,
     enable_sccache: bool,
     mold: bool,
     timestamp: u64,
@@ -1977,7 +1918,6 @@ struct SerializableLastRunSnapshot {
     platform: StoredPlatform,
     device: Option<String>,
     release: bool,
-    hot_reload: bool,
     enable_sccache: bool,
     mold: bool,
     timestamp: u64,
@@ -2032,7 +1972,6 @@ impl From<LastRunSnapshot> for SerializableLastRunSnapshot {
             platform: StoredPlatform::from(value.platform),
             device: value.device,
             release: value.release,
-            hot_reload: value.hot_reload,
             enable_sccache: value.enable_sccache,
             mold: value.mold,
             timestamp: value.timestamp,
@@ -2046,7 +1985,6 @@ impl From<SerializableLastRunSnapshot> for LastRunSnapshot {
             platform: value.platform.into(),
             device: value.device,
             release: value.release,
-            hot_reload: value.hot_reload,
             enable_sccache: value.enable_sccache,
             mold: value.mold,
             timestamp: value.timestamp,
