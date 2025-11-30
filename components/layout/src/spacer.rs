@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use waterui_core::raw_view;
 
-use crate::{ChildMetadata, ChildPlacement, Layout, LayoutContext, ProposalSize, Rect, Size};
+use crate::{Layout, ProposalSize, Rect, Size, SubView};
 
 /// A flexible space component that expands to fill available space.
 ///
@@ -38,39 +38,21 @@ pub struct SpacerLayout {
 }
 
 impl Layout for SpacerLayout {
-    fn propose(
-        &mut self,
-        _parent: ProposalSize,
-        _children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // Spacer has no children
-        Vec::new()
-    }
-
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        _children: &[ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        _proposal: ProposalSize,
+        _children: &mut [&mut dyn SubView],
     ) -> Size {
-        // Spacer takes all available space, but respects minimum length
-        let width = parent.width.unwrap_or(self.min_length).max(self.min_length);
-        let height = parent
-            .height
-            .unwrap_or(self.min_length)
-            .max(self.min_length);
-
-        Size::new(width, height)
+        // Spacer reports its minimum length as intrinsic size (like SwiftUI)
+        // The parent stack will expand it to fill remaining space during place()
+        Size::new(self.min_length, self.min_length)
     }
 
     fn place(
-        &mut self,
-        _bound: Rect,
-        _proposal: ProposalSize,
-        _children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
+        &self,
+        _bounds: Rect,
+        _children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         // Spacer has no children to place
         Vec::new()
     }

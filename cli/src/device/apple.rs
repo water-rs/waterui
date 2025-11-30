@@ -82,6 +82,8 @@ impl Device for MacosDevice {
                 bail!("App executable not found at {}", executable.display());
             }
             let mut cmd = Command::new(&executable);
+            // Enable Rust backtraces for easier debugging of panics
+            cmd.env("RUST_BACKTRACE", "1");
             util::configure_hot_reload_env(&mut cmd, true, options.hot_reload.port);
             if let Some(filter) = &options.log_filter {
                 cmd.env("RUST_LOG", filter);
@@ -214,6 +216,8 @@ impl Device for AppleSimulatorDevice {
         });
         let mut launch_cmd = Command::new("xcrun");
         launch_cmd.args(["simctl", "launch", "--terminate-running-process"]);
+        // Enable Rust backtraces for easier debugging of panics
+        launch_cmd.env("SIMCTL_CHILD_RUST_BACKTRACE", "1");
         if options.hot_reload.enabled {
             launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "0");
             launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST", "127.0.0.1");

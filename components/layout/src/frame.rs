@@ -8,7 +8,7 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    Layout, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -26,19 +26,17 @@ pub struct FrameLayout {
 }
 
 impl Layout for FrameLayout {
-    /// Proposes a size to the child, taking the frame's constraints into account.
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        _children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // A Frame passes a modified proposal to its single child.
-        // It uses its own ideal dimensions if they exist, otherwise it passes the parent's proposal.
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
+    ) -> Size {
+        // A Frame proposes a modified size to its single child.
+        // It uses its own ideal dimensions if they exist, otherwise parent's proposal.
         // This is then clamped by the frame's min/max constraints.
 
-        let proposed_width = self.ideal_width.or(parent.width);
-        let proposed_height = self.ideal_height.or(parent.height);
+        let proposed_width = self.ideal_width.or(proposal.width);
+        let proposed_height = self.ideal_height.or(proposal.height);
 
         let child_proposal = ProposalSize {
             width: proposed_width.map(|w| {
@@ -51,25 +49,11 @@ impl Layout for FrameLayout {
             }),
         };
 
-        vec![child_proposal]
-    }
-
-    /// Determines the size of the frame itself.
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Size {
-        // The frame's size is determined by its child's measured size,
-        // but overridden by its own ideal dimensions and clamped by its min/max.
-
-        let child_size = children.first().map_or(Size::zero(), |c| {
-            Size::new(
-                c.proposal_width().unwrap_or(0.0),
-                c.proposal_height().unwrap_or(0.0),
-            )
-        });
+        // Measure the child with our constrained proposal
+        let child_size = children
+            .first_mut()
+            .map(|c| c.size_that_fits(child_proposal))
+            .unwrap_or(Size::zero());
 
         // 1. Determine the frame's ideal width based on its own properties and its child.
         let mut target_width = self.ideal_width.unwrap_or(child_size.width);
@@ -86,51 +70,73 @@ impl Layout for FrameLayout {
         // 3. The final size is the target size, but it must also respect the parent's proposal.
         // If the parent proposed a fixed size, we must take it.
         Size::new(
-            parent.width.unwrap_or(target_width),
-            parent.height.unwrap_or(target_height),
+            proposal.width.unwrap_or(target_width),
+            proposal.height.unwrap_or(target_height),
         )
     }
 
-    /// Places the child within the frame's final bounds according to the alignment.
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
-        let child = children
-            .first()
-            .expect("FrameLayout expects exactly one child");
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
+        if children.is_empty() {
+            return vec![];
+        }
 
-        let child_size = Size::new(
-            child.proposal_width().unwrap_or(0.0),
-            child.proposal_height().unwrap_or(0.0),
-        );
+        // Create constrained proposal for child
+        let proposed_width = self.ideal_width.unwrap_or(bounds.width());
+        let proposed_height = self.ideal_height.unwrap_or(bounds.height());
+
+        let child_proposal = ProposalSize {
+            width: Some(
+                proposed_width
+                    .max(self.min_width.unwrap_or(0.0))
+                    .min(self.max_width.unwrap_or(f32::INFINITY))
+                    .min(bounds.width()),
+            ),
+            height: Some(
+                proposed_height
+                    .max(self.min_height.unwrap_or(0.0))
+                    .min(self.max_height.unwrap_or(f32::INFINITY))
+                    .min(bounds.height()),
+            ),
+        };
+
+        let child_size = children
+            .first_mut()
+            .map(|c| c.size_that_fits(child_proposal))
+            .unwrap_or(Size::zero());
+
+        // Handle infinite dimensions (axis-expanding views)
+        let child_width = if child_size.width.is_infinite() {
+            bounds.width()
+        } else {
+            child_size.width
+        };
+
+        let child_height = if child_size.height.is_infinite() {
+            bounds.height()
+        } else {
+            child_size.height
+        };
+
+        let final_child_size = Size::new(child_width, child_height);
 
         // Calculate the child's origin point (top-left) based on alignment.
         let child_x = match self.alignment.horizontal() {
-            HorizontalAlignment::Leading => bound.x(),
-            HorizontalAlignment::Center => bound.x() + (bound.width() - child_size.width) / 2.0,
-            HorizontalAlignment::Trailing => bound.max_x() - child_size.width,
+            HorizontalAlignment::Leading => bounds.x(),
+            HorizontalAlignment::Center => bounds.x() + (bounds.width() - final_child_size.width) / 2.0,
+            HorizontalAlignment::Trailing => bounds.max_x() - final_child_size.width,
         };
 
         let child_y = match self.alignment.vertical() {
-            VerticalAlignment::Top => bound.y(),
-            VerticalAlignment::Center => bound.y() + (bound.height() - child_size.height) / 2.0,
-            VerticalAlignment::Bottom => bound.max_y() - child_size.height,
+            VerticalAlignment::Top => bounds.y(),
+            VerticalAlignment::Center => bounds.y() + (bounds.height() - final_child_size.height) / 2.0,
+            VerticalAlignment::Bottom => bounds.max_y() - final_child_size.height,
         };
 
-        let child_origin = Point::new(child_x, child_y);
-
-        // Frame passes safe area through unchanged
-        vec![ChildPlacement::new(
-            Rect::new(child_origin, child_size),
-            LayoutContext {
-                safe_area: context.safe_area.clone(),
-                ignores_safe_area: context.ignores_safe_area,
-            },
-        )]
+        vec![Rect::new(Point::new(child_x, child_y), final_child_size)]
     }
 }
 
@@ -215,5 +221,66 @@ impl View for Frame {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // The Frame view's body is just a Container with our custom layout and the child content.
         FixedContainer::new(self.layout, vec![self.content])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            false
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_frame_with_ideal_size() {
+        let layout = FrameLayout {
+            ideal_width: Some(100.0),
+            ideal_height: Some(50.0),
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        // Frame uses ideal dimensions
+        assert_eq!(size.width, 100.0);
+        assert_eq!(size.height, 50.0);
+    }
+
+    #[test]
+    fn test_frame_alignment() {
+        let layout = FrameLayout {
+            alignment: Alignment::BottomTrailing,
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let rects = layout.place(bounds, &mut children);
+
+        // Child should be at bottom-trailing corner
+        assert_eq!(rects[0].x(), 70.0); // 100 - 30
+        assert_eq!(rects[0].y(), 80.0); // 100 - 20
     }
 }

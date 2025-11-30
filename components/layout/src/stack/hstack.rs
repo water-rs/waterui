@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    ChildMetadata, ChildPlacement, Container, Layout, LayoutContext, Point, ProposalSize, Rect,
-    SafeAreaInsets, Size, container::FixedContainer, stack::VerticalAlignment,
+    Container, Layout, Point, ProposalSize, Rect, Size,
+    container::FixedContainer, stack::VerticalAlignment, SubView,
 };
 
 /// A horizontal stack that arranges its children in a horizontal line.
@@ -25,41 +25,31 @@ pub struct HStackLayout {
     pub spacing: f32,
 }
 
+impl Default for HStackLayout {
+    fn default() -> Self {
+        Self {
+            alignment: VerticalAlignment::Center,
+            spacing: 10.0,
+        }
+    }
+}
+
+/// Cached measurement for a child during layout
+struct ChildMeasurement {
+    size: Size,
+    is_stretch: bool,
+}
+
 #[allow(clippy::cast_precision_loss)]
 impl Layout for HStackLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // Per LAYOUT_SPEC.md:
-        // - Width: None (child decides)
-        // - Height: Parent's height proposal
-        //
-        // This allows:
-        // - Children to measure intrinsic width (for sizing)
-        // - Vertically-expanding views to fill available height
-        vec![ProposalSize::new(None, parent.height); children.len()]
-    }
-
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size {
         if children.is_empty() {
-            return Size::new(0.0, 0.0);
+            return Size::zero();
         }
-
-        let has_stretchy_children = children.iter().any(ChildMetadata::stretch);
-
-        let non_stretchy_width: f32 = children
-            .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().width.unwrap_or(0.0))
-            .sum();
 
         let total_spacing = if children.len() > 1 {
             (children.len() - 1) as f32 * self.spacing
@@ -67,131 +57,241 @@ impl Layout for HStackLayout {
             0.0
         };
 
-        let intrinsic_width = non_stretchy_width + total_spacing;
+        // First pass: measure children with unspecified width to get intrinsic sizes
+        let intrinsic_proposal = ProposalSize::new(None, proposal.height);
+        let mut measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(intrinsic_proposal),
+                is_stretch: child.is_stretch(),
+            })
+            .collect();
 
-        let final_width = if has_stretchy_children {
-            parent.width.unwrap_or(intrinsic_width)
+        let has_stretch = measurements.iter().any(|m| m.is_stretch);
+        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
+
+        // Calculate intrinsic width (sum of non-stretch children + spacing)
+        let non_stretch_width: f32 = measurements
+            .iter()
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.width)
+            .sum();
+
+        let intrinsic_width = non_stretch_width + total_spacing;
+
+        // Determine final width
+        let final_width = if has_stretch {
+            proposal.width.unwrap_or(intrinsic_width)
         } else {
-            intrinsic_width
+            match proposal.width {
+                Some(proposed) => intrinsic_width.min(proposed),
+                None => intrinsic_width,
+            }
         };
 
-        // Calculate intrinsic height as the maximum height of NON-STRETCHY children.
-        // Stretchy children (like Spacer) don't contribute to HStack's height.
-        // This allows center alignment to work correctly.
-        let max_height = children
+        // If width is constrained, we need to distribute space properly
+        // Key insight: small children (labels) keep intrinsic width, large children (text) compress
+        let available_for_children = final_width - total_spacing;
+
+        if proposal.width.is_some() && non_stretch_width > available_for_children {
+            // Need to compress - find the largest child and give it remaining space
+            // Small children keep their intrinsic width
+            let overflow = non_stretch_width - available_for_children;
+
+            // Find indices of non-stretch children sorted by width (largest first)
+            let mut non_stretch_indices: Vec<usize> = measurements
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !m.is_stretch)
+                .map(|(i, _)| i)
+                .collect();
+            non_stretch_indices.sort_by(|&a, &b| {
+                measurements[b].size.width.partial_cmp(&measurements[a].size.width).unwrap()
+            });
+
+            // Compress largest children first until we fit
+            let mut remaining_overflow = overflow;
+            for &idx in &non_stretch_indices {
+                if remaining_overflow <= 0.0 {
+                    break;
+                }
+
+                let current_width = measurements[idx].size.width;
+                // Don't compress below a minimum (e.g., 20px for very small labels)
+                let min_width = 20.0_f32.min(current_width);
+                let max_reduction = current_width - min_width;
+                let reduction = remaining_overflow.min(max_reduction);
+
+                if reduction > 0.0 {
+                    let new_width = current_width - reduction;
+                    let constrained_proposal = ProposalSize::new(
+                        Some(new_width),
+                        proposal.height,
+                    );
+                    measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
+                    remaining_overflow -= reduction;
+                }
+            }
+        } else if proposal.width.is_some() && stretch_count > 0 {
+            // With spacers, non-stretch children keep intrinsic width
+            // Spacers get the remaining space (but we don't measure them here)
+        }
+
+        // Height: max of all children (after re-measurement for proper wrapped height)
+        // Important: Do NOT cap height to proposal - if text wraps, we need the full height
+        let max_height = measurements
             .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().height.unwrap_or(0.0))
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.height)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        // Use intrinsic height, but cap at parent's proposed height if any
-        let final_height = match parent.height {
-            Some(proposed) => max_height.min(proposed),
-            None => max_height,
-        };
-
-        Size::new(final_width, final_height)
+        Size::new(final_width, max_height)
     }
 
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
 
-        let stretchy_children_count = children.iter().filter(|c| c.stretch()).count();
-        let non_stretchy_width: f32 = children
-            .iter()
-            .filter(|c| !c.stretch())
-            .map(|c| c.proposal().width.unwrap_or(0.0))
-            .sum();
-
         let total_spacing = if children.len() > 1 {
             (children.len() - 1) as f32 * self.spacing
         } else {
             0.0
         };
 
-        let remaining_width = bound.width() - non_stretchy_width - total_spacing;
-        let stretchy_child_width = if stretchy_children_count > 0 {
-            (remaining_width / stretchy_children_count as f32).max(0.0)
+        let available_width = bounds.width() - total_spacing;
+
+        // First pass: measure all children with None to get intrinsic sizes
+        let intrinsic_proposal = ProposalSize::new(None, Some(bounds.height()));
+        let mut measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(intrinsic_proposal),
+                is_stretch: child.is_stretch(),
+            })
+            .collect();
+
+        // Calculate totals
+        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
+        let non_stretch_count = measurements.iter().filter(|m| !m.is_stretch).count();
+
+        let total_intrinsic_width: f32 = measurements
+            .iter()
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.width)
+            .sum();
+
+        // Calculate how much space is available for non-stretch children
+        let width_for_non_stretch = if stretch_count > 0 {
+            // If there are spacers, non-stretch children get their intrinsic width
+            // but capped to available space
+            available_width.min(total_intrinsic_width)
+        } else {
+            // No spacers - all width goes to non-stretch children
+            available_width
+        };
+
+        // Check if we need to compress children
+        let needs_compression = total_intrinsic_width > width_for_non_stretch && non_stretch_count > 0;
+
+        if needs_compression {
+            // Compress largest children first, keeping small labels at intrinsic width
+            let overflow = total_intrinsic_width - width_for_non_stretch;
+
+            // Find indices of non-stretch children sorted by width (largest first)
+            let mut non_stretch_indices: Vec<usize> = measurements
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !m.is_stretch)
+                .map(|(i, _)| i)
+                .collect();
+            non_stretch_indices.sort_by(|&a, &b| {
+                measurements[b].size.width.partial_cmp(&measurements[a].size.width).unwrap()
+            });
+
+            // Compress largest children first until we fit
+            let mut remaining_overflow = overflow;
+            for &idx in &non_stretch_indices {
+                if remaining_overflow <= 0.0 {
+                    break;
+                }
+
+                let current_width = measurements[idx].size.width;
+                // Don't compress below a minimum (keep small labels readable)
+                let min_width = 20.0_f32.min(current_width);
+                let max_reduction = current_width - min_width;
+                let reduction = remaining_overflow.min(max_reduction);
+
+                if reduction > 0.0 {
+                    let new_width = current_width - reduction;
+                    let constrained_proposal = ProposalSize::new(
+                        Some(new_width),
+                        Some(bounds.height()),
+                    );
+                    measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
+                    measurements[idx].size.width = measurements[idx].size.width.min(new_width);
+                    remaining_overflow -= reduction;
+                }
+            }
+        }
+
+        // Calculate stretch child width from remaining space
+        let actual_non_stretch_width: f32 = measurements
+            .iter()
+            .filter(|m| !m.is_stretch)
+            .map(|m| m.size.width)
+            .sum();
+
+        let remaining_width = (available_width - actual_non_stretch_width).max(0.0);
+        let stretch_width = if stretch_count > 0 {
+            remaining_width / stretch_count as f32
         } else {
             0.0
         };
 
-        let mut placements = Vec::with_capacity(children.len());
-        let mut current_x = bound.origin().x;
-        let mut remaining_safe_area = context.safe_area.clone();
+        // Place children
+        let mut rects = Vec::with_capacity(children.len());
+        let mut current_x = bounds.x();
 
-        for (i, child) in children.iter().enumerate() {
+        for (i, measurement) in measurements.iter().enumerate() {
             if i > 0 {
                 current_x += self.spacing;
             }
 
-            let child_proposal = child.proposal();
-            // Clamp infinite heights to parent's bounds - INFINITY means "fill available"
-            let raw_height = child_proposal.height.unwrap_or(0.0);
-            let child_height = if raw_height.is_infinite() {
-                bound.height()
+            // Handle infinite height (axis-expanding views) and clamp to bounds
+            let child_height = if measurement.size.height.is_infinite() {
+                bounds.height()
             } else {
-                raw_height
+                measurement.size.height.min(bounds.height())
             };
-            let child_width = if child.stretch() {
-                stretchy_child_width
+
+            let child_width = if measurement.is_stretch {
+                stretch_width
             } else {
-                child_proposal.width.unwrap_or(0.0)
+                measurement.size.width
             };
 
             let y = match self.alignment {
-                VerticalAlignment::Top => bound.origin().y,
-                VerticalAlignment::Center => {
-                    bound.origin().y + (bound.height() - child_height) / 2.0
-                }
-                VerticalAlignment::Bottom => bound.origin().y + bound.height() - child_height,
+                VerticalAlignment::Top => bounds.y(),
+                VerticalAlignment::Center => bounds.y() + (bounds.height() - child_height) / 2.0,
+                VerticalAlignment::Bottom => bounds.y() + bounds.height() - child_height,
             };
 
-            let origin = Point::new(current_x, y);
-            let size = Size::new(child_width, child_height);
-            let rect = Rect::new(origin, size);
+            let rect = Rect::new(
+                Point::new(current_x, y),
+                Size::new(child_width, child_height),
+            );
+            rects.push(rect);
 
-            // Calculate safe area for this child:
-            // - First child gets leading safe area
-            // - Last child gets trailing safe area
-            // - All children get top/bottom safe area
-            let child_safe_area = SafeAreaInsets {
-                top: remaining_safe_area.top,
-                bottom: remaining_safe_area.bottom,
-                leading: if i == 0 {
-                    remaining_safe_area.leading
-                } else {
-                    0.0
-                },
-                trailing: if i == children.len() - 1 {
-                    remaining_safe_area.trailing
-                } else {
-                    0.0
-                },
-            };
-
-            let child_context = LayoutContext {
-                safe_area: child_safe_area,
-                ignores_safe_area: context.ignores_safe_area,
-            };
-
-            placements.push(ChildPlacement::new(rect, child_context));
             current_x += child_width;
-
-            // Consume leading safe area after first child
-            remaining_safe_area.leading = 0.0;
         }
 
-        placements
+        rects
     }
 }
 
@@ -252,5 +352,106 @@ where
 impl<C: TupleViews + 'static> View for HStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+        is_stretch: bool,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            self.is_stretch
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_hstack_size_two_children() {
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(50.0, 30.0),
+            is_stretch: false,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(60.0, 40.0),
+            is_stretch: false,
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        assert_eq!(size.width, 120.0); // 50 + 10 + 60
+        assert_eq!(size.height, 40.0); // max height
+    }
+
+    #[test]
+    fn test_hstack_with_spacer() {
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 0.0,
+        };
+
+        let mut child1 = MockSubView {
+            size: Size::new(30.0, 40.0),
+            is_stretch: false,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            is_stretch: true,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(30.0, 40.0),
+            is_stretch: false,
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+        // With specified width, spacer should expand
+        let size = layout.size_that_fits(
+            ProposalSize::new(Some(200.0), None),
+            &mut children,
+        );
+
+        assert_eq!(size.width, 200.0);
+
+        // Place should distribute remaining space to spacer
+        let bounds = Rect::new(Point::zero(), Size::new(200.0, 40.0));
+
+        let mut child1 = MockSubView {
+            size: Size::new(30.0, 40.0),
+            is_stretch: false,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            is_stretch: true,
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(30.0, 40.0),
+            is_stretch: false,
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+        let rects = layout.place(bounds, &mut children);
+
+        assert_eq!(rects[0].width(), 30.0);
+        assert_eq!(rects[1].width(), 140.0); // 200 - 30 - 30
+        assert_eq!(rects[2].width(), 30.0);
+        assert_eq!(rects[2].x(), 170.0); // 30 + 140
     }
 }

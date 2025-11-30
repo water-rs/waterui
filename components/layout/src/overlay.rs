@@ -11,9 +11,14 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect, Size,
+    Layout, Point, ProposalSize, Rect, Size, SubView,
     container::FixedContainer, stack::Alignment,
 };
+
+/// Cached measurement for a child during layout
+struct ChildMeasurement {
+    size: Size,
+}
 
 /// Layout used by [`Overlay`] to keep the base child's size authoritative while
 /// still allowing aligned overlay content.
@@ -68,85 +73,87 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        // Forward the parent's proposal verbatim. The overlay only cares about two
-        // children, but extra entries are handled gracefully.
-        vec![parent; children.len()]
-    }
-
-    fn size(
-        &mut self,
-        parent: ProposalSize,
-        children: &[ChildMetadata],
-        _context: &LayoutContext,
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
     ) -> Size {
         // Overlay size is driven entirely by the base child (index 0). If the base
         // provides no intrinsic size, fall back to the parent's constraints.
-        let base_width = children
-            .first()
-            .and_then(ChildMetadata::proposal_width)
-            .or(parent.width)
-            .unwrap_or(0.0);
-        let base_height = children
-            .first()
-            .and_then(ChildMetadata::proposal_height)
-            .or(parent.height)
-            .unwrap_or(0.0);
+        let base_size = children
+            .first_mut()
+            .map(|c| c.size_that_fits(proposal))
+            .unwrap_or(Size::zero());
 
-        let width = parent.width.map_or(base_width, |w| w);
-        let height = parent.height.map_or(base_height, |h| h);
+        let base_width = if base_size.width.is_finite() && base_size.width > 0.0 {
+            base_size.width
+        } else {
+            proposal.width.unwrap_or(0.0)
+        };
+
+        let base_height = if base_size.height.is_finite() && base_size.height > 0.0 {
+            base_size.height
+        } else {
+            proposal.height.unwrap_or(0.0)
+        };
+
+        let width = proposal.width.unwrap_or(base_width);
+        let height = proposal.height.unwrap_or(base_height);
 
         Size::new(width.max(0.0), height.max(0.0))
     }
 
     fn place(
-        &mut self,
+        &self,
         bounds: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         if children.is_empty() {
-            return Vec::new();
+            return vec![];
         }
+
+        // Measure all children
+        let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+
+        let measurements: Vec<ChildMeasurement> = children
+            .iter_mut()
+            .map(|child| ChildMeasurement {
+                size: child.size_that_fits(child_proposal),
+            })
+            .collect();
 
         let mut placements = Vec::with_capacity(children.len());
 
-        // Base child always fills the container's bounds and gets full safe area.
-        placements.push(ChildPlacement::new(
-            bounds.clone(),
-            LayoutContext {
-                safe_area: context.safe_area.clone(),
-                ignores_safe_area: context.ignores_safe_area,
-            },
-        ));
+        // Base child always fills the container's bounds
+        if let Some(base) = measurements.first() {
+            let base_width = if base.size.width.is_infinite() {
+                bounds.width()
+            } else {
+                base.size.width
+            };
+            let base_height = if base.size.height.is_infinite() {
+                bounds.height()
+            } else {
+                base.size.height
+            };
+            placements.push(Rect::new(bounds.origin(), Size::new(base_width, base_height)));
+        }
 
-        for child in children.iter().skip(1) {
-            let width = child
-                .proposal_width()
-                .unwrap_or_else(|| bounds.width())
-                .min(bounds.width())
-                .max(0.0);
-            let height = child
-                .proposal_height()
-                .unwrap_or_else(|| bounds.height())
-                .min(bounds.height())
-                .max(0.0);
+        // Overlay children are aligned within the bounds
+        for measurement in measurements.iter().skip(1) {
+            let width = if measurement.size.width.is_infinite() {
+                bounds.width()
+            } else {
+                measurement.size.width.min(bounds.width()).max(0.0)
+            };
+            let height = if measurement.size.height.is_infinite() {
+                bounds.height()
+            } else {
+                measurement.size.height.min(bounds.height()).max(0.0)
+            };
             let size = Size::new(width, height);
             let origin = self.aligned_origin(&bounds, &size);
-            // Overlay children also get the full safe area since they occupy the same space
-            placements.push(ChildPlacement::new(
-                Rect::new(origin, size),
-                LayoutContext {
-                    safe_area: context.safe_area.clone(),
-                    ignores_safe_area: context.ignores_safe_area,
-                },
-            ));
+            placements.push(Rect::new(origin, size));
         }
 
         placements
@@ -204,4 +211,72 @@ where
 #[must_use]
 pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Layer> {
     Overlay::new(base, layer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            false
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_overlay_size_from_base() {
+        let layout = OverlayLayout::default();
+
+        let mut base = MockSubView {
+            size: Size::new(100.0, 50.0),
+        };
+        let mut overlay_child = MockSubView {
+            size: Size::new(20.0, 20.0),
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut base, &mut overlay_child];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        // Size comes from base child
+        assert_eq!(size.width, 100.0);
+        assert_eq!(size.height, 50.0);
+    }
+
+    #[test]
+    fn test_overlay_placement_center() {
+        let layout = OverlayLayout {
+            alignment: Alignment::Center,
+        };
+
+        let mut base = MockSubView {
+            size: Size::new(100.0, 100.0),
+        };
+        let mut overlay_child = MockSubView {
+            size: Size::new(20.0, 20.0),
+        };
+
+        let mut children: Vec<&mut dyn SubView> = vec![&mut base, &mut overlay_child];
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let rects = layout.place(bounds, &mut children);
+
+        // Base fills bounds
+        assert_eq!(rects[0].width(), 100.0);
+        assert_eq!(rects[0].height(), 100.0);
+
+        // Overlay child centered
+        assert_eq!(rects[1].x(), 40.0); // (100 - 20) / 2
+        assert_eq!(rects[1].y(), 40.0); // (100 - 20) / 2
+    }
 }
