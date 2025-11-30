@@ -4,8 +4,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
 use crate::{
-    ChildMetadata, ChildPlacement, Layout, LayoutContext, Point, ProposalSize, Rect,
-    SafeAreaInsets, Size, container::FixedContainer,
+    Layout, Point, ProposalSize, Rect, Size, SubView,
+    container::FixedContainer,
 };
 
 /// Layout that insets its single child by the configured edge values.
@@ -15,88 +15,68 @@ pub struct PaddingLayout {
 }
 
 impl Layout for PaddingLayout {
-    fn propose(
-        &mut self,
-        parent: ProposalSize,
-        children: &[crate::ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Vec<ProposalSize> {
-        if children.is_empty() {
-            return vec![];
-        }
-
+    fn size_that_fits(
+        &self,
+        proposal: ProposalSize,
+        children: &mut [&mut dyn SubView],
+    ) -> Size {
         // The horizontal and vertical space consumed by padding.
         let horizontal_padding = self.edges.leading + self.edges.trailing;
         let vertical_padding = self.edges.top + self.edges.bottom;
 
         // Reduce the proposed size for the child by the padding amount.
-        // If the parent proposal is unconstrained (None), it remains None for the child.
-        // Ensure the proposed dimension is not negative.
         let child_proposal = ProposalSize {
-            width: parent.width.map(|w| (w - horizontal_padding).max(0.0)),
-            height: parent.height.map(|h| (h - vertical_padding).max(0.0)),
+            width: proposal.width.map(|w| (w - horizontal_padding).max(0.0)),
+            height: proposal.height.map(|h| (h - vertical_padding).max(0.0)),
         };
 
-        vec![child_proposal]
-    }
+        // Measure the child
+        let child_size = children
+            .first_mut()
+            .map(|c| c.size_that_fits(child_proposal))
+            .unwrap_or(Size::zero());
 
-    fn size(
-        &mut self,
-        _parent: ProposalSize,
-        children: &[crate::ChildMetadata],
-        _context: &LayoutContext,
-    ) -> Size {
-        // The child's size is the base for our size calculation.
-        let child_size = match children.first() {
-            Some(child) => child.proposal(),
-            None => return Size::new(0.0, 0.0), // Should not happen with Padding
+        // Handle infinite dimensions
+        let child_width = if child_size.width.is_infinite() {
+            proposal.width.unwrap_or(0.0) - horizontal_padding
+        } else {
+            child_size.width
+        };
+
+        let child_height = if child_size.height.is_infinite() {
+            proposal.height.unwrap_or(0.0) - vertical_padding
+        } else {
+            child_size.height
         };
 
         // The final size is the child's size plus the padding.
-        let total_width =
-            child_size.width.unwrap_or(0.0) + self.edges.leading + self.edges.trailing;
-        let total_height = child_size.height.unwrap_or(0.0) + self.edges.top + self.edges.bottom;
-
-        Size::new(total_width, total_height)
+        Size::new(
+            child_width + horizontal_padding,
+            child_height + vertical_padding,
+        )
     }
 
     fn place(
-        &mut self,
-        bound: Rect,
-        _proposal: ProposalSize,
-        children: &[ChildMetadata],
-        context: &LayoutContext,
-    ) -> Vec<ChildPlacement> {
+        &self,
+        bounds: Rect,
+        children: &mut [&mut dyn SubView],
+    ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
 
         // Create the child's frame by insetting the parent's bound by the padding amount.
-        let child_origin = Point::new(bound.x() + self.edges.leading, bound.y() + self.edges.top);
+        let child_origin = Point::new(bounds.x() + self.edges.leading, bounds.y() + self.edges.top);
 
         let horizontal_padding = self.edges.leading + self.edges.trailing;
         let vertical_padding = self.edges.top + self.edges.bottom;
 
         let child_size = Size::new(
-            (bound.width() - horizontal_padding).max(0.0),
-            (bound.height() - vertical_padding).max(0.0),
+            (bounds.width() - horizontal_padding).max(0.0),
+            (bounds.height() - vertical_padding).max(0.0),
         );
 
-        // Reduce safe area by the padding amount (padding consumes safe area)
-        let child_safe_area = SafeAreaInsets {
-            top: (context.safe_area.top - self.edges.top).max(0.0),
-            bottom: (context.safe_area.bottom - self.edges.bottom).max(0.0),
-            leading: (context.safe_area.leading - self.edges.leading).max(0.0),
-            trailing: (context.safe_area.trailing - self.edges.trailing).max(0.0),
-        };
-
-        vec![ChildPlacement::new(
-            Rect::new(child_origin, child_size),
-            LayoutContext {
-                safe_area: child_safe_area,
-                ignores_safe_area: context.ignores_safe_area,
-            },
-        )]
+        vec![Rect::new(child_origin, child_size)]
     }
 }
 
@@ -178,5 +158,67 @@ impl Padding {
 impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, vec![self.content])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSubView {
+        size: Size,
+    }
+
+    impl SubView for MockSubView {
+        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+            self.size
+        }
+        fn is_stretch(&self) -> bool {
+            false
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn test_padding_size() {
+        let layout = PaddingLayout {
+            edges: EdgeInsets::all(10.0),
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(50.0, 30.0),
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+
+        // Size = child size + padding on all sides
+        assert_eq!(size.width, 70.0);  // 50 + 10 + 10
+        assert_eq!(size.height, 50.0); // 30 + 10 + 10
+    }
+
+    #[test]
+    fn test_padding_placement() {
+        let layout = PaddingLayout {
+            edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0),
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(50.0, 30.0),
+        };
+        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
+        let rects = layout.place(bounds, &mut children);
+
+        // Child origin is offset by leading and top
+        assert_eq!(rects[0].x(), 15.0);
+        assert_eq!(rects[0].y(), 10.0);
+
+        // Child size is bounds minus padding
+        assert_eq!(rects[0].width(), 60.0);  // 100 - 15 - 25
+        assert_eq!(rects[0].height(), 70.0); // 100 - 10 - 20
     }
 }

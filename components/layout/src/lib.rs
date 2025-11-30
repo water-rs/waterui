@@ -48,3 +48,6 @@ pub mod overlay;
 pub mod padding;
 
 pub use overlay::{Overlay, OverlayLayout, overlay};
+
+#[cfg(test)]
+mod tests;
