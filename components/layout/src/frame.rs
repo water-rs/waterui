@@ -26,11 +26,7 @@ pub struct FrameLayout {
 }
 
 impl Layout for FrameLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         // A Frame proposes a modified size to its single child.
         // It uses its own ideal dimensions if they exist, otherwise parent's proposal.
         // This is then clamped by the frame's min/max constraints.
@@ -51,7 +47,7 @@ impl Layout for FrameLayout {
 
         // Measure the child with our constrained proposal
         let child_size = children
-            .first_mut()
+            .first()
             .map(|c| c.size_that_fits(child_proposal))
             .unwrap_or(Size::zero());
 
@@ -75,11 +71,7 @@ impl Layout for FrameLayout {
         )
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &mut [&mut dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
@@ -104,7 +96,7 @@ impl Layout for FrameLayout {
         };
 
         let child_size = children
-            .first_mut()
+            .first()
             .map(|c| c.size_that_fits(child_proposal))
             .unwrap_or(Size::zero());
 
@@ -126,13 +118,17 @@ impl Layout for FrameLayout {
         // Calculate the child's origin point (top-left) based on alignment.
         let child_x = match self.alignment.horizontal() {
             HorizontalAlignment::Leading => bounds.x(),
-            HorizontalAlignment::Center => bounds.x() + (bounds.width() - final_child_size.width) / 2.0,
+            HorizontalAlignment::Center => {
+                bounds.x() + (bounds.width() - final_child_size.width) / 2.0
+            }
             HorizontalAlignment::Trailing => bounds.max_x() - final_child_size.width,
         };
 
         let child_y = match self.alignment.vertical() {
             VerticalAlignment::Top => bounds.y(),
-            VerticalAlignment::Center => bounds.y() + (bounds.height() - final_child_size.height) / 2.0,
+            VerticalAlignment::Center => {
+                bounds.y() + (bounds.height() - final_child_size.height) / 2.0
+            }
             VerticalAlignment::Bottom => bounds.max_y() - final_child_size.height,
         };
 
@@ -227,17 +223,18 @@ impl View for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StretchAxis;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            false
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
         }
         fn priority(&self) -> i32 {
             0
@@ -255,9 +252,9 @@ mod tests {
         let mut child = MockSubView {
             size: Size::new(30.0, 20.0),
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+        let children: Vec<&dyn SubView> = vec![&mut child];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Frame uses ideal dimensions
         assert_eq!(size.width, 100.0);
@@ -274,10 +271,10 @@ mod tests {
         let mut child = MockSubView {
             size: Size::new(30.0, 20.0),
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+        let children: Vec<&dyn SubView> = vec![&mut child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         // Child should be at bottom-trailing corner
         assert_eq!(rects[0].x(), 70.0); // 100 - 30
