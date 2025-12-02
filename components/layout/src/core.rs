@@ -13,10 +13,10 @@
 //!
 //! ```ignore
 //! impl Layout for VStackLayout {
-//!     fn size_that_fits(&self, proposal: ProposalSize, children: &mut [&mut dyn SubView]) -> Size {
+//!     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
 //!         // Query each child for its ideal size
 //!         let sizes: Vec<Size> = children
-//!             .iter_mut()
+//!             .iter()
 //!             .map(|c| c.size_that_fits(ProposalSize::new(proposal.width, None)))
 //!             .collect();
 //!         // Calculate total size...
@@ -29,6 +29,46 @@ use core::fmt::Debug;
 use alloc::vec::Vec;
 
 // ============================================================================
+// StretchAxis - Specifies which axis a view stretches on
+// ============================================================================
+
+/// Specifies which axis (or axes) a view wants to stretch to fill available space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum StretchAxis {
+    /// No stretching - view uses its intrinsic size
+    #[default]
+    None,
+    /// Stretch horizontally only (expand width, use intrinsic height)
+    Horizontal,
+    /// Stretch vertically only (expand height, use intrinsic width)
+    Vertical,
+    /// Stretch in both directions (expand width and height)
+    Both,
+    /// Stretch in the direction of the parent's axis.
+    Adoptive,
+}
+
+impl StretchAxis {
+    /// Returns true if this stretches horizontally.
+    #[must_use]
+    pub const fn stretches_horizontal(&self) -> bool {
+        matches!(self, Self::Horizontal | Self::Both)
+    }
+
+    /// Returns true if this stretches vertically.
+    #[must_use]
+    pub const fn stretches_vertical(&self) -> bool {
+        matches!(self, Self::Vertical | Self::Both)
+    }
+
+    /// Returns true if this stretches in any direction.
+    #[must_use]
+    pub const fn stretches_any(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+// ============================================================================
 // SubView Trait - Child View Proxy
 // ============================================================================
 
@@ -38,11 +78,10 @@ use alloc::vec::Vec;
 /// "if I propose this size, how big would you be?" multiple times with
 /// different proposals.
 ///
-/// # Caching
+/// # Pure Functions
 ///
-/// Implementations should cache results for the same proposal to avoid
-/// redundant measurements. The FFI layer provides [`CachedSubView`] which
-/// handles caching automatically.
+/// All methods are pure (take `&self`) with no side effects. Caching of
+/// measurement results is handled by the native backend, not in Rust.
 pub trait SubView {
     /// Query the child's size for a given proposal.
     ///
@@ -53,13 +92,19 @@ pub trait SubView {
     /// - `ProposalSize::new(Some(0.0), None)` - minimum width
     /// - `ProposalSize::new(Some(f32::INFINITY), None)` - maximum width
     /// - `ProposalSize::new(Some(200.0), None)` - constrained width
-    fn size_that_fits(&mut self, proposal: ProposalSize) -> Size;
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size;
 
-    /// Whether this view stretches to fill available space.
+    /// Which axis (or axes) this view stretches to fill available space.
     ///
-    /// Stretch views (like `Spacer`, `Color`) expand to consume remaining
-    /// space after non-stretch views are measured.
-    fn is_stretch(&self) -> bool;
+    /// - `StretchAxis::None`: Content-sized, uses intrinsic size
+    /// - `StretchAxis::Horizontal`: Expands width only (e.g., TextField, Slider)
+    /// - `StretchAxis::Vertical`: Expands height only
+    /// - `StretchAxis::Both`: Greedy, fills all space (e.g., Spacer, Color)
+    ///
+    /// Layout containers use this to distribute remaining space appropriately:
+    /// - VStack checks `stretches_vertical()` for height distribution
+    /// - HStack checks `stretches_horizontal()` for width distribution
+    fn stretch_axis(&self) -> StretchAxis;
 
     /// Layout priority for space distribution.
     ///
@@ -97,12 +142,8 @@ pub trait Layout: Debug {
     /// # Arguments
     ///
     /// * `proposal` - The size proposed by the parent
-    /// * `children` - Mutable references to child proxies for size queries
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
-    ) -> Size;
+    /// * `children` - References to child proxies for size queries
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size;
 
     /// Place children within the given bounds.
     ///
@@ -112,12 +153,8 @@ pub trait Layout: Debug {
     /// # Arguments
     ///
     /// * `bounds` - The rectangle this layout should fill
-    /// * `children` - Mutable references to child proxies (may query sizes again)
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &mut [&mut dyn SubView],
-    ) -> Vec<Rect>;
+    /// * `children` - References to child proxies (may query sizes again)
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect>;
 }
 
 // ============================================================================
