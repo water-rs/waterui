@@ -1,4 +1,6 @@
 //! A text input component wired to a reactive string binding.
+use core::num::NonZeroUsize;
+
 use nami::Binding;
 use waterui_core::Str;
 use waterui_core::configurable;
@@ -60,8 +62,10 @@ pub struct TextFieldConfig {
     pub prompt: Text,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
+    /// The maximum number of lines to show.
+    /// If `None`, the text field will show as many lines as needed.
+    pub line_limit: Option<NonZeroUsize>,
 }
-
 
 #[derive(Debug, Default)]
 #[non_exhaustive]
@@ -91,12 +95,30 @@ impl TextField {
             value: value.clone(),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
+            line_limit: NonZeroUsize::new(1),
         })
     }
     /// Sets the label for the text field.
     #[must_use]
     pub fn label(mut self, label: impl View) -> Self {
         self.0.label = AnyView::new(label);
+        self
+    }
+
+    /// Sets the maximum number of lines to show.
+    ///
+    /// By default, the line limit is 1.
+    #[must_use]
+    pub fn line_limit(mut self, line_limit: usize) -> Self {
+        assert!(line_limit > 0, "Line limit must be greater than 0");
+        self.0.line_limit = NonZeroUsize::new(line_limit);
+        self
+    }
+
+    /// Disables the line limit.
+    #[must_use]
+    pub fn disable_line_limit(mut self) -> Self {
+        self.0.line_limit = None;
         self
     }
 
