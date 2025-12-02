@@ -1,9 +1,7 @@
 use crate::array::WuiArray;
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use crate::{
-    IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive,
-};
+use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
 use alloc::vec::Vec;
 use waterui::view::ConfigurableView;
 use waterui_text::font::{Font, FontWeight, ResolvedFont};
@@ -104,7 +102,7 @@ impl IntoFFI for Text {
 }
 
 // FFI view bindings for text components
-native_view!(Text, WuiText);
+ffi_view!(TextConfig, WuiText, text);
 
 ffi_computed!(ResolvedFont, WuiResolvedFont);
 ffi_computed_ctor!(ResolvedFont, WuiResolvedFont);
