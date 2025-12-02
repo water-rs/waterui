@@ -2,7 +2,7 @@
 use nami::Binding;
 use waterui_core::Str;
 use waterui_core::configurable;
-use waterui_core::{AnyView, NativeView, View, layout::StretchAxis};
+use waterui_core::{AnyView, View, layout::StretchAxis};
 
 use waterui_text::Text;
 
@@ -37,14 +37,15 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `Horizontal` - Expands to fill available width.
+
     // Height: Fixed intrinsic (platform-determined)
     // Width: Reports minimum usable width, expands during layout phase
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     TextField,
-    TextFieldConfig
+    TextFieldConfig,
+    StretchAxis::Horizontal
 );
 
 /// Configuration options for a `TextField`.
@@ -61,11 +62,6 @@ pub struct TextFieldConfig {
     pub keyboard: KeyboardType,
 }
 
-impl NativeView for TextFieldConfig {
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
-    }
-}
 
 #[derive(Debug, Default)]
 #[non_exhaustive]

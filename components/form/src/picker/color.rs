@@ -2,7 +2,7 @@
 
 use nami::Binding;
 use waterui_color::Color;
-use waterui_core::{AnyView, NativeView, View, configurable};
+use waterui_core::{AnyView, View, configurable};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -13,8 +13,6 @@ pub struct ColorPickerConfig {
     /// The binding to the color value.
     pub value: Binding<Color>,
 }
-
-impl NativeView for ColorPickerConfig {}
 
 configurable!(
     /// A control for selecting colors.
@@ -30,7 +28,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - ColorPicker never expands to fill available space.
+    
     // Size: Determined by platform color picker UI
     //
     // ═══════════════════════════════════════════════════════════════════════════

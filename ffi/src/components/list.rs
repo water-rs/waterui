@@ -10,7 +10,7 @@ into_ffi! {
     }
 }
 
-ffi_view!(ListItem, WuiListItem);
+ffi_view!(ListItem, WuiListItem, list_item);
 
 #[repr(C)]
 pub struct WuiList {
@@ -27,7 +27,7 @@ impl IntoFFI for ListConfig {
     }
 }
 
-native_view!(List, WuiList);
+ffi_view!(ListConfig, WuiList, list);
 
 /// Calls the delete callback for a list item.
 ///
