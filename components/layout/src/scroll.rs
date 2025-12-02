@@ -2,6 +2,8 @@
 
 use waterui_core::{AnyView, View, raw_view};
 
+use crate::StretchAxis;
+
 /// A scrollable view that displays content larger than its frame.
 ///
 /// Use a `ScrollView` when you have content that might not fit in the available space.
@@ -76,7 +78,7 @@ impl ScrollView {
     }
 }
 
-raw_view!(ScrollView);
+raw_view!(ScrollView, StretchAxis::Both);
 
 /// Creates a vertical `ScrollView` with the given content.
 ///

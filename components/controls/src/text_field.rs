@@ -2,7 +2,7 @@
 use nami::Binding;
 use waterui_core::Str;
 use waterui_core::configurable;
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, NativeView, View, layout::StretchAxis};
 
 use waterui_text::Text;
 
@@ -59,6 +59,12 @@ pub struct TextFieldConfig {
     pub prompt: Text,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
+}
+
+impl NativeView for TextFieldConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
 }
 
 #[derive(Debug, Default)]
