@@ -2,11 +2,18 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
+use waterui_core::{
+    AnyView, View,
+    env::{WithEnv, with},
+    id::Identifable,
+    view::TupleViews,
+    views::ForEach,
+};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis,
-    container::FixedContainer, stack::HorizontalAlignment, SubView,
+    Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    container::FixedContainer,
+    stack::{Axis, HorizontalAlignment},
 };
 
 /// Layout engine shared by the public [`VStack`] view.
@@ -49,11 +56,7 @@ impl ChildMeasurement {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for VStackLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
@@ -110,11 +113,7 @@ impl Layout for VStackLayout {
         Size::new(final_width, final_height)
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &[&dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
@@ -131,7 +130,10 @@ impl Layout for VStackLayout {
             .collect();
 
         // Calculate stretch child height - only for main-axis (vertically) stretching children
-        let main_axis_stretch_count = measurements.iter().filter(|m| m.stretches_main_axis()).count();
+        let main_axis_stretch_count = measurements
+            .iter()
+            .filter(|m| m.stretches_main_axis())
+            .count();
         let non_stretch_height: f32 = measurements
             .iter()
             .filter(|m| !m.stretches_main_axis())
@@ -303,13 +305,18 @@ where
     V: View,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Container::new(self.layout, self.contents)
+        // Inject the vertical axis into the container
+        with(Container::new(self.layout, self.contents), Axis::Vertical)
     }
 }
 
 impl<C: TupleViews + 'static> View for VStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        FixedContainer::new(self.layout, self.contents.0)
+        // Inject the vertical axis into the container
+        with(
+            FixedContainer::new(self.layout, self.contents.0),
+            Axis::Vertical,
+        )
     }
 }
 
@@ -381,10 +388,7 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
         // With specified height, spacer should expand
-        let size = layout.size_that_fits(
-            ProposalSize::new(None, Some(200.0)),
-            &children,
-        );
+        let size = layout.size_that_fits(ProposalSize::new(None, Some(200.0)), &children);
 
         assert_eq!(size.height, 200.0);
 

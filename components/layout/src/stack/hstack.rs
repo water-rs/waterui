@@ -2,11 +2,12 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
+use waterui_core::{AnyView, View, env::with, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
     Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    container::FixedContainer, stack::VerticalAlignment,
+    container::FixedContainer,
+    stack::{Axis, VerticalAlignment},
 };
 
 /// A view that arranges its children in a horizontal line.
@@ -407,13 +408,18 @@ where
     V: View,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Container::new(self.layout, self.contents)
+        // Inject the horizontal axis into the container
+        with(Container::new(self.layout, self.contents), Axis::Horizontal)
     }
 }
 
 impl<C: TupleViews + 'static> View for HStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        FixedContainer::new(self.layout, self.contents.0)
+        // Inject the horizontal axis into the container
+        with(
+            FixedContainer::new(self.layout, self.contents.0),
+            Axis::Horizontal,
+        )
     }
 }
 
@@ -537,8 +543,7 @@ mod tests {
             stretch_axis: StretchAxis::None,
         };
 
-        let children: Vec<&dyn SubView> =
-            vec![&mut label, &mut vertical_stretch, &mut button];
+        let children: Vec<&dyn SubView> = vec![&mut label, &mut vertical_stretch, &mut button];
 
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 

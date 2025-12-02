@@ -1,20 +1,49 @@
 //! Hot reload client + log/panic forwarding.
 //!
-//! Panic/Tracing pipeline overview:
-//! - `ffi` installs `tracing_panic::panic_hook` so panics become tracing events (for stderr/logcat).
-//! - This module installs its own panic hook once (`PANIC_FORWARDER`), sending a structured
-//!   `NativeClientEvent::Panic` over the hot-reload websocket, then delegating to the previous
-//!   hook (tracing_panic) so logs still flow.
-//! - `PanicAwareFormatter` rewrites panic tracing events into a minimal, source-path-free
-//!   message + truncated stack snippet for app-side logs, while the CLI renders the rich view.
-//! - `CliForwardLayer` forwards tracing output (including sanitized panic logs) over the websocket.
+//! # Architecture Overview
 //!
-//! Log-level control notes:
-//! - System logs (stderr/logcat/simulator logs) follow the platform’s own filters/environment;
-//!   CLI flags do **not** alter them. Hot reload/websocket filtering is the only scope affected
-//!   by the CLI `--log-filter` flag.
+//! This module implements the app-side of WaterUI's hot reload system, handling:
+//! - WebSocket connection to the CLI for receiving rebuilt libraries
+//! - Structured panic reports sent to CLI for pretty display
+//! - Log forwarding with level filtering
 //!
-//! This keeps device logs clean while enabling the CLI to show a detailed, pretty panic report.
+//! # Panic Handling Pipeline
+//!
+//! When a panic occurs in hot reload mode, the following sequence happens:
+//!
+//! 1. **Our panic hook** (`install_panic_forwarder`) runs first:
+//!    - Captures a full backtrace via `Backtrace::force_capture()` (ignores RUST_BACKTRACE env)
+//!    - Sends structured `PanicReport` JSON over websocket to CLI
+//!    - CLI displays a pretty, colorized panic report with highlighted user frames
+//!
+//! 2. **Previous hook** (`tracing_panic::panic_hook`) runs:
+//!    - Logs panic to tracing (appears in device logs/logcat)
+//!    - `PanicAwareFormatter` sanitizes these logs to be minimal (truncated backtrace)
+//!
+//! 3. **CLI receives panic via websocket**:
+//!    - Displays pretty panic report with: message, location, thread, and backtrace
+//!    - User frames are highlighted in yellow; stdlib frames are dimmed
+//!    - Shows hint to fix and save for automatic rebuild
+//!
+//! # Log Forwarding
+//!
+//! - `CliForwardLayer`: Forwards tracing events over websocket to CLI
+//! - CLI `--log-filter` controls what gets forwarded (not device logs)
+//! - Device logs (stderr/logcat) use platform defaults, unaffected by CLI flags
+//! - Panic logs from tracing are filtered from CLI console (to avoid duplication)
+//!   but saved to crash log files
+//!
+//! # CLI Auto-Exit
+//!
+//! The CLI automatically exits when the app disconnects:
+//! - Graceful close: App closed normally
+//! - Abnormal close: App crashed (panic, SIGABRT, etc.)
+//!
+//! # Platform Notes
+//!
+//! - **Android**: `RUST_BACKTRACE=1` is set in MainActivity before loading native libs
+//!   to ensure `tracing_panic` also captures backtraces (no performance impact at runtime)
+//! - **iOS/macOS**: Backtraces work via `force_capture()` regardless of env var
 use async_channel::{Receiver, Sender};
 use executor_core::spawn_local;
 use libloading::Library;
