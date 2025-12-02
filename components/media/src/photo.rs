@@ -10,7 +10,7 @@
 //! let _photo = Photo::new(url).placeholder(waterui_core::AnyView::new(()));
 //! ```
 use crate::image::Image;
-use waterui_core::{AnyView, configurable};
+use waterui_core::{AnyView, NativeView, configurable};
 
 use crate::Url;
 
@@ -22,6 +22,8 @@ pub struct PhotoConfig {
     /// The view to display while the image is loading or unavailable.
     pub placeholder: AnyView,
 }
+
+impl NativeView for PhotoConfig {}
 
 configurable!(
     #[doc = "A static photo component that displays remote imagery with placeholders."]
