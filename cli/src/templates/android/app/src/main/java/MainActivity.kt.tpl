@@ -1,6 +1,7 @@
 package __BUNDLE_IDENTIFIER__
 
 import android.os.Bundle
+import android.system.Os
 import android.util.Log
 import androidx.activity.ComponentActivity
 import dev.waterui.android.runtime.WaterUiRootView
@@ -14,6 +15,13 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "WaterUI.MainActivity"
 
         init {
+            // Enable Rust backtraces for better panic diagnostics.
+            // This has no runtime cost until a panic occurs.
+            try {
+                Os.setenv("RUST_BACKTRACE", "1", false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to set RUST_BACKTRACE: ${e.message}")
+            }
             loadWaterUiLibraries()
             bootstrapWaterUiRuntime()
         }
