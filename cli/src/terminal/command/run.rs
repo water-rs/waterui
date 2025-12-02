@@ -2117,23 +2117,71 @@ fn emit_remote_panic(report: NativePanicReport) {
         return;
     }
 
-    ui::warning("App panic reported via hot reload");
-    ui::kv("Message", &report.message);
-    if let Some(thread) = report.thread {
-        ui::kv("Thread", thread);
+    ui::newline();
+    println!(
+        "{}",
+        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            .red()
+            .dim()
+    );
+    ui::error("PANIC in app");
+    println!(
+        "{}",
+        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            .red()
+            .dim()
+    );
+    ui::newline();
+
+    // Message - the most important part, highlighted
+    println!("  {} {}", style("Message:").bold(), style(&report.message).red());
+
+    // Location - formatted as clickable path
+    if let Some(location) = &report.location {
+        let location_str = format!("{}:{}:{}", location.file, location.line, location.column);
+        println!("  {} {}", style("Location:").bold(), style(&location_str).cyan().underlined());
     }
-    if let Some(location) = report.location {
-        let formatted = format!("{}:{}:{}", location.file, location.line, location.column);
-        ui::kv("Location", &formatted);
+
+    // Thread info
+    if let Some(thread) = &report.thread {
+        println!("  {} {}", style("Thread:").bold(), thread);
     }
-    if let Some(backtrace) = report.backtrace {
-        ui::kv("Backtrace", "");
-        for line in backtrace.lines() {
-            ui::plain(format!("    {line}"));
+
+    // Backtrace - with smart formatting
+    if let Some(backtrace) = &report.backtrace {
+        let backtrace = backtrace.trim();
+        if !backtrace.is_empty() && backtrace != "disabled backtrace" {
+            ui::newline();
+            println!("  {}", style("Backtrace:").bold());
+            for line in backtrace.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                // Highlight lines that look like user code (not std/core/alloc)
+                let is_user_frame = !line.contains("std::")
+                    && !line.contains("core::")
+                    && !line.contains("alloc::")
+                    && !line.contains("<unknown>")
+                    && !line.contains("rust_begin_unwind");
+
+                if is_user_frame && (line.contains("::") || line.contains(" at ")) {
+                    println!("    {}", style(line).yellow());
+                } else {
+                    ui::dimmed(format!("    {line}"));
+                }
+            }
         }
     }
 
-    ui::plain("  Hint: fix the panic above, save, and WaterUI will rebuild automatically.");
+    ui::newline();
+    println!(
+        "{}",
+        style("────────────────────────────────────────────────────────────────────────────────")
+            .dim()
+    );
+    ui::hint("Fix the panic above, save, and WaterUI will rebuild automatically.");
+    ui::newline();
 }
 
 fn emit_remote_log(event: NativeLogEvent) {
