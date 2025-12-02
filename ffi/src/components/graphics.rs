@@ -29,7 +29,7 @@ impl From<RendererBufferFormat> for WuiRendererBufferFormat {
     }
 }
 
-ffi_view!(RendererView, *mut WuiRendererView);
+ffi_view!(RendererView, *mut WuiRendererView, renderer_view);
 
 /// Gets the width of the renderer view.
 ///

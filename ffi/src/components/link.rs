@@ -11,4 +11,4 @@ into_ffi! {LinkConfig,
     }
 }
 
-native_view!(Link, WuiLink);
+ffi_view!(LinkConfig, WuiLink, link);

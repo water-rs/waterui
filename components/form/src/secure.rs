@@ -7,7 +7,7 @@ use core::fmt::Debug;
 
 use alloc::string::String;
 use nami::Binding;
-use waterui_core::{AnyView, NativeView, View, configurable, layout::StretchAxis};
+use waterui_core::{AnyView, View, configurable, layout::StretchAxis};
 use zeroize::Zeroize;
 
 /// A wrapper type for securely handling sensitive string data.
@@ -59,12 +59,6 @@ pub struct SecureFieldConfig {
     pub value: Binding<Secure>,
 }
 
-impl NativeView for SecureFieldConfig {
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
-    }
-}
-
 configurable!(
     /// A secure text entry field for passwords and sensitive data.
     ///
@@ -79,7 +73,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `Horizontal` - Expands to fill available width.
+
     // Height: Fixed intrinsic (platform-determined)
     // Width: Reports minimum usable width, expands during layout phase
     //
@@ -88,7 +82,8 @@ configurable!(
     // ═══════════════════════════════════════════════════════════════════════════
     //
     SecureField,
-    SecureFieldConfig
+    SecureFieldConfig,
+    StretchAxis::Horizontal
 );
 
 impl SecureField {
