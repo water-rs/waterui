@@ -59,7 +59,7 @@ use waterui_core::{
 // INTERNAL: Layout Contract for Backend Implementers
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Stretch Axis: `Both` - Expands to fill all available space.
+
 // With constraints: Returns the full proposal size
 // Without constraints: Returns a small fallback (e.g., 10pt × 10pt)
 //

@@ -6,8 +6,8 @@ use waterui::{
 use waterui_core::Native;
 
 use crate::{
-    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed,
-    reactive::WuiComputed, views::WuiAnyViews,
+    IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed, reactive::WuiComputed,
+    views::WuiAnyViews,
 };
 
 into_ffi! {
@@ -36,6 +36,6 @@ impl IntoFFI for TableColumn {
     }
 }
 
-ffi_view!(Native<TableConfig>, WuiTable, table);
+ffi_view!(TableConfig, WuiTable, table);
 
-ffi_view!(TableColumn, WuiTableColumn);
+ffi_view!(TableColumn, WuiTableColumn, table_column);

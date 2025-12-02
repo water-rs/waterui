@@ -16,4 +16,6 @@ impl IntoFFI for Lazy {
         }
     }
 }
-ffi_view!(Lazy, WuiLazy);
+
+// ffi_view!(Lazy, WuiLazy);
+// TODO: Implement Lazy FFI bindings

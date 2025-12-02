@@ -6,7 +6,7 @@
 use core::ops::RangeInclusive;
 
 use nami::Binding;
-use waterui_core::{AnyView, NativeView, View, configurable, layout::StretchAxis};
+use waterui_core::{AnyView, View, configurable, layout::StretchAxis};
 use waterui_text::text;
 
 /// Configuration for the [`Slider`] widget.
@@ -23,12 +23,6 @@ pub struct SliderConfig {
     pub range: RangeInclusive<f64>,
     /// The binding to the current value of the slider.
     pub value: Binding<f64>,
-}
-
-impl NativeView for SliderConfig {
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
-    }
 }
 
 configurable!(
@@ -64,14 +58,15 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `Horizontal` - Expands to fill available width.
+
     // Height: Fixed intrinsic (platform-determined)
     // Width: Reports minimum usable width, expands during layout phase
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Slider,
-    SliderConfig
+    SliderConfig,
+    StretchAxis::Horizontal
 );
 
 impl Slider {

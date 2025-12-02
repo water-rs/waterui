@@ -22,4 +22,4 @@ into_ffi! {
     }
 }
 
-native_view!(Progress, WuiProgress);
+ffi_view!(ProgressConfig, WuiProgress, progress);

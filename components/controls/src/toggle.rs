@@ -3,7 +3,7 @@
 use nami::Binding;
 use waterui_core::configurable;
 
-use waterui_core::{AnyView, NativeView, View};
+use waterui_core::{AnyView, View};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -14,8 +14,6 @@ pub struct ToggleConfig {
     /// The binding to the toggle state.
     pub toggle: Binding<bool>,
 }
-
-impl NativeView for ToggleConfig {}
 
 configurable!(
     /// A control that toggles between on and off states.
@@ -48,7 +46,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Toggle never expands to fill available space.
+    
     // Size: label_width + spacing + switch_width (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════

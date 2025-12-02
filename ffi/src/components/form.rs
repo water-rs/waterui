@@ -95,17 +95,17 @@ impl IntoFFI for RangeInclusive<i32> {
 }
 
 // FFI view bindings for form components
-native_view!(TextField, WuiTextField);
+ffi_view!(TextFieldConfig, WuiTextField, text_field);
 
-native_view!(Toggle, WuiToggle);
+ffi_view!(ToggleConfig, WuiToggle, toggle);
 
-native_view!(Slider, WuiSlider);
+ffi_view!(SliderConfig, WuiSlider, slider);
 
-native_view!(Stepper, WuiStepper);
+ffi_view!(StepperConfig, WuiStepper, stepper);
 
-native_view!(ColorPicker, WuiColorPicker);
+ffi_view!(ColorPickerConfig, WuiColorPicker, color_picker);
 
-native_view!(Picker, WuiPicker);
+ffi_view!(PickerConfig, WuiPicker, picker);
 
 into_ffi! {PickerConfig,
     pub struct WuiPicker {
