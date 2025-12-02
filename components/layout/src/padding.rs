@@ -18,7 +18,7 @@ impl Layout for PaddingLayout {
     fn size_that_fits(
         &self,
         proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Size {
         // The horizontal and vertical space consumed by padding.
         let horizontal_padding = self.edges.leading + self.edges.trailing;
@@ -32,7 +32,7 @@ impl Layout for PaddingLayout {
 
         // Measure the child
         let child_size = children
-            .first_mut()
+            .first()
             .map(|c| c.size_that_fits(child_proposal))
             .unwrap_or(Size::zero());
 
@@ -59,7 +59,7 @@ impl Layout for PaddingLayout {
     fn place(
         &self,
         bounds: Rect,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
@@ -164,17 +164,18 @@ impl View for Padding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StretchAxis;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            false
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
         }
         fn priority(&self) -> i32 {
             0
@@ -190,9 +191,9 @@ mod tests {
         let mut child = MockSubView {
             size: Size::new(50.0, 30.0),
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+        let children: Vec<&dyn SubView> = vec![&mut child];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Size = child size + padding on all sides
         assert_eq!(size.width, 70.0);  // 50 + 10 + 10
@@ -208,10 +209,10 @@ mod tests {
         let mut child = MockSubView {
             size: Size::new(50.0, 30.0),
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child];
+        let children: Vec<&dyn SubView> = vec![&mut child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         // Child origin is offset by leading and top
         assert_eq!(rects[0].x(), 15.0);
