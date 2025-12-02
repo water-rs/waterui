@@ -36,7 +36,25 @@ pub enum DatePickerType {
 }
 
 configurable!(
-    #[doc = "A date selection control supporting multiple calendar granularity options."]
+    /// A control for selecting dates and times.
+    ///
+    /// DatePicker provides various styles for date/time selection including
+    /// date-only, time-only, or combined date-time pickers.
+    ///
+    /// # Layout Behavior
+    ///
+    /// DatePicker sizes itself to fit its content and never stretches to fill extra space.
+    /// In a stack, it takes only the space it needs.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - DatePicker never expands to fill available space.
+    // Size: Determined by picker style and content (platform-determined)
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     DatePicker,
     DatePickerConfig
 );

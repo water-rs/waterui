@@ -60,7 +60,27 @@ pub struct SecureFieldConfig {
 }
 
 configurable!(
-    #[doc = "A secure text entry field that stores its value in a zeroizing wrapper."]
+    /// A secure text entry field for passwords and sensitive data.
+    ///
+    /// SecureField masks input and securely stores values with automatic memory zeroing.
+    ///
+    /// # Layout Behavior
+    ///
+    /// SecureField **expands horizontally** to fill available space, but has a fixed height.
+    /// In an `HStack`, it will take up all remaining width after other views are sized.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `Horizontal` - Expands to fill available width.
+    // Height: Fixed intrinsic (platform-determined)
+    // Width: Reports minimum usable width, expands during layout phase
+    //
+    // Same layout behavior as TextField.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     SecureField,
     SecureFieldConfig
 );

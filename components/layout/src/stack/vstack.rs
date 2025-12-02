@@ -5,7 +5,7 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size,
+    Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis,
     container::FixedContainer, stack::HorizontalAlignment, SubView,
 };
 
@@ -21,7 +21,14 @@ pub struct VStackLayout {
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
     size: Size,
-    is_stretch: bool,
+    stretch_axis: StretchAxis,
+}
+
+impl ChildMeasurement {
+    /// Returns true if this child stretches vertically (for VStack height distribution).
+    fn stretches_vertical(&self) -> bool {
+        self.stretch_axis.stretches_vertical()
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -29,7 +36,7 @@ impl Layout for VStackLayout {
     fn size_that_fits(
         &self,
         proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Size {
         if children.is_empty() {
             return Size::zero();
@@ -39,19 +46,21 @@ impl Layout for VStackLayout {
         let child_proposal = ProposalSize::new(proposal.width, None);
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
-                is_stretch: child.is_stretch(),
+                stretch_axis: child.stretch_axis(),
             })
             .collect();
 
-        let has_stretch = measurements.iter().any(|m| m.is_stretch);
+        // VStack only cares about vertical stretching
+        let has_vertical_stretch = measurements.iter().any(|m| m.stretches_vertical());
 
-        // Height: sum of non-stretch children + spacing
+        // Height: sum of children that don't stretch vertically + spacing
+        // (axis-expanding components like TextField report their intrinsic height here)
         let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretches_vertical())
             .map(|m| m.size.height)
             .sum();
 
@@ -62,16 +71,17 @@ impl Layout for VStackLayout {
         };
 
         let intrinsic_height = non_stretch_height + total_spacing;
-        let final_height = if has_stretch {
+        let final_height = if has_vertical_stretch {
             proposal.height.unwrap_or(intrinsic_height)
         } else {
             intrinsic_height
         };
 
-        // Width: max of non-stretch children
+        // Width: max of children that don't stretch horizontally
+        // (horizontally-stretching children don't contribute to intrinsic width)
         let max_width = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretch_axis.stretches_horizontal())
             .map(|m| m.size.width)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
@@ -87,7 +97,7 @@ impl Layout for VStackLayout {
     fn place(
         &self,
         bounds: Rect,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
@@ -97,18 +107,18 @@ impl Layout for VStackLayout {
         let child_proposal = ProposalSize::new(Some(bounds.width()), None);
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
-                is_stretch: child.is_stretch(),
+                stretch_axis: child.stretch_axis(),
             })
             .collect();
 
-        // Calculate stretch child height
-        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
+        // Calculate stretch child height - only for vertically stretching children
+        let vertical_stretch_count = measurements.iter().filter(|m| m.stretches_vertical()).count();
         let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretches_vertical())
             .map(|m| m.size.height)
             .sum();
 
@@ -119,8 +129,8 @@ impl Layout for VStackLayout {
         };
 
         let remaining_height = bounds.height() - non_stretch_height - total_spacing;
-        let stretch_height = if stretch_count > 0 {
-            (remaining_height / stretch_count as f32).max(0.0)
+        let stretch_height = if vertical_stretch_count > 0 {
+            (remaining_height / vertical_stretch_count as f32).max(0.0)
         } else {
             0.0
         };
@@ -142,7 +152,7 @@ impl Layout for VStackLayout {
                 measurement.size.width.min(bounds.width())
             };
 
-            let child_height = if measurement.is_stretch {
+            let child_height = if measurement.stretches_vertical() {
                 stretch_height
             } else {
                 measurement.size.height
@@ -166,7 +176,36 @@ impl Layout for VStackLayout {
     }
 }
 
-/// A vertical stack view that arranges its children in a column.
+/// A view that arranges its children in a vertical line.
+///
+/// Use a `VStack` to arrange views top-to-bottom. The stack sizes itself to fit
+/// its contents, distributing available space among its children.
+///
+/// ```ignore
+/// vstack((
+///     text("Title"),
+///     text("Subtitle"),
+/// ))
+/// ```
+///
+/// You can customize the spacing between children and their horizontal alignment:
+///
+/// ```ignore
+/// VStack::new(HorizontalAlignment::Leading, 8.0, (
+///     text("First"),
+///     text("Second"),
+/// ))
+/// ```
+///
+/// Use [`spacer()`] to push content to the top and bottom:
+///
+/// ```ignore
+/// vstack((
+///     text("Header"),
+///     spacer(),
+///     text("Footer"),
+/// ))
+/// ```
 #[derive(Debug, Clone)]
 pub struct VStack<C> {
     layout: VStackLayout,
@@ -255,15 +294,15 @@ mod tests {
 
     struct MockSubView {
         size: Size,
-        is_stretch: bool,
+        stretch_axis: StretchAxis,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            self.is_stretch
+        fn stretch_axis(&self) -> StretchAxis {
+            self.stretch_axis
         }
         fn priority(&self) -> i32 {
             0
@@ -279,16 +318,16 @@ mod tests {
 
         let mut child1 = MockSubView {
             size: Size::new(100.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut child2 = MockSubView {
             size: Size::new(80.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         assert_eq!(size.width, 100.0); // max width
         assert_eq!(size.height, 80.0); // 30 + 10 + 40
@@ -303,23 +342,23 @@ mod tests {
 
         let mut child1 = MockSubView {
             size: Size::new(100.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut spacer = MockSubView {
             size: Size::zero(),
-            is_stretch: true,
+            stretch_axis: StretchAxis::Both, // Spacer stretches in both directions
         };
         let mut child2 = MockSubView {
             size: Size::new(100.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
         // With specified height, spacer should expand
         let size = layout.size_that_fits(
             ProposalSize::new(None, Some(200.0)),
-            &mut children,
+            &children,
         );
 
         assert_eq!(size.height, 200.0);
@@ -330,23 +369,56 @@ mod tests {
         // Need fresh references
         let mut child1 = MockSubView {
             size: Size::new(100.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut spacer = MockSubView {
             size: Size::zero(),
-            is_stretch: true,
+            stretch_axis: StretchAxis::Both,
         };
         let mut child2 = MockSubView {
             size: Size::new(100.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         assert_eq!(rects[0].height(), 30.0);
         assert_eq!(rects[1].height(), 140.0); // 200 - 30 - 30
         assert_eq!(rects[2].height(), 30.0);
         assert_eq!(rects[2].y(), 170.0); // 30 + 140
+    }
+
+    #[test]
+    fn test_vstack_with_horizontal_stretch() {
+        // TextField-like component: stretches horizontally but has fixed height
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut label = MockSubView {
+            size: Size::new(50.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut text_field = MockSubView {
+            size: Size::new(100.0, 40.0), // reports minimum width, intrinsic height
+            stretch_axis: StretchAxis::Horizontal, // stretches width only
+        };
+        let mut button = MockSubView {
+            size: Size::new(80.0, 44.0),
+            stretch_axis: StretchAxis::None,
+        };
+
+        let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+
+        // Width: max of non-horizontal-stretching children = max(50, 80) = 80
+        // Note: text_field stretches horizontally so its width doesn't contribute
+        assert_eq!(size.width, 80.0);
+        // Height: all children contribute (text_field doesn't stretch vertically)
+        // = 20 + 10 + 40 + 10 + 44 = 124
+        assert_eq!(size.height, 124.0);
     }
 }
