@@ -11,6 +11,15 @@ pub use hstack::*;
 mod zstack;
 pub use zstack::*;
 
+/// Defines the axis of a stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// Horizontal axis is the x-axis (HStack)
+    Horizontal,
+    /// Vertical axis is the y-axis (VStack)
+    Vertical,
+}
+
 /// Defines vertical alignment options for layout components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VerticalAlignment {
