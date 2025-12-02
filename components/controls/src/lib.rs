@@ -18,3 +18,4 @@ pub use stepper::{Stepper, stepper};
 
 pub mod button;
 pub use button::{Button, button};
+pub mod text_editor;
