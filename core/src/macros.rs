@@ -91,7 +91,6 @@ macro_rules! configurable {
     // Internal implementation with stretch axis
     (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr) => {
         $(#[$meta])*
-        #[derive(Debug)]
         pub struct $view($config);
 
         impl $crate::NativeView for $config {
