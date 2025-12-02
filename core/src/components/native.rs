@@ -2,7 +2,7 @@
 
 use core::any::type_name;
 
-use crate::{Environment, View};
+use crate::{Environment, View, layout::StretchAxis};
 
 /// A wrapper for platform-specific native UI components.
 ///
@@ -22,5 +22,19 @@ impl<T: 'static> View for Native<T> {
     fn body(self, _env: &Environment) -> impl View {
         panic!("Native view ({})", type_name::<T>());
         return;
+    }
+}
+
+/// A trait for all views handled by the native backend.
+///
+/// This includes:
+/// - Configurable views (TextField, Slider, Toggle, etc.)
+/// - Raw views (Color, Spacer, Divider, Container, etc.)
+///
+/// The native backend uses this trait to query layout behavior.
+pub trait NativeView {
+    /// Which axis (or axes) this view stretches to fill available space.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
     }
 }

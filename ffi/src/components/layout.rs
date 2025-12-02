@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, ScrollView, Size, SubView,
+    Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
     container::{Container as LayoutContainer, FixedContainer},
     scroll::Axis,
 };
@@ -100,6 +100,56 @@ impl IntoFFI for ProposalSize {
 }
 
 // ============================================================================
+// StretchAxis FFI
+// ============================================================================
+
+/// FFI representation of StretchAxis enum.
+///
+/// Specifies which axis (or axes) a view stretches to fill available space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WuiStretchAxis {
+    /// No stretching - view uses its intrinsic size
+    None = 0,
+    /// Stretch horizontally only (expand width, use intrinsic height)
+    Horizontal = 1,
+    /// Stretch vertically only (expand height, use intrinsic width)
+    Vertical = 2,
+    /// Stretch in both directions (expand width and height)
+    Both = 3,
+    /// Stretch along the parent container's main axis (e.g., Spacer)
+    MainAxis = 4,
+    /// Stretch along the parent container's cross axis (e.g., Divider)
+    CrossAxis = 5,
+}
+
+impl From<WuiStretchAxis> for StretchAxis {
+    fn from(axis: WuiStretchAxis) -> Self {
+        match axis {
+            WuiStretchAxis::None => StretchAxis::None,
+            WuiStretchAxis::Horizontal => StretchAxis::Horizontal,
+            WuiStretchAxis::Vertical => StretchAxis::Vertical,
+            WuiStretchAxis::Both => StretchAxis::Both,
+            WuiStretchAxis::MainAxis => StretchAxis::MainAxis,
+            WuiStretchAxis::CrossAxis => StretchAxis::CrossAxis,
+        }
+    }
+}
+
+impl From<StretchAxis> for WuiStretchAxis {
+    fn from(axis: StretchAxis) -> Self {
+        match axis {
+            StretchAxis::None => WuiStretchAxis::None,
+            StretchAxis::Horizontal => WuiStretchAxis::Horizontal,
+            StretchAxis::Vertical => WuiStretchAxis::Vertical,
+            StretchAxis::Both => WuiStretchAxis::Both,
+            StretchAxis::MainAxis => WuiStretchAxis::MainAxis,
+            StretchAxis::CrossAxis => WuiStretchAxis::CrossAxis,
+        }
+    }
+}
+
+// ============================================================================
 // SubView FFI Proxy
 // ============================================================================
 
@@ -134,8 +184,8 @@ pub struct WuiSubView {
     pub context: *mut core::ffi::c_void,
     /// VTable containing measure and drop functions
     pub vtable: WuiSubViewVTable,
-    /// Whether this view stretches to fill available space (like Spacer)
-    pub is_stretch: bool,
+    /// Which axis this view stretches to fill available space
+    pub stretch_axis: WuiStretchAxis,
     /// Layout priority (higher = measured first, gets space preference)
     pub priority: i32,
 }
@@ -147,13 +197,13 @@ impl Drop for WuiSubView {
 }
 
 impl SubView for WuiSubView {
-    fn size_that_fits(&mut self, proposal: ProposalSize) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
         let result = unsafe { (self.vtable.measure)(self.context, proposal.into_ffi()) };
         unsafe { result.into_rust() }
     }
 
-    fn is_stretch(&self) -> bool {
-        self.is_stretch
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch_axis.into()
     }
 
     fn priority(&self) -> i32 {
@@ -243,17 +293,17 @@ pub unsafe extern "C" fn waterui_layout_size_that_fits(
     proposal: WuiProposalSize,
     mut children: WuiArray<WuiSubView>,
 ) -> WuiSize {
-    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
     let proposal = unsafe { proposal.into_rust() };
 
-    // Get mutable slice of WuiSubView and create trait object references
+    // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
-    let mut subview_refs: Vec<&mut dyn SubView> = children_slice
-        .iter_mut()
-        .map(|s| s as &mut dyn SubView)
+    let subview_refs: Vec<&dyn SubView> = children_slice
+        .iter()
+        .map(|s| s as &dyn SubView)
         .collect();
 
-    let size = layout.size_that_fits(proposal, &mut subview_refs);
+    let size = layout.size_that_fits(proposal, &subview_refs);
     size.into_ffi()
     // children array is dropped here, calling drop on each WuiSubView
 }
@@ -274,19 +324,35 @@ pub unsafe extern "C" fn waterui_layout_place(
     bounds: WuiRect,
     mut children: WuiArray<WuiSubView>,
 ) -> WuiArray<WuiRect> {
-    let layout: &mut dyn Layout = unsafe { &mut *(*layout).0 };
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
     let bounds = unsafe { bounds.into_rust() };
 
-    // Get mutable slice of WuiSubView and create trait object references
+    // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
-    let mut subview_refs: Vec<&mut dyn SubView> = children_slice
-        .iter_mut()
-        .map(|s| s as &mut dyn SubView)
+    let subview_refs: Vec<&dyn SubView> = children_slice
+        .iter()
+        .map(|s| s as &dyn SubView)
         .collect();
 
-    let rects = layout.place(bounds, &mut subview_refs);
+    let rects = layout.place(bounds, &subview_refs);
     rects.into_ffi()
     // children array is dropped here, calling drop on each WuiSubView
+}
+
+/// Gets the stretch axis of a layout.
+///
+/// Layout containers report which axis they stretch on:
+/// - VStack: Horizontal (fills width, uses intrinsic height)
+/// - HStack: Vertical (fills height, uses intrinsic width)
+/// - ZStack: Both (fills all available space)
+///
+/// # Safety
+///
+/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_layout_stretch_axis(layout: *mut WuiLayout) -> WuiStretchAxis {
+    let layout: &dyn Layout = unsafe { &*(*layout).0 };
+    layout.stretch_axis().into()
 }
 
 // ============================================================================

@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 
-use waterui_core::raw_view;
+use waterui_core::{layout::StretchAxis, raw_view};
 
 /// The pixel format of a CPU renderer surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl core::fmt::Debug for RendererView {
     }
 }
 
-raw_view!(RendererView);
+raw_view!(RendererView, StretchAxis::Both);
 
 impl RendererView {
     /// Creates a new renderer view with the provided callback.
