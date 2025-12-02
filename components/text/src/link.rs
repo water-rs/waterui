@@ -1,6 +1,6 @@
 use nami::Computed;
 use nami::signal::IntoComputed;
-use waterui_core::{AnyView, NativeView, configurable};
+use waterui_core::{AnyView, configurable};
 use waterui_core::{Str, View};
 
 #[derive(Debug)]
@@ -11,8 +11,6 @@ pub struct LinkConfig {
     /// The URL the link points to.
     pub url: Computed<Str>,
 }
-
-impl NativeView for LinkConfig {}
 
 configurable!(
     /// A tappable text link that opens a URL.
@@ -28,7 +26,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Link never expands to fill available space.
+    
     // Size: Determined by label content (same as Text)
     //
     // ═══════════════════════════════════════════════════════════════════════════

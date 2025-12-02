@@ -314,6 +314,12 @@ pub extern "C" fn waterui_env_new() -> *mut WuiEnv {
     env.into_ffi()
 }
 
+/// Gets the id of the anyview type
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_anyview_id() -> WuiStr {
+    core::any::type_name::<AnyView>().into_ffi()
+}
+
 /// Clones an existing environment instance
 ///
 /// # Safety
@@ -357,6 +363,23 @@ pub unsafe extern "C" fn waterui_view_id(view: *const WuiAnyView) -> WuiStr {
     unsafe { (&*view).name().into_ffi() }
 }
 
+/// Gets the stretch axis of a view.
+///
+/// Returns the `StretchAxis` that indicates how this view stretches to fill
+/// available space. For native views, this returns the layout behavior defined
+/// by the `NativeView` trait. For non-native views, this will panic.
+///
+/// # Safety
+/// The caller must ensure that `view` is a valid pointer to a properly
+/// initialized `WuiAnyView` instance and that it remains valid for the
+/// duration of this function call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_stretch_axis(
+    view: *const WuiAnyView,
+) -> crate::components::layout::WuiStretchAxis {
+    unsafe { (&*view).stretch_axis().into() }
+}
+
 // UTF-8 string represented as a byte array
 #[repr(C)]
 pub struct WuiStr(WuiArray<u8>);
@@ -387,11 +410,6 @@ impl IntoRust for WuiStr {
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
     AnyView::default().into_ffi()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_anyview_id() -> WuiStr {
-    core::any::type_name::<AnyView>().into_ffi()
 }
 
 pub struct WuiMetadata<T> {

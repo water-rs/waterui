@@ -38,7 +38,7 @@ use waterui_core::{layout::StretchAxis, raw_view};
 // INTERNAL: Layout Contract for Backend Implementers
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Stretch Axis: `CrossAxis` - Expands along parent stack's cross axis.
+
 // Thickness: Fixed 1pt on the non-expanding axis
 // In VStack: Horizontal line (expands width, 1pt height)
 // In HStack: Vertical line (1pt width, expands height)
