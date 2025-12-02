@@ -26,8 +26,24 @@ struct ChildMeasurement {
 
 impl ChildMeasurement {
     /// Returns true if this child stretches vertically (for VStack height distribution).
-    fn stretches_vertical(&self) -> bool {
-        self.stretch_axis.stretches_vertical()
+    /// In VStack context:
+    /// - MainAxis means vertical (VStack's main axis)
+    /// - CrossAxis means horizontal (VStack's cross axis)
+    fn stretches_main_axis(&self) -> bool {
+        matches!(
+            self.stretch_axis,
+            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
+        )
+    }
+
+    /// Returns true if this child stretches horizontally (for VStack width expansion).
+    /// In VStack context:
+    /// - CrossAxis means horizontal (VStack's cross axis)
+    fn stretches_cross_axis(&self) -> bool {
+        matches!(
+            self.stretch_axis,
+            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+        )
     }
 }
 
@@ -53,14 +69,14 @@ impl Layout for VStackLayout {
             })
             .collect();
 
-        // VStack only cares about vertical stretching
-        let has_vertical_stretch = measurements.iter().any(|m| m.stretches_vertical());
+        // VStack checks for main-axis (vertical) stretching
+        let has_main_axis_stretch = measurements.iter().any(|m| m.stretches_main_axis());
 
-        // Height: sum of children that don't stretch vertically + spacing
+        // Height: sum of children that don't stretch on main axis (vertically) + spacing
         // (axis-expanding components like TextField report their intrinsic height here)
         let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|m| !m.stretches_vertical())
+            .filter(|m| !m.stretches_main_axis())
             .map(|m| m.size.height)
             .sum();
 
@@ -71,17 +87,17 @@ impl Layout for VStackLayout {
         };
 
         let intrinsic_height = non_stretch_height + total_spacing;
-        let final_height = if has_vertical_stretch {
+        let final_height = if has_main_axis_stretch {
             proposal.height.unwrap_or(intrinsic_height)
         } else {
             intrinsic_height
         };
 
-        // Width: max of children that don't stretch horizontally
-        // (horizontally-stretching children don't contribute to intrinsic width)
+        // Width: max of children that don't stretch on cross axis (horizontally)
+        // (cross-axis stretching children don't contribute to intrinsic width)
         let max_width = measurements
             .iter()
-            .filter(|m| !m.stretch_axis.stretches_horizontal())
+            .filter(|m| !m.stretches_cross_axis())
             .map(|m| m.size.width)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
@@ -114,11 +130,11 @@ impl Layout for VStackLayout {
             })
             .collect();
 
-        // Calculate stretch child height - only for vertically stretching children
-        let vertical_stretch_count = measurements.iter().filter(|m| m.stretches_vertical()).count();
+        // Calculate stretch child height - only for main-axis (vertically) stretching children
+        let main_axis_stretch_count = measurements.iter().filter(|m| m.stretches_main_axis()).count();
         let non_stretch_height: f32 = measurements
             .iter()
-            .filter(|m| !m.stretches_vertical())
+            .filter(|m| !m.stretches_main_axis())
             .map(|m| m.size.height)
             .sum();
 
@@ -129,8 +145,8 @@ impl Layout for VStackLayout {
         };
 
         let remaining_height = bounds.height() - non_stretch_height - total_spacing;
-        let stretch_height = if vertical_stretch_count > 0 {
-            (remaining_height / vertical_stretch_count as f32).max(0.0)
+        let stretch_height = if main_axis_stretch_count > 0 {
+            (remaining_height / main_axis_stretch_count as f32).max(0.0)
         } else {
             0.0
         };
@@ -144,15 +160,18 @@ impl Layout for VStackLayout {
                 current_y += self.spacing;
             }
 
-            // Handle infinite width (axis-expanding views) and clamp to bounds
-            let child_width = if measurement.size.width.is_infinite() {
+            // Handle cross-axis (horizontal) stretching and infinite width
+            let child_width = if measurement.stretches_cross_axis() {
+                // CrossAxis in VStack means expand horizontally to full bounds width
+                bounds.width()
+            } else if measurement.size.width.is_infinite() {
                 bounds.width()
             } else {
                 // Clamp child width to bounds - child can't be wider than container
                 measurement.size.width.min(bounds.width())
             };
 
-            let child_height = if measurement.stretches_vertical() {
+            let child_height = if measurement.stretches_main_axis() {
                 stretch_height
             } else {
                 measurement.size.height
@@ -173,6 +192,12 @@ impl Layout for VStackLayout {
         }
 
         rects
+    }
+
+    /// VStack stretches horizontally to fill available width (cross-axis).
+    /// It uses intrinsic height based on children (main-axis).
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
     }
 }
 
