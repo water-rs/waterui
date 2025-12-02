@@ -28,7 +28,7 @@ pub extern "C" fn waterui_divider_id() -> WuiStr {
     core::any::type_name::<waterui::widget::Divider>().into_ffi()
 }
 
-ffi_view!(FixedContainer, WuiFixedContainer);
+ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);
 
 impl IntoFFI for FixedContainer {
     type FFI = WuiFixedContainer;
@@ -47,7 +47,7 @@ pub struct WuiContainer {
     contents: *mut WuiAnyViews,
 }
 
-ffi_view!(LayoutContainer, WuiContainer);
+ffi_view!(LayoutContainer, WuiContainer, layout_container);
 
 impl IntoFFI for LayoutContainer {
     type FFI = WuiContainer;
@@ -298,10 +298,8 @@ pub unsafe extern "C" fn waterui_layout_size_that_fits(
 
     // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
-    let subview_refs: Vec<&dyn SubView> = children_slice
-        .iter()
-        .map(|s| s as &dyn SubView)
-        .collect();
+    let subview_refs: Vec<&dyn SubView> =
+        children_slice.iter().map(|s| s as &dyn SubView).collect();
 
     let size = layout.size_that_fits(proposal, &subview_refs);
     size.into_ffi()
@@ -329,30 +327,12 @@ pub unsafe extern "C" fn waterui_layout_place(
 
     // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
-    let subview_refs: Vec<&dyn SubView> = children_slice
-        .iter()
-        .map(|s| s as &dyn SubView)
-        .collect();
+    let subview_refs: Vec<&dyn SubView> =
+        children_slice.iter().map(|s| s as &dyn SubView).collect();
 
     let rects = layout.place(bounds, &subview_refs);
     rects.into_ffi()
     // children array is dropped here, calling drop on each WuiSubView
-}
-
-/// Gets the stretch axis of a layout.
-///
-/// Layout containers report which axis they stretch on:
-/// - VStack: Horizontal (fills width, uses intrinsic height)
-/// - HStack: Vertical (fills height, uses intrinsic width)
-/// - ZStack: Both (fills all available space)
-///
-/// # Safety
-///
-/// The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_layout_stretch_axis(layout: *mut WuiLayout) -> WuiStretchAxis {
-    let layout: &dyn Layout = unsafe { &*(*layout).0 };
-    layout.stretch_axis().into()
 }
 
 // ============================================================================
@@ -384,4 +364,4 @@ impl IntoFFI for ScrollView {
     }
 }
 
-ffi_view!(ScrollView, WuiScrollView);
+ffi_view!(ScrollView, WuiScrollView, scroll_view);
