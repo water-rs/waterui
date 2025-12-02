@@ -81,6 +81,17 @@ macro_rules! native_view {
     ($ty:ty, $ffi:ty) => {
         paste::paste!{
             $crate::ffi_view!(waterui_core::Native<<$ty as waterui_core::view::ConfigurableView>::Config>, $ffi, [<$ty:snake>]);
+
+            /// Returns the stretch axis for this native view type.
+            #[unsafe(no_mangle)]
+            pub extern "C" fn [<waterui_ $ty:snake _stretch_axis>](view: *mut $crate::WuiAnyView) -> $crate::components::layout::WuiStretchAxis {
+                use waterui_core::NativeView;
+                unsafe {
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
+                    let native = any.downcast_unchecked::<waterui_core::Native<<$ty as waterui_core::view::ConfigurableView>::Config>>();
+                    native.0.stretch_axis().into()
+                }
+            }
         }
     };
 }
