@@ -1,6 +1,5 @@
 use core::fmt::Debug;
 
-use alloc::boxed::Box;
 use nami::{Computed, Signal, impl_constant};
 use waterui_core::{
     Environment,
@@ -64,17 +63,6 @@ pub enum FontWeight {
 }
 
 impl_constant!(Font, ResolvedFont, FontWeight);
-
-/// A trait for custom font types that can be resolved.
-pub trait CustomFont: Debug + Clone {
-    /// Resolves the font in the given environment.
-    fn resolve(&self, env: &Environment) -> ResolvedFont;
-}
-
-trait CustomFontImpl {
-    fn resolve(&self, env: &Environment) -> ResolvedFont;
-    fn box_clone(&self) -> Box<dyn CustomFontImpl>;
-}
 
 impl Font {
     /// Creates a new font from a resolvable value.
