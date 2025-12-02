@@ -76,12 +76,12 @@ impl Layout for OverlayLayout {
     fn size_that_fits(
         &self,
         proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Size {
         // Overlay size is driven entirely by the base child (index 0). If the base
         // provides no intrinsic size, fall back to the parent's constraints.
         let base_size = children
-            .first_mut()
+            .first()
             .map(|c| c.size_that_fits(proposal))
             .unwrap_or(Size::zero());
 
@@ -106,7 +106,7 @@ impl Layout for OverlayLayout {
     fn place(
         &self,
         bounds: Rect,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
@@ -116,7 +116,7 @@ impl Layout for OverlayLayout {
         let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
             })
@@ -216,17 +216,18 @@ pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Lay
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StretchAxis;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            false
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
         }
         fn priority(&self) -> i32 {
             0
@@ -244,9 +245,9 @@ mod tests {
             size: Size::new(20.0, 20.0),
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut base, &mut overlay_child];
+        let children: Vec<&dyn SubView> = vec![&mut base, &mut overlay_child];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Size comes from base child
         assert_eq!(size.width, 100.0);
@@ -266,10 +267,10 @@ mod tests {
             size: Size::new(20.0, 20.0),
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut base, &mut overlay_child];
+        let children: Vec<&dyn SubView> = vec![&mut base, &mut overlay_child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         // Base fills bounds
         assert_eq!(rects[0].width(), 100.0);
