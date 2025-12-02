@@ -13,8 +13,27 @@ pub struct LinkConfig {
 }
 
 configurable!(
-    /// A hyperlink component that navigates to a specified URL when clicked.
-    Link, LinkConfig);
+    /// A tappable text link that opens a URL.
+    ///
+    /// Link displays styled text that navigates to the specified URL when tapped.
+    ///
+    /// # Layout Behavior
+    ///
+    /// Link sizes itself to fit its label content and never stretches to fill extra space.
+    /// In a stack, it takes only the space it needs, just like Text.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - Link never expands to fill available space.
+    // Size: Determined by label content (same as Text)
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    Link,
+    LinkConfig
+);
 
 impl Link {
     /// Creates a new link component.
