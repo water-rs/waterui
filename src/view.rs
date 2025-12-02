@@ -19,6 +19,7 @@ use waterui_core::{
 };
 
 use waterui_layout::{
+    EdgeSet, IgnoreSafeArea,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -288,6 +289,32 @@ pub trait ViewExt: View + Sized {
     /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
+    }
+
+    /// Extends this view's bounds to ignore safe area insets on the specified edges.
+    ///
+    /// This allows backgrounds, images, and other visual elements to extend edge-to-edge
+    /// while content remains in the safe area. The native renderer will expand the
+    /// view's frame to include the unsafe regions on the specified edges.
+    ///
+    /// # Arguments
+    /// * `edges` - The edges on which to ignore safe area insets
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// // Extend background to fill entire screen
+    /// Color::blue()
+    ///     .ignore_safe_area(EdgeSet::ALL);
+    ///
+    /// // Only extend to top (under status bar)
+    /// header_view
+    ///     .ignore_safe_area(EdgeSet::TOP);
+    /// ```
+    fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
+        Metadata::new(self, IgnoreSafeArea::new(edges))
     }
 }
 

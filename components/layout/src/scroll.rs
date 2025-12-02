@@ -2,11 +2,33 @@
 
 use waterui_core::{AnyView, View, raw_view};
 
-/// A scrollable container that can display content larger than its bounds.
+/// A scrollable view that displays content larger than its frame.
 ///
-/// `ScrollView` is a special component that requires renderer support for actual scrolling behavior.
-/// It cannot be implemented purely through the layout system and must be bridged through FFI
-/// to the platform-specific scrolling implementations.
+/// Use a `ScrollView` when you have content that might not fit in the available space.
+/// The view automatically enables scrolling in the specified direction.
+///
+/// ```ignore
+/// scroll(
+///     vstack((
+///         text("Item 1"),
+///         text("Item 2"),
+///         text("Item 3"),
+///         // ... many more items
+///     ))
+/// )
+/// ```
+///
+/// By default, `ScrollView` scrolls vertically. For horizontal scrolling:
+///
+/// ```ignore
+/// scroll_horizontal(long_content)
+/// ```
+///
+/// Or both directions:
+///
+/// ```ignore
+/// scroll_both(large_image)
+/// ```
 #[derive(Debug)]
 pub struct ScrollView {
     axis: Axis,

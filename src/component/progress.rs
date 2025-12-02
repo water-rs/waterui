@@ -58,7 +58,44 @@ pub enum ProgressStyle {
 }
 
 configurable!(
-    #[doc = "A progress indicator view with customizable labels and styles."]
+    /// A view that shows the progress of a task.
+    ///
+    /// Progress can be displayed as a linear bar or circular spinner.
+    ///
+    /// # Layout Behavior
+    ///
+    /// - **Linear style:** Expands horizontally to fill available space, fixed height
+    /// - **Circular style:** Sizes itself to fit the spinner, never stretches
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Determinate progress (75% complete)
+    /// progress(0.75)
+    ///
+    /// // Circular spinner
+    /// progress(0.5).circular()
+    ///
+    /// // Indeterminate loading spinner
+    /// loading()
+    ///
+    /// // With custom label
+    /// progress(0.3).label("Downloading...")
+    /// ```
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Linear style:
+    //   Stretch Axis: `Horizontal` - Expands to fill available width.
+    //   Height: Fixed intrinsic (platform-determined track height)
+    //
+    // Circular style:
+    //   Stretch Axis: `None` - Content-sized, does not expand.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     Progress,
     ProgressConfig
 );

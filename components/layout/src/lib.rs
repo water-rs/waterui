@@ -46,8 +46,10 @@ pub use container::Container;
 pub mod grid;
 pub mod overlay;
 pub mod padding;
+pub mod safe_area;
 
 pub use overlay::{Overlay, OverlayLayout, overlay};
+pub use safe_area::{EdgeSet, IgnoreSafeArea};
 
 #[cfg(test)]
 mod tests;

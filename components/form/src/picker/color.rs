@@ -15,7 +15,24 @@ pub struct ColorPickerConfig {
 }
 
 configurable!(
-    #[doc = "A color picker control for selecting colors with live binding updates."]
+    /// A control for selecting colors.
+    ///
+    /// ColorPicker provides a platform-native color selection interface.
+    ///
+    /// # Layout Behavior
+    ///
+    /// ColorPicker sizes itself to fit its content and never stretches to fill extra space.
+    /// In a stack, it takes only the space it needs.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - ColorPicker never expands to fill available space.
+    // Size: Determined by platform color picker UI
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     ColorPicker,
     ColorPickerConfig
 );

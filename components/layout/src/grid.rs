@@ -40,7 +40,7 @@ impl Layout for GridLayout {
     fn size_that_fits(
         &self,
         proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Size {
         if children.is_empty() {
             return Size::zero();
@@ -61,7 +61,7 @@ impl Layout for GridLayout {
         let child_proposal = ProposalSize::new(child_width, None);
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
             })
@@ -89,7 +89,7 @@ impl Layout for GridLayout {
     fn place(
         &self,
         bounds: Rect,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Vec<Rect> {
         if children.is_empty() || !bounds.width().is_finite() {
             // A grid cannot be placed in an infinitely wide space. Return zero-rects.
@@ -109,7 +109,7 @@ impl Layout for GridLayout {
         let child_proposal = ProposalSize::new(Some(column_width), None);
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
             })
@@ -204,7 +204,28 @@ impl GridRow {
     }
 }
 
-/// A view that arranges its `GridRow` children into a grid.
+/// A view that arranges content in rows and columns.
+///
+/// Use a `Grid` to create a two-dimensional layout. You define the number of columns,
+/// and the grid automatically arranges your content into rows.
+///
+/// ```ignore
+/// grid(2, [
+///     row((text("A1"), text("A2"))),
+///     row((text("B1"), text("B2"))),
+/// ])
+/// ```
+///
+/// Customize spacing and alignment:
+///
+/// ```ignore
+/// Grid::new(3, rows)
+///     .spacing(16.0)
+///     .alignment(Alignment::Leading)
+/// ```
+///
+/// The grid sizes columns equally based on available width, and row heights
+/// are determined by the tallest item in each row.
 #[derive(Debug)]
 pub struct Grid {
     layout: GridLayout,
@@ -282,17 +303,18 @@ pub fn row(contents: impl TupleViews) -> GridRow {
 mod tests {
     use super::*;
     use core::num::NonZeroUsize;
+    use crate::StretchAxis;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            false
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
         }
         fn priority(&self) -> i32 {
             0
@@ -312,14 +334,14 @@ mod tests {
         let mut child3 = MockSubView { size: Size::new(50.0, 20.0) };
         let mut child4 = MockSubView { size: Size::new(50.0, 50.0) };
 
-        let mut children: Vec<&mut dyn SubView> = vec![
+        let children: Vec<&dyn SubView> = vec![
             &mut child1, &mut child2,
             &mut child3, &mut child4,
         ];
 
         let size = layout.size_that_fits(
             ProposalSize::new(Some(200.0), None),
-            &mut children,
+            &children,
         );
 
         // Width is parent-proposed
@@ -339,10 +361,10 @@ mod tests {
         let mut child1 = MockSubView { size: Size::new(40.0, 30.0) };
         let mut child2 = MockSubView { size: Size::new(40.0, 30.0) };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         // Column width: (100 - 10) / 2 = 45
         // Child 1 at (0, 0)

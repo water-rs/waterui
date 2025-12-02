@@ -5,10 +5,46 @@ use waterui_core::raw_view;
 
 use crate::{Layout, ProposalSize, Rect, Size, SubView};
 
-/// A flexible space component that expands to fill available space.
+/// A flexible space that expands to push views apart.
 ///
-/// Spacers are commonly used in layouts to push other components apart or to
-/// create flexible spacing that adapts to the container size.
+/// Spacer adapts to its parent container: in HStack it expands horizontally,
+/// in VStack it expands vertically. Use it to push views to opposite edges
+/// or distribute space evenly.
+///
+/// # Layout Behavior
+///
+/// - **In HStack:** Expands horizontally only
+/// - **In VStack:** Expands vertically only
+/// - **In ZStack:** No expansion (falls back to minimum length)
+///
+/// # Examples
+///
+/// ```ignore
+/// // Push button to trailing edge
+/// hstack((
+///     text("Title"),
+///     spacer(),
+///     button("Done", || {}),
+/// ))
+///
+/// // Center content with equal spacing
+/// hstack((spacer(), text("Centered"), spacer()))
+///
+/// // Spacer with minimum length (never shrinks below 20pt)
+/// spacer_min(20.0)
+/// ```
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERNAL: Layout Contract for Backend Implementers
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stretch Axis: `Adaptive` - Expands along parent stack's main axis.
+// Measurement: Returns (minLength, minLength) as intrinsic size
+// Layout: Expands to fill remaining surplus space during place() phase
+// Overflow: Collapses to minLength when space is insufficient
+//
+// ═══════════════════════════════════════════════════════════════════════════
+//
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spacer {
     min_length: f32,
@@ -38,21 +74,13 @@ pub struct SpacerLayout {
 }
 
 impl Layout for SpacerLayout {
-    fn size_that_fits(
-        &self,
-        _proposal: ProposalSize,
-        _children: &mut [&mut dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         // Spacer reports its minimum length as intrinsic size (like SwiftUI)
         // The parent stack will expand it to fill remaining space during place()
         Size::new(self.min_length, self.min_length)
     }
 
-    fn place(
-        &self,
-        _bounds: Rect,
-        _children: &mut [&mut dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, _bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
         // Spacer has no children to place
         Vec::new()
     }
