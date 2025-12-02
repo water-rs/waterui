@@ -13,31 +13,45 @@ macro_rules! impl_debug {
     };
 }
 
-/// Implements a raw view that panics when `body()` is called.
+/// Implements a native view that is handled by the platform backend.
 ///
-/// This macro is used for views that should be handled specially by the renderer
-/// and should not have their `body()` method called in normal view composition.
+/// This macro implements both `NativeView` and `View` traits for a type.
+/// The `View::body()` returns `Native(self)` to delegate to the native backend.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Default stretch axis (None)
+/// raw_view!(Text);
+///
+/// // With explicit stretch axis
+/// raw_view!(Color, StretchAxis::Both);
+/// raw_view!(Spacer, StretchAxis::MainAxis);
+/// ```
 #[macro_export]
 macro_rules! raw_view {
-    ($ty:ty,$info:expr) => {
-        impl $crate::View for $ty {
-            #[allow(clippy::unused_unit)]
-            #[allow(unused)]
-            fn body(self, _env: &$crate::Environment) -> impl $crate::View {
-                panic!($info);
-                ()
+    // With explicit stretch axis
+    ($ty:ty, $axis:expr) => {
+        impl $crate::NativeView for $ty {
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $axis
             }
         }
 
+        impl $crate::View for $ty {
+            fn body(self, _env: &$crate::Environment) -> impl $crate::View {
+                $crate::Native(self)
+            }
+        }
     };
 
+    // Default stretch axis (None)
     ($ty:ty) => {
+        impl $crate::NativeView for $ty {}
+
         impl $crate::View for $ty {
-            #[allow(clippy::unused_unit)]
-            #[allow(unused)]
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
-                panic!("You cannot call `body` for a raw view, may you need to handle this view `{}` manually", core::any::type_name::<$ty>());
-                ()
+                $crate::Native(self)
             }
         }
     };

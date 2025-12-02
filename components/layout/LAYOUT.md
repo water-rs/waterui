@@ -67,7 +67,8 @@ pub trait SubView {
     /// - `None`: Content-sized, does not expand
     /// - `Horizontal`/`Vertical`: Expands along one axis
     /// - `Both`: Greedy, fills all available space
-    /// - `Adaptive`: Expands along parent stack's main axis
+    /// - `MainAxis`: Expands along parent stack's main axis (e.g., Spacer)
+    /// - `CrossAxis`: Expands along parent stack's cross axis (e.g., Divider)
     fn stretch_axis(&self) -> StretchAxis;
 
     /// Returns the view's layout priority (default: 0).
@@ -113,18 +114,23 @@ struct ProposalSize {
 enum StretchAxis {
     /// Content-Sized: The view prefers its intrinsic size (e.g., Text, Image, Toggle).
     None,
-    
+
     /// Width-Expanding: The view fills horizontal space but keeps intrinsic height (e.g., Slider, TextField).
     Horizontal,
-    
-    /// Height-Expanding: The view fills vertical space but keeps intrinsic width (e.g., Vertical Separator).
+
+    /// Height-Expanding: The view fills vertical space but keeps intrinsic width.
     Vertical,
-    
+
     /// Greedy: The view fills all available space in both directions (e.g. Shape like rectangle, Color).
     Both,
-    
-    /// Context-Dependent: The view expands in the direction of the parent stack's main axis (e.g., Spacer).
-    Adaptive
+
+    /// Main-Axis: The view expands along the parent stack's main axis (e.g., Spacer).
+    /// In VStack: expands vertically. In HStack: expands horizontally.
+    MainAxis,
+
+    /// Cross-Axis: The view expands along the parent stack's cross axis (e.g., Divider).
+    /// In VStack: expands horizontally. In HStack: expands vertically.
+    CrossAxis,
 }
 ```
 

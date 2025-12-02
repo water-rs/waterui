@@ -6,7 +6,7 @@ use core::fmt::Display;
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_core::configurable;
+use waterui_core::{NativeView, configurable};
 
 configurable!(
     /// A view that displays one or more lines of read-only text.
@@ -64,6 +64,8 @@ pub struct TextConfig {
     /// The rich text content to be displayed.
     pub content: Computed<StyledStr>,
 }
+
+impl NativeView for TextConfig {}
 
 impl Clone for Text {
     fn clone(&self) -> Self {
