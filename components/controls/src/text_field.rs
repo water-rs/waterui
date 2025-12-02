@@ -7,7 +7,42 @@ use waterui_core::{AnyView, View};
 use waterui_text::Text;
 
 configurable!(
-    #[doc = "A text input component wired to a reactive string binding."]
+    /// A single-line text input field.
+    ///
+    /// TextField lets users enter and edit text.
+    ///
+    /// # Layout Behavior
+    ///
+    /// TextField **expands horizontally** to fill available space, but has a fixed height.
+    /// In an `HStack`, it will take up all remaining width after other views are sized.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Basic text field
+    /// TextField::new(&name)
+    ///
+    /// // With label and placeholder
+    /// field("Username", &username)
+    ///     .prompt("Enter your name")
+    ///
+    /// // In a form (TextField fills remaining space)
+    /// hstack((
+    ///     text("Email:"),
+    ///     TextField::new(&email),
+    /// ))
+    /// ```
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `Horizontal` - Expands to fill available width.
+    // Height: Fixed intrinsic (platform-determined)
+    // Width: Reports minimum usable width, expands during layout phase
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     TextField,
     TextFieldConfig
 );

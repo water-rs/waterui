@@ -31,7 +31,7 @@ impl Layout for ZStackLayout {
     fn size_that_fits(
         &self,
         proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Size {
         if children.is_empty() {
             return Size::zero();
@@ -39,7 +39,7 @@ impl Layout for ZStackLayout {
 
         // Measure each child with the parent's proposal
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(proposal),
             })
@@ -75,7 +75,7 @@ impl Layout for ZStackLayout {
     fn place(
         &self,
         bounds: Rect,
-        children: &mut [&mut dyn SubView],
+        children: &[&dyn SubView],
     ) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
@@ -85,7 +85,7 @@ impl Layout for ZStackLayout {
         let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
 
         let measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(child_proposal),
             })
@@ -156,11 +156,29 @@ impl ZStackLayout {
     }
 }
 
-/// A view that overlays its children, aligning them according to the specified alignment.
+/// A view that overlays its children, aligning them in front of each other.
 ///
-/// Use `ZStack` when every layer should be measured and the container should expand to
-/// fit the largest child. If you only need a decorative layer on top of a base child
-/// without affecting the parent's layout decisions, prefer [`crate::overlay::Overlay`].
+/// Use a `ZStack` when you want to layer views on top of each other. The stack
+/// sizes itself to fit its largest child.
+///
+/// ```ignore
+/// zstack((
+///     Color::blue(),
+///     text("Overlay Text"),
+/// ))
+/// ```
+///
+/// You can control how children align within the stack:
+///
+/// ```ignore
+/// ZStack::new(Alignment::TopLeading, (
+///     background_view,
+///     content_view,
+/// ))
+/// ```
+///
+/// **Note:** If you only need a decorative background without affecting layout size,
+/// use `.background()` instead.
 #[derive(Debug, Clone)]
 pub struct ZStack<C> {
     layout: ZStackLayout,
@@ -251,17 +269,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StretchAxis;
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            false
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
         }
         fn priority(&self) -> i32 {
             0
@@ -284,9 +303,9 @@ mod tests {
             size: Size::new(60.0, 60.0),
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2, &mut child3];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2, &mut child3];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // ZStack takes the max width and max height
         assert_eq!(size.width, 80.0);
@@ -306,10 +325,10 @@ mod tests {
             size: Size::new(60.0, 40.0),
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         // Child 1: centered in 100x100
         assert_eq!(rects[0].x(), 30.0); // (100 - 40) / 2

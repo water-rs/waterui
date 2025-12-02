@@ -32,6 +32,20 @@ use waterui_core::View;
 /// Configuration for a button component.
 ///
 /// Use the `Button` struct's methods to customize these properties.
+///
+/// # Layout Behavior
+///
+/// Buttons size themselves to fit their label content and never stretch to fill
+/// extra space. In a stack, they take only the space they need.
+///
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERNAL: Layout Contract for Backend Implementers
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stretch Axis: `None` - Button never expands to fill available space.
+// Size: Determined by label content + platform padding.
+//
+// ═══════════════════════════════════════════════════════════════════════════
 #[non_exhaustive]
 pub struct ButtonConfig {
     /// The label displayed on the button
