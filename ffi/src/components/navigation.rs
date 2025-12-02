@@ -31,7 +31,7 @@ into_ffi! {Bar,
 }
 
 // FFI view bindings for navigation components
-ffi_view!(NavigationView, WuiNavigationView);
+ffi_view!(NavigationView, WuiNavigationView, navigation_view);
 
 #[repr(C)]
 pub struct WuiTabs {

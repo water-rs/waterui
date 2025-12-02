@@ -2,7 +2,7 @@ use crate::{IntoFFI, WuiStr};
 
 pub mod layout;
 
-impl<T: IntoFFI> IntoFFI for waterui_core::Native<T> {
+impl<T: IntoFFI + waterui_core::NativeView> IntoFFI for waterui_core::Native<T> {
     type FFI = T::FFI;
     fn into_ffi(self) -> Self::FFI {
         IntoFFI::into_ffi(self.0)

@@ -24,8 +24,6 @@ pub struct PickerConfig {
     pub selection: Binding<Id>,
 }
 
-impl waterui_core::NativeView for PickerConfig {}
-
 configurable!(
     /// A control for selecting from a list of options.
     ///
@@ -40,7 +38,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Picker never expands to fill available space.
+    
     // Size: Determined by content and picker style (platform-determined)
     //
     // Note: Segmented picker style may use `Horizontal` stretch axis.

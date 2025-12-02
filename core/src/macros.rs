@@ -42,6 +42,10 @@ macro_rules! raw_view {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 $crate::Native(self)
             }
+
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $axis
+            }
         }
     };
 
@@ -53,6 +57,10 @@ macro_rules! raw_view {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 $crate::Native(self)
             }
+
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $crate::layout::StretchAxis::None
+            }
         }
     };
 }
@@ -61,12 +69,36 @@ macro_rules! raw_view {
 ///
 /// This macro generates a wrapper struct and builder methods for configuring views,
 /// following the builder pattern commonly used in UI frameworks.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Default stretch axis (None) - for content-sized views
+/// configurable!(Button, ButtonConfig);
+///
+/// // With explicit stretch axis - for views that expand
+/// configurable!(Slider, SliderConfig, StretchAxis::Horizontal);
+/// configurable!(Color, ColorConfig, StretchAxis::Both);
+///
+/// // With dynamic stretch axis (closure) - for runtime-dependent behavior
+/// configurable!(Progress, ProgressConfig, |config| match config.style {
+///     ProgressStyle::Linear => StretchAxis::Horizontal,
+///     ProgressStyle::Circular => StretchAxis::None,
+/// });
+/// ```
 #[macro_export]
 macro_rules! configurable {
-    (@impl $(#[$meta:meta])*; $view:ident, $config:ty) => {
+    // Internal implementation with stretch axis
+    (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr) => {
         $(#[$meta])*
         #[derive(Debug)]
         pub struct $view($config);
+
+        impl $crate::NativeView for $config {
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $axis
+            }
+        }
 
         impl $crate::view::ConfigurableView for $view {
             type Config = $config;
@@ -92,13 +124,72 @@ macro_rules! configurable {
                     $crate::AnyView::new($crate::Native(config))
                 }
             }
+
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $crate::NativeView::stretch_axis(&self.0)
+            }
         }
     };
 
-    ($(#[$meta:meta])* $view:ident, $config:ty) => {
-        $crate::configurable!(@impl $(#[$meta])*; $view, $config);
+    // Dynamic stretch axis with closure/function
+    // Internal implementation that generates NativeView with the provided function
+    (@impl_dynamic $(#[$meta:meta])*; $view:ident, $config:ty, $stretch_fn:expr) => {
+        $(#[$meta])*
+        #[derive(Debug)]
+        pub struct $view($config);
+
+        impl $crate::NativeView for $config {
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                ($stretch_fn)(self)
+            }
+        }
+
+        impl $crate::view::ConfigurableView for $view {
+            type Config = $config;
+            #[inline] fn config(self) -> Self::Config { self.0 }
+        }
+
+        impl $crate::view::ViewConfiguration for $config {
+            type View = $view;
+            #[inline] fn render(self) -> Self::View { $view(self) }
+        }
+
+        impl From<$config> for $view {
+            #[inline] fn from(value: $config) -> Self { Self(value) }
+        }
+
+        impl $crate::view::View for $view {
+            fn body(self, env: &$crate::Environment) -> impl $crate::View {
+                use $crate::view::ConfigurableView;
+                let config = self.config();
+                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
+                    $crate::AnyView::new(hook.apply(env, config))
+                } else {
+                    $crate::AnyView::new($crate::Native(config))
+                }
+            }
+
+            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
+                $crate::NativeView::stretch_axis(&self.0)
+            }
+        }
     };
 
+    // Public variant for dynamic stretch_axis with closure: |config| -> StretchAxis
+    // IMPORTANT: This must come BEFORE the $axis:expr variant (closure pattern)
+    ($(#[$meta:meta])* $view:ident, $config:ty, |$param:ident| $body:expr) => {
+        $crate::configurable!(@impl_dynamic $(#[$meta])*; $view, $config, |$param: &$config| $body);
+    };
+
+    // With explicit stretch axis
+    ($(#[$meta:meta])* $view:ident, $config:ty, $axis:expr) => {
+        $crate::configurable!(@impl $(#[$meta])*; $view, $config, $axis);
+    };
+
+    // Default stretch axis (None)
+    ($(#[$meta:meta])* $view:ident, $config:ty) => {
+        $crate::configurable!(@impl $(#[$meta])*; $view, $config, $crate::layout::StretchAxis::None);
+    };
 }
 macro_rules! tuples {
     ($macro:ident) => {

@@ -28,7 +28,7 @@
 //! ```ignore
 
 use waterui_core::{
-    Binding, Computed, NativeView, View, binding, configurable,
+    Binding, Computed, View, binding, configurable,
     reactive::{impl_constant, signal::IntoComputed},
 };
 
@@ -60,8 +60,6 @@ pub struct VideoPlayerConfig {
     /// Uses the special [`Volume`] type that preserves volume levels when muted.
     pub volume: Binding<Volume>,
 }
-
-impl NativeView for VideoPlayerConfig {}
 
 configurable!(
     #[doc = "An interactive video player component with reactive volume control."]

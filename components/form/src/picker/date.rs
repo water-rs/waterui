@@ -50,7 +50,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - DatePicker never expands to fill available space.
+    
     // Size: Determined by picker style and content (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════
