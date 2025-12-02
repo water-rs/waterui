@@ -31,7 +31,7 @@ impl IntoRust for WuiResolvedColor {
     }
 }
 
-ffi_view!(Color, *mut WuiColor);
+ffi_view!(Color, *mut WuiColor, color);
 
 ffi_computed!(ResolvedColor, WuiResolvedColor);
 ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);

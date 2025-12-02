@@ -1,4 +1,4 @@
-use waterui_core::{Computed, NativeView, configurable, reactive::signal::IntoComputed};
+use waterui_core::{Computed, configurable, reactive::signal::IntoComputed};
 
 use crate::Url;
 
@@ -8,8 +8,6 @@ pub struct LivePhotoConfig {
     /// The source of the live photo.
     pub source: Computed<LivePhotoSource>,
 }
-
-impl NativeView for LivePhotoConfig {}
 
 configurable!(
     #[doc = "A live photo widget that combines still and motion imagery."]

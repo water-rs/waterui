@@ -97,6 +97,8 @@ pub struct ListItem {
     pub on_delete: Option<OnDelete>,
 }
 
+impl NativeView for ListItem {}
+
 impl View for ListItem {
     fn body(self, _env: &Environment) -> impl View {
         self.content
