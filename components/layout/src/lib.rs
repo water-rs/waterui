@@ -28,8 +28,7 @@
 
 extern crate alloc;
 
-mod core;
-pub use core::*;
+pub use waterui_core::layout::*;
 
 pub mod spacer;
 pub use spacer::{Spacer, spacer};

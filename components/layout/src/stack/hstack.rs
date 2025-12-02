@@ -71,8 +71,24 @@ struct ChildMeasurement {
 
 impl ChildMeasurement {
     /// Returns true if this child stretches horizontally (for HStack width distribution).
-    fn stretches_horizontal(&self) -> bool {
-        self.stretch_axis.stretches_horizontal()
+    /// In HStack context:
+    /// - MainAxis means horizontal (HStack's main axis)
+    /// - CrossAxis means vertical (HStack's cross axis)
+    fn stretches_main_axis(&self) -> bool {
+        matches!(
+            self.stretch_axis,
+            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
+        )
+    }
+
+    /// Returns true if this child stretches vertically (for HStack height expansion).
+    /// In HStack context:
+    /// - CrossAxis means vertical (HStack's cross axis)
+    fn stretches_cross_axis(&self) -> bool {
+        matches!(
+            self.stretch_axis,
+            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
+        )
     }
 }
 
@@ -99,24 +115,24 @@ impl Layout for HStackLayout {
             })
             .collect();
 
-        // HStack only cares about horizontal stretching
-        let has_horizontal_stretch = measurements.iter().any(|m| m.stretches_horizontal());
-        let horizontal_stretch_count = measurements
+        // HStack checks for main-axis (horizontal) stretching
+        let has_main_axis_stretch = measurements.iter().any(|m| m.stretches_main_axis());
+        let main_axis_stretch_count = measurements
             .iter()
-            .filter(|m| m.stretches_horizontal())
+            .filter(|m| m.stretches_main_axis())
             .count();
 
-        // Calculate intrinsic width (sum of non-horizontally-stretching children + spacing)
+        // Calculate intrinsic width (sum of non-main-axis-stretching children + spacing)
         let non_stretch_width: f32 = measurements
             .iter()
-            .filter(|m| !m.stretches_horizontal())
+            .filter(|m| !m.stretches_main_axis())
             .map(|m| m.size.width)
             .sum();
 
         let intrinsic_width = non_stretch_width + total_spacing;
 
         // Determine final width
-        let final_width = if has_horizontal_stretch {
+        let final_width = if has_main_axis_stretch {
             proposal.width.unwrap_or(intrinsic_width)
         } else {
             match proposal.width {
@@ -134,11 +150,11 @@ impl Layout for HStackLayout {
             // Small children keep their intrinsic width
             let overflow = non_stretch_width - available_for_children;
 
-            // Find indices of non-horizontally-stretching children sorted by width (largest first)
+            // Find indices of non-main-axis-stretching children sorted by width (largest first)
             let mut non_stretch_indices: Vec<usize> = measurements
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| !m.stretches_horizontal())
+                .filter(|(_, m)| !m.stretches_main_axis())
                 .map(|(i, _)| i)
                 .collect();
             non_stretch_indices.sort_by(|&a, &b| {
@@ -169,17 +185,17 @@ impl Layout for HStackLayout {
                     remaining_overflow -= reduction;
                 }
             }
-        } else if proposal.width.is_some() && horizontal_stretch_count > 0 {
-            // With spacers, non-horizontally-stretching children keep intrinsic width
+        } else if proposal.width.is_some() && main_axis_stretch_count > 0 {
+            // With spacers, non-main-axis-stretching children keep intrinsic width
             // Spacers get the remaining space (but we don't measure them here)
         }
 
         // Height: max of all children (after re-measurement for proper wrapped height)
         // Important: Do NOT cap height to proposal - if text wraps, we need the full height
-        // Note: vertically-stretching children don't contribute to intrinsic height
+        // Note: cross-axis-stretching children don't contribute to intrinsic height
         let max_height = measurements
             .iter()
-            .filter(|m| !m.stretch_axis.stretches_vertical())
+            .filter(|m| !m.stretches_cross_axis())
             .map(|m| m.size.height)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
@@ -210,24 +226,24 @@ impl Layout for HStackLayout {
             })
             .collect();
 
-        // Calculate totals - HStack cares about horizontal stretching
-        let horizontal_stretch_count = measurements
+        // Calculate totals - HStack cares about main-axis (horizontal) stretching
+        let main_axis_stretch_count = measurements
             .iter()
-            .filter(|m| m.stretches_horizontal())
+            .filter(|m| m.stretches_main_axis())
             .count();
         let non_stretch_count = measurements
             .iter()
-            .filter(|m| !m.stretches_horizontal())
+            .filter(|m| !m.stretches_main_axis())
             .count();
 
         let total_intrinsic_width: f32 = measurements
             .iter()
-            .filter(|m| !m.stretches_horizontal())
+            .filter(|m| !m.stretches_main_axis())
             .map(|m| m.size.width)
             .sum();
 
-        // Calculate how much space is available for non-horizontally-stretching children
-        let width_for_non_stretch = if horizontal_stretch_count > 0 {
+        // Calculate how much space is available for non-main-axis-stretching children
+        let width_for_non_stretch = if main_axis_stretch_count > 0 {
             // If there are spacers, non-stretch children get their intrinsic width
             // but capped to available space
             available_width.min(total_intrinsic_width)
@@ -244,11 +260,11 @@ impl Layout for HStackLayout {
             // Compress largest children first, keeping small labels at intrinsic width
             let overflow = total_intrinsic_width - width_for_non_stretch;
 
-            // Find indices of non-horizontally-stretching children sorted by width (largest first)
+            // Find indices of non-main-axis-stretching children sorted by width (largest first)
             let mut non_stretch_indices: Vec<usize> = measurements
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| !m.stretches_horizontal())
+                .filter(|(_, m)| !m.stretches_main_axis())
                 .map(|(i, _)| i)
                 .collect();
             non_stretch_indices.sort_by(|&a, &b| {
@@ -286,13 +302,13 @@ impl Layout for HStackLayout {
         // Calculate stretch child width from remaining space
         let actual_non_stretch_width: f32 = measurements
             .iter()
-            .filter(|m| !m.stretches_horizontal())
+            .filter(|m| !m.stretches_main_axis())
             .map(|m| m.size.width)
             .sum();
 
         let remaining_width = (available_width - actual_non_stretch_width).max(0.0);
-        let stretch_width = if horizontal_stretch_count > 0 {
-            remaining_width / horizontal_stretch_count as f32
+        let stretch_width = if main_axis_stretch_count > 0 {
+            remaining_width / main_axis_stretch_count as f32
         } else {
             0.0
         };
@@ -306,8 +322,9 @@ impl Layout for HStackLayout {
                 current_x += self.spacing;
             }
 
-            // Handle vertically-stretching children and infinite height
-            let child_height = if measurement.stretch_axis.stretches_vertical() {
+            // Handle cross-axis (vertical) stretching and infinite height
+            let child_height = if measurement.stretches_cross_axis() {
+                // CrossAxis in HStack means expand vertically to full bounds height
                 bounds.height()
             } else if measurement.size.height.is_infinite() {
                 bounds.height()
@@ -315,7 +332,7 @@ impl Layout for HStackLayout {
                 measurement.size.height.min(bounds.height())
             };
 
-            let child_width = if measurement.stretches_horizontal() {
+            let child_width = if measurement.stretches_main_axis() {
                 stretch_width
             } else {
                 measurement.size.width

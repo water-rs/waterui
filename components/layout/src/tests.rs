@@ -1058,3 +1058,208 @@ fn test_vstack_form_with_spacer() {
     // Button at bottom
     assert_eq!(rects[3].y() + rects[3].height(), 300.0, "Button should be at bottom");
 }
+
+// ============================================================================
+// MainAxis / CrossAxis Tests
+// ============================================================================
+
+/// A mock Spacer that uses StretchAxis::MainAxis.
+/// Should expand along VStack's main axis (vertical) and HStack's main axis (horizontal).
+struct MainAxisSpacerView;
+
+impl SubView for MainAxisSpacerView {
+    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+        Size::zero()
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::MainAxis
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// A mock Divider that uses StretchAxis::CrossAxis.
+/// Should expand along VStack's cross axis (horizontal) and HStack's cross axis (vertical).
+struct CrossAxisDividerView {
+    thickness: f32,
+}
+
+impl SubView for CrossAxisDividerView {
+    fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
+        // Returns minimal size - cross axis expansion handled by layout
+        Size::new(self.thickness, self.thickness)
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::CrossAxis
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+#[test]
+fn test_vstack_main_axis_spacer() {
+    // MainAxis spacer in VStack should expand vertically (the main axis of VStack)
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: 0.0,
+    };
+
+    let mut child1 = FixedSizeView { size: Size::new(100.0, 30.0) };
+    let mut spacer = MainAxisSpacerView;
+    let mut child2 = FixedSizeView { size: Size::new(100.0, 30.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
+    let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+    let rects = layout.place(bounds, &children);
+
+    // Fixed children: 30 + 30 = 60
+    // MainAxis spacer should expand: 200 - 60 = 140
+    assert_eq!(rects[0].height(), 30.0);
+    assert_eq!(rects[1].height(), 140.0, "MainAxis spacer should expand vertically in VStack");
+    assert_eq!(rects[2].height(), 30.0);
+}
+
+#[test]
+fn test_hstack_main_axis_spacer() {
+    // MainAxis spacer in HStack should expand horizontally (the main axis of HStack)
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: 0.0,
+    };
+
+    let mut child1 = FixedSizeView { size: Size::new(30.0, 100.0) };
+    let mut spacer = MainAxisSpacerView;
+    let mut child2 = FixedSizeView { size: Size::new(30.0, 100.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
+    let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+
+    let rects = layout.place(bounds, &children);
+
+    // Fixed children: 30 + 30 = 60
+    // MainAxis spacer should expand: 200 - 60 = 140
+    assert_eq!(rects[0].width(), 30.0);
+    assert_eq!(rects[1].width(), 140.0, "MainAxis spacer should expand horizontally in HStack");
+    assert_eq!(rects[2].width(), 30.0);
+}
+
+#[test]
+fn test_vstack_cross_axis_divider() {
+    // CrossAxis divider in VStack should expand horizontally (the cross axis of VStack)
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Leading,
+        spacing: 10.0,
+    };
+
+    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut divider = CrossAxisDividerView { thickness: 1.0 };
+    let mut button = FixedSizeView { size: Size::new(80.0, 30.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
+    let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
+
+    let rects = layout.place(bounds, &children);
+
+    // Divider should expand to full width of VStack (cross axis)
+    assert_eq!(rects[1].width(), 200.0, "CrossAxis divider should expand to full width in VStack");
+    // Divider height should be its intrinsic thickness
+    assert_eq!(rects[1].height(), 1.0, "CrossAxis divider should keep intrinsic height in VStack");
+}
+
+#[test]
+fn test_hstack_cross_axis_divider() {
+    // CrossAxis divider in HStack should expand vertically (the cross axis of HStack)
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Top,
+        spacing: 10.0,
+    };
+
+    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut divider = CrossAxisDividerView { thickness: 1.0 };
+    let mut button = FixedSizeView { size: Size::new(80.0, 30.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
+    let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
+
+    let rects = layout.place(bounds, &children);
+
+    // Divider should expand to full height of HStack (cross axis)
+    assert_eq!(rects[1].height(), 100.0, "CrossAxis divider should expand to full height in HStack");
+    // Divider width should be its intrinsic thickness
+    assert_eq!(rects[1].width(), 1.0, "CrossAxis divider should keep intrinsic width in HStack");
+}
+
+/// A mock TextField/Slider that uses StretchAxis::Horizontal.
+/// Should expand horizontally in any stack (not context-dependent like MainAxis/CrossAxis).
+struct HorizontalStretchView {
+    min_width: f32,
+    height: f32,
+}
+
+impl SubView for HorizontalStretchView {
+    fn size_that_fits(&self, proposal: ProposalSize) -> Size {
+        // When proposed width, use it (but not less than minimum)
+        let width = proposal.width.map(|w| w.max(self.min_width)).unwrap_or(self.min_width);
+        Size::new(width, self.height)
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+#[test]
+fn test_vstack_horizontal_stretch_textfield() {
+    // StretchAxis::Horizontal in VStack should expand horizontally to full width
+    // This tests TextField/Slider behavior
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Leading,
+        spacing: 10.0,
+    };
+
+    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut textfield = HorizontalStretchView { min_width: 100.0, height: 34.0 };
+    let mut button = FixedSizeView { size: Size::new(80.0, 40.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(300.0, 200.0));
+    let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
+
+    let rects = layout.place(bounds, &children);
+
+    // Label keeps its intrinsic width (alignment is Leading, not stretched)
+    assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
+    // TextField should expand to full container width
+    assert_eq!(rects[1].width(), 300.0, "Horizontal stretch TextField should expand to full width in VStack");
+    // Button keeps its intrinsic width
+    assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
+}
+
+#[test]
+fn test_hstack_horizontal_stretch_textfield() {
+    // StretchAxis::Horizontal in HStack should also expand horizontally
+    // But since HStack's main axis is horizontal, this behaves like MainAxis
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: 10.0,
+    };
+
+    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut textfield = HorizontalStretchView { min_width: 100.0, height: 34.0 };
+    let mut button = FixedSizeView { size: Size::new(80.0, 40.0) };
+
+    let bounds = Rect::new(Point::zero(), Size::new(300.0, 100.0));
+    let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
+
+    let rects = layout.place(bounds, &children);
+
+    // Fixed children: 50 + 80 = 130, spacing: 20
+    // Remaining for textfield: 300 - 130 - 20 = 150
+    assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
+    assert_eq!(rects[1].width(), 150.0, "Horizontal stretch TextField should expand in HStack");
+    assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
+}
