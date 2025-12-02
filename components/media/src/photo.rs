@@ -10,7 +10,7 @@
 //! let _photo = Photo::new(url).placeholder(waterui_core::AnyView::new(()));
 //! ```
 use crate::image::Image;
-use waterui_core::{AnyView, configurable};
+use waterui_core::{AnyView, Environment, View, configurable};
 
 use crate::Url;
 
