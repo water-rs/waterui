@@ -25,7 +25,26 @@ pub struct PickerConfig {
 }
 
 configurable!(
-    #[doc = "A generic selection picker that binds choices to a reactive identifier."]
+    /// A control for selecting from a list of options.
+    ///
+    /// Picker displays a selection UI (menu, wheel, or segmented style depending on context).
+    ///
+    /// # Layout Behavior
+    ///
+    /// Picker sizes itself to fit its content and never stretches to fill extra space.
+    /// In a stack, it takes only the space it needs.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - Picker never expands to fill available space.
+    // Size: Determined by content and picker style (platform-determined)
+    //
+    // Note: Segmented picker style may use `Horizontal` stretch axis.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     Picker,
     PickerConfig
 );

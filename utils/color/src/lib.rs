@@ -35,6 +35,35 @@ use waterui_core::{
 ///
 /// This is the main color type that wraps a resolvable color value.
 /// Colors can be created from sRGB, P3, OKLCH, or custom color spaces.
+///
+/// # Layout Behavior
+///
+/// Color is a **greedy view** that expands to fill all available space in both
+/// directions. Use `.frame()` to constrain its size, or use it as a background.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Fills entire container
+/// Color::blue()
+///
+/// // Constrained to specific size
+/// Color::red().frame().width(100.0).height(50.0)
+///
+/// // As a background
+/// text("Hello").background(Color::yellow())
+/// ```
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERNAL: Layout Contract for Backend Implementers
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stretch Axis: `Both` - Expands to fill all available space.
+// With constraints: Returns the full proposal size
+// Without constraints: Returns a small fallback (e.g., 10pt × 10pt)
+//
+// ═══════════════════════════════════════════════════════════════════════════
+//
 #[derive(Debug, Clone)]
 pub struct Color(AnyResolvable<ResolvedColor>);
 
