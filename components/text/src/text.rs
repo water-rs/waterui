@@ -41,7 +41,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     //
     // Measurement Protocol (multi-pass):
     //   Pass 1 - PROBE:    proposal(nil, nil)    → (single_line_width, line_height)
@@ -50,6 +50,7 @@ configurable!(
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
+    #[derive(Debug)]
     Text,
     TextConfig
 );
@@ -64,7 +65,6 @@ pub struct TextConfig {
     /// The rich text content to be displayed.
     pub content: Computed<StyledStr>,
 }
-
 
 impl Clone for Text {
     fn clone(&self) -> Self {

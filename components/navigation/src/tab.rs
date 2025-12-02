@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use nami::Binding;
 use waterui_core::{
-    AnyView, configurable,
+    AnyView,
     handler::{AnyViewBuilder, ViewBuilder},
     id::Id,
     impl_debug,
@@ -54,29 +54,10 @@ impl<T> Tab<T> {
 /// This struct holds the current tab selection and the collection of tabs.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct TabsConfig {
+pub struct Tabs {
     /// The currently selected tab identifier.
     pub selection: Binding<Id>,
 
     /// The collection of tabs to display.
     pub tabs: Vec<Tab<Id>>,
-}
-
-configurable!(
-    #[doc = "A tab bar component that manages labeled views with selection state."]
-    Tabs,
-    TabsConfig
-);
-
-impl TabsConfig {
-    /// Creates a new tabs configuration with the given selection and tabs.
-    ///
-    /// # Arguments
-    ///
-    /// * `selection` - A binding to the currently selected tab ID
-    /// * `tabs` - The collection of tabs to display
-    #[must_use]
-    pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
-        Self { selection, tabs }
-    }
 }
