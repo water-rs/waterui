@@ -29,7 +29,7 @@ use nami::signal::IntoComputed;
 use nami::zip::FlattenMap;
 use waterui_core::View;
 use waterui_core::configurable;
-use waterui_core::{NativeView, layout::StretchAxis};
+use waterui_core::layout::StretchAxis;
 use waterui_text::text;
 
 /// Configuration for progress indicators.
@@ -56,15 +56,6 @@ pub enum ProgressStyle {
     Circular,
     /// A linear bar-style progress indicator.
     Linear,
-}
-
-impl NativeView for ProgressConfig {
-    fn stretch_axis(&self) -> StretchAxis {
-        match self.style {
-            ProgressStyle::Linear => StretchAxis::Horizontal,
-            ProgressStyle::Circular => StretchAxis::None,
-        }
-    }
 }
 
 configurable!(
@@ -107,7 +98,11 @@ configurable!(
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Progress,
-    ProgressConfig
+    ProgressConfig,
+    |config| match config.style {
+        ProgressStyle::Linear => StretchAxis::Horizontal,
+        ProgressStyle::Circular => StretchAxis::None,
+    }
 );
 
 /// A progress indicator with a calculated total.

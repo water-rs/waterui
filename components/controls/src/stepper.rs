@@ -3,7 +3,7 @@
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
 use nami::{Binding, Computed, signal::IntoComputed};
-use waterui_core::{AnyView, NativeView, View, configurable};
+use waterui_core::{AnyView, View, configurable};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -18,8 +18,6 @@ pub struct StepperConfig {
     /// The valid range of values for the stepper.
     pub range: RangeInclusive<i32>,
 }
-
-impl NativeView for StepperConfig {}
 
 configurable!(
     /// A control for incrementing or decrementing a value.
@@ -56,7 +54,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Stepper never expands to fill available space.
+    
     // Size: label_width + spacing + stepper_buttons (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════
