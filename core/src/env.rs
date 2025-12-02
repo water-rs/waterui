@@ -235,7 +235,7 @@ pub struct With<V, T> {
     value: T,
 }
 
-impl<V, T> With<V, T> {
+impl<V: View, T: 'static> With<V, T> {
     /// Creates a new `With` view that wraps the provided content and adds
     /// the given value to the environment for all child views.
     pub const fn new(content: V, value: T) -> Self {
@@ -275,4 +275,14 @@ where
     fn body(self, env: &Environment) -> impl View {
         WithEnv::new(self.content, env.clone().with(self.value))
     }
+}
+
+/// Wraps a view and provides an extended environment.
+pub fn with_env<V: View>(view: V, env: Environment) -> WithEnv<V> {
+    WithEnv::new(view, env)
+}
+
+/// Wraps a view and provides an extended environment.
+pub fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
+    With::new(view, value)
 }

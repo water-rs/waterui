@@ -97,6 +97,36 @@ pub fn newline() {
     println!();
 }
 
+/// Print an error/panic message with red styling.
+///
+/// Suppressed in JSON output mode.
+pub fn error(message: impl AsRef<str>) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+    println!("{} {}", style("✗").red().bold(), style(message.as_ref()).red().bold());
+}
+
+/// Print a dimmed/muted line (for less important info like frame numbers).
+///
+/// Suppressed in JSON output mode.
+pub fn dimmed(message: impl AsRef<str>) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+    println!("{}", style(message.as_ref()).dim());
+}
+
+/// Print a hint message with cyan styling.
+///
+/// Suppressed in JSON output mode.
+pub fn hint(message: impl AsRef<str>) {
+    if output::global_output_format().is_json() {
+        return;
+    }
+    println!("{} {}", style("💡").cyan(), style(message.as_ref()).cyan());
+}
+
 const SPINNER_FRAMES: &[&str] = &["-", "\\", "|", "/"];
 
 /// Handle for a background spinner animating in the terminal.
