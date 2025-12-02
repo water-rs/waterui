@@ -4,7 +4,8 @@
 //! that can be used to create a clear distinction between different sections
 //! or elements in a user interface.
 
-use waterui_core::{layout::StretchAxis, raw_view};
+use waterui_color::{Color, Grey};
+use waterui_core::{View, layout::StretchAxis, raw_view};
 
 /// A thin line that separates content.
 ///
@@ -33,20 +34,16 @@ use waterui_core::{layout::StretchAxis, raw_view};
 ///     text("Right"),
 /// ))
 /// ```
-//
-// ═══════════════════════════════════════════════════════════════════════════
-// INTERNAL: Layout Contract for Backend Implementers
-// ═══════════════════════════════════════════════════════════════════════════
-//
-
-// Thickness: Fixed 1pt on the non-expanding axis
-// In VStack: Horizontal line (expands width, 1pt height)
-// In HStack: Vertical line (1pt width, expands height)
-//
-// ═══════════════════════════════════════════════════════════════════════════
-//
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct Divider;
 
-raw_view!(Divider, StretchAxis::CrossAxis);
+impl View for Divider {
+    fn body(self, env: &waterui_core::Environment) -> impl View {
+        let mut env = env.clone();
+        let axis = env.get::<StretchAxis>().unwrap_or_default();
+        env.insert(axis);
+
+        Grey
+    }
+}
