@@ -20,7 +20,45 @@ pub struct StepperConfig {
 }
 
 configurable!(
-    #[doc = "A numeric stepper control for incrementing or decrementing values."]
+    /// A control for incrementing or decrementing a value.
+    ///
+    /// Stepper displays +/- buttons with an optional label. It's ideal for
+    /// adjusting small numeric values like quantities.
+    ///
+    /// # Layout Behavior
+    ///
+    /// Stepper sizes itself to fit its label and buttons, and never stretches
+    /// to fill extra space. In a stack, it takes only the space it needs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Basic stepper
+    /// stepper(&quantity)
+    ///
+    /// // With label and range
+    /// stepper(&count)
+    ///     .label("Items")
+    ///     .range(1..=10)
+    ///     .step(1)
+    ///
+    /// // In a form row
+    /// hstack((
+    ///     text("Quantity"),
+    ///     spacer(),
+    ///     stepper(&quantity),
+    /// ))
+    /// ```
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - Stepper never expands to fill available space.
+    // Size: label_width + spacing + stepper_buttons (platform-determined)
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     Stepper,
     StepperConfig
 );

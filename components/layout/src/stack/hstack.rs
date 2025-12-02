@@ -5,11 +5,40 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size,
-    container::FixedContainer, stack::VerticalAlignment, SubView,
+    Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    container::FixedContainer, stack::VerticalAlignment,
 };
 
-/// A horizontal stack that arranges its children in a horizontal line.
+/// A view that arranges its children in a horizontal line.
+///
+/// Use an `HStack` to arrange views side-by-side. The stack sizes itself to fit
+/// its contents, distributing available space among its children.
+///
+/// ```ignore
+/// hstack((
+///     text("Hello"),
+///     text("World"),
+/// ))
+/// ```
+///
+/// You can customize the spacing between children and their vertical alignment:
+///
+/// ```ignore
+/// HStack::new(VerticalAlignment::Top, 20.0, (
+///     text("First"),
+///     text("Second"),
+/// ))
+/// ```
+///
+/// Use [`spacer()`] to push content to the sides:
+///
+/// ```ignore
+/// hstack((
+///     text("Leading"),
+///     spacer(),
+///     text("Trailing"),
+/// ))
+/// ```
 #[derive(Debug, Clone)]
 pub struct HStack<C> {
     layout: HStackLayout,
@@ -37,16 +66,19 @@ impl Default for HStackLayout {
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
     size: Size,
-    is_stretch: bool,
+    stretch_axis: StretchAxis,
+}
+
+impl ChildMeasurement {
+    /// Returns true if this child stretches horizontally (for HStack width distribution).
+    fn stretches_horizontal(&self) -> bool {
+        self.stretch_axis.stretches_horizontal()
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for HStackLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &mut [&mut dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
@@ -60,27 +92,31 @@ impl Layout for HStackLayout {
         // First pass: measure children with unspecified width to get intrinsic sizes
         let intrinsic_proposal = ProposalSize::new(None, proposal.height);
         let mut measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(intrinsic_proposal),
-                is_stretch: child.is_stretch(),
+                stretch_axis: child.stretch_axis(),
             })
             .collect();
 
-        let has_stretch = measurements.iter().any(|m| m.is_stretch);
-        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
+        // HStack only cares about horizontal stretching
+        let has_horizontal_stretch = measurements.iter().any(|m| m.stretches_horizontal());
+        let horizontal_stretch_count = measurements
+            .iter()
+            .filter(|m| m.stretches_horizontal())
+            .count();
 
-        // Calculate intrinsic width (sum of non-stretch children + spacing)
+        // Calculate intrinsic width (sum of non-horizontally-stretching children + spacing)
         let non_stretch_width: f32 = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretches_horizontal())
             .map(|m| m.size.width)
             .sum();
 
         let intrinsic_width = non_stretch_width + total_spacing;
 
         // Determine final width
-        let final_width = if has_stretch {
+        let final_width = if has_horizontal_stretch {
             proposal.width.unwrap_or(intrinsic_width)
         } else {
             match proposal.width {
@@ -98,15 +134,19 @@ impl Layout for HStackLayout {
             // Small children keep their intrinsic width
             let overflow = non_stretch_width - available_for_children;
 
-            // Find indices of non-stretch children sorted by width (largest first)
+            // Find indices of non-horizontally-stretching children sorted by width (largest first)
             let mut non_stretch_indices: Vec<usize> = measurements
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| !m.is_stretch)
+                .filter(|(_, m)| !m.stretches_horizontal())
                 .map(|(i, _)| i)
                 .collect();
             non_stretch_indices.sort_by(|&a, &b| {
-                measurements[b].size.width.partial_cmp(&measurements[a].size.width).unwrap()
+                measurements[b]
+                    .size
+                    .width
+                    .partial_cmp(&measurements[a].size.width)
+                    .unwrap()
             });
 
             // Compress largest children first until we fit
@@ -124,24 +164,22 @@ impl Layout for HStackLayout {
 
                 if reduction > 0.0 {
                     let new_width = current_width - reduction;
-                    let constrained_proposal = ProposalSize::new(
-                        Some(new_width),
-                        proposal.height,
-                    );
+                    let constrained_proposal = ProposalSize::new(Some(new_width), proposal.height);
                     measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
                     remaining_overflow -= reduction;
                 }
             }
-        } else if proposal.width.is_some() && stretch_count > 0 {
-            // With spacers, non-stretch children keep intrinsic width
+        } else if proposal.width.is_some() && horizontal_stretch_count > 0 {
+            // With spacers, non-horizontally-stretching children keep intrinsic width
             // Spacers get the remaining space (but we don't measure them here)
         }
 
         // Height: max of all children (after re-measurement for proper wrapped height)
         // Important: Do NOT cap height to proposal - if text wraps, we need the full height
+        // Note: vertically-stretching children don't contribute to intrinsic height
         let max_height = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretch_axis.stretches_vertical())
             .map(|m| m.size.height)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
@@ -149,11 +187,7 @@ impl Layout for HStackLayout {
         Size::new(final_width, max_height)
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &mut [&mut dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
@@ -169,25 +203,31 @@ impl Layout for HStackLayout {
         // First pass: measure all children with None to get intrinsic sizes
         let intrinsic_proposal = ProposalSize::new(None, Some(bounds.height()));
         let mut measurements: Vec<ChildMeasurement> = children
-            .iter_mut()
+            .iter()
             .map(|child| ChildMeasurement {
                 size: child.size_that_fits(intrinsic_proposal),
-                is_stretch: child.is_stretch(),
+                stretch_axis: child.stretch_axis(),
             })
             .collect();
 
-        // Calculate totals
-        let stretch_count = measurements.iter().filter(|m| m.is_stretch).count();
-        let non_stretch_count = measurements.iter().filter(|m| !m.is_stretch).count();
+        // Calculate totals - HStack cares about horizontal stretching
+        let horizontal_stretch_count = measurements
+            .iter()
+            .filter(|m| m.stretches_horizontal())
+            .count();
+        let non_stretch_count = measurements
+            .iter()
+            .filter(|m| !m.stretches_horizontal())
+            .count();
 
         let total_intrinsic_width: f32 = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretches_horizontal())
             .map(|m| m.size.width)
             .sum();
 
-        // Calculate how much space is available for non-stretch children
-        let width_for_non_stretch = if stretch_count > 0 {
+        // Calculate how much space is available for non-horizontally-stretching children
+        let width_for_non_stretch = if horizontal_stretch_count > 0 {
             // If there are spacers, non-stretch children get their intrinsic width
             // but capped to available space
             available_width.min(total_intrinsic_width)
@@ -197,21 +237,26 @@ impl Layout for HStackLayout {
         };
 
         // Check if we need to compress children
-        let needs_compression = total_intrinsic_width > width_for_non_stretch && non_stretch_count > 0;
+        let needs_compression =
+            total_intrinsic_width > width_for_non_stretch && non_stretch_count > 0;
 
         if needs_compression {
             // Compress largest children first, keeping small labels at intrinsic width
             let overflow = total_intrinsic_width - width_for_non_stretch;
 
-            // Find indices of non-stretch children sorted by width (largest first)
+            // Find indices of non-horizontally-stretching children sorted by width (largest first)
             let mut non_stretch_indices: Vec<usize> = measurements
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| !m.is_stretch)
+                .filter(|(_, m)| !m.stretches_horizontal())
                 .map(|(i, _)| i)
                 .collect();
             non_stretch_indices.sort_by(|&a, &b| {
-                measurements[b].size.width.partial_cmp(&measurements[a].size.width).unwrap()
+                measurements[b]
+                    .size
+                    .width
+                    .partial_cmp(&measurements[a].size.width)
+                    .unwrap()
             });
 
             // Compress largest children first until we fit
@@ -229,10 +274,8 @@ impl Layout for HStackLayout {
 
                 if reduction > 0.0 {
                     let new_width = current_width - reduction;
-                    let constrained_proposal = ProposalSize::new(
-                        Some(new_width),
-                        Some(bounds.height()),
-                    );
+                    let constrained_proposal =
+                        ProposalSize::new(Some(new_width), Some(bounds.height()));
                     measurements[idx].size = children[idx].size_that_fits(constrained_proposal);
                     measurements[idx].size.width = measurements[idx].size.width.min(new_width);
                     remaining_overflow -= reduction;
@@ -243,13 +286,13 @@ impl Layout for HStackLayout {
         // Calculate stretch child width from remaining space
         let actual_non_stretch_width: f32 = measurements
             .iter()
-            .filter(|m| !m.is_stretch)
+            .filter(|m| !m.stretches_horizontal())
             .map(|m| m.size.width)
             .sum();
 
         let remaining_width = (available_width - actual_non_stretch_width).max(0.0);
-        let stretch_width = if stretch_count > 0 {
-            remaining_width / stretch_count as f32
+        let stretch_width = if horizontal_stretch_count > 0 {
+            remaining_width / horizontal_stretch_count as f32
         } else {
             0.0
         };
@@ -263,14 +306,16 @@ impl Layout for HStackLayout {
                 current_x += self.spacing;
             }
 
-            // Handle infinite height (axis-expanding views) and clamp to bounds
-            let child_height = if measurement.size.height.is_infinite() {
+            // Handle vertically-stretching children and infinite height
+            let child_height = if measurement.stretch_axis.stretches_vertical() {
+                bounds.height()
+            } else if measurement.size.height.is_infinite() {
                 bounds.height()
             } else {
                 measurement.size.height.min(bounds.height())
             };
 
-            let child_width = if measurement.is_stretch {
+            let child_width = if measurement.stretches_horizontal() {
                 stretch_width
             } else {
                 measurement.size.width
@@ -361,15 +406,15 @@ mod tests {
 
     struct MockSubView {
         size: Size,
-        is_stretch: bool,
+        stretch_axis: StretchAxis,
     }
 
     impl SubView for MockSubView {
-        fn size_that_fits(&mut self, _proposal: ProposalSize) -> Size {
+        fn size_that_fits(&self, _proposal: ProposalSize) -> Size {
             self.size
         }
-        fn is_stretch(&self) -> bool {
-            self.is_stretch
+        fn stretch_axis(&self) -> StretchAxis {
+            self.stretch_axis
         }
         fn priority(&self) -> i32 {
             0
@@ -385,16 +430,16 @@ mod tests {
 
         let mut child1 = MockSubView {
             size: Size::new(50.0, 30.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut child2 = MockSubView {
             size: Size::new(60.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &mut children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         assert_eq!(size.width, 120.0); // 50 + 10 + 60
         assert_eq!(size.height, 40.0); // max height
@@ -409,24 +454,21 @@ mod tests {
 
         let mut child1 = MockSubView {
             size: Size::new(30.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut spacer = MockSubView {
             size: Size::zero(),
-            is_stretch: true,
+            stretch_axis: StretchAxis::Both, // Spacer stretches in both directions
         };
         let mut child2 = MockSubView {
             size: Size::new(30.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
 
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
         // With specified width, spacer should expand
-        let size = layout.size_that_fits(
-            ProposalSize::new(Some(200.0), None),
-            &mut children,
-        );
+        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), None), &children);
 
         assert_eq!(size.width, 200.0);
 
@@ -435,23 +477,59 @@ mod tests {
 
         let mut child1 = MockSubView {
             size: Size::new(30.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
         let mut spacer = MockSubView {
             size: Size::zero(),
-            is_stretch: true,
+            stretch_axis: StretchAxis::Both,
         };
         let mut child2 = MockSubView {
             size: Size::new(30.0, 40.0),
-            is_stretch: false,
+            stretch_axis: StretchAxis::None,
         };
-        let mut children: Vec<&mut dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-        let rects = layout.place(bounds, &mut children);
+        let rects = layout.place(bounds, &children);
 
         assert_eq!(rects[0].width(), 30.0);
         assert_eq!(rects[1].width(), 140.0); // 200 - 30 - 30
         assert_eq!(rects[2].width(), 30.0);
         assert_eq!(rects[2].x(), 170.0); // 30 + 140
+    }
+
+    #[test]
+    fn test_hstack_with_vertical_stretch() {
+        // Vertical stretch component in HStack: stretches HEIGHT but has fixed WIDTH
+        // This is like a Slider/TextField rotated for use in HStack context
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut label = MockSubView {
+            size: Size::new(50.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        // A vertically-stretching component: fixed width, wants to fill height
+        let mut vertical_stretch = MockSubView {
+            size: Size::new(40.0, 100.0), // reports minimum width, tall height
+            stretch_axis: StretchAxis::Vertical, // stretches height only
+        };
+        let mut button = MockSubView {
+            size: Size::new(80.0, 44.0),
+            stretch_axis: StretchAxis::None,
+        };
+
+        let children: Vec<&dyn SubView> =
+            vec![&mut label, &mut vertical_stretch, &mut button];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+
+        // Width: all children contribute (vertical_stretch doesn't stretch horizontally)
+        // = 50 + 10 + 40 + 10 + 80 = 190
+        assert_eq!(size.width, 190.0);
+        // Height: max of non-vertically-stretching children = max(20, 44) = 44
+        // Note: vertical_stretch stretches vertically so its height doesn't contribute
+        assert_eq!(size.height, 44.0);
     }
 }

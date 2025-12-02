@@ -26,7 +26,44 @@ pub struct SliderConfig {
 }
 
 configurable!(
-    #[doc = "A slider control for adjusting numeric values within a range."]
+    /// A control for selecting a value from a continuous range.
+    ///
+    /// Slider lets users select a value by dragging a thumb along a track.
+    ///
+    /// # Layout Behavior
+    ///
+    /// Slider **expands horizontally** to fill available space, but has a fixed height.
+    /// In an `HStack`, it will take up all remaining width after other views are sized.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Basic slider (0 to 100)
+    /// slider(0.0..=100.0, &volume)
+    ///
+    /// // With custom labels
+    /// slider(0.0..=1.0, &brightness)
+    ///     .label("Brightness")
+    ///     .min_value_label("Dark")
+    ///     .max_value_label("Bright")
+    ///
+    /// // In a form (slider fills remaining width)
+    /// hstack((
+    ///     text("Volume"),
+    ///     slider(0.0..=100.0, &volume),
+    /// ))
+    /// ```
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `Horizontal` - Expands to fill available width.
+    // Height: Fixed intrinsic (platform-determined)
+    // Width: Reports minimum usable width, expands during layout phase
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     Slider,
     SliderConfig
 );

@@ -30,8 +30,28 @@ pub struct BadgeConfig {
 }
 
 configurable!(
-    /// A badge component that displays a numeric indicator attached to content.
-    Badge,BadgeConfig);
+    /// A small indicator that displays a count on top of another view.
+    ///
+    /// Badge is typically used to show notification counts or item quantities
+    /// overlaid on icons or buttons.
+    ///
+    /// # Layout Behavior
+    ///
+    /// Badge sizes itself to fit the content it wraps, plus the badge indicator.
+    /// It never stretches to fill extra space.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - Badge never expands to fill available space.
+    // Size: Determined by wrapped content + badge indicator overlay
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    Badge,
+    BadgeConfig
+);
 
 impl Badge {
     /// Creates a new Badge with the specified value and content
