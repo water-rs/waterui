@@ -24,7 +24,7 @@ use waterui_core::handler::{
     into_handler, into_handler_with_state,
 };
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{Environment, Native, impl_debug};
+use waterui_core::{Environment, Native, NativeView, impl_debug};
 
 use waterui_core::AnyView;
 use waterui_core::View;
@@ -42,7 +42,6 @@ use waterui_core::View;
 // INTERNAL: Layout Contract for Backend Implementers
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Stretch Axis: `None` - Button never expands to fill available space.
 // Size: Determined by label content + platform padding.
 //
 // ═══════════════════════════════════════════════════════════════════════════
@@ -56,6 +55,8 @@ pub struct ButtonConfig {
 
 impl_debug!(ButtonConfig);
 
+impl NativeView for ButtonConfig {}
+
 impl<Label, Action> View for Button<Label, Action>
 where
     Label: View,
@@ -68,6 +69,10 @@ where
         } else {
             AnyView::new(Native(config))
         }
+    }
+
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::None
     }
 }
 

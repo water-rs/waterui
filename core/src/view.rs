@@ -12,7 +12,7 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
-use crate::{AnyView, Environment, components::Metadata};
+use crate::{AnyView, Environment, components::Metadata, layout::StretchAxis};
 use alloc::{boxed::Box, vec::Vec};
 
 /// View represents a part of the user interface.
@@ -37,6 +37,12 @@ pub trait View: 'static {
     ///
     /// WARNING: This method should not be called directly by user.
     fn body(self, _env: &Environment) -> impl View;
+
+    #[doc(hidden)]
+    /// Returns the stretch axis for this view.
+    fn stretch_axis(&self) -> StretchAxis {
+        panic!("View::stretch_axis() only implemented for NativeView");
+    }
 }
 
 impl<F: 'static + FnOnce() -> V, V: View> View for F {

@@ -14,14 +14,18 @@ use crate::{Environment, View, layout::StretchAxis};
 /// Attempting to render a `Native<T>` view directly will panic. This type is intended
 /// to be handled by platform-specific rendering backends.
 #[derive(Debug)]
-pub struct Native<T>(pub T);
+pub struct Native<T: NativeView>(pub T);
 
-impl<T: 'static> View for Native<T> {
+impl<T: 'static + NativeView> View for Native<T> {
     #[allow(unused)]
     #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
         panic!("Native view ({})", type_name::<T>());
         return;
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        NativeView::stretch_axis(&self.0)
     }
 }
 

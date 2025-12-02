@@ -44,7 +44,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Badge never expands to fill available space.
+    
     // Size: Determined by wrapped content + badge indicator overlay
     //
     // ═══════════════════════════════════════════════════════════════════════════
