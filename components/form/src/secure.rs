@@ -7,7 +7,7 @@ use core::fmt::Debug;
 
 use alloc::string::String;
 use nami::Binding;
-use waterui_core::{AnyView, View, configurable};
+use waterui_core::{AnyView, NativeView, View, configurable, layout::StretchAxis};
 use zeroize::Zeroize;
 
 /// A wrapper type for securely handling sensitive string data.
@@ -57,6 +57,12 @@ pub struct SecureFieldConfig {
     pub label: AnyView,
     /// The binding to the secure value being edited.
     pub value: Binding<Secure>,
+}
+
+impl NativeView for SecureFieldConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
 }
 
 configurable!(

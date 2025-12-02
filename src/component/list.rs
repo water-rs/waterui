@@ -11,7 +11,7 @@ use nami::collection::Collection;
 use crate::views::{AnyViews, ForEach, Views};
 use waterui_core::Native;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, View, id::Identifable};
+use waterui_core::{AnyView, Environment, NativeView, View, id::Identifable};
 
 /// Configuration for a list component.
 #[derive(Debug)]
@@ -19,6 +19,8 @@ pub struct ListConfig {
     /// Content items to be displayed in the list.
     pub contents: AnyViews<ListItem>,
 }
+
+impl NativeView for ListConfig {}
 
 /// A component that displays items in a list format.
 #[derive(Debug)]

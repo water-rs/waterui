@@ -5,12 +5,12 @@ use core::fmt::Debug;
 
 use alloc::{boxed::Box, vec::Vec};
 use waterui_core::{
-    AnyView, View, raw_view,
+    AnyView, Native, NativeView, View,
     view::TupleViews,
     views::{AnyViews, Views, ViewsExt},
 };
 
-use crate::Layout;
+use crate::{Layout, StretchAxis};
 
 /// A view wrapper that executes an arbitrary [`Layout`]
 /// implementation.
@@ -45,7 +45,17 @@ impl FixedContainer {
     }
 }
 
-raw_view!(FixedContainer); // Under the hood the renderer drives the layout trait object.
+impl NativeView for FixedContainer {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis()
+    }
+}
+
+impl View for FixedContainer {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        Native(self)
+    }
+}
 
 /// A view wrapper that executes an arbitrary [`Layout`] implementation
 /// with reconstructable views, which can support lazy layouting.
@@ -73,4 +83,14 @@ impl Container {
     }
 }
 
-raw_view!(Container); // Under the hood the renderer drives the layout trait object.
+impl NativeView for Container {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis()
+    }
+}
+
+impl View for Container {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        Native(self)
+    }
+}

@@ -2,7 +2,7 @@
 
 use nami::Binding;
 use waterui_color::Color;
-use waterui_core::{AnyView, View, configurable};
+use waterui_core::{AnyView, NativeView, View, configurable};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -13,6 +13,8 @@ pub struct ColorPickerConfig {
     /// The binding to the color value.
     pub value: Binding<Color>,
 }
+
+impl NativeView for ColorPickerConfig {}
 
 configurable!(
     /// A control for selecting colors.

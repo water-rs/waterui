@@ -20,7 +20,7 @@ pub mod metadata;
 pub use metadata::{IgnorableMetadata, Metadata};
 pub mod native;
 use crate::View;
-pub use native::Native;
+pub use native::{Native, NativeView};
 
 /// A wrapper allows a view to carry an additional value without affecting its rendering.
 #[derive(Debug, Clone)]

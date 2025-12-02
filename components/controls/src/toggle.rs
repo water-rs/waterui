@@ -3,7 +3,7 @@
 use nami::Binding;
 use waterui_core::configurable;
 
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, NativeView, View};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -14,6 +14,8 @@ pub struct ToggleConfig {
     /// The binding to the toggle state.
     pub toggle: Binding<bool>,
 }
+
+impl NativeView for ToggleConfig {}
 
 configurable!(
     /// A control that toggles between on and off states.

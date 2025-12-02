@@ -1,29 +1,3 @@
-//! Core layout primitives used by layout components.
-//!
-//! The layout system uses a negotiation-based protocol where layouts can query
-//! children multiple times with different proposals to determine optimal sizing.
-//! This is inspired by SwiftUI's "parent proposes, child chooses" model.
-//!
-//! # Architecture
-//!
-//! - [`SubView`]: A proxy trait that allows layouts to query child sizes
-//! - [`Layout`]: The core trait implemented by layout containers (VStack, HStack, etc.)
-//!
-//! # Example
-//!
-//! ```ignore
-//! impl Layout for VStackLayout {
-//!     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-//!         // Query each child for its ideal size
-//!         let sizes: Vec<Size> = children
-//!             .iter()
-//!             .map(|c| c.size_that_fits(ProposalSize::new(proposal.width, None)))
-//!             .collect();
-//!         // Calculate total size...
-//!     }
-//! }
-//! ```
-
 use core::fmt::Debug;
 
 use alloc::vec::Vec;
@@ -44,8 +18,14 @@ pub enum StretchAxis {
     Vertical,
     /// Stretch in both directions (expand width and height)
     Both,
-    /// Stretch in the direction of the parent's axis.
-    Adoptive,
+    /// Stretch along the parent container's main axis.
+    /// In VStack: expands vertically. In HStack: expands horizontally.
+    /// Used by Spacer.
+    MainAxis,
+    /// Stretch along the parent container's cross axis.
+    /// In VStack: expands horizontally. In HStack: expands vertically.
+    /// Used by Divider.
+    CrossAxis,
 }
 
 impl StretchAxis {
@@ -155,6 +135,19 @@ pub trait Layout: Debug {
     /// * `bounds` - The rectangle this layout should fill
     /// * `children` - References to child proxies (may query sizes again)
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect>;
+
+    /// Which axis this container stretches to fill available space.
+    ///
+    /// - VStack: `.horizontal` (fills available width, intrinsic height)
+    /// - HStack: `.vertical` (fills available height, intrinsic width)
+    /// - ZStack: `.both` (fills all available space)
+    /// - Other layouts: `.none` by default
+    ///
+    /// This allows parent containers to know whether to expand this container
+    /// to fill available space on the cross axis.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
 }
 
 // ============================================================================

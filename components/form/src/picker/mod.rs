@@ -24,6 +24,8 @@ pub struct PickerConfig {
     pub selection: Binding<Id>,
 }
 
+impl waterui_core::NativeView for PickerConfig {}
+
 configurable!(
     /// A control for selecting from a list of options.
     ///

@@ -24,7 +24,7 @@ use waterui_color::Color;
 use waterui_controls::button;
 use waterui_core::{
     AnyView, Environment, View, env::use_env, event::Associated, handler::ViewBuilder,
-    impl_extractor, raw_view,
+    impl_extractor, layout::StretchAxis, raw_view,
 };
 use waterui_text::Text;
 
@@ -89,10 +89,7 @@ impl NavigationController {
     }
 }
 
-raw_view!(
-    NavigationView,
-    "Please use `NavigationView` in a proper navigation context"
-);
+raw_view!(NavigationView, StretchAxis::Both);
 
 /// Configuration for a navigation bar.
 ///
@@ -194,7 +191,7 @@ impl<T> NavigationStack<NavigationPath<T>, ()> {
     }
 }
 
-raw_view!(NavigationStack<(),()>);
+raw_view!(NavigationStack<(),()>, StretchAxis::Both);
 
 impl<T, F> View for NavigationStack<NavigationPath<T>, F>
 where

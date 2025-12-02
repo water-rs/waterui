@@ -31,6 +31,38 @@ typedef enum WuiAnimation {
   WuiAnimation_None,
 } WuiAnimation;
 
+/**
+ * FFI representation of StretchAxis enum.
+ *
+ * Specifies which axis (or axes) a view stretches to fill available space.
+ */
+typedef enum WuiStretchAxis {
+  /**
+   * No stretching - view uses its intrinsic size
+   */
+  WuiStretchAxis_None = 0,
+  /**
+   * Stretch horizontally only (expand width, use intrinsic height)
+   */
+  WuiStretchAxis_Horizontal = 1,
+  /**
+   * Stretch vertically only (expand height, use intrinsic width)
+   */
+  WuiStretchAxis_Vertical = 2,
+  /**
+   * Stretch in both directions (expand width and height)
+   */
+  WuiStretchAxis_Both = 3,
+  /**
+   * Stretch along the parent container's main axis (e.g., Spacer)
+   */
+  WuiStretchAxis_MainAxis = 4,
+  /**
+   * Stretch along the parent container's cross axis (e.g., Divider)
+   */
+  WuiStretchAxis_CrossAxis = 5,
+} WuiStretchAxis;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -386,6 +418,14 @@ typedef struct Computed_f64 Computed_f64;
 typedef struct Computed_i32 Computed_i32;
 
 /**
+ * Specifies which edges should ignore safe area insets.
+ *
+ * Used with `IgnoreSafeArea` to control which edges of a view
+ * should extend into the unsafe screen regions.
+ */
+typedef struct EdgeSet EdgeSet;
+
+/**
  * A size proposal from parent to child during layout negotiation.
  *
  * Each dimension can be:
@@ -581,9 +621,9 @@ typedef struct WuiSubView {
    */
   struct WuiSubViewVTable vtable;
   /**
-   * Whether this view stretches to fill available space (like Spacer)
+   * Which axis this view stretches to fill available space
    */
-  bool is_stretch;
+  enum WuiStretchAxis stretch_axis;
   /**
    * Layout priority (higher = measured first, gets space preference)
    */
@@ -946,6 +986,18 @@ typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 void waterui_configure_hot_reload_endpoint(const char *_host, uint16_t _port);
 
 void waterui_configure_hot_reload_directory(const char *_path);
@@ -1238,6 +1290,20 @@ struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
                                              struct WuiArray_WuiSubView children);
 
 /**
+ * Gets the stretch axis of a layout.
+ *
+ * Layout containers report which axis they stretch on:
+ * - VStack: Horizontal (fills width, uses intrinsic height)
+ * - HStack: Vertical (fills height, uses intrinsic width)
+ * - ZStack: Both (fills all available space)
+ *
+ * # Safety
+ *
+ * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
+ */
+enum WuiStretchAxis waterui_layout_stretch_axis(struct WuiLayout *layout);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1272,6 +1338,11 @@ struct WuiStr waterui_lazy_id(void);
 struct WuiLink waterui_force_as_link(struct WuiAnyView *view);
 
 struct WuiStr waterui_link_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_link_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1399,6 +1470,11 @@ struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 struct WuiStr waterui_text_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_text_stretch_axis(struct WuiAnyView *view);
+
+/**
  * Reads the current value from a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
@@ -1462,6 +1538,11 @@ struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 struct WuiStr waterui_text_field_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_text_field_stretch_axis(struct WuiAnyView *view);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1469,6 +1550,11 @@ struct WuiStr waterui_text_field_id(void);
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
 struct WuiStr waterui_toggle_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_toggle_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1480,6 +1566,11 @@ struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 struct WuiStr waterui_slider_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_slider_stretch_axis(struct WuiAnyView *view);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1487,6 +1578,11 @@ struct WuiStr waterui_slider_id(void);
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
 struct WuiStr waterui_stepper_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_stepper_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1498,6 +1594,11 @@ struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 struct WuiStr waterui_color_picker_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_color_picker_stretch_axis(struct WuiAnyView *view);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1505,6 +1606,11 @@ struct WuiStr waterui_color_picker_id(void);
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
 struct WuiStr waterui_picker_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_picker_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1531,6 +1637,11 @@ struct WuiPhoto waterui_force_as_photo(struct WuiAnyView *view);
 struct WuiStr waterui_photo_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_photo_stretch_axis(struct WuiAnyView *view);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1540,6 +1651,11 @@ struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 struct WuiStr waterui_video_player_id(void);
 
 /**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_video_player_stretch_axis(struct WuiAnyView *view);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -1547,6 +1663,11 @@ struct WuiStr waterui_video_player_id(void);
 struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
 
 struct WuiStr waterui_live_photo_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_live_photo_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1591,6 +1712,11 @@ struct WuiStr waterui_list_item_id(void);
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
 struct WuiStr waterui_list_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_list_stretch_axis(struct WuiAnyView *view);
 
 /**
  * Calls the delete callback for a list item.
@@ -1668,6 +1794,11 @@ struct WuiStr waterui_table_column_id(void);
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiStr waterui_progress_id(void);
+
+/**
+ * Returns the stretch axis for this native view type.
+ */
+enum WuiStretchAxis waterui_progress_stretch_axis(struct WuiAnyView *view);
 
 /**
  * # Safety

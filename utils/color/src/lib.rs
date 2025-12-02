@@ -28,6 +28,7 @@ use nami::{Computed, Signal, SignalExt, impl_constant};
 
 use waterui_core::{
     Environment, raw_view,
+    layout::StretchAxis,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -518,7 +519,7 @@ color_const!(Brown, Srgb::BROWN, "Brown color.");
 
 color_const!(Grey, Srgb::GREY, "Grey color.");
 color_const!(BlueGrey, Srgb::BLUE_GREY, "Blue grey color.");
-raw_view!(Color); // should be filled rectangle
+raw_view!(Color, StretchAxis::Both);
 
 // https://www.w3.org/TR/css-color-4/#color-conversion-code
 fn srgb_to_linear(c: f32) -> f32 {

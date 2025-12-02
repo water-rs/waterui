@@ -3,7 +3,7 @@
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
 use nami::{Binding, Computed, signal::IntoComputed};
-use waterui_core::{AnyView, View, configurable};
+use waterui_core::{AnyView, NativeView, View, configurable};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -18,6 +18,8 @@ pub struct StepperConfig {
     /// The valid range of values for the stepper.
     pub range: RangeInclusive<i32>,
 }
+
+impl NativeView for StepperConfig {}
 
 configurable!(
     /// A control for incrementing or decrementing a value.

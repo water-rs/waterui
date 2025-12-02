@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use waterui_core::raw_view;
 
-use crate::{Layout, ProposalSize, Rect, Size, SubView};
+use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
 /// A flexible space that expands to push views apart.
 ///
@@ -38,7 +38,7 @@ use crate::{Layout, ProposalSize, Rect, Size, SubView};
 // INTERNAL: Layout Contract for Backend Implementers
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Stretch Axis: `Adaptive` - Expands along parent stack's main axis.
+// Stretch Axis: `MainAxis` - Expands along parent stack's main axis.
 // Measurement: Returns (minLength, minLength) as intrinsic size
 // Layout: Expands to fill remaining surplus space during place() phase
 // Overflow: Collapses to minLength when space is insufficient
@@ -94,7 +94,7 @@ impl From<Spacer> for SpacerLayout {
     }
 }
 
-raw_view!(Spacer); // Spacer has a special behavior in layouting
+raw_view!(Spacer, StretchAxis::MainAxis);
 
 /// Creates a flexible spacer with zero minimum length.
 ///
