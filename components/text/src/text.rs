@@ -9,7 +9,47 @@ use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_core::configurable;
 
 configurable!(
-    #[doc = "A configurable text view that renders styled, reactive content."]
+    /// A view that displays one or more lines of read-only text.
+    ///
+    /// Text sizes itself to fit its content and never stretches to fill extra space.
+    /// When the available width is limited, it wraps to multiple lines automatically.
+    /// If both width and height are constrained, it truncates with "..." at the end.
+    ///
+    /// # Layout Behavior
+    ///
+    /// - **Sizing:** Fits its content naturally, like a label
+    /// - **In stacks:** Takes only the space it needs, leaving room for siblings
+    /// - **Wrapping:** Automatically wraps when width is constrained via `.frame()`
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Simple text
+    /// text("Hello, World!")
+    ///
+    /// // Styled text
+    /// text("Important").bold().title()
+    ///
+    /// // Enable wrapping with fixed width
+    /// text("Long paragraph...").frame().width(200.0)
+    ///
+    /// // Push text apart in a row
+    /// hstack((text("Name"), spacer(), text("Value")))
+    /// ```
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Stretch Axis: `None` - Text never expands to fill available space.
+    //
+    // Measurement Protocol (multi-pass):
+    //   Pass 1 - PROBE:    proposal(nil, nil)    → (single_line_width, line_height)
+    //   Pass 2 - WRAP:     proposal(w, nil)      → (actual_width ≤ w, wrapped_height)
+    //   Pass 3 - TRUNCATE: proposal(w, h)        → (w, h) with ellipsis if needed
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
     Text,
     TextConfig
 );
