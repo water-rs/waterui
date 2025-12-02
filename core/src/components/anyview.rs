@@ -11,7 +11,7 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{Environment, View};
+use crate::{Environment, View, layout::StretchAxis};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
@@ -21,11 +21,15 @@ trait AnyViewImpl: 'static {
     fn name(&self) -> &'static str {
         type_name::<Self>()
     }
+    fn stretch_axis(&self) -> StretchAxis;
 }
 
 impl<T: View> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
         AnyView::new(View::body(*self, &env))
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        View::stretch_axis(self)
     }
 }
 
@@ -82,6 +86,15 @@ impl AnyView {
     #[must_use]
     pub fn name(&self) -> &'static str {
         AnyViewImpl::name(&*self.0)
+    }
+
+    /// Returns the stretch axis of the contained view.
+    ///
+    /// This delegates to the `View::stretch_axis()` method of the wrapped view,
+    /// which for native views returns their layout stretch behavior.
+    #[must_use]
+    pub fn stretch_axis(&self) -> StretchAxis {
+        AnyViewImpl::stretch_axis(&*self.0)
     }
 
     /// Downcasts `AnyView` to a concrete view type without any runtime checks.

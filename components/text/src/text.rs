@@ -6,7 +6,7 @@ use core::fmt::Display;
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_core::{NativeView, configurable};
+use waterui_core::configurable;
 
 configurable!(
     /// A view that displays one or more lines of read-only text.
@@ -41,7 +41,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // Stretch Axis: `None` - Text never expands to fill available space.
+    
     //
     // Measurement Protocol (multi-pass):
     //   Pass 1 - PROBE:    proposal(nil, nil)    → (single_line_width, line_height)
@@ -65,7 +65,6 @@ pub struct TextConfig {
     pub content: Computed<StyledStr>,
 }
 
-impl NativeView for TextConfig {}
 
 impl Clone for Text {
     fn clone(&self) -> Self {

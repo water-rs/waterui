@@ -26,11 +26,6 @@ typedef struct WuiArray {
 
 
 
-typedef enum WuiAnimation {
-  WuiAnimation_Default,
-  WuiAnimation_None,
-} WuiAnimation;
-
 /**
  * FFI representation of StretchAxis enum.
  *
@@ -62,6 +57,11 @@ typedef enum WuiStretchAxis {
    */
   WuiStretchAxis_CrossAxis = 5,
 } WuiStretchAxis;
+
+typedef enum WuiAnimation {
+  WuiAnimation_Default,
+  WuiAnimation_None,
+} WuiAnimation;
 
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
@@ -1049,6 +1049,20 @@ struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env
  */
 struct WuiStr waterui_view_id(const struct WuiAnyView *view);
 
+/**
+ * Gets the stretch axis of a view.
+ *
+ * Returns the `StretchAxis` that indicates how this view stretches to fill
+ * available space. For native views, this returns the layout behavior defined
+ * by the `NativeView` trait. For non-native views, this will panic.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to a properly
+ * initialized `WuiAnyView` instance and that it remains valid for the
+ * duration of this function call.
+ */
+enum WuiStretchAxis waterui_view_stretch_axis(const struct WuiAnyView *view);
+
 struct WuiAnyView *waterui_empty_anyview(void);
 
 struct WuiStr waterui_anyview_id(void);
@@ -1288,20 +1302,6 @@ struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
 struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
                                              struct WuiRect bounds,
                                              struct WuiArray_WuiSubView children);
-
-/**
- * Gets the stretch axis of a layout.
- *
- * Layout containers report which axis they stretch on:
- * - VStack: Horizontal (fills width, uses intrinsic height)
- * - HStack: Vertical (fills height, uses intrinsic width)
- * - ZStack: Both (fills all available space)
- *
- * # Safety
- *
- * The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
- */
-enum WuiStretchAxis waterui_layout_stretch_axis(struct WuiLayout *layout);
 
 /**
  * # Safety

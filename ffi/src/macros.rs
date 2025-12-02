@@ -39,30 +39,24 @@ macro_rules! ffi_safe {
 macro_rules! ffi_view {
     ($view:ty,$ffi:ty,$ident:tt) => {
         paste::paste! {
-            /// # Safety
+        /// # Safety
         /// This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
         /// The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn [<waterui_force_as_ $ident>](view: *mut $crate::WuiAnyView) -> $ffi {
             unsafe {
                 let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
-                let view = (*any.downcast_unchecked::<$view>());
+                let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
                 $crate::IntoFFI::into_ffi(view)
             }
         }
 
         #[unsafe(no_mangle)]
         pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiStr {
-            $crate::IntoFFI::into_ffi(core::any::type_name::<$view>()) // type_name is constant between runs, so it's good to use as a hot reload id.
+            $crate::IntoFFI::into_ffi(core::any::type_name::<waterui_core::Native<$view>>()) // type_name is constant between runs, so it's good to use as a hot reload id.
         }
         }
     };
-
-    ($view:ty,$ffi:ty) => {
-        paste::paste!{
-            $crate::ffi_view!($view,$ffi,[<$view:snake>]);
-        }
-    }
 }
 
 // metadata is a special case of view wrapper that holds both content and value
@@ -71,27 +65,6 @@ macro_rules! ffi_metadata {
     ($ty:ty,$ffi:ty) => {
         paste::paste! {
             $crate::ffi_view!(waterui_core::Metadata<$ty>,$crate::WuiMetadata<$ffi>,[<metadata_ $ty:snake>]);
-        }
-    };
-}
-
-// $ty impl ConfigurableView
-#[macro_export]
-macro_rules! native_view {
-    ($ty:ty, $ffi:ty) => {
-        paste::paste!{
-            $crate::ffi_view!(waterui_core::Native<<$ty as waterui_core::view::ConfigurableView>::Config>, $ffi, [<$ty:snake>]);
-
-            /// Returns the stretch axis for this native view type.
-            #[unsafe(no_mangle)]
-            pub extern "C" fn [<waterui_ $ty:snake _stretch_axis>](view: *mut $crate::WuiAnyView) -> $crate::components::layout::WuiStretchAxis {
-                use waterui_core::NativeView;
-                unsafe {
-                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
-                    let native = any.downcast_unchecked::<waterui_core::Native<<$ty as waterui_core::view::ConfigurableView>::Config>>();
-                    native.0.stretch_axis().into()
-                }
-            }
         }
     };
 }

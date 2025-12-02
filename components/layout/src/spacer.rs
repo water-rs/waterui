@@ -38,7 +38,7 @@ use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 // INTERNAL: Layout Contract for Backend Implementers
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Stretch Axis: `MainAxis` - Expands along parent stack's main axis.
+
 // Measurement: Returns (minLength, minLength) as intrinsic size
 // Layout: Expands to fill remaining surplus space during place() phase
 // Overflow: Collapses to minLength when space is insufficient

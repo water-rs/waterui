@@ -55,6 +55,10 @@ impl View for FixedContainer {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Native(self)
     }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis()
+    }
 }
 
 /// A view wrapper that executes an arbitrary [`Layout`] implementation
@@ -92,5 +96,9 @@ impl NativeView for Container {
 impl View for Container {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Native(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis()
     }
 }

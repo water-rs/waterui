@@ -24,7 +24,7 @@ use waterui_text::Text;
 
 use crate::{AnyView, Environment, View, views::Views};
 
-use waterui_core::Native;
+use waterui_core::{Native, NativeView};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -32,6 +32,8 @@ pub struct TableConfig {
     /// Columns that make up the table.
     pub columns: Computed<Vec<TableColumn>>,
 }
+
+impl NativeView for TableConfig {}
 
 /// A tabular layout component composed of reactive text columns.
 #[derive(Debug)]

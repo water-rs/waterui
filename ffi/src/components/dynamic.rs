@@ -4,7 +4,7 @@ use crate::{IntoRust, reactive::WuiWatcher};
 
 opaque!(WuiDynamic, Dynamic);
 
-ffi_view!(Dynamic, *mut WuiDynamic);
+ffi_view!(Dynamic, *mut WuiDynamic, dynamic);
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn waterui_dynamic_connect(

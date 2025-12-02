@@ -1,7 +1,6 @@
 use crate::WuiStr;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, WuiAnyView, ffi_view};
-use waterui_media::{LivePhoto, Photo, VideoPlayer};
+use crate::{IntoFFI, WuiAnyView};
 use waterui_media::{
     Video,
     live::{LivePhotoConfig, LivePhotoSource},
@@ -64,13 +63,11 @@ impl IntoFFI for waterui_media::Url {
 }
 
 // FFI view bindings for media components
-native_view!(Photo, WuiPhoto);
+ffi_view!(PhotoConfig, WuiPhoto, photo);
 
-native_view!(VideoPlayer, WuiVideoPlayer);
+ffi_view!(VideoPlayerConfig, WuiVideoPlayer, video_player);
 
-native_view!(LivePhoto, WuiLivePhoto);
-
-ffi_view!(LivePhotoSource, WuiLivePhotoSource);
+ffi_view!(LivePhotoConfig, WuiLivePhoto, live_photo);
 
 // Note: Media enum has complex tuple variants that need special FFI handling
 // - leaving for future implementation with manual IntoFFI implementation
