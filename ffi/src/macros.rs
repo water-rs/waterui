@@ -59,12 +59,41 @@ macro_rules! ffi_view {
     };
 }
 
-// metadata is a special case of view wrapper that holds both content and value
+/// Generates FFI functions for Metadata<T> types.
+///
+/// Unlike `ffi_view!`, this macro does NOT wrap in `Native<T>` because
+/// `Metadata<T>` is stored directly in the view tree (not as a native view).
+///
+/// # Generated Functions
+/// - `waterui_metadata_<ident>_id()` - Returns the type ID string
+/// - `waterui_force_as_metadata_<ident>()` - Downcasts AnyView to the metadata type
 #[macro_export]
 macro_rules! ffi_metadata {
-    ($ty:ty,$ffi:ty) => {
+    ($ty:ty, $ffi:ty, $ident:tt) => {
         paste::paste! {
-            $crate::ffi_view!(waterui_core::Metadata<$ty>,$crate::WuiMetadata<$ffi>,[<metadata_ $ty:snake>]);
+            /// Gets the type ID for this metadata type
+            #[unsafe(no_mangle)]
+            pub extern "C" fn [<waterui_metadata_ $ident _id>]() -> $crate::WuiStr {
+                // Metadata<T> is stored directly, not wrapped in Native<T>
+                $crate::IntoFFI::into_ffi(core::any::type_name::<waterui_core::Metadata<$ty>>())
+            }
+
+            /// Force-casts an AnyView to this metadata type
+            ///
+            /// # Safety
+            /// The caller must ensure that `view` is a valid pointer to an `AnyView`
+            /// that contains a `Metadata<$ty>`.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_force_as_metadata_ $ident>](
+                view: *mut $crate::WuiAnyView
+            ) -> $ffi {
+                unsafe {
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
+                    // Metadata<T> is stored directly, not wrapped in Native<T>
+                    let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
+                    $crate::IntoFFI::into_ffi(metadata)
+                }
+            }
         }
     };
 }

@@ -412,6 +412,7 @@ pub extern "C" fn waterui_empty_anyview() -> *mut WuiAnyView {
     AnyView::default().into_ffi()
 }
 
+#[repr(C)]
 pub struct WuiMetadata<T> {
     pub content: *mut WuiAnyView,
     pub value: T,
@@ -426,3 +427,13 @@ impl<T: IntoFFI> IntoFFI for Metadata<T> {
         }
     }
 }
+
+// ========== Metadata<Environment> FFI ==========
+// Used by WithEnv to pass a new environment to child views
+
+/// Type alias for Metadata<Environment> FFI struct
+/// Layout: { content: *mut WuiAnyView, value: *mut WuiEnv }
+pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
+
+// Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
+ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
