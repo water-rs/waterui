@@ -9,7 +9,19 @@
 //! - thin wrappers (for example [`scroll()`]) that signal backend-specific
 //!   behaviour.
 //!
-//! High-level usage mirrors other `WaterUI` crates:
+//! # Logical Pixels (Points)
+//!
+//! All layout values use **logical pixels** (points/dp) - the same unit as design
+//! tools like Figma, Sketch, and Adobe XD. Native backends handle conversion to
+//! physical pixels based on screen density:
+//!
+//! - iOS/macOS: Uses points natively
+//! - Android: Converts dp → pixels via `displayMetrics.density`
+//!
+//! This ensures `spacing(8.0)` or `width(100.0)` renders at the same physical
+//! size across all platforms, matching your design specifications exactly.
+//!
+//! # Example
 //!
 //! ```rust,ignore
 //! use waterui_layout::{stack, spacer};
@@ -21,6 +33,7 @@
 //!         spacer(),
 //!         stack::vstack((text("Docs"), text("Blog"))),
 //!     ))
+//!     .spacing(8.0)  // 8pt spacing - same as Figma/Sketch
 //! }
 //! ```
 //!
