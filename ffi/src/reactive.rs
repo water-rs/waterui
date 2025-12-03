@@ -493,7 +493,10 @@ pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<
 /// # Safety
 /// The binding pointer must be valid and point to a properly initialized binding object.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_set_binding_secure(binding: *mut WuiBinding<Secure>, value: WuiStr) {
+pub unsafe extern "C" fn waterui_set_binding_secure(
+    binding: *mut WuiBinding<Secure>,
+    value: WuiStr,
+) {
     unsafe {
         let str_value: Str = value.into_rust();
         (*binding).set(Secure::from_str(&str_value));
@@ -509,9 +512,9 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
     binding: *const WuiBinding<Secure>,
     watcher: *mut WuiWatcher<Secure>,
 ) -> *mut WuiWatcherGuard {
-    use waterui::Signal;
-    use core::cell::Cell;
     use alloc::rc::Rc;
+    use core::cell::Cell;
+    use waterui::Signal;
 
     // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
     let is_setting_up = Rc::new(Cell::new(true));
