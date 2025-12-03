@@ -2,11 +2,11 @@ use std::{
     collections::VecDeque,
     env,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread::sleep,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use color_eyre::{
@@ -405,7 +405,9 @@ const fn host_default_arch() -> &'static str {
     }
 }
 
-/// Run `xcodebuild` while streaming progress to a log file.
+/// Run `xcodebuild` while streaming progress to both the terminal and a log file.
+///
+/// Output is displayed in real-time so users can see build progress and errors.
 ///
 /// # Errors
 /// Returns an error if the process fails or if the log cannot be written.
@@ -428,25 +430,45 @@ pub fn run_xcodebuild_with_progress(
         .truncate(true)
         .open(&log_path)
         .with_context(|| format!("failed to create {}", log_path.display()))?;
-    let log_clone = log_file
-        .try_clone()
-        .with_context(|| format!("failed to clone handle for {}", log_path.display()))?;
-    cmd.stdout(Stdio::from(log_clone));
-    cmd.stderr(Stdio::from(log_file));
+
+    // Pipe stdout/stderr so we can stream to both terminal and log file
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("failed to invoke xcodebuild")?;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+
+    // Stream stdout to both terminal and log file
+    let stdout = child.stdout.take();
+    let log_file_stdout = log_file
+        .try_clone()
+        .with_context(|| format!("failed to clone handle for {}", log_path.display()))?;
+    let stdout_handle = thread::spawn(move || {
+        if let Some(stdout) = stdout {
+            stream_output(stdout, std::io::stdout(), log_file_stdout);
         }
-        sleep(Duration::from_millis(150));
-    };
+    });
+
+    // Stream stderr to both terminal and log file
+    let stderr = child.stderr.take();
+    let log_file_stderr = log_file;
+    let stderr_handle = thread::spawn(move || {
+        if let Some(stderr) = stderr {
+            stream_output(stderr, std::io::stderr(), log_file_stderr);
+        }
+    });
+
+    // Wait for output threads to complete
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+
+    // Wait for process to complete
+    let status = child.wait().context("failed to wait for xcodebuild")?;
 
     if status.success() {
         Ok(log_path)
     } else {
         let mut err = eyre::eyre!(format!(
-            "xcodebuild failed with status {}. See log at {}",
+            "xcodebuild failed with status {}. See full log at {}",
             status,
             log_path.display()
         ));
@@ -459,6 +481,26 @@ pub fn run_xcodebuild_with_progress(
             }
         }
         Err(err)
+    }
+}
+
+/// Stream output from a reader to both a terminal writer and a log file.
+fn stream_output<R, W>(reader: R, mut terminal: W, mut log_file: File)
+where
+    R: std::io::Read,
+    W: Write,
+{
+    let buf_reader = BufReader::new(reader);
+    for line in buf_reader.lines() {
+        match line {
+            Ok(line) => {
+                // Write to terminal
+                let _ = writeln!(terminal, "{}", line);
+                // Write to log file
+                let _ = writeln!(log_file, "{}", line);
+            }
+            Err(_) => break,
+        }
     }
 }
 

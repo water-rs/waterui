@@ -97,7 +97,7 @@ use core::marker::PhantomData;
 use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
     Environment,
-    env::{Store, WithEnv},
+    env::{Store, WithEnv, with_env},
     plugin::Plugin,
 };
 
@@ -617,6 +617,6 @@ impl<V: View> View for ThemeProvider<V> {
     fn body(self, env: &Environment) -> impl View {
         let mut themed_env = env.clone();
         self.theme.install(&mut themed_env);
-        WithEnv::new(self.content, themed_env)
+        with_env(self.content, themed_env)
     }
 }
