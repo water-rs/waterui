@@ -63,7 +63,7 @@ pub fn main() -> impl View {
             Divider,
             "Built with WaterUI - Cross-platform Reactive UI Framework",
         ))
-        .padding_with(EdgeInsets::all(100.0)),
+        .padding(),
     );
 
     view
