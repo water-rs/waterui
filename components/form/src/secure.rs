@@ -5,7 +5,7 @@
 
 use core::fmt::Debug;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use nami::Binding;
 use waterui_core::{AnyView, View, configurable, layout::StretchAxis};
 use zeroize::Zeroize;
@@ -21,6 +21,34 @@ impl Debug for Secure {
 }
 
 impl Secure {
+    /// Creates a new Secure value from a string.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The string value to secure
+    ///
+    /// # Returns
+    ///
+    /// A new Secure instance wrapping the provided string.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Creates a new Secure value from a string slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The string slice to secure
+    ///
+    /// # Returns
+    ///
+    /// A new Secure instance wrapping a copy of the provided string.
+    #[must_use]
+    pub fn from_str(value: &str) -> Self {
+        Self(value.to_string())
+    }
+
     /// Returns the inner string as a string slice.
     ///
     /// # Returns
@@ -29,6 +57,16 @@ impl Secure {
     #[must_use]
     pub fn expose(&self) -> &str {
         &self.0
+    }
+
+    /// Sets the value of the secure string.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The new string value
+    pub fn set(&mut self, value: String) {
+        self.0.zeroize();
+        self.0 = value;
     }
 
     /// Hashes the secure string using bcrypt.

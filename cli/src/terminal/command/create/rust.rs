@@ -51,6 +51,14 @@ pub fn create_rust_sources(
         &context,
     )?;
 
+    template::process_template_file(
+        templates
+            .get_file("build.rs.tpl")
+            .expect("build.rs.tpl should exist"),
+        &project_dir.join("build.rs"),
+        &context,
+    )?;
+
     copy_ffi_header(project_dir)?;
 
     Ok(())
