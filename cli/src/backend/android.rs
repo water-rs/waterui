@@ -1059,7 +1059,9 @@ pub fn build_android_native_libraries(
         let abi_dir = jni_dir.join(target.abi);
         util::ensure_directory(&abi_dir)?;
 
-        let dest = abi_dir.join(format!("lib{crate_file}.so"));
+        // Copy with standardized name (libwaterui_app.so) so the Android backend
+        // can always load "waterui_app" regardless of the actual crate name
+        let dest = abi_dir.join("libwaterui_app.so");
         fs::copy(&source, &dest)
             .with_context(|| format!("failed to copy library to {}", dest.display()))?;
 

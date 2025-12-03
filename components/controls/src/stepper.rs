@@ -31,13 +31,14 @@ configurable!(
     ///
     /// # Layout Behavior
     ///
-    /// Stepper sizes itself to fit its label and buttons, and never stretches
-    /// to fill extra space. In a stack, it takes only the space it needs.
+    /// With a label: Stepper expands horizontally to fill available space,
+    /// placing the label on the left and buttons on the right.
+    /// Without a label: Stepper is content-sized (just buttons).
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// // Basic stepper
+    /// // Basic stepper (has default label showing value)
     /// stepper(&quantity)
     ///
     /// // With label and range
@@ -58,13 +59,15 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-
-    // Size: label_width + spacing + stepper_buttons (platform-determined)
+    // - stretchAxis: .horizontal (stepper always has a label by default)
+    // - sizeThatFits: Returns proposed width (or minimum), intrinsic height
+    // - Layout: label on left, buttons on right, flexible space between
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Stepper,
-    StepperConfig
+    StepperConfig,
+    waterui_core::layout::StretchAxis::Horizontal
 );
 
 impl Stepper {

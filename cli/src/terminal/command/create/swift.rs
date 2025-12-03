@@ -24,12 +24,10 @@ pub fn create_xcode_project(
     swift_dependency: &SwiftDependency,
 ) -> Result<()> {
     let apple_root = project_dir.join("apple");
-    let lib_name = crate_name.replace('-', "_");
 
     let mut context = HashMap::new();
     context.insert("APP_NAME", app_name.to_string());
     context.insert("APP_DISPLAY_NAME", app_display_name.to_string());
-    context.insert("LIB_NAME", lib_name);
     context.insert("BUNDLE_IDENTIFIER", bundle_identifier.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
 
