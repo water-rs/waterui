@@ -1,8 +1,76 @@
-use std::{env, path::Path, process::Command};
+use std::{
+    env,
+    path::Path,
+    process::{Child, Command, ExitStatus},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
+};
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Context, Result, bail};
 use tracing::warn;
 use which::which;
+
+/// Global flag to track if we've received a termination signal.
+/// This is shared across all child process runs.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Check if the process has been interrupted by a signal.
+#[inline]
+pub fn is_interrupted() -> bool {
+    INTERRUPTED.load(Ordering::Relaxed)
+}
+
+/// Mark the process as interrupted (called from signal handlers).
+pub fn set_interrupted() {
+    INTERRUPTED.store(true, Ordering::Relaxed);
+}
+
+/// Reset the interrupted flag (call at start of commands).
+pub fn reset_interrupted() {
+    INTERRUPTED.store(false, Ordering::Relaxed);
+}
+
+/// Run a command with proper signal handling.
+///
+/// Unlike `.status()` which blocks until completion, this spawns the child
+/// and polls for completion, checking for interrupt signals. When interrupted,
+/// it kills the child process and returns an error.
+///
+/// This solves the "double Ctrl+C" problem where the first Ctrl+C goes to the
+/// child process but the parent is blocked in `.status()`.
+pub fn run_command_interruptible(mut cmd: Command) -> Result<ExitStatus> {
+    let mut child = cmd.spawn().context("failed to spawn command")?;
+    wait_for_child_interruptible(&mut child)
+}
+
+/// Wait for a child process with interrupt handling.
+///
+/// Polls the child for completion every 50ms, checking for interrupt signals.
+/// If interrupted, kills the child and returns an error.
+pub fn wait_for_child_interruptible(child: &mut Child) -> Result<ExitStatus> {
+    loop {
+        // Check for interrupt signal
+        if is_interrupted() {
+            // Kill the child process
+            let _ = child.kill();
+            let _ = child.wait(); // Reap the zombie
+            bail!("Build interrupted by user");
+        }
+
+        // Check if child has exited
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                // Child still running, sleep briefly before next check
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(e).context("failed to wait for child process");
+            }
+        }
+    }
+}
 
 /// Ensure a directory exists, creating missing parents when needed.
 ///
