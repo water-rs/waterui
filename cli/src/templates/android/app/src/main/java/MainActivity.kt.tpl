@@ -28,7 +28,8 @@ class MainActivity : ComponentActivity() {
 
         private fun loadWaterUiLibraries() {
             try {
-                loadLibraryGlobal("__CRATE_NAME_SANITIZED__")
+                // waterui_app is the standardized name used by `water build android`
+                loadLibraryGlobal("waterui_app")
                 loadLibraryGlobal("waterui_android")
             } catch (error: UnsatisfiedLinkError) {
                 throw RuntimeException("Failed to load WaterUI native libraries", error)
