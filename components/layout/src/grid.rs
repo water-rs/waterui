@@ -206,6 +206,8 @@ impl GridRow {
 
 /// A view that arranges content in rows and columns.
 ///
+/// ![Grid](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/grid.svg)
+///
 /// Use a `Grid` to create a two-dimensional layout. You define the number of columns,
 /// and the grid automatically arranges your content into rows.
 ///
