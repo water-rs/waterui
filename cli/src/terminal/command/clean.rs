@@ -113,6 +113,7 @@ pub fn run(args: CleanArgs) -> CleanReport {
 fn build_actions(workspace: &Path) -> Vec<Action> {
     let mut actions = Vec::new();
 
+    // Run cargo clean to remove compiled Rust artifacts
     actions.push(Action::command(
         format!("Run `cargo clean` in {}", workspace.display()),
         "cargo",
@@ -122,13 +123,25 @@ fn build_actions(workspace: &Path) -> Vec<Action> {
 
     let mut directories: HashSet<PathBuf> = HashSet::new();
 
-    let android_dirs = [
+    // WaterUI library backend directories
+    let android_backend_dirs = [
         workspace.join("backends/android/build"),
         workspace.join("backends/android/.gradle"),
         workspace.join("backends/android/runtime/build"),
         workspace.join("backends/android/runtime/.cxx"),
     ];
-    directories.extend(android_dirs);
+    directories.extend(android_backend_dirs);
+
+    // Project-level Android directories (for app projects using WaterUI)
+    let android_project_dirs = [
+        workspace.join("android/build"),
+        workspace.join("android/.gradle"),
+        workspace.join("android/app/build"),
+        workspace.join("android/app/.cxx"),
+        // jniLibs contains copied .so files that can become stale
+        workspace.join("android/app/src/main/jniLibs"),
+    ];
+    directories.extend(android_project_dirs);
 
     let apple_dirs = [
         workspace.join("backends/apple/.build"),
@@ -136,6 +149,14 @@ fn build_actions(workspace: &Path) -> Vec<Action> {
         workspace.join("backends/apple/.swiftpm"),
     ];
     directories.extend(apple_dirs);
+
+    // Project-level Apple directories (for app projects)
+    let apple_project_dirs = [
+        workspace.join("apple/.build"),
+        workspace.join("apple/DerivedData"),
+        workspace.join("apple/.swiftpm"),
+    ];
+    directories.extend(apple_project_dirs);
 
     if let Some(home) = home::home_dir() {
         let gradle_dirs = [

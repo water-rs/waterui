@@ -40,4 +40,5 @@ pub extern "C" fn waterui_empty_id() -> WuiStr {
 
 pub mod progress;
 
-pub mod graphics;
+// TODO: Re-enable when waterui_graphics types are implemented
+// pub mod graphics;
