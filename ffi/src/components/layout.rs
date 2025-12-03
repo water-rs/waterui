@@ -6,7 +6,7 @@ use waterui_layout::{
 };
 
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
-use crate::{WuiStr, views::WuiAnyViews};
+use crate::{WuiStr, WuiTypeId, views::WuiAnyViews};
 
 opaque!(WuiLayout, Box<dyn Layout>, layout);
 
@@ -16,10 +16,11 @@ pub struct WuiFixedContainer {
     contents: WuiArray<*mut WuiAnyView>,
 }
 
-// `Spacer` is a raw view, it stretches to fill available space.
+/// Returns the type ID for Spacer views as a 128-bit value.
+/// `Spacer` is a raw view that stretches to fill available space.
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_spacer_id() -> WuiStr {
-    core::any::type_name::<waterui::component::spacer::Spacer>().into_ffi()
+pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
+    WuiTypeId::of::<waterui::component::spacer::Spacer>()
 }
 
 ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);

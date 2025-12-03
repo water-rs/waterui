@@ -31,6 +31,7 @@ use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
     background::{Background, ForegroundColor},
     gesture::{Gesture, GestureObserver, TapGesture},
+    metadata::secure::Secure,
 };
 use crate::{
     component::{Text, badge::Badge, focu::Focused},
@@ -216,6 +217,8 @@ pub trait ViewExt: View + Sized {
 
     /// Adds default padding to this view.
     ///
+    /// By default, the padding is 14.0 points.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -224,7 +227,17 @@ pub trait ViewExt: View + Sized {
     /// text!("Hello").padding();
     /// ```
     fn padding(self) -> Padding {
-        Padding::new(EdgeInsets::default(), self)
+        Padding::new(EdgeInsets::all(14.0), self)
+    }
+
+    /// Marks this view as secure.
+    ///
+    /// User would be forbidden to take a screenshot of the view.
+    ///
+    /// # Arguments
+    /// * `secure` - The secure metadata to apply
+    fn secure(self) -> Metadata<Secure> {
+        Metadata::new(self, Secure::new())
     }
 
     /// Tags this view with a custom tag for identification.

@@ -555,19 +555,8 @@ fn run_platform(
     let connection_events = server.connection_events();
     let hot_reload_port = Some(server.address().port());
 
-    // Build the Rust library
-    run_cargo_build(
-        project_dir,
-        &config.package.name,
-        release,
-        hot_reload_enabled,
-        hot_reload_port,
-        enable_sccache,
-        mold_requested,
-        hot_reload_target.as_deref(),
-    )?;
-
-    // Notify initial library if it exists
+    // NOTE: The initial Rust library build is handled by Xcode/Gradle via `water build`.
+    // We only need to notify the hot reload server if a library already exists from a previous build.
     let library_path = hot_reload_library_path(
         project_dir,
         &config.package.name,
@@ -881,8 +870,7 @@ fn run_cargo_build(
     let sccache_enabled =
         cli_util::configure_build_speedups(&mut cmd, enable_sccache, mold_requested);
     debug!("Running command: {:?}", cmd);
-    let status = cmd
-        .status()
+    let status = cli_util::run_command_interruptible(cmd)
         .with_context(|| format!("failed to run cargo build in {}", project_dir.display()))?;
     if status.success() {
         if hot_reload_enabled && hot_reload_target.is_some() {
@@ -902,7 +890,7 @@ fn run_cargo_build(
         let mut retry_cmd = make_command();
         cli_util::configure_build_speedups(&mut retry_cmd, false, mold_requested);
         debug!("Running command without sccache: {:?}", retry_cmd);
-        let retry_status = retry_cmd.status().with_context(|| {
+        let retry_status = cli_util::run_command_interruptible(retry_cmd).with_context(|| {
             format!(
                 "failed to rerun cargo build without sccache in {}",
                 project_dir.display()
@@ -1670,6 +1658,7 @@ struct ServerState {
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
     log_filter: Option<String>,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -1678,6 +1667,7 @@ struct Server {
     thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     hot_reload_tx: broadcast::Sender<HotReloadMessage>,
     connection_events: NativeConnectionEvents,
+    shutdown: Arc<AtomicBool>,
 }
 
 type HotReloadSocket = WebSocket;
@@ -1686,10 +1676,12 @@ impl Server {
     fn start(static_path: PathBuf, log_filter: Option<String>) -> Result<Self> {
         let (hot_reload_tx, _) = broadcast::channel(16);
         let (connection_event_tx, connection_event_rx) = mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
         let app_state = Arc::new(ServerState {
             hot_reload_tx: hot_reload_tx.clone(),
             connection_event_tx: connection_event_tx.clone(),
             log_filter: log_filter.clone(),
+            shutdown: shutdown.clone(),
         });
 
         let (startup_tx, startup_rx) =
@@ -1721,6 +1713,7 @@ impl Server {
             thread: Arc::new(Mutex::new(Some(thread))),
             hot_reload_tx,
             connection_events,
+            shutdown,
         })
     }
 
@@ -1744,8 +1737,33 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Signal all handlers to shutdown
+        self.shutdown.store(true, Ordering::Relaxed);
+
+        // Take the thread handle
         let thread_handle = self.thread.lock().unwrap().take();
-        drop(thread_handle);
+
+        // Give the server a brief moment to shut down gracefully
+        // If skyzen is stuck, we don't block forever - just let the process exit
+        if let Some(handle) = thread_handle {
+            // Wait a short time for graceful shutdown
+            let start = Instant::now();
+            let timeout = Duration::from_millis(500);
+
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    // Server didn't shutdown in time, just continue
+                    // The thread will be terminated when the process exits
+                    debug!("Hot reload server shutdown timed out, continuing...");
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 }
 
@@ -1785,8 +1803,20 @@ async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerStat
     let _ = state
         .connection_event_tx
         .send(NativeConnectionEvent::Connected);
+
+    // Interval for checking shutdown flag
+    let mut shutdown_check = tokio::time::interval(tokio::time::Duration::from_millis(100));
+
     loop {
+        // Check shutdown flag
+        if state.shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
         tokio::select! {
+            _ = shutdown_check.tick() => {
+                // Periodic check for shutdown handled above
+            }
             Some(msg) = socket.next() => {
                 match msg {
                     Ok(WebSocketMessage::Text(payload)) => {
@@ -1850,14 +1880,33 @@ async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerStat
 
 async fn handle_web_socket(mut socket: HotReloadSocket, state: Arc<ServerState>) {
     let mut rx = state.hot_reload_tx.subscribe();
-    while let Ok(msg) = rx.recv().await {
-        if matches!(msg, HotReloadMessage::Web)
-            && socket
-                .send(WebSocketMessage::Text("reload".to_string().into()))
-                .await
-                .is_err()
-        {
+    let mut shutdown_check = tokio::time::interval(tokio::time::Duration::from_millis(100));
+
+    loop {
+        // Check shutdown flag
+        if state.shutdown.load(Ordering::Relaxed) {
             break;
+        }
+
+        tokio::select! {
+            _ = shutdown_check.tick() => {
+                // Periodic check for shutdown handled above
+            }
+            msg = rx.recv() => {
+                match msg {
+                    Ok(HotReloadMessage::Web) => {
+                        if socket
+                            .send(WebSocketMessage::Text("reload".to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(HotReloadMessage::Native(_)) => {}
+                    Err(_) => break,
+                }
+            }
         }
     }
 }

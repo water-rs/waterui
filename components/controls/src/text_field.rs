@@ -74,8 +74,6 @@ pub enum KeyboardType {
     #[default]
     /// Default keyboard type, typically used for general text input.
     Text,
-    /// Keyboard for secure text input, such as passwords.
-    Secure,
     /// Keyboard for email input, which may include special characters like `@` and `.`
     Email,
     /// Keyboard for URL input, which may include characters like `:`, `/`, and `.`

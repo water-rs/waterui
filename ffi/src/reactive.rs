@@ -470,3 +470,87 @@ pub extern "C" fn waterui_new_watcher_guard(
     impl WatcherGuard for Cleaner {}
     Box::into_raw(Box::new(WuiWatcherGuard(Box::new(cleaner))))
 }
+
+// Custom Secure binding implementation
+// Secure uses WuiStr for FFI, but converts to/from Secure on the Rust side
+use waterui_form::secure::Secure;
+
+/// Reads the current value from a Secure binding
+/// # Safety
+/// The binding pointer must be valid and point to a properly initialized binding object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<Secure>) -> WuiStr {
+    use alloc::string::String;
+    unsafe {
+        let secure = (*binding).get();
+        // Create an owned String, then convert to Str
+        let owned_string = String::from(secure.expose());
+        Str::from(owned_string).into_ffi()
+    }
+}
+
+/// Sets the value of a Secure binding
+/// # Safety
+/// The binding pointer must be valid and point to a properly initialized binding object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_set_binding_secure(binding: *mut WuiBinding<Secure>, value: WuiStr) {
+    unsafe {
+        let str_value: Str = value.into_rust();
+        (*binding).set(Secure::from_str(&str_value));
+    }
+}
+
+/// Watches for changes in a Secure binding
+/// # Safety
+/// The binding pointer must be valid and point to a properly initialized binding object.
+/// The watcher must be a valid callback function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_watch_binding_secure(
+    binding: *const WuiBinding<Secure>,
+    watcher: *mut WuiWatcher<Secure>,
+) -> *mut WuiWatcherGuard {
+    use waterui::Signal;
+    use core::cell::Cell;
+    use alloc::rc::Rc;
+
+    // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
+    let is_setting_up = Rc::new(Cell::new(true));
+    let is_setting_up_clone = is_setting_up.clone();
+
+    unsafe {
+        let guard = (*binding).watch(move |ctx| {
+            if is_setting_up_clone.get() {
+                return; // Skip synchronous callback during setup
+            }
+            let metadata = ctx.metadata().clone();
+            let value = ctx.into_value();
+            (*watcher).call(value, metadata);
+        });
+        is_setting_up.set(false);
+        guard.into_ffi()
+    }
+}
+
+/// Drops a Secure binding
+/// # Safety
+/// The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_binding_secure(binding: *mut WuiBinding<Secure>) {
+    unsafe {
+        drop(alloc::boxed::Box::from_raw(binding));
+    }
+}
+
+/// Creates a watcher from native callbacks for Secure
+/// # Safety
+/// All function pointers must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_new_watcher_secure(
+    data: *mut (),
+    call: unsafe extern "C" fn(*mut (), WuiStr, *mut WuiWatcherMetadata),
+    drop: unsafe extern "C" fn(*mut ()),
+) -> *mut WuiWatcher<Secure> {
+    use alloc::boxed::Box;
+    let watcher = unsafe { WuiWatcher::new(data, call, drop) };
+    Box::into_raw(Box::new(watcher))
+}

@@ -2,8 +2,10 @@
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
-use nami::{Binding, Computed, signal::IntoComputed};
+use alloc::{rc::Rc, string::ToString};
+use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{AnyView, View, configurable};
+use waterui_text::{Text, styled::StyledStr, text};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -54,7 +56,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: label_width + spacing + stepper_buttons (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════
@@ -70,7 +72,7 @@ impl Stepper {
         Self(StepperConfig {
             value: value.clone(),
             step: 1i32.into_computed(),
-            label: AnyView::default(),
+            label: AnyView::new(text(value.clone().map(|value| value.to_string()))),
             range: i32::MIN..=i32::MAX,
         })
     }
@@ -81,9 +83,29 @@ impl Stepper {
         self
     }
     /// Sets the label for the stepper.
+    ///
+    /// By default, the label is the value of the binding formatted as a string.
     #[must_use]
     pub fn label(mut self, label: impl View) -> Self {
         self.0.label = AnyView::new(label);
+        self
+    }
+
+    /// Sets the formatter for the value of the binding.
+    ///
+    /// By default, the value is formatted as a string.
+    #[must_use]
+    pub fn value_formatter<T: Into<StyledStr>>(
+        mut self,
+        formatter: impl 'static + Fn(i32) -> T,
+    ) -> Self {
+        let formatter = Rc::new(formatter);
+        self.0.label = AnyView::new(text(
+            self.0
+                .value
+                .clone()
+                .map(move |value| formatter(value).into()),
+        ));
         self
     }
 

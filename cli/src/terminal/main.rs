@@ -81,6 +81,13 @@ fn run_cli() -> Result<()> {
 
     init_tracing();
 
+    // Set up global signal handler for clean interrupts
+    // This enables single Ctrl+C to kill child processes during builds
+    waterui_cli::util::reset_interrupted();
+    let _ = ctrlc::set_handler(|| {
+        waterui_cli::util::set_interrupted();
+    });
+
     let cli = Cli::parse();
     let format = if cli.json {
         OutputFormat::Json

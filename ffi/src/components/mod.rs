@@ -1,4 +1,4 @@
-use crate::{IntoFFI, WuiStr};
+use crate::{IntoFFI, WuiStr, WuiTypeId};
 
 pub mod layout;
 
@@ -33,9 +33,10 @@ pub mod list;
 
 pub mod table;
 
+/// Returns the type ID for empty views as a 128-bit value.
 #[unsafe(no_mangle)]
-pub extern "C" fn waterui_empty_id() -> WuiStr {
-    core::any::type_name::<()>().into_ffi()
+pub extern "C" fn waterui_empty_id() -> WuiTypeId {
+    WuiTypeId::of::<()>()
 }
 
 pub mod progress;

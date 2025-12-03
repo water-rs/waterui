@@ -51,9 +51,11 @@ macro_rules! ffi_view {
             }
         }
 
+        /// Returns the type ID as a 128-bit value for O(1) comparison.
+        /// Uses TypeId in normal builds, type_name hash in hot reload builds.
         #[unsafe(no_mangle)]
-        pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiStr {
-            $crate::IntoFFI::into_ffi(core::any::type_name::<waterui_core::Native<$view>>()) // type_name is constant between runs, so it's good to use as a hot reload id.
+        pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiTypeId {
+            $crate::WuiTypeId::of::<waterui_core::Native<$view>>()
         }
         }
     };
@@ -65,17 +67,18 @@ macro_rules! ffi_view {
 /// `Metadata<T>` is stored directly in the view tree (not as a native view).
 ///
 /// # Generated Functions
-/// - `waterui_metadata_<ident>_id()` - Returns the type ID string
+/// - `waterui_metadata_<ident>_id()` - Returns the type ID as 128-bit value
 /// - `waterui_force_as_metadata_<ident>()` - Downcasts AnyView to the metadata type
 #[macro_export]
 macro_rules! ffi_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
         paste::paste! {
-            /// Gets the type ID for this metadata type
+            /// Returns the type ID as a 128-bit value for O(1) comparison.
+            /// Uses TypeId in normal builds, type_name hash in hot reload builds.
             #[unsafe(no_mangle)]
-            pub extern "C" fn [<waterui_metadata_ $ident _id>]() -> $crate::WuiStr {
+            pub extern "C" fn [<waterui_metadata_ $ident _id>]() -> $crate::WuiTypeId {
                 // Metadata<T> is stored directly, not wrapped in Native<T>
-                $crate::IntoFFI::into_ffi(core::any::type_name::<waterui_core::Metadata<$ty>>())
+                $crate::WuiTypeId::of::<waterui_core::Metadata<$ty>>()
             }
 
             /// Force-casts an AnyView to this metadata type
