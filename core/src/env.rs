@@ -261,25 +261,19 @@ impl<V: View> WithEnv<V> {
     }
 }
 
-impl<V: View> View for WithEnv<V> {
-    fn body(self, _env: &Environment) -> impl View {
-        Metadata::new(self.content, self.env)
-    }
-}
-
 impl<V, T> View for With<V, T>
 where
     V: View,
     T: 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        WithEnv::new(self.content, env.clone().with(self.value))
+        with_env(self.content, env.clone().with(self.value))
     }
 }
 
 /// Wraps a view and provides an extended environment.
-pub fn with_env<V: View>(view: V, env: Environment) -> WithEnv<V> {
-    WithEnv::new(view, env)
+pub fn with_env<V: View>(view: V, env: Environment) -> Metadata<Environment> {
+    Metadata::new(view, env)
 }
 
 /// Wraps a view and provides an extended environment.
