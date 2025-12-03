@@ -35,9 +35,6 @@ pub fn process_template_directory<S: BuildHasher>(
         if let Some(app_name) = context.get("APP_NAME") {
             dest_path_str = dest_path_str.replace("AppName", app_name);
         }
-        if let Some(lib_name) = context.get("LIB_NAME") {
-            dest_path_str = dest_path_str.replace("__LIB_NAME__", lib_name);
-        }
         if let Some(bundle_id) = context.get("BUNDLE_IDENTIFIER") {
             dest_path_str = dest_path_str.replace("__BUNDLE_IDENTIFIER__", bundle_id);
         }
