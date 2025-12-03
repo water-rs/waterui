@@ -294,16 +294,14 @@ impl BuildCoordinator {
             util::configure_build_speedups(&mut cmd, opts.speedups.sccache, opts.speedups.mold);
 
         debug!("Running: {:?}", cmd);
-        let status = cmd
-            .status()
+        let status = util::run_command_interruptible(cmd)
             .with_context(|| format!("failed to run cargo build for {target}"))?;
 
         if !status.success() && sccache_enabled {
             warn!("Build failed with sccache, retrying without");
             let mut retry = make_command();
             util::configure_build_speedups(&mut retry, false, opts.speedups.mold);
-            let retry_status = retry
-                .status()
+            let retry_status = util::run_command_interruptible(retry)
                 .with_context(|| format!("failed to retry cargo build for {target}"))?;
 
             if !retry_status.success() {

@@ -49,10 +49,12 @@ impl View for Divider {
         // If the parent container is a horizontal stack, the divider should be vertical
         let vertical_divider = matches!(axis, Some(stack::Axis::Horizontal));
 
+        // TODO: Handle the scale factor
+
         if vertical_divider {
-            Grey.width(2.0)
+            Grey.width(1.0)
         } else {
-            Grey.height(2.0)
+            Grey.height(1.0)
         }
     }
 }
