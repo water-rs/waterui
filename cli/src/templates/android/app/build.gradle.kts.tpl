@@ -54,10 +54,8 @@ val buildRustLibraries by tasks.registering(Exec::class) {
         environment("WATERUI_HOT_RELOAD_PORT", it)
     }
 
-    // Only run if source files changed
-    inputs.dir(projectRoot.resolve("src"))
-    inputs.file(projectRoot.resolve("Cargo.toml"))
-    outputs.dir(projectRoot.resolve("android/app/src/main/jniLibs"))
+    // Always run - Cargo handles incremental builds internally
+    outputs.upToDateWhen { false }
 }
 
 // Hook into Android build - run Rust build before compiling
