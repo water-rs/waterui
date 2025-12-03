@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D01867772E6C81BF00802E96 /* lib__LIB_NAME__.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* lib__LIB_NAME__.a */; };
+		D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libwaterui_app.a */; };
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		D018675E2E6C7BBB00802E96 /* __APP_NAME__.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = __APP_NAME__.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* lib__LIB_NAME__.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = lib__LIB_NAME__.a; path = "$(BUILT_PRODUCTS_DIR)/lib__LIB_NAME__.a"; sourceTree = "<group>"; };
+		D01867752E6C818300802E96 /* libwaterui_app.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libwaterui_app.a; path = "$(BUILT_PRODUCTS_DIR)/libwaterui_app.a"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -30,7 +30,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */,
-				D01867772E6C81BF00802E96 /* lib__LIB_NAME__.a in Frameworks */,
+				D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,7 +57,7 @@
 		D01867742E6C818200802E96 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				D01867752E6C818300802E96 /* lib__LIB_NAME__.a */,
+				D01867752E6C818300802E96 /* libwaterui_app.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -154,7 +154,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/lib__LIB_NAME__.a",
+				"$(BUILT_PRODUCTS_DIR)/libwaterui_app.a",
 				"$(PROJECT_DIR)/rust_build_info.xcconfig",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -322,7 +322,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-l__LIB_NAME__ -lc++";
+				OTHER_LDFLAGS = "-lwaterui_app -lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = __BUNDLE_IDENTIFIER__;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -377,7 +377,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-l__LIB_NAME__ -lc++";
+				OTHER_LDFLAGS = "-lwaterui_app -lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = __BUNDLE_IDENTIFIER__;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

@@ -25,13 +25,14 @@ configurable!(
     ///
     /// # Layout Behavior
     ///
-    /// Toggle sizes itself to fit its label and switch, and never stretches
-    /// to fill extra space. In a stack, it takes only the space it needs.
+    /// With a label: Toggle expands horizontally to fill available space,
+    /// placing the label on the left and switch on the right.
+    /// Without a label: Toggle is content-sized (just the switch).
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// // Simple toggle
+    /// // Simple toggle with label
     /// toggle("Wi-Fi", &is_enabled)
     ///
     /// // Toggle without label
@@ -48,13 +49,15 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-
-    // Size: label_width + spacing + switch_width (platform-determined)
+    // - stretchAxis: .horizontal (toggle expands to fill available width)
+    // - sizeThatFits: Returns proposed width (or minimum), intrinsic height
+    // - Layout: label on left, switch on right, flexible space between
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Toggle,
-    ToggleConfig
+    ToggleConfig,
+    waterui_core::layout::StretchAxis::Horizontal
 );
 
 impl Toggle {

@@ -325,7 +325,9 @@ pub fn build_apple_static_library(
     };
     util::ensure_directory(&output_dir)?;
 
-    let output_library = output_dir.join(format!("lib{lib_name}.a"));
+    // Copy with standardized name (libwaterui_app.a) so the Xcode project
+    // can always link against "waterui_app" regardless of the actual crate name
+    let output_library = output_dir.join("libwaterui_app.a");
     fs::copy(&rust_lib, &output_library).with_context(|| {
         format!(
             "failed to copy {} to {}",
