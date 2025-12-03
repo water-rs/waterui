@@ -49,7 +49,7 @@ pub mod prelude {
     pub use style::*;
 
     pub use theme::{
-        self, Theme, ColorSettings, FontSettings, ColorScheme, ThemeProvider, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, ThemeProvider, color as theme_color,
     };
 
     pub use text::{
@@ -69,6 +69,7 @@ pub use waterui_layout as layout;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;
+pub mod metadata;
 pub mod style;
 
 #[doc(inline)]

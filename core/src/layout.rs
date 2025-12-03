@@ -1,3 +1,31 @@
+//! Layout primitives and geometry types for the WaterUI layout system.
+//!
+//! # Logical Pixels (Points)
+//!
+//! All layout values in WaterUI use **logical pixels** (also called "points" or "dp").
+//! This is the same unit system used by design tools like Figma, Sketch, and Adobe XD,
+//! allowing seamless translation from design to implementation.
+//!
+//! - **1 logical pixel** = 1 point in design tools
+//! - Native backends handle conversion to physical pixels based on screen density
+//! - iOS: UIKit uses points natively (1pt = 1-3 physical pixels depending on device)
+//! - Android: Backend converts dp to physical pixels using `displayMetrics.density`
+//! - macOS: AppKit uses points (1pt = 1-2 physical pixels on Retina displays)
+//!
+//! This means `spacing: 8.0` or `width: 100.0` will appear the same physical size
+//! across all platforms and screen densities.
+//!
+//! # Example
+//!
+//! ```ignore
+//! // In Figma: Button with 16pt horizontal padding, 8pt vertical padding
+//! // In WaterUI: Same values work directly
+//! vstack((
+//!     text("Hello").padding(16.0),  // 16 logical pixels = 16pt in Figma
+//!     Divider,                       // 1pt thick line
+//! )).spacing(8.0)                    // 8 logical pixels between items
+//! ```
+
 use core::fmt::Debug;
 
 use alloc::vec::Vec;
