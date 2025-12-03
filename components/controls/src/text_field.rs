@@ -1,4 +1,6 @@
 //! A text input component wired to a reactive string binding.
+//!
+//! ![TextField](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
 use core::num::NonZeroUsize;
 
 use nami::Binding;

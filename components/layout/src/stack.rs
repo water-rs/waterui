@@ -3,6 +3,8 @@
 //! The submodules implement horizontal, vertical, and overlay stacks. These
 //! views arrange child content according to alignments and spacing and are the
 //! backbone of most declarative layouts in `WaterUI`.
+//!
+//! ![Stack](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/stack.svg)
 
 mod vstack;
 pub use vstack::*;

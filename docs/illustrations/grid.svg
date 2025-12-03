@@ -1,0 +1,27 @@
+<svg width="500" height="350" xmlns="http://www.w3.org/2000/svg">
+<defs>
+    
+        <marker id="arrowhead-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#BD10E0" />
+        </marker>
+        
+        <marker id="arrowhead-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#FF9500" />
+        </marker>
+        
+        <marker id="arrowhead-white" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <polygon points="0 0, 6 3, 0 6" fill="#ffffff" />
+        </marker>
+        
+        <marker id="arrowhead-white-rev" markerWidth="6" markerHeight="6" refX="1" refY="3" orient="auto">
+            <polygon points="6 0, 0 3, 6 6" fill="#ffffff" />
+        </marker>
+        
+        <g id="cursor">
+            <path d="M0,0 L0,16 L4,12 L8,20 L10,19 L6,11 L12,11 Z" fill="black" stroke="white" stroke-width="1"/>
+        </g>
+        
+</defs>
+<rect width="100%" height="100%" fill="white" />
+<rect x="50" y="50" width="300" height="250" rx="8" fill="#F0F0F0" fill-opacity="1.0" stroke="#ccc" stroke-width="1" stroke-dasharray="4,4" /><text x="200.0" y="70" font-family="Arial, sans-serif" font-size="16" fill="#333" text-anchor="middle" font-weight="bold" font-style="normal">Grid (2 Columns)</text><rect x="70" y="90" width="125" height="80" rx="4" fill="#4A90E2" fill-opacity="1.0" stroke="none" stroke-width="0"  /><text x="132" y="135" font-family="Arial, sans-serif" font-size="14" fill="white" text-anchor="middle" font-weight="bold" font-style="normal">Item</text><rect x="205" y="90" width="125" height="80" rx="4" fill="#4A90E2" fill-opacity="1.0" stroke="none" stroke-width="0"  /><text x="267" y="135" font-family="Arial, sans-serif" font-size="14" fill="white" text-anchor="middle" font-weight="bold" font-style="normal">Item</text><rect x="70" y="190" width="125" height="80" rx="4" fill="#4A90E2" fill-opacity="1.0" stroke="none" stroke-width="0"  /><text x="132" y="235" font-family="Arial, sans-serif" font-size="14" fill="white" text-anchor="middle" font-weight="bold" font-style="normal">Item</text><rect x="205" y="190" width="125" height="80" rx="4" fill="#4A90E2" fill-opacity="1.0" stroke="none" stroke-width="0"  /><text x="267" y="235" font-family="Arial, sans-serif" font-size="14" fill="white" text-anchor="middle" font-weight="bold" font-style="normal">Item</text><line x1="400" y1="100" x2="330" y2="100" stroke="#BD10E0" stroke-width="2"  marker-end="url(#arrowhead-purple)"  /><text x="410" y="105" font-family="Arial, sans-serif" font-size="14" fill="#BD10E0" text-anchor="start" font-weight="normal" font-style="normal">Spacing</text>
+</svg>

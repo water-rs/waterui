@@ -11,6 +11,8 @@ use waterui_core::configurable;
 configurable!(
     /// A view that displays one or more lines of read-only text.
     ///
+    /// ![Text](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text.svg)
+    ///
     /// Text sizes itself to fit its content and never stretches to fill extra space.
     /// When the available width is limited, it wraps to multiple lines automatically.
     /// If both width and height are constrained, it truncates with "..." at the end.
