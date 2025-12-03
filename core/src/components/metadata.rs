@@ -14,6 +14,8 @@ use crate::{AnyView, Environment, View};
 ///
 /// This struct allows attaching arbitrary data to a view component. The metadata
 /// is expected to be handled by a renderer, and will panic if not properly caught.
+///
+/// Metadata is transparent for layout system, it is not a native view.
 #[derive(Debug)]
 #[must_use]
 pub struct Metadata<T: 'static> {
