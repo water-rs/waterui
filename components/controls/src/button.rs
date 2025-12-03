@@ -2,8 +2,8 @@
 //!
 //! This module provides a Button component that allows users to trigger actions
 //! when clicked.
-//!
 //! ![Button](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/button.svg)
+//!
 //!
 //! # Examples
 //!
