@@ -1,4 +1,4 @@
-use crate::WuiAnyView;
+use crate::{WuiAnyView, WuiStr};
 use crate::components::text::WuiText;
 use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed};
@@ -16,10 +16,10 @@ use waterui::{
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::{ColorPicker, Picker, PickerConfig, PickerItem};
+use waterui_form::secure::{Secure, SecureFieldConfig};
 
 into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
     Text,
-    Secure,
     Email,
     URL,
     Number,
@@ -107,6 +107,8 @@ ffi_view!(ColorPickerConfig, WuiColorPicker, color_picker);
 
 ffi_view!(PickerConfig, WuiPicker, picker);
 
+ffi_view!(SecureFieldConfig, WuiSecureField, secure_field);
+
 into_ffi! {PickerConfig,
     pub struct WuiPicker {
         items: *mut WuiComputed<Vec<PickerItem<Id>>>,
@@ -125,5 +127,24 @@ into_ffi! {ColorPickerConfig,
     pub struct WuiColorPicker {
         label: *mut WuiAnyView,
         value: *mut WuiBinding<Color>,
+    }
+}
+
+// Secure type FFI - uses WuiStr representation
+// The Secure type is treated as a string at the FFI boundary
+impl IntoFFI for Secure {
+    type FFI = WuiStr;
+    fn into_ffi(self) -> Self::FFI {
+        use alloc::string::String;
+        // Create an owned string from the exposed value before Secure is dropped
+        let owned = String::from(self.expose());
+        Str::from(owned).into_ffi()
+    }
+}
+
+into_ffi! {SecureFieldConfig,
+    pub struct WuiSecureField {
+        label: *mut WuiAnyView,
+        value: *mut WuiBinding<Secure>,
     }
 }
