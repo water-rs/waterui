@@ -1,4 +1,6 @@
 //! A boolean toggle switch backed by a reactive binding.
+//!
+//! ![Toggle](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/toggle.svg)
 
 use nami::Binding;
 use waterui_core::configurable;
@@ -46,7 +48,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: label_width + spacing + switch_width (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════
