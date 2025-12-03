@@ -6,6 +6,9 @@
 
 use waterui_color::{Color, Grey};
 use waterui_core::{View, layout::StretchAxis, raw_view};
+use waterui_layout::stack;
+
+use crate::ViewExt;
 
 /// A thin line that separates content.
 ///
@@ -40,10 +43,16 @@ pub struct Divider;
 
 impl View for Divider {
     fn body(self, env: &waterui_core::Environment) -> impl View {
-        let mut env = env.clone();
-        let axis = env.get::<StretchAxis>().unwrap_or_default();
-        env.insert(axis);
+        // Get the axis of the parent container
+        let axis = env.get::<stack::Axis>();
 
-        Grey
+        // If the parent container is a horizontal stack, the divider should be vertical
+        let vertical_divider = matches!(axis, Some(stack::Axis::Horizontal));
+
+        if vertical_divider {
+            Grey.width(2.0)
+        } else {
+            Grey.height(2.0)
+        }
     }
 }

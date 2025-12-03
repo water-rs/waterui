@@ -2,6 +2,7 @@
 extern "C" {
 #endif
 
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -14,14 +15,16 @@ typedef struct WuiArraySlice {
 } WuiArraySlice;
 
 typedef struct WuiArrayVTable {
-  void (*drop)(void *);
-  struct WuiArraySlice (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice (*slice)(const void*);
 } WuiArrayVTable;
 
 typedef struct WuiArray {
   void *data;
   struct WuiArrayVTable vtable;
 } WuiArray;
+
+
 
 /**
  * FFI representation of StretchAxis enum.
@@ -91,16 +94,6 @@ typedef enum WuiProgressStyle {
   WuiProgressStyle_Linear,
   WuiProgressStyle_Circular,
 } WuiProgressStyle;
-
-/**
- * Pixel formats supported by the renderer bridge FFI.
- */
-typedef enum WuiRendererBufferFormat {
-  /**
-   * 8-bit per channel RGBA pixels in native byte order.
-   */
-  WuiRendererBufferFormat_Rgba8888 = 0,
-} WuiRendererBufferFormat;
 
 /**
  * Color scheme enum for FFI.
@@ -273,162 +266,144 @@ typedef struct Binding_i32 Binding_i32;
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_AnyView Computed_AnyView;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_AnyViews_AnyView Computed_AnyViews_AnyView;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Color Computed_Color;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_ColorScheme Computed_ColorScheme;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Font Computed_Font;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Id Computed_Id;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_ResolvedColor Computed_ResolvedColor;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_ResolvedFont Computed_ResolvedFont;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Str Computed_Str;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_StyledStr Computed_StyledStr;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Vec_TableColumn Computed_Vec_TableColumn;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Video Computed_Video;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_bool Computed_bool;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_f32 Computed_f32;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_f64 Computed_f64;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
  *
- * This type represents a computation that can be evaluated to produce a result
- * of type `T`. The computation is stored as a boxed trait object, allowing for
- * dynamic dispatch.
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_i32 Computed_i32;
 
@@ -468,8 +443,6 @@ typedef struct WuiEnv WuiEnv;
 typedef struct WuiFont WuiFont;
 
 typedef struct WuiLayout WuiLayout;
-
-typedef struct WuiRendererView WuiRendererView;
 
 typedef struct WuiTabContent WuiTabContent;
 
@@ -519,20 +492,16 @@ typedef struct WuiArraySlice_u8 {
 } WuiArraySlice_u8;
 
 typedef struct WuiArrayVTable_u8 {
-  void (*drop)(void *);
-  struct WuiArraySlice_u8 (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_u8 (*slice)(const void*);
 } WuiArrayVTable_u8;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_u8 {
   NonNull data;
@@ -542,6 +511,17 @@ typedef struct WuiArray_u8 {
 typedef struct WuiStr {
   struct WuiArray_u8 _0;
 } WuiStr;
+
+typedef struct WuiMetadata_____WuiEnv {
+  struct WuiAnyView *content;
+  struct WuiEnv *value;
+} WuiMetadata_____WuiEnv;
+
+/**
+ * Type alias for Metadata<Environment> FFI struct
+ * Layout: { content: *mut WuiAnyView, value: *mut WuiEnv }
+ */
+typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
 
 typedef struct WuiResolvedColor {
   float red;
@@ -563,20 +543,16 @@ typedef struct WuiArraySlice_____WuiAnyView {
 } WuiArraySlice_____WuiAnyView;
 
 typedef struct WuiArrayVTable_____WuiAnyView {
-  void (*drop)(void *);
-  struct WuiArraySlice_____WuiAnyView (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_____WuiAnyView (*slice)(const void*);
 } WuiArrayVTable_____WuiAnyView;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_____WuiAnyView {
   NonNull data;
@@ -607,8 +583,8 @@ typedef struct WuiProposalSize {
  * VTable for SubView operations.
  *
  * This structure contains function pointers that allow native code to implement
- * the SubView protocol. The native backend provides these callbacks to
- * participate in layout negotiation.
+ * the SubView protocol. The native backend provides these callbacks to participate
+ * in layout negotiation.
  */
 typedef struct WuiSubViewVTable {
   /**
@@ -627,13 +603,12 @@ typedef struct WuiSubViewVTable {
  * FFI representation of a SubView proxy.
  *
  * This allows native code to participate in the layout negotiation protocol
- * by providing callbacks that can be called multiple times with different
- * proposals.
+ * by providing callbacks that can be called multiple times with different proposals.
  *
  * # Memory Management
  *
- * The `context` pointer is owned by this struct. When the `WuiSubView` is
- * dropped, the `vtable.drop` function will be called to clean up the context.
+ * The `context` pointer is owned by this struct. When the `WuiSubView` is dropped,
+ * the `vtable.drop` function will be called to clean up the context.
  */
 typedef struct WuiSubView {
   /**
@@ -660,20 +635,16 @@ typedef struct WuiArraySlice_WuiSubView {
 } WuiArraySlice_WuiSubView;
 
 typedef struct WuiArrayVTable_WuiSubView {
-  void (*drop)(void *);
-  struct WuiArraySlice_WuiSubView (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiSubView (*slice)(const void*);
 } WuiArrayVTable_WuiSubView;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiSubView {
   NonNull data;
@@ -696,20 +667,16 @@ typedef struct WuiArraySlice_WuiRect {
 } WuiArraySlice_WuiRect;
 
 typedef struct WuiArrayVTable_WuiRect {
-  void (*drop)(void *);
-  struct WuiArraySlice_WuiRect (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiRect (*slice)(const void*);
 } WuiArrayVTable_WuiRect;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiRect {
   NonNull data;
@@ -725,10 +692,6 @@ typedef struct WuiButton {
   struct WuiAnyView *label;
   struct WuiAction *action;
 } WuiButton;
-
-typedef struct WuiLazy {
-  struct WuiAnyViews *contents;
-} WuiLazy;
 
 typedef struct Computed_Str WuiComputed_Str;
 
@@ -757,20 +720,16 @@ typedef struct WuiArraySlice_WuiStyledChunk {
 } WuiArraySlice_WuiStyledChunk;
 
 typedef struct WuiArrayVTable_WuiStyledChunk {
-  void (*drop)(void *);
-  struct WuiArraySlice_WuiStyledChunk (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiStyledChunk (*slice)(const void*);
 } WuiArrayVTable_WuiStyledChunk;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiStyledChunk {
   NonNull data;
@@ -912,11 +871,6 @@ typedef struct WuiLivePhoto {
   WuiComputed_LivePhotoSource *source;
 } WuiLivePhoto;
 
-typedef struct WuiLivePhotoSource {
-  Url image;
-  Url video;
-} WuiLivePhotoSource;
-
 typedef struct WuiListItem {
   struct WuiAnyView *content;
 } WuiListItem;
@@ -936,20 +890,16 @@ typedef struct WuiArraySlice_WuiTableColumn {
 } WuiArraySlice_WuiTableColumn;
 
 typedef struct WuiArrayVTable_WuiTableColumn {
-  void (*drop)(void *);
-  struct WuiArraySlice_WuiTableColumn (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiTableColumn (*slice)(const void*);
 } WuiArrayVTable_WuiTableColumn;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiTableColumn {
   NonNull data;
@@ -996,20 +946,16 @@ typedef struct WuiArraySlice_WuiPickerItem {
 } WuiArraySlice_WuiPickerItem;
 
 typedef struct WuiArrayVTable_WuiPickerItem {
-  void (*drop)(void *);
-  struct WuiArraySlice_WuiPickerItem (*slice)(const void *);
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiPickerItem (*slice)(const void*);
 } WuiArrayVTable_WuiPickerItem;
 
 /**
- * A generic array structure for FFI, representing a contiguous sequence of
- * elements. `WuiArray` can represent mutiple types of arrays, for instance, a
- * `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's
- * scope), or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`,
- * `Bytes`, or even a foreign allocated array. For a value type, `WuiArray`
- * contains a destructor function pointer to free the array buffer, whatever it
- * is allocated by Rust side or foreign side. We assume `T` does not contain any
- * non-trivial drop logic, and `WuiArray` will not call `drop` on each element
- * when it is dropped.
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
 typedef struct WuiArray_WuiPickerItem {
   NonNull data;
@@ -1020,9 +966,32 @@ typedef struct WuiVideo {
   Url url;
 } WuiVideo;
 
+typedef struct WuiLivePhotoSource {
+  Url image;
+  Url video;
+} WuiLivePhotoSource;
+
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void waterui_configure_hot_reload_endpoint(const char *_host, uint16_t _port);
 
@@ -1030,15 +999,13 @@ void waterui_configure_hot_reload_directory(const char *_path);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_env(struct WuiEnv *value);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_anyview(struct WuiAnyView *value);
 
@@ -1048,12 +1015,17 @@ void waterui_drop_anyview(struct WuiAnyView *value);
 struct WuiEnv *waterui_env_new(void);
 
 /**
+ * Gets the id of the anyview type
+ */
+struct WuiStr waterui_anyview_id(void);
+
+/**
  * Clones an existing environment instance
  *
  * # Safety
- * The caller must ensure that `env` is a valid pointer to a properly
- * initialized `waterui::Environment` instance and that the environment remains
- * valid for the duration of this function call.
+ * The caller must ensure that `env` is a valid pointer to a properly initialized
+ * `waterui::Environment` instance and that the environment remains valid for the
+ * duration of this function call.
  */
 struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
 
@@ -1061,13 +1033,11 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  * Gets the body of a view given the environment
  *
  * # Safety
- * The caller must ensure that both `view` and `env` are valid pointers to
- * properly initialized instances and that they remain valid for the duration of
- * this function call. The `view` pointer will be consumed and should not be
- * used after this call.
+ * The caller must ensure that both `view` and `env` are valid pointers to properly
+ * initialized instances and that they remain valid for the duration of this function call.
+ * The `view` pointer will be consumed and should not be used after this call.
  */
-struct WuiAnyView *waterui_view_body(struct WuiAnyView *view,
-                                     struct WuiEnv *env);
+struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env);
 
 /**
  * Gets the id of a view
@@ -1095,12 +1065,23 @@ enum WuiStretchAxis waterui_view_stretch_axis(const struct WuiAnyView *view);
 
 struct WuiAnyView *waterui_empty_anyview(void);
 
-struct WuiStr waterui_anyview_id(void);
+/**
+ * Gets the type ID for this metadata type
+ */
+struct WuiStr waterui_metadata_env_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_action(struct WuiAction *value);
 
@@ -1114,21 +1095,18 @@ void waterui_drop_action(struct WuiAction *value);
  */
 void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
 
-enum WuiAnimation
-waterui_get_animation(const struct WuiWatcherMetadata *metadata);
+enum WuiAnimation waterui_get_animation(const struct WuiWatcherMetadata *metadata);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_color(struct WuiColor *value);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiColor *waterui_force_as_color(struct WuiAnyView *view);
 
@@ -1137,21 +1115,17 @@ struct WuiStr waterui_color_id(void);
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiResolvedColor
-waterui_read_computed_resolved_color(const WuiComputed_ResolvedColor *computed);
+struct WuiResolvedColor waterui_read_computed_resolved_color(const WuiComputed_ResolvedColor *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_resolved_color(const WuiComputed_ResolvedColor *computed,
-                                      struct WuiWatcher_ResolvedColor *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const WuiComputed_ResolvedColor *computed,
+                                                              struct WuiWatcher_ResolvedColor *watcher);
 
 /**
  * Drops a computed
@@ -1165,83 +1139,74 @@ void waterui_drop_computed_resolved_color(WuiComputed_ResolvedColor *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_ResolvedColor *waterui_clone_computed_resolved_color(
-    const WuiComputed_ResolvedColor *computed);
+WuiComputed_ResolvedColor *waterui_clone_computed_resolved_color(const WuiComputed_ResolvedColor *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_ResolvedColor *waterui_new_watcher_resolved_color(
-    void *data,
-    void (*call)(void *, struct WuiResolvedColor, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_ResolvedColor *waterui_new_watcher_resolved_color(void *data,
+                                                                    void (*call)(void*,
+                                                                                 struct WuiResolvedColor,
+                                                                                 struct WuiWatcherMetadata*),
+                                                                    void (*drop)(void*));
 
 /**
  * Creates a computed signal from native callbacks.
  * # Safety
- * All function pointers must be valid and follow the expected calling
- * conventions.
+ * All function pointers must be valid and follow the expected calling conventions.
  */
-WuiComputed_ResolvedColor *waterui_new_computed_resolved_color(
-    void *data, struct WuiResolvedColor (*get)(const void *),
-    struct WuiWatcherGuard *(*watch)(const void *,
-                                     struct WuiWatcher_ResolvedColor *),
-    void (*drop)(void *));
+WuiComputed_ResolvedColor *waterui_new_computed_resolved_color(void *data,
+                                                               struct WuiResolvedColor (*get)(const void*),
+                                                               struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                                struct WuiWatcher_ResolvedColor*),
+                                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 struct WuiColor *waterui_read_binding_color(const WuiBinding_Color *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
-void waterui_set_binding_color(WuiBinding_Color *binding,
-                               struct WuiColor *value);
+void waterui_set_binding_color(WuiBinding_Color *binding, struct WuiColor *value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_color(const WuiBinding_Color *binding,
-                            struct WuiWatcher_Color *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_color(const WuiBinding_Color *binding,
+                                                    struct WuiWatcher_Color *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_color(WuiBinding_Color *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiColor *waterui_read_computed_color(const WuiComputed_Color *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_color(const WuiComputed_Color *computed,
-                             struct WuiWatcher_Color *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_color(const WuiComputed_Color *computed,
+                                                     struct WuiWatcher_Color *watcher);
 
 /**
  * Drops a computed
@@ -1255,35 +1220,33 @@ void waterui_drop_computed_color(WuiComputed_Color *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_Color *
-waterui_clone_computed_color(const WuiComputed_Color *computed);
+WuiComputed_Color *waterui_clone_computed_color(const WuiComputed_Color *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Color *waterui_new_watcher_color(
-    void *data,
-    void (*call)(void *, struct WuiColor *, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
+                                                   void (*call)(void*,
+                                                                struct WuiColor*,
+                                                                struct WuiWatcherMetadata*),
+                                                   void (*drop)(void*));
 
 /**
  * Resolves a color in the given environment.
  *
  * # Safety
  *
- * Both `color` and `env` must be valid, non-null pointers to their respective
- * types.
+ * Both `color` and `env` must be valid, non-null pointers to their respective types.
  */
 WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiStr waterui_force_as_plain(struct WuiAnyView *view);
 
@@ -1293,8 +1256,7 @@ struct WuiStr waterui_empty_id(void);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_layout(struct WuiLayout *value);
 
@@ -1302,68 +1264,59 @@ struct WuiStr waterui_spacer_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiFixedContainer
-waterui_force_as_fixed_container(struct WuiAnyView *view);
+struct WuiFixedContainer waterui_force_as_fixed_container(struct WuiAnyView *view);
 
 struct WuiStr waterui_fixed_container_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiContainer waterui_force_as_layout_container(struct WuiAnyView *view);
 
 struct WuiStr waterui_layout_container_id(void);
 
 /**
- * Calculates the size required by the layout given a proposal and child
- * proxies.
+ * Calculates the size required by the layout given a proposal and child proxies.
  *
  * This function implements the new SubView-based negotiation protocol where
  * layouts can query children multiple times with different proposals.
  *
  * # Safety
  *
- * - The `layout` pointer must be valid and point to a properly initialized
- * `WuiLayout`.
+ * - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
  * - The `children` array must contain valid `WuiSubView` entries.
  * - The measure callbacks in each child must be safe to call.
  * - The `children` array will be consumed and dropped after this call.
  */
-struct WuiSize
-waterui_layout_size_that_fits(struct WuiLayout *layout,
-                              struct WuiProposalSize proposal,
-                              struct WuiArray_WuiSubView children);
+struct WuiSize waterui_layout_size_that_fits(struct WuiLayout *layout,
+                                             struct WuiProposalSize proposal,
+                                             struct WuiArray_WuiSubView children);
 
 /**
  * Places child views within the specified bounds.
  *
- * Returns an array of Rect values representing the position and size of each
- * child.
+ * Returns an array of Rect values representing the position and size of each child.
  *
  * # Safety
  *
- * - The `layout` pointer must be valid and point to a properly initialized
- * `WuiLayout`.
+ * - The `layout` pointer must be valid and point to a properly initialized `WuiLayout`.
  * - The `children` array must contain valid `WuiSubView` entries.
  * - The measure callbacks in each child must be safe to call.
  * - The `children` array will be consumed and dropped after this call.
  */
-struct WuiArray_WuiRect
-waterui_layout_place(struct WuiLayout *layout, struct WuiRect bounds,
-                     struct WuiArray_WuiSubView children);
+struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
+                                             struct WuiRect bounds,
+                                             struct WuiArray_WuiSubView children);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiScrollView waterui_force_as_scroll_view(struct WuiAnyView *view);
 
@@ -1371,9 +1324,8 @@ struct WuiStr waterui_scroll_view_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
 
@@ -1381,54 +1333,33 @@ struct WuiStr waterui_button_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
- */
-struct WuiLazy waterui_force_as_lazy(struct WuiAnyView *view);
-
-struct WuiStr waterui_lazy_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiLink waterui_force_as_link(struct WuiAnyView *view);
 
 struct WuiStr waterui_link_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_link_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_font(struct WuiFont *value);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiStyledStr
-waterui_read_computed_styled_str(const WuiComputed_StyledStr *computed);
+struct WuiStyledStr waterui_read_computed_styled_str(const WuiComputed_StyledStr *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_styled_str(const WuiComputed_StyledStr *computed,
-                                  struct WuiWatcher_StyledStr *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_styled_str(const WuiComputed_StyledStr *computed,
+                                                          struct WuiWatcher_StyledStr *watcher);
 
 /**
  * Drops a computed
@@ -1442,70 +1373,63 @@ void waterui_drop_computed_styled_str(WuiComputed_StyledStr *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_StyledStr *
-waterui_clone_computed_styled_str(const WuiComputed_StyledStr *computed);
+WuiComputed_StyledStr *waterui_clone_computed_styled_str(const WuiComputed_StyledStr *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_StyledStr *waterui_new_watcher_styled_str(
-    void *data,
-    void (*call)(void *, struct WuiStyledStr, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_StyledStr *waterui_new_watcher_styled_str(void *data,
+                                                            void (*call)(void*,
+                                                                         struct WuiStyledStr,
+                                                                         struct WuiWatcherMetadata*),
+                                                            void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 struct WuiFont *waterui_read_binding_font(const WuiBinding_Font *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_font(WuiBinding_Font *binding, struct WuiFont *value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_font(const WuiBinding_Font *binding,
-                           struct WuiWatcher_Font *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_font(const WuiBinding_Font *binding,
+                                                   struct WuiWatcher_Font *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_font(WuiBinding_Font *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiFont *waterui_read_computed_font(const WuiComputed_Font *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_font(const WuiComputed_Font *computed,
-                            struct WuiWatcher_Font *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_font(const WuiComputed_Font *computed,
+                                                    struct WuiWatcher_Font *watcher);
 
 /**
  * Drops a computed
@@ -1526,44 +1450,35 @@ WuiComputed_Font *waterui_clone_computed_font(const WuiComputed_Font *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Font *waterui_new_watcher_font(
-    void *data,
-    void (*call)(void *, struct WuiFont *, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Font *waterui_new_watcher_font(void *data,
+                                                 void (*call)(void*,
+                                                              struct WuiFont*,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiText waterui_force_as_text(struct WuiAnyView *view);
 
 struct WuiStr waterui_text_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_text_stretch_axis(struct WuiAnyView *view);
-
-/**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiResolvedFont
-waterui_read_computed_resolved_font(const WuiComputed_ResolvedFont *computed);
+struct WuiResolvedFont waterui_read_computed_resolved_font(const WuiComputed_ResolvedFont *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_resolved_font(const WuiComputed_ResolvedFont *computed,
-                                     struct WuiWatcher_ResolvedFont *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const WuiComputed_ResolvedFont *computed,
+                                                             struct WuiWatcher_ResolvedFont *watcher);
 
 /**
  * Drops a computed
@@ -1577,223 +1492,150 @@ void waterui_drop_computed_resolved_font(WuiComputed_ResolvedFont *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_ResolvedFont *
-waterui_clone_computed_resolved_font(const WuiComputed_ResolvedFont *computed);
+WuiComputed_ResolvedFont *waterui_clone_computed_resolved_font(const WuiComputed_ResolvedFont *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_ResolvedFont *waterui_new_watcher_resolved_font(
-    void *data,
-    void (*call)(void *, struct WuiResolvedFont, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_ResolvedFont *waterui_new_watcher_resolved_font(void *data,
+                                                                  void (*call)(void*,
+                                                                               struct WuiResolvedFont,
+                                                                               struct WuiWatcherMetadata*),
+                                                                  void (*drop)(void*));
 
 /**
  * Creates a computed signal from native callbacks.
  * # Safety
- * All function pointers must be valid and follow the expected calling
- * conventions.
+ * All function pointers must be valid and follow the expected calling conventions.
  */
-WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(
-    void *data, struct WuiResolvedFont (*get)(const void *),
-    struct WuiWatcherGuard *(*watch)(const void *,
-                                     struct WuiWatcher_ResolvedFont *),
-    void (*drop)(void *));
+WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
+                                                             struct WuiResolvedFont (*get)(const void*),
+                                                             struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                              struct WuiWatcher_ResolvedFont*),
+                                                             void (*drop)(void*));
 
 WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                const struct WuiEnv *env);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiTextField waterui_force_as_text_field(struct WuiAnyView *view);
 
 struct WuiStr waterui_text_field_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_text_field_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiToggle waterui_force_as_toggle(struct WuiAnyView *view);
 
 struct WuiStr waterui_toggle_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_toggle_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiSlider waterui_force_as_slider(struct WuiAnyView *view);
 
 struct WuiStr waterui_slider_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_slider_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiStepper waterui_force_as_stepper(struct WuiAnyView *view);
 
 struct WuiStr waterui_stepper_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_stepper_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiColorPicker waterui_force_as_color_picker(struct WuiAnyView *view);
 
 struct WuiStr waterui_color_picker_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_color_picker_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiPicker waterui_force_as_picker(struct WuiAnyView *view);
 
 struct WuiStr waterui_picker_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_picker_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiNavigationView
-waterui_force_as_navigation_view(struct WuiAnyView *view);
+struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *view);
 
 struct WuiStr waterui_navigation_view_id(void);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_tab_content(struct WuiTabContent *value);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiPhoto waterui_force_as_photo(struct WuiAnyView *view);
 
 struct WuiStr waterui_photo_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_photo_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
 struct WuiStr waterui_video_player_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_video_player_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
 
 struct WuiStr waterui_live_photo_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_live_photo_stretch_axis(struct WuiAnyView *view);
-
-/**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
- */
-struct WuiLivePhotoSource
-waterui_force_as_live_photo_source(struct WuiAnyView *view);
-
-struct WuiStr waterui_live_photo_source_id(void);
-
-/**
- * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_dynamic(struct WuiDynamic *value);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
 
 struct WuiStr waterui_dynamic_id(void);
 
-void waterui_dynamic_connect(struct WuiDynamic *dynamic,
-                             struct WuiWatcher_AnyView *watcher);
+void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyView *watcher);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
 
@@ -1801,18 +1643,12 @@ struct WuiStr waterui_list_item_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiList waterui_force_as_list(struct WuiAnyView *view);
 
 struct WuiStr waterui_list_id(void);
-
-/**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_list_stretch_axis(struct WuiAnyView *view);
 
 /**
  * Calls the delete callback for a list item.
@@ -1821,26 +1657,23 @@ enum WuiStretchAxis waterui_list_stretch_axis(struct WuiAnyView *view);
  * The caller must ensure that `item` and `env` are valid pointers.
  */
 void waterui_list_item_call_delete(struct WuiListItem *item,
-                                   const struct WuiEnv *env, uintptr_t index);
+                                   const struct WuiEnv *env,
+                                   uintptr_t index);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiArray_WuiTableColumn
-waterui_read_computed_table_cols(const WuiComputed_Vec_TableColumn *computed);
+struct WuiArray_WuiTableColumn waterui_read_computed_table_cols(const WuiComputed_Vec_TableColumn *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_table_cols(const WuiComputed_Vec_TableColumn *computed,
-                                  struct WuiWatcher_Vec_TableColumn *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_table_cols(const WuiComputed_Vec_TableColumn *computed,
+                                                          struct WuiWatcher_Vec_TableColumn *watcher);
 
 /**
  * Drops a computed
@@ -1854,25 +1687,23 @@ void waterui_drop_computed_table_cols(WuiComputed_Vec_TableColumn *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_Vec_TableColumn *
-waterui_clone_computed_table_cols(const WuiComputed_Vec_TableColumn *computed);
+WuiComputed_Vec_TableColumn *waterui_clone_computed_table_cols(const WuiComputed_Vec_TableColumn *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Vec_TableColumn *waterui_new_watcher_table_cols(
-    void *data,
-    void (*call)(void *, struct WuiArray_WuiTableColumn,
-                 struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Vec_TableColumn *waterui_new_watcher_table_cols(void *data,
+                                                                  void (*call)(void*,
+                                                                               struct WuiArray_WuiTableColumn,
+                                                                               struct WuiWatcherMetadata*),
+                                                                  void (*drop)(void*));
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiTable waterui_force_as_table(struct WuiAnyView *view);
 
@@ -1880,9 +1711,8 @@ struct WuiStr waterui_table_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiTableColumn waterui_force_as_table_column(struct WuiAnyView *view);
 
@@ -1890,94 +1720,32 @@ struct WuiStr waterui_table_column_id(void);
 
 /**
  * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
 struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
 
 struct WuiStr waterui_progress_id(void);
 
 /**
- * Returns the stretch axis for this native view type.
- */
-enum WuiStretchAxis waterui_progress_stretch_axis(struct WuiAnyView *view);
-
-/**
- * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
- */
-void waterui_drop_renderer_view(struct WuiRendererView *value);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs
- * unchecked downcasting. The caller must ensure that `view` is a valid pointer
- * to an `AnyView` that contains the expected view type.
- */
-struct WuiRendererView *waterui_force_as_renderer_view(struct WuiAnyView *view);
-
-struct WuiStr waterui_renderer_view_id(void);
-
-/**
- * Gets the width of the renderer view.
- *
- * # Safety
- * The caller must ensure that `view` is a valid pointer.
- */
-float waterui_renderer_view_width(const struct WuiRendererView *view);
-
-/**
- * Gets the height of the renderer view.
- *
- * # Safety
- * The caller must ensure that `view` is a valid pointer.
- */
-float waterui_renderer_view_height(const struct WuiRendererView *view);
-
-/**
- * Gets the preferred buffer format for the renderer view.
- *
- * # Safety
- * The caller must ensure that `view` is a valid pointer.
- */
-enum WuiRendererBufferFormat
-waterui_renderer_view_preferred_format(const struct WuiRendererView *_view);
-
-/**
- * Renders the view to a CPU buffer.
- *
- * # Safety
- * The caller must ensure that `view` and `pixels` are valid pointers, and that
- * the pixel buffer has sufficient capacity for the given dimensions and stride.
- */
-bool waterui_renderer_view_render_cpu(struct WuiRendererView *view,
-                                      uint8_t *pixels, uint32_t width,
-                                      uint32_t height, uintptr_t stride,
-                                      enum WuiRendererBufferFormat format);
-
-/**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 struct WuiId waterui_read_binding_id(const WuiBinding_Id *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_id(WuiBinding_Id *binding, struct WuiId value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
 struct WuiWatcherGuard *waterui_watch_binding_id(const WuiBinding_Id *binding,
                                                  struct WuiWatcher_Id *watcher);
@@ -1985,28 +1753,24 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const WuiBinding_Id *binding,
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_id(WuiBinding_Id *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiId waterui_read_computed_id(const WuiComputed_Id *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_id(const WuiComputed_Id *computed,
-                          struct WuiWatcher_Id *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_id(const WuiComputed_Id *computed,
+                                                  struct WuiWatcher_Id *watcher);
 
 /**
  * Drops a computed
@@ -2027,75 +1791,68 @@ WuiComputed_Id *waterui_clone_computed_id(const WuiComputed_Id *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Id *waterui_new_watcher_id(
-    void *data, void (*call)(void *, struct WuiId, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
+                                             void (*call)(void*,
+                                                          struct WuiId,
+                                                          struct WuiWatcherMetadata*),
+                                             void (*drop)(void*));
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_watcher_metadata(struct WuiWatcherMetadata *value);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_box_watcher_guard(struct WuiWatcherGuard *value);
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 struct WuiStr waterui_read_binding_str(const WuiBinding_Str *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_str(WuiBinding_Str *binding, struct WuiStr value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_str(const WuiBinding_Str *binding,
-                          struct WuiWatcher_Str *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_str(const WuiBinding_Str *binding,
+                                                  struct WuiWatcher_Str *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_str(WuiBinding_Str *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiStr waterui_read_computed_str(const WuiComputed_Str *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_str(const WuiComputed_Str *computed,
-                           struct WuiWatcher_Str *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_str(const WuiComputed_Str *computed,
+                                                   struct WuiWatcher_Str *watcher);
 
 /**
  * Drops a computed
@@ -2116,65 +1873,56 @@ WuiComputed_Str *waterui_clone_computed_str(const WuiComputed_Str *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Str *waterui_new_watcher_str(
-    void *data,
-    void (*call)(void *, struct WuiStr, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Str *waterui_new_watcher_str(void *data,
+                                               void (*call)(void*,
+                                                            struct WuiStr,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
-struct WuiAnyView *
-waterui_read_binding_any_view(const WuiBinding_AnyView *binding);
+struct WuiAnyView *waterui_read_binding_any_view(const WuiBinding_AnyView *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
-void waterui_set_binding_any_view(WuiBinding_AnyView *binding,
-                                  struct WuiAnyView *value);
+void waterui_set_binding_any_view(WuiBinding_AnyView *binding, struct WuiAnyView *value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_any_view(const WuiBinding_AnyView *binding,
-                               struct WuiWatcher_AnyView *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_any_view(const WuiBinding_AnyView *binding,
+                                                       struct WuiWatcher_AnyView *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_any_view(WuiBinding_AnyView *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiAnyView *
-waterui_read_computed_any_view(const WuiComputed_AnyView *computed);
+struct WuiAnyView *waterui_read_computed_any_view(const WuiComputed_AnyView *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_any_view(const WuiComputed_AnyView *computed,
-                                struct WuiWatcher_AnyView *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_any_view(const WuiComputed_AnyView *computed,
+                                                        struct WuiWatcher_AnyView *watcher);
 
 /**
  * Drops a computed
@@ -2188,70 +1936,63 @@ void waterui_drop_computed_any_view(WuiComputed_AnyView *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_AnyView *
-waterui_clone_computed_any_view(const WuiComputed_AnyView *computed);
+WuiComputed_AnyView *waterui_clone_computed_any_view(const WuiComputed_AnyView *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_AnyView *waterui_new_watcher_any_view(
-    void *data,
-    void (*call)(void *, struct WuiAnyView *, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_AnyView *waterui_new_watcher_any_view(void *data,
+                                                        void (*call)(void*,
+                                                                     struct WuiAnyView*,
+                                                                     struct WuiWatcherMetadata*),
+                                                        void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 int32_t waterui_read_binding_i32(const WuiBinding_i32 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_i32(WuiBinding_i32 *binding, int32_t value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_i32(const WuiBinding_i32 *binding,
-                          struct WuiWatcher_i32 *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_i32(const WuiBinding_i32 *binding,
+                                                  struct WuiWatcher_i32 *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_i32(WuiBinding_i32 *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 int32_t waterui_read_computed_i32(const WuiComputed_i32 *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_i32(const WuiComputed_i32 *computed,
-                           struct WuiWatcher_i32 *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_i32(const WuiComputed_i32 *computed,
+                                                   struct WuiWatcher_i32 *watcher);
 
 /**
  * Drops a computed
@@ -2272,61 +2013,56 @@ WuiComputed_i32 *waterui_clone_computed_i32(const WuiComputed_i32 *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_i32 *waterui_new_watcher_i32(
-    void *data, void (*call)(void *, int32_t, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_i32 *waterui_new_watcher_i32(void *data,
+                                               void (*call)(void*,
+                                                            int32_t,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 bool waterui_read_binding_bool(const WuiBinding_bool *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_bool(WuiBinding_bool *binding, bool value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_bool(const WuiBinding_bool *binding,
-                           struct WuiWatcher_bool *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_bool(const WuiBinding_bool *binding,
+                                                   struct WuiWatcher_bool *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_bool(WuiBinding_bool *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 bool waterui_read_computed_bool(const WuiComputed_bool *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_bool(const WuiComputed_bool *computed,
-                            struct WuiWatcher_bool *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_bool(const WuiComputed_bool *computed,
+                                                    struct WuiWatcher_bool *watcher);
 
 /**
  * Drops a computed
@@ -2347,61 +2083,56 @@ WuiComputed_bool *waterui_clone_computed_bool(const WuiComputed_bool *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_bool *waterui_new_watcher_bool(
-    void *data, void (*call)(void *, bool, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_bool *waterui_new_watcher_bool(void *data,
+                                                 void (*call)(void*,
+                                                              bool,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 float waterui_read_binding_f32(const WuiBinding_f32 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_f32(WuiBinding_f32 *binding, float value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_f32(const WuiBinding_f32 *binding,
-                          struct WuiWatcher_f32 *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_f32(const WuiBinding_f32 *binding,
+                                                  struct WuiWatcher_f32 *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_f32(WuiBinding_f32 *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 float waterui_read_computed_f32(const WuiComputed_f32 *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_f32(const WuiComputed_f32 *computed,
-                           struct WuiWatcher_f32 *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_f32(const WuiComputed_f32 *computed,
+                                                   struct WuiWatcher_f32 *watcher);
 
 /**
  * Drops a computed
@@ -2422,61 +2153,54 @@ WuiComputed_f32 *waterui_clone_computed_f32(const WuiComputed_f32 *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_f32 *waterui_new_watcher_f32(
-    void *data, void (*call)(void *, float, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_f32 *waterui_new_watcher_f32(void *data,
+                                               void (*call)(void*, float, struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 double waterui_read_binding_f64(const WuiBinding_f64 *binding);
 
 /**
  * Sets the value of a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object.
+ * The binding pointer must be valid and point to a properly initialized binding object.
  */
 void waterui_set_binding_f64(WuiBinding_f64 *binding, double value);
 
 /**
  * Watches for changes in a binding
  * # Safety
- * The binding pointer must be valid and point to a properly initialized binding
- * object. The watcher must be a valid callback function.
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
  */
-struct WuiWatcherGuard *
-waterui_watch_binding_f64(const WuiBinding_f64 *binding,
-                          struct WuiWatcher_f64 *watcher);
+struct WuiWatcherGuard *waterui_watch_binding_f64(const WuiBinding_f64 *binding,
+                                                  struct WuiWatcher_f64 *watcher);
 
 /**
  * Drops a binding
  * # Safety
- * The caller must ensure that `binding` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_binding_f64(WuiBinding_f64 *binding);
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 double waterui_read_computed_f64(const WuiComputed_f64 *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_f64(const WuiComputed_f64 *computed,
-                           struct WuiWatcher_f64 *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_f64(const WuiComputed_f64 *computed,
+                                                   struct WuiWatcher_f64 *watcher);
 
 /**
  * Drops a computed
@@ -2497,73 +2221,66 @@ WuiComputed_f64 *waterui_clone_computed_f64(const WuiComputed_f64 *computed);
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_f64 *waterui_new_watcher_f64(
-    void *data, void (*call)(void *, double, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_f64 *waterui_new_watcher_f64(void *data,
+                                               void (*call)(void*,
+                                                            double,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(
-    const WuiComputed_Vec_PickerItem_Id *computed);
+struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(const WuiComputed_Vec_PickerItem_Id *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_picker_items(
-    const WuiComputed_Vec_PickerItem_Id *computed,
-    struct WuiWatcher_Vec_PickerItem_Id *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_picker_items(const WuiComputed_Vec_PickerItem_Id *computed,
+                                                            struct WuiWatcher_Vec_PickerItem_Id *watcher);
 
 /**
  * Drops a computed
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-void waterui_drop_computed_picker_items(
-    WuiComputed_Vec_PickerItem_Id *computed);
+void waterui_drop_computed_picker_items(WuiComputed_Vec_PickerItem_Id *computed);
 
 /**
  * Clones a computed
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_Vec_PickerItem_Id *waterui_clone_computed_picker_items(
-    const WuiComputed_Vec_PickerItem_Id *computed);
+WuiComputed_Vec_PickerItem_Id *waterui_clone_computed_picker_items(const WuiComputed_Vec_PickerItem_Id *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(
-    void *data,
-    void (*call)(void *, struct WuiArray_WuiPickerItem,
-                 struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(void *data,
+                                                                      void (*call)(void*,
+                                                                                   struct WuiArray_WuiPickerItem,
+                                                                                   struct WuiWatcherMetadata*),
+                                                                      void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
 struct WuiVideo waterui_read_computed_video(const WuiComputed_Video *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_video(const WuiComputed_Video *computed,
-                             struct WuiWatcher_Video *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_video(const WuiComputed_Video *computed,
+                                                     struct WuiWatcher_Video *watcher);
 
 /**
  * Drops a computed
@@ -2577,93 +2294,81 @@ void waterui_drop_computed_video(WuiComputed_Video *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_Video *
-waterui_clone_computed_video(const WuiComputed_Video *computed);
+WuiComputed_Video *waterui_clone_computed_video(const WuiComputed_Video *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_Video *waterui_new_watcher_video(
-    void *data,
-    void (*call)(void *, struct WuiVideo, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
+                                                   void (*call)(void*,
+                                                                struct WuiVideo,
+                                                                struct WuiWatcherMetadata*),
+                                                   void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiLivePhotoSource waterui_read_computed_live_photo_source(
-    const WuiComputed_LivePhotoSource *computed);
+struct WuiLivePhotoSource waterui_read_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(
-    const WuiComputed_LivePhotoSource *computed,
-    struct WuiWatcher_LivePhotoSource *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed,
+                                                                 struct WuiWatcher_LivePhotoSource *watcher);
 
 /**
  * Drops a computed
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-void waterui_drop_computed_live_photo_source(
-    WuiComputed_LivePhotoSource *computed);
+void waterui_drop_computed_live_photo_source(WuiComputed_LivePhotoSource *computed);
 
 /**
  * Clones a computed
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_LivePhotoSource *waterui_clone_computed_live_photo_source(
-    const WuiComputed_LivePhotoSource *computed);
+WuiComputed_LivePhotoSource *waterui_clone_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_LivePhotoSource *waterui_new_watcher_live_photo_source(
-    void *data,
-    void (*call)(void *, struct WuiLivePhotoSource,
-                 struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_LivePhotoSource *waterui_new_watcher_live_photo_source(void *data,
+                                                                         void (*call)(void*,
+                                                                                      struct WuiLivePhotoSource,
+                                                                                      struct WuiWatcherMetadata*),
+                                                                         void (*drop)(void*));
 
 /**
  * Creates a new watcher guard from raw data and a drop function.
  *
  * # Safety
- * The caller must ensure that the provided data pointer and drop function are
- * valid.
+ * The caller must ensure that the provided data pointer and drop function are valid.
  */
-struct WuiWatcherGuard *waterui_new_watcher_guard(void *data,
-                                                  void (*drop)(void *));
+struct WuiWatcherGuard *waterui_new_watcher_guard(void *data, void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-enum WuiColorScheme
-waterui_read_computed_color_scheme(const WuiComputed_ColorScheme *computed);
+enum WuiColorScheme waterui_read_computed_color_scheme(const WuiComputed_ColorScheme *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_color_scheme(const WuiComputed_ColorScheme *computed,
-                                    struct WuiWatcher_ColorScheme *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_color_scheme(const WuiComputed_ColorScheme *computed,
+                                                            struct WuiWatcher_ColorScheme *watcher);
 
 /**
  * Drops a computed
@@ -2677,42 +2382,39 @@ void waterui_drop_computed_color_scheme(WuiComputed_ColorScheme *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_ColorScheme *
-waterui_clone_computed_color_scheme(const WuiComputed_ColorScheme *computed);
+WuiComputed_ColorScheme *waterui_clone_computed_color_scheme(const WuiComputed_ColorScheme *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_ColorScheme *waterui_new_watcher_color_scheme(
-    void *data,
-    void (*call)(void *, enum WuiColorScheme, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_ColorScheme *waterui_new_watcher_color_scheme(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiColorScheme,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
 
 /**
  * Creates a computed signal from native callbacks.
  * # Safety
- * All function pointers must be valid and follow the expected calling
- * conventions.
+ * All function pointers must be valid and follow the expected calling conventions.
  */
-WuiComputed_ColorScheme *waterui_new_computed_color_scheme(
-    void *data, enum WuiColorScheme (*get)(const void *),
-    struct WuiWatcherGuard *(*watch)(const void *,
-                                     struct WuiWatcher_ColorScheme *),
-    void (*drop)(void *));
+WuiComputed_ColorScheme *waterui_new_computed_color_scheme(void *data,
+                                                           enum WuiColorScheme (*get)(const void*),
+                                                           struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                            struct WuiWatcher_ColorScheme*),
+                                                           void (*drop)(void*));
 
 /**
  * Creates a constant color scheme signal.
  */
-WuiComputed_ColorScheme *
-waterui_computed_color_scheme_constant(enum WuiColorScheme scheme);
+WuiComputed_ColorScheme *waterui_computed_color_scheme_constant(enum WuiColorScheme scheme);
 
 /**
  * Installs a color scheme signal into the environment.
  */
-void waterui_theme_install_color_scheme(struct WuiEnv *env,
-                                        WuiComputed_ColorScheme *signal);
+void waterui_theme_install_color_scheme(struct WuiEnv *env, WuiComputed_ColorScheme *signal);
 
 /**
  * Returns the current color scheme signal from the environment.
@@ -2724,7 +2426,8 @@ WuiComputed_ColorScheme *waterui_theme_color_scheme(const struct WuiEnv *env);
  *
  * Takes ownership of the signal pointer.
  */
-void waterui_theme_install_color(struct WuiEnv *env, enum WuiColorSlot slot,
+void waterui_theme_install_color(struct WuiEnv *env,
+                                 enum WuiColorSlot slot,
                                  WuiComputed_ResolvedColor *signal);
 
 /**
@@ -2732,15 +2435,15 @@ void waterui_theme_install_color(struct WuiEnv *env, enum WuiColorSlot slot,
  *
  * Returns a new reference to the signal. Caller must drop it when done.
  */
-WuiComputed_ResolvedColor *waterui_theme_color(const struct WuiEnv *env,
-                                               enum WuiColorSlot slot);
+WuiComputed_ResolvedColor *waterui_theme_color(const struct WuiEnv *env, enum WuiColorSlot slot);
 
 /**
  * Installs a font signal for a specific slot.
  *
  * Takes ownership of the signal pointer.
  */
-void waterui_theme_install_font(struct WuiEnv *env, enum WuiFontSlot slot,
+void waterui_theme_install_font(struct WuiEnv *env,
+                                enum WuiFontSlot slot,
                                 WuiComputed_ResolvedFont *signal);
 
 /**
@@ -2748,8 +2451,7 @@ void waterui_theme_install_font(struct WuiEnv *env, enum WuiFontSlot slot,
  *
  * Returns a new reference to the signal. Caller must drop it when done.
  */
-WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env,
-                                             enum WuiFontSlot slot);
+WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env, enum WuiFontSlot slot);
 
 /**
  * Legacy function to install all theme values at once.
@@ -2759,39 +2461,36 @@ WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env,
  * - `waterui_theme_install_color()`
  * - `waterui_theme_install_font()`
  */
-void waterui_env_install_theme(
-    struct WuiEnv *env, WuiComputed_ResolvedColor *background,
-    WuiComputed_ResolvedColor *surface,
-    WuiComputed_ResolvedColor *surface_variant,
-    WuiComputed_ResolvedColor *border, WuiComputed_ResolvedColor *foreground,
-    WuiComputed_ResolvedColor *muted_foreground,
-    WuiComputed_ResolvedColor *accent,
-    WuiComputed_ResolvedColor *accent_foreground,
-    WuiComputed_ResolvedFont *body, WuiComputed_ResolvedFont *title,
-    WuiComputed_ResolvedFont *headline, WuiComputed_ResolvedFont *subheadline,
-    WuiComputed_ResolvedFont *caption);
+void waterui_env_install_theme(struct WuiEnv *env,
+                               WuiComputed_ResolvedColor *background,
+                               WuiComputed_ResolvedColor *surface,
+                               WuiComputed_ResolvedColor *surface_variant,
+                               WuiComputed_ResolvedColor *border,
+                               WuiComputed_ResolvedColor *foreground,
+                               WuiComputed_ResolvedColor *muted_foreground,
+                               WuiComputed_ResolvedColor *accent,
+                               WuiComputed_ResolvedColor *accent_foreground,
+                               WuiComputed_ResolvedFont *body,
+                               WuiComputed_ResolvedFont *title,
+                               WuiComputed_ResolvedFont *headline,
+                               WuiComputed_ResolvedFont *subheadline,
+                               WuiComputed_ResolvedFont *caption);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_background(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_background(const struct WuiEnv *env);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_surface(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_surface(const struct WuiEnv *env);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_surface_variant(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_surface_variant(const struct WuiEnv *env);
 
 WuiComputed_ResolvedColor *waterui_theme_color_border(const struct WuiEnv *env);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_foreground(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_foreground(const struct WuiEnv *env);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_muted_foreground(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_muted_foreground(const struct WuiEnv *env);
 
 WuiComputed_ResolvedColor *waterui_theme_color_accent(const struct WuiEnv *env);
 
-WuiComputed_ResolvedColor *
-waterui_theme_color_accent_foreground(const struct WuiEnv *env);
+WuiComputed_ResolvedColor *waterui_theme_color_accent_foreground(const struct WuiEnv *env);
 
 WuiComputed_ResolvedFont *waterui_theme_font_body(const struct WuiEnv *env);
 
@@ -2799,8 +2498,7 @@ WuiComputed_ResolvedFont *waterui_theme_font_title(const struct WuiEnv *env);
 
 WuiComputed_ResolvedFont *waterui_theme_font_headline(const struct WuiEnv *env);
 
-WuiComputed_ResolvedFont *
-waterui_theme_font_subheadline(const struct WuiEnv *env);
+WuiComputed_ResolvedFont *waterui_theme_font_subheadline(const struct WuiEnv *env);
 
 WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv *env);
 
@@ -2812,8 +2510,8 @@ WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
  * # Safety
  * The watcher pointer must be valid.
  */
-void waterui_call_watcher_color_scheme(
-    const struct WuiWatcher_ColorScheme *watcher, enum WuiColorScheme value);
+void waterui_call_watcher_color_scheme(const struct WuiWatcher_ColorScheme *watcher,
+                                       enum WuiColorScheme value);
 
 /**
  * Drops a ColorScheme watcher.
@@ -2828,17 +2526,15 @@ void waterui_drop_watcher_color_scheme(struct WuiWatcher_ColorScheme *watcher);
  * # Safety
  * The watcher pointer must be valid.
  */
-void waterui_call_watcher_resolved_color(
-    const struct WuiWatcher_ResolvedColor *watcher,
-    struct WuiResolvedColor value);
+void waterui_call_watcher_resolved_color(const struct WuiWatcher_ResolvedColor *watcher,
+                                         struct WuiResolvedColor value);
 
 /**
  * Drops a ResolvedColor watcher.
  * # Safety
  * The watcher pointer must be valid.
  */
-void waterui_drop_watcher_resolved_color(
-    struct WuiWatcher_ResolvedColor *watcher);
+void waterui_drop_watcher_resolved_color(struct WuiWatcher_ResolvedColor *watcher);
 
 /**
  * Calls a ResolvedFont watcher with the given value.
@@ -2846,22 +2542,19 @@ void waterui_drop_watcher_resolved_color(
  * # Safety
  * The watcher pointer must be valid.
  */
-void waterui_call_watcher_resolved_font(
-    const struct WuiWatcher_ResolvedFont *watcher,
-    struct WuiResolvedFont value);
+void waterui_call_watcher_resolved_font(const struct WuiWatcher_ResolvedFont *watcher,
+                                        struct WuiResolvedFont value);
 
 /**
  * Drops a ResolvedFont watcher.
  * # Safety
  * The watcher pointer must be valid.
  */
-void waterui_drop_watcher_resolved_font(
-    struct WuiWatcher_ResolvedFont *watcher);
+void waterui_drop_watcher_resolved_font(struct WuiWatcher_ResolvedFont *watcher);
 
 /**
  * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the
- * corresponding FFI function.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_anyviews(struct WuiAnyViews *value);
 
@@ -2869,21 +2562,17 @@ void waterui_drop_anyviews(struct WuiAnyViews *value);
  * Gets the ID of a view at the specified index.
  *
  * # Safety
- * The caller must ensure that `anyviews` is a valid pointer and `index` is
- * within bounds.
+ * The caller must ensure that `anyviews` is a valid pointer and `index` is within bounds.
  */
-struct WuiId waterui_anyviews_get_id(const struct WuiAnyViews *anyviews,
-                                     uintptr_t index);
+struct WuiId waterui_anyviews_get_id(const struct WuiAnyViews *anyviews, uintptr_t index);
 
 /**
  * Gets a view at the specified index.
  *
  * # Safety
- * The caller must ensure that `anyview` is a valid pointer and `index` is
- * within bounds.
+ * The caller must ensure that `anyview` is a valid pointer and `index` is within bounds.
  */
-struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview,
-                                             uintptr_t index);
+struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, uintptr_t index);
 
 /**
  * Gets the number of views in the collection.
@@ -2896,21 +2585,17 @@ uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
 /**
  * Reads the current value from a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiAnyViews *
-waterui_read_computed_views(const WuiComputed_AnyViews_AnyView *computed);
+struct WuiAnyViews *waterui_read_computed_views(const WuiComputed_AnyViews_AnyView *computed);
 
 /**
  * Watches for changes in a computed
  * # Safety
- * The computed pointer must be valid and point to a properly initialized
- * computed object.
+ * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiWatcherGuard *
-waterui_watch_computed_views(const WuiComputed_AnyViews_AnyView *computed,
-                             struct WuiWatcher_AnyViews_AnyView *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_views(const WuiComputed_AnyViews_AnyView *computed,
+                                                     struct WuiWatcher_AnyViews_AnyView *watcher);
 
 /**
  * Drops a computed
@@ -2924,22 +2609,22 @@ void waterui_drop_computed_views(WuiComputed_AnyViews_AnyView *computed);
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-WuiComputed_AnyViews_AnyView *
-waterui_clone_computed_views(const WuiComputed_AnyViews_AnyView *computed);
+WuiComputed_AnyViews_AnyView *waterui_clone_computed_views(const WuiComputed_AnyViews_AnyView *computed);
 
 /**
  * Creates a watcher from native callbacks.
  * # Safety
  * All function pointers must be valid.
  */
-struct WuiWatcher_AnyViews_AnyView *waterui_new_watcher_views(
-    void *data,
-    void (*call)(void *, struct WuiAnyViews *, struct WuiWatcherMetadata *),
-    void (*drop)(void *));
+struct WuiWatcher_AnyViews_AnyView *waterui_new_watcher_views(void *data,
+                                                              void (*call)(void*,
+                                                                           struct WuiAnyViews*,
+                                                                           struct WuiWatcherMetadata*),
+                                                              void (*drop)(void*));
 
-WuiEnv *waterui_init(void);
+WuiEnv* waterui_init(void);
 
-WuiAnyView *waterui_main(void);
+WuiAnyView* waterui_main(void);
 
 #ifdef __cplusplus
 }

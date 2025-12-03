@@ -331,6 +331,14 @@ where
     pub const fn new(data: C, generator: F) -> Self {
         Self { data, generator }
     }
+
+    /// Consumes the `ForEach` and returns the original data collection and generator function.
+    ///
+    /// # Returns
+    /// A tuple containing the original data collection and generator function
+    pub fn into_inner(self) -> (C, F) {
+        (self.data, self.generator)
+    }
 }
 
 /// Represents a single transformed item, pairing data with a generator function to produce a view.
@@ -340,9 +348,8 @@ where
     F: Fn(T) -> V,
     V: View,
 {
-    
     data: T,
-    
+
     generator: Rc<F>,
 }
 
