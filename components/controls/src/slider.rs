@@ -2,6 +2,8 @@
 //!
 //! This module provides a `Slider` widget that allows users to select a value
 //! within a specified numeric range by sliding a handle along a track.
+//!
+//! ![Slider](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/slider.svg)
 
 use core::ops::RangeInclusive;
 

@@ -1,4 +1,6 @@
 //! A numeric stepper control for incrementing or decrementing values.
+//!
+//! ![Stepper](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/stepper.svg)
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
