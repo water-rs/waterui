@@ -4,7 +4,10 @@
 //! Each gesture type captures the minimum configuration necessary for a backend to register
 //! and recognize the interaction, while remaining portable across platforms.
 
-use waterui_core::handler::{BoxHandler, HandlerFn, into_handler};
+use waterui_core::{
+    handler::{BoxHandler, HandlerFn, into_handler},
+    metadata::MetadataKey,
+};
 
 /// Represents the phase of a gesture interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +272,8 @@ pub struct GestureObserver {
     /// The action to execute when the gesture is recognized.
     pub action: BoxHandler<()>,
 }
+
+impl MetadataKey for GestureObserver {}
 
 impl GestureObserver {
     /// Creates a new gesture observer that executes the given action when the gesture is recognized.
