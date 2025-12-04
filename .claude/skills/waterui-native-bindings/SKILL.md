@@ -58,6 +58,7 @@ impl NativeView for MyComponent {
 ### Native Side: Render with Platform Views
 
 **Apple (Swift):**
+
 ```swift
 final class WuiMyComponent: WuiBaseView, WuiComponent {
     static var rawId: WuiTypeId { waterui_my_component_id() }
@@ -79,6 +80,7 @@ final class WuiMyComponent: WuiBaseView, WuiComponent {
 ```
 
 **Android (Kotlin):**
+
 ```kotlin
 private val myComponentRenderer = WuiRenderer { context, node, env, registry ->
     val data = NativeBindings.waterui_force_as_my_component(node.rawPtr)
@@ -98,21 +100,21 @@ private val myComponentRenderer = WuiRenderer { context, node, env, registry ->
 
 ### StretchAxis Values
 
-| Value | Behavior | Use Case |
-|-------|----------|----------|
-| `None` | Fixed size from content | Text, icons, buttons |
+| Value        | Behavior                         | Use Case                   |
+| ------------ | -------------------------------- | -------------------------- |
+| `None`       | Fixed size from content          | Text, icons, buttons       |
 | `Horizontal` | Fills width, height from content | Text fields, progress bars |
-| `Vertical` | Fills height, width from content | Vertical dividers |
-| `Both` | Fills all available space | Backgrounds, containers |
+| `Vertical`   | Fills height, width from content | Vertical dividers          |
+| `Both`       | Fills all available space        | Backgrounds, containers    |
 
 ## Quick Reference
 
-| Layer | Key Files |
-|-------|-----------|
-| FFI | `ffi/src/lib.rs`, `ffi/src/macros.rs` |
-| Apple | `backends/apple/Sources/WaterUI/Components/`, `Core/AnyView.swift` |
-| Android | `backends/android/runtime/src/main/java/dev/waterui/android/` |
-| Android JNI | `backends/android/runtime/src/main/cpp/waterui_jni.cpp` |
+| Layer       | Key Files                                                          |
+| ----------- | ------------------------------------------------------------------ |
+| FFI         | `ffi/src/lib.rs`, `ffi/src/macros.rs`                              |
+| Apple       | `backends/apple/Sources/WaterUI/Components/`, `Core/AnyView.swift` |
+| Android     | `backends/android/runtime/src/main/java/dev/waterui/android/`      |
+| Android JNI | `backends/android/runtime/src/main/cpp/waterui_jni.cpp`            |
 
 ## Adding a New Component
 
@@ -131,6 +133,7 @@ Generate header: `cargo run --bin generate_header --features cbindgen`
 ### 2. Apple Backend
 
 Create `backends/apple/Sources/WaterUI/Components/WuiFoo.swift`:
+
 ```swift
 @MainActor
 final class WuiFoo: WuiBaseView, WuiComponent {
@@ -151,6 +154,7 @@ Register in `AnyView.swift`: `registerComponent(WuiFoo.self)`
 See [references/android-jni.md](references/android-jni.md) for complete step-by-step.
 
 **Quick checklist:**
+
 1. `FfiStructs.kt` - Add data class
 2. `WatcherJni.kt` - Add `external fun` declarations
 3. `NativeBindings.kt` - Add wrapper functions
@@ -161,6 +165,7 @@ See [references/android-jni.md](references/android-jni.md) for complete step-by-
 ## Reactive Values
 
 **Swift:**
+
 ```swift
 let computed = WuiComputed<T>(ptr, env: env)
 computed.watch { value in /* react */ }
@@ -171,6 +176,7 @@ binding.set(true)
 ```
 
 **Kotlin:**
+
 ```kotlin
 val computed = WuiComputed.resolvedColor(ptr, env)
 computed.observe { value -> /* react */ }
@@ -198,9 +204,45 @@ cd backends/android && ./gradlew :runtime:assembleDebug
 
 ## Troubleshooting
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `UnsatisfiedLinkError` | Missing JNI symbol | Add to `WATCHER_SYMBOL_LIST` in waterui_jni.cpp |
-| Swift "Cannot find X" | Header outdated | Regenerate + copy waterui.h |
-| Type mismatch | Wrong pointer type | Check header for exact type name |
-| Unit type `()` fails | C can't represent `()` | Use marker struct: `struct Marker { _m: u8 }` |
+| Error                  | Cause                  | Fix                                             |
+| ---------------------- | ---------------------- | ----------------------------------------------- |
+| `UnsatisfiedLinkError` | Missing JNI symbol     | Add to `WATCHER_SYMBOL_LIST` in waterui_jni.cpp |
+| Swift "Cannot find X"  | Header outdated        | Regenerate + copy waterui.h                     |
+| Type mismatch          | Wrong pointer type     | Check header for exact type name                |
+| Unit type `()` fails   | C can't represent `()` | Use marker struct: `struct Marker { _m: u8 }`   |
+
+## Adding New Primitive Types
+
+When adding support for a new primitive type (e.g., `f32`, custom struct), update all layers:
+
+### Swift Side
+
+1. **Watcher.swift** - Add watcher creator following existing patterns (see `makeDoubleWatcher`)
+2. **Binding.swift** - Add `WuiBinding` extension with read/watch/set/drop functions
+3. **Computed.swift** - Add `WuiComputed` extension if needed for computed values
+
+### Android Side
+
+1. **WatcherJni.kt** - Add `external fun` declarations for read/set/drop/watch/create
+2. **WuiBinding.kt** - Add factory function in companion object + `WatcherStructFactory` function
+3. **WuiComputed.kt** - Add factory function if needed for computed values
+4. **waterui_jni.cpp** - Add symbols to `WATCHER_SYMBOL_LIST` + implement JNI functions
+
+### Pattern: Follow Existing Types
+
+Look at how `Double`/`f64` is implemented across all layers and replicate the pattern for your new type. The key functions needed are:
+
+- `read_binding_<type>` / `read_computed_<type>`
+- `set_binding_<type>`
+- `drop_binding_<type>` / `drop_computed_<type>`
+- `watch_binding_<type>` / `watch_computed_<type>`
+- `new_watcher_<type>`
+
+## Custom Struct Types (Computed)
+
+For custom struct types like `Video`, `ResolvedColor`, etc.:
+
+1. **FfiStructs.kt** - Add Kotlin data class matching the C struct
+2. **WatcherJni.kt** - Add `readComputed<Type>`, `watchComputed<Type>`, `dropComputed<Type>`, `create<Type>Watcher`
+3. **WuiComputed.kt** - Add factory function
+4. **waterui_jni.cpp** - Convert C struct fields to Java object in JNI function
