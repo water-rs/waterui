@@ -15,12 +15,22 @@ use waterui_core::{AnyView, Environment, View, configurable};
 use crate::Url;
 
 /// Configuration for the Photo component, including the image source and placeholder view.
-#[derive(Debug)]
 pub struct PhotoConfig {
     /// The URL of the image to display.
     pub source: Url,
     /// The view to display while the image is loading or unavailable.
     pub placeholder: AnyView,
+    pub on_event: OnEvent,
+}
+
+type OnEvent = Box<dyn Fn(Event) + 'static>;
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// The image has finished loading.
+    Loaded,
+    /// The image has failed to load.
+    Error(String),
 }
 
 configurable!(
@@ -39,6 +49,9 @@ impl Photo {
         Self(PhotoConfig {
             source: source.into(),
             placeholder: AnyView::default(),
+            on_event: Box::new(|_event| {
+                // No-op default handler
+            }),
         })
     }
 
@@ -50,6 +63,27 @@ impl Photo {
     #[must_use]
     pub fn placeholder(mut self, placeholder: impl Into<AnyView>) -> Self {
         self.0.placeholder = placeholder.into();
+        self
+    }
+
+    /// Sets the event handler for the photo.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use waterui_media::{Photo, photo::Event};
+    ///
+    /// let photo = Photo::new(url)
+    ///     .on_event(|event| {
+    ///         match event {
+    ///             Event::Loaded => println!("Image loaded!"),
+    ///             Event::Error(msg) => println!("Error: {}", msg),
+    ///         }
+    ///     });
+    /// ```
+    #[must_use]
+    pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
+        self.0.on_event = Box::new(handler);
         self
     }
 

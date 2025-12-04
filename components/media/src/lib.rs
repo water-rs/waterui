@@ -81,7 +81,7 @@ pub mod video;
 pub use {
     live::LivePhoto,
     photo::Photo,
-    video::{Video, VideoPlayer},
+    video::{AspectRatio, Video, VideoPlayer},
 };
 
 /// URL types for working with media resources

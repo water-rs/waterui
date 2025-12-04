@@ -127,7 +127,7 @@ impl AndroidDevice {
             .take()
             .ok_or_else(|| Report::msg("failed to capture adb logcat output"))?;
 
-        let log_dir = project.root().join(".waterui/logs");
+        let log_dir = project.root().join(".water/logs");
         util::ensure_directory(&log_dir)?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

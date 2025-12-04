@@ -12,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+cargo_toml = "0.22"
 clap = { version = "4.5.49", features = ["derive"] }
 const_format = "0.2"
 console = "0.16.1"
@@ -36,7 +37,6 @@ tokio = { version = "1", features = ["full"] }
 futures-util = "0.3.31"
 indexmap = "2.6.0"
 tungstenite = "0.23"
-tokio-tungstenite = "0.23"
 thiserror = "2.0.17"
 smol = "2.0.2"
 atty = "0.2.14"
