@@ -58,6 +58,14 @@ typedef enum WuiStretchAxis {
   WuiStretchAxis_CrossAxis = 5,
 } WuiStretchAxis;
 
+/**
+ * FFI event enum.
+ */
+typedef enum WuiEvent {
+  WuiEvent_Appear,
+  WuiEvent_Disappear,
+} WuiEvent;
+
 typedef enum WuiAnimation {
   WuiAnimation_Default,
   WuiAnimation_None,
@@ -451,6 +459,11 @@ typedef struct WuiFont WuiFont;
 
 typedef struct WuiLayout WuiLayout;
 
+/**
+ * Wrapper for OnEvent to avoid orphan rule issues.
+ */
+typedef struct WuiOnEventHandler WuiOnEventHandler;
+
 typedef struct WuiTabContent WuiTabContent;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
@@ -519,6 +532,310 @@ typedef struct WuiMetadata_____WuiEnv {
  */
 typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
 
+/**
+ * C-compatible empty marker struct for Secure metadata.
+ * This is needed because `()` (unit type) is not representable in C.
+ */
+typedef struct WuiSecureMarker {
+  /**
+   * Placeholder field to ensure struct has valid size in C.
+   * The actual value is meaningless - Secure is just a marker type.
+   */
+  uint8_t _marker;
+} WuiSecureMarker;
+
+typedef struct WuiMetadata_WuiSecureMarker {
+  struct WuiAnyView *content;
+  struct WuiSecureMarker value;
+} WuiMetadata_WuiSecureMarker;
+
+/**
+ * Type alias for Metadata<Secure> FFI struct
+ * Layout: { content: *mut WuiAnyView, value: WuiSecureMarker }
+ */
+typedef struct WuiMetadata_WuiSecureMarker WuiMetadataSecure;
+
+/**
+ * FFI-safe representation of a gesture type.
+ */
+typedef enum WuiGesture_Tag {
+  /**
+   * A tap gesture requiring a specific number of taps.
+   */
+  WuiGesture_Tap,
+  /**
+   * A long-press gesture requiring a minimum duration.
+   */
+  WuiGesture_LongPress,
+  /**
+   * A drag gesture with minimum distance threshold.
+   */
+  WuiGesture_Drag,
+  /**
+   * A magnification (pinch) gesture with initial scale.
+   */
+  WuiGesture_Magnification,
+  /**
+   * A rotation gesture with initial angle.
+   */
+  WuiGesture_Rotation,
+  /**
+   * A sequential composition of two gestures.
+   */
+  WuiGesture_Then,
+} WuiGesture_Tag;
+
+typedef struct WuiGesture_Tap_Body {
+  uint32_t count;
+} WuiGesture_Tap_Body;
+
+typedef struct WuiGesture_LongPress_Body {
+  uint32_t duration;
+} WuiGesture_LongPress_Body;
+
+typedef struct WuiGesture_Drag_Body {
+  float min_distance;
+} WuiGesture_Drag_Body;
+
+typedef struct WuiGesture_Magnification_Body {
+  float initial_scale;
+} WuiGesture_Magnification_Body;
+
+typedef struct WuiGesture_Rotation_Body {
+  float initial_angle;
+} WuiGesture_Rotation_Body;
+
+typedef struct WuiGesture_Then_Body {
+  /**
+   * The first gesture that must complete.
+   */
+  struct WuiGesture *first;
+  /**
+   * The gesture that runs after the first completes.
+   */
+  struct WuiGesture *then;
+} WuiGesture_Then_Body;
+
+typedef struct WuiGesture {
+  WuiGesture_Tag tag;
+  union {
+    WuiGesture_Tap_Body tap;
+    WuiGesture_LongPress_Body long_press;
+    WuiGesture_Drag_Body drag;
+    WuiGesture_Magnification_Body magnification;
+    WuiGesture_Rotation_Body rotation;
+    WuiGesture_Then_Body then;
+  };
+} WuiGesture;
+
+/**
+ * FFI-safe representation of a gesture observer.
+ */
+typedef struct WuiGestureObserver {
+  /**
+   * The gesture type to observe.
+   */
+  struct WuiGesture gesture;
+  /**
+   * Pointer to the action handler.
+   */
+  struct WuiAction *action;
+} WuiGestureObserver;
+
+typedef struct WuiMetadata_WuiGestureObserver {
+  struct WuiAnyView *content;
+  struct WuiGestureObserver value;
+} WuiMetadata_WuiGestureObserver;
+
+/**
+ * Type alias for Metadata<GestureObserver> FFI struct
+ */
+typedef struct WuiMetadata_WuiGestureObserver WuiMetadataGesture;
+
+/**
+ * FFI-safe representation of an event handler.
+ */
+typedef struct WuiOnEvent {
+  /**
+   * The event type to listen for.
+   */
+  enum WuiEvent event;
+  /**
+   * Opaque pointer to the OnEvent (owns the handler).
+   */
+  struct WuiOnEventHandler *handler;
+} WuiOnEvent;
+
+typedef struct WuiMetadata_WuiOnEvent {
+  struct WuiAnyView *content;
+  struct WuiOnEvent value;
+} WuiMetadata_WuiOnEvent;
+
+/**
+ * Type alias for Metadata<OnEvent> FFI struct
+ */
+typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
+
+typedef struct Computed_Color WuiComputed_Color;
+
+typedef struct Computed_Str WuiComputed_Str;
+
+/**
+ * FFI-safe representation of a background.
+ */
+typedef enum WuiBackground_Tag {
+  /**
+   * A solid color background.
+   */
+  WuiBackground_Color,
+  /**
+   * An image background.
+   */
+  WuiBackground_Image,
+} WuiBackground_Tag;
+
+typedef struct WuiBackground_Color_Body {
+  WuiComputed_Color *color;
+} WuiBackground_Color_Body;
+
+typedef struct WuiBackground_Image_Body {
+  WuiComputed_Str *image;
+} WuiBackground_Image_Body;
+
+typedef struct WuiBackground {
+  WuiBackground_Tag tag;
+  union {
+    WuiBackground_Color_Body color;
+    WuiBackground_Image_Body image;
+  };
+} WuiBackground;
+
+typedef struct WuiMetadata_WuiBackground {
+  struct WuiAnyView *content;
+  struct WuiBackground value;
+} WuiMetadata_WuiBackground;
+
+/**
+ * Type alias for Metadata<Background> FFI struct
+ */
+typedef struct WuiMetadata_WuiBackground WuiMetadataBackground;
+
+/**
+ * FFI-safe representation of a foreground color.
+ */
+typedef struct WuiForegroundColor {
+  /**
+   * Pointer to the computed color.
+   */
+  WuiComputed_Color *color;
+} WuiForegroundColor;
+
+typedef struct WuiMetadata_WuiForegroundColor {
+  struct WuiAnyView *content;
+  struct WuiForegroundColor value;
+} WuiMetadata_WuiForegroundColor;
+
+/**
+ * Type alias for Metadata<ForegroundColor> FFI struct
+ */
+typedef struct WuiMetadata_WuiForegroundColor WuiMetadataForeground;
+
+/**
+ * FFI-safe representation of a shadow.
+ */
+typedef struct WuiShadow {
+  /**
+   * Shadow color (as opaque pointer - needs environment to resolve).
+   */
+  struct WuiColor *color;
+  /**
+   * Horizontal offset.
+   */
+  float offset_x;
+  /**
+   * Vertical offset.
+   */
+  float offset_y;
+  /**
+   * Blur radius.
+   */
+  float radius;
+} WuiShadow;
+
+typedef struct WuiMetadata_WuiShadow {
+  struct WuiAnyView *content;
+  struct WuiShadow value;
+} WuiMetadata_WuiShadow;
+
+/**
+ * Type alias for Metadata<Shadow> FFI struct
+ */
+typedef struct WuiMetadata_WuiShadow WuiMetadataShadow;
+
+typedef struct Binding_bool WuiBinding_bool;
+
+/**
+ * FFI-safe representation of focused state.
+ */
+typedef struct WuiFocused {
+  /**
+   * Binding to the focus state (true = focused).
+   */
+  WuiBinding_bool *binding;
+} WuiFocused;
+
+typedef struct WuiMetadata_WuiFocused {
+  struct WuiAnyView *content;
+  struct WuiFocused value;
+} WuiMetadata_WuiFocused;
+
+/**
+ * Type alias for Metadata<Focused> FFI struct
+ */
+typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
+
+/**
+ * FFI-safe representation of edge set for safe area.
+ */
+typedef struct WuiEdgeSet {
+  /**
+   * Ignore safe area on top edge.
+   */
+  bool top;
+  /**
+   * Ignore safe area on leading edge.
+   */
+  bool leading;
+  /**
+   * Ignore safe area on bottom edge.
+   */
+  bool bottom;
+  /**
+   * Ignore safe area on trailing edge.
+   */
+  bool trailing;
+} WuiEdgeSet;
+
+/**
+ * FFI-safe representation of IgnoreSafeArea.
+ */
+typedef struct WuiIgnoreSafeArea {
+  /**
+   * Which edges should ignore safe area.
+   */
+  struct WuiEdgeSet edges;
+} WuiIgnoreSafeArea;
+
+typedef struct WuiMetadata_WuiIgnoreSafeArea {
+  struct WuiAnyView *content;
+  struct WuiIgnoreSafeArea value;
+} WuiMetadata_WuiIgnoreSafeArea;
+
+/**
+ * Type alias for Metadata<IgnoreSafeArea> FFI struct
+ */
+typedef struct WuiMetadata_WuiIgnoreSafeArea WuiMetadataIgnoreSafeArea;
+
 typedef struct WuiResolvedColor {
   float red;
   float green;
@@ -530,8 +847,6 @@ typedef struct WuiResolvedColor {
 typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 
 typedef struct Binding_Color WuiBinding_Color;
-
-typedef struct Computed_Color WuiComputed_Color;
 
 typedef struct WuiArraySlice_u8 {
   uint8_t *head;
@@ -715,8 +1030,6 @@ typedef struct WuiButton {
   struct WuiAction *action;
 } WuiButton;
 
-typedef struct Computed_Str WuiComputed_Str;
-
 typedef struct WuiLink {
   struct WuiAnyView *label;
   WuiComputed_Str *url;
@@ -787,8 +1100,6 @@ typedef struct WuiTextField {
   struct WuiText prompt;
   enum WuiKeyboardType keyboard;
 } WuiTextField;
-
-typedef struct Binding_bool WuiBinding_bool;
 
 typedef struct WuiToggle {
   struct WuiAnyView *label;
@@ -1111,6 +1422,126 @@ struct WuiTypeId waterui_metadata_env_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_secure_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataSecure waterui_force_as_metadata_secure(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_gesture_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataGesture waterui_force_as_metadata_gesture(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_on_event_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_background_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataBackground waterui_force_as_metadata_background(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_foreground_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataForeground waterui_force_as_metadata_foreground(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_shadow_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataShadow waterui_force_as_metadata_shadow(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_focused_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataFocused waterui_force_as_metadata_focused(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_ignore_safe_area_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataIgnoreSafeArea waterui_force_as_metadata_ignore_safe_area(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -1875,6 +2306,35 @@ struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_progress_id(void);
+
+/**
+ * Calls an OnEvent handler with the given environment.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiOnEventHandler.
+ * * `env` must be a valid pointer to a WuiEnv.
+ * * This consumes the handler - it can only be called once.
+ */
+void waterui_call_on_event(struct WuiOnEventHandler *handler, const struct WuiEnv *env);
+
+/**
+ * Drops an OnEvent handler without calling it.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiOnEventHandler.
+ */
+void waterui_drop_on_event(struct WuiOnEventHandler *handler);
+
+/**
+ * Drops a WuiGesture, recursively freeing any Then variants.
+ *
+ * # Safety
+ *
+ * The gesture pointer must be valid and properly initialized.
+ */
+void waterui_drop_gesture(struct WuiGesture *gesture);
 
 /**
  * Reads the current value from a binding
