@@ -17,6 +17,8 @@
 //!    - Allow the view to extend edge-to-edge for those edges
 //! 3. **Handle changes**: Re-layout when safe area changes (keyboard, rotation, etc.)
 
+use waterui_core::metadata::MetadataKey;
+
 /// Specifies which edges should ignore safe area insets.
 ///
 /// Used with `IgnoreSafeArea` to control which edges of a view
@@ -131,6 +133,8 @@ pub struct IgnoreSafeArea {
     /// Which edges should ignore the safe area.
     pub edges: EdgeSet,
 }
+
+impl MetadataKey for IgnoreSafeArea {}
 
 impl IgnoreSafeArea {
     /// Creates a new `IgnoreSafeArea` with the specified edges.
