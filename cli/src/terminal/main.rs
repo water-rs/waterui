@@ -12,8 +12,8 @@ use color_eyre::{
     eyre::{Report, Result},
 };
 use command::{
-    BackendCommands, BuildCommands, CaptureArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs,
-    DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
+    BackendCommands, BuildCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs,
+    DeviceCommands, DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
 };
 use console::style;
 use dialoguer::Confirm;
@@ -59,8 +59,9 @@ enum Commands {
     Doctor(DoctorArgs),
     /// List available devices and simulators
     Devices(DevicesArgs),
-    /// Capture a screenshot from a simulator or device
-    Capture(CaptureArgs),
+    /// Manage device operations (capture screenshots, etc.)
+    #[command(subcommand)]
+    Device(DeviceCommands),
 }
 
 fn main() {
@@ -197,17 +198,19 @@ fn run_cli() -> Result<()> {
                 render_device_table(&devices);
             }
         }
-        Commands::Capture(args) => {
-            let report = command::capture::run(args)?;
-            emit_or_print(&report, format, |report| {
-                info!(
-                    "Screenshot captured from {} ({}) -> {}",
-                    report.device,
-                    report.platform,
-                    report.output_path.display()
-                );
-            })?;
-        }
+        Commands::Device(subcommand) => match subcommand {
+            DeviceCommands::Capture(args) => {
+                let report = command::device::capture(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Screenshot captured from {} ({}) -> {}",
+                        report.device,
+                        report.platform,
+                        report.output_path.display()
+                    );
+                })?;
+            }
+        },
     }
 
     Ok(())
