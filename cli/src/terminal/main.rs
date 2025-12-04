@@ -210,6 +210,59 @@ fn run_cli() -> Result<()> {
                     );
                 })?;
             }
+            DeviceCommands::Tap(args) => {
+                let report = command::device::tap(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Tapped at ({}, {}) on {} ({})",
+                        report.x, report.y, report.device, report.platform
+                    );
+                    if let Some(diff) = &report.diff {
+                        render_diff_result(diff);
+                    }
+                })?;
+            }
+            DeviceCommands::Swipe(args) => {
+                let report = command::device::swipe(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Swiped from ({}, {}) to ({}, {}) on {} ({})",
+                        report.start.0,
+                        report.start.1,
+                        report.end.0,
+                        report.end.1,
+                        report.device,
+                        report.platform
+                    );
+                    if let Some(diff) = &report.diff {
+                        render_diff_result(diff);
+                    }
+                })?;
+            }
+            DeviceCommands::Type(args) => {
+                let report = command::device::type_text(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Typed {} characters on {} ({})",
+                        report.text_length, report.device, report.platform
+                    );
+                    if let Some(diff) = &report.diff {
+                        render_diff_result(diff);
+                    }
+                })?;
+            }
+            DeviceCommands::Key(args) => {
+                let report = command::device::key(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!(
+                        "Sent '{}' key to {} ({})",
+                        report.key, report.device, report.platform
+                    );
+                    if let Some(diff) = &report.diff {
+                        render_diff_result(diff);
+                    }
+                })?;
+            }
         },
     }
 
@@ -453,5 +506,38 @@ fn render_device_table(devices: &[waterui_cli::device::DeviceInfo]) {
                 println!("      {detail}");
             }
         }
+    }
+}
+
+fn render_diff_result(diff: &command::device::DiffResult) {
+    if diff.changed_rects.is_empty() {
+        println!("  No changes detected.");
+        return;
+    }
+
+    println!("  Changed regions:");
+    for rect in &diff.changed_rects {
+        println!(
+            "    • ({}, {}) to ({}, {}) - {}x{} pixels",
+            rect.x,
+            rect.y,
+            rect.x + rect.width,
+            rect.y + rect.height,
+            rect.width,
+            rect.height
+        );
+    }
+    println!(
+        "  Total: {} pixels changed ({:.1}% of screen)",
+        diff.total_changed_pixels, diff.change_percentage
+    );
+
+    if let Some(path) = &diff.diff_image_path {
+        println!("  Diff image saved to: {}", path.display());
+    } else {
+        println!(
+            "  {}",
+            style("Hint: Use --diff <path> to save a visual diff image.").dim()
+        );
     }
 }
