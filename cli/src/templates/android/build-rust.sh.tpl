@@ -8,14 +8,21 @@ if ! command -v water >/dev/null 2>&1; then
     exit 1
 fi
 
-PROFILE=${1:-debug}
-CLI_ARGS=()
+# Usage: build-rust.sh <target-triple> [release]
+# Example: build-rust.sh aarch64-linux-android release
+TARGET="${1:-}"
+PROFILE="${2:-debug}"
+
+if [ -z "$TARGET" ]; then
+    echo "error: target triple is required" >&2
+    echo "usage: build-rust.sh <target-triple> [release]" >&2
+    echo "example: build-rust.sh aarch64-linux-android release" >&2
+    exit 1
+fi
+
+CLI_ARGS=(build "$TARGET" --project "$SCRIPT_DIR")
 if [ "$PROFILE" = "release" ]; then
     CLI_ARGS+=(--release)
 fi
 
-if [ "${#CLI_ARGS[@]}" -gt 0 ]; then
-    exec water build android --project "$SCRIPT_DIR" "${CLI_ARGS[@]}"
-else
-    exec water build android --project "$SCRIPT_DIR"
-fi
+exec water "${CLI_ARGS[@]}"

@@ -1,5 +1,6 @@
 .DS_Store
 target
+.water
 apple/DerivedData
 apple/build
 *.xcworkspace/xcuserdata

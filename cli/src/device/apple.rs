@@ -463,7 +463,7 @@ struct AppleLogResult {
 }
 
 fn apple_log_path(project: &Project, bundle_id: &str) -> Result<PathBuf> {
-    let log_dir = project.root().join(".waterui/logs");
+    let log_dir = project.root().join(".water/logs");
     util::ensure_directory(&log_dir)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
