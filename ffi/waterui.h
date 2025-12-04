@@ -105,12 +105,11 @@ typedef enum WuiPhotoEventType {
   WuiPhotoEventType_Error = 1,
 } WuiPhotoEventType;
 
-enum WuiAspectRatio {
+typedef enum WuiAspectRatio {
   WuiAspectRatio_Fit = 0,
   WuiAspectRatio_Fill = 1,
   WuiAspectRatio_Stretch = 2,
-};
-typedef int32_t WuiAspectRatio;
+} WuiAspectRatio;
 
 /**
  * FFI representation of video player events.
@@ -862,6 +861,28 @@ typedef struct WuiMetadata_WuiIgnoreSafeArea {
  */
 typedef struct WuiMetadata_WuiIgnoreSafeArea WuiMetadataIgnoreSafeArea;
 
+/**
+ * FFI-safe representation of Retain metadata.
+ * The actual retained value is opaque - renderers just need to keep it alive.
+ */
+typedef struct WuiRetain {
+  /**
+   * Opaque pointer to the retained value (Box<dyn Any>).
+   * This must be kept alive and dropped when the view is disposed.
+   */
+  void *_opaque;
+} WuiRetain;
+
+typedef struct WuiMetadata_WuiRetain {
+  struct WuiAnyView *content;
+  struct WuiRetain value;
+} WuiMetadata_WuiRetain;
+
+/**
+ * Type alias for Metadata<Retain> FFI struct
+ */
+typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
+
 typedef struct WuiResolvedColor {
   float red;
   float green;
@@ -1270,7 +1291,7 @@ typedef struct WuiFn_WuiVideoEvent {
 typedef struct WuiVideoPlayer {
   WuiComputed_Video *video;
   WuiBinding_Volume *volume;
-  WuiAspectRatio aspect_ratio;
+  enum WuiAspectRatio aspect_ratio;
   bool show_controls;
   struct WuiFn_WuiVideoEvent on_event;
 } WuiVideoPlayer;
@@ -1612,6 +1633,30 @@ struct WuiTypeId waterui_metadata_ignore_safe_area_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataIgnoreSafeArea waterui_force_as_metadata_ignore_safe_area(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_retain_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataRetain waterui_force_as_metadata_retain(struct WuiAnyView *view);
+
+/**
+ * Drops the retained value.
+ *
+ * # Safety
+ * The caller must ensure that `retain` is a valid pointer returned from
+ * `waterui_force_as_metadata_retain` and has not been dropped before.
+ */
+void waterui_drop_retain(struct WuiRetain retain);
 
 /**
  * # Safety
