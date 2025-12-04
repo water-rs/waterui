@@ -1,371 +1,184 @@
 # WaterUI CLI
 
-WaterUI ships with a dedicated command line interface, exposed as the `water`
-binary, to help you bootstrap, run, and package cross‑platform applications that
-use the framework. The CLI keeps common platform tooling wired together so you
-can stay inside your editor instead of juggling Xcode, Gradle, and browser build
-chains.
+The official command-line interface for [WaterUI](https://github.com/water-rs/waterui), a cross-platform reactive UI framework for Rust.
 
-## Features at a Glance
-
-- Scaffold ready-to-run WaterUI projects with optional Android, Apple (SwiftUI),
-  and Web backends.
-- **Hot-reload** your app on Apple simulators/devices, Android emulators, or the
-  browser with a single command.
-- **Live panic reporting** - Rust panics in your app are captured and displayed
-  with colorful, formatted output including file location and backtrace.
-- **Crash collection** - Automatically captures and reports crashes from native
-  platforms with log excerpts.
-- Package signed artifacts for distribution (APK and iOS app bundles).
-- Audit and repair your toolchain with `water doctor`.
-- Inspect connected simulators, emulators, and physical devices.
-- Clean up build artifacts and caches across supported platforms.
-- **JSON output mode** for CI/CD pipelines and LLM/automation integration.
+The `water` tool handles project scaffolding, building, packaging, and running applications on Android, iOS, macOS, and the Web. It abstracts away the complexity of platform-specific build systems (Gradle, Xcode) and provides a unified development workflow with features like hot reload.
 
 ## Installation
 
-The CLI is developed in this repository and built with Rust. Install it with
-`cargo` from the workspace root:
+### From Source
+
+To install the CLI from the repository:
 
 ```bash
 cargo install --path cli
 ```
 
-During local development you can also run the binary without installing it:
+Ensure that `~/.cargo/bin` is in your `PATH`.
+
+## Usage
 
 ```bash
-cargo run -p waterui-cli -- <command> [flags]
+water <command> [options]
 ```
 
-> **Note:** Release builds embed version information from Git tags. If you are
-> working from an unpublished checkout without tags, use the `--dev` flag on
-> project-scaffolding commands to depend on the latest framework sources.
+### Core Commands
 
-### Prerequisites
-
-- A Rust toolchain that supports the 2024 edition (`rustup toolchain install
-  stable` keeps you current).
-- Git (used by the build script to resolve framework versions).
-- Platform tooling for the backends you intend to use:
-  - **Apple platforms:** macOS host with Xcode + command line tools + CMake (`brew install cmake`).
-  - **Android:** Android SDK, NDK, CMake, JDK 17+, and either an emulator or a connected device.
-  - **Web:** a modern browser (the CLI spins up a local development server).
-
-Run `water doctor` any time to verify that everything is configured correctly.
-
-## Global Flags
-
-All commands share a couple of helpful flags:
-
-- `-v / -vv`: increase logging verbosity (DEBUG / TRACE).
-- `--json`: emit machine-readable JSON output. This mode is designed for:
-  - CI/CD pipeline integration
-  - LLM agents and automation tools
-  - Scripting and programmatic access
-  
-  JSON output automatically disables interactive prompts, so pass the necessary
-  flags up front (details below).
-
-## Commands
-
-| Command | Purpose | Common Flags |
-| --- | --- | --- |
-| `water create` | Scaffold a new WaterUI project interactively or from flags. | `--name`, `--directory`, `--backend`, `--dev`, `--waterui-path`, `--yes` |
-| `water run` | Build and hot-reload the app on a selected backend. | `--platform`, `--project`, `--device`, `--release`, `--no-hot-reload` |
-| `water build` | Build native Rust libraries for a platform (used by IDE build scripts). | `android`, `apple`, `--release`, `--targets` |
-| `water package` | Produce distributable artifacts without launching them. | `--platform`, `--all`, `--release`, `--project` |
-| `water doctor` | Check (and optionally fix) toolchain prerequisites. | `--fix` |
-| `water devices` | List available simulators, emulators, and devices. |  |
-| `water capture` | Capture a screenshot from a simulator or device. | `--device`, `--platform`, `-o/--output` |
-| `water clean` | Remove Cargo, Gradle, Xcode, and workspace caches. | `-y/--yes` |
-| `water add-backend` | Add an additional backend to an existing project. | `--project`, `--dev` |
-
-A brief overview of the most common workflows follows.
-
-### Create a Project
-
-Generate a new project and choose which targets you need:
+#### `create`
+Scaffold a new WaterUI project.
 
 ```bash
-water create --name "Water Demo" \
-  --bundle-identifier com.example.waterdemo \
-  --backend swiftui --backend android --backend web
+# Interactive mode
+water create
+
+# Create a project with specific backends
+water create --name "My App" --backend apple --backend android
+
+# Create a playground for quick experimentation
+water create --playground
 ```
 
-If you omit flags the CLI guides you through the options interactively. Newly
-created projects include:
+**Options:**
+*   `--name <NAME>`: Application display name.
+*   `--bundle-identifier <ID>`: Bundle ID (e.g., `com.example.app`).
+*   `--backend <BACKEND>`: Backends to include (`apple`, `android`, `web`).
+*   `--dev`: Use the development version of WaterUI (requires a local repository path).
 
-- A Rust library with a starter `lib.rs`.
-- `Water.toml`, which declares the package metadata and enabled backends.
-- Backend folders (`apple/`, `android/`, `web/`) populated with templates and
-  build scripts.
-
-Pass `--dev` to use the latest framework sources directly from Git while new
-releases are being cut. When running with `--json`, also supply `--yes` (and
-any other configuration flags) so the command can stay non-interactive.
-
-#### Local Dev Mode (Recommended for Framework Development)
-
-When working on WaterUI itself, use local dev mode for instant feedback:
+#### `run`
+Build and run the application on a device or simulator.
 
 ```bash
-water create --name "My App" --dev --waterui-path /path/to/waterui
-```
-
-Or interactively—when you use `--dev` without `--waterui-path`, the CLI will
-prompt you for the local WaterUI repository path.
-
-**Benefits of local dev mode:**
-
-- **Instant feedback**: Changes to WaterUI or its backends are immediately
-  reflected—no need to run `water backend update` or `cargo update`.
-- **Direct path dependencies**: Cargo.toml uses `path = "..."` instead of git
-  dependencies, enabling seamless iteration.
-- **Symlink-free**: Gradle and Xcode reference the backends directly from your
-  WaterUI repository, keeping your project clean.
-
-**Requirements:**
-
-The WaterUI repository path must contain:
-- `backends/android/` - The Android backend (git submodule)
-- `backends/apple/` - The Apple/SwiftUI backend (git submodule)
-
-Initialize submodules if needed:
-
-```bash
-cd /path/to/waterui
-git submodule update --init --recursive
-```
-
-**Updating backends in local dev mode:**
-
-Since backends are referenced directly from your WaterUI repository, simply pull
-the latest changes:
-
-```bash
-cd /path/to/waterui
-git pull
-git submodule update --recursive
-```
-
-Note: `water backend update` is not available in local dev mode—the CLI will
-display instructions for updating via git instead.
-
-### Run with Hot Reload
-
-```bash
+# Run on a connected device or available simulator (interactive selection)
 water run
+
+# Run specifically on Android
+water run --platform android
+
+# Run on a specific device
+water run --device "iPhone 15"
+
+# Rerun the previous configuration
+water run again
 ```
 
-When no `--platform` is given, the CLI detects available targets and prompts you
-to choose (or uses `--device` to match a specific simulator/emulator name).
+**Key Features:**
+*   **Hot Reload:** Enabled by default. Changes to your Rust code are automatically applied to the running app without restarting the application state where possible.
+*   **Device Selection:** Automatically detects connected devices and simulators.
 
-**Features during `water run`:**
-
-- **Hot Reload**: Source changes trigger incremental rebuilds via a file watcher.
-  Disable this behaviour with `--no-hot-reload`.
-- **Live Panic Reporting**: If your Rust code panics, the CLI displays a colorful,
-  formatted report with the panic message, source location, thread name, and
-  backtrace—all without restarting your IDE.
-- **Crash Detection**: Native crashes are automatically captured with log excerpts
-  to help diagnose issues.
-- **Remote Logging**: Tracing logs from your app are streamed to the terminal.
-
-Pass `--release` for optimized builds once things are ready for profiling. JSON
-output requires supplying `--platform` or `--device` ahead of time to avoid
-interactive prompts.
-
-### Build Native Artifacts
-
-The `water build` command compiles Rust code for a specific platform. It's
-designed to be called from IDE build scripts (Xcode, Gradle) but can also be
-used directly:
+#### `doctor`
+Check your development environment for required tools and dependencies.
 
 ```bash
-water build android --release
-water build apple --release
-```
+# Check environment
+water doctor
 
-**Architecture:**
-
-Both Xcode and Android Studio projects are configured to call `water build`
-automatically during their build phases:
-
-- **Android**: Gradle runs `water build android` via a custom task before packaging
-- **Apple**: Xcode runs `water build apple` via a "Build Rust Library" script phase
-
-This ensures Rust compilation happens through a single, consistent path whether
-you run from the CLI (`water run`) or click "Run" in your IDE.
-
-The command honours environment variables such as `CONFIGURATION`,
-`BUILT_PRODUCTS_DIR`, and `ANDROID_BUILD_TARGETS` when invoked from IDE build
-phases.
-
-### Package Artifacts
-
-Produce platform bundles without launching them:
-
-```bash
-water package --platform android --release
-water package --platform ios --release
-```
-
-Use `--all` to build every configured backend. The Rust libraries are built
-automatically via the platform's native build system (Gradle/Xcode), which
-internally calls `water build`. JSON output requires specifying `--platform`
-or `--all` so the command can stay non-interactive.
-
-### Inspect and Fix Your Toolchain
-
-```bash
+# Attempt to automatically fix issues (e.g., installing missing tools)
 water doctor --fix
 ```
 
-`doctor` runs platform-specific health checks (Rust, Swift, Android). It verifies:
+Checks for:
+*   Rust toolchain and targets (`rustup`, `cargo`).
+*   Android SDK, NDK, CMake.
+*   Xcode and command-line tools (macOS).
+*   UI automation tools (`idb` for iOS).
 
-- **Rust**: cargo, rustup, required targets (e.g., `aarch64-linux-android`), sccache
-- **Swift/Apple**: xcodebuild, xcrun
-- **Android**: adb, emulator, Java/JDK, SDK, NDK, CMake, clang toolchain
-
-With `--fix` it attempts to repair critical issues automatically (installing
-missing Rust targets, JDK via Homebrew, etc.). JSON output removes the
-interactive prompts and surfaces structured summaries of each check and fix.
-
-### List Connected Devices
+#### `backend`
+Manage platform backends for your project.
 
 ```bash
-water devices --json
+# List configured backends
+water backend list
+
+# Add a new backend to an existing project
+water backend add --backend web
+
+# Update a backend to a specific version or commit
+water backend update android
 ```
 
-The JSON output is useful for automation—e.g. selecting the first available
-device inside a script. Without `--json`, the CLI prints a human-readable table.
+### Build & Package
 
-### Capture Screenshots
+#### `build`
+Compile the Rust library for a specific target.
 
 ```bash
-water capture --device "iPhone 16 Pro" -o screenshot.png
-water capture --device "emulator-5554" -o android-screenshot.png
-water capture --device "My Device" --platform android -o screenshot.png
+water build aarch64-linux-android
+water build aarch64-apple-ios --release
 ```
 
-Capture a screenshot from any running simulator or connected device. The
-`--device` flag accepts either the device name (e.g., `iPhone 16 Pro`) or its
-identifier (e.g., `emulator-5554` for Android emulators). The output defaults
-to `screenshot.png` in the current directory if `-o` is omitted.
-
-If the device name exists on multiple platforms (e.g., both Apple and Android),
-use `--platform apple` or `--platform android` to disambiguate.
-
-This command is particularly useful for:
-
-- **LLM Agents**: Capture visual state for debugging or verification
-- **CI/CD Pipelines**: Generate screenshots for visual regression testing
-- **Documentation**: Automate screenshot generation for docs
-
-JSON output includes the device name, platform, and output path:
-
-```json
-{
-  "device": "sdk gphone64 arm64",
-  "platform": "Android",
-  "output_path": "screenshot.png"
-}
-```
-
-### Clean Build Artifacts
+#### `package`
+Create distributable artifacts (APK, APP).
 
 ```bash
-water clean
+# Package for Android
+water package --platform android --release
+
+# Package for all configured platforms
+water package --all --release
 ```
 
-The command enumerates pending cleanup actions and asks for confirmation (skip
-the prompt with `--yes`). It deletes Cargo, Gradle, Xcode DerivedData, and other
-workspace caches to help you reset stubborn build environments. In JSON mode,
-the CLI auto-confirms and returns a structured report of what was removed,
-skipped, or failed.
+### Device Management
 
-### Add Additional Backends
-
-Extend an existing project with another target:
+#### `devices`
+List available devices and simulators.
 
 ```bash
-water add-backend swiftui
+water devices
 ```
 
-The CLI updates `Water.toml`, downloads the necessary templates, and ensures any
-generated scripts are executable. As with `create`, you can pass `--dev` if you
-need the development versions of the framework dependencies. Combine with
-`--json` for a structured summary of what changed.
-
-## Automating with JSON Output
-
-All commands support the `--json` flag for machine-readable output. This is
-particularly useful for:
-
-- **CI/CD Pipelines**: Parse build results, test reports, and diagnostics
-- **LLM Agents**: Structured output avoids parsing issues and provides clear
-  error information
-- **Scripting**: Programmatically query device lists, check doctor status, etc.
-
-Because prompts are disabled in JSON mode, provide any required confirmation
-flags (`--yes`, `--platform`, `--device`, etc.) up front.
-
-Example JSON output from `water doctor --json`:
-
-```json
-{
-  "status": "pass",
-  "sections": [
-    {
-      "title": "Rust toolchain",
-      "rows": [
-        {"status": "pass", "message": "Found `cargo`", "detail": "/usr/bin/cargo"}
-      ]
-    }
-  ],
-  "suggestions": []
-}
-```
-
-## Troubleshooting
-
-- Use `water doctor` first—it highlights missing SDK components, Rust targets,
-  and misconfigured environment variables.
-- For verbose logs add multiple `-v` flags (up to TRACE level).
-- If you cloned the repository and encounter "WATERUI_VERSION is not set" while
-  scaffolding, rerun the command with `--dev` to opt into the unreleased
-  framework branches.
-- If hot reload isn't connecting, check that no firewall is blocking the local
-  WebSocket server.
-
-## Contributing
-
-The CLI lives in `cli/` inside the main WaterUI workspace. Standard Rust
-development workflows apply:
+#### `device`
+Interact with running devices (useful for automation or debugging).
 
 ```bash
-cargo fmt
-cargo clippy --all-targets
-cargo test -p waterui-cli
+# Capture a screenshot
+water device capture --output screenshot.png
+
+# Tap the screen
+water device tap --x 500 --y 500 --device "iPhone 15"
+
+# Type text
+water device type "Hello World"
 ```
 
-### Architecture
+## Project Structure
 
-The CLI is structured as a library (`cli/src/lib.rs`) with a terminal frontend
-(`cli/src/terminal/`). This separation allows:
+A typical WaterUI project created with `water create`:
 
-- Core logic to be reused by different frontends
-- Clean separation between business logic and presentation
-- Easy testing of core functionality
+```
+my-app/
+├── Water.toml          # Project configuration
+├── Cargo.toml          # Rust dependencies
+├── src/
+│   └── lib.rs          # Application entry point
+├── apple/              # Xcode project (if Apple backend enabled)
+├── android/            # Android Studio project (if Android backend enabled)
+└── web/                # Web assets (if Web backend enabled)
+```
 
-Key modules:
+## Configuration (`Water.toml`)
 
-- `build.rs` - Unified build system with `BuildOptions` and `BuildCoordinator`
-- `installer.rs` - Cross-platform package installation
-- `doctor/` - Toolchain checks and auto-fixes
-- `platform/` - Platform-specific build and packaging
-- `device/` - Device discovery and management
+The `Water.toml` file defines project metadata and backend configurations.
 
-Bug reports and pull requests are welcome—open an issue in the main
-[`water-rs/waterui`](https://github.com/water-rs/waterui) repository with CLI
-details so we can triage it quickly.
+```toml
+[package]
+type = "app"
+name = "My App"
+bundle_identifier = "com.example.myapp"
+
+[backends.android]
+project_path = "android"
+version = "0.1.0"
+
+[backends.swift]
+project_path = "apple"
+scheme = "my-app"
+```
+
+## Architecture
+
+The CLI acts as a bridge between the Rust ecosystem and platform-specific build tools:
+
+*   **Android:** Wraps Gradle. `water run` invokes Gradle, which calls back into `water build` to compile the Rust shared library (`.so`), which is then packaged into the APK.
+*   **Apple:** Wraps `xcodebuild`. `water run` invokes Xcode, which calls back into `water build` to compile the Rust static library (`.a`), which is linked into the app bundle.
+
+This "Rust-as-a-dependency" approach ensures seamless integration with standard platform tooling while maintaining a unified Rust-centric workflow.
