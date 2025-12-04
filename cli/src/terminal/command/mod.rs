@@ -7,6 +7,7 @@ pub mod device;
 pub mod devices;
 pub mod doctor;
 pub mod package;
+pub mod permission;
 pub mod playground;
 pub mod run;
 
@@ -18,4 +19,5 @@ pub use device::DeviceCommands;
 pub use devices::DevicesArgs;
 pub use doctor::{DoctorArgs, DoctorReport};
 pub use package::PackageArgs;
+pub use permission::PermissionCommands;
 pub use run::RunArgs;
