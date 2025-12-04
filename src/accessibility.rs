@@ -8,12 +8,15 @@
 //! defaults whenever possible and use these helpers as the final step to ensure
 //! assistive technologies convey the intended experience.
 
+use waterui_core::metadata::MetadataKey;
 use waterui_str::Str;
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessibilityLabel(Str);
+
+impl MetadataKey for AccessibilityLabel {}
 
 impl AccessibilityLabel {
     /// Creates a label announced by assistive technologies when the default
@@ -96,6 +99,8 @@ pub enum AccessibilityRole {
     /// Grouping container that provides context for nested items.
     Group,
 }
+
+impl MetadataKey for AccessibilityRole {}
 
 /// Describes nuanced state transitions that assistive technologies use to keep
 /// users in sync with complex widgets.

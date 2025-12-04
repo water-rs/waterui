@@ -59,11 +59,15 @@
 //! When one element receives focus, any previously focused element will automatically
 //! lose focus due to the shared binding mechanism.
 
+use waterui_core::metadata::MetadataKey;
+
 use crate::Binding;
 
 /// A struct that represents a focused state based on a binding to a boolean value.
 #[derive(Debug, Clone)]
 pub struct Focused(pub Binding<bool>);
+
+impl MetadataKey for Focused {}
 
 impl Focused {
     /// Creates a new `Focused` instance based on an optional value binding.

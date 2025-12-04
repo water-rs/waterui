@@ -48,9 +48,7 @@ pub mod prelude {
     pub use padding::*;
     pub use style::*;
 
-    pub use theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, ThemeProvider, color as theme_color,
-    };
+    pub use theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
 
     pub use text::{
         TextConfig, font, highlight,

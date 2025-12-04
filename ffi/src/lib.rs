@@ -40,6 +40,7 @@ use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
+use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
 
@@ -525,7 +526,7 @@ pub struct WuiMetadata<T> {
     pub value: T,
 }
 
-impl<T: IntoFFI> IntoFFI for Metadata<T> {
+impl<T: IntoFFI + MetadataKey> IntoFFI for Metadata<T> {
     type FFI = WuiMetadata<T::FFI>;
     fn into_ffi(self) -> Self::FFI {
         WuiMetadata {
@@ -602,8 +603,8 @@ ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
 
 use crate::color::{WuiColor, WuiResolvedColor};
 use crate::reactive::WuiComputed;
-use waterui::background::Background;
 use waterui::Color;
+use waterui::background::Background;
 use waterui_color::ResolvedColor;
 
 /// FFI-safe representation of a background.

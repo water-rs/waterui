@@ -12,8 +12,8 @@ use color_eyre::{
     eyre::{Report, Result},
 };
 use command::{
-    BackendCommands, BuildArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs,
-    DeviceCommands, DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
+    BackendCommands, BuildArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs, DeviceCommands,
+    DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
 };
 use console::style;
 use dialoguer::Confirm;
@@ -110,9 +110,7 @@ fn run_cli() -> Result<()> {
             emit_or_print(&report, format, |report| {
                 info!(
                     "Built {} for {} ({})",
-                    report.artifact_kind,
-                    report.target,
-                    report.profile
+                    report.artifact_kind, report.target, report.profile
                 );
             })?;
         }
@@ -368,11 +366,6 @@ fn derive_suggestions(messages: &[String]) -> Vec<String> {
         .any(|msg| msg.contains("toolchain requirement"))
     {
         suggestions.push("Run `water doctor` to diagnose and fix toolchain issues.".to_string());
-    }
-
-    if lowered.iter().any(|msg| msg.contains("not found")) {
-        suggestions
-            .push("Install the missing tool or ensure it is available on your PATH.".to_string());
     }
 
     if suggestions.is_empty() {

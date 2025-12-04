@@ -2,7 +2,7 @@
 
 use nami::signal::IntoComputed;
 use waterui_color::{Color, Srgb};
-use waterui_core::Computed;
+use waterui_core::{Computed, metadata::MetadataKey};
 use waterui_str::Str;
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.
@@ -13,6 +13,8 @@ pub enum Background {
     /// An image background.
     Image(Computed<Str>),
 }
+
+impl MetadataKey for Background {}
 
 impl From<Color> for Background {
     fn from(color: Color) -> Self {
@@ -47,6 +49,8 @@ pub struct ForegroundColor {
     /// The computed color value.
     pub color: Computed<Color>,
 }
+
+impl MetadataKey for ForegroundColor {}
 
 impl ForegroundColor {
     /// Creates a new foreground color.

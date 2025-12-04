@@ -95,11 +95,7 @@
 use core::marker::PhantomData;
 
 use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
-use waterui_core::{
-    Environment,
-    env::{Store, WithEnv, with_env},
-    plugin::Plugin,
-};
+use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
     View,
@@ -583,40 +579,4 @@ pub fn install_font_signal<T: 'static>(env: &mut Environment, signal: Computed<R
 /// tracks the system appearance setting.
 pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>) {
     env.insert(ColorSchemeSignal(signal));
-}
-
-// ============================================================================
-// ThemeProvider - For layering themes in a view subtree
-// ============================================================================
-
-/// Applies a theme to a subtree of views.
-///
-/// Use this to override theme values for a specific part of your UI:
-///
-/// ```ignore
-/// ThemeProvider::new(
-///     my_card_view,
-///     Theme::new().color_scheme(ColorScheme::Dark)
-/// )
-/// ```
-#[derive(Default)]
-pub struct ThemeProvider<V> {
-    content: V,
-    theme: Theme,
-}
-
-impl<V> ThemeProvider<V> {
-    /// Creates a new theme provider that wraps the given content.
-    #[must_use]
-    pub fn new(content: V, theme: Theme) -> Self {
-        Self { content, theme }
-    }
-}
-
-impl<V: View> View for ThemeProvider<V> {
-    fn body(self, env: &Environment) -> impl View {
-        let mut themed_env = env.clone();
-        self.theme.install(&mut themed_env);
-        with_env(self.content, themed_env)
-    }
 }
