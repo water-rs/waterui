@@ -8,6 +8,8 @@
 //! by renderers, such as accessibility attributes, transition effects, or custom
 //! rendering instructions.
 
+use std::any::Any;
+
 use crate::{AnyView, Environment, View};
 
 /// Represents a view that carries additional metadata of type `T`.
@@ -83,5 +85,31 @@ impl<T: MetadataKey> IgnorableMetadata<T> {
 }
 
 impl<T: MetadataKey> View for IgnorableMetadata<T> {
-    fn body(self, _env: &Environment) -> impl View {}
+    fn body(self, _env: &Environment) -> impl View {
+        self.content
+    }
+}
+
+/// A metadata key that retains a value for its lifetime.
+///
+/// This is useful for keeping watcher guards, subscriptions, or other values
+/// alive as long as the view exists. The retained value is dropped when the
+/// view is dropped.
+///
+/// This type implements `MetadataKey` and is used with `Metadata`,
+/// so renderers must handle it (by extracting content and keeping the value alive).
+#[derive(Debug)]
+pub struct Retain(
+    /// The retained value (not used, just kept alive).
+    #[allow(dead_code)]
+    Box<dyn Any>,
+);
+
+impl MetadataKey for Retain {}
+
+impl Retain {
+    /// Creates a new `Retain` from a value.
+    pub fn new<T: 'static>(value: T) -> Self {
+        Self(Box::new(value))
+    }
 }
