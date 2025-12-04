@@ -94,8 +94,13 @@
 
 use core::marker::PhantomData;
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
+use nami::{
+    Computed, SignalExt, impl_constant,
+    signal::IntoSignal,
+    zip::{FlattenMap, zip},
+};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
+use waterui_text::font::FontWeight;
 
 use crate::{
     View,
