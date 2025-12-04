@@ -17,6 +17,7 @@
 //! ```
 
 use waterui_color::Color;
+use waterui_core::metadata::MetadataKey;
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
@@ -31,6 +32,8 @@ pub struct Shadow {
     /// The blur radius of the shadow in pixels.
     pub radius: f32,
 }
+
+impl MetadataKey for Shadow {}
 
 impl Shadow {
     /// Creates a new shadow with the specified color, offset, and radius.
