@@ -17,7 +17,7 @@ pub mod dynamic;
 mod label;
 pub use dynamic::Dynamic;
 pub mod metadata;
-pub use metadata::{IgnorableMetadata, Metadata};
+pub use metadata::{IgnorableMetadata, Metadata, Retain};
 pub mod native;
 use crate::View;
 pub use native::{Native, NativeView};

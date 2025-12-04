@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, Context, bail};
@@ -391,6 +392,9 @@ pub struct Config {
     /// When set, all dependencies use local paths instead of git/crates.io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
+    /// Permission configuration for playground projects.
+    #[serde(default, skip_serializing_if = "Permissions::is_empty")]
+    pub permissions: Permissions,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -406,6 +410,7 @@ impl Config {
             hot_reload: HotReload::default(),
             dev_dependencies: false,
             waterui_path: None,
+            permissions: Permissions::default(),
         }
     }
 
@@ -606,5 +611,112 @@ pub struct HotReload {
 impl HotReload {
     fn is_empty(&self) -> bool {
         self.watch.is_empty()
+    }
+}
+
+/// Permission configuration for playground projects.
+///
+/// Supports two formats in Water.toml:
+/// 1. Simple list: `enabled = ["camera", "location"]`
+/// 2. With descriptions: `[permissions.camera] description = "..."`
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Permissions {
+    /// List of enabled permissions (simple form).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled: Vec<String>,
+
+    /// Permission-specific configurations with custom descriptions.
+    #[serde(flatten)]
+    pub detailed: HashMap<String, PermissionConfig>,
+}
+
+impl Permissions {
+    /// Check if permissions section is empty (for serialization skip).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_empty() && self.detailed.is_empty()
+    }
+
+    /// Check if a permission is configured.
+    #[must_use]
+    pub fn has(&self, name: &str) -> bool {
+        self.enabled.contains(&name.to_string()) || self.detailed.contains_key(name)
+    }
+
+    /// Remove a permission from the configuration.
+    /// Returns true if the permission was found and removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let in_enabled = self.enabled.iter().position(|p| p == name).map(|i| {
+            self.enabled.remove(i);
+        });
+        let in_detailed = self.detailed.remove(name);
+        in_enabled.is_some() || in_detailed.is_some()
+    }
+
+    /// Get all enabled permission names (combining both formats).
+    #[must_use]
+    pub fn all_enabled(&self) -> Vec<String> {
+        let mut perms: Vec<String> = self.enabled.clone();
+        for (name, config) in &self.detailed {
+            if config.is_enabled() && !perms.contains(name) {
+                perms.push(name.clone());
+            }
+        }
+        perms
+    }
+
+    /// Get the custom description for a permission, if any.
+    #[must_use]
+    pub fn get_description(&self, name: &str) -> Option<String> {
+        self.detailed.get(name).and_then(|c| c.description())
+    }
+
+    /// Add a permission to the enabled list (simple form).
+    pub fn add(&mut self, name: String) {
+        if !self.has(&name) {
+            self.enabled.push(name);
+        }
+    }
+
+    /// Add a permission with a custom description.
+    pub fn add_with_description(&mut self, name: String, description: String) {
+        // Remove from enabled list if present (since we're adding with description)
+        if let Some(pos) = self.enabled.iter().position(|p| p == &name) {
+            self.enabled.remove(pos);
+        }
+        self.detailed.insert(
+            name,
+            PermissionConfig::WithDescription { description },
+        );
+    }
+}
+
+/// Configuration for a single permission.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum PermissionConfig {
+    /// Simple enable: `permission = true`
+    Enabled(bool),
+    /// With description: `permission = { description = "..." }`
+    WithDescription { description: String },
+}
+
+impl PermissionConfig {
+    /// Check if this permission is enabled.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            Self::Enabled(enabled) => *enabled,
+            Self::WithDescription { .. } => true,
+        }
+    }
+
+    /// Get the description if present.
+    #[must_use]
+    pub fn description(&self) -> Option<String> {
+        match self {
+            Self::Enabled(_) => None,
+            Self::WithDescription { description } => Some(description.clone()),
+        }
     }
 }
