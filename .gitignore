@@ -6,9 +6,7 @@
 /backends/apple/build
 /.build
 /water-demo
-# Tutorial book build output
-/tutorial-book/book/
-/tutorial-book/target/
+
 
 .vscode/*
 
