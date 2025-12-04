@@ -14,8 +14,10 @@ use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata,
-    env::{With, WithEnv},
+    env::{With, use_env},
     handler::{HandlerFn, HandlerFnOnce},
+    metadata::MetadataKey,
+    plugin::Plugin,
 };
 
 use waterui_layout::{
@@ -46,23 +48,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `metadata` - The metadata to attach
-    fn metadata<T>(self, metadata: T) -> Metadata<T> {
+    fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
         Metadata::new(self, metadata)
     }
 
-    /// Associates a value with this view in the environment.
+    /// Associates  a value with this view in the environment.
     ///
     /// # Arguments
     /// * `value` - The value to associate with this view
     fn with<T: 'static>(self, value: T) -> With<Self, T> {
         With::new(self, value)
-    }
-
-    /// Replaces the environment for this view and its children.
-    /// # Arguments
-    /// * `env` - The new environment to use
-    fn with_env(self, env: Environment) -> WithEnv<Self> {
-        WithEnv::new(self, env)
     }
 
     /// Sets this view as the content of a navigation view with the specified title.
@@ -328,6 +323,14 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
         Metadata::new(self, IgnoreSafeArea::new(edges))
+    }
+
+    /// Installs a plugin into the environment.
+    fn install(self, plugin: impl Plugin) -> impl View {
+        use_env(move |mut env: Environment| {
+            plugin.install(&mut env);
+            Metadata::new(self, env)
+        })
     }
 }
 

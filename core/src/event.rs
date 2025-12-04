@@ -3,6 +3,7 @@
 use crate::{
     Metadata, View,
     handler::{BoxHandlerOnce, HandlerFnOnce, HandlerOnce, into_handler_once},
+    metadata::MetadataKey,
 };
 use alloc::boxed::Box;
 /// An enumeration of events that can occur within the UI framework.
@@ -21,6 +22,8 @@ pub struct OnEvent {
     event: Event,
     handler: BoxHandlerOnce<()>,
 }
+
+impl MetadataKey for OnEvent {}
 
 impl OnEvent {
     /// Creates a new `OnEvent` handler for the specified event and action.

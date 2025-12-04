@@ -4,6 +4,7 @@ use clap::{Args, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
+use fs2::FileExt;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -151,6 +152,10 @@ pub struct RunArgs {
     /// Enable experimental mold linker integration (Linux hosts only)
     #[arg(long)]
     mold: bool,
+
+    /// Disable hot reload (exit after app launch)
+    #[arg(long)]
+    no_hot_reload: bool,
 }
 
 /// Build and launch a `WaterUI` project for the selected platform.
@@ -199,6 +204,7 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
     let enable_sccache = !args.no_sccache;
     let mold_requested = args.mold;
     let log_filter = args.log_filter.clone();
+    let no_hot_reload = args.no_hot_reload;
 
     if is_json && !had_explicit_platform && device.is_none() {
         bail!(
@@ -262,13 +268,14 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         enable_sccache,
         mold_requested,
         log_filter,
+        no_hot_reload,
     )?;
 
     Ok(())
 }
 
 fn run_again(args: RunArgs) -> Result<()> {
-    if args.device.is_some() || args.release || args.no_sccache || args.mold {
+    if args.device.is_some() || args.release || args.no_sccache || args.mold || args.no_hot_reload {
         bail!(
             "`water run again` does not accept additional options. Re-run the original command without extra flags."
         );
@@ -288,6 +295,7 @@ fn run_again(args: RunArgs) -> Result<()> {
         release: snapshot.release,
         no_sccache: !snapshot.enable_sccache,
         mold: snapshot.mold,
+        no_hot_reload: false, // Replay always uses hot reload
     };
 
     run_fresh(replay_args)
@@ -668,7 +676,7 @@ fn dylib_filename(crate_name: &str, target_triple: Option<&str>) -> String {
     format!("{prefix}{normalized}.{suffix}")
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn run_platform(
     platform: Platform,
     mut device: Option<String>,
@@ -678,10 +686,11 @@ fn run_platform(
     enable_sccache: bool,
     mold_requested: bool,
     log_filter: Option<String>,
+    no_hot_reload: bool,
 ) -> Result<()> {
     let project_dir = project.root();
     let mut recorded_device = device.clone();
-    let hot_reload_target = hot_reload_target(platform);
+    let hot_reload_target_triple = hot_reload_target(platform);
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
     {
@@ -702,71 +711,35 @@ fn run_platform(
         return run_web(project_dir, config, project.crate_name(), release, log_filter);
     }
 
-    // Hot reload is always enabled for native platforms that support it
-    let hot_reload_enabled = platform_supports_native_hot_reload(platform);
+    // Hot reload is enabled unless --no-hot-reload is passed
+    let hot_reload_enabled = !no_hot_reload && platform_supports_native_hot_reload(platform);
     if platform == Platform::Android && hot_reload_enabled {
-        if let Some(target) = hot_reload_target.as_deref() {
+        if let Some(target) = hot_reload_target_triple.as_deref() {
             configure_rust_android_linker_env(&[target])?;
         }
     }
 
-    let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
-        .context("Failed to start hot reload server")?;
-    let connection_events = server.connection_events();
-    let hot_reload_port = Some(server.address().port());
+    // Acquire file lock on the library path to prevent concurrent hot reload runs.
+    // We create a lock file in the .water directory rather than locking the library itself,
+    // since the library may not exist yet and we need to hold the lock during compilation.
+    let lock_file_path = project_dir.join(".water").join("hot-reload.lock");
+    let _lock_guard = if hot_reload_enabled {
+        Some(acquire_hot_reload_lock(&lock_file_path)?)
+    } else {
+        None
+    };
 
-    // NOTE: The initial Rust library build is handled by Xcode/Gradle via `water build`.
-    // We only need to notify the hot reload server if a library already exists from a previous build.
-    let library_path = hot_reload_library_path(
-        project_dir,
-        project.crate_name(),
-        release,
-        hot_reload_target.as_deref(),
-    );
-    if library_path.exists() {
-        server.notify_native_reload(library_path);
-    }
-
-    // Set up file watcher for hot reload
-    let mut watch_paths = vec![project_dir.join("src")];
-    for path in &config.hot_reload.watch {
-        watch_paths.push(project_dir.join(path));
-    }
-
-    let project_dir_buf = project_dir.to_path_buf();
-    let package_name = project.crate_name().to_string();
-    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-        run_cargo_build(
-            &project_dir_buf,
-            &package_name,
-            release,
-            hot_reload_enabled,
-            hot_reload_port,
-            enable_sccache,
-            mold_requested,
-            hot_reload_target.as_deref(),
-        )?;
-        let library_path = hot_reload_library_path(
-            &project_dir_buf,
-            &package_name,
-            release,
-            hot_reload_target.as_deref(),
-        );
-        server.notify_native_reload(library_path);
-        Ok(())
-    });
-
-    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
-
-    let run_options = RunOptions {
+    // Build run options - hot reload port will be set after server starts (if hot reload enabled)
+    let mut run_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
             enabled: hot_reload_enabled,
-            port: hot_reload_port,
+            port: None,
         },
         log_filter: log_filter.clone(),
     };
 
+    // First, package the app (this triggers the Rust build via Xcode/Gradle)
     let run_report = match platform {
         Platform::Macos => {
             let swift_config = config.backends.swift.clone().ok_or_else(|| {
@@ -780,7 +753,7 @@ fn run_platform(
             let scheme_name = swift_config.scheme.clone();
             let spinner_msg = apple_build_progress_message(Platform::Macos, &scheme_name, None);
             let device_impl = MacosDevice::new(swift_config);
-            run_with_package_spinner(project, device_impl, run_options, spinner_msg)?
+            run_with_package_spinner(project, device_impl, run_options.clone(), spinner_msg)?
         }
         Platform::Ios
         | Platform::Ipados
@@ -810,7 +783,7 @@ fn run_platform(
             let spinner_msg =
                 apple_build_progress_message(platform, &scheme_name, Some(target_label.as_str()));
             let simulator = AppleSimulatorDevice::new(swift_config, simulator_kind, device_name);
-            run_with_package_spinner(project, simulator, run_options, spinner_msg)?
+            run_with_package_spinner(project, simulator, run_options.clone(), spinner_msg)?
         }
         Platform::Android => {
             let android_config = config.backends.android.clone().ok_or_else(|| {
@@ -829,11 +802,12 @@ fn run_platform(
             recorded_device = Some(stored_id);
             let platform_impl = AndroidPlatform::new(android_config);
             let android_device = AndroidDevice::new(platform_impl, selection)?;
-            run_on_device(project, android_device, run_options)?
+            run_on_device(project, android_device, run_options.clone())?
         }
         Platform::Web => unreachable!(),
     };
 
+    // Persist last run configuration
     if let Err(err) = persist_last_run(
         project,
         LastRunSnapshot {
@@ -853,6 +827,72 @@ fn run_platform(
             "Application built: {}",
             run_report.artifact.display()
         ));
+    }
+
+    // If hot reload is disabled, we're done after launching the app
+    if !hot_reload_enabled {
+        if !output::global_output_format().is_json() {
+            ui::info("App launched (hot reload disabled)");
+        }
+        if output::global_output_format().is_json() {
+            output::emit_json(&run_report)?;
+        }
+        return Ok(());
+    }
+
+    // Start hot reload server now that packaging succeeded
+    let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
+        .context("Failed to start hot reload server")?;
+    let connection_events = server.connection_events();
+    let hot_reload_port = Some(server.address().port());
+
+    // Update run_options with the actual port for the rebuild callback
+    run_options.hot_reload.port = hot_reload_port;
+
+    // Notify the hot reload server if a library already exists from the build
+    let library_path = hot_reload_library_path(
+        project_dir,
+        project.crate_name(),
+        release,
+        hot_reload_target_triple.as_deref(),
+    );
+    if library_path.exists() {
+        server.notify_native_reload(library_path);
+    }
+
+    // Set up file watcher for hot reload
+    let mut watch_paths = vec![project_dir.join("src")];
+    for path in &config.hot_reload.watch {
+        watch_paths.push(project_dir.join(path));
+    }
+
+    let project_dir_buf = project_dir.to_path_buf();
+    let package_name = project.crate_name().to_string();
+    let hot_reload_target_clone = hot_reload_target_triple.clone();
+    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+        run_cargo_build(
+            &project_dir_buf,
+            &package_name,
+            release,
+            true, // hot_reload_enabled
+            hot_reload_port,
+            enable_sccache,
+            mold_requested,
+            hot_reload_target_clone.as_deref(),
+        )?;
+        let library_path = hot_reload_library_path(
+            &project_dir_buf,
+            &package_name,
+            release,
+            hot_reload_target_clone.as_deref(),
+        );
+        server.notify_native_reload(library_path);
+        Ok(())
+    });
+
+    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
+
+    if !output::global_output_format().is_json() {
         ui::info("App launched with hot reload enabled");
         ui::plain("Press Ctrl+C to stop the watcher");
     }
@@ -889,6 +929,54 @@ fn run_platform(
     }
 
     Ok(())
+}
+
+/// Acquires an exclusive file lock on the hot reload lock file.
+/// Returns a guard that releases the lock when dropped.
+fn acquire_hot_reload_lock(lock_path: &Path) -> Result<HotReloadLockGuard> {
+    // Ensure the parent directory exists
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
+
+    // Try to acquire an exclusive lock without blocking
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            debug!("Acquired hot reload lock: {}", lock_path.display());
+            Ok(HotReloadLockGuard { file })
+        }
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            bail!(
+                "Another `water run` process is already running with hot reload enabled.\n\
+                 Only one hot reload session is allowed at a time to prevent conflicts.\n\
+                 Stop the other process or use `--no-hot-reload` to run without hot reload."
+            );
+        }
+        Err(err) => {
+            Err(err).with_context(|| format!("Failed to acquire lock: {}", lock_path.display()))
+        }
+    }
+}
+
+/// Guard that holds an exclusive file lock and releases it when dropped.
+struct HotReloadLockGuard {
+    file: File,
+}
+
+impl Drop for HotReloadLockGuard {
+    fn drop(&mut self) {
+        if let Err(err) = self.file.unlock() {
+            warn!("Failed to release hot reload lock: {err}");
+        }
+    }
 }
 
 fn run_on_device<D>(project: &Project, device: D, options: RunOptions) -> Result<RunReport>
