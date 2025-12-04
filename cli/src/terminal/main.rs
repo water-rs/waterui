@@ -12,7 +12,7 @@ use color_eyre::{
     eyre::{Report, Result},
 };
 use command::{
-    BackendCommands, BuildCommands, CleanArgs, CleanReport, CleanStatus, CreateArgs,
+    BackendCommands, BuildArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs,
     DeviceCommands, DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
 };
 use console::style;
@@ -43,11 +43,8 @@ enum Commands {
     Create(CreateArgs),
     /// Run a `WaterUI` project
     Run(RunArgs),
-    /// Build native artifacts without launching them
-    Build {
-        #[command(subcommand)]
-        command: BuildCommands,
-    },
+    /// Build Rust library for a target triple
+    Build(BuildArgs),
     /// Package project artifacts
     Package(PackageArgs),
     /// Manage project backends
@@ -108,13 +105,13 @@ fn run_cli() -> Result<()> {
         Commands::Run(args) => {
             command::run::run(args)?;
         }
-        Commands::Build { command } => {
-            let report = command::build::run(command)?;
+        Commands::Build(args) => {
+            let report = command::build::run(args)?;
             emit_or_print(&report, format, |report| {
                 info!(
-                    "Built {} artifact(s) for {} ({})",
-                    report.artifacts.len(),
-                    report.platform,
+                    "Built {} for {} ({})",
+                    report.artifact_kind,
+                    report.target,
                     report.profile
                 );
             })?;

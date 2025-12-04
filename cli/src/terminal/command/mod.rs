@@ -7,10 +7,11 @@ pub mod device;
 pub mod devices;
 pub mod doctor;
 pub mod package;
+pub mod playground;
 pub mod run;
 
 pub use backend::BackendCommands;
-pub use build::BuildCommands;
+pub use build::BuildArgs;
 pub use clean::{CleanArgs, CleanReport, CleanStatus};
 pub use create::CreateArgs;
 pub use device::DeviceCommands;
