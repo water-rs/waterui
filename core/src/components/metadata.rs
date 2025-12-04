@@ -8,7 +8,8 @@
 //! by renderers, such as accessibility attributes, transition effects, or custom
 //! rendering instructions.
 
-use std::any::Any;
+use alloc::boxed::Box;
+use core::any::Any;
 
 use crate::{AnyView, Environment, View};
 
