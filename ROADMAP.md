@@ -13,23 +13,21 @@
 - [x] Stabilized the layout system — now exercised by the [`components/layout`](components/layout/) crate.
 - [x] MVP of Android backend
 - [x] CLI — shipped via the [`cli`](cli/) crate; future plugin scaffolding continues under 0.3 milestones.
-- [ ] Gesture support
+- [x] Gesture support
 - [ ] Hot reload
 - [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
-- [ ] Styling (Theme system)
+- [x] Styling (Theme system)
 - [ ] Document all completed features in our book (👷WIP)
 
 ## 0.3.0 - Practical
 
-- [x] Media widget — core playback components live in [`components/media`](components/media/); streaming & backend parity still in progress.
-  - [ ] Streaming parity: implement buffering/resume paths for Android/iOS in [`components/media/src`](components/media/src/).
-  - [ ] Controls polish: align overlays with the navigation stack and expose callbacks for accessibility hooks.
+- [x] Media widget — core playback components live in [`components/media`](components/media/)
 - [ ] Resource manager
 - [ ] Canvas API (👷WIP)
 - [ ] Persistence
+- [ ] Automation UI test
 - [ ] Some platform-specific APIs (notification, camera, etc.)
 - [ ] Faster hot reload
-  - [ ] Tooling: integrate filesystem diff watching to shorten rebuild cycles.
 - [ ] Accessibility (👷WIP)
   - [ ] Accessibility polish: expand semantics in [`src/accessibility.rs`](src/accessibility.rs) for custom widgets (media, rich text, etc.).
 

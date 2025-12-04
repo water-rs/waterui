@@ -5,13 +5,19 @@ use std::{
     process::{Command, Stdio},
 };
 
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::Serialize;
 use waterui_cli::{
     backend::android::find_android_tool,
     device::{self, DeviceInfo, DeviceKind},
 };
+
+#[derive(Subcommand, Debug)]
+pub enum DeviceCommands {
+    /// Capture a screenshot from a simulator or device
+    Capture(CaptureArgs),
+}
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
 pub enum CapturePlatform {
@@ -46,8 +52,16 @@ pub struct CaptureReport {
 ///
 /// # Errors
 /// Returns an error if the device is not found, or if the screenshot capture fails.
-pub fn run(args: CaptureArgs) -> Result<CaptureReport> {
-    let devices = device::list_devices()?;
+pub fn capture(args: CaptureArgs) -> Result<CaptureReport> {
+    let devices = device::list_devices().context("Failed to discover devices")?;
+
+    if devices.is_empty() {
+        bail!(
+            "No devices found. Connect a device or start a simulator first.\n\
+             Run `water devices` to see available targets."
+        );
+    }
+
     let device_info = find_device(&devices, &args.device, args.platform)?;
 
     let output_path = args
@@ -62,14 +76,17 @@ pub fn run(args: CaptureArgs) -> Result<CaptureReport> {
             || p.starts_with("visionOS")
             || p == "macOS" =>
         {
-            capture_apple_simulator(&device_info.identifier, &output_path)?;
+            capture_apple_simulator(&device_info.identifier, &output_path)
+                .with_context(|| format!("Failed to capture screenshot from Apple device '{}'", device_info.name))?;
         }
         "Android" => {
-            capture_android_device(device_info, &output_path)?;
+            capture_android_device(device_info, &output_path)
+                .with_context(|| format!("Failed to capture screenshot from Android device '{}'", device_info.name))?;
         }
         _ => {
             bail!(
-                "Unsupported platform '{}' for screenshot capture",
+                "Unsupported platform '{}' for screenshot capture.\n\
+                 Supported platforms: iOS, iPadOS, watchOS, tvOS, visionOS, macOS, Android.",
                 device_info.platform
             );
         }
@@ -103,10 +120,31 @@ fn find_device<'a>(
             let filter_hint = platform_filter
                 .map(|p| format!(" for platform {:?}", p))
                 .unwrap_or_default();
+
+            // Provide helpful suggestions based on available devices
+            let available_platforms: Vec<&str> = devices
+                .iter()
+                .map(|d| d.platform.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            let suggestion = if available_platforms.is_empty() {
+                "No devices are currently available.".to_string()
+            } else {
+                format!(
+                    "Available platforms: {}",
+                    available_platforms.join(", ")
+                )
+            };
+
             Err(eyre!(
-                "Device '{}' not found{}. Run `water devices` to list available targets.",
+                "Device '{}' not found{}.\n\
+                 {}\n\
+                 Run `water devices` to see all available targets.",
                 query,
-                filter_hint
+                filter_hint,
+                suggestion
             ))
         }
         1 => Ok(matches[0]),
@@ -118,13 +156,12 @@ fn find_device<'a>(
 
             if has_apple && has_android {
                 Err(eyre!(
-                    "Device '{}' exists on multiple platforms (Apple and Android). \
-                    Use --platform apple or --platform android to disambiguate.",
+                    "Device '{}' exists on multiple platforms (Apple and Android).\n\
+                     Use --platform apple or --platform android to disambiguate.",
                     query
                 ))
             } else {
                 // Multiple devices on same platform - just use the first one
-                // (e.g., multiple iOS simulators with same name is unlikely but possible)
                 Ok(matches[0])
             }
         }
@@ -143,18 +180,40 @@ fn is_apple_platform(platform: &str) -> bool {
 fn capture_apple_simulator(device_identifier: &str, output_path: &PathBuf) -> Result<()> {
     let output_str = output_path
         .to_str()
-        .ok_or_else(|| eyre!("Output path is not valid UTF-8"))?;
+        .ok_or_else(|| eyre!("Output path contains invalid UTF-8 characters"))?;
 
-    let status = Command::new("xcrun")
+    let output = Command::new("xcrun")
         .args(["simctl", "io", device_identifier, "screenshot", output_str])
-        .status()
-        .context("failed to execute xcrun simctl io screenshot")?;
+        .output()
+        .context("Failed to execute xcrun simctl. Is Xcode installed?")?;
 
-    if !status.success() {
-        bail!(
-            "Failed to capture screenshot from simulator {}",
-            device_identifier
-        );
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+
+        // Provide more specific error messages based on common failure modes
+        if stderr.contains("Invalid device") || stderr.contains("No matching device") {
+            bail!(
+                "Device '{}' is not available.\n\
+                 The simulator may not be booted. Start it with `water run --device {}`.",
+                device_identifier,
+                device_identifier
+            );
+        } else if stderr.contains("Unable to") {
+            bail!(
+                "Unable to capture screenshot: {}\n\
+                 Ensure the simulator is fully booted and responsive.",
+                stderr
+            );
+        } else if !stderr.is_empty() {
+            bail!("Screenshot capture failed: {}", stderr);
+        } else {
+            bail!(
+                "Screenshot capture failed with exit code {}.\n\
+                 Ensure the simulator is booted and responsive.",
+                output.status.code().unwrap_or(-1)
+            );
+        }
     }
 
     Ok(())
@@ -163,14 +222,17 @@ fn capture_apple_simulator(device_identifier: &str, output_path: &PathBuf) -> Re
 fn capture_android_device(device_info: &DeviceInfo, output_path: &PathBuf) -> Result<()> {
     let adb_path = find_android_tool("adb").ok_or_else(|| {
         eyre!(
-            "`adb` not found. Install the Android SDK platform-tools and ensure they are available."
+            "Android Debug Bridge (adb) not found.\n\
+             Install the Android SDK platform-tools and ensure they are on your PATH.\n\
+             You can install them via Android Studio or run:\n\
+               brew install android-platform-tools  (macOS)\n\
+               sudo apt install adb                 (Linux)"
         )
     })?;
 
     // For emulators, we need to check if the emulator is running
     // The identifier for emulators is the AVD name, but adb uses the serial number
     let serial = if device_info.kind == DeviceKind::Emulator {
-        // Find the running emulator's serial number
         find_running_emulator_serial(&adb_path, &device_info.identifier)?
     } else {
         device_info.identifier.clone()
@@ -180,34 +242,67 @@ fn capture_android_device(device_info: &DeviceInfo, output_path: &PathBuf) -> Re
         .args(["-s", &serial, "exec-out", "screencap", "-p"])
         .stdout(Stdio::piped())
         .output()
-        .context("failed to execute adb screencap")?;
+        .context("Failed to execute adb screencap command")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+
+        if stderr.contains("device offline") {
+            bail!(
+                "Device '{}' is offline.\n\
+                 Check the USB connection or restart the device.",
+                device_info.name
+            );
+        } else if stderr.contains("device unauthorized") {
+            bail!(
+                "Device '{}' is unauthorized.\n\
+                 Accept the USB debugging prompt on the device.",
+                device_info.name
+            );
+        } else if stderr.contains("not found") {
+            bail!(
+                "Device '{}' not found.\n\
+                 The device may have been disconnected. Run `water devices` to check.",
+                device_info.name
+            );
+        } else if !stderr.is_empty() {
+            bail!("Screenshot capture failed: {}", stderr);
+        } else {
+            bail!(
+                "Screenshot capture failed with exit code {}.",
+                output.status.code().unwrap_or(-1)
+            );
+        }
+    }
+
+    if output.stdout.is_empty() {
         bail!(
-            "Failed to capture screenshot from Android device {}: {}",
-            device_info.name,
-            stderr.trim()
+            "Screenshot capture returned empty data.\n\
+             The device screen may be locked or the display is off."
         );
     }
 
     let mut file = File::create(output_path)
-        .with_context(|| format!("failed to create output file {}", output_path.display()))?;
+        .with_context(|| format!("Failed to create output file '{}'", output_path.display()))?;
+
     file.write_all(&output.stdout)
-        .with_context(|| format!("failed to write screenshot to {}", output_path.display()))?;
+        .with_context(|| format!("Failed to write screenshot to '{}'", output_path.display()))?;
 
     Ok(())
 }
 
 fn find_running_emulator_serial(adb_path: &PathBuf, avd_name: &str) -> Result<String> {
-    // First, list all connected devices
     let output = Command::new(adb_path)
         .args(["devices", "-l"])
         .output()
-        .context("failed to execute adb devices")?;
+        .context("Failed to list connected Android devices")?;
 
     if !output.status.success() {
-        bail!("Failed to list Android devices");
+        bail!(
+            "Failed to list Android devices.\n\
+             Ensure the ADB server is running: `adb start-server`"
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -244,7 +339,8 @@ fn find_running_emulator_serial(adb_path: &PathBuf, avd_name: &str) -> Result<St
     }
 
     bail!(
-        "Emulator '{}' is not running. Start the emulator first with `water run --device {}`.",
+        "Emulator '{}' is not running.\n\
+         Start the emulator first with `water run --device {}`.",
         avd_name,
         avd_name
     );
