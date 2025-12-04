@@ -52,9 +52,7 @@ pub fn main() -> impl View {
             let is_buffering = is_buffering.clone();
             move |event| match event {
                 video::Event::Buffering => is_buffering.set(true),
-                video::Event::BufferingEnded | video::Event::ReadyToPlay => {
-                    is_buffering.set(false)
-                }
+                video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
                 video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
             }
         });

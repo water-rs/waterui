@@ -13,7 +13,7 @@ use nami::{Binding, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata,
+    AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
     handler::{HandlerFn, HandlerFnOnce},
     metadata::MetadataKey,
@@ -331,6 +331,29 @@ pub trait ViewExt: View + Sized {
             plugin.install(&mut env);
             Metadata::new(self, env)
         })
+    }
+
+    /// Retains a value for the lifetime of this view.
+    ///
+    /// This is useful for keeping watcher guards, subscriptions, or other values
+    /// alive as long as the view exists. The retained value is dropped when the
+    /// view is dropped.
+    ///
+    /// # Arguments
+    /// * `value` - The value to retain (e.g., watcher guard, subscription)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::reactive::binding;
+    ///
+    /// let count = binding(0);
+    /// let guard = count.clone().watch(|v| println!("Count: {}", v.into_value()));
+    /// text("Hello").retain(guard)
+    /// ```
+    fn retain<T: 'static>(self, value: T) -> Metadata<Retain> {
+        Metadata::new(self, Retain::new(value))
     }
 }
 

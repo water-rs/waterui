@@ -13,7 +13,7 @@ use color_eyre::{
 };
 use command::{
     BackendCommands, BuildArgs, CleanArgs, CleanReport, CleanStatus, CreateArgs, DeviceCommands,
-    DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, RunArgs,
+    DevicesArgs, DoctorArgs, DoctorReport, PackageArgs, PermissionCommands, RunArgs,
 };
 use console::style;
 use dialoguer::Confirm;
@@ -59,6 +59,9 @@ enum Commands {
     /// Manage device operations (capture screenshots, etc.)
     #[command(subcommand)]
     Device(DeviceCommands),
+    /// Manage permissions (playground projects only)
+    #[command(subcommand)]
+    Permission(PermissionCommands),
 }
 
 fn main() {
@@ -256,6 +259,32 @@ fn run_cli() -> Result<()> {
                     if let Some(diff) = &report.diff {
                         render_diff_result(diff);
                     }
+                })?;
+            }
+        },
+        Commands::Permission(subcommand) => match subcommand {
+            PermissionCommands::Add(args) => {
+                let report = command::permission::add(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!("Permission {}: {:?}", report.permission, report.status);
+                })?;
+            }
+            PermissionCommands::Remove(args) => {
+                let report = command::permission::remove(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!("Permission {}: {:?}", report.permission, report.status);
+                })?;
+            }
+            PermissionCommands::List(args) => {
+                let report = command::permission::list(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!("Configured permissions: {}", report.count);
+                })?;
+            }
+            PermissionCommands::Available(args) => {
+                let report = command::permission::available(args)?;
+                emit_or_print(&report, format, |report| {
+                    info!("Available permissions: {}", report.permissions.len());
                 })?;
             }
         },

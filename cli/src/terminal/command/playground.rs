@@ -20,6 +20,7 @@ use super::create::{
     self, BackendChoice, SwiftDependency, resolve_dependencies_with_path, validate_waterui_path,
 };
 use crate::util;
+use waterui_cli::permission::{Permission, ResolvedPermission};
 use waterui_cli::project::{Android, Config, Swift, Web, playground_cache_dir};
 
 /// Ensure platform backend exists for a playground project.
@@ -58,6 +59,9 @@ pub fn ensure_playground_backend(
         }
     };
 
+    // Resolve permissions from config
+    let resolved_permissions = resolve_permissions(&config);
+
     match backend {
         BackendChoice::Web => {
             let web_dir = cache_dir.join("web");
@@ -74,13 +78,14 @@ pub fn ensure_playground_backend(
         BackendChoice::Android => {
             let android_dir = cache_dir.join("android");
             if !android_dir.exists() {
-                create::android::create_android_project(
+                create::android::create_android_project_with_permissions(
                     &cache_dir,
                     &app_name,
                     crate_name,
                     &config.package.bundle_identifier,
                     use_dev,
                     deps.local_waterui_path.as_ref(),
+                    &resolved_permissions,
                 )?;
             }
             config.backends.android = Some(Android {
@@ -93,13 +98,14 @@ pub fn ensure_playground_backend(
             let apple_dir = cache_dir.join("apple");
             if !apple_dir.exists() {
                 util::ensure_directory(&apple_dir)?;
-                create::swift::create_xcode_project(
+                create::swift::create_xcode_project_with_permissions(
                     &cache_dir,
                     &app_name,
                     display_name,
                     crate_name,
                     &config.package.bundle_identifier,
                     &deps.swift,
+                    &resolved_permissions,
                 )?;
             }
             let (version, branch, revision, local_path) = match &deps.swift {
@@ -151,4 +157,21 @@ pub fn clean_playground_cache(project_dir: &Path) -> Result<()> {
             .with_context(|| format!("failed to remove playground cache at {}", cache_dir.display()))?;
     }
     Ok(())
+}
+
+/// Resolve permissions from project config into platform-ready format.
+fn resolve_permissions(config: &Config) -> Vec<ResolvedPermission> {
+    config
+        .permissions
+        .all_enabled()
+        .into_iter()
+        .filter_map(|name| {
+            let permission: Permission = name.parse().ok()?;
+            let description = config.permissions.get_description(&name);
+            Some(ResolvedPermission {
+                permission,
+                description,
+            })
+        })
+        .collect()
 }
