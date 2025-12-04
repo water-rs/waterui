@@ -120,7 +120,13 @@ private val myComponentRenderer = WuiRenderer { context, node, env, registry ->
 
 ### 1. Rust FFI (`ffi/src/lib.rs`)
 
+**Metadata types:** `T` in `Metadata<T>` must implement `MetadataKey` and be a concrete type (no generics) for FFI compatibility. For generic types, use type erasure (e.g., `Box<dyn Any>`).
+
 ```rust
+// In core: T must implement MetadataKey
+impl MetadataKey for Foo {}
+
+// In ffi/src/lib.rs:
 #[repr(C)]
 pub struct WuiFooData { pub field: i32 }
 
@@ -146,6 +152,8 @@ final class WuiFoo: WuiBaseView, WuiComponent {
     }
 }
 ```
+
+**Naming convention:** Swift classes intentionally share names with C types. When referencing C types, use `CWaterUI.` prefix (e.g., `CWaterUI.WuiFoo`, `CWaterUI.WuiTypeId`).
 
 Register in `AnyView.swift`: `registerComponent(WuiFoo.self)`
 
