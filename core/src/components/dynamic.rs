@@ -18,13 +18,13 @@
 //! // Create a view that watches a reactive value
 //! let count = Binding::container(0);
 //! let counter_view = watch(count, |value| format!("Count: {}", value));
-use crate::components::With;
-use crate::{AnyView, View};
+use crate::components::metadata::Retain;
+use crate::{AnyView, Metadata, View};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
 use nami::watcher::Context;
-use nami::{Computed, Signal, watcher::Metadata};
+use nami::{Computed, Signal, watcher::Metadata as WatcherMetadata};
 
 /// A dynamic view that can be updated.
 ///
@@ -40,7 +40,9 @@ raw_view!(Dynamic);
 pub struct DynamicHandler(Rc<RefCell<DynamicHandlerState>>);
 
 enum DynamicHandlerState {
+    /// Connected to a receiver (Swift/native side).
     Connected(Receiver),
+    /// Not yet connected, stores the initial view if set before connection.
     Unconnected(Option<AnyView>),
 }
 
@@ -56,15 +58,15 @@ impl DynamicHandler {
     ///
     /// * `view` - The new view to display
     /// * `metadata` - Additional metadata associated with the update
-    pub fn set_with_metadata(&self, view: impl View, metadata: Metadata) {
+    pub fn set_with_metadata(&self, view: impl View, metadata: WatcherMetadata) {
         let mut state = self.0.borrow_mut();
         let view = AnyView::new(view);
         match &mut *state {
             DynamicHandlerState::Connected(receiver) => {
                 receiver(Context::new(view, metadata));
             }
-            DynamicHandlerState::Unconnected(state) => {
-                *state = Some(view);
+            DynamicHandlerState::Unconnected(temp_view) => {
+                *temp_view = Some(view);
             }
         }
     }
@@ -75,7 +77,7 @@ impl DynamicHandler {
     ///
     /// * `view` - The new view to display
     pub fn set(&self, view: impl View) {
-        self.set_with_metadata(view, Metadata::new());
+        self.set_with_metadata(view, WatcherMetadata::new());
     }
 }
 
@@ -118,7 +120,8 @@ impl Dynamic {
 
         let guard = value.watch(move |value| handle.set(f(value.into_value())));
 
-        With::new(dynamic, (guard, value))
+        // Use Metadata<Retain> to keep the guard and value alive
+        Metadata::new(dynamic, Retain::new((guard, value)))
     }
 
     /// Connects the Dynamic view to a receiver function.
@@ -133,13 +136,12 @@ impl Dynamic {
     ///
     /// * `receiver` - A function that receives view updates
     pub fn connect(self, receiver: impl Fn(Context<AnyView>) + 'static) {
-        // It would be used on swift side
         let mut state = self.0.0.borrow_mut();
 
         match &mut *state {
             DynamicHandlerState::Unconnected(temp_view) => {
                 if let Some(view) = temp_view.take() {
-                    receiver(Context::new(view, Metadata::new()));
+                    receiver(Context::new(view, WatcherMetadata::new()));
                 }
                 *state = DynamicHandlerState::Connected(Box::new(receiver));
             }
