@@ -18,14 +18,17 @@ use crate::{AnyView, Environment, View};
 /// Metadata is transparent for layout system, it is not a native view.
 #[derive(Debug)]
 #[must_use]
-pub struct Metadata<T: 'static> {
+pub struct Metadata<T: MetadataKey> {
     /// The view content wrapped by this metadata.
     pub content: AnyView,
     /// The metadata value associated with the content.
     pub value: T,
 }
 
-impl<T> Metadata<T> {
+/// A marker trait for metadata keys.
+pub trait MetadataKey: 'static {}
+
+impl<T: MetadataKey> Metadata<T> {
     /// Creates a new `Metadata` instance with the specified content and value.
     ///
     /// # Arguments
@@ -40,7 +43,7 @@ impl<T> Metadata<T> {
     }
 }
 
-impl<T: 'static> View for Metadata<T> {
+impl<T: MetadataKey> View for Metadata<T> {
     #[allow(unused)]
     #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
@@ -57,14 +60,14 @@ impl<T: 'static> View for Metadata<T> {
 ///
 /// Unlike `Metadata<T>`, this type won't panic if not caught by a renderer.
 #[derive(Debug)]
-pub struct IgnorableMetadata<T> {
+pub struct IgnorableMetadata<T: MetadataKey> {
     /// The view content wrapped by this ignorable metadata.
     pub content: AnyView,
     /// The metadata value associated with the content.
     pub value: T,
 }
 
-impl<T> IgnorableMetadata<T> {
+impl<T: MetadataKey> IgnorableMetadata<T> {
     /// Creates a new `IgnorableMetadata` instance with the specified content and value.
     ///
     /// # Arguments
@@ -79,6 +82,6 @@ impl<T> IgnorableMetadata<T> {
     }
 }
 
-impl<T: 'static> View for IgnorableMetadata<T> {
+impl<T: MetadataKey> View for IgnorableMetadata<T> {
     fn body(self, _env: &Environment) -> impl View {}
 }

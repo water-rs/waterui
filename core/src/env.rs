@@ -60,10 +60,13 @@ pub struct Environment {
     map: BTreeMap<TypeId, Rc<dyn Any>>,
 }
 
+impl MetadataKey for Environment {}
+
 use crate::{
     View,
     components::Metadata,
     handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
+    metadata::MetadataKey,
     plugin::Plugin,
     view::{Hook, ViewConfiguration},
 };
@@ -243,40 +246,15 @@ impl<V: View, T: 'static> With<V, T> {
     }
 }
 
-/// A view that overrides the environment for its children.
-///
-/// `WithEnv` wraps a child view and provides a completely replaced environment
-/// instead of extending the existing one.
-#[derive(Debug)]
-pub struct WithEnv<V> {
-    content: V,
-    env: Environment,
-}
-
-impl<V: View> WithEnv<V> {
-    /// Creates a new `WithEnv` view that wraps the provided content and replaces
-    /// the environment with the given environment for all child views.
-    pub const fn new(content: V, env: Environment) -> Self {
-        Self { content, env }
-    }
-}
-
-impl<V, T> View for With<V, T>
-where
-    V: View,
-    T: 'static,
-{
-    fn body(self, env: &Environment) -> impl View {
-        with_env(self.content, env.clone().with(self.value))
-    }
-}
-
-/// Wraps a view and provides an extended environment.
-pub fn with_env<V: View>(view: V, env: Environment) -> Metadata<Environment> {
-    Metadata::new(view, env)
-}
-
-/// Wraps a view and provides an extended environment.
+/// Wraps a view and provides an extended environment value.
 pub fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
     With::new(view, value)
+}
+
+impl<V: View, T: 'static> View for With<V, T> {
+    fn body(self, env: &Environment) -> impl View {
+        let mut env = env.clone();
+        env.insert(self.value);
+        Metadata::new(self.content, env)
+    }
 }
