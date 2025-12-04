@@ -31,6 +31,7 @@ pub mod doctor;
 pub mod installer;
 pub mod output;
 pub mod package;
+pub mod permission;
 pub mod project;
 pub mod util;
 
