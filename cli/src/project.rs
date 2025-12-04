@@ -19,6 +19,44 @@ pub struct Project {
     dir: PathBuf,
     config: Config,
     identifier: String,
+    cargo_manifest: CargoManifest,
+}
+
+/// Parsed Cargo.toml manifest for reading crate metadata.
+#[derive(Debug, Clone)]
+struct CargoManifest {
+    name: String,
+    authors: Vec<String>,
+}
+
+impl CargoManifest {
+    fn load(project_dir: &Path) -> eyre::Result<Self> {
+        let cargo_path = project_dir.join("Cargo.toml");
+        let manifest = cargo_toml::Manifest::from_path(&cargo_path)
+            .with_context(|| format!("failed to parse {}", cargo_path.display()))?;
+
+        let package = manifest
+            .package
+            .ok_or_else(|| eyre::eyre!("missing [package] section in Cargo.toml"))?;
+
+        let name = package.name;
+
+        let authors = match package.authors {
+            cargo_toml::Inheritable::Set(authors) => authors,
+            cargo_toml::Inheritable::Inherited { .. } => Vec::new(),
+        };
+
+        Ok(Self { name, authors })
+    }
+}
+
+/// Read crate name from Cargo.toml in the given project directory.
+///
+/// # Errors
+/// Returns an error if `Cargo.toml` cannot be read or parsed.
+pub fn read_crate_name(project_dir: &Path) -> eyre::Result<String> {
+    let manifest = CargoManifest::load(project_dir)?;
+    Ok(manifest.name)
 }
 
 /// Controls build and runtime behavior for `Project::run`.
@@ -177,14 +215,17 @@ impl Project {
     /// Returns an error if:
     /// - The `Water.toml` file cannot be read from the directory
     /// - The TOML file cannot be parsed into a valid `ProjectConfig`
+    /// - The `Cargo.toml` file cannot be read or parsed
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
         let dir = dir.as_ref().to_path_buf();
         let config = Config::load(&dir).map_err(Error::Other)?;
-        let identifier = config.package.name.to_snake_case();
+        let cargo_manifest = CargoManifest::load(&dir).map_err(Error::Other)?;
+        let identifier = cargo_manifest.name.to_snake_case();
         Ok(Self {
             dir,
             config,
             identifier,
+            cargo_manifest,
         })
     }
 
@@ -258,13 +299,19 @@ impl Project {
         Ok(artifact)
     }
 
-    /// Get the name of the project.
+    /// Get the display name of the project (human-readable).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.config.package.name
     }
 
-    /// Get the unique identifier of the project.
+    /// Get the crate name from Cargo.toml (kebab-case identifier).
+    #[must_use]
+    pub fn crate_name(&self) -> &str {
+        &self.cargo_manifest.name
+    }
+
+    /// Get the unique identifier of the project (snake_case from crate name).
     #[must_use]
     pub fn identifier(&self) -> &str {
         &self.identifier
@@ -282,10 +329,15 @@ impl Project {
         &self.config
     }
 
-    /// Get the author of the project.
+    /// Get the author of the project from Cargo.toml.
+    /// Returns the first author if multiple are specified.
     #[must_use]
-    pub const fn author(&self) -> &str {
-        self.config.package.author.as_str()
+    pub fn author(&self) -> &str {
+        self.cargo_manifest
+            .authors
+            .first()
+            .map(String::as_str)
+            .unwrap_or("")
     }
 
     /// Bundle identifier used for Apple/Android targets.
@@ -311,22 +363,38 @@ impl Project {
         backend.init(self, dev)?;
         Ok(())
     }
+
+    /// Check if this is a playground project.
+    #[must_use]
+    pub fn is_playground(&self) -> bool {
+        self.config.package.package_type == PackageType::Playground
+    }
+
+    /// Get the package type.
+    #[must_use]
+    pub fn package_type(&self) -> PackageType {
+        self.config.package.package_type
+    }
 }
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub package: Package,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Backends::is_empty")]
     pub backends: Backends,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HotReload::is_empty")]
     pub hot_reload: HotReload,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub dev_dependencies: bool,
     /// Path to local WaterUI repository for dev mode.
     /// When set, all dependencies use local paths instead of git/crates.io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Config {
@@ -376,15 +444,43 @@ impl Config {
     pub fn path(root: &Path) -> PathBuf {
         root.join("Water.toml")
     }
+
+    /// Check if this is a playground configuration.
+    #[must_use]
+    pub fn is_playground(&self) -> bool {
+        self.package.package_type == PackageType::Playground
+    }
+}
+
+/// Get the playground cache directory for a project.
+/// This is where temporary platform backends are created for playground projects.
+///
+/// Structure: `<project>/.water/playground/`
+#[must_use]
+pub fn playground_cache_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".water").join("playground")
+}
+
+/// Package type indicating what kind of project this is.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageType {
+    /// A standalone application with platform-specific backends.
+    #[default]
+    App,
+    /// A playground project for quick experimentation.
+    /// Platform projects are created in a temporary directory.
+    Playground,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Package {
+    /// Type of the package (e.g., "app").
+    #[serde(rename = "type")]
+    pub package_type: PackageType,
+    /// Human-readable name of the application (e.g., "Water Demo").
     pub name: String,
-    pub display_name: String,
     pub bundle_identifier: String,
-    #[serde(default)]
-    pub author: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -399,9 +495,18 @@ pub struct Backends {
     pub tui: Option<Tui>,
 }
 
+impl Backends {
+    fn is_empty(&self) -> bool {
+        self.swift.is_none() && self.android.is_none() && self.web.is_none() && self.tui.is_none()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Swift {
-    #[serde(default = "default_swift_project_path")]
+    #[serde(
+        default = "default_swift_project_path",
+        skip_serializing_if = "is_default_swift_project_path"
+    )]
     pub project_path: String,
     pub scheme: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -415,51 +520,69 @@ pub struct Swift {
     /// Local path to the Apple backend for local dev mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub dev: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ffi_version: Option<String>,
 }
 
-fn default_swift_project_path() -> String {
+#[must_use]
+pub fn default_swift_project_path() -> String {
     "apple".to_string()
+}
+
+fn is_default_swift_project_path(s: &str) -> bool {
+    s == "apple"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Android {
-    #[serde(default = "default_android_project_path")]
+    #[serde(
+        default = "default_android_project_path",
+        skip_serializing_if = "is_default_android_project_path"
+    )]
     pub project_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub dev: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ffi_version: Option<String>,
 }
 
-fn default_android_project_path() -> String {
+#[must_use]
+pub fn default_android_project_path() -> String {
     "android".to_string()
+}
+
+fn is_default_android_project_path(s: &str) -> bool {
+    s == "android"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Web {
-    #[serde(default = "default_web_project_path")]
+    #[serde(
+        default = "default_web_project_path",
+        skip_serializing_if = "is_default_web_project_path"
+    )]
     pub project_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub dev: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ffi_version: Option<String>,
 }
 
-fn default_web_project_path() -> String {
+#[must_use]
+pub fn default_web_project_path() -> String {
     "web".to_string()
+}
+
+fn is_default_web_project_path(s: &str) -> bool {
+    s == "web"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Tui {
-    #[serde(default = "default_tui_project_path")]
+    #[serde(
+        default = "default_tui_project_path",
+        skip_serializing_if = "is_default_tui_project_path"
+    )]
     pub project_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -469,9 +592,19 @@ fn default_tui_project_path() -> String {
     "tui".to_string()
 }
 
+fn is_default_tui_project_path(s: &str) -> bool {
+    s == "tui"
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct HotReload {
     /// Additional paths to watch for triggering rebuilds
     #[serde(default)]
     pub watch: Vec<String>,
+}
+
+impl HotReload {
+    fn is_empty(&self) -> bool {
+        self.watch.is_empty()
+    }
 }

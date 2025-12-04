@@ -28,11 +28,25 @@
 //! ```ignore
 
 use waterui_core::{
-    Binding, Computed, View, binding, configurable,
+    Binding, Computed, NativeView, View, binding, configurable,
+    layout::StretchAxis,
     reactive::{impl_constant, signal::IntoComputed},
 };
 
 use crate::Url;
+
+/// Aspect ratio mode for video playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(i32)]
+pub enum AspectRatio {
+    /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
+    #[default]
+    Fit = 0,
+    /// Fill the entire bounds, potentially cropping the video.
+    Fill = 1,
+    /// Stretch the video to fill the bounds, ignoring aspect ratio.
+    Stretch = 2,
+}
 
 /// A Volume value represents the audio volume level of a player.
 ///
@@ -51,7 +65,6 @@ pub type Volume = f32;
 /// Configuration for the [`VideoPlayer`] component.
 ///
 /// This configuration defines the video source and volume control for the player.
-#[derive(Debug)]
 pub struct VideoPlayerConfig {
     /// The video to be played.
     pub video: Computed<Video>,
@@ -59,7 +72,30 @@ pub struct VideoPlayerConfig {
     ///
     /// Uses the special [`Volume`] type that preserves volume levels when muted.
     pub volume: Binding<Volume>,
+    /// The aspect ratio mode for video playback.
+    pub aspect_ratio: AspectRatio,
+    /// Whether to show native playback controls.
+    pub show_controls: bool,
+    /// The event handler for the video player.
+    pub on_event: OnEvent,
 }
+
+/// Events emitted by the video player.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// The video is ready to play.
+    ReadyToPlay,
+    /// The video has finished playing.
+    Ended,
+    /// The video is buffering due to slow network or disk.
+    Buffering,
+    /// The video has resumed playing after buffering.
+    BufferingEnded,
+    /// An error occurred while loading or playing the video.
+    Error { message: String },
+}
+
+type OnEvent = Box<dyn Fn(Event) + 'static>;
 
 configurable!(
     #[doc = "An interactive video player component with reactive volume control."]
@@ -145,7 +181,48 @@ impl VideoPlayer {
         Self(VideoPlayerConfig {
             video: video.into_computed(),
             volume: binding(0.5),
+            aspect_ratio: AspectRatio::default(),
+            show_controls: false,
+            on_event: Box::new(|_event| {
+                // No-op default handler
+            }),
         })
+    }
+
+    /// Sets the aspect ratio mode for the video player.
+    #[must_use]
+    pub fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
+        self.0.aspect_ratio = aspect_ratio;
+        self
+    }
+
+    /// Sets whether to show native playback controls.
+    #[must_use]
+    pub fn show_controls(mut self, show_controls: bool) -> Self {
+        self.0.show_controls = show_controls;
+        self
+    }
+
+    /// Sets the event handler for the video player.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use waterui_media::{VideoPlayer, Video, Event};
+    ///
+    /// let player = VideoPlayer::new(video)
+    ///     .on_event(|event| {
+    ///         match event {
+    ///             Event::ReadyToPlay => println!("Video ready!"),
+    ///             Event::Error { message } => println!("Error: {}", message),
+    ///             Event::Ended => println!("Video ended"),
+    ///         }
+    ///     });
+    /// ```
+    #[must_use]
+    pub fn on_event(mut self, handler: impl Fn(Event) + 'static) -> Self {
+        self.0.on_event = Box::new(handler);
+        self
     }
 
     /// Mutes or unmutes the video player based on the provided boolean binding.
@@ -175,5 +252,18 @@ impl VideoPlayer {
         );
 
         self
+    }
+}
+
+impl NativeView for VideoPlayer {
+    fn stretch_axis(&self) -> StretchAxis {
+        // Stretch behavior depends on aspect ratio mode:
+        // - Fit: Video maintains aspect ratio, so it stretches horizontally but has fixed height based on content
+        // - Fill: Video fills entire space in both directions (may crop)
+        // - Stretch: Video fills entire space and stretches to fit (distorts aspect ratio)
+        match self.0.aspect_ratio {
+            AspectRatio::Fit => StretchAxis::Horizontal,
+            AspectRatio::Fill | AspectRatio::Stretch => StretchAxis::Both,
+        }
     }
 }
