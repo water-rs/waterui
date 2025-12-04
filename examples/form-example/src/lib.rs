@@ -8,6 +8,8 @@
 
 use waterui::Str;
 use waterui::prelude::*;
+use waterui::text::font::FontWeight;
+use waterui::text::font::ResolvedFont;
 
 pub fn init() -> Environment {
     Environment::new()
@@ -37,7 +39,7 @@ struct AppSettings {
     /// Enable dark mode
     dark_mode: bool,
     /// Font size multiplier
-    font_scale: i32,
+    font_scale: f32,
     /// Auto-save interval (minutes)
     auto_save_minutes: i32,
     /// Enable notifications
@@ -101,7 +103,7 @@ pub fn main() -> impl View {
                 )),
                 hstack((
                     "Brightness: ",
-                    waterui::text!("{}", settings.project().brightness),
+                    waterui::text!("{:.4}", settings.project().brightness),
                 )),
             )),
             spacer(),
@@ -135,15 +137,21 @@ pub fn main() -> impl View {
             Divider,
             "Built with WaterUI Form Components",
         ))
-        .padding_with(EdgeInsets::all(16.0))
-        .install(
-            Theme::new().color_scheme(
+        .padding_with(EdgeInsets::all(16.0)),
+    )
+    .install(
+        Theme::new()
+            .color_scheme(
                 settings
                     .project()
                     .dark_mode
                     .select(ColorScheme::Dark, ColorScheme::Light),
-            ),
-        ),
+            )
+            .fonts(FontSettings::new().body(
+                settings.project().font_scale.map(|scale| {
+                    ResolvedFont::new(16.0 + (1.0 + scale * 10.0), FontWeight::Normal)
+                }),
+            )),
     )
 }
 
