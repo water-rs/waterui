@@ -17,7 +17,7 @@ use tracing::warn;
 use super::{
     add_backend,
     create::{
-        self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX,
+        self, BackendChoice, SWIFT_BACKEND_GIT_URL, SWIFT_TAG_PREFIX,
         android::{
             self, clear_android_dev_commit, configure_android_local_properties,
             copy_android_backend, ensure_android_backend_release,
@@ -95,8 +95,6 @@ pub struct BackendListEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub dev: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ffi_version: Option<String>,
     pub targets: Vec<String>,
     pub project_path: String,
 }
@@ -190,7 +188,6 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
                 swift.version.clone()
             },
             dev: swift.dev || config.dev_dependencies,
-            ffi_version: swift.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Apple)
                 .iter()
                 .map(|t| (*t).to_string())
@@ -208,7 +205,6 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
                 android.version.clone()
             },
             dev: android.dev || config.dev_dependencies,
-            ffi_version: android.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Android)
                 .iter()
                 .map(|t| (*t).to_string())
@@ -222,7 +218,6 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
             backend: BackendChoice::Web.label().to_string(),
             version: web.version.clone(),
             dev: web.dev || config.dev_dependencies,
-            ffi_version: web.ffi_version.clone(),
             targets: backend_targets(BackendChoice::Web)
                 .iter()
                 .map(|t| (*t).to_string())
@@ -245,9 +240,6 @@ pub fn list(args: BackendListArgs) -> Result<BackendListReport> {
                     .unwrap_or_else(|| "unknown".to_string()),
             );
             ui::kv("Dev install", entry.dev.to_string());
-            if let Some(ffi) = &entry.ffi_version {
-                ui::kv("waterui-ffi", ffi);
-            }
             ui::kv("Targets", entry.targets.join(", "));
             ui::kv("Path", &entry.project_path);
             ui::newline();
@@ -282,7 +274,6 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
         }
         android_cfg.dev = true;
         android_cfg.version = None;
-        android_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
         config.save(project_dir)?;
         report.from_version = previous_commit.clone();
         report.to_version = new_commit.clone();
@@ -349,9 +340,6 @@ fn update_android_backend(project_dir: &Path, config: &mut Config) -> Result<Bac
         clear_android_dev_commit(project_dir)?;
         android_cfg.version = Some(new_version.to_string());
         android_cfg.dev = false;
-        if android_cfg.ffi_version.is_none() {
-            android_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
-        }
         config.save(project_dir)?;
         report.status = BackendUpdateStatus::Updated;
         report.from_version = Some(current_version);
@@ -404,7 +392,6 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
             format!("failed to resolve latest Apple backend commit for branch '{branch}'")
         })?;
         rewrite_swift_requirement(&pbxproj, SwiftRequirement::Revision(revision.clone()))?;
-        swift_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
         swift_cfg.version = None;
         swift_cfg.revision = Some(revision.clone());
         swift_cfg.dev = true;
@@ -471,9 +458,6 @@ fn update_swift_backend(project_dir: &Path, config: &mut Config) -> Result<Backe
         swift_cfg.dev = false;
         swift_cfg.branch = None;
         swift_cfg.revision = None;
-        if swift_cfg.ffi_version.is_none() {
-            swift_cfg.ffi_version = Some(DEFAULT_WATERUI_FFI_VERSION.to_string());
-        }
         config.save(project_dir)?;
         report.status = BackendUpdateStatus::Updated;
         report.from_version = Some(current_version);
@@ -524,7 +508,7 @@ fn upgrade_android_backend(
         .cloned()
         .ok_or_else(|| eyre!("No Android backend releases available"))?;
     let release_path = ensure_android_backend_release(&latest.to_string())?;
-    let required_ffi = parse_ffi_requirement(android_cfg.ffi_version.as_deref())?;
+    let required_ffi = default_ffi_version()?;
 
     let compatibility =
         ensure_backend_ffi_compat(project_dir, &required_ffi, args, BackendChoice::Android)?;
@@ -541,7 +525,6 @@ fn upgrade_android_backend(
     clear_android_dev_commit(project_dir)?;
     android_cfg.version = Some(latest.to_string());
     android_cfg.dev = false;
-    android_cfg.ffi_version = Some(required_ffi.to_string());
     config.save(project_dir)?;
 
     let mut report = BackendUpdateReport::new(BackendChoice::Android, BackendUpdateStatus::Updated);
@@ -575,7 +558,7 @@ fn upgrade_swift_backend(
         .cloned()
         .ok_or_else(|| eyre!("No Apple backend releases available"))?;
 
-    let required_ffi = parse_ffi_requirement(swift_cfg.ffi_version.as_deref())?;
+    let required_ffi = default_ffi_version()?;
     let compatibility =
         ensure_backend_ffi_compat(project_dir, &required_ffi, args, BackendChoice::Apple)?;
     if let DependencyUpgradeOutcome::Cancelled(message) = compatibility {
@@ -598,7 +581,6 @@ fn upgrade_swift_backend(
     swift_cfg.dev = false;
     swift_cfg.branch = None;
     swift_cfg.revision = None;
-    swift_cfg.ffi_version = Some(required_ffi.to_string());
     config.save(project_dir)?;
 
     let mut report = BackendUpdateReport::new(BackendChoice::Apple, BackendUpdateStatus::Updated);
@@ -825,11 +807,13 @@ fn dependency_spec_from_value(value: Option<&Value>) -> DependencySpec {
     }
 }
 
-fn parse_ffi_requirement(value: Option<&str>) -> Result<Version> {
-    let raw = value
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_WATERUI_FFI_VERSION);
-    Version::parse(raw).with_context(|| format!("invalid waterui-ffi version '{raw}'"))
+/// Default FFI version for backend upgrades. This is a constant that represents
+/// the minimum FFI version required for latest backends.
+const DEFAULT_FFI_VERSION: &str = "0.1.0";
+
+fn default_ffi_version() -> Result<Version> {
+    Version::parse(DEFAULT_FFI_VERSION)
+        .with_context(|| format!("invalid default waterui-ffi version '{DEFAULT_FFI_VERSION}'"))
 }
 
 fn ensure_backend_ffi_compat(

@@ -1269,6 +1269,9 @@ pub fn build_android_apk(
     };
     let mut cmd = Command::new(gradlew);
 
+    // Skip Rust build in Gradle's build script - water run already built the library
+    cmd.env("WATERUI_SKIP_RUST_BUILD", "1");
+
     util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
 
     // Configure JVM options

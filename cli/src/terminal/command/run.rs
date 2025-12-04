@@ -176,11 +176,16 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let project = Project::open(&project_dir)?;
-    let config = project.config().clone();
+    let is_playground = project.is_playground();
+    let mut config = project.config().clone();
     let is_json = output::global_output_format().is_json();
 
     if !is_json {
-        ui::section(format!("Running: {}", config.package.display_name));
+        if is_playground {
+            ui::section(format!("Running playground: {}", project.name()));
+        } else {
+            ui::section(format!("Running: {}", project.name()));
+        }
     }
 
     let had_explicit_platform = matches!(args.platform, Some(RunTarget::Platform(_)));
@@ -212,10 +217,33 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
                     )
                 })?;
             platform = Some(platform_from_device(selected_device)?);
+        } else if is_playground {
+            let backend_choice = prompt_for_playground_backend()?;
+            platform = Some(resolve_playground_backend_choice(backend_choice)?);
         } else {
             let backend_choice = prompt_for_backend(&config)?;
             platform = Some(resolve_backend_choice(backend_choice, &config)?);
         }
+    }
+
+    // For playground projects, ensure the backend exists in the cache
+    if is_playground {
+        let platform_kind = platform.ok_or_else(|| eyre!("No platform selected"))?;
+        let backend = match platform_kind {
+            Platform::Web => super::create::BackendChoice::Web,
+            Platform::Android => super::create::BackendChoice::Android,
+            Platform::Macos | Platform::Ios | Platform::Ipados | Platform::Tvos | Platform::Visionos => {
+                super::create::BackendChoice::Apple
+            }
+            _ => bail!("Platform {:?} is not supported in playground mode", platform_kind),
+        };
+        config = super::playground::ensure_playground_backend(
+            &project_dir,
+            &config,
+            project.crate_name(),
+            backend,
+        )?;
+        platform = Some(platform_kind);
     }
 
     if matches!(platform, Some(Platform::Watchos)) {
@@ -327,6 +355,138 @@ fn resolve_backend_choice(choice: BackendChoice, config: &Config) -> Result<Plat
         BackendChoice::Platform(platform) => Ok(platform),
         BackendChoice::AppleAggregate => prompt_for_apple_platform(config),
     }
+}
+
+/// Prompt for backend selection in playground mode (no pre-configured backends).
+fn prompt_for_playground_backend() -> Result<BackendChoice> {
+    let mut options: Vec<(BackendChoice, String)> = Vec::new();
+
+    // Web is always available
+    options.push((
+        BackendChoice::Platform(Platform::Web),
+        "Web Browser".to_string(),
+    ));
+
+    // Apple is only available on macOS
+    #[cfg(target_os = "macos")]
+    options.push((
+        BackendChoice::AppleAggregate,
+        "Apple (macOS, iOS, iPadOS, tvOS, visionOS)".to_string(),
+    ));
+
+    // Android is available if Android SDK might be installed
+    options.push((
+        BackendChoice::Platform(Platform::Android),
+        "Android".to_string(),
+    ));
+
+    let default_index = default_backend_index(&options);
+    let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
+    let selection = if is_interactive_terminal() {
+        Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a platform to run")
+            .items(&labels)
+            .default(default_index)
+            .interact()?
+    } else {
+        if !output::global_output_format().is_json() {
+            ui::info(format!(
+                "Non-interactive terminal detected; using {}.",
+                options[default_index].1
+            ));
+        }
+        default_index
+    };
+
+    Ok(options[selection].0)
+}
+
+/// Resolve playground backend choice to a platform.
+fn resolve_playground_backend_choice(choice: BackendChoice) -> Result<Platform> {
+    match choice {
+        BackendChoice::Platform(platform) => Ok(platform),
+        BackendChoice::AppleAggregate => prompt_for_playground_apple_platform(),
+    }
+}
+
+/// Prompt for Apple platform in playground mode.
+fn prompt_for_playground_apple_platform() -> Result<Platform> {
+    let mut spinner = ui::spinner("Scanning Apple devices...");
+    let scan_started = Instant::now();
+    debug!("Starting Apple device scan for playground");
+    let devices = match device::list_devices_filtered(DevicePlatformFilter::Apple) {
+        Ok(list) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            debug!(
+                "Apple device scan for playground completed in {:?} with {} device(s)",
+                scan_started.elapsed(),
+                list.len()
+            );
+            list
+        }
+        Err(err) => {
+            if let Some(spinner_guard) = spinner.take() {
+                spinner_guard.finish();
+            }
+            debug!(
+                "Apple device scan for playground failed after {:?}: {err:?}",
+                scan_started.elapsed()
+            );
+            return Err(err);
+        }
+    };
+
+    let mut has_ios = false;
+    let mut has_ipados = false;
+    let mut has_tvos = false;
+    let mut has_visionos = false;
+
+    for device in &devices {
+        if let Ok(platform) = platform_from_device(device) {
+            match platform {
+                Platform::Ios => has_ios = true,
+                Platform::Ipados => has_ipados = true,
+                Platform::Tvos => has_tvos = true,
+                Platform::Visionos => has_visionos = true,
+                _ => {}
+            }
+        }
+    }
+
+    let mut options: Vec<(Platform, String)> = vec![(Platform::Macos, "Apple: macOS".to_string())];
+    if has_ios {
+        options.push((Platform::Ios, "Apple: iOS".to_string()));
+    }
+    if has_ipados {
+        options.push((Platform::Ipados, "Apple: iPadOS".to_string()));
+    }
+    if has_tvos {
+        options.push((Platform::Tvos, "Apple: tvOS".to_string()));
+    }
+    if has_visionos {
+        options.push((Platform::Visionos, "Apple: visionOS".to_string()));
+    }
+
+    let labels: Vec<_> = options.iter().map(|(_, label)| label.as_str()).collect();
+    let selection = if is_interactive_terminal() {
+        Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select an Apple platform")
+            .items(&labels)
+            .default(0)
+            .interact()?
+    } else {
+        if !output::global_output_format().is_json() {
+            ui::info(format!(
+                "Non-interactive terminal detected; using {}.",
+                options[0].1
+            ));
+        }
+        0
+    };
+
+    Ok(options[selection].0)
 }
 
 fn default_backend_index(options: &[(BackendChoice, String)]) -> usize {
@@ -539,7 +699,7 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(project_dir, config, release, log_filter);
+        return run_web(project_dir, config, project.crate_name(), release, log_filter);
     }
 
     // Hot reload is always enabled for native platforms that support it
@@ -559,7 +719,7 @@ fn run_platform(
     // We only need to notify the hot reload server if a library already exists from a previous build.
     let library_path = hot_reload_library_path(
         project_dir,
-        &config.package.name,
+        project.crate_name(),
         release,
         hot_reload_target.as_deref(),
     );
@@ -574,7 +734,7 @@ fn run_platform(
     }
 
     let project_dir_buf = project_dir.to_path_buf();
-    let package_name = config.package.name.clone();
+    let package_name = project.crate_name().to_string();
     let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
         run_cargo_build(
             &project_dir_buf,
@@ -757,31 +917,15 @@ fn run_with_package_spinner<D>(
     project: &Project,
     device: D,
     options: RunOptions,
-    spinner_msg: String,
+    _spinner_msg: String,
 ) -> Result<RunReport>
 where
     D: Device,
 {
-    let mut spinner_guard: Option<ui::SpinnerGuard> = None;
-    let result = run_on_device_with_observer(project, device, options, |stage| match stage {
-        RunStage::Package => {
-            if spinner_guard.is_none() {
-                spinner_guard = ui::spinner(spinner_msg.clone());
-            }
-        }
-        RunStage::Launch => {
-            if let Some(guard) = spinner_guard.take() {
-                guard.finish();
-            }
-        }
-        _ => {}
-    });
-
-    if let Some(guard) = spinner_guard.take() {
-        guard.finish();
-    }
-
-    result
+    // Note: We don't show a spinner during packaging because both Cargo
+    // and xcodebuild/Gradle have their own progress output that would
+    // conflict with the spinner animation.
+    run_on_device_with_observer(project, device, options, |_stage| {})
 }
 
 fn convert_run_error(err: FailToRun) -> color_eyre::eyre::Report {
@@ -1192,6 +1336,7 @@ fn indent_lines(text: &str, indent: &str) -> String {
 fn run_web(
     project_dir: &Path,
     config: &Config,
+    crate_name: &str,
     release: bool,
     log_filter: Option<String>,
 ) -> Result<()> {
@@ -1215,7 +1360,7 @@ fn run_web(
 
     build_web_app(
         project_dir,
-        &config.package.name,
+        crate_name,
         &web_dir,
         release,
         &wasm_pack,
@@ -1238,7 +1383,7 @@ fn run_web(
     }
 
     let project_dir_buf = project_dir.to_path_buf();
-    let package_name = config.package.name.clone();
+    let package_name = crate_name.to_string();
     let web_dir_buf = web_dir.clone();
     let wasm_pack_path = wasm_pack;
     let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
@@ -1952,7 +2097,7 @@ fn load_last_run(project: &Project) -> Result<LastRunSnapshot> {
 }
 
 fn last_run_path(project: &Project) -> PathBuf {
-    project.root().join(".waterui").join(LAST_RUN_FILE)
+    project.root().join(".water").join(LAST_RUN_FILE)
 }
 
 fn current_timestamp() -> u64 {

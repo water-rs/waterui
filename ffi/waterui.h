@@ -97,6 +97,32 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
+/**
+ * FFI representation of photo events.
+ */
+typedef enum WuiPhotoEventType {
+  WuiPhotoEventType_Loaded = 0,
+  WuiPhotoEventType_Error = 1,
+} WuiPhotoEventType;
+
+enum WuiAspectRatio {
+  WuiAspectRatio_Fit = 0,
+  WuiAspectRatio_Fill = 1,
+  WuiAspectRatio_Stretch = 2,
+};
+typedef int32_t WuiAspectRatio;
+
+/**
+ * FFI representation of video player events.
+ */
+typedef enum WuiVideoEventType {
+  WuiVideoEventType_ReadyToPlay = 0,
+  WuiVideoEventType_Ended = 1,
+  WuiVideoEventType_Error = 2,
+  WuiVideoEventType_Buffering = 3,
+  WuiVideoEventType_BufferingEnded = 4,
+} WuiVideoEventType;
+
 typedef enum WuiProgressStyle {
   WuiProgressStyle_Linear,
   WuiProgressStyle_Circular,
@@ -1191,18 +1217,62 @@ typedef struct WuiNavigationView {
 
 typedef struct WuiStr Url;
 
+/**
+ * FFI representation of a photo event.
+ */
+typedef struct WuiPhotoEvent {
+  enum WuiPhotoEventType event_type;
+  struct WuiStr error_message;
+} WuiPhotoEvent;
+
+/**
+ * A C-compatible function wrapper that can be called multiple times.
+ *
+ * This structure wraps a Rust `Fn` closure to allow it to be passed across
+ * the FFI boundary while maintaining proper memory management.
+ */
+typedef struct WuiFn_WuiPhotoEvent {
+  void *data;
+  void (*call)(const void*, struct WuiPhotoEvent);
+  void (*drop)(void*);
+} WuiFn_WuiPhotoEvent;
+
 typedef struct WuiPhoto {
   Url source;
   struct WuiAnyView *placeholder;
+  struct WuiFn_WuiPhotoEvent on_event;
 } WuiPhoto;
 
 typedef struct Computed_Video WuiComputed_Video;
 
 typedef struct Binding_Volume WuiBinding_Volume;
 
+/**
+ * FFI representation of a video player event.
+ */
+typedef struct WuiVideoEvent {
+  enum WuiVideoEventType event_type;
+  struct WuiStr error_message;
+} WuiVideoEvent;
+
+/**
+ * A C-compatible function wrapper that can be called multiple times.
+ *
+ * This structure wraps a Rust `Fn` closure to allow it to be passed across
+ * the FFI boundary while maintaining proper memory management.
+ */
+typedef struct WuiFn_WuiVideoEvent {
+  void *data;
+  void (*call)(const void*, struct WuiVideoEvent);
+  void (*drop)(void*);
+} WuiFn_WuiVideoEvent;
+
 typedef struct WuiVideoPlayer {
   WuiComputed_Video *video;
   WuiBinding_Volume *volume;
+  WuiAspectRatio aspect_ratio;
+  bool show_controls;
+  struct WuiFn_WuiVideoEvent on_event;
 } WuiVideoPlayer;
 
 typedef struct Computed_LivePhotoSource WuiComputed_LivePhotoSource;
