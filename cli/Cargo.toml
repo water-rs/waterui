@@ -41,6 +41,7 @@ thiserror = "2.0.17"
 smol = "2.0.2"
 atty = "0.2.14"
 pathdiff = "0.2.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 zenwave.workspace = true
 skyzen = { git = "https://github.com/zen-rs/skyzen" , default-features = true, features = ["websocket", "rt"] }
 
