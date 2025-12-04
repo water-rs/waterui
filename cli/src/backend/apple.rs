@@ -175,7 +175,7 @@ pub fn resolve_xcode_project<'a>(
 
 #[must_use]
 pub fn derived_data_dir(project_dir: &Path) -> PathBuf {
-    project_dir.join(".waterui/DerivedData")
+    project_dir.join(".water/DerivedData")
 }
 
 /// Ensure the derived data directory exists for Xcode builds.
