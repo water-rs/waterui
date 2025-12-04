@@ -5,14 +5,14 @@ use color_eyre::eyre::{Result, bail};
 use heck::ToUpperCamelCase;
 
 use super::create::{
-    self, BackendChoice, DEFAULT_WATERUI_FFI_VERSION, ValidatedWaterUIPath,
-    resolve_dependencies_with_path, validate_waterui_path,
+    self, BackendChoice, ValidatedWaterUIPath, resolve_dependencies_with_path,
+    validate_waterui_path,
 };
 use crate::ui;
 use serde::Serialize;
 use waterui_cli::{
     WATERUI_ANDROID_BACKEND_VERSION, output,
-    project::{Android, Config, Swift, Web},
+    project::{Android, Config, Swift, Web, read_crate_name},
 };
 
 #[derive(Args, Debug, Clone)]
@@ -23,8 +23,9 @@ pub struct AddBackendArgs {
     /// Project directory (defaults to current working directory)
     pub project: Option<PathBuf>,
 
-    /// Use the development version of `WaterUI` from GitHub
-    pub dev: bool,
+    /// Local path to a custom backend implementation (app mode only)
+    #[arg(long)]
+    pub local_path: Option<PathBuf>,
 }
 
 /// Add an additional backend implementation to an existing `WaterUI` project.
@@ -44,6 +45,16 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let mut config = Config::load(&project_dir)?;
 
+    // Playground projects cannot have backends added manually
+    if config.is_playground() {
+        bail!(
+            "Cannot add backends to a playground project.\n\n\
+             Playground projects automatically create platform backends at runtime.\n\
+             If you need custom backend configuration, create a regular app project instead:\n\n\
+             water create --backend apple --backend android"
+        );
+    }
+
     // Use the stored waterui_path from config for dev mode
     let validated_waterui_path: Option<ValidatedWaterUIPath> =
         if let Some(ref path_str) = config.waterui_path {
@@ -52,8 +63,13 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             None
         };
 
-    let use_dev = args.dev || config.dev_dependencies;
-    let deps = resolve_dependencies_with_path(use_dev, validated_waterui_path.as_ref())?;
+    // Dev mode is determined by waterui_path presence
+    let use_dev = validated_waterui_path.is_some();
+
+    let deps = resolve_dependencies_with_path(validated_waterui_path.as_ref())?;
+
+    // Read crate name from Cargo.toml
+    let crate_name = read_crate_name(&project_dir)?;
 
     let is_json = output::global_output_format().is_json();
 
@@ -65,16 +81,12 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             if !is_json {
                 ui::step("Adding Web backend...");
             }
-            create::web::create_web_assets(&project_dir, &config.package.display_name)?;
+            create::web::create_web_assets(&project_dir, &config.package.name)?;
             config.backends.web = Some(Web {
                 project_path: "web".to_string(),
                 version: None,
                 dev: use_dev,
-                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
-            if !config.hot_reload.watch.iter().any(|path| path == "web") {
-                config.hot_reload.watch.push("web".to_string());
-            }
             if !is_json {
                 ui::success("Web backend added successfully");
             }
@@ -87,7 +99,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 ui::step("Adding Android backend...");
             }
             let app_name = {
-                let generated = config.package.display_name.to_upper_camel_case();
+                let generated = config.package.name.to_upper_camel_case();
                 if generated.is_empty() {
                     "WaterUIApp".to_string()
                 } else {
@@ -97,7 +109,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             create::android::create_android_project(
                 &project_dir,
                 &app_name,
-                &config.package.name,
+                &crate_name,
                 &config.package.bundle_identifier,
                 use_dev,
                 deps.local_waterui_path.as_ref(),
@@ -110,7 +122,6 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                     Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
                 },
                 dev: use_dev,
-                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
                 ui::success("Android backend added successfully");
@@ -124,7 +135,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 ui::step("Adding Apple backend...");
             }
             let app_name = {
-                let generated = config.package.display_name.to_upper_camel_case();
+                let generated = config.package.name.to_upper_camel_case();
                 if generated.is_empty() {
                     "WaterUIApp".to_string()
                 } else {
@@ -134,8 +145,8 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
             create::swift::create_xcode_project(
                 &project_dir,
                 &app_name,
-                &config.package.display_name,
                 &config.package.name,
+                &crate_name,
                 &config.package.bundle_identifier,
                 &deps.swift,
             )?;
@@ -149,16 +160,21 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                     (None, None, None, Some(path.display().to_string()))
                 }
             };
+            // Use --local-path override if provided, otherwise use deps.swift local_path
+            let effective_local_path = args
+                .local_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .or(local_path);
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
-                scheme: config.package.name.clone(),
+                scheme: crate_name.clone(),
                 project_file: Some(format!("{app_name}.xcodeproj")),
                 version,
                 branch,
                 revision,
-                local_path,
+                local_path: effective_local_path,
                 dev: use_dev,
-                ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
             });
             if !is_json {
                 ui::success("Apple backend added successfully");
@@ -174,7 +190,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
     let report = AddBackendReport {
         project_dir: project_dir.display().to_string(),
         backend: args.backend.label().to_string(),
-        using_dev_dependencies: args.dev,
+        using_dev_dependencies: use_dev,
         config_path: Config::path(&project_dir).display().to_string(),
     };
 

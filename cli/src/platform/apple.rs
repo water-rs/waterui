@@ -4,7 +4,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, bail};
-use tracing::debug;
+use tracing::{debug, info};
 use which::which;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
             xcodebuild_base,
         },
     },
+    build::{self, BuildOptions},
     doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
     project::{Project, Swift},
@@ -163,6 +164,20 @@ impl Platform for ApplePlatform {
         prepare_derived_data_dir(&derived_root)?;
 
         let configuration = Self::configuration(release);
+
+        // Build the Rust library first (use internal to allow playground builds)
+        let rust_target = self.target_triple();
+        info!("Building Rust library for {rust_target}");
+        let build_options = BuildOptions::new().with_release(release);
+        let build_result = build::build_for_target_internal(project, rust_target, &build_options)?;
+
+        // Copy libwaterui_app.a to where Xcode expects it (BUILT_PRODUCTS_DIR)
+        let products_dir = self.products_dir(&derived_root, configuration);
+        std::fs::create_dir_all(&products_dir)?;
+        let dest_lib = products_dir.join("libwaterui_app.a");
+        std::fs::copy(&build_result.artifact_path, &dest_lib)?;
+        info!("Copied {} to {}", build_result.artifact_path.display(), dest_lib.display());
+
         let mut build_cmd = xcodebuild_base(&xcode, configuration, &derived_root);
 
         match &self.target {
@@ -184,8 +199,11 @@ impl Platform for ApplePlatform {
             }
         }
 
+        // Skip Rust build in Xcode's build script - we already built it above
+        build_cmd.env("WATERUI_SKIP_RUST_BUILD", "1");
+
         debug!("Executing xcodebuild command: {:?}", build_cmd);
-        let log_dir = project.root().join(".waterui/logs");
+        let log_dir = project.root().join(".water/logs");
         run_xcodebuild_with_progress(
             build_cmd,
             &format!("Building {} ({configuration})", xcode.scheme),

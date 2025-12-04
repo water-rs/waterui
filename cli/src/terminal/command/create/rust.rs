@@ -1,8 +1,7 @@
-use color_eyre::eyre::{Context, Result};
-use std::{collections::HashMap, fs, path::Path};
+use color_eyre::eyre::Result;
+use std::{collections::HashMap, path::Path};
 
 use super::{ProjectDependencies, template};
-use crate::util;
 
 /// Create the Rust crate scaffolding for a `WaterUI` project.
 ///
@@ -23,7 +22,7 @@ pub fn create_rust_sources(
     context.insert("AUTHOR", author.to_string());
     context.insert("APP_DISPLAY_NAME", display_name.to_string());
 
-    context.insert("WATERUI_DEPS", deps.rust_toml.clone());
+    context.insert("WATERUI_DEPS", deps.rust_toml_for_project(project_dir));
 
     let templates = &template::TEMPLATES_DIR;
 
@@ -51,34 +50,5 @@ pub fn create_rust_sources(
         &context,
     )?;
 
-    template::process_template_file(
-        templates
-            .get_file("build.rs.tpl")
-            .expect("build.rs.tpl should exist"),
-        &project_dir.join("build.rs"),
-        &context,
-    )?;
-
-    copy_ffi_header(project_dir)?;
-
-    Ok(())
-}
-
-fn copy_ffi_header(project_dir: &Path) -> Result<()> {
-    let source = util::workspace_root().join("ffi/waterui.h");
-    if !source.exists() {
-        return Ok(());
-    }
-
-    let destination_dir = project_dir.join("ffi");
-    util::ensure_directory(&destination_dir)?;
-    let destination = destination_dir.join("waterui.h");
-    fs::copy(&source, &destination).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
     Ok(())
 }
