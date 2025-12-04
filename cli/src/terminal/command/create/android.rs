@@ -13,6 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use super::{ValidatedWaterUIPath, template};
 use crate::{ui, util};
 use waterui_cli::backend::android;
+use waterui_cli::permission::ResolvedPermission;
 
 pub const ANDROID_BACKEND_REPO: &str = "https://github.com/water-rs/android-backend.git";
 pub const ANDROID_BACKEND_BRANCH: &str = "dev";
@@ -35,6 +36,31 @@ pub fn create_android_project(
     bundle_identifier: &str,
     dev_mode: bool,
     local_waterui_path: Option<&ValidatedWaterUIPath>,
+) -> Result<()> {
+    create_android_project_with_permissions(
+        project_dir,
+        display_name,
+        crate_name,
+        bundle_identifier,
+        dev_mode,
+        local_waterui_path,
+        &[],
+    )
+}
+
+/// Generate the Android Gradle project with custom permissions.
+///
+/// # Errors
+/// Returns an error if any template cannot be written to the target project directory.
+#[allow(clippy::too_many_lines)]
+pub fn create_android_project_with_permissions(
+    project_dir: &Path,
+    display_name: &str,
+    crate_name: &str,
+    bundle_identifier: &str,
+    dev_mode: bool,
+    local_waterui_path: Option<&ValidatedWaterUIPath>,
+    permissions: &[ResolvedPermission],
 ) -> Result<()> {
     let android_dir = project_dir.join("android");
     util::ensure_directory(&android_dir)?;
@@ -90,6 +116,9 @@ pub fn create_android_project(
 
     let android_package = android::sanitize_package_name(bundle_identifier);
 
+    // Generate Android permission entries
+    let android_permissions = generate_android_permissions(permissions);
+
     let mut context = HashMap::new();
     context.insert("APP_NAME", display_name.to_string());
     context.insert("CRATE_NAME", crate_name.to_string());
@@ -97,6 +126,7 @@ pub fn create_android_project(
     context.insert("BUNDLE_IDENTIFIER", android_package.clone());
     context.insert("USE_REMOTE_DEV_BACKEND", use_remote_dev_backend.to_string());
     context.insert("ANDROID_BACKEND_PATH", android_backend_path);
+    context.insert("ANDROID_PERMISSIONS", android_permissions);
 
     let templates = &template::TEMPLATES_DIR;
 
@@ -632,4 +662,31 @@ pub fn git_head_commit(repo_dir: &Path) -> Option<String> {
     }
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if hash.is_empty() { None } else { Some(hash) }
+}
+
+/// Generate Android manifest permission entries from resolved permissions.
+fn generate_android_permissions(permissions: &[ResolvedPermission]) -> String {
+    use std::collections::HashSet;
+
+    // Always include INTERNET permission by default
+    let mut entries = vec!["    <uses-permission android:name=\"android.permission.INTERNET\" />".to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert("android.permission.INTERNET".to_string());
+
+    for perm in permissions {
+        for entry in perm.android_manifest_entries() {
+            // Extract permission name for deduplication
+            if let Some(start) = entry.find("android:name=\"") {
+                let rest = &entry[start + 14..];
+                if let Some(end) = rest.find('"') {
+                    let perm_name = &rest[..end];
+                    if seen.insert(perm_name.to_string()) {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    entries.join("\n")
 }
