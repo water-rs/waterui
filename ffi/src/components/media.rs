@@ -14,7 +14,7 @@ use waterui_media::{
 type Url = WuiStr;
 type Volume = f32;
 
-#[repr(i32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum WuiAspectRatio {
     Fit = 0,

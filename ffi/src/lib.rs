@@ -778,3 +778,49 @@ pub type WuiMetadataIgnoreSafeArea = WuiMetadata<WuiIgnoreSafeArea>;
 
 // Generate waterui_metadata_ignore_safe_area_id() and waterui_force_as_metadata_ignore_safe_area()
 ffi_metadata!(IgnoreSafeArea, WuiMetadataIgnoreSafeArea, ignore_safe_area);
+
+// ========== Metadata<Retain> FFI ==========
+// Used to keep values alive for the lifetime of a view (e.g., watcher guards)
+
+use waterui_core::Retain;
+
+/// FFI-safe representation of Retain metadata.
+/// The actual retained value is opaque - renderers just need to keep it alive.
+#[repr(C)]
+pub struct WuiRetain {
+    /// Opaque pointer to the retained value (Box<dyn Any>).
+    /// This must be kept alive and dropped when the view is disposed.
+    _opaque: *mut (),
+}
+
+impl IntoFFI for Retain {
+    type FFI = WuiRetain;
+    fn into_ffi(self) -> Self::FFI {
+        // Leak the Retain to keep the inner value alive
+        // The native side will call waterui_drop_retain to clean up
+        let boxed = Box::new(self);
+        WuiRetain {
+            _opaque: Box::into_raw(boxed) as *mut (),
+        }
+    }
+}
+
+/// Type alias for Metadata<Retain> FFI struct
+pub type WuiMetadataRetain = WuiMetadata<WuiRetain>;
+
+// Generate waterui_metadata_retain_id() and waterui_force_as_metadata_retain()
+ffi_metadata!(Retain, WuiMetadataRetain, retain);
+
+/// Drops the retained value.
+///
+/// # Safety
+/// The caller must ensure that `retain` is a valid pointer returned from
+/// `waterui_force_as_metadata_retain` and has not been dropped before.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
+    if !retain._opaque.is_null() {
+        unsafe {
+            drop(Box::from_raw(retain._opaque as *mut Retain));
+        }
+    }
+}
