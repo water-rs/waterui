@@ -1,14 +1,12 @@
-//! Video Player Example - Demonstrates WaterUI's video playback capabilities
+//! Video Player Example - Immersive video playback demo
 //!
 //! This example showcases:
 //! - VideoPlayer with native controls
 //! - Overlay for buffering indicator
-//! - ProgressView for loading state
-//! - Reactive state management for playback events
+//! - Immersive full-screen layout
+//! - Reactive state management
 
 use waterui::color::Srgb;
-use waterui::layout::frame::Frame;
-use waterui::layout::stack::{Alignment, HorizontalAlignment};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::widget::condition::when;
@@ -17,76 +15,11 @@ pub fn init() -> Environment {
     Environment::new()
 }
 
-/// A video player component with buffering overlay
-struct BufferingVideoPlayer {
-    video_url: &'static str,
-}
-
-impl BufferingVideoPlayer {
-    fn new(url: &'static str) -> Self {
-        Self { video_url: url }
-    }
-}
-
-impl View for BufferingVideoPlayer {
-    fn body(self, _env: &Environment) -> impl View {
-        // Track buffering state
-        let is_buffering = binding(false);
-
-        // Create the video player with native controls
-        let player = VideoPlayer::new(Video::new(
-            url::Url::parse(self.video_url).expect("Invalid video URL"),
-        ))
-        .show_controls(true)
-        .aspect_ratio(AspectRatio::Fit)
-        .on_event({
-            let is_buffering = is_buffering.clone();
-            move |event| match event {
-                video::Event::Buffering => {
-                    is_buffering.set(true);
-                }
-                video::Event::BufferingEnded | video::Event::ReadyToPlay => {
-                    is_buffering.set(false);
-                }
-                video::Event::Ended => {
-                    // Video finished playing
-                }
-                video::Event::Error { message } => {
-                    // Log error - in a real app you might show an error view
-                    #[cfg(debug_assertions)]
-                    {
-                        let _ = message;
-                    }
-                }
-            }
-        });
-
-        // Create buffering overlay with centered spinner
-        let buffering_overlay = when(is_buffering, || {
-            // When buffering: show a semi-transparent overlay with spinner
-            zstack((
-                // Semi-transparent background
-                spacer().background(Color::from(Srgb::BLACK).with_opacity(0.4)),
-                // Centered loading indicator with label
-                vstack((
-                    loading(),
-                    text("Buffering...").foreground(Color::from(Srgb::WHITE)),
-                ))
-                .spacing(12.0),
-            ))
-            .alignment(Alignment::Center)
-        });
-
-        // Combine player with overlay
-        overlay(player, buffering_overlay)
-    }
-}
-
 pub fn main() -> impl View {
     // Sample video URLs (Big Buck Bunny - open source test videos)
     let sample_videos: [(&str, &str); 3] = [
         (
-            "Big Buck Bunny (720p)",
+            "Big Buck Bunny",
             "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
         ),
         (
@@ -102,70 +35,92 @@ pub fn main() -> impl View {
     // Track which video is selected
     let selected_index = binding(0usize);
 
-    // Header section
-    let header = vstack((
-        text("Video Player Demo").size(28.0),
-        "Demonstrating VideoPlayer with buffering overlay",
+    // Track buffering state
+    let is_buffering = binding(false);
+
+    // Create reactive video source
+    let video_source = selected_index.clone().map(move |idx| {
+        let (_, url_str) = sample_videos[idx];
+        Video::new(url::Url::parse(url_str).expect("Invalid video URL"))
+    });
+
+    // Video player - immersive full screen with Fill aspect ratio
+    let player = VideoPlayer::new(video_source)
+        .show_controls(true)
+        .aspect_ratio(AspectRatio::Fill)
+        .on_event({
+            let is_buffering = is_buffering.clone();
+            move |event| match event {
+                video::Event::Buffering => is_buffering.set(true),
+                video::Event::BufferingEnded | video::Event::ReadyToPlay => {
+                    is_buffering.set(false)
+                }
+                video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
+            }
+        });
+
+    // Buffering overlay
+    let buffering_overlay = when(is_buffering, || {
+        zstack((
+            spacer().background(Color::from(Srgb::BLACK).with_opacity(0.5)),
+            vstack((
+                loading(),
+                text("Buffering...").foreground(Color::from(Srgb::WHITE)),
+            ))
+            .spacing(12.0),
+        ))
+    });
+
+    // Video with buffering overlay
+    let video_layer = overlay(player, buffering_overlay);
+
+    // Bottom controls overlay
+    let controls_overlay = vstack((
+        spacer(),
+        // Bottom panel
+        vstack((
+            // Current video title
+            Dynamic::watch(selected_index.clone(), move |idx| {
+                let (title, _) = sample_videos[idx];
+                text(title)
+                    .size(28.0)
+                    .bold()
+                    .foreground(Color::from(Srgb::WHITE))
+            }),
+            spacer_min(20.0),
+            // Video selector pills
+            hstack((
+                pill_button("Big Buck Bunny", 0, &selected_index),
+                pill_button("Elephant Dream", 1, &selected_index),
+                pill_button("Sintel", 2, &selected_index),
+            ))
+            .spacing(12.0),
+        ))
+        .padding_with(EdgeInsets::new(60.0, 32.0, 32.0, 32.0))
+        .background(Color::from(Srgb::BLACK).with_opacity(0.6)),
     ));
 
-    // Video selection buttons
-    let selection_buttons = hstack((
-        button("Video 1").action({
-            let selected = selected_index.clone();
-            move || selected.set(0)
-        }),
-        button("Video 2").action({
-            let selected = selected_index.clone();
-            move || selected.set(1)
-        }),
-        button("Video 3").action({
-            let selected = selected_index.clone();
-            move || selected.set(2)
-        }),
-    ))
-    .spacing(8.0);
+    // Stack everything
+    zstack((video_layer, controls_overlay))
+}
 
-    // Now playing title (reactive)
-    let now_playing = Dynamic::watch(selected_index.clone(), move |idx| {
-        let (title, _) = sample_videos[idx];
-        text(title).foreground(theme_color::Accent)
-    });
+/// Pill-style selection button
+fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> impl View {
+    let is_selected = selected.clone().map(move |s| s == index);
+    let selected_for_action = selected.clone();
 
-    // Video player (reactive)
-    let player = Dynamic::watch(selected_index, move |idx| {
-        let (_, url) = sample_videos[idx];
-        Frame::new(BufferingVideoPlayer::new(url)).height(300.0)
-    });
+    Dynamic::watch(is_selected, move |active| {
+        let bg = if active {
+            Color::from(Srgb::WHITE).with_opacity(0.35)
+        } else {
+            Color::from(Srgb::WHITE).with_opacity(0.15)
+        };
 
-    // Feature description
-    let features = vstack((
-        text("Features demonstrated:").bold(),
-        "- Native video controls (play/pause, seek, fullscreen)",
-        "- Buffering detection with overlay indicator",
-        "- Circular ProgressView for loading state",
-        "- Dynamic video switching",
-        "- Aspect ratio handling (Fit mode)",
-    ))
-    .alignment(HorizontalAlignment::Leading);
-
-    scroll(
-        vstack((
-            header,
-            Divider,
-            spacer_min(16.0),
-            text("Select a video:").bold(),
-            selection_buttons,
-            spacer_min(16.0),
-            text("Now Playing:").bold(),
-            now_playing,
-            spacer_min(8.0),
-            player,
-            spacer_min(16.0),
-            Divider,
-            features,
-        ))
-        .padding_with(EdgeInsets::all(16.0)),
-    )
+        let selected_clone = selected_for_action.clone();
+        button(text(label).foreground(Color::from(Srgb::WHITE)))
+            .action(move || selected_clone.set(index))
+            .background(bg)
+    })
 }
 
 waterui_ffi::export!();
