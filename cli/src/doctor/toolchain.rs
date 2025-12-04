@@ -28,6 +28,7 @@ pub enum CheckTarget {
     Rust,
     Swift,
     Android,
+    Automation,
 }
 
 impl CheckTarget {
@@ -37,6 +38,7 @@ impl CheckTarget {
             Self::Rust => "Rust toolchain",
             Self::Swift => "Swift toolchain",
             Self::Android => "Android tooling",
+            Self::Automation => "UI automation tools",
         }
     }
 }
@@ -106,6 +108,14 @@ pub fn perform_check(mode: CheckMode, target: CheckTarget) -> Option<SectionOutc
             }
         }
         CheckTarget::Android => Some(check_android(mode)),
+        CheckTarget::Automation => {
+            // Only check automation tools on macOS (idb is for iOS simulators)
+            if cfg!(target_os = "macos") {
+                Some(check_automation())
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -629,6 +639,51 @@ fn check_swift() -> SectionOutcome {
     ));
     outcome.push_outcome(check_apple_cmake());
     outcome
+}
+
+fn check_automation() -> SectionOutcome {
+    let mut outcome = SectionOutcome::new("UI automation tools");
+
+    // Check for idb (iOS Development Bridge) - required for iOS simulator UI automation
+    outcome.push_outcome(check_idb());
+
+    outcome
+}
+
+fn check_idb() -> RowOutcome {
+    which("idb").map_or_else(
+        |_| {
+            let detail = "idb (iOS Development Bridge) is required for UI automation on iOS simulators.\n\
+                         Install it with: brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb";
+            let row = Row::warn("`idb` not installed").with_detail(detail);
+            if let Some(fix) = idb_fix_suggestion() {
+                RowOutcome::with_fix(row, fix)
+            } else {
+                RowOutcome::new(row)
+            }
+        },
+        |path| {
+            RowOutcome::new(
+                Row::pass("`idb` available for iOS UI automation")
+                    .with_detail(path.display().to_string()),
+            )
+        },
+    )
+}
+
+fn idb_fix_suggestion() -> Option<FixSuggestion> {
+    if which("brew").is_ok() {
+        return Some(FixSuggestion::new(
+            "tool-idb".into(),
+            "Install idb for iOS UI automation".into(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb".into(),
+            ],
+        ));
+    }
+    None
 }
 
 fn check_apple_cmake() -> RowOutcome {
