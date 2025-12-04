@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use color_eyre::eyre::Result;
 
 use super::{SwiftDependency, swift_backend_repo_url, template};
+use waterui_cli::permission::ResolvedPermission;
 
 /// Generate the Swift/Xcode portion of a `WaterUI` project.
 ///
@@ -22,6 +23,31 @@ pub fn create_xcode_project(
     crate_name: &str,
     bundle_identifier: &str,
     swift_dependency: &SwiftDependency,
+) -> Result<()> {
+    create_xcode_project_with_permissions(
+        project_dir,
+        app_name,
+        app_display_name,
+        crate_name,
+        bundle_identifier,
+        swift_dependency,
+        &[],
+    )
+}
+
+/// Generate the Swift/Xcode portion of a `WaterUI` project with custom permissions.
+///
+/// # Errors
+/// Returns an error if file writes fail or file permissions cannot be updated.
+#[allow(clippy::too_many_lines)]
+pub fn create_xcode_project_with_permissions(
+    project_dir: &Path,
+    app_name: &str,
+    app_display_name: &str,
+    crate_name: &str,
+    bundle_identifier: &str,
+    swift_dependency: &SwiftDependency,
+    permissions: &[ResolvedPermission],
 ) -> Result<()> {
     let apple_root = project_dir.join("apple");
 
@@ -88,6 +114,10 @@ pub fn create_xcode_project(
     context.insert("SWIFT_PACKAGE_REFERENCE_ENTRY", package_reference_entry);
     context.insert("SWIFT_PACKAGE_REFERENCE_SECTION", package_reference_section);
 
+    // Generate iOS permission build settings (INFOPLIST_KEY_* entries)
+    let ios_permission_keys = generate_ios_permission_keys(permissions);
+    context.insert("IOS_PERMISSION_KEYS", ios_permission_keys);
+
     let templates = &template::TEMPLATES_DIR;
     let apple_template_dir = templates
         .get_dir("apple")
@@ -107,4 +137,31 @@ pub fn create_xcode_project(
     fs::write(xcconfig, "RUST_LIBRARY_PATH=\n")?;
 
     Ok(())
+}
+
+/// Generate iOS permission build settings for Xcode's auto-generated Info.plist.
+///
+/// This generates `INFOPLIST_KEY_*` build settings that Xcode uses when
+/// `GENERATE_INFOPLIST_FILE = YES` is set.
+fn generate_ios_permission_keys(permissions: &[ResolvedPermission]) -> String {
+    use std::collections::HashSet;
+
+    let mut entries = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for perm in permissions {
+        for (key, description) in perm.ios_plist_entries() {
+            if seen.insert(key.clone()) {
+                // Convert Info.plist key to INFOPLIST_KEY_* format
+                // e.g., NSCameraUsageDescription -> INFOPLIST_KEY_NSCameraUsageDescription
+                let escaped_description = description.replace('"', "\\\"");
+                entries.push(format!(
+                    "\t\t\t\tINFOPLIST_KEY_{} = \"{}\";",
+                    key, escaped_description
+                ));
+            }
+        }
+    }
+
+    entries.join("\n")
 }
