@@ -147,7 +147,9 @@ impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
-        waterui_controls::Stepper::new(binding).label(label)
+        waterui_controls::Stepper::new(binding)
+            .label(label)
+            .range(i32::MIN..=i32::MAX)
     }
 }
 
@@ -172,6 +174,22 @@ impl FormBuilder for f64 {
     #[allow(unused_variables)]
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(0.0..=1.0, binding).label(label)
+    }
+}
+
+impl FormBuilder for f32 {
+    type View = waterui_controls::Slider;
+    #[allow(unused_variables)]
+    fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
+        waterui_controls::Slider::new(
+            0.0..=1.0,
+            &Binding::mapping(
+                binding,
+                |val| val as f64,
+                |binding, val| binding.set(val as f32),
+            ),
+        )
+        .label(label)
     }
 }
 
