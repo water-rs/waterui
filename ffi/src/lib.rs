@@ -544,3 +544,236 @@ pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 
 // Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
 ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
+
+// ========== Metadata<Secure> FFI ==========
+// Used to mark views as secure (prevent screenshots)
+
+use waterui::metadata::secure::Secure;
+
+/// C-compatible empty marker struct for Secure metadata.
+/// This is needed because `()` (unit type) is not representable in C.
+#[repr(C)]
+pub struct WuiSecureMarker {
+    /// Placeholder field to ensure struct has valid size in C.
+    /// The actual value is meaningless - Secure is just a marker type.
+    _marker: u8,
+}
+
+impl IntoFFI for Secure {
+    type FFI = WuiSecureMarker;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSecureMarker { _marker: 0 }
+    }
+}
+
+/// Type alias for Metadata<Secure> FFI struct
+/// Layout: { content: *mut WuiAnyView, value: WuiSecureMarker }
+pub type WuiMetadataSecure = WuiMetadata<WuiSecureMarker>;
+
+// Generate waterui_metadata_secure_id() and waterui_force_as_metadata_secure()
+ffi_metadata!(Secure, WuiMetadataSecure, secure);
+
+// ========== Metadata<GestureObserver> FFI ==========
+// Used to attach gesture recognizers to views
+
+use crate::gesture::WuiGestureObserver;
+use waterui::gesture::GestureObserver;
+
+/// Type alias for Metadata<GestureObserver> FFI struct
+pub type WuiMetadataGesture = WuiMetadata<WuiGestureObserver>;
+
+// Generate waterui_metadata_gesture_id() and waterui_force_as_metadata_gesture()
+ffi_metadata!(GestureObserver, WuiMetadataGesture, gesture);
+
+// ========== Metadata<OnEvent> FFI ==========
+// Used to attach lifecycle event handlers (appear/disappear)
+
+use crate::event::WuiOnEvent;
+use waterui_core::event::OnEvent;
+
+/// Type alias for Metadata<OnEvent> FFI struct
+pub type WuiMetadataOnEvent = WuiMetadata<WuiOnEvent>;
+
+// Generate waterui_metadata_on_event_id() and waterui_force_as_metadata_on_event()
+ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
+
+// ========== Metadata<Background> FFI ==========
+// Used to apply background colors or images to views
+
+use crate::color::{WuiColor, WuiResolvedColor};
+use crate::reactive::WuiComputed;
+use waterui::background::Background;
+use waterui::Color;
+use waterui_color::ResolvedColor;
+
+/// FFI-safe representation of a background.
+#[repr(C)]
+pub enum WuiBackground {
+    /// A solid color background.
+    Color { color: *mut WuiComputed<Color> },
+    /// An image background.
+    Image { image: *mut WuiComputed<Str> },
+}
+
+impl IntoFFI for Background {
+    type FFI = WuiBackground;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Background::Color(color) => WuiBackground::Color {
+                color: color.into_ffi(),
+            },
+            Background::Image(image) => WuiBackground::Image {
+                image: image.into_ffi(),
+            },
+        }
+    }
+}
+
+/// Type alias for Metadata<Background> FFI struct
+pub type WuiMetadataBackground = WuiMetadata<WuiBackground>;
+
+// Generate waterui_metadata_background_id() and waterui_force_as_metadata_background()
+ffi_metadata!(Background, WuiMetadataBackground, background);
+
+// ========== Metadata<ForegroundColor> FFI ==========
+// Used to set foreground/text color for views
+
+use waterui::background::ForegroundColor;
+
+/// FFI-safe representation of a foreground color.
+#[repr(C)]
+pub struct WuiForegroundColor {
+    /// Pointer to the computed color.
+    pub color: *mut WuiComputed<Color>,
+}
+
+impl IntoFFI for ForegroundColor {
+    type FFI = WuiForegroundColor;
+    fn into_ffi(self) -> Self::FFI {
+        WuiForegroundColor {
+            color: self.color.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<ForegroundColor> FFI struct
+pub type WuiMetadataForeground = WuiMetadata<WuiForegroundColor>;
+
+// Generate waterui_metadata_foreground_id() and waterui_force_as_metadata_foreground()
+ffi_metadata!(ForegroundColor, WuiMetadataForeground, foreground);
+
+// ========== Metadata<Shadow> FFI ==========
+// Used to apply shadow effects to views
+
+use waterui::style::Shadow;
+
+/// FFI-safe representation of a shadow.
+#[repr(C)]
+pub struct WuiShadow {
+    /// Shadow color (as opaque pointer - needs environment to resolve).
+    pub color: *mut WuiColor,
+    /// Horizontal offset.
+    pub offset_x: f32,
+    /// Vertical offset.
+    pub offset_y: f32,
+    /// Blur radius.
+    pub radius: f32,
+}
+
+impl IntoFFI for Shadow {
+    type FFI = WuiShadow;
+    fn into_ffi(self) -> Self::FFI {
+        WuiShadow {
+            color: self.color.into_ffi(),
+            offset_x: self.offset.x,
+            offset_y: self.offset.y,
+            radius: self.radius,
+        }
+    }
+}
+
+/// Type alias for Metadata<Shadow> FFI struct
+pub type WuiMetadataShadow = WuiMetadata<WuiShadow>;
+
+// Generate waterui_metadata_shadow_id() and waterui_force_as_metadata_shadow()
+ffi_metadata!(Shadow, WuiMetadataShadow, shadow);
+
+// ========== Metadata<Focused> FFI ==========
+// Used to track focus state for views
+
+use crate::reactive::WuiBinding;
+use waterui::component::focu::Focused;
+
+/// FFI-safe representation of focused state.
+#[repr(C)]
+pub struct WuiFocused {
+    /// Binding to the focus state (true = focused).
+    pub binding: *mut WuiBinding<bool>,
+}
+
+impl IntoFFI for Focused {
+    type FFI = WuiFocused;
+    fn into_ffi(self) -> Self::FFI {
+        WuiFocused {
+            binding: self.0.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Focused> FFI struct
+pub type WuiMetadataFocused = WuiMetadata<WuiFocused>;
+
+// Generate waterui_metadata_focused_id() and waterui_force_as_metadata_focused()
+ffi_metadata!(Focused, WuiMetadataFocused, focused);
+
+// ========== Metadata<IgnoreSafeArea> FFI ==========
+// Used to extend views beyond safe area insets
+
+use waterui_layout::IgnoreSafeArea;
+
+/// FFI-safe representation of edge set for safe area.
+#[repr(C)]
+pub struct WuiEdgeSet {
+    /// Ignore safe area on top edge.
+    pub top: bool,
+    /// Ignore safe area on leading edge.
+    pub leading: bool,
+    /// Ignore safe area on bottom edge.
+    pub bottom: bool,
+    /// Ignore safe area on trailing edge.
+    pub trailing: bool,
+}
+
+impl IntoFFI for waterui_layout::EdgeSet {
+    type FFI = WuiEdgeSet;
+    fn into_ffi(self) -> Self::FFI {
+        WuiEdgeSet {
+            top: self.top,
+            leading: self.leading,
+            bottom: self.bottom,
+            trailing: self.trailing,
+        }
+    }
+}
+
+/// FFI-safe representation of IgnoreSafeArea.
+#[repr(C)]
+pub struct WuiIgnoreSafeArea {
+    /// Which edges should ignore safe area.
+    pub edges: WuiEdgeSet,
+}
+
+impl IntoFFI for IgnoreSafeArea {
+    type FFI = WuiIgnoreSafeArea;
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnoreSafeArea {
+            edges: self.edges.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<IgnoreSafeArea> FFI struct
+pub type WuiMetadataIgnoreSafeArea = WuiMetadata<WuiIgnoreSafeArea>;
+
+// Generate waterui_metadata_ignore_safe_area_id() and waterui_force_as_metadata_ignore_safe_area()
+ffi_metadata!(IgnoreSafeArea, WuiMetadataIgnoreSafeArea, ignore_safe_area);

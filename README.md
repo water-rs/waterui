@@ -17,8 +17,8 @@ WaterUI combines the safety and speed of Rust with a declarative, component-base
 
 - **Declarative & Reactive**: Build complex UIs with simple, reusable components. State management is handled by a fine-grained reactivity system, ensuring your UI always stays in sync with your data.
 - **Truly Cross-Platform**:
-    - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
-    - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated (Vello/wgpu) and CPU-based (tiny-skia) backends for high-performance, consistent rendering on desktop platforms (Windows, macOS, Linux).
+  - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
+  - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated (Vello/wgpu) and CPU-based (tiny-skia) backends for high-performance, consistent rendering on desktop platforms (Windows, macOS, Linux).
 - **Powerful CLI**: A dedicated `water` command-line tool to create, run, build, and package your applications, with integrated hot-reloading.
 - **Modern Component Library**: A rich set of pre-built components for layouts, controls, forms, text, and more.
 - **Type-Safe & Safe**: Leverage Rust's powerful type system and memory safety guarantees from your UI to your data logic.
@@ -26,11 +26,13 @@ WaterUI combines the safety and speed of Rust with a declarative, component-base
 ## 🚀 Quick Start
 
 Add `waterui` and its dependencies to your `Cargo.toml`:
+
 ```toml
 [dependencies]
 waterui = "0.1.0" # Replace with the latest version
 ```
-> Or use `waterui = { git = "https://github.com/water-rs/waterui", branch = "main" }` for the latest development version.
+
+> Or use `waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }` for the latest development version.
 
 Create your first reactive counter:
 
@@ -54,6 +56,7 @@ fn counter_app() -> impl View {
     .padding_with(16.0)
 }
 ```
+
 This example creates a simple view with a counter that can be incremented or reset. The `text!` macro automatically updates the displayed count whenever the `count` binding changes.
 
 ## 📦 Architecture
@@ -63,16 +66,16 @@ WaterUI is built with a modular architecture to ensure clear separation of conce
 - **`waterui`**: The main crate, which provides the prelude and re-exports key components.
 - **`waterui-core`**: The heart of the framework, containing the `View` trait, the reactive state system (powered by `nami`), and the environment system.
 - **`components/`**: A collection of component libraries, including:
-    - `waterui-layout`: Stacks (`HStack`, `VStack`, `ZStack`), grids, and other layout primitives.
-    - `waterui-controls`: Interactive components like `Button`, `Slider`, `TextField`, and `Toggle`.
-    - `waterui-text`: Styled text, fonts, and Markdown rendering.
-    - `waterui-form`: Form building utilities, including a derive macro for easy form creation.
-    - `waterui-graphics`: 2D drawing canvas and shape primitives.
+  - `waterui-layout`: Stacks (`HStack`, `VStack`, `ZStack`), grids, and other layout primitives.
+  - `waterui-controls`: Interactive components like `Button`, `Slider`, `TextField`, and `Toggle`.
+  - `waterui-text`: Styled text, fonts, and Markdown rendering.
+  - `waterui-form`: Form building utilities, including a derive macro for easy form creation.
+  - `waterui-graphics`: 2D drawing canvas and shape primitives.
 - **`backends/`**: Platform-specific renderers.
-    - **`apple`**: SwiftUI backend for macOS, iOS, visionOS, etc.
-    - **`android`**: Jetpack Compose backend.
-    - **`hydrolysis`**: A self-drawn renderer with GPU (Vello) and CPU (tiny-skia) implementations (Very early stage...DO NOT use it...).
-    - **`tui`**: Terminal UI backend (WIP).
+  - **`apple`**: SwiftUI backend for macOS, iOS, visionOS, etc.
+  - **`android`**: Jetpack Compose backend.
+  - **`hydrolysis`**: A self-drawn renderer with GPU (Vello) and CPU (tiny-skia) implementations (Very early stage...DO NOT use it...).
+  - **`tui`**: Terminal UI backend (WIP).
 - **`cli/`**: The `water` command-line interface for managing your projects.
 - **`ffi/`**: A C-compatible Foreign Function Interface that bridges the Rust core with native backends (Swift/Kotlin).
 
@@ -81,19 +84,25 @@ WaterUI is built with a modular architecture to ensure clear separation of conce
 WaterUI ships with a powerful CLI (`water`) to streamline your development process.
 
 ### Create a Project
+
 Scaffold a new project with your chosen backends:
+
 ```bash
 water create --name "My App" --backend apple --backend android
 ```
 
 **For framework developers**: Use `--dev` with `--waterui-path` for instant feedback:
+
 ```bash
 water create --name "My App" --dev --waterui-path /path/to/waterui
 ```
+
 This creates a project with path-based dependencies, so changes to WaterUI are immediately reflected without running `cargo update`.
 
 ### Run with Hot Reload
+
 Build, run, and hot-reload your app on a connected device, simulator, or emulator:
+
 ```bash
 # The CLI will prompt you to select a target
 water run
@@ -103,12 +112,14 @@ water run --platform ios --device "iPhone 15 Pro"
 ```
 
 **Developer Experience Features:**
+
 - 🔄 **Hot Reload**: File changes trigger automatic rebuilds and live updates
 - 🐛 **Live Panic Reporting**: Rust panics are captured and displayed with colorful, formatted output
 - 📋 **Crash Collection**: Native crashes are automatically captured with log excerpts
 - 📡 **Remote Logging**: App logs stream directly to your terminal
 
 ### Other Commands
+
 - `water build`: Build native libraries for a specific platform (called by Xcode/Gradle)
 - `water package`: Package your application for distribution
 - `water devices`: List available devices, simulators, and emulators
@@ -116,7 +127,9 @@ water run --platform ios --device "iPhone 15 Pro"
 - `water clean`: Clean all build artifacts
 
 ### JSON Output for Automation
+
 All commands support `--json` for machine-readable output, making it easy to integrate with CI/CD pipelines or LLM agents:
+
 ```bash
 water doctor --json
 water devices --json
