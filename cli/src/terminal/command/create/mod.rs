@@ -11,13 +11,16 @@ use crate::util;
 use serde::Serialize;
 use waterui_cli::{
     WATERUI_ANDROID_BACKEND_VERSION, WATERUI_SWIFT_BACKEND_VERSION, WATERUI_VERSION, output,
-    project::{Android, Config, Package, Swift, Web},
+    project::{
+        Android, Config, Package, PackageType, Swift, Web, default_android_project_path,
+        default_swift_project_path, default_web_project_path,
+    },
 };
 
 /// Validated WaterUI repository path for dev mode.
 #[derive(Debug, Clone)]
 pub struct ValidatedWaterUIPath {
-    /// The root path to the WaterUI repository.
+    /// The root path to the WaterUI repository (canonicalized for internal use).
     pub root: PathBuf,
     /// Path to the Android backend within the repository.
     pub android_backend: PathBuf,
@@ -25,13 +28,41 @@ pub struct ValidatedWaterUIPath {
     pub apple_backend: PathBuf,
 }
 
-pub const DEFAULT_WATERUI_FFI_VERSION: &str = "0.1.0";
+impl ValidatedWaterUIPath {
+    /// Get the path to store in Water.toml, relative to the project directory.
+    ///
+    /// This computes a relative path from the project directory to the waterui root,
+    /// so that the project remains portable. For example, if the project is at
+    /// `/Users/foo/waterui/my-app` and waterui is at `/Users/foo/waterui`,
+    /// this returns `..`.
+    pub fn path_for_config(&self, project_dir: &Path) -> String {
+        // Try to compute relative path from project_dir to waterui root
+        if let Ok(project_canonical) = project_dir.canonicalize() {
+            if let Some(rel_path) = pathdiff::diff_paths(&self.root, &project_canonical) {
+                return rel_path.display().to_string();
+            }
+        }
+        // Fallback to absolute path if relative path cannot be computed
+        self.root.display().to_string()
+    }
+}
 
 pub mod android;
 pub mod rust;
 pub mod swift;
 pub mod template;
 pub mod web;
+
+/// Check if a directory is inside a git repository.
+fn is_inside_git_repo(dir: &Path) -> bool {
+    Command::new("git")
+        .arg("rev-parse")
+        .arg("--git-dir")
+        .current_dir(dir)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
 
 pub const SWIFT_BACKEND_GIT_URL: &str = "https://github.com/water-rs/apple-backend.git";
 
@@ -68,8 +99,13 @@ pub struct CreateArgs {
     pub yes: bool,
 
     /// Backends to include (android, web, apple). Can be provided multiple times or as a comma-separated list.
-    #[arg(long = "backend", value_enum, value_delimiter = ',', num_args = 1..)]
+    #[arg(long = "backend", value_enum, value_delimiter = ',', num_args = 1.., conflicts_with = "playground")]
     pub backends: Vec<BackendChoice>,
+
+    /// Create a playground project for quick experimentation.
+    /// Platform projects will be created in a temporary directory at runtime.
+    #[arg(long, conflicts_with = "backends")]
+    pub playground: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -103,6 +139,11 @@ impl BackendChoice {
 /// Panics if required embedded templates are missing; this indicates a build-time bug.
 #[allow(clippy::too_many_lines)]
 pub fn run(args: CreateArgs) -> Result<CreateReport> {
+    // Playground mode has a simplified flow
+    if args.playground {
+        return run_playground(args);
+    }
+
     let is_json = output::global_output_format().is_json();
     if is_json && !args.yes {
         bail!(
@@ -117,8 +158,8 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         let waterui_path = if let Some(path) = args.waterui_path.clone() {
             path
         } else if args.yes {
-            // In non-interactive mode, dev without path falls back to git dependencies
-            PathBuf::new()
+            // In non-interactive mode with --yes, default to current directory
+            PathBuf::from(".")
         } else {
             use crate::ui;
             ui::info("Dev mode requires a local WaterUI repository path for instant feedback.");
@@ -127,25 +168,22 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
             );
             ui::newline();
 
-            let default_path = std::env::current_dir().expect("failed to get current directory");
+            // Default to current directory (typical when creating inside waterui repo)
+            let default_path = ".";
 
             Input::with_theme(&theme)
                 .with_prompt("WaterUI repository path")
-                .default(default_path.display().to_string())
+                .default(default_path.to_string())
                 .interact_text()
                 .map(PathBuf::from)?
         };
 
-        if waterui_path.as_os_str().is_empty() {
-            None
-        } else {
-            Some(validate_waterui_path(&waterui_path)?)
-        }
+        Some(validate_waterui_path(&waterui_path)?)
     } else {
         None
     };
 
-    let deps = resolve_dependencies_with_path(args.dev, validated_waterui_path.as_ref())?;
+    let deps = resolve_dependencies_with_path(validated_waterui_path.as_ref())?;
 
     let display_name = if let Some(name) = args.name.clone() {
         name
@@ -307,28 +345,24 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
     rust::create_rust_sources(&project_dir, &crate_name, &author, &display_name, &deps)?;
 
     let mut config = Config::new(Package {
-        name: crate_name.clone(),
-        display_name: display_name.clone(),
+        package_type: PackageType::App,
+        name: display_name.clone(),
         bundle_identifier: bundle_identifier.clone(),
-        author,
     });
     config.dev_dependencies = args.dev;
     if let Some(ref validated_path) = validated_waterui_path {
-        config.waterui_path = Some(validated_path.root.display().to_string());
+        config.waterui_path = Some(validated_path.path_for_config(&project_dir));
     }
 
-    let mut web_enabled = false;
     for backend in &selected_backends {
         match backend {
             BackendChoice::Web => {
                 web::create_web_assets(&project_dir, &display_name)?;
                 config.backends.web = Some(Web {
-                    project_path: "web".to_string(),
+                    project_path: default_web_project_path(),
                     version: None,
                     dev: args.dev,
-                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
-                web_enabled = true;
             }
             BackendChoice::Android => {
                 android::create_android_project(
@@ -340,14 +374,13 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     deps.local_waterui_path.as_ref(),
                 )?;
                 config.backends.android = Some(Android {
-                    project_path: "android".to_string(),
+                    project_path: default_android_project_path(),
                     version: if args.dev || WATERUI_ANDROID_BACKEND_VERSION.is_empty() {
                         None
                     } else {
                         Some(WATERUI_ANDROID_BACKEND_VERSION.to_string())
                     },
                     dev: args.dev,
-                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
             }
             BackendChoice::Apple => {
@@ -370,7 +403,7 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     }
                 };
                 config.backends.swift = Some(Swift {
-                    project_path: "apple".to_string(),
+                    project_path: default_swift_project_path(),
                     scheme: crate_name.clone(),
                     project_file: Some(format!("{app_name}.xcodeproj")),
                     version,
@@ -378,14 +411,9 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
                     revision,
                     local_path,
                     dev: args.dev,
-                    ffi_version: Some(DEFAULT_WATERUI_FFI_VERSION.to_string()),
                 });
             }
         }
-    }
-
-    if web_enabled && !config.hot_reload.watch.iter().any(|path| path == "web") {
-        config.hot_reload.watch.push("web".to_string());
     }
 
     config.save(&project_dir)?;
@@ -413,13 +441,13 @@ pub fn run(args: CreateArgs) -> Result<CreateReport> {
         args.dev,
     );
 
-    // if which::which("git").is_ok() {
-    //     std::process::Command::new("git")
-    //         .arg("init")
-    //         .current_dir(&project_dir)
-    //         .output()?;
-    //     info!("✅ Git repository initialized");
-    // }
+    // Initialize git repository (only if not already in a git repo)
+    if which::which("git").is_ok() && !is_inside_git_repo(&project_dir) {
+        let _ = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&project_dir)
+            .output();
+    }
 
     Ok(report)
 }
@@ -475,6 +503,22 @@ pub struct ProjectDependencies {
     pub local_waterui_path: Option<ValidatedWaterUIPath>,
 }
 
+impl ProjectDependencies {
+    /// Get the Cargo.toml dependency string for a specific project directory.
+    ///
+    /// For dev mode with local paths, this computes the relative path from the
+    /// project directory to the WaterUI repository. For normal mode, returns
+    /// the crates.io version string.
+    pub fn rust_toml_for_project(&self, project_dir: &Path) -> String {
+        if let Some(ref validated_path) = self.local_waterui_path {
+            let rel_path = validated_path.path_for_config(project_dir);
+            format!(r#"waterui = {{ path = "{rel_path}" }}"#)
+        } else {
+            self.rust_toml.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SwiftDependency {
     Git {
@@ -492,6 +536,7 @@ pub enum SwiftDependency {
 /// # Errors
 /// Returns an error if the path doesn't exist or doesn't contain the required backend directories.
 pub fn validate_waterui_path(path: &Path) -> Result<ValidatedWaterUIPath> {
+    // Canonicalize for internal validation and use
     let path = path.canonicalize().with_context(|| {
         format!(
             "Failed to resolve WaterUI repository path: {}",
@@ -563,53 +608,28 @@ pub fn validate_waterui_path(path: &Path) -> Result<ValidatedWaterUIPath> {
 /// Returns an error if the crates index cannot be queried or if the local path is invalid.
 #[allow(clippy::const_is_empty)]
 pub fn resolve_dependencies_with_path(
-    dev: bool,
     waterui_path: Option<&ValidatedWaterUIPath>,
 ) -> Result<ProjectDependencies> {
-    if dev {
-        if let Some(validated_path) = waterui_path {
-            // Local dev mode - use path dependencies
-            let root_path = validated_path.root.display();
-            let rust_toml = format!(
-                r#"waterui = {{ path = "{root_path}" }}
-waterui-ffi = {{ path = "{root_path}/ffi" }}"#
-            );
-            return Ok(ProjectDependencies {
-                rust_toml,
-                swift: SwiftDependency::Local {
-                    path: validated_path.apple_backend.clone(),
-                },
-                local_waterui_path: Some(validated_path.clone()),
-            });
-        }
-
-        // Remote dev mode - use git dependencies
-        let branch = "dev";
-        let revision = fetch_swift_branch_head(branch)?;
-        let rust_toml =
-            r#"waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }
-waterui-ffi = { git = "https://github.com/water-rs/waterui", branch = "dev" }"#
-                .to_string();
+    // Dev mode - use local path dependencies
+    if let Some(validated_path) = waterui_path {
+        let root_path = validated_path.root.display();
+        let rust_toml = format!(r#"waterui = {{ path = "{root_path}" }}"#);
         return Ok(ProjectDependencies {
             rust_toml,
-            swift: SwiftDependency::Git {
-                version: None,
-                branch: Some(branch.to_string()),
-                revision: Some(revision),
+            swift: SwiftDependency::Local {
+                path: validated_path.apple_backend.clone(),
             },
-            local_waterui_path: None,
+            local_waterui_path: Some(validated_path.clone()),
         });
     }
 
+    // Normal mode - use crates.io versions
     let waterui_version = WATERUI_VERSION;
     if waterui_version.is_empty() {
         bail!("WATERUI_VERSION is not set. This should be set at build time.");
     }
 
-    let rust_toml = format!(
-        r#"waterui = "{waterui_version}"
-waterui-ffi = "{waterui_version}""#
-    );
+    let rust_toml = format!(r#"waterui = "{waterui_version}""#);
 
     let swift_backend_version = WATERUI_SWIFT_BACKEND_VERSION;
     if swift_backend_version.is_empty() {
@@ -670,4 +690,198 @@ fn prepare_directory(project_dir: &Path) -> Result<()> {
     util::ensure_directory(&project_dir.join("src"))?;
     util::ensure_directory(&project_dir.join("apple"))?;
     Ok(())
+}
+
+fn prepare_playground_directory(project_dir: &Path) -> Result<()> {
+    if project_dir.exists() {
+        if project_dir.is_file() {
+            bail!("{} already exists and is a file", project_dir.display());
+        }
+        if project_dir.read_dir()?.next().is_some() {
+            bail!("{} already exists and is not empty", project_dir.display());
+        }
+    }
+
+    util::ensure_directory(project_dir)?;
+    util::ensure_directory(&project_dir.join("src"))?;
+    Ok(())
+}
+
+/// Create a playground project - a simplified WaterUI project without platform backends.
+/// Platform projects will be created in a temporary directory at runtime.
+fn run_playground(args: CreateArgs) -> Result<CreateReport> {
+    use crate::ui;
+
+    let is_json = output::global_output_format().is_json();
+    let theme = ColorfulTheme::default();
+
+    // Handle local WaterUI path for dev mode
+    let validated_waterui_path = if args.dev {
+        let waterui_path = if let Some(path) = args.waterui_path.clone() {
+            path
+        } else if args.yes {
+            // In non-interactive mode with --yes, default to current directory
+            PathBuf::from(".")
+        } else {
+            ui::info("Dev mode requires a local WaterUI repository path.");
+            ui::newline();
+
+            // Default to current directory (typical when creating inside waterui repo)
+            let default_path = ".";
+
+            Input::with_theme(&theme)
+                .with_prompt("WaterUI repository path")
+                .default(default_path.to_string())
+                .interact_text()
+                .map(PathBuf::from)?
+        };
+
+        Some(validate_waterui_path(&waterui_path)?)
+    } else {
+        None
+    };
+
+    let deps = resolve_dependencies_with_path(validated_waterui_path.as_ref())?;
+
+    let display_name = if let Some(name) = args.name.clone() {
+        name
+    } else if args.yes {
+        "Playground".to_string()
+    } else {
+        Input::with_theme(&theme)
+            .with_prompt("Playground name")
+            .default("Playground".to_string())
+            .interact_text()?
+    };
+
+    let default_author = std::process::Command::new("git")
+        .arg("config")
+        .arg("user.name")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let author = if args.yes {
+        default_author
+    } else {
+        Input::with_theme(&theme)
+            .with_prompt("Author")
+            .default(default_author)
+            .interact_text()?
+    };
+
+    let crate_name = {
+        let generated = display_name.to_kebab_case();
+        if generated.is_empty() {
+            "playground".to_string()
+        } else {
+            generated
+        }
+    };
+
+    let default_bundle_identifier = format!("com.waterui.{crate_name}");
+    let bundle_identifier = if let Some(id) = args.bundle_identifier {
+        id
+    } else if args.yes {
+        default_bundle_identifier
+    } else {
+        Input::with_theme(&theme)
+            .with_prompt("Bundle identifier")
+            .default(default_bundle_identifier)
+            .interact_text()?
+    };
+
+    let project_dir = if let Some(dir) = args.directory {
+        dir
+    } else {
+        let default = std::env::current_dir()?.join(&crate_name);
+        if args.yes {
+            default
+        } else {
+            Input::with_theme(&theme)
+                .with_prompt("Project directory")
+                .default(default.display().to_string())
+                .interact_text()
+                .map(PathBuf::from)?
+        }
+    };
+
+    if !is_json {
+        ui::section("Playground Configuration");
+        ui::kv("Name", &display_name);
+        ui::kv("Author", &author);
+        ui::kv("Crate name", &crate_name);
+        ui::kv("Bundle ID", &bundle_identifier);
+        ui::kv("Location", project_dir.display().to_string());
+        ui::newline();
+    }
+
+    if !args.yes {
+        let proceed = Confirm::with_theme(&theme)
+            .with_prompt("Create playground with these settings?")
+            .default(true)
+            .interact()?;
+        if !proceed {
+            warn!("Cancelled");
+            return Ok(build_report(
+                CreateStatus::Cancelled,
+                &project_dir,
+                &crate_name,
+                &display_name,
+                &bundle_identifier,
+                &[],
+                args.dev,
+            ));
+        }
+    }
+
+    prepare_playground_directory(&project_dir)?;
+
+    rust::create_rust_sources(&project_dir, &crate_name, &author, &display_name, &deps)?;
+
+    let mut config = Config::new(Package {
+        package_type: PackageType::Playground,
+        name: display_name.clone(),
+        bundle_identifier: bundle_identifier.clone(),
+    });
+    // Playground uses waterui_path for dev mode, not dev_dependencies
+    // dev_dependencies and hot_reload are not used in playground mode
+    if let Some(ref validated_path) = validated_waterui_path {
+        config.waterui_path = Some(validated_path.path_for_config(&project_dir));
+    }
+
+    // No backends for playground - they are created at runtime
+    config.save(&project_dir)?;
+
+    // Initialize git repository (only if not already in a git repo)
+    if which::which("git").is_ok() && !is_inside_git_repo(&project_dir) {
+        let _ = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&project_dir)
+            .output();
+    }
+
+    if !is_json {
+        ui::success("Playground created successfully!");
+        ui::newline();
+        let current_dir = std::env::current_dir()?;
+        let display_path = project_dir
+            .strip_prefix(current_dir)
+            .unwrap_or(&project_dir);
+        ui::section("Next Steps");
+        ui::step(format!("cd {}", display_path.display()));
+        ui::step("water run");
+    }
+
+    Ok(build_report(
+        CreateStatus::Created,
+        &project_dir,
+        &crate_name,
+        &display_name,
+        &bundle_identifier,
+        &[],
+        args.dev,
+    ))
 }
