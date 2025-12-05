@@ -1,4 +1,11 @@
-// TODO: Refractor this large file...We shouldn't put heavy logic in terminal commands.
+//! Run command implementation.
+//!
+//! This module orchestrates building and running WaterUI projects.
+//! Heavy logic is delegated to library modules:
+//! - `waterui_cli::hot_reload` - Hot reload server and file watcher
+//! - `waterui_cli::run_session` - Last run persistence
+//! - `device_selector` - Interactive device/platform selection
+
 use crate::{ui, util};
 use atty::{self, Stream};
 use clap::{Args, ValueEnum};
@@ -6,21 +13,11 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use fs2::FileExt;
-use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use skyzen::{
-    CreateRouteNode, Route, StaticDir,
-    runtime::native as skyzen_runtime,
-    websocket::{WebSocket, WebSocketMessage},
-};
 use std::{
     fs::{self, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::fs as tokio_fs;
 use waterui_cli::{
-    WATERUI_TRACING_PREFIX,
     backend::{
         self,
         android::{configure_rust_android_linker_env, prepare_cmake_env},
@@ -33,32 +30,27 @@ use waterui_cli::{
         AnyToolchainIssue,
         toolchain::{self, CheckMode, CheckTarget},
     },
+    hot_reload::{
+        DisconnectReason, FileWatcher, NativeConnectionEvent, NativeConnectionEvents, Server,
+        WaitOutcome, poll_file_changes,
+    },
     output,
     platform::{
         Platform as PlatformTrait, PlatformKind, android::AndroidPlatform,
         apple::AppleSimulatorKind,
     },
     project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
+    run_session::{self, LastRunSnapshot},
     util as cli_util,
 };
 type Platform = PlatformKind;
 
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    collections::HashSet,
     io,
-    net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, TryRecvError},
-    },
-    thread,
     time::{Duration, Instant},
 };
-use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use which::which;
@@ -295,7 +287,7 @@ fn run_again(args: RunArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current dir"));
     let project = Project::open(&project_dir)?;
-    let snapshot = load_last_run(&project)?;
+    let snapshot = run_session::load(&project)?;
     let replay_args = RunArgs {
         platform: Some(RunTarget::Platform(snapshot.platform.into())),
         log_filter: None,
@@ -647,22 +639,21 @@ fn hot_reload_library_path(
     project_dir: &Path,
     crate_name: &str,
     release: bool,
-    target_triple: Option<&str>,
+    target_triple: &str,
 ) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
     let filename = dylib_filename(crate_name, target_triple);
-    let mut path = project_dir.join("target");
-    if let Some(target) = target_triple {
-        path = path.join(target);
-    }
-    path.join(profile).join(filename)
+    project_dir
+        .join("target")
+        .join(target_triple)
+        .join(profile)
+        .join(filename)
 }
 
-fn dylib_filename(crate_name: &str, target_triple: Option<&str>) -> String {
+fn dylib_filename(crate_name: &str, target_triple: &str) -> String {
     let normalized = crate_name.replace('-', "_");
-    let target = target_triple.unwrap_or_else(|| std::env::consts::OS);
 
-    let target_lower = target.to_ascii_lowercase();
+    let target_lower = target_triple.to_ascii_lowercase();
     let (prefix, suffix) = if target_lower.contains("windows") {
         ("", "dll")
     } else if target_lower.contains("darwin")
@@ -693,7 +684,9 @@ fn prepare_and_package<D: Device>(
     let build_options = BuildOptions::new()
         .with_release(options.release)
         .with_hot_reload(options.hot_reload.enabled, options.hot_reload.port);
-    device.platform().package_with_options(project, &build_options)
+    device
+        .platform()
+        .package_with_options(project, &build_options)
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -837,10 +830,10 @@ fn run_platform(
     };
 
     // Extract artifact path and target for later use
-    let (artifact_path, hot_reload_target_triple) = match &prepared {
+    let (artifact_path, target_triple) = match &prepared {
         PreparedDevice::Macos(_, artifact, target)
         | PreparedDevice::AppleSimulator(_, artifact, target)
-        | PreparedDevice::Android(_, artifact, target) => (artifact.clone(), Some(*target)),
+        | PreparedDevice::Android(_, artifact, target) => (artifact.clone(), *target),
     };
 
     if !output::global_output_format().is_json() {
@@ -848,12 +841,12 @@ fn run_platform(
     }
 
     // Now start the hot reload server (after build succeeded)
-    let server = if hot_reload_enabled {
-        let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
+    let (server, connection_events) = if hot_reload_enabled {
+        let (server, events) = Server::start(project_dir.to_path_buf(), log_filter.clone())
             .context("Failed to start hot reload server")?;
-        Some(server)
+        (Some(server), Some(events))
     } else {
-        None
+        (None, None)
     };
 
     let hot_reload_port = server.as_ref().map(|s| s.address().port());
@@ -887,9 +880,9 @@ fn run_platform(
     };
 
     // Persist last run configuration
-    if let Err(err) = persist_last_run(
+    if let Err(err) = run_session::persist(
         project,
-        LastRunSnapshot {
+        &LastRunSnapshot {
             platform,
             device: recorded_device,
             release,
@@ -921,14 +914,14 @@ fn run_platform(
 
     // Server was already started above, unwrap it (we know it exists when hot_reload_enabled)
     let server = server.expect("server should exist when hot reload is enabled");
-    let connection_events = server.connection_events();
+    let connection_events = connection_events.expect("connection_events should exist when hot reload is enabled");
 
     // Notify the hot reload server if a library already exists from the build
     let library_path = hot_reload_library_path(
         project_dir,
         project.crate_name(),
         release,
-        hot_reload_target_triple,
+        target_triple,
     );
     if library_path.exists() {
         server.notify_native_reload(library_path);
@@ -940,30 +933,8 @@ fn run_platform(
         watch_paths.push(project_dir.join(path));
     }
 
-    let project_dir_buf = project_dir.to_path_buf();
-    let package_name = project.crate_name().to_string();
-    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-        run_cargo_build(
-            &project_dir_buf,
-            &package_name,
-            release,
-            false, // hot_reload_enabled - dylib doesn't need Hotreload wrapper
-            hot_reload_port,
-            enable_sccache,
-            mold_requested,
-            hot_reload_target_triple,
-        )?;
-        let library_path = hot_reload_library_path(
-            &project_dir_buf,
-            &package_name,
-            release,
-            hot_reload_target_triple,
-        );
-        server.notify_native_reload(library_path);
-        Ok(())
-    });
-
-    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
+    let (mut file_watcher, file_rx) = FileWatcher::new(watch_paths)
+        .context("Failed to initialize file watcher")?;
 
     if !output::global_output_format().is_json() {
         ui::info("App launched with hot reload enabled");
@@ -976,15 +947,25 @@ fn run_platform(
     }
     wait_for_hot_reload_connection(&connection_events)?;
 
-    // Wait for user interrupt or connection loss
-    match wait_for_interrupt(Some(connection_events))? {
-        WaitOutcome::Interrupted => {}
-        WaitOutcome::ConnectionLost(reason) => {
-            bail!(format_connection_loss_message(reason));
-        }
+    // Run the hot reload event loop
+    let outcome = run_hot_reload_loop(HotReloadContext {
+        server: &server,
+        connection_events,
+        file_watcher: &mut file_watcher,
+        file_rx: &file_rx,
+        project_dir,
+        package_name: project.crate_name(),
+        release,
+        hot_reload_port,
+        enable_sccache,
+        mold_requested,
+        target_triple,
+    })?;
+
+    if let WaitOutcome::ConnectionLost(reason) = outcome {
+        bail!("{}", reason);
     }
 
-    drop(watcher);
     if let Some(crash) = &run_report.crash_report {
         if !output::global_output_format().is_json() {
             ui::warning(format!(
@@ -1002,6 +983,76 @@ fn run_platform(
     }
 
     Ok(())
+}
+
+/// Context for the hot reload event loop.
+struct HotReloadContext<'a> {
+    server: &'a Server,
+    connection_events: NativeConnectionEvents,
+    file_watcher: &'a mut FileWatcher,
+    file_rx: &'a std::sync::mpsc::Receiver<waterui_cli::hot_reload::FileChanged>,
+    project_dir: &'a Path,
+    package_name: &'a str,
+    release: bool,
+    hot_reload_port: Option<u16>,
+    enable_sccache: bool,
+    mold_requested: bool,
+    target_triple: &'a str,
+}
+
+/// Run the hot reload event loop, handling file changes and connection events.
+fn run_hot_reload_loop(ctx: HotReloadContext<'_>) -> Result<WaitOutcome> {
+    loop {
+        // Check for interrupt signal
+        if waterui_cli::util::is_interrupted() {
+            return Ok(WaitOutcome::Interrupted);
+        }
+
+        // Check for file changes (non-blocking)
+        if poll_file_changes(ctx.file_rx, ctx.file_watcher) {
+            // Rebuild and notify server
+            if let Err(err) = run_cargo_build(
+                ctx.project_dir,
+                ctx.package_name,
+                ctx.release,
+                false, // hot_reload_enabled - dylib doesn't need Hotreload wrapper
+                ctx.hot_reload_port,
+                ctx.enable_sccache,
+                ctx.mold_requested,
+                ctx.target_triple,
+            ) {
+                warn!("Rebuild failed: {err}");
+            } else {
+                let library_path = hot_reload_library_path(
+                    ctx.project_dir,
+                    ctx.package_name,
+                    ctx.release,
+                    ctx.target_triple,
+                );
+                ctx.server.notify_native_reload(library_path);
+            }
+        }
+
+        // Check for connection events (non-blocking)
+        match ctx.connection_events.try_recv() {
+            Ok(NativeConnectionEvent::Connected) => {}
+            Ok(NativeConnectionEvent::Disconnected(reason)) => {
+                return Ok(WaitOutcome::ConnectionLost(reason));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if waterui_cli::util::is_interrupted() {
+                    return Ok(WaitOutcome::Interrupted);
+                }
+                return Ok(WaitOutcome::ConnectionLost(DisconnectReason::Abnormal {
+                    details: "Hot reload server stopped unexpectedly".to_string(),
+                }));
+            }
+        }
+
+        // Sleep briefly to avoid busy-waiting
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Acquires an exclusive file lock on the hot reload lock file.
@@ -1198,13 +1249,11 @@ fn run_cargo_build(
     hot_reload_port: Option<u16>,
     enable_sccache: bool,
     mold_requested: bool,
-    hot_reload_target: Option<&str>,
+    target: &str,
 ) -> Result<()> {
-    if let Some(target) = hot_reload_target {
-        if target.contains("android") {
-            configure_rust_android_linker_env(&[target])?;
-            prepare_cmake_env(&[target])?;
-        }
+    if target.contains("android") {
+        configure_rust_android_linker_env(&[target])?;
+        prepare_cmake_env(&[target])?;
     }
 
     if !output::global_output_format().is_json() {
@@ -1212,10 +1261,11 @@ fn run_cargo_build(
     }
     let make_command = || {
         let mut cmd = Command::new("cargo");
-        cmd.arg("build").arg("--package").arg(package);
-        if let Some(target) = hot_reload_target {
-            cmd.arg("--target").arg(target);
-        }
+        cmd.arg("build")
+            .arg("--package")
+            .arg(package)
+            .arg("--target")
+            .arg(target);
         if release {
             cmd.arg("--release");
         }
@@ -1232,14 +1282,12 @@ fn run_cargo_build(
     let status = cli_util::run_command_interruptible(cmd)
         .with_context(|| format!("failed to run cargo build in {}", project_dir.display()))?;
     if status.success() {
-        if hot_reload_enabled && hot_reload_target.is_some() {
-            ensure_cdylib(project_dir, package, release, hot_reload_target)?;
+        if hot_reload_enabled {
+            ensure_cdylib(project_dir, package, release, target)?;
         }
         // For Android, copy the .so to jniLibs so Gradle can package it
-        if let Some(target) = hot_reload_target {
-            if target.contains("android") {
-                copy_android_library_to_jnilibs(project_dir, package, release, target)?;
-            }
+        if target.contains("android") {
+            copy_android_library_to_jnilibs(project_dir, package, release, target)?;
         }
         return Ok(());
     }
@@ -1257,8 +1305,8 @@ fn run_cargo_build(
         })?;
         if retry_status.success() {
             info!("cargo build succeeded after disabling sccache");
-            if hot_reload_enabled && hot_reload_target.is_some() {
-                ensure_cdylib(project_dir, package, release, hot_reload_target)?;
+            if hot_reload_enabled {
+                ensure_cdylib(project_dir, package, release, target)?;
             }
             return Ok(());
         }
@@ -1271,11 +1319,11 @@ fn ensure_cdylib(
     project_dir: &Path,
     package: &str,
     release: bool,
-    hot_reload_target: Option<&str>,
+    target: &str,
 ) -> Result<()> {
-    let expected = hot_reload_library_path(project_dir, package, release, hot_reload_target);
+    let expected = hot_reload_library_path(project_dir, package, release, target);
     if expected.exists() {
-        strip_artifact_if_needed(&expected, hot_reload_target);
+        strip_artifact_if_needed(&expected, target);
         return Ok(());
     }
 
@@ -1285,10 +1333,12 @@ fn ensure_cdylib(
     );
 
     let mut cmd = Command::new("cargo");
-    cmd.arg("rustc").arg("--package").arg(package).arg("--lib");
-    if let Some(target) = hot_reload_target {
-        cmd.arg("--target").arg(target);
-    }
+    cmd.arg("rustc")
+        .arg("--package")
+        .arg(package)
+        .arg("--lib")
+        .arg("--target")
+        .arg(target);
     if release {
         cmd.arg("--release");
     }
@@ -1309,19 +1359,17 @@ fn ensure_cdylib(
     }
 
     if expected.exists() {
-        strip_artifact_if_needed(&expected, hot_reload_target);
+        strip_artifact_if_needed(&expected, target);
         return Ok(());
     }
 
     let profile = if release { "release" } else { "debug" };
     let mut deps_dir = project_dir.join("target");
-    if let Some(target) = hot_reload_target {
-        deps_dir.push(target);
-    }
+    deps_dir.push(target);
     deps_dir.push(profile);
     deps_dir.push("deps");
 
-    let filename = dylib_filename(package, hot_reload_target);
+    let filename = dylib_filename(package, target);
     let suffix = filename
         .rsplit('.')
         .next()
@@ -1353,7 +1401,7 @@ fn ensure_cdylib(
                         path.display(),
                         expected.display()
                     );
-                    strip_artifact_if_needed(&expected, hot_reload_target);
+                    strip_artifact_if_needed(&expected, target);
                     return Ok(());
                 }
             }
@@ -1458,9 +1506,9 @@ fn copy_android_library_to_jnilibs(
     Ok(())
 }
 
-fn strip_artifact_if_needed(path: &Path, target_triple: Option<&str>) {
+fn strip_artifact_if_needed(path: &Path, target_triple: &str) {
     // Only try to strip Android artifacts to shrink websocket payloads.
-    if !target_triple.is_some_and(|t| t.contains("android")) {
+    if !target_triple.contains("android") {
         return;
     }
 
@@ -1582,7 +1630,7 @@ fn run_web(
         false,
     )?;
 
-    let server = Server::start(web_dir.clone(), log_filter)?;
+    let (server, _connection_events) = Server::start(web_dir.clone(), log_filter)?;
     let address = server.address();
     let url = format!("http://{address}/");
 
@@ -1597,24 +1645,8 @@ fn run_web(
         watch_paths.push(project_dir.join(path));
     }
 
-    let project_dir_buf = project_dir.to_path_buf();
-    let package_name = crate_name.to_string();
-    let web_dir_buf = web_dir.clone();
-    let wasm_pack_path = wasm_pack;
-    let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-        build_web_app(
-            project_dir_buf.as_path(),
-            &package_name,
-            web_dir_buf.as_path(),
-            release,
-            wasm_pack_path.as_path(),
-            false,
-        )?;
-        server.notify_web_reload();
-        Ok(())
-    });
-
-    let watcher = RebuildWatcher::new(watch_paths, &build_callback)?;
+    let (mut file_watcher, file_rx) = FileWatcher::new(watch_paths)
+        .context("Failed to initialize file watcher")?;
 
     if output::global_output_format().is_json() {
         let _ = webbrowser::open(&url);
@@ -1627,11 +1659,29 @@ fn run_web(
         ui::plain("Press Ctrl+C to stop the server");
     }
 
-    match wait_for_interrupt(None)? {
-        WaitOutcome::Interrupted => {}
-        WaitOutcome::ConnectionLost(reason) => {
-            bail!(format_connection_loss_message(reason));
+    // Run the web hot reload event loop
+    loop {
+        if waterui_cli::util::is_interrupted() {
+            break;
         }
+
+        // Check for file changes
+        if poll_file_changes(&file_rx, &mut file_watcher) {
+            if let Err(err) = build_web_app(
+                project_dir,
+                crate_name,
+                &web_dir,
+                release,
+                &wasm_pack,
+                false,
+            ) {
+                warn!("Rebuild failed: {err}");
+            } else {
+                server.notify_web_reload();
+            }
+        }
+
+        thread::sleep(Duration::from_millis(50));
     }
 
     // Restore original main.js template
@@ -1640,8 +1690,6 @@ fn run_web(
     {
         let _ = std::fs::write(web_dir.join("main.js"), template_content);
     }
-
-    drop(watcher);
 
     Ok(())
 }
@@ -2007,313 +2055,8 @@ const fn apple_simulator_platform_id(platform: Platform) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
-enum HotReloadMessage {
-    Native(PathBuf),
-    Web,
-}
-
-#[derive(Clone)]
-struct ServerState {
-    hot_reload_tx: broadcast::Sender<HotReloadMessage>,
-    connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
-    log_filter: Option<String>,
-    shutdown: Arc<AtomicBool>,
-}
-
-#[derive(Clone)]
-struct Server {
-    address: SocketAddr,
-    thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    hot_reload_tx: broadcast::Sender<HotReloadMessage>,
-    connection_events: NativeConnectionEvents,
-    shutdown: Arc<AtomicBool>,
-}
-
-type HotReloadSocket = WebSocket;
-
-impl Server {
-    fn start(static_path: PathBuf, log_filter: Option<String>) -> Result<Self> {
-        let (hot_reload_tx, _) = broadcast::channel(16);
-        let (connection_event_tx, connection_event_rx) = mpsc::channel();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let app_state = Arc::new(ServerState {
-            hot_reload_tx: hot_reload_tx.clone(),
-            connection_event_tx: connection_event_tx.clone(),
-            log_filter: log_filter.clone(),
-            shutdown: shutdown.clone(),
-        });
-
-        let (startup_tx, startup_rx) =
-            std::sync::mpsc::channel::<std::result::Result<SocketAddr, io::Error>>();
-        let thread = thread::spawn(move || {
-            skyzen_runtime::init_logging();
-            let router = build_hot_reload_router(app_state, static_path);
-            let address = reserve_loopback_addr().expect("Failed to reserve loopback address");
-            // Safe because the address string is well-formed and under our control.
-            unsafe {
-                std::env::set_var("SKYZEN_ADDRESS", address.to_string());
-            }
-            let _ = startup_tx.send(Ok(address));
-            skyzen_runtime::launch(move || async { router });
-        });
-
-        let connection_events = NativeConnectionEvents::new(connection_event_rx);
-        let startup_result = match startup_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                "hot reload server failed to report its status",
-            )),
-        };
-        let address = startup_result.context("failed to bind hot reload server socket")?;
-
-        Ok(Self {
-            address,
-            thread: Arc::new(Mutex::new(Some(thread))),
-            hot_reload_tx,
-            connection_events,
-            shutdown,
-        })
-    }
-
-    const fn address(&self) -> SocketAddr {
-        self.address
-    }
-
-    fn notify_native_reload(&self, path: PathBuf) {
-        info!("Hot reload: queueing native artifact {}", path.display());
-        let _ = self.hot_reload_tx.send(HotReloadMessage::Native(path));
-    }
-
-    fn notify_web_reload(&self) {
-        let _ = self.hot_reload_tx.send(HotReloadMessage::Web);
-    }
-
-    fn connection_events(&self) -> NativeConnectionEvents {
-        self.connection_events.clone()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        // Signal all handlers to shutdown
-        self.shutdown.store(true, Ordering::Relaxed);
-
-        // Take the thread handle
-        let thread_handle = self.thread.lock().unwrap().take();
-
-        // Give the server a brief moment to shut down gracefully
-        // If skyzen is stuck, we don't block forever - just let the process exit
-        if let Some(handle) = thread_handle {
-            // Wait a short time for graceful shutdown
-            let start = Instant::now();
-            let timeout = Duration::from_millis(500);
-
-            loop {
-                if handle.is_finished() {
-                    let _ = handle.join();
-                    break;
-                }
-                if start.elapsed() > timeout {
-                    // Server didn't shutdown in time, just continue
-                    // The thread will be terminated when the process exits
-                    debug!("Hot reload server shutdown timed out, continuing...");
-                    break;
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
-fn reserve_loopback_addr() -> Result<SocketAddr> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    drop(listener);
-    Ok(addr)
-}
-
-fn build_hot_reload_router(
-    state: Arc<ServerState>,
-    static_path: PathBuf,
-) -> skyzen::routing::Router {
-    let native_state = state.clone();
-    let web_state = state.clone();
-
-    Route::new((
-        "/hot-reload-native".ws(move |socket| handle_native_socket(socket, native_state.clone())),
-        "/hot-reload-web".ws(move |socket| handle_web_socket(socket, web_state.clone())),
-        StaticDir::new("/", static_path),
-    ))
-    .build()
-}
-
-async fn handle_native_socket(mut socket: HotReloadSocket, state: Arc<ServerState>) {
-    if let Some(filter) = &state.log_filter {
-        let message = json!({
-            "type": "log_filter",
-            "filter": filter,
-        })
-        .to_string();
-        let _ = socket.send(WebSocketMessage::Text(message.into())).await;
-    }
-
-    let mut rx = state.hot_reload_tx.subscribe();
-    let _ = state
-        .connection_event_tx
-        .send(NativeConnectionEvent::Connected);
-
-    // Interval for checking shutdown flag
-    let mut shutdown_check = tokio::time::interval(tokio::time::Duration::from_millis(100));
-
-    loop {
-        // Check shutdown flag
-        if state.shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-
-        tokio::select! {
-            _ = shutdown_check.tick() => {
-                // Periodic check for shutdown handled above
-            }
-            Some(msg) = socket.next() => {
-                match msg {
-                    Ok(WebSocketMessage::Text(payload)) => {
-                        handle_native_client_message(&payload);
-                    }
-                    Ok(WebSocketMessage::Close(frame)) => {
-                        let reason = NativeDisconnectReason::Graceful(frame.map(|f| f.code.into()));
-                        let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
-                        break;
-                    }
-                    Ok(WebSocketMessage::Ping(payload)) => {
-                        let _ = socket.send(WebSocketMessage::Pong(payload)).await;
-                    }
-                    Ok(WebSocketMessage::Binary(_))
-                    | Ok(WebSocketMessage::Pong(_))
-                    | Ok(WebSocketMessage::Frame(_)) => {}
-                    Err(err) => {
-                        let reason = NativeDisconnectReason::Abnormal(err.to_string());
-                        let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
-                        break;
-                    }
-                }
-            }
-            msg = rx.recv() => {
-                match msg {
-                    Ok(HotReloadMessage::Native(path)) => {
-                        match tokio_fs::read(&path).await {
-                            Ok(data) => {
-                                info!(
-                                    "Hot reload: sending {} ({} bytes)",
-                                    path.display(),
-                                    data.len()
-                                );
-                                if let Err(err) = socket.send(WebSocketMessage::Binary(data.into())).await {
-                                    let reason = NativeDisconnectReason::Abnormal(err.to_string());
-                                    let _ = state.connection_event_tx.send(NativeConnectionEvent::Disconnected(reason));
-                                    break;
-                                }
-                            }
-                            Err(err) => {
-                                let exists = path.exists();
-                                warn!(
-                                    "Failed to read hot reload artifact at {} (exists: {}): {err:?}",
-                                    path.display(),
-                                    exists
-                                );
-                            }
-                        }
-                    }
-                    Ok(HotReloadMessage::Web) => {}
-                    Err(broadcast::error::RecvError::Closed) => break,
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("Missed {skipped} hot reload updates (CLI lagged behind)");
-                    }
-                }
-            }
-            else => break,
-        }
-    }
-}
-
-async fn handle_web_socket(mut socket: HotReloadSocket, state: Arc<ServerState>) {
-    let mut rx = state.hot_reload_tx.subscribe();
-    let mut shutdown_check = tokio::time::interval(tokio::time::Duration::from_millis(100));
-
-    loop {
-        // Check shutdown flag
-        if state.shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-
-        tokio::select! {
-            _ = shutdown_check.tick() => {
-                // Periodic check for shutdown handled above
-            }
-            msg = rx.recv() => {
-                match msg {
-                    Ok(HotReloadMessage::Web) => {
-                        if socket
-                            .send(WebSocketMessage::Text("reload".to_string().into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Ok(HotReloadMessage::Native(_)) => {}
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-}
-
-const LAST_RUN_FILE: &str = "last-run.json";
-
-#[derive(Debug, Clone)]
-struct LastRunSnapshot {
-    platform: Platform,
-    device: Option<String>,
-    release: bool,
-    enable_sccache: bool,
-    mold: bool,
-    timestamp: u64,
-}
-
-fn persist_last_run(project: &Project, snapshot: LastRunSnapshot) -> Result<()> {
-    let path = last_run_path(project);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let file = File::create(&path)?;
-    let record: SerializableLastRunSnapshot = snapshot.into();
-    serde_json::to_writer_pretty(file, &record)?;
-    Ok(())
-}
-
-fn load_last_run(project: &Project) -> Result<LastRunSnapshot> {
-    let path = last_run_path(project);
-    let file = File::open(&path).with_context(|| {
-        format!(
-            "No previous run recorded for {}. Run `water run` first.",
-            project.root().display()
-        )
-    })?;
-    let record: SerializableLastRunSnapshot = serde_json::from_reader(file).with_context(|| {
-        format!(
-            "Failed to parse last run configuration at {}",
-            path.display()
-        )
-    })?;
-    Ok(record.into())
-}
-
-fn last_run_path(project: &Project) -> PathBuf {
-    project.root().join(".water").join(LAST_RUN_FILE)
-}
+// Note: Server, RebuildWatcher, NativeConnectionEvents, WaitOutcome, DisconnectReason
+// are now provided by waterui_cli::hot_reload module
 
 fn current_timestamp() -> u64 {
     SystemTime::now()
@@ -2322,345 +2065,14 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SerializableLastRunSnapshot {
-    platform: StoredPlatform,
-    device: Option<String>,
-    release: bool,
-    enable_sccache: bool,
-    mold: bool,
-    timestamp: u64,
-}
+// Note: LastRunSnapshot and related serialization is now provided by waterui_cli::run_session module
+// Note: RebuildWatcher is now provided by waterui_cli::hot_reload module
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StoredPlatform {
-    Web,
-    Macos,
-    Ios,
-    Ipados,
-    Watchos,
-    Tvos,
-    Visionos,
-    Android,
-}
+// Note: Native client message handling (panic/log events) is now done in waterui_cli::hot_reload::server
+// Note: NativeConnectionEvents, NativeConnectionEvent, DisconnectReason, WaitOutcome
+// are now imported from waterui_cli::hot_reload module
 
-impl From<Platform> for StoredPlatform {
-    fn from(platform: Platform) -> Self {
-        match platform {
-            Platform::Web => StoredPlatform::Web,
-            Platform::Macos => StoredPlatform::Macos,
-            Platform::Ios => StoredPlatform::Ios,
-            Platform::Ipados => StoredPlatform::Ipados,
-            Platform::Watchos => StoredPlatform::Watchos,
-            Platform::Tvos => StoredPlatform::Tvos,
-            Platform::Visionos => StoredPlatform::Visionos,
-            Platform::Android => StoredPlatform::Android,
-        }
-    }
-}
-
-impl From<StoredPlatform> for Platform {
-    fn from(value: StoredPlatform) -> Self {
-        match value {
-            StoredPlatform::Web => Platform::Web,
-            StoredPlatform::Macos => Platform::Macos,
-            StoredPlatform::Ios => Platform::Ios,
-            StoredPlatform::Ipados => Platform::Ipados,
-            StoredPlatform::Watchos => Platform::Watchos,
-            StoredPlatform::Tvos => Platform::Tvos,
-            StoredPlatform::Visionos => Platform::Visionos,
-            StoredPlatform::Android => Platform::Android,
-        }
-    }
-}
-
-impl From<LastRunSnapshot> for SerializableLastRunSnapshot {
-    fn from(value: LastRunSnapshot) -> Self {
-        Self {
-            platform: StoredPlatform::from(value.platform),
-            device: value.device,
-            release: value.release,
-            enable_sccache: value.enable_sccache,
-            mold: value.mold,
-            timestamp: value.timestamp,
-        }
-    }
-}
-
-impl From<SerializableLastRunSnapshot> for LastRunSnapshot {
-    fn from(value: SerializableLastRunSnapshot) -> Self {
-        Self {
-            platform: value.platform.into(),
-            device: value.device,
-            release: value.release,
-            enable_sccache: value.enable_sccache,
-            mold: value.mold,
-            timestamp: value.timestamp,
-        }
-    }
-}
-
-struct RebuildWatcher {
-    _watcher: RecommendedWatcher,
-    signal: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-impl RebuildWatcher {
-    fn new(
-        watch_paths: Vec<PathBuf>,
-        build_callback: &Arc<dyn Fn() -> Result<()> + Send + Sync>,
-    ) -> Result<Self> {
-        let (tx, rx) = mpsc::channel();
-        let mut watcher: RecommendedWatcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-                if let Ok(event) = res {
-                    if matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                    ) {
-                        let _ = tx.send(());
-                    }
-                }
-            })?;
-
-        let mut seen = HashSet::new();
-        for path in watch_paths {
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            if path.exists() {
-                watcher.watch(&path, RecursiveMode::Recursive)?;
-            } else {
-                debug!("Skipping hot reload path (not found): {}", path.display());
-            }
-        }
-
-        let signal = Arc::new(AtomicBool::new(false));
-        let shutdown_flag = signal.clone();
-        let build = Arc::clone(build_callback);
-
-        let handle = thread::spawn(move || {
-            info!("Hot reload watcher started (CLI)");
-            let mut last_run = Instant::now();
-            while !shutdown_flag.load(Ordering::Relaxed) {
-                match rx.recv_timeout(Duration::from_millis(500)) {
-                    Ok(()) => {
-                        if last_run.elapsed() < Duration::from_millis(250) {
-                            continue;
-                        }
-                        if let Err(err) = build() {
-                            warn!("Rebuild failed: {}", err);
-                        }
-                        last_run = Instant::now();
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-            debug!("Hot reload watcher stopped");
-        });
-
-        Ok(Self {
-            _watcher: watcher,
-            signal,
-            thread: Some(handle),
-        })
-    }
-}
-
-impl Drop for RebuildWatcher {
-    fn drop(&mut self) {
-        self.signal.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum NativeClientEvent {
-    #[serde(rename = "panic")]
-    Panic(NativePanicReport),
-    #[serde(rename = "log")]
-    Log(NativeLogEvent),
-}
-
-#[derive(Debug, Deserialize)]
-struct NativePanicReport {
-    message: String,
-    location: Option<NativePanicLocation>,
-    thread: Option<String>,
-    backtrace: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NativeLogEvent {
-    message: String,
-    level: String,
-    target: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NativePanicLocation {
-    file: String,
-    line: u32,
-    column: u32,
-}
-
-fn handle_native_client_message(payload: &str) {
-    match serde_json::from_str::<NativeClientEvent>(payload) {
-        Ok(NativeClientEvent::Panic(report)) => emit_remote_panic(report),
-        Ok(NativeClientEvent::Log(event)) => emit_remote_log(event),
-        Err(err) => {
-            warn!("Failed to parse native client message ({err}): {payload}");
-        }
-    }
-}
-
-fn emit_remote_panic(report: NativePanicReport) {
-    if output::global_output_format().is_json() {
-        warn!("App panic: {:?}", report);
-        return;
-    }
-
-    ui::newline();
-    println!(
-        "{}",
-        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            .red()
-            .dim()
-    );
-    ui::error("PANIC in app");
-    println!(
-        "{}",
-        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            .red()
-            .dim()
-    );
-    ui::newline();
-
-    // Message - the most important part, highlighted
-    println!(
-        "  {} {}",
-        style("Message:").bold(),
-        style(&report.message).red()
-    );
-
-    // Location - formatted as clickable path
-    if let Some(location) = &report.location {
-        let location_str = format!("{}:{}:{}", location.file, location.line, location.column);
-        println!(
-            "  {} {}",
-            style("Location:").bold(),
-            style(&location_str).cyan().underlined()
-        );
-    }
-
-    // Thread info
-    if let Some(thread) = &report.thread {
-        println!("  {} {}", style("Thread:").bold(), thread);
-    }
-
-    // Backtrace - with smart formatting
-    if let Some(backtrace) = &report.backtrace {
-        let backtrace = backtrace.trim();
-        if !backtrace.is_empty() && backtrace != "disabled backtrace" {
-            ui::newline();
-            println!("  {}", style("Backtrace:").bold());
-            for line in backtrace.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                // Highlight lines that look like user code (not std/core/alloc)
-                let is_user_frame = !line.contains("std::")
-                    && !line.contains("core::")
-                    && !line.contains("alloc::")
-                    && !line.contains("<unknown>")
-                    && !line.contains("rust_begin_unwind");
-
-                if is_user_frame && (line.contains("::") || line.contains(" at ")) {
-                    println!("    {}", style(line).yellow());
-                } else {
-                    ui::dimmed(format!("    {line}"));
-                }
-            }
-        }
-    }
-
-    ui::newline();
-    println!(
-        "{}",
-        style("────────────────────────────────────────────────────────────────────────────────")
-            .dim()
-    );
-    ui::hint("Fix the panic above, save, and WaterUI will rebuild automatically.");
-    ui::newline();
-}
-
-fn emit_remote_log(event: NativeLogEvent) {
-    if output::global_output_format().is_json() {
-        return;
-    }
-    let target = event.target.unwrap_or_default();
-    let message = event
-        .message
-        .trim()
-        .trim_start_matches(WATERUI_TRACING_PREFIX)
-        .trim_start();
-    if target.is_empty() {
-        println!("{} [{}] {}", WATERUI_TRACING_PREFIX, event.level, message);
-    } else {
-        println!(
-            "{} [{}] {} ({})",
-            WATERUI_TRACING_PREFIX, event.level, message, target
-        );
-    }
-}
-
-#[derive(Clone)]
-struct NativeConnectionEvents {
-    receiver: Arc<Mutex<mpsc::Receiver<NativeConnectionEvent>>>,
-}
-
-impl NativeConnectionEvents {
-    fn new(receiver: mpsc::Receiver<NativeConnectionEvent>) -> Self {
-        Self {
-            receiver: Arc::new(Mutex::new(receiver)),
-        }
-    }
-
-    fn recv_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<NativeConnectionEvent, mpsc::RecvTimeoutError> {
-        self.receiver.lock().unwrap().recv_timeout(timeout)
-    }
-
-    fn try_recv(&self) -> Result<NativeConnectionEvent, TryRecvError> {
-        self.receiver.lock().unwrap().try_recv()
-    }
-}
-
-#[derive(Clone, Debug)]
-enum NativeConnectionEvent {
-    Connected,
-    Disconnected(NativeDisconnectReason),
-}
-
-#[derive(Clone, Debug)]
-enum NativeDisconnectReason {
-    Graceful(Option<u16>),
-    Abnormal(String),
-}
-
-enum WaitOutcome {
-    Interrupted,
-    ConnectionLost(NativeDisconnectReason),
-}
+use std::thread;
 
 const HOT_RELOAD_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -2683,65 +2095,14 @@ fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()>
         match events.recv_timeout(poll_timeout) {
             Ok(NativeConnectionEvent::Connected) => return Ok(()),
             Ok(NativeConnectionEvent::Disconnected(reason)) => {
-                bail!(format_connection_loss_message(reason));
+                // DisconnectReason implements Display
+                bail!("{}", reason);
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 bail!("Hot reload server shut down before the app connected. Restart `water run`.");
             }
         }
     }
 }
 
-fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Result<WaitOutcome> {
-    // Use the global interrupt flag set by the ctrlc handler in main.rs
-    loop {
-        // Check global interrupt flag
-        if waterui_cli::util::is_interrupted() {
-            return Ok(WaitOutcome::Interrupted);
-        }
-
-        if let Some(events) = &connection_events {
-            match events.try_recv() {
-                Ok(NativeConnectionEvent::Connected) => {}
-                Ok(NativeConnectionEvent::Disconnected(reason)) => {
-                    return Ok(WaitOutcome::ConnectionLost(reason));
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    if waterui_cli::util::is_interrupted() {
-                        return Ok(WaitOutcome::Interrupted);
-                    }
-                    return Ok(WaitOutcome::ConnectionLost(
-                        NativeDisconnectReason::Abnormal(
-                            "Hot reload server stopped unexpectedly".to_string(),
-                        ),
-                    ));
-                }
-            }
-        }
-
-        // Sleep briefly to avoid busy-waiting
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn format_connection_loss_message(reason: NativeDisconnectReason) -> String {
-    match reason {
-        NativeDisconnectReason::Graceful(code) => {
-            if let Some(code) = code {
-                format!("Hot reload connection closed by the app (close code {code}).")
-            } else {
-                "Hot reload connection closed by the app.".to_string()
-            }
-        }
-        NativeDisconnectReason::Abnormal(details) => {
-            let detail = details.trim();
-            if detail.is_empty() {
-                "Hot reload connection failed. The app likely crashed.".to_string()
-            } else {
-                format!("Hot reload connection failed ({detail}). The app likely crashed.")
-            }
-        }
-    }
-}

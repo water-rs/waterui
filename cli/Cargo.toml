@@ -44,7 +44,7 @@ atty = "0.2.14"
 pathdiff = "0.2.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 zenwave.workspace = true
-skyzen = { git = "https://github.com/zen-rs/skyzen" , default-features = true, features = ["websocket", "rt"] }
+skyzen = { git = "https://github.com/zen-rs/skyzen" , branch = "dev", default-features = true, features = ["websocket", "rt"] }
 
 [[bin]]
 name = "water"

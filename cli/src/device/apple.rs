@@ -358,7 +358,9 @@ impl AppleCrashCollector {
                     .and_then(|value| value.get("eventMessage").and_then(Value::as_str))
                     .unwrap_or(&line);
 
-                if show_lines && !is_forwarded_tracing_line(message) {
+                // Only show relevant log lines to avoid cluttering the terminal
+                // with Apple system framework logs (CoreMedia, etc.)
+                if show_lines && should_display_apple_log(parsed.as_ref(), message) {
                     println!("{message}");
                 }
 
@@ -503,6 +505,60 @@ fn is_crash_event(parsed: Option<&Value>, message: &str) -> bool {
 
 fn is_forwarded_tracing_line(message: &str) -> bool {
     message.contains(WATERUI_TRACING_PREFIX)
+}
+
+/// Determine if an Apple log line should be displayed in the terminal.
+///
+/// We want to show:
+/// - Crash/error/fault events
+/// - Logs from WaterUI/Rust (but not tracing-forwarded ones, as those go through the hot reload channel)
+/// - Logs that mention waterui or the app explicitly
+///
+/// We want to hide:
+/// - System framework noise (CoreMedia, MediaToolbox, etc.)
+/// - Generic Apple subsystem logs
+fn should_display_apple_log(parsed: Option<&Value>, message: &str) -> bool {
+    // Never show tracing-forwarded lines (they're displayed via hot reload channel)
+    if is_forwarded_tracing_line(message) {
+        return false;
+    }
+
+    // Always show crash/error events
+    if is_crash_event(parsed, message) {
+        return true;
+    }
+
+    // Check the subsystem to filter out Apple framework noise
+    if let Some(value) = parsed {
+        if let Some(subsystem) = value.get("subsystem").and_then(Value::as_str) {
+            // Hide Apple system framework logs
+            if subsystem.starts_with("com.apple.") {
+                return false;
+            }
+        }
+
+        // Check sender image path - if it's from system frameworks, hide it
+        if let Some(sender_path) = value.get("senderImagePath").and_then(Value::as_str) {
+            if sender_path.contains("/System/Library/") || sender_path.contains("/usr/lib/") {
+                return false;
+            }
+        }
+    }
+
+    // Show logs that mention waterui
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("waterui") || lower.contains("water_ui") {
+        return true;
+    }
+
+    // Show Rust panic/backtrace related logs
+    if lower.contains("panic") || lower.contains("backtrace") || lower.contains("rust") {
+        return true;
+    }
+
+    // Hide by default to keep terminal clean
+    // All logs are still saved to the log file for debugging
+    false
 }
 
 fn debug_launch_simulator_app() -> Result<()> {
