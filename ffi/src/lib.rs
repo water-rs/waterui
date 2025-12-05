@@ -626,6 +626,7 @@ impl IntoFFI for Background {
             Background::Image(image) => WuiBackground::Image {
                 image: image.into_ffi(),
             },
+            _ => unimplemented!(),
         }
     }
 }
