@@ -35,6 +35,7 @@ pub mod package;
 pub mod permission;
 pub mod project;
 pub mod run_session;
+pub mod runtime;
 pub mod util;
 
 pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
