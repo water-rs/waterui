@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Skip build if WATERUI_SKIP_RUST_BUILD is set (used by `water run` to avoid
+# redundant builds - the Rust library was already built before Gradle was invoked)
+if [ "${WATERUI_SKIP_RUST_BUILD:-}" = "1" ]; then
+    echo "Skipping Rust build (WATERUI_SKIP_RUST_BUILD=1)"
+    exit 0
+fi
+
 if ! command -v water >/dev/null 2>&1; then
     echo "error: the 'water' CLI is not on PATH. Install it with 'cargo install waterui-cli'." >&2
     exit 1
