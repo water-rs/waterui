@@ -8,150 +8,106 @@ A modern, cross-platform UI framework for Rust, designed for building reactive, 
 
 WaterUI combines the safety and speed of Rust with a declarative, component-based architecture inspired by modern web frameworks. It offers true native rendering on Apple and Android, a powerful self-drawn renderer for desktop, and even a terminal backend, all powered by a fine-grained reactive system.
 
-## 📖 Documentation
+## 🚀 Quick Start: Playground Mode
 
-- 📚 [API Documentation](https://docs.rs/waterui/latest) - Complete API reference
-- 📖 [Official Book](https://book.waterui.dev) - Guides and tutorials
+The fastest way to try WaterUI is with the CLI's **Playground Mode**. This allows you to start coding immediately without setting up complex native backends (like Xcode or Android Studio projects) manually.
 
-## ✨ Features
+### 1. Install the CLI
 
-- **Declarative & Reactive**: Build complex UIs with simple, reusable components. State management is handled by a fine-grained reactivity system, ensuring your UI always stays in sync with your data.
-- **Truly Cross-Platform**:
-  - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
-  - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated (Vello/wgpu) and CPU-based (tiny-skia) backends for high-performance, consistent rendering on desktop platforms (Windows, macOS, Linux).
-- **Powerful CLI**: A dedicated `water` command-line tool to create, run, build, and package your applications, with integrated hot-reloading.
-- **Modern Component Library**: A rich set of pre-built components for layouts, controls, forms, text, and more.
-- **Type-Safe & Safe**: Leverage Rust's powerful type system and memory safety guarantees from your UI to your data logic.
-
-## 🚀 Quick Start
-
-Add `waterui` and its dependencies to your `Cargo.toml`:
-
-```toml
-[dependencies]
-waterui = "0.1.0" # Replace with the latest version
+```bash
+cargo install --path cli
 ```
 
-> Or use `waterui = { git = "https://github.com/water-rs/waterui", branch = "dev" }` for the latest development version.
+### 2. Create a Playground
 
-Create your first reactive counter:
-
-```rust
-use waterui::prelude::*;
-
-fn counter_app() -> impl View {
-    let count = Binding::new(0);
-
-    vstack((
-        text!("Count: {}", count),
-        hstack((
-            button("Increment").on_tap({
-                let count = count.clone();
-                move || count.set(count.get() + 1)
-            }),
-            button("Reset").on_tap(move || count.set(0)),
-        ))
-        .spacing(10.0),
-    ))
-    .padding_with(16.0)
-}
+```bash
+water create --playground --name my-playground
+cd my-playground
 ```
 
-This example creates a simple view with a counter that can be incremented or reset. The `text!` macro automatically updates the displayed count whenever the `count` binding changes.
+### 3. Run and Experiment
 
-## 📦 Architecture
+```bash
+water run
+```
 
-WaterUI is built with a modular architecture to ensure clear separation of concerns and maximum flexibility.
+The playground will automatically set up a temporary native environment for you. You can start editing `src/lib.rs`, and the app will **hot reload** instantly!
 
-- **`waterui`**: The main crate, which provides the prelude and re-exports key components.
-- **`waterui-core`**: The heart of the framework, containing the `View` trait, the reactive state system (powered by `nami`), and the environment system.
-- **`components/`**: A collection of component libraries, including:
-  - `waterui-layout`: Stacks (`HStack`, `VStack`, `ZStack`), grids, and other layout primitives.
-  - `waterui-controls`: Interactive components like `Button`, `Slider`, `TextField`, and `Toggle`.
-  - `waterui-text`: Styled text, fonts, and Markdown rendering.
-  - `waterui-form`: Form building utilities, including a derive macro for easy form creation.
-  - `waterui-graphics`: 2D drawing canvas and shape primitives.
-- **`backends/`**: Platform-specific renderers.
-  - **`apple`**: SwiftUI backend for macOS, iOS, visionOS, etc.
-  - **`android`**: Jetpack Compose backend.
-  - **`hydrolysis`**: A self-drawn renderer with GPU (Vello) and CPU (tiny-skia) implementations (Very early stage...DO NOT use it...).
-  - **`tui`**: Terminal UI backend (WIP).
-- **`cli/`**: The `water` command-line interface for managing your projects.
-- **`ffi/`**: A C-compatible Foreign Function Interface that bridges the Rust core with native backends (Swift/Kotlin).
+### 🎡 Examples to Try
 
-## CLI Workflow
+Copy code from our examples into your playground's `src/lib.rs` to see what WaterUI can do:
 
-WaterUI ships with a powerful CLI (`water`) to streamline your development process.
+- **[Form Example](examples/form-example/src/lib.rs)**: See how `#[form]` makes building settings screens and input forms effortless.
+- **[Video Player](examples/video-player-example/src/lib.rs)**: Try the immersive video player with custom overlay controls.
 
-### Create a Project
+## 📦 Standard Project Setup
 
-Scaffold a new project with your chosen backends:
+When you're ready to build a full application with permanent native backends:
+
+### 1. Create a Project
+
+Scaffold a new project with specific backends:
 
 ```bash
 water create --name "My App" --backend apple --backend android
 ```
 
-**For framework developers**: Use `--dev` with `--waterui-path` for instant feedback:
+### 2. Run
+
+Build, run, and hot-reload on a connected device or simulator:
 
 ```bash
-water create --name "My App" --dev --waterui-path /path/to/waterui
-```
-
-This creates a project with path-based dependencies, so changes to WaterUI are immediately reflected without running `cargo update`.
-
-### Run with Hot Reload
-
-Build, run, and hot-reload your app on a connected device, simulator, or emulator:
-
-```bash
-# The CLI will prompt you to select a target
-water run
-
-# Or specify a target directly
 water run --platform ios --device "iPhone 15 Pro"
+# or
+water run --platform android
 ```
 
-**Developer Experience Features:**
+### 3. Add to Cargo.toml
 
-- 🔄 **Hot Reload**: File changes trigger automatic rebuilds and live updates
-- 🐛 **Live Panic Reporting**: Rust panics are captured and displayed with colorful, formatted output
-- 📋 **Crash Collection**: Native crashes are automatically captured with log excerpts
-- 📡 **Remote Logging**: App logs stream directly to your terminal
+If you are adding WaterUI to an existing Rust library:
 
-### Other Commands
-
-- `water build`: Build native libraries for a specific platform (called by Xcode/Gradle)
-- `water package`: Package your application for distribution
-- `water devices`: List available devices, simulators, and emulators
-- `water doctor`: Check and auto-fix your development environment
-- `water clean`: Clean all build artifacts
-
-### JSON Output for Automation
-
-All commands support `--json` for machine-readable output, making it easy to integrate with CI/CD pipelines or LLM agents:
-
-```bash
-water doctor --json
-water devices --json
+```toml
+[dependencies]
+waterui = "0.1.1" # Replace with the latest version
 ```
 
-For more details, run `water --help` or see the [CLI README](./cli/README.md).
+## ✨ Features
+
+- **Declarative & Reactive**: Build complex UIs with simple, reusable components. State management is handled by a fine-grained reactivity system.
+- **Truly Cross-Platform**:
+  - **Native**: Renders to **SwiftUI** on Apple platforms and **Jetpack Compose** on Android for a completely native look and feel.
+  - **Self-Drawn**: The `Hydrolysis` renderer provides GPU-accelerated rendering on desktop platforms.
+- **Powerful CLI**: A dedicated `water` command-line tool to create, run, build, and package your applications.
+- **Modern Component Library**: Pre-built components for layouts, controls, forms, text, media, and more.
+- **Type-Safe**: Leverage Rust's type system and memory safety guarantees.
+
+## 📖 Documentation
+
+- 📚 [API Documentation](https://docs.rs/waterui/latest) - Complete API reference
+- 📖 [Official Book](https://book.waterui.dev) - Guides and tutorials
+
+## 🏗️ Architecture
+
+WaterUI uses a modular architecture:
+
+- **`waterui`**: The main crate.
+- **`waterui-core`**: The heart of the framework (View trait, Environment, Reactivity).
+- **`components/`**: Component libraries (`layout`, `controls`, `form`, `media`, etc.).
+- **`backends/`**: Platform renderers (`apple`, `android`, `hydrolysis`, `tui`).
+- **`cli/`**: The `water` command-line interface.
 
 ## 🛣️ Roadmap
 
-- **Component Library Expansion**: Add more advanced components like tables, trees, and charts.
-- **Renderer Maturation**: Continue to develop `Hydrolysis` with a focus on performance and broader platform support (including Windows).
-- **Animation API**: Introduce a declarative animation and transition system.
-- **Accessibility**: Enhance accessibility features across all backends.
-- **Documentation**: Improve tutorials, guides, and API documentation.
+- **Component Library Expansion**: Tables, trees, charts.
+- **Renderer Maturation**: `Hydrolysis` performance and platform support.
+- **Animation API**: Declarative animation system.
+- **Accessibility**: Enhanced accessibility features.
 
 ## 🤝 Contributing
 
-We welcome contributions! `WaterUI` is in active development and there's plenty to work on. Please check the `ROADMAP.md` and open issues to see where you can help.
+We welcome contributions! Please check `ROADMAP.md` and open issues to see where you can help.
 
-## 🏗️ Project Status
-
-**⚠️ Early Development** - `WaterUI` is in active early development. APIs may change as we stabilize the framework. We're working towards production-ready releases with comprehensive platform support.
+For contributions, please merge your changes into the `dev` branch. Releases are made from the `main` branch.
 
 ## 📄 License
 
