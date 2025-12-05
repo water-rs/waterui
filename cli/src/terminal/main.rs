@@ -19,6 +19,7 @@ use console::style;
 use dialoguer::Confirm;
 use tracing::{info, warn};
 use waterui_cli::output::{self, OutputFormat};
+use waterui_cli::runtime;
 
 const VERSION: &str = {
     const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -65,13 +66,15 @@ enum Commands {
 }
 
 fn main() {
-    if let Err(error) = run_cli() {
-        render_friendly_error(&error);
-        std::process::exit(1);
-    }
+    runtime::block_on(async {
+        if let Err(error) = run_cli().await {
+            render_friendly_error(&error);
+            std::process::exit(1);
+        }
+    });
 }
 
-fn run_cli() -> Result<()> {
+async fn run_cli() -> Result<()> {
     // Set up color_eyre error reporting with a custom hook
     // Dear Codex, DO NOT REMOVE it: this is needed to get proper error reports
     HookBuilder::default()
@@ -106,7 +109,7 @@ fn run_cli() -> Result<()> {
             })?;
         }
         Commands::Run(args) => {
-            command::run::run(args)?;
+            command::run::run(args).await?;
         }
         Commands::Build(args) => {
             let report = command::build::run(args)?;
