@@ -81,7 +81,7 @@ native-executor = { git = "https://github.com/water-rs/native_executor", branch 
 waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
-wgpu = "27.0"
+wgpu = "27.0.1"
 time = "0.3"
 tiny-skia = "0.11"
 vello = "0.2"
