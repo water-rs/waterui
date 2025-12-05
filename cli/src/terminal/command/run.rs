@@ -5,7 +5,7 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use fs2::FileExt;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use skyzen::{
