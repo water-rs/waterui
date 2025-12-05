@@ -1,13 +1,13 @@
 use crate::array::WuiArray;
 use crate::components::text::WuiText;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, WuiAnyView};
-use crate::{closure::WuiFn, ffi_view};
+use crate::{IntoFFI, WuiAnyView, ffi_view};
+use crate::closure::WuiFn;
 use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
-use waterui_navigation::tab::Tab;
-use waterui_navigation::{Bar, NavigationView};
+use waterui_navigation::tab::{Tab, TabPosition, Tabs};
+use waterui_navigation::{Bar, NavigationStack, NavigationView};
 
 into_ffi! {
     NavigationView,
@@ -33,6 +33,43 @@ into_ffi! {Bar,
 // FFI view bindings for navigation components
 ffi_view!(NavigationView, WuiNavigationView, navigation_view);
 
+/// FFI struct for NavigationStack<(),()>
+#[repr(C)]
+pub struct WuiNavigationStack {
+    /// The root view of the navigation stack.
+    pub root: *mut WuiAnyView,
+}
+
+impl IntoFFI for NavigationStack<(), ()> {
+    type FFI = WuiNavigationStack;
+    fn into_ffi(self) -> Self::FFI {
+        WuiNavigationStack {
+            root: self.into_inner().into_ffi(),
+        }
+    }
+}
+
+ffi_view!(NavigationStack<(),()>, WuiNavigationStack, navigation_stack);
+
+/// Position of the tab bar within the tab container.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiTabPosition {
+    /// Tab bar is positioned at the top of the container.
+    Top = 0,
+    /// Tab bar is positioned at the bottom of the container.
+    Bottom = 1,
+}
+
+impl From<TabPosition> for WuiTabPosition {
+    fn from(pos: TabPosition) -> Self {
+        match pos {
+            TabPosition::Top => WuiTabPosition::Top,
+            TabPosition::Bottom => WuiTabPosition::Bottom,
+        }
+    }
+}
+
 #[repr(C)]
 pub struct WuiTabs {
     /// The currently selected tab identifier.
@@ -40,14 +77,17 @@ pub struct WuiTabs {
 
     /// The collection of tabs to display.
     pub tabs: WuiArray<WuiTab>,
+
+    /// Position of the tab bar (top or bottom).
+    pub position: WuiTabPosition,
 }
 
 opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
 
 #[repr(C)]
 pub struct WuiTab {
-    /// The unique identifier for the tab.
-    pub id: Id,
+    /// The unique identifier for the tab (raw u64 for FFI compatibility).
+    pub id: u64,
 
     /// Pointer to the tab's label view.
     pub label: *mut WuiAnyView,
@@ -75,9 +115,23 @@ impl IntoFFI for Tab<Id> {
     type FFI = WuiTab;
     fn into_ffi(self) -> Self::FFI {
         WuiTab {
-            id: self.label.tag,
+            id: i32::from(self.label.tag) as u64,
             label: self.label.content.into_ffi(),
             content: self.content.into_ffi(),
         }
     }
 }
+
+impl IntoFFI for Tabs {
+    type FFI = WuiTabs;
+    fn into_ffi(self) -> Self::FFI {
+        WuiTabs {
+            selection: self.selection.into_ffi(),
+            tabs: self.tabs.into_ffi(),
+            position: self.position.into(),
+        }
+    }
+}
+
+// FFI view binding for Tabs
+ffi_view!(Tabs, WuiTabs, tabs);
