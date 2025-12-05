@@ -282,6 +282,15 @@ pub struct CleanReport {
     pub errors: Vec<String>,
 }
 
+waterui_cli::impl_report!(CleanReport, |r| {
+    let actions_count = r.actions.iter().filter(|a| a.result == CleanActionResult::Removed || a.result == CleanActionResult::Done).count();
+    if r.errors.is_empty() {
+        format!("Cleaned {} items in {}", actions_count, r.workspace)
+    } else {
+        format!("Cleaned {} items with {} errors in {}", actions_count, r.errors.len(), r.workspace)
+    }
+});
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanStatus {
@@ -301,7 +310,7 @@ pub struct CleanActionReport {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanActionResult {
     Done,
