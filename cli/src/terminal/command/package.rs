@@ -202,6 +202,11 @@ pub struct PackageReport {
     pub artifacts: Vec<PackageArtifact>,
 }
 
+waterui_cli::impl_report!(PackageReport, |r| {
+    let paths: Vec<_> = r.artifacts.iter().map(|a| format!("{}: {}", a.platform, a.path)).collect();
+    format!("Packaged: {}", paths.join(", "))
+});
+
 /// A single packaged artifact.
 #[derive(Debug, Serialize)]
 pub struct PackageArtifact {

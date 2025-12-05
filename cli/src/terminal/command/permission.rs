@@ -75,6 +75,15 @@ pub struct AddPermissionReport {
     pub message: Option<String>,
 }
 
+waterui_cli::impl_report!(AddPermissionReport, |r| {
+    match r.status {
+        PermissionStatus::Added => format!("Added permission: {}", r.permission),
+        PermissionStatus::AlreadyExists => format!("Permission {} already exists", r.permission),
+        PermissionStatus::Removed => format!("Removed permission: {}", r.permission),
+        PermissionStatus::NotFound => format!("Permission {} not found", r.permission),
+    }
+});
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionStatus {
@@ -90,6 +99,14 @@ pub struct ListPermissionsReport {
     pub count: usize,
 }
 
+waterui_cli::impl_report!(ListPermissionsReport, |r| {
+    if r.permissions.is_empty() {
+        "No permissions configured".to_string()
+    } else {
+        format!("{} permissions configured", r.count)
+    }
+});
+
 #[derive(Debug, Serialize)]
 pub struct PermissionEntry {
     pub name: String,
@@ -103,6 +120,10 @@ pub struct PermissionEntry {
 pub struct AvailablePermissionsReport {
     pub permissions: Vec<AvailablePermissionEntry>,
 }
+
+waterui_cli::impl_report!(AvailablePermissionsReport, |r| {
+    format!("{} permissions available", r.permissions.len())
+});
 
 #[derive(Debug, Serialize)]
 pub struct AvailablePermissionEntry {
