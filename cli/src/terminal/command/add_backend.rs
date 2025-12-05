@@ -204,3 +204,7 @@ pub struct AddBackendReport {
     pub using_dev_dependencies: bool,
     pub config_path: String,
 }
+
+waterui_cli::impl_report!(AddBackendReport, |r| {
+    format!("Added {} backend to {}", r.backend, r.project_dir)
+});
