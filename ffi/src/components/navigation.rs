@@ -104,6 +104,7 @@ pub struct WuiTab {
 /// - `handler` must be a valid, non-null pointer to a `WuiTabContent`
 /// - Both pointers must remain valid for the duration of the function call
 /// - The caller must ensure proper memory management of the returned view
+#[no_mangle]
 pub unsafe extern "C" fn waterui_tab_content(handler: *mut WuiTabContent) -> WuiNavigationView {
     unsafe {
         let view = (&*handler).build();
