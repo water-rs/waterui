@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-# Install CLI from source
+# Install CLI from source (required for `water run` to work)
 cargo install --path cli
+
+# Build CLI for development (faster iteration, but not in PATH)
+cargo build -p waterui-cli
 
 # Build entire workspace
 cargo build
