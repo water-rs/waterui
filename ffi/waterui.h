@@ -1245,6 +1245,48 @@ typedef struct WuiNavigationView {
 } WuiNavigationView;
 
 /**
+ * FFI struct for NavigationStack<(),()>
+ */
+typedef struct WuiNavigationStack {
+  struct WuiAnyView *root;
+} WuiNavigationStack;
+
+/**
+ * Position of the tab bar within the tab container.
+ */
+typedef enum WuiTabPosition {
+  WuiTabPosition_Top = 0,
+  WuiTabPosition_Bottom = 1,
+} WuiTabPosition;
+
+typedef struct WuiTab {
+  uint64_t id;
+  struct WuiAnyView *label;
+  struct WuiTabContent *content;
+} WuiTab;
+
+typedef struct WuiArraySlice_WuiTab {
+  struct WuiTab *head;
+  uintptr_t len;
+} WuiArraySlice_WuiTab;
+
+typedef struct WuiArrayVTable_WuiTab {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiTab (*slice)(const void*);
+} WuiArrayVTable_WuiTab;
+
+typedef struct WuiArray_WuiTab {
+  void *data;
+  struct WuiArrayVTable_WuiTab vtable;
+} WuiArray_WuiTab;
+
+typedef struct WuiTabs {
+  WuiBinding_Id *selection;
+  struct WuiArray_WuiTab tabs;
+  enum WuiTabPosition position;
+} WuiTabs;
+
+/**
  * FFI representation of a photo event.
  */
 typedef struct WuiPhotoEvent {
@@ -2299,6 +2341,40 @@ struct WuiNavigationView waterui_force_as_navigation_view(struct WuiAnyView *vie
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_navigation_view_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiNavigationStack waterui_force_as_navigation_stack(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_navigation_stack_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_tabs_id(void);
+
+/**
+ * Creates a navigation view from tab content.
+ *
+ * # Safety
+ * - `handler` must be a valid, non-null pointer to a `WuiTabContent`
+ */
+struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler);
 
 /**
  * # Safety
