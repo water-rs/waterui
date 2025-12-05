@@ -6,6 +6,7 @@
 //! - WebSocket connection to the CLI for receiving rebuilt libraries
 //! - Structured panic reports sent to CLI for pretty display
 //! - Log forwarding with level filtering
+//! - Connection status overlay (connecting, reconnecting, error states)
 //!
 //! # Panic Handling Pipeline
 //!
@@ -44,6 +45,7 @@
 //! - **Android**: `RUST_BACKTRACE=1` is set in MainActivity before loading native libs
 //!   to ensure `tracing_panic` also captures backtraces (no performance impact at runtime)
 //! - **iOS/macOS**: Backtraces work via `force_capture()` regardless of env var
+use alloc::string::String;
 use async_channel::{Receiver, Sender};
 use executor_core::spawn_local;
 use libloading::Library;
@@ -62,7 +64,7 @@ use std::{
 };
 use thiserror::Error;
 use tracing::level_filters::LevelFilter;
-use tracing::{Level, debug, warn};
+use tracing::{Level, debug, info, warn};
 use tracing_subscriber::{
     EnvFilter, Layer,
     fmt::{self, FormatEvent, FormatFields, format::Writer, writer::MakeWriter},
@@ -71,11 +73,37 @@ use tracing_subscriber::{
     registry::LookupSpan,
     util::SubscriberInitExt,
 };
-use waterui_core::{AnyView, Dynamic, View, event::Associated};
+use waterui_core::{AnyView, Dynamic, View};
+use waterui_core::dynamic::DynamicHandler;
+use waterui_layout::overlay;
+use crate::ViewExt;
 use zenwave::websocket::{self, WebSocketError, WebSocketMessage};
+
+/// Connection state for the hot reload WebSocket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionState {
+    /// Initial state, connecting to CLI
+    Connecting,
+    /// Successfully connected
+    Connected,
+    /// Connection lost, attempting to reconnect
+    Reconnecting { attempt: u32 },
+    /// Connection failed with an error
+    Error { message: String },
+    /// Overlay dismissed by user
+    Dismissed,
+}
 
 const TRACING_PREFIX: &str = "[waterui::tracing]";
 const DEFAULT_CLI_LOG_LEVEL: LevelFilter = LevelFilter::INFO;
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const RECONNECT_DELAY_MS: u64 = 1000;
+/// Maximum number of rapid disconnections before giving up.
+/// This prevents infinite reconnection loops when the connection
+/// succeeds but immediately fails (e.g., WebSocket upgrade issues).
+const MAX_RAPID_DISCONNECTS: u32 = 3;
+/// Time window to consider a disconnection as "rapid" (in milliseconds).
+const RAPID_DISCONNECT_WINDOW_MS: u64 = 5000;
 
 /// A view that can be hot-reloaded at runtime.
 #[derive(Debug)]
@@ -99,6 +127,11 @@ impl<V: View> View for Hotreload<V> {
         let trigger = HotReloadTrigger::new(sender);
         let endpoint = resolve_endpoint();
 
+        // Create overlay handler for connection status
+        let (overlay_handler, overlay_dynamic) = Dynamic::new();
+        // Start with empty overlay
+        overlay_handler.set(());
+
         spawn_local(async move {
             while let Ok(path) = receiver.recv().await {
                 let new_view = unsafe { reload("waterui_main", &path) };
@@ -109,16 +142,32 @@ impl<V: View> View for Hotreload<V> {
 
         install_panic_forwarder();
         install_tracing_forwarder();
+
         if let Some(endpoint) = endpoint {
             let daemon_trigger = trigger.clone();
             let daemon_endpoint = endpoint.clone();
             let (outbound_tx, outbound_rx) = async_channel::unbounded();
             register_outbound_sender(outbound_tx);
+
+            // Show connecting status
+            overlay_handler.set(connection_status_view(ConnectionState::Connecting, overlay_handler.clone()));
+
+            let daemon_overlay_handler = overlay_handler.clone();
             spawn_local(async move {
-                let result = hot_reload_daemon(daemon_trigger, daemon_endpoint, outbound_rx).await;
+                let result = hot_reload_daemon_with_state(
+                    daemon_trigger,
+                    daemon_endpoint,
+                    outbound_rx,
+                    daemon_overlay_handler.clone(),
+                )
+                .await;
                 clear_outbound_sender();
                 if let Err(err) = result {
-                    warn!("Failed to launch hot reload daemon: {err}");
+                    warn!("Hot reload daemon ended: {err}");
+                    daemon_overlay_handler.set(connection_status_view(
+                        ConnectionState::Error { message: alloc::format!("{err}") },
+                        daemon_overlay_handler.clone(),
+                    ));
                 }
             })
             .detach();
@@ -126,7 +175,61 @@ impl<V: View> View for Hotreload<V> {
             debug!("Hot reload endpoint not available; running without watcher");
         }
 
-        dynamic
+        // Overlay the status on top of the dynamic content
+        overlay(dynamic, overlay_dynamic)
+    }
+}
+
+/// Creates a view for the given connection state.
+fn connection_status_view(state: ConnectionState, handler: DynamicHandler) -> AnyView {
+    use waterui_layout::stack::vstack;
+    use waterui_text::text::text;
+    use waterui_controls::button;
+    use waterui_color::Color;
+
+    match state {
+        ConnectionState::Connected | ConnectionState::Dismissed => {
+            // Empty overlay when connected or dismissed
+            AnyView::new(())
+        }
+        ConnectionState::Connecting => {
+            AnyView::new(
+                vstack((
+                    text("Hot Reload"),
+                    text("Connecting to CLI..."),
+                ))
+                .spacing(8.0)
+                .padding_with(16.0)
+                .background(Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.9))
+            )
+        }
+        ConnectionState::Reconnecting { attempt } => {
+            let msg = alloc::format!("Reconnecting... ({}/{})", attempt, MAX_RECONNECT_ATTEMPTS);
+            AnyView::new(
+                vstack((
+                    text("Hot Reload"),
+                    text(msg),
+                ))
+                .spacing(8.0)
+                .padding_with(16.0)
+                .background(Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.9))
+            )
+        }
+        ConnectionState::Error { message } => {
+            let dismiss_handler = handler.clone();
+            AnyView::new(
+                vstack((
+                    text("Hot Reload Error"),
+                    text(message),
+                    button(text("Dismiss")).action(move || {
+                        dismiss_handler.set(());
+                    }),
+                ))
+                .spacing(12.0)
+                .padding_with(16.0)
+                .background(Color::srgb_f32(0.6, 0.1, 0.1).with_opacity(0.95))
+            )
+        }
     }
 }
 
@@ -139,13 +242,15 @@ pub enum Error {
 }
 
 // you must call this function on main thread, otherwise it is UB
-unsafe fn reload(symbol: &str, path: &Path) -> Associated<Library, AnyView> {
+unsafe fn reload(symbol: &str, path: &Path) -> impl View {
     let lib = unsafe { Library::new(path) }.unwrap();
     let func: libloading::Symbol<unsafe extern "C" fn() -> *mut waterui_core::AnyView> =
         unsafe { lib.get(symbol.as_bytes()) }.expect("Failed to load symbol");
     let view_ptr = unsafe { func() };
     let view = unsafe { Box::from_raw(view_ptr) };
-    Associated::new(lib, *view)
+    // Use retain to keep the dylib alive as long as the view exists.
+    // This ensures closures/code in the dylib remain valid.
+    (*view).retain(lib)
 }
 
 #[derive(Debug, Clone)]
@@ -163,50 +268,140 @@ impl HotReloadTrigger {
     }
 }
 
-async fn hot_reload_daemon(
+/// Hot reload daemon with connection state tracking and reconnection support.
+async fn hot_reload_daemon_with_state(
     trigger: HotReloadTrigger,
     endpoint: HotReloadEndpoint,
     outbound_rx: Receiver<String>,
+    overlay_handler: DynamicHandler,
 ) -> Result<(), Error> {
-    // The app is the client, connecting to the CLI.
-    let url = format!("ws://{}:{}/hot-reload-native", endpoint.host, endpoint.port);
+    use std::time::Instant;
 
-    let mut socket = websocket::connect(url).await?;
-    let mut outbound_closed = false;
+    let url = format!("ws://{}:{}/hot-reload-native", endpoint.host, endpoint.port);
+    let mut attempt = 0u32;
+    let mut rapid_disconnect_count = 0u32;
+    let mut last_connect_time: Option<Instant> = None;
 
     loop {
-        if !outbound_closed && !outbound_rx.is_closed() {
-            while let Ok(text) = outbound_rx.try_recv() {
-                if let Err(err) = socket.send_text(text).await {
-                    warn!("Failed to forward message to CLI: {err}");
-                    return Err(err.into());
+        attempt += 1;
+        if attempt > 1 {
+            overlay_handler.set(connection_status_view(
+                ConnectionState::Reconnecting { attempt: attempt - 1 },
+                overlay_handler.clone(),
+            ));
+            // Wait before reconnecting
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::sleep(std::time::Duration::from_millis(RECONNECT_DELAY_MS));
+        }
+
+        match websocket::connect(&url).await {
+            Ok(mut socket) => {
+                // Connection successful - hide overlay
+                info!("Hot reload connected to CLI");
+                overlay_handler.set(());
+                attempt = 0; // Reset attempt counter on successful connection
+                last_connect_time = Some(Instant::now());
+
+                let mut outbound_closed = false;
+
+                loop {
+                    if !outbound_closed && !outbound_rx.is_closed() {
+                        while let Ok(text) = outbound_rx.try_recv() {
+                            if let Err(err) = socket.send_text(text).await {
+                                warn!("Failed to forward message to CLI: {err}");
+                                // Connection lost, break inner loop to reconnect
+                                break;
+                            }
+                        }
+
+                        if outbound_rx.is_closed() {
+                            outbound_closed = true;
+                        }
+                    }
+
+                    match socket.recv().await {
+                        Ok(Some(WebSocketMessage::Binary(data))) => {
+                            let lib_path = create_library(&data);
+                            trigger.trigger_reload(lib_path);
+                        }
+                        Ok(Some(WebSocketMessage::Text(text))) => {
+                            handle_server_message(&text);
+                        }
+                        Ok(None) => {
+                            // Connection closed gracefully, try to reconnect
+                            debug!("Hot reload connection closed, attempting to reconnect");
+                            break;
+                        }
+                        Err(err) => {
+                            warn!("Hot reload connection error: {err}");
+                            break;
+                        }
+                    }
+                }
+
+                // Check if this was a rapid disconnection (connected but failed quickly)
+                if let Some(connect_time) = last_connect_time {
+                    if connect_time.elapsed().as_millis() < RAPID_DISCONNECT_WINDOW_MS as u128 {
+                        rapid_disconnect_count += 1;
+                        warn!(
+                            "Rapid disconnection detected ({}/{})",
+                            rapid_disconnect_count, MAX_RAPID_DISCONNECTS
+                        );
+                        if rapid_disconnect_count >= MAX_RAPID_DISCONNECTS {
+                            overlay_handler.set(connection_status_view(
+                                ConnectionState::Error {
+                                    message: alloc::format!(
+                                        "Connection unstable: {} rapid disconnections",
+                                        rapid_disconnect_count
+                                    ),
+                                },
+                                overlay_handler.clone(),
+                            ));
+                            return Err(Error::HotReloadPortNotSet);
+                        }
+                    } else {
+                        // Connection was stable for a while, reset rapid disconnect counter
+                        rapid_disconnect_count = 0;
+                    }
                 }
             }
-
-            if outbound_rx.is_closed() {
-                outbound_closed = true;
+            Err(err) => {
+                if attempt >= MAX_RECONNECT_ATTEMPTS {
+                    overlay_handler.set(connection_status_view(
+                        ConnectionState::Error {
+                            message: alloc::format!(
+                                "Failed to connect after {} attempts: {}",
+                                MAX_RECONNECT_ATTEMPTS,
+                                err
+                            ),
+                        },
+                        overlay_handler.clone(),
+                    ));
+                    return Err(err.into());
+                }
+                warn!(
+                    "Hot reload connection attempt {}/{} failed: {}",
+                    attempt, MAX_RECONNECT_ATTEMPTS, err
+                );
             }
         }
 
-        match socket.recv().await {
-            Ok(Some(WebSocketMessage::Binary(data))) => {
-                let lib_path = create_library(&data);
-                trigger.trigger_reload(lib_path);
-            }
-            Ok(Some(WebSocketMessage::Text(text))) => {
-                handle_server_message(&text);
-            }
-            Ok(None) => {
-                break;
-            }
-            Err(err) => {
-                return Err(err.into());
-            }
+        // Check if we've exceeded max reconnect attempts
+        if attempt >= MAX_RECONNECT_ATTEMPTS {
+            overlay_handler.set(connection_status_view(
+                ConnectionState::Error {
+                    message: alloc::format!(
+                        "Connection lost after {} reconnection attempts",
+                        MAX_RECONNECT_ATTEMPTS
+                    ),
+                },
+                overlay_handler.clone(),
+            ));
+            return Err(Error::HotReloadPortNotSet);
         }
     }
-
-    Ok(())
 }
+
 fn library_name() -> String {
     // generate a uuid for the library name
     let uuid = uuid::Uuid::new_v4();
