@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-str.workspace = true
-nami.workspace = true
+nami-core.workspace = true
 
 [features]
 std = []

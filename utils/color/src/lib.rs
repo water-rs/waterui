@@ -27,8 +27,9 @@ use core::{
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
 use waterui_core::{
-    Environment, raw_view,
+    Environment,
     layout::StretchAxis,
+    raw_view,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
