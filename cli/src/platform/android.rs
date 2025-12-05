@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
+use tracing::info;
 
 use crate::{
     backend::{
         Backend,
-        android::{AndroidBackend, build_android_apk},
+        android::{AndroidBackend, AndroidNativeBuildOptions, build_android_apk, build_android_native_libraries},
     },
     build::BuildOptions,
     doctor::AnyToolchainIssue,
@@ -74,24 +75,33 @@ impl Platform for AndroidPlatform {
     }
 
     fn package(&self, project: &Project, release: bool) -> Result<PathBuf> {
-        // Gradle's build script calls `water build android` internally,
-        // so we just need to run Gradle here.
-        build_android_apk(
-            project.root(),
-            &self.config,
-            release,
-            false, // hot_reload_enabled
-            project.bundle_identifier(),
-        )
+        self.package_with_options(project, &BuildOptions::new().with_release(release))
     }
 
     /// Package with full build options.
     ///
-    /// This is the preferred method that uses `BuildOptions` instead of
-    /// scattered parameters.
+    /// This builds the Rust native libraries first, then invokes Gradle to
+    /// package them into an APK.
     fn package_with_options(&self, project: &Project, options: &BuildOptions) -> Result<PathBuf> {
-        // Gradle's build script calls `water build android` internally,
-        // handling all build options via environment variables.
+        // Build the Rust native libraries first
+        info!("Building Rust native libraries for Android");
+        let build_opts = AndroidNativeBuildOptions {
+            project_dir: project.root(),
+            android_config: &self.config,
+            crate_name: project.crate_name(),
+            release: options.is_release(),
+            hot_reload: options.hot_reload.enabled,
+            enable_sccache: options.speedups.sccache,
+            enable_mold: options.speedups.mold,
+            requested_triples: self.target_triples.clone(),
+        };
+        let build_report = build_android_native_libraries(build_opts)?;
+        info!(
+            "Built native libraries for targets: {:?}",
+            build_report.targets
+        );
+
+        // Run Gradle to package into APK (Rust build is skipped via WATERUI_SKIP_RUST_BUILD=1)
         build_android_apk(
             project.root(),
             &self.config,
