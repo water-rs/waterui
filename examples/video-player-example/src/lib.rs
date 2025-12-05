@@ -38,14 +38,15 @@ pub fn main() -> impl View {
     // Track buffering state
     let is_buffering = binding(false);
 
-    // Create reactive video source
-    let video_source = selected_index.clone().map(move |idx| {
+    // Create reactive video URL
+    let video_url = selected_index.clone().map(move |idx| {
         let (_, url_str) = sample_videos[idx];
-        Video::new(url::Url::parse(url_str).expect("Invalid video URL"))
+        url::Url::parse(url_str).expect("Invalid video URL")
     });
 
     // Video player - immersive full screen with Fill aspect ratio
-    let player = VideoPlayer::new(video_source)
+    // VideoPlayer now takes a Url directly (not a Video data source)
+    let player = VideoPlayer::new(video_url)
         .show_controls(true)
         .aspect_ratio(AspectRatio::Fill)
         .on_event({
@@ -75,6 +76,7 @@ pub fn main() -> impl View {
     // Bottom controls overlay
     let controls_overlay = vstack((
         spacer(),
+        "Wow",
         // Bottom panel
         vstack((
             // Current video title
