@@ -6,6 +6,7 @@ use core::fmt::Display;
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
+use waterui_color::Color;
 use waterui_core::configurable;
 
 configurable!(
@@ -169,6 +170,37 @@ impl Text {
             .content
             .zip(weight)
             .map(|(content, weight)| content.weight(weight))
+            .computed();
+        self
+    }
+
+    pub fn underline(mut self, underline: impl IntoSignal<bool>) -> Self {
+        let underline = underline.into_signal();
+        self.0.content = self
+            .0
+            .content
+            .zip(underline)
+            .map(|(content, underline)| content.underline(underline))
+            .computed();
+        self
+    }
+
+    pub fn foreground(mut self, color: impl Into<Color>) -> Self {
+        let color = color.into();
+        self.0.content = self
+            .0
+            .content
+            .map(move |content| content.foreground(color.clone()))
+            .computed();
+        self
+    }
+
+    pub fn background_color(mut self, color: impl Into<Color>) -> Self {
+        let color = color.into();
+        self.0.content = self
+            .0
+            .content
+            .map(move |content| content.background_color(color.clone()))
             .computed();
         self
     }
