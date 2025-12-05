@@ -7,6 +7,7 @@ use which::which;
 
 use crate::{
     backend,
+    build::BuildOptions,
     crash::CrashReport,
     platform::Platform,
     project::{Project, RunOptions},
@@ -17,27 +18,109 @@ pub mod apple;
 pub use android::{AndroidDevice, AndroidSelection};
 pub use apple::{AppleSimulatorDevice, MacosDevice};
 
+/// Result of a device build operation.
+#[derive(Debug, Clone)]
+pub struct DeviceBuildResult {
+    /// Path to the built library artifact (e.g., libwaterui_app.a or .so)
+    pub library_path: std::path::PathBuf,
+    /// Target triple that was built
+    pub target_triple: &'static str,
+}
+
+/// Abstraction for a device that can build, package, and run WaterUI apps.
+///
+/// The Device trait encapsulates the full lifecycle of deploying an app:
+/// 1. `prepare()` - Set up toolchain and device (e.g., launch emulator)
+/// 2. `build()` - Compile the Rust library for this device's architecture
+/// 3. `package()` - Create the platform-specific artifact (app bundle, APK)
+/// 4. `run()` - Deploy and launch on the device
+///
+/// For hot reload, use `build_for_hot_reload()` instead of `build()` to
+/// produce a dynamic library that can be swapped at runtime.
 pub trait Device: Send + Sync {
     type Platform: Platform + Clone;
+
     /// Perform any per-run setup (toolchain configuration, emulator launch, etc.).
     ///
     /// # Errors
     /// Returns an error if preparation fails.
     fn prepare(&self, project: &Project, options: &RunOptions) -> eyre::Result<()>;
+
+    /// Build the Rust library for this device's target architecture.
+    ///
+    /// This produces a static library (.a) that will be linked into the
+    /// platform-specific app bundle during `package()`.
+    ///
+    /// # Errors
+    /// Returns an error if the build fails.
+    fn build(&self, project: &Project, options: &BuildOptions) -> eyre::Result<DeviceBuildResult> {
+        // Default implementation delegates to the platform
+        let platform = self.platform();
+        let target = platform.target_triple();
+        let result = crate::build::build_for_target(project, target, options)?;
+        Ok(DeviceBuildResult {
+            library_path: result.artifact_path,
+            target_triple: target,
+        })
+    }
+
+    /// Build a hot-reloadable dynamic library for this device.
+    ///
+    /// Unlike `build()`, this produces a cdylib that can be loaded at runtime
+    /// without restarting the app. The `waterui_hot_reload_lib` cfg flag
+    /// is set during compilation, which switches the entry point to
+    /// `waterui_hot_reload_main` to prevent infinite loading loops.
+    ///
+    /// # Errors
+    /// Returns an error if the build fails.
+    fn build_for_hot_reload(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+    ) -> eyre::Result<DeviceBuildResult> {
+        // Hot reload builds need special handling - enable the hot reload flag
+        let mut hot_reload_options = options.clone();
+        hot_reload_options.hot_reload.enabled = true;
+
+        self.build(project, &hot_reload_options)
+    }
+
+    /// Package the built library into a platform-specific artifact.
+    ///
+    /// This creates the final deployable artifact (e.g., .app bundle for iOS,
+    /// .apk for Android) by combining the Rust library with platform resources.
+    ///
+    /// # Errors
+    /// Returns an error if packaging fails.
+    fn package(&self, project: &Project, options: &BuildOptions) -> eyre::Result<std::path::PathBuf> {
+        // Default implementation delegates to the platform
+        self.platform().package_with_options(project, options)
+    }
+
     /// Run the packaged application artifact on this device.
     ///
     /// # Errors
-    /// Returns an error if launching fails. On success, returns an optional CrashReport if the app crashed during monitoring.
+    /// Returns an error if launching fails. On success, returns an optional
+    /// `CrashReport` if the app crashed during monitoring.
     fn run(
         &self,
         project: &Project,
         artifact: &Path,
         options: &RunOptions,
     ) -> eyre::Result<Option<CrashReport>>;
+
     /// Returns a clone of the platform configuration.
+    ///
     /// Call this after `prepare()` to get device-specific configuration
     /// like detected target architecture for Android.
     fn platform(&self) -> Self::Platform;
+
+    /// Get the target triple for this device.
+    ///
+    /// This is a convenience method that delegates to the platform.
+    fn target_triple(&self) -> &'static str {
+        self.platform().target_triple()
+    }
 }
 
 // Note: AnyDevice/AnyPlatform cannot be used with the current trait design
