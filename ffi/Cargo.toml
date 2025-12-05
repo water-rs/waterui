@@ -24,12 +24,14 @@ waterui-layout.workspace = true
 nami.workspace = true
 executor-core.workspace = true
 cbindgen = { version = "0.29.0", optional = true }
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["wgpu"] }
 wgpu.workspace = true
 paste = "1.0.15"
 tracing.workspace = true
 tracing-panic.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
 
 
 [[bin]]
