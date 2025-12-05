@@ -1,3 +1,4 @@
+// TODO: Refractor this large file...We shouldn't put heavy logic in terminal commands.
 use crate::{ui, util};
 use atty::{self, Stream};
 use clap::{Args, ValueEnum};
@@ -33,7 +34,10 @@ use waterui_cli::{
         toolchain::{self, CheckMode, CheckTarget},
     },
     output,
-    platform::{PlatformKind, android::AndroidPlatform, apple::AppleSimulatorKind},
+    platform::{
+        Platform as PlatformTrait, PlatformKind, android::AndroidPlatform,
+        apple::AppleSimulatorKind,
+    },
     project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
     util as cli_util,
 };
@@ -238,10 +242,15 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         let backend = match platform_kind {
             Platform::Web => super::create::BackendChoice::Web,
             Platform::Android => super::create::BackendChoice::Android,
-            Platform::Macos | Platform::Ios | Platform::Ipados | Platform::Tvos | Platform::Visionos => {
-                super::create::BackendChoice::Apple
-            }
-            _ => bail!("Platform {:?} is not supported in playground mode", platform_kind),
+            Platform::Macos
+            | Platform::Ios
+            | Platform::Ipados
+            | Platform::Tvos
+            | Platform::Visionos => super::create::BackendChoice::Apple,
+            _ => bail!(
+                "Platform {:?} is not supported in playground mode",
+                platform_kind
+            ),
         };
         config = super::playground::ensure_playground_backend(
             &project_dir,
@@ -634,13 +643,6 @@ const fn platform_supports_native_hot_reload(platform: Platform) -> bool {
     platform.is_apple_platform() || matches!(platform, Platform::Android)
 }
 
-fn hot_reload_target(platform: Platform) -> Option<String> {
-    match platform {
-        Platform::Android => Some("aarch64-linux-android".to_string()),
-        _ => None,
-    }
-}
-
 fn hot_reload_library_path(
     project_dir: &Path,
     crate_name: &str,
@@ -676,6 +678,24 @@ fn dylib_filename(crate_name: &str, target_triple: Option<&str>) -> String {
     format!("{prefix}{normalized}.{suffix}")
 }
 
+/// Prepare device and build the app, but don't launch it yet.
+/// This separates the package step from the launch step so we can start
+/// the hot reload server in between.
+fn prepare_and_package<D: Device>(
+    project: &Project,
+    device: &D,
+    options: &RunOptions,
+) -> Result<PathBuf> {
+    use waterui_cli::build::BuildOptions;
+
+    device.prepare(project, options)?;
+    // Convert RunOptions to BuildOptions for the platform package
+    let build_options = BuildOptions::new()
+        .with_release(options.release)
+        .with_hot_reload(options.hot_reload.enabled, options.hot_reload.port);
+    device.platform().package_with_options(project, &build_options)
+}
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn run_platform(
     platform: Platform,
@@ -690,7 +710,6 @@ fn run_platform(
 ) -> Result<()> {
     let project_dir = project.root();
     let mut recorded_device = device.clone();
-    let hot_reload_target_triple = hot_reload_target(platform);
     if let Err(report) =
         toolchain::ensure_ready(CheckMode::Quick, &toolchain_targets_for_platform(platform))
     {
@@ -708,15 +727,21 @@ fn run_platform(
     }
 
     if platform == Platform::Web {
-        return run_web(project_dir, config, project.crate_name(), release, log_filter);
+        return run_web(
+            project_dir,
+            config,
+            project.crate_name(),
+            release,
+            log_filter,
+        );
     }
 
     // Hot reload is enabled unless --no-hot-reload is passed
     let hot_reload_enabled = !no_hot_reload && platform_supports_native_hot_reload(platform);
+    // Configure Android linker environment early (before device selection)
+    // Android hot reload always uses aarch64-linux-android target
     if platform == Platform::Android && hot_reload_enabled {
-        if let Some(target) = hot_reload_target_triple.as_deref() {
-            configure_rust_android_linker_env(&[target])?;
-        }
+        configure_rust_android_linker_env(&["aarch64-linux-android"])?;
     }
 
     // Acquire file lock on the library path to prevent concurrent hot reload runs.
@@ -729,31 +754,26 @@ fn run_platform(
         None
     };
 
-    // For Android, we need to start the hot reload server BEFORE launching the app,
-    // because the ADB reverse tunnel and app launch require the port. For Apple platforms,
-    // the app connects to the server after launch, so we can start it later.
-    let early_server = if hot_reload_enabled && platform == Platform::Android {
-        let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
-            .context("Failed to start hot reload server")?;
-        Some(server)
-    } else {
-        None
-    };
-
-    let hot_reload_port = early_server.as_ref().map(|s| s.address().port());
-
-    // Build run options
-    let mut run_options = RunOptions {
+    // Build run options for packaging (no port yet - server starts after build)
+    let package_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
             enabled: hot_reload_enabled,
-            port: hot_reload_port,
+            port: None, // Port not needed for packaging
         },
         log_filter: log_filter.clone(),
     };
 
-    // First, package the app (this triggers the Rust build via Xcode/Gradle)
-    let run_report = match platform {
+    // Prepare device and package the app, but don't launch yet.
+    // Returns: (device, artifact_path, target_triple)
+    // We keep the device so we can launch it after starting the hot reload server.
+    enum PreparedDevice {
+        Macos(MacosDevice, PathBuf, &'static str),
+        AppleSimulator(AppleSimulatorDevice, PathBuf, &'static str),
+        Android(AndroidDevice, PathBuf, &'static str),
+    }
+
+    let prepared = match platform {
         Platform::Macos => {
             let swift_config = config.backends.swift.clone().ok_or_else(|| {
                 eyre!(
@@ -763,10 +783,10 @@ fn run_platform(
             if !output::global_output_format().is_json() {
                 ui::info(format!("Xcode scheme: {}", swift_config.scheme));
             }
-            let scheme_name = swift_config.scheme.clone();
-            let spinner_msg = apple_build_progress_message(Platform::Macos, &scheme_name, None);
             let device_impl = MacosDevice::new(swift_config);
-            run_with_package_spinner(project, device_impl, run_options.clone(), spinner_msg)?
+            let target = device_impl.platform().target_triple();
+            let artifact = prepare_and_package(project, &device_impl, &package_options)?;
+            PreparedDevice::Macos(device_impl, artifact, target)
         }
         Platform::Ios
         | Platform::Ipados
@@ -787,16 +807,10 @@ fn run_platform(
                 None => prompt_for_apple_device(platform)?,
             };
             recorded_device = Some(device_name.clone());
-            let scheme_name = swift_config.scheme.clone();
-            let target_label = format!(
-                "{} ({})",
-                device_name,
-                apple_platform_display_name(platform)
-            );
-            let spinner_msg =
-                apple_build_progress_message(platform, &scheme_name, Some(target_label.as_str()));
             let simulator = AppleSimulatorDevice::new(swift_config, simulator_kind, device_name);
-            run_with_package_spinner(project, simulator, run_options.clone(), spinner_msg)?
+            let target = simulator.platform().target_triple();
+            let artifact = prepare_and_package(project, &simulator, &package_options)?;
+            PreparedDevice::AppleSimulator(simulator, artifact, target)
         }
         Platform::Android => {
             let android_config = config.backends.android.clone().ok_or_else(|| {
@@ -814,10 +828,62 @@ fn run_platform(
                 .unwrap_or(selection.name.clone());
             recorded_device = Some(stored_id);
             let platform_impl = AndroidPlatform::new(android_config);
+            let target = platform_impl.target_triple();
             let android_device = AndroidDevice::new(platform_impl, selection)?;
-            run_on_device(project, android_device, run_options.clone())?
+            let artifact = prepare_and_package(project, &android_device, &package_options)?;
+            PreparedDevice::Android(android_device, artifact, target)
         }
         Platform::Web => unreachable!(),
+    };
+
+    // Extract artifact path and target for later use
+    let (artifact_path, hot_reload_target_triple) = match &prepared {
+        PreparedDevice::Macos(_, artifact, target)
+        | PreparedDevice::AppleSimulator(_, artifact, target)
+        | PreparedDevice::Android(_, artifact, target) => (artifact.clone(), Some(*target)),
+    };
+
+    if !output::global_output_format().is_json() {
+        ui::success(format!("Application built: {}", artifact_path.display()));
+    }
+
+    // Now start the hot reload server (after build succeeded)
+    let server = if hot_reload_enabled {
+        let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
+            .context("Failed to start hot reload server")?;
+        Some(server)
+    } else {
+        None
+    };
+
+    let hot_reload_port = server.as_ref().map(|s| s.address().port());
+
+    // Build run options with the actual port for launching
+    let run_options = RunOptions {
+        release,
+        hot_reload: HotReloadOptions {
+            enabled: hot_reload_enabled,
+            port: hot_reload_port,
+        },
+        log_filter: log_filter.clone(),
+    };
+
+    // Launch the app on the device
+    let crash_report = match prepared {
+        PreparedDevice::Macos(device_impl, artifact, _) => {
+            device_impl.run(project, &artifact, &run_options)?
+        }
+        PreparedDevice::AppleSimulator(simulator, artifact, _) => {
+            simulator.run(project, &artifact, &run_options)?
+        }
+        PreparedDevice::Android(android_device, artifact, _) => {
+            android_device.run(project, &artifact, &run_options)?
+        }
+    };
+
+    let run_report = RunReport {
+        artifact: artifact_path,
+        crash_report,
     };
 
     // Persist last run configuration
@@ -853,24 +919,16 @@ fn run_platform(
         return Ok(());
     }
 
-    // Start hot reload server now that packaging succeeded (or reuse the early server for Android)
-    let server = match early_server {
-        Some(s) => s,
-        None => Server::start(project_dir.to_path_buf(), log_filter.clone())
-            .context("Failed to start hot reload server")?,
-    };
+    // Server was already started above, unwrap it (we know it exists when hot_reload_enabled)
+    let server = server.expect("server should exist when hot reload is enabled");
     let connection_events = server.connection_events();
-    let hot_reload_port = Some(server.address().port());
-
-    // Update run_options with the actual port for the rebuild callback (for non-Android)
-    run_options.hot_reload.port = hot_reload_port;
 
     // Notify the hot reload server if a library already exists from the build
     let library_path = hot_reload_library_path(
         project_dir,
         project.crate_name(),
         release,
-        hot_reload_target_triple.as_deref(),
+        hot_reload_target_triple,
     );
     if library_path.exists() {
         server.notify_native_reload(library_path);
@@ -884,23 +942,22 @@ fn run_platform(
 
     let project_dir_buf = project_dir.to_path_buf();
     let package_name = project.crate_name().to_string();
-    let hot_reload_target_clone = hot_reload_target_triple.clone();
     let build_callback: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
         run_cargo_build(
             &project_dir_buf,
             &package_name,
             release,
-            true, // hot_reload_enabled
+            false, // hot_reload_enabled - dylib doesn't need Hotreload wrapper
             hot_reload_port,
             enable_sccache,
             mold_requested,
-            hot_reload_target_clone.as_deref(),
+            hot_reload_target_triple,
         )?;
         let library_path = hot_reload_library_path(
             &project_dir_buf,
             &package_name,
             release,
-            hot_reload_target_clone.as_deref(),
+            hot_reload_target_triple,
         );
         server.notify_native_reload(library_path);
         Ok(())
@@ -2486,12 +2543,20 @@ fn emit_remote_panic(report: NativePanicReport) {
     ui::newline();
 
     // Message - the most important part, highlighted
-    println!("  {} {}", style("Message:").bold(), style(&report.message).red());
+    println!(
+        "  {} {}",
+        style("Message:").bold(),
+        style(&report.message).red()
+    );
 
     // Location - formatted as clickable path
     if let Some(location) = &report.location {
         let location_str = format!("{}:{}:{}", location.file, location.line, location.column);
-        println!("  {} {}", style("Location:").bold(), style(&location_str).cyan().underlined());
+        println!(
+            "  {} {}",
+            style("Location:").bold(),
+            style(&location_str).cyan().underlined()
+        );
     }
 
     // Thread info
