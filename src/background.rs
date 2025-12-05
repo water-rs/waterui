@@ -12,7 +12,22 @@ pub enum Background {
     Color(Computed<Color>),
     /// An image background.
     Image(Computed<Str>),
+
+    /// A material background.
+    Material(Computed<Material>),
+
+    /// WebGPU shader background.
+    Shader(Shader),
 }
+
+/// A WebGPU shader background.
+///
+/// Not implemented yet.
+#[derive(Debug)]
+pub struct Shader {}
+
+#[derive(Debug)]
+pub enum Material {}
 
 impl MetadataKey for Background {}
 

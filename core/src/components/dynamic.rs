@@ -29,6 +29,9 @@ use nami::{Computed, Signal, watcher::Metadata as WatcherMetadata};
 /// A dynamic view that can be updated.
 ///
 /// Represents a view whose content can be changed dynamically at runtime.
+///
+/// You should avoid using this component if possible,
+/// most of components in `WaterUI` already provide a way to update their content reactively.
 pub struct Dynamic(DynamicHandler);
 
 raw_view!(Dynamic);

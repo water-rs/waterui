@@ -156,6 +156,10 @@ impl Platform for ApplePlatform {
     }
 
     fn package(&self, project: &Project, release: bool) -> Result<PathBuf> {
+        self.package_with_options(project, &BuildOptions::new().with_release(release))
+    }
+
+    fn package_with_options(&self, project: &Project, options: &BuildOptions) -> Result<PathBuf> {
         ensure_macos_host("Apple packaging")?;
 
         let project_dir = project.root();
@@ -163,13 +167,12 @@ impl Platform for ApplePlatform {
         let derived_root = derived_data_dir(project_dir);
         prepare_derived_data_dir(&derived_root)?;
 
-        let configuration = Self::configuration(release);
+        let configuration = Self::configuration(options.is_release());
 
         // Build the Rust library first
         let rust_target = self.target_triple();
         info!("Building Rust library for {rust_target}");
-        let build_options = BuildOptions::new().with_release(release);
-        let build_result = build::build_for_target(project, rust_target, &build_options)?;
+        let build_result = build::build_for_target(project, rust_target, options)?;
 
         // Copy libwaterui_app.a to where Xcode expects it (BUILT_PRODUCTS_DIR)
         let products_dir = self.products_dir(&derived_root, configuration);

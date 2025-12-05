@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install CLI from source (required for `water run` to work)
+# You must reinstall cli to path after modifiying it if you wanna debug it.
 cargo install --path cli
 
 # Build CLI for development (faster iteration, but not in PATH)
@@ -70,6 +71,7 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 ### CLI (`cli/`)
 
 The `water` CLI orchestrates builds across platforms:
+
 - `water create` - Scaffold new project
 - `water run` - Build and deploy to device/simulator with hot reload
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
@@ -78,6 +80,7 @@ The `water` CLI orchestrates builds across platforms:
 ### FFI Contract
 
 Native backends call into Rust via:
+
 1. `waterui_init()` - Initialize runtime, returns Environment pointer
 2. `waterui_env_install_theme()` - Inject native theme colors/fonts
 3. `waterui_main()` - Get root view tree
@@ -88,6 +91,7 @@ Raw views are leaf components (Text, Button, etc.) that map to native widgets. C
 ### Reactive System
 
 Uses `nami` crate for fine-grained reactivity:
+
 - `Binding<T>` - Mutable reactive state
 - `Computed<T>` - Derived reactive values
 - Views automatically update when reactive values change
