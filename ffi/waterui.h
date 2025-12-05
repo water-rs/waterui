@@ -1,3 +1,5 @@
+// Generate by generate_header.rs, do not modify by hand.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -96,6 +98,20 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_Number,
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
+
+/**
+ * Position of the tab bar within the tab container.
+ */
+typedef enum WuiTabPosition {
+  /**
+   * Tab bar is positioned at the top of the container.
+   */
+  WuiTabPosition_Top = 0,
+  /**
+   * Tab bar is positioned at the bottom of the container.
+   */
+  WuiTabPosition_Bottom = 1,
+} WuiTabPosition;
 
 /**
  * FFI representation of photo events.
@@ -397,14 +413,6 @@ typedef struct Computed_StyledStr Computed_StyledStr;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_Url Computed_Url;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
 typedef struct Computed_Vec_PickerItem_Id Computed_Vec_PickerItem_Id;
 
 /**
@@ -490,6 +498,15 @@ typedef struct WuiEnv WuiEnv;
 
 typedef struct WuiFont WuiFont;
 
+/**
+ * Opaque state held by the native backend after initialization.
+ *
+ * This struct owns all wgpu resources and the user's renderer.
+ * It is created by `waterui_gpu_surface_init` and destroyed by
+ * `waterui_gpu_surface_drop`.
+ */
+typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
+
 typedef struct WuiLayout WuiLayout;
 
 /**
@@ -546,8 +563,6 @@ typedef struct WuiWatcher_i32 WuiWatcher_i32;
  *
  * - Normal build: Uses `std::any::TypeId` (guaranteed unique by Rust)
  * - Hot reload: Uses 128-bit FNV-1a hash of `type_name()` (stable across dylib reloads)
- *
- * The choice is controlled by the `waterui_enable_hot_reload` cfg flag.
  */
 typedef struct WuiTypeId {
   uint64_t low;
@@ -1248,20 +1263,24 @@ typedef struct WuiNavigationView {
  * FFI struct for NavigationStack<(),()>
  */
 typedef struct WuiNavigationStack {
+  /**
+   * The root view of the navigation stack.
+   */
   struct WuiAnyView *root;
 } WuiNavigationStack;
 
-/**
- * Position of the tab bar within the tab container.
- */
-typedef enum WuiTabPosition {
-  WuiTabPosition_Top = 0,
-  WuiTabPosition_Bottom = 1,
-} WuiTabPosition;
-
 typedef struct WuiTab {
+  /**
+   * The unique identifier for the tab (raw u64 for FFI compatibility).
+   */
   uint64_t id;
+  /**
+   * Pointer to the tab's label view.
+   */
   struct WuiAnyView *label;
+  /**
+   * Pointer to the tab's content view.
+   */
   struct WuiTabContent *content;
 } WuiTab;
 
@@ -1275,14 +1294,30 @@ typedef struct WuiArrayVTable_WuiTab {
   struct WuiArraySlice_WuiTab (*slice)(const void*);
 } WuiArrayVTable_WuiTab;
 
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
 typedef struct WuiArray_WuiTab {
-  void *data;
+  NonNull data;
   struct WuiArrayVTable_WuiTab vtable;
 } WuiArray_WuiTab;
 
 typedef struct WuiTabs {
+  /**
+   * The currently selected tab identifier.
+   */
   WuiBinding_Id *selection;
+  /**
+   * The collection of tabs to display.
+   */
   struct WuiArray_WuiTab tabs;
+  /**
+   * Position of the tab bar (top or bottom).
+   */
   enum WuiTabPosition position;
 } WuiTabs;
 
@@ -1312,8 +1347,6 @@ typedef struct WuiPhoto {
   struct WuiFn_WuiPhotoEvent on_event;
 } WuiPhoto;
 
-typedef struct Computed_Url WuiComputed_Url;
-
 typedef struct Binding_Volume WuiBinding_Volume;
 
 /**
@@ -1341,9 +1374,10 @@ typedef struct WuiFn_WuiVideoEvent {
  */
 typedef struct WuiVideo {
   /**
-   * The video source URL (reactive).
+   * The video source URL as a string (reactive).
+   * Swift expects WuiStr, so we convert Url -> Str.
    */
-  WuiComputed_Url *source;
+  WuiComputed_Str *source;
   /**
    * The volume of the video.
    */
@@ -1367,9 +1401,10 @@ typedef struct WuiVideo {
  */
 typedef struct WuiVideoPlayer {
   /**
-   * The video source URL (reactive).
+   * The video source URL as a string (reactive).
+   * Swift expects WuiStr, so we convert Url -> Str.
    */
-  WuiComputed_Url *source;
+  WuiComputed_Str *source;
   /**
    * The volume of the video player.
    */
@@ -1457,6 +1492,21 @@ typedef struct WuiProgress {
   enum WuiProgressStyle style;
 } WuiProgress;
 
+/**
+ * FFI representation of a GpuSurface view.
+ *
+ * This struct is passed to the native backend when rendering the view tree.
+ * The native backend should call `waterui_gpu_surface_init` to initialize
+ * the GPU resources, then `waterui_gpu_surface_render` each frame.
+ */
+typedef struct WuiGpuSurface {
+  /**
+   * Opaque pointer to the boxed GpuRenderer trait object.
+   * This is consumed during init and should not be used after.
+   */
+  void *renderer;
+} WuiGpuSurface;
+
 typedef struct WuiId {
   int32_t inner;
 } WuiId;
@@ -1524,10 +1574,6 @@ typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
 
 
-
-void waterui_configure_hot_reload_endpoint(const char *_host, uint16_t _port);
-
-void waterui_configure_hot_reload_directory(const char *_path);
 
 /**
  * # Safety
@@ -2357,6 +2403,24 @@ struct WuiTypeId waterui_navigation_stack_id(void);
 
 /**
  * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_tab_content(struct WuiTabContent *value);
+
+/**
+ * Creates a navigation view from tab content.
+ *
+ * # Safety
+ *
+ * This function is unsafe because:
+ * - `handler` must be a valid, non-null pointer to a `WuiTabContent`
+ * - Both pointers must remain valid for the duration of the function call
+ * - The caller must ensure proper memory management of the returned view
+ */
+struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler);
+
+/**
+ * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
@@ -2367,20 +2431,6 @@ struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_tabs_id(void);
-
-/**
- * Creates a navigation view from tab content.
- *
- * # Safety
- * - `handler` must be a valid, non-null pointer to a `WuiTabContent`
- */
-struct WuiNavigationView waterui_tab_content(struct WuiTabContent *handler);
-
-/**
- * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
- */
-void waterui_drop_tab_content(struct WuiTabContent *value);
 
 /**
  * # Safety
@@ -2609,6 +2659,83 @@ struct WuiProgress waterui_force_as_progress(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_progress_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_gpu_surface_id(void);
+
+/**
+ * Initialize a GpuSurface with a native layer.
+ *
+ * This function creates wgpu resources (Instance, Adapter, Device, Queue, Surface)
+ * from the provided native layer and calls the user's `setup()` method.
+ *
+ * # Arguments
+ *
+ * * `surface` - Pointer to the WuiGpuSurface FFI struct (consumed)
+ * * `layer` - Platform-specific layer pointer:
+ *   - Apple: `CAMetalLayer*`
+ *   - Android: `ANativeWindow*`
+ * * `width` - Initial surface width in pixels
+ * * `height` - Initial surface height in pixels
+ *
+ * # Returns
+ *
+ * Opaque pointer to the initialized state, or null on failure.
+ *
+ * # Safety
+ *
+ * - `surface` must be a valid pointer obtained from `waterui_force_as_gpu_surface`
+ * - `layer` must be a valid platform-specific layer pointer
+ * - The layer must remain valid for the lifetime of the returned state
+ */
+struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surface,
+                                                    void *layer,
+                                                    uint32_t width,
+                                                    uint32_t height);
+
+/**
+ * Render a single frame.
+ *
+ * This function should be called from a display-sync callback (CADisplayLink on Apple,
+ * Choreographer on Android) to render at the display's refresh rate.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+ * * `width` - Current surface width in pixels (from layout)
+ * * `height` - Current surface height in pixels (from layout)
+ *
+ * # Returns
+ *
+ * `true` if rendering succeeded, `false` on error.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`.
+ */
+bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
+
+/**
+ * Clean up GPU resources.
+ *
+ * This function should be called when the GpuSurface view is destroyed.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`,
+ * and must not be used after this call.
+ */
+void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
 
 /**
  * Calls an OnEvent handler with the given environment.
