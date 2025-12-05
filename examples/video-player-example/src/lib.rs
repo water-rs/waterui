@@ -76,7 +76,7 @@ pub fn main() -> impl View {
     // Bottom controls overlay
     let controls_overlay = vstack((
         spacer(),
-        "Wow",
+        "Lexo!",
         // Bottom panel
         vstack((
             // Current video title
