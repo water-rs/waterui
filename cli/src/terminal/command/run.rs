@@ -5,7 +5,7 @@ use color_eyre::eyre::{Context, Result, bail, eyre};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use fs2::FileExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use skyzen::{
@@ -2602,14 +2602,20 @@ const HOT_RELOAD_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()> {
     let deadline = Instant::now() + HOT_RELOAD_CONNECTION_TIMEOUT;
     loop {
+        // Check for interrupt signal first
+        if waterui_cli::util::is_interrupted() {
+            bail!("Interrupted while waiting for hot reload connection");
+        }
+
         let now = Instant::now();
         if now >= deadline {
             bail!(
                 "App failed to establish a hot reload WebSocket connection. Confirm it launched and can reach the CLI."
             );
         }
-        let remaining = deadline.saturating_duration_since(now);
-        match events.recv_timeout(remaining) {
+        // Use a short timeout to allow interrupt checks
+        let poll_timeout = Duration::from_millis(200);
+        match events.recv_timeout(poll_timeout) {
             Ok(NativeConnectionEvent::Connected) => return Ok(()),
             Ok(NativeConnectionEvent::Disconnected(reason)) => {
                 bail!(format_connection_loss_message(reason));
@@ -2623,17 +2629,10 @@ fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()>
 }
 
 fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Result<WaitOutcome> {
-    let (tx, rx) = mpsc::channel();
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let interrupt_flag = interrupted.clone();
-    ctrlc::set_handler(move || {
-        interrupt_flag.store(true, Ordering::Relaxed);
-        let _ = tx.send(());
-    })
-    .context("failed to install Ctrl+C handler")?;
-
+    // Use the global interrupt flag set by the ctrlc handler in main.rs
     loop {
-        if interrupted.load(Ordering::Relaxed) {
+        // Check global interrupt flag
+        if waterui_cli::util::is_interrupted() {
             return Ok(WaitOutcome::Interrupted);
         }
 
@@ -2645,7 +2644,7 @@ fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Resu
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    if interrupted.load(Ordering::Relaxed) {
+                    if waterui_cli::util::is_interrupted() {
                         return Ok(WaitOutcome::Interrupted);
                     }
                     return Ok(WaitOutcome::ConnectionLost(
@@ -2657,11 +2656,8 @@ fn wait_for_interrupt(connection_events: Option<NativeConnectionEvents>) -> Resu
             }
         }
 
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(()) => return Ok(WaitOutcome::Interrupted),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(WaitOutcome::Interrupted),
-        }
+        // Sleep briefly to avoid busy-waiting
+        thread::sleep(Duration::from_millis(100));
     }
 }
 

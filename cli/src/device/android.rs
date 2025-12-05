@@ -161,6 +161,11 @@ impl AndroidDevice {
         let start = Instant::now();
 
         loop {
+            // Check for interrupt signal
+            if util::is_interrupted() {
+                break;
+            }
+
             if let Some(_) = self.query_app_pid(package)? {
                 seen_pid = true;
                 last_seen = Instant::now();
