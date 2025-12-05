@@ -41,6 +41,7 @@ pub mod prelude {
     pub use color::*;
 
     pub use component::*;
+    pub use dynamic::{DynamicHandler, watch};
     pub use form::*;
     pub use layout::*;
     pub use media::*;
@@ -108,8 +109,9 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use task::task;
 
-#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
-pub mod hot_reload;
+#[cfg(debug_assertions)]
+#[macro_use]
+pub mod debug;
 
 mod entry;
 pub use entry::entry;
