@@ -254,3 +254,91 @@ For custom struct types like `Video`, `ResolvedColor`, etc.:
 2. **WatcherJni.kt** - Add `readComputed<Type>`, `watchComputed<Type>`, `dropComputed<Type>`, `create<Type>Watcher`
 3. **WuiComputed.kt** - Add factory function
 4. **waterui_jni.cpp** - Convert C struct fields to Java object in JNI function
+
+## Header Synchronization
+
+**Critical:** The Apple backend has its own copy of `waterui.h`:
+
+```bash
+# After updating ffi/waterui.h, copy to Apple backend:
+cp ffi/waterui.h backends/apple/Sources/CWaterUI/include/waterui.h
+
+# Then clean and rebuild
+cd backends/apple && swift package clean && swift build
+```
+
+## FFI Type Ordering
+
+When using custom FFI types (like `WuiId`) as struct fields:
+
+- The type must be defined BEFORE structs that use it in the C header
+- If header ordering causes "incomplete type" errors, use raw C types (`uint64_t`, `int32_t`) in FFI structs instead
+- Convert in `IntoFFI` impl: `id: i32::from(rust_id) as u64`
+
+## Greedy Layout Components
+
+Components that fill available space (containers, navigation):
+
+```rust
+// Rust: Use raw_view! with StretchAxis::Both
+raw_view!(MyContainer, StretchAxis::Both);
+```
+
+```swift
+// Swift: Set stretchAxis and use proposal size
+private(set) var stretchAxis: WuiStretchAxis = .both
+
+func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
+    let width = proposal.width.map { CGFloat($0) } ?? 320
+    let height = proposal.height.map { CGFloat($0) } ?? 480
+    return CGSize(width: width, height: height)
+}
+```
+
+## Platform-Specific Layout Triggers
+
+```swift
+#if canImport(UIKit)
+setNeedsLayout()
+layoutIfNeeded()
+#elseif canImport(AppKit)
+needsLayout = true
+#endif
+```
+
+## Reactive Color Watchers
+
+For components with reactive `Computed<Color>` properties:
+
+```swift
+private func setupColorWatcher(colorPtr: OpaquePointer?) {
+    guard let colorPtr = colorPtr else { return }
+
+    // Read Color, then resolve to Computed<ResolvedColor>
+    let color = WuiColor(waterui_read_computed_color(colorPtr)!)
+    let resolved = color.resolve(in: env)
+
+    applyColor(resolved.value)
+
+    colorWatcher = resolved.watch { [weak self] color, metadata in
+        withPlatformAnimation(metadata) {
+            self?.applyColor(color)
+        }
+    }
+}
+```
+
+## Array Extraction Pattern
+
+```swift
+private func extractItems(from array: WuiArray_WuiItem) {
+    let slice = array.vtable.slice(array.data)
+    guard let head = slice.head else { return }
+
+    for i in 0..<slice.len {
+        let item = head.advanced(by: Int(i)).pointee
+        let view = WuiAnyView(anyview: item.content, env: env)
+        items.append((id: item.id, view: view, ptr: item.data))
+    }
+}
+```
