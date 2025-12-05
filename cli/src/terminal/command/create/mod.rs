@@ -464,6 +464,14 @@ pub struct CreateReport {
     pub config_path: String,
 }
 
+waterui_cli::impl_report!(CreateReport, |r| {
+    format!(
+        "Project created at {}\nBackends: {}",
+        r.project_dir,
+        r.backends.join(", ")
+    )
+});
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CreateStatus {
