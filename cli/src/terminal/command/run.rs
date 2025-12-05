@@ -32,7 +32,7 @@ use waterui_cli::{
     },
     hot_reload::{
         DisconnectReason, FileWatcher, NativeConnectionEvent, NativeConnectionEvents, Server,
-        WaitOutcome, poll_file_changes,
+        WaitOutcome,
     },
     output,
     platform::{
@@ -163,15 +163,15 @@ pub struct RunArgs {
 /// # Panics
 /// Panics if the current working directory cannot be determined when `--project` is not set.
 #[allow(clippy::needless_pass_by_value)]
-pub fn run(args: RunArgs) -> Result<()> {
+pub async fn run(args: RunArgs) -> Result<()> {
     if matches!(args.platform, Some(RunTarget::Again)) {
-        run_again(args)
+        run_again(args).await
     } else {
-        run_fresh(args)
+        run_fresh(args).await
     }
 }
 
-fn run_fresh(mut args: RunArgs) -> Result<()> {
+async fn run_fresh(mut args: RunArgs) -> Result<()> {
     let project_dir = args
         .project
         .clone()
@@ -270,12 +270,13 @@ fn run_fresh(mut args: RunArgs) -> Result<()> {
         mold_requested,
         log_filter,
         no_hot_reload,
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
 
-fn run_again(args: RunArgs) -> Result<()> {
+async fn run_again(args: RunArgs) -> Result<()> {
     if args.device.is_some() || args.release || args.no_sccache || args.mold || args.no_hot_reload {
         bail!(
             "`water run again` does not accept additional options. Re-run the original command without extra flags."
@@ -299,7 +300,7 @@ fn run_again(args: RunArgs) -> Result<()> {
         no_hot_reload: false, // Replay always uses hot reload
     };
 
-    run_fresh(replay_args)
+    run_fresh(replay_args).await
 }
 
 #[derive(Clone, Copy)]
@@ -690,7 +691,7 @@ fn prepare_and_package<D: Device>(
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-fn run_platform(
+async fn run_platform(
     platform: Platform,
     mut device: Option<String>,
     project: &Project,
@@ -726,7 +727,8 @@ fn run_platform(
             project.crate_name(),
             release,
             log_filter,
-        );
+        )
+        .await;
     }
 
     // Hot reload is enabled unless --no-hot-reload is passed
@@ -933,7 +935,7 @@ fn run_platform(
         watch_paths.push(project_dir.join(path));
     }
 
-    let (mut file_watcher, file_rx) = FileWatcher::new(watch_paths)
+    let mut file_watcher = FileWatcher::new(watch_paths)
         .context("Failed to initialize file watcher")?;
 
     if !output::global_output_format().is_json() {
@@ -952,7 +954,6 @@ fn run_platform(
         server: &server,
         connection_events,
         file_watcher: &mut file_watcher,
-        file_rx: &file_rx,
         project_dir,
         package_name: project.crate_name(),
         release,
@@ -960,7 +961,8 @@ fn run_platform(
         enable_sccache,
         mold_requested,
         target_triple,
-    })?;
+    })
+    .await?;
 
     if let WaitOutcome::ConnectionLost(reason) = outcome {
         bail!("{}", reason);
@@ -990,7 +992,6 @@ struct HotReloadContext<'a> {
     server: &'a Server,
     connection_events: NativeConnectionEvents,
     file_watcher: &'a mut FileWatcher,
-    file_rx: &'a std::sync::mpsc::Receiver<waterui_cli::hot_reload::FileChanged>,
     project_dir: &'a Path,
     package_name: &'a str,
     release: bool,
@@ -1001,57 +1002,65 @@ struct HotReloadContext<'a> {
 }
 
 /// Run the hot reload event loop, handling file changes and connection events.
-fn run_hot_reload_loop(ctx: HotReloadContext<'_>) -> Result<WaitOutcome> {
-    loop {
-        // Check for interrupt signal
-        if waterui_cli::util::is_interrupted() {
-            return Ok(WaitOutcome::Interrupted);
-        }
+///
+/// Uses `tokio::select!` to efficiently wait on multiple async sources:
+/// - File changes from the watcher
+/// - Connection events from the server
+/// - Periodic interrupt checks
+async fn run_hot_reload_loop(ctx: HotReloadContext<'_>) -> Result<WaitOutcome> {
+    let mut interrupt_check = tokio::time::interval(Duration::from_millis(100));
 
-        // Check for file changes (non-blocking)
-        if poll_file_changes(ctx.file_rx, ctx.file_watcher) {
-            // Rebuild and notify server
-            if let Err(err) = run_cargo_build(
-                ctx.project_dir,
-                ctx.package_name,
-                ctx.release,
-                false, // hot_reload_enabled - dylib doesn't need Hotreload wrapper
-                ctx.hot_reload_port,
-                ctx.enable_sccache,
-                ctx.mold_requested,
-                ctx.target_triple,
-            ) {
-                warn!("Rebuild failed: {err}");
-            } else {
-                let library_path = hot_reload_library_path(
+    loop {
+        tokio::select! {
+            // Check for file changes
+            Some(_) = ctx.file_watcher.recv() => {
+                // Rebuild and notify server
+                if let Err(err) = run_cargo_build(
                     ctx.project_dir,
                     ctx.package_name,
                     ctx.release,
+                    false, // hot_reload_enabled - dylib doesn't need Hotreload wrapper
+                    ctx.hot_reload_port,
+                    ctx.enable_sccache,
+                    ctx.mold_requested,
                     ctx.target_triple,
-                );
-                ctx.server.notify_native_reload(library_path);
+                ) {
+                    warn!("Rebuild failed: {err}");
+                } else {
+                    let library_path = hot_reload_library_path(
+                        ctx.project_dir,
+                        ctx.package_name,
+                        ctx.release,
+                        ctx.target_triple,
+                    );
+                    ctx.server.notify_native_reload(library_path);
+                }
             }
-        }
 
-        // Check for connection events (non-blocking)
-        match ctx.connection_events.try_recv() {
-            Ok(NativeConnectionEvent::Connected) => {}
-            Ok(NativeConnectionEvent::Disconnected(reason)) => {
-                return Ok(WaitOutcome::ConnectionLost(reason));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            // Periodic interrupt check (since ctrlc uses a global flag)
+            _ = interrupt_check.tick() => {
                 if waterui_cli::util::is_interrupted() {
                     return Ok(WaitOutcome::Interrupted);
                 }
-                return Ok(WaitOutcome::ConnectionLost(DisconnectReason::Abnormal {
-                    details: "Hot reload server stopped unexpectedly".to_string(),
-                }));
+
+                // Also check connection events (non-blocking)
+                match ctx.connection_events.try_recv() {
+                    Ok(NativeConnectionEvent::Connected) => {}
+                    Ok(NativeConnectionEvent::Disconnected(reason)) => {
+                        return Ok(WaitOutcome::ConnectionLost(reason));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if waterui_cli::util::is_interrupted() {
+                            return Ok(WaitOutcome::Interrupted);
+                        }
+                        return Ok(WaitOutcome::ConnectionLost(DisconnectReason::Abnormal {
+                            details: "Hot reload server stopped unexpectedly".to_string(),
+                        }));
+                    }
+                }
             }
         }
-
-        // Sleep briefly to avoid busy-waiting
-        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1596,7 +1605,7 @@ fn indent_lines(text: &str, indent: &str) -> String {
         .join("\n")
 }
 
-fn run_web(
+async fn run_web(
     project_dir: &Path,
     config: &Config,
     crate_name: &str,
@@ -1645,7 +1654,7 @@ fn run_web(
         watch_paths.push(project_dir.join(path));
     }
 
-    let (mut file_watcher, file_rx) = FileWatcher::new(watch_paths)
+    let mut file_watcher = FileWatcher::new(watch_paths)
         .context("Failed to initialize file watcher")?;
 
     if output::global_output_format().is_json() {
@@ -1660,28 +1669,30 @@ fn run_web(
     }
 
     // Run the web hot reload event loop
+    let mut interrupt_check = tokio::time::interval(Duration::from_millis(100));
     loop {
-        if waterui_cli::util::is_interrupted() {
-            break;
-        }
+        tokio::select! {
+            Some(_) = file_watcher.recv() => {
+                if let Err(err) = build_web_app(
+                    project_dir,
+                    crate_name,
+                    &web_dir,
+                    release,
+                    &wasm_pack,
+                    false,
+                ) {
+                    warn!("Rebuild failed: {err}");
+                } else {
+                    server.notify_web_reload();
+                }
+            }
 
-        // Check for file changes
-        if poll_file_changes(&file_rx, &mut file_watcher) {
-            if let Err(err) = build_web_app(
-                project_dir,
-                crate_name,
-                &web_dir,
-                release,
-                &wasm_pack,
-                false,
-            ) {
-                warn!("Rebuild failed: {err}");
-            } else {
-                server.notify_web_reload();
+            _ = interrupt_check.tick() => {
+                if waterui_cli::util::is_interrupted() {
+                    break;
+                }
             }
         }
-
-        thread::sleep(Duration::from_millis(50));
     }
 
     // Restore original main.js template
@@ -2071,8 +2082,6 @@ fn current_timestamp() -> u64 {
 // Note: Native client message handling (panic/log events) is now done in waterui_cli::hot_reload::server
 // Note: NativeConnectionEvents, NativeConnectionEvent, DisconnectReason, WaitOutcome
 // are now imported from waterui_cli::hot_reload module
-
-use std::thread;
 
 const HOT_RELOAD_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
