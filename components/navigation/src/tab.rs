@@ -11,10 +11,23 @@ use waterui_core::{
     handler::{AnyViewBuilder, ViewBuilder},
     id::Id,
     impl_debug,
+    layout::StretchAxis,
+    raw_view,
 };
 
 use super::NavigationView;
 use waterui_core::id::TaggedView;
+
+/// Position of the tab bar within the tab container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum TabPosition {
+    /// Tab bar is positioned at the top of the container.
+    Top,
+    /// Tab bar is positioned at the bottom of the container (default).
+    #[default]
+    Bottom,
+}
 
 /// Represents a single tab with a label and content.
 ///
@@ -60,4 +73,10 @@ pub struct Tabs {
 
     /// The collection of tabs to display.
     pub tabs: Vec<Tab<Id>>,
+
+    /// Position of the tab bar (top or bottom).
+    pub position: TabPosition,
 }
+
+// Make Tabs a raw view that stretches to fill available space
+raw_view!(Tabs, StretchAxis::Both);
