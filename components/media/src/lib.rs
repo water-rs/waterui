@@ -81,7 +81,7 @@ pub mod video;
 pub use {
     live::LivePhoto,
     photo::Photo,
-    video::{AspectRatio, Video, VideoPlayer},
+    video::{AspectRatio, Video, VideoConfig, VideoPlayer, VideoPlayerConfig},
 };
 
 /// URL types for working with media resources
@@ -133,7 +133,7 @@ impl View for Media {
         match self {
             Self::Image(url) => AnyView::new(Photo::new(url)),
             Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
-            Self::Video(url) => AnyView::new(Video::new(url)),
+            Self::Video(url) => AnyView::new(VideoPlayer::new(url)),
         }
     }
 }

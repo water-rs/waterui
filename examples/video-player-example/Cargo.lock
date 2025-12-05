@@ -3723,7 +3723,7 @@ dependencies = [
 name = "waterui-url"
 version = "0.1.0"
 dependencies = [
- "nami",
+ "nami-core",
  "waterui-str",
 ]
 

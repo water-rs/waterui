@@ -358,10 +358,7 @@ impl AppleCrashCollector {
                     .and_then(|value| value.get("eventMessage").and_then(Value::as_str))
                     .unwrap_or(&line);
 
-                if show_lines
-                    && is_relevant_apple_log_line(message)
-                    && !is_forwarded_tracing_line(message)
-                {
+                if show_lines && !is_forwarded_tracing_line(message) {
                     println!("{message}");
                 }
 

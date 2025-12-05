@@ -112,7 +112,7 @@ typedef enum WuiAspectRatio {
 } WuiAspectRatio;
 
 /**
- * FFI representation of video player events.
+ * FFI representation of video events.
  */
 typedef enum WuiVideoEventType {
   WuiVideoEventType_ReadyToPlay = 0,
@@ -390,6 +390,14 @@ typedef struct Computed_Str Computed_Str;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_StyledStr Computed_StyledStr;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Url Computed_Url;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1236,8 +1244,6 @@ typedef struct WuiNavigationView {
   struct WuiAnyView *content;
 } WuiNavigationView;
 
-typedef struct WuiStr Url;
-
 /**
  * FFI representation of a photo event.
  */
@@ -1259,17 +1265,17 @@ typedef struct WuiFn_WuiPhotoEvent {
 } WuiFn_WuiPhotoEvent;
 
 typedef struct WuiPhoto {
-  Url source;
+  struct WuiStr source;
   struct WuiAnyView *placeholder;
   struct WuiFn_WuiPhotoEvent on_event;
 } WuiPhoto;
 
-typedef struct Computed_Video WuiComputed_Video;
+typedef struct Computed_Url WuiComputed_Url;
 
 typedef struct Binding_Volume WuiBinding_Volume;
 
 /**
- * FFI representation of a video player event.
+ * FFI representation of a video event.
  */
 typedef struct WuiVideoEvent {
   enum WuiVideoEventType event_type;
@@ -1288,11 +1294,55 @@ typedef struct WuiFn_WuiVideoEvent {
   void (*drop)(void*);
 } WuiFn_WuiVideoEvent;
 
-typedef struct WuiVideoPlayer {
-  WuiComputed_Video *video;
+/**
+ * FFI representation of the raw Video component (no native controls).
+ */
+typedef struct WuiVideo {
+  /**
+   * The video source URL (reactive).
+   */
+  WuiComputed_Url *source;
+  /**
+   * The volume of the video.
+   */
   WuiBinding_Volume *volume;
+  /**
+   * The aspect ratio mode for video playback.
+   */
   enum WuiAspectRatio aspect_ratio;
+  /**
+   * Whether the video should loop when it ends.
+   */
+  bool loops;
+  /**
+   * The event handler for video events.
+   */
+  struct WuiFn_WuiVideoEvent on_event;
+} WuiVideo;
+
+/**
+ * FFI representation of the VideoPlayer component (with native controls).
+ */
+typedef struct WuiVideoPlayer {
+  /**
+   * The video source URL (reactive).
+   */
+  WuiComputed_Url *source;
+  /**
+   * The volume of the video player.
+   */
+  WuiBinding_Volume *volume;
+  /**
+   * The aspect ratio mode for video playback.
+   */
+  enum WuiAspectRatio aspect_ratio;
+  /**
+   * Whether to show native playback controls.
+   */
   bool show_controls;
+  /**
+   * The event handler for the video player.
+   */
   struct WuiFn_WuiVideoEvent on_event;
 } WuiVideoPlayer;
 
@@ -1301,6 +1351,19 @@ typedef struct Computed_LivePhotoSource WuiComputed_LivePhotoSource;
 typedef struct WuiLivePhoto {
   WuiComputed_LivePhotoSource *source;
 } WuiLivePhoto;
+
+/**
+ * FFI representation of a Video source for Computed signals.
+ * This is used by Android to observe video source changes reactively.
+ */
+typedef struct WuiComputedVideo {
+  /**
+   * The URL of the video source.
+   */
+  struct WuiStr url;
+} WuiComputedVideo;
+
+typedef struct Computed_Video WuiComputed_Video;
 
 typedef struct WuiListItem {
   struct WuiAnyView *content;
@@ -1393,13 +1456,9 @@ typedef struct WuiArray_WuiPickerItem {
   struct WuiArrayVTable_WuiPickerItem vtable;
 } WuiArray_WuiPickerItem;
 
-typedef struct WuiVideo {
-  Url url;
-} WuiVideo;
-
 typedef struct WuiLivePhotoSource {
-  Url image;
-  Url video;
+  struct WuiStr image;
+  struct WuiStr video;
 } WuiLivePhotoSource;
 
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
@@ -2265,6 +2324,19 @@ struct WuiTypeId waterui_photo_id(void);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
+struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_video_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
 struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
 
 /**
@@ -2285,6 +2357,46 @@ struct WuiLivePhoto waterui_force_as_live_photo(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_live_photo_id(void);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiComputedVideo waterui_read_computed_video(const WuiComputed_Video *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_video(const WuiComputed_Video *computed,
+                                                     struct WuiWatcher_Video *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_video(WuiComputed_Video *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Video *waterui_clone_computed_video(const WuiComputed_Video *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
+                                                   void (*call)(void*,
+                                                                struct WuiComputedVideo,
+                                                                struct WuiWatcherMetadata*),
+                                                   void (*drop)(void*));
 
 /**
  * # Safety
@@ -2990,46 +3102,6 @@ struct WuiWatcher_Vec_PickerItem_Id *waterui_new_watcher_picker_items(void *data
                                                                                    struct WuiArray_WuiPickerItem,
                                                                                    struct WuiWatcherMetadata*),
                                                                       void (*drop)(void*));
-
-/**
- * Reads the current value from a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- */
-struct WuiVideo waterui_read_computed_video(const WuiComputed_Video *computed);
-
-/**
- * Watches for changes in a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- */
-struct WuiWatcherGuard *waterui_watch_computed_video(const WuiComputed_Video *computed,
-                                                     struct WuiWatcher_Video *watcher);
-
-/**
- * Drops a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-void waterui_drop_computed_video(WuiComputed_Video *computed);
-
-/**
- * Clones a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-WuiComputed_Video *waterui_clone_computed_video(const WuiComputed_Video *computed);
-
-/**
- * Creates a watcher from native callbacks.
- * # Safety
- * All function pointers must be valid.
- */
-struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
-                                                   void (*call)(void*,
-                                                                struct WuiVideo,
-                                                                struct WuiWatcherMetadata*),
-                                                   void (*drop)(void*));
 
 /**
  * Reads the current value from a computed

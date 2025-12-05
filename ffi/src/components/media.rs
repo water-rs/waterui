@@ -4,14 +4,13 @@ use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, IntoRust, WuiAnyView};
 use waterui_media::{
-    AspectRatio, Video,
+    AspectRatio, Url,
     live::{LivePhotoConfig, LivePhotoSource},
     photo::{Event as PhotoEvent, PhotoConfig},
-    video::{Event as VideoEvent, VideoPlayerConfig},
+    video::{Event as VideoEvent, VideoConfig, VideoPlayerConfig},
 };
 
 // Type alias for URL
-type Url = WuiStr;
 type Volume = f32;
 
 #[repr(C)]
@@ -66,7 +65,7 @@ impl IntoFFI for PhotoEvent {
 
 #[repr(C)]
 pub struct WuiPhoto {
-    pub source: Url,
+    pub source: WuiStr,
     pub placeholder: *mut WuiAnyView,
     pub on_event: WuiFn<WuiPhotoEvent>,
 }
@@ -98,22 +97,7 @@ impl IntoFFI for PhotoConfig {
     }
 }
 
-// It is not a native view, the actual view is VideoPlayer
-#[repr(C)]
-pub struct WuiVideo {
-    url: Url,
-}
-
-impl IntoFFI for Video {
-    type FFI = WuiVideo;
-    fn into_ffi(self) -> Self::FFI {
-        WuiVideo {
-            url: self.url().inner().into_ffi(),
-        }
-    }
-}
-
-/// FFI representation of video player events.
+/// FFI representation of video events.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum WuiVideoEventType {
@@ -124,7 +108,7 @@ pub enum WuiVideoEventType {
     BufferingEnded = 4,
 }
 
-/// FFI representation of a video player event.
+/// FFI representation of a video event.
 #[repr(C)]
 pub struct WuiVideoEvent {
     pub event_type: WuiVideoEventType,
@@ -159,22 +143,30 @@ impl IntoFFI for VideoEvent {
     }
 }
 
+// =============================================================================
+// Video - Raw video view without controls
+// =============================================================================
+
+/// FFI representation of the raw Video component (no native controls).
 #[repr(C)]
-pub struct WuiVideoPlayer {
-    pub video: *mut WuiComputed<Video>,
+pub struct WuiVideo {
+    /// The video source URL (reactive).
+    pub source: *mut WuiComputed<Url>,
+    /// The volume of the video.
     pub volume: *mut WuiBinding<Volume>,
+    /// The aspect ratio mode for video playback.
     pub aspect_ratio: WuiAspectRatio,
-    pub show_controls: bool,
+    /// Whether the video should loop when it ends.
+    pub loops: bool,
+    /// The event handler for video events.
     pub on_event: WuiFn<WuiVideoEvent>,
 }
 
-impl IntoFFI for VideoPlayerConfig {
-    type FFI = WuiVideoPlayer;
+impl IntoFFI for VideoConfig {
+    type FFI = WuiVideo;
     fn into_ffi(self) -> Self::FFI {
         // Convert the Rust closure to a WuiFn
-        // Swift will call this with WuiVideoEvent, we convert to Rust Event and call the closure
         let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
-            // Convert FFI event to Rust event
             let rust_event = match ffi_event.event_type {
                 WuiVideoEventType::ReadyToPlay => VideoEvent::ReadyToPlay,
                 WuiVideoEventType::Ended => VideoEvent::Ended,
@@ -188,12 +180,61 @@ impl IntoFFI for VideoPlayerConfig {
                 }
             };
 
-            // Call the user's closure
+            (self.on_event)(rust_event);
+        });
+
+        WuiVideo {
+            source: self.source.into_ffi(),
+            volume: self.volume.into_ffi(),
+            aspect_ratio: self.aspect_ratio.into_ffi(),
+            loops: self.loops,
+            on_event: on_event_fn,
+        }
+    }
+}
+
+// =============================================================================
+// VideoPlayer - Full-featured player with native controls
+// =============================================================================
+
+/// FFI representation of the VideoPlayer component (with native controls).
+#[repr(C)]
+pub struct WuiVideoPlayer {
+    /// The video source URL (reactive).
+    pub source: *mut WuiComputed<Url>,
+    /// The volume of the video player.
+    pub volume: *mut WuiBinding<Volume>,
+    /// The aspect ratio mode for video playback.
+    pub aspect_ratio: WuiAspectRatio,
+    /// Whether to show native playback controls.
+    pub show_controls: bool,
+    /// The event handler for the video player.
+    pub on_event: WuiFn<WuiVideoEvent>,
+}
+
+impl IntoFFI for VideoPlayerConfig {
+    type FFI = WuiVideoPlayer;
+    fn into_ffi(self) -> Self::FFI {
+        // Convert the Rust closure to a WuiFn
+        let on_event_fn = WuiFn::from(move |ffi_event: WuiVideoEvent| {
+            let rust_event = match ffi_event.event_type {
+                WuiVideoEventType::ReadyToPlay => VideoEvent::ReadyToPlay,
+                WuiVideoEventType::Ended => VideoEvent::Ended,
+                WuiVideoEventType::Buffering => VideoEvent::Buffering,
+                WuiVideoEventType::BufferingEnded => VideoEvent::BufferingEnded,
+                WuiVideoEventType::Error => {
+                    let message_str = unsafe { ffi_event.error_message.into_rust() };
+                    VideoEvent::Error {
+                        message: String::from(message_str),
+                    }
+                }
+            };
+
             (self.on_event)(rust_event);
         });
 
         WuiVideoPlayer {
-            video: self.video.into_ffi(),
+            source: self.source.into_ffi(),
             volume: self.volume.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             show_controls: self.show_controls,
@@ -201,6 +242,10 @@ impl IntoFFI for VideoPlayerConfig {
         }
     }
 }
+
+// =============================================================================
+// LivePhoto
+// =============================================================================
 
 into_ffi! { LivePhotoConfig,
     pub struct WuiLivePhoto {
@@ -211,8 +256,8 @@ into_ffi! { LivePhotoConfig,
 into_ffi! {
     LivePhotoSource,
     pub struct WuiLivePhotoSource {
-         image: Url,
-         video: Url,
+         image: WuiStr,
+         video: WuiStr,
     }
 }
 
@@ -223,12 +268,82 @@ impl IntoFFI for waterui_media::Url {
     }
 }
 
-// FFI view bindings for media components
+// =============================================================================
+// FFI view bindings
+// =============================================================================
+
 ffi_view!(PhotoConfig, WuiPhoto, photo);
 
+// Video - raw video view without controls
+ffi_view!(VideoConfig, WuiVideo, video);
+
+// VideoPlayer - full-featured player with native controls
 ffi_view!(VideoPlayerConfig, WuiVideoPlayer, video_player);
 
 ffi_view!(LivePhotoConfig, WuiLivePhoto, live_photo);
 
 // Note: Media enum has complex tuple variants that need special FFI handling
 // - leaving for future implementation with manual IntoFFI implementation
+
+// =============================================================================
+// Video - Computed signal wrapper type for reactive video sources
+// =============================================================================
+
+/// A wrapper type representing a video source for reactive Computed signals.
+/// This is a newtype wrapper around `Url` that allows separate FFI handling
+/// for video sources in computed signals (used by Android's reactive video player).
+#[derive(Debug, Clone)]
+pub struct Video(pub Url);
+
+impl Video {
+    /// Creates a new Video from a URL.
+    pub fn new(url: Url) -> Self {
+        Self(url)
+    }
+
+    /// Returns the inner URL.
+    pub fn url(&self) -> &Url {
+        &self.0
+    }
+
+    /// Consumes self and returns the inner URL.
+    pub fn into_url(self) -> Url {
+        self.0
+    }
+}
+
+impl From<Url> for Video {
+    fn from(url: Url) -> Self {
+        Self(url)
+    }
+}
+
+/// FFI representation of a Video source for Computed signals.
+/// This is used by Android to observe video source changes reactively.
+#[repr(C)]
+pub struct WuiComputedVideo {
+    /// The URL of the video source.
+    pub url: WuiStr,
+}
+
+impl IntoFFI for Video {
+    type FFI = WuiComputedVideo;
+    fn into_ffi(self) -> Self::FFI {
+        WuiComputedVideo {
+            url: self.0.inner().into_ffi(),
+        }
+    }
+}
+
+impl IntoRust for WuiComputedVideo {
+    type Rust = Video;
+    unsafe fn into_rust(self) -> Self::Rust {
+        unsafe {
+            let url_str: waterui::Str = self.url.into_rust();
+            Video::new(Url::new(url_str))
+        }
+    }
+}
+
+// Generate computed FFI functions for Video type
+crate::ffi_computed!(Video, WuiComputedVideo, video);

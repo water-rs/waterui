@@ -11,7 +11,7 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use core::fmt;
-use nami::Signal;
+use nami_core::Signal;
 use waterui_str::Str;
 
 #[cfg(feature = "std")]
@@ -469,6 +469,10 @@ impl From<Url> for Str {
     }
 }
 
+// Implement Signal for Url as a constant value
+// This allows Url to be used directly with `IntoComputed<Url>`
+nami_core::impl_constant!(Url);
+
 /// A reactive signal for fetched URL content.
 #[derive(Debug, Clone)]
 pub struct Fetched {
@@ -477,7 +481,7 @@ pub struct Fetched {
 
 impl Signal for Fetched {
     type Output = Option<Url>;
-    type Guard = nami::watcher::BoxWatcherGuard;
+    type Guard = nami_core::watcher::BoxWatcherGuard;
 
     fn get(&self) -> Self::Output {
         // TODO: Implement actual fetching logic
@@ -486,7 +490,7 @@ impl Signal for Fetched {
 
     fn watch(
         &self,
-        _watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
+        _watcher: impl Fn(nami_core::watcher::Context<Self::Output>) + 'static,
     ) -> Self::Guard {
         // TODO: Implement actual watching logic
         Box::new(())
