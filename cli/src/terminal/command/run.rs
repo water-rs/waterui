@@ -729,12 +729,25 @@ fn run_platform(
         None
     };
 
-    // Build run options - hot reload port will be set after server starts (if hot reload enabled)
+    // For Android, we need to start the hot reload server BEFORE launching the app,
+    // because the ADB reverse tunnel and app launch require the port. For Apple platforms,
+    // the app connects to the server after launch, so we can start it later.
+    let early_server = if hot_reload_enabled && platform == Platform::Android {
+        let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
+            .context("Failed to start hot reload server")?;
+        Some(server)
+    } else {
+        None
+    };
+
+    let hot_reload_port = early_server.as_ref().map(|s| s.address().port());
+
+    // Build run options
     let mut run_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
             enabled: hot_reload_enabled,
-            port: None,
+            port: hot_reload_port,
         },
         log_filter: log_filter.clone(),
     };
@@ -840,13 +853,16 @@ fn run_platform(
         return Ok(());
     }
 
-    // Start hot reload server now that packaging succeeded
-    let server = Server::start(project_dir.to_path_buf(), log_filter.clone())
-        .context("Failed to start hot reload server")?;
+    // Start hot reload server now that packaging succeeded (or reuse the early server for Android)
+    let server = match early_server {
+        Some(s) => s,
+        None => Server::start(project_dir.to_path_buf(), log_filter.clone())
+            .context("Failed to start hot reload server")?,
+    };
     let connection_events = server.connection_events();
     let hot_reload_port = Some(server.address().port());
 
-    // Update run_options with the actual port for the rebuild callback
+    // Update run_options with the actual port for the rebuild callback (for non-Android)
     run_options.hot_reload.port = hot_reload_port;
 
     // Notify the hot reload server if a library already exists from the build
@@ -934,12 +950,14 @@ fn run_platform(
 /// Acquires an exclusive file lock on the hot reload lock file.
 /// Returns a guard that releases the lock when dropped.
 fn acquire_hot_reload_lock(lock_path: &Path) -> Result<HotReloadLockGuard> {
+    use std::io::{Read, Seek, Write};
+
     // Ensure the parent directory exists
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let file = fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -950,10 +968,34 @@ fn acquire_hot_reload_lock(lock_path: &Path) -> Result<HotReloadLockGuard> {
     // Try to acquire an exclusive lock without blocking
     match file.try_lock_exclusive() {
         Ok(()) => {
+            // Write our PID to the lock file
+            file.set_len(0)?;
+            file.seek(std::io::SeekFrom::Start(0))?;
+            write!(file, "{}", std::process::id())?;
+            file.flush()?;
             debug!("Acquired hot reload lock: {}", lock_path.display());
-            Ok(HotReloadLockGuard { file })
+            Ok(HotReloadLockGuard {
+                file,
+                lock_path: lock_path.to_path_buf(),
+            })
         }
         Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            // Check if the process holding the lock is still alive
+            let mut contents = String::new();
+            if file.read_to_string(&mut contents).is_ok() {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    if !is_process_running(pid) {
+                        // The process is dead, the lock is stale
+                        // Try to remove the lock file and retry
+                        drop(file);
+                        if fs::remove_file(lock_path).is_ok() {
+                            info!("Removed stale hot reload lock (PID {pid} no longer running)");
+                            // Retry acquiring the lock
+                            return acquire_hot_reload_lock(lock_path);
+                        }
+                    }
+                }
+            }
             bail!(
                 "Another `water run` process is already running with hot reload enabled.\n\
                  Only one hot reload session is allowed at a time to prevent conflicts.\n\
@@ -966,16 +1008,44 @@ fn acquire_hot_reload_lock(lock_path: &Path) -> Result<HotReloadLockGuard> {
     }
 }
 
+/// Check if a process with the given PID is running.
+fn is_process_running(pid: u32) -> bool {
+    // Use `kill -0` to check if a process exists (works on macOS/Linux)
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, assume the process is running to be safe
+        true
+    }
+}
+
 /// Guard that holds an exclusive file lock and releases it when dropped.
+/// The lock file uses flock (file system lock) which is automatically released
+/// when the file descriptor is closed (process exit, including crashes).
 struct HotReloadLockGuard {
     file: File,
+    #[allow(dead_code)]
+    lock_path: std::path::PathBuf,
 }
 
 impl Drop for HotReloadLockGuard {
     fn drop(&mut self) {
+        // Explicitly unlock the file. The lock is also released when the file
+        // descriptor is closed, but this makes it more explicit.
         if let Err(err) = self.file.unlock() {
             warn!("Failed to release hot reload lock: {err}");
         }
+        // Note: We intentionally do NOT remove the lock file. The file itself
+        // is just a vessel for the flock. Removing it could cause race conditions
+        // if another process is trying to acquire the lock at the same time.
     }
 }
 
