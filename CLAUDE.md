@@ -21,7 +21,7 @@ cargo test
 # Check with hot reload lib feature (for development)
 RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo check
 
-# Generate FFI C header (after modifying ffi/ APIs)
+# Generate FFI C header (after modifying ffi/ APIs), never write C header by hand
 cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
 
 # Build Apple backend
