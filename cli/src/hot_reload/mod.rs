@@ -39,7 +39,7 @@ mod server;
 mod watcher;
 
 pub use server::{NativeConnectionEvent, NativeConnectionEvents, Server};
-pub use watcher::{FileChanged, FileWatcher, poll_file_changes};
+pub use watcher::{FileChanged, FileWatcher};
 
 use std::{fmt, path::PathBuf};
 use thiserror::Error;
