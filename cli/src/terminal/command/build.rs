@@ -47,6 +47,10 @@ pub struct BuildReport {
     pub artifact_kind: String,
 }
 
+waterui_cli::impl_report!(BuildReport, |r| {
+    format!("Built {} for {} at {}", r.artifact_kind, r.target, r.artifact_path)
+});
+
 pub fn run(args: BuildArgs) -> Result<BuildReport> {
     // Validate target format
     if !build::is_valid_target(&args.target) {
