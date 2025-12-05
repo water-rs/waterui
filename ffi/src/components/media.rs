@@ -3,6 +3,8 @@ use crate::WuiStr;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, IntoRust, WuiAnyView};
+use nami::signal::IntoComputed;
+use nami::SignalExt;
 use waterui_media::{
     AspectRatio, Url,
     live::{LivePhotoConfig, LivePhotoSource},
@@ -150,8 +152,9 @@ impl IntoFFI for VideoEvent {
 /// FFI representation of the raw Video component (no native controls).
 #[repr(C)]
 pub struct WuiVideo {
-    /// The video source URL (reactive).
-    pub source: *mut WuiComputed<Url>,
+    /// The video source URL as a string (reactive).
+    /// Swift expects WuiStr, so we convert Url -> Str.
+    pub source: *mut WuiComputed<waterui::Str>,
     /// The volume of the video.
     pub volume: *mut WuiBinding<Volume>,
     /// The aspect ratio mode for video playback.
@@ -183,8 +186,11 @@ impl IntoFFI for VideoConfig {
             (self.on_event)(rust_event);
         });
 
+        // Convert Computed<Url> to Computed<Str> for FFI boundary
+        let source_str = self.source.map(|url: Url| url.inner()).into_computed();
+
         WuiVideo {
-            source: self.source.into_ffi(),
+            source: source_str.into_ffi(),
             volume: self.volume.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             loops: self.loops,
@@ -200,8 +206,9 @@ impl IntoFFI for VideoConfig {
 /// FFI representation of the VideoPlayer component (with native controls).
 #[repr(C)]
 pub struct WuiVideoPlayer {
-    /// The video source URL (reactive).
-    pub source: *mut WuiComputed<Url>,
+    /// The video source URL as a string (reactive).
+    /// Swift expects WuiStr, so we convert Url -> Str.
+    pub source: *mut WuiComputed<waterui::Str>,
     /// The volume of the video player.
     pub volume: *mut WuiBinding<Volume>,
     /// The aspect ratio mode for video playback.
@@ -233,8 +240,11 @@ impl IntoFFI for VideoPlayerConfig {
             (self.on_event)(rust_event);
         });
 
+        // Convert Computed<Url> to Computed<Str> for FFI boundary
+        let source_str = self.source.map(|url: Url| url.inner()).into_computed();
+
         WuiVideoPlayer {
-            source: self.source.into_ffi(),
+            source: source_str.into_ffi(),
             volume: self.volume.into_ffi(),
             aspect_ratio: self.aspect_ratio.into_ffi(),
             show_controls: self.show_controls,

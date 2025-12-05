@@ -1,7 +1,6 @@
 //! Event handling components and utilities.
 
 use crate::{
-    Metadata, View,
     handler::{BoxHandlerOnce, HandlerFnOnce, HandlerOnce, into_handler_once},
     metadata::MetadataKey,
 };
@@ -55,39 +54,5 @@ impl OnEvent {
     /// Handles the event by invoking the stored handler.
     pub fn handle(self, env: &crate::Environment) {
         (self.handler).handle(env);
-    }
-}
-
-/// A value associated with an view, having a same lifecycle as the view.
-#[derive(Debug)]
-pub struct Associated<T, V> {
-    content: V,
-    value: T,
-}
-
-impl<T, V> Associated<T, V> {
-    /// Creates a new `Associated` view that ties the lifecycle of the given value
-    /// to the provided content view.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The value to associate with the view
-    /// * `content` - The content view that will have the same lifecycle as the value
-    #[must_use]
-    pub const fn new(value: T, content: V) -> Self {
-        Self { content, value }
-    }
-}
-
-impl<T, V> View for Associated<T, V>
-where
-    T: 'static,
-    V: View,
-{
-    fn body(self, _env: &crate::Environment) -> impl View {
-        Metadata::new(
-            self.content,
-            OnEvent::new(Event::Disappear, move || drop(self.value)),
-        )
     }
 }
