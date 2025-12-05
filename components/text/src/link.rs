@@ -26,7 +26,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: Determined by label content (same as Text)
     //
     // ═══════════════════════════════════════════════════════════════════════════
