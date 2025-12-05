@@ -41,5 +41,5 @@ pub extern "C" fn waterui_empty_id() -> WuiTypeId {
 
 pub mod progress;
 
-// TODO: Re-enable when waterui_graphics types are implemented
-// pub mod graphics;
+/// GPU surface FFI bindings for high-performance wgpu rendering
+pub mod gpu_surface;
