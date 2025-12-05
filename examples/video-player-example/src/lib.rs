@@ -41,7 +41,7 @@ pub fn main() -> impl View {
     // Create reactive video URL
     let video_url = selected_index.clone().map(move |idx| {
         let (_, url_str) = sample_videos[idx];
-        url::Url::parse(url_str).expect("Invalid video URL")
+        Url::parse(url_str).expect("Invalid video URL")
     });
 
     // Video player - immersive full screen with Fill aspect ratio

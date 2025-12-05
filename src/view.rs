@@ -21,7 +21,7 @@ use waterui_core::{
 };
 
 use waterui_layout::{
-    EdgeSet, IgnoreSafeArea,
+    EdgeSet, IgnoreSafeArea, Overlay,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -110,7 +110,27 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, ForegroundColor::new(color))
     }
 
+    /// Adds an overlay to this view.
+    ///
+    /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.
+    ///
+    /// # Arguments
+    /// * `overlay` - The overlay view to add
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text("Hello").overlay(Color::red().opacity(0.5));
+    /// ```
+    fn overlay<V>(self, overlay: V) -> Overlay<Self, V> {
+        Overlay::new(self, overlay)
+    }
+
     /// Adds an event handler for the specified event.
+    ///
+    /// You may would like use `ViewExt::on_appear` or `ViewExt::on_disappear` for convenience.
     ///
     /// # Arguments
     /// * `event` - The event to listen for
@@ -124,6 +144,10 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds a handler that triggers when the view disappears.
+    ///
+    /// Warning: This handler will be called when the view is removed from the view hierarchy,
+    /// not when the view is hidden. Also, removed from the view hierarchy does not mean the view is destroyed,
+    /// if you want to release resources when the view is destroyed, consider to use [`ViewExt::retain`] to keep the view alive.
     ////
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
@@ -135,6 +159,25 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds a handler that triggers when the view appears.
+    ///
+    /// In `WaterUI`, a struct that implements `View` trait is a descriptor of a view,
+    /// `View` has a `body` method which would be called when the view is rendered.
+    /// However, even if `body` is called, the view is not guaranteed to be visible yet.
+    /// For instance, a lazy view may resolve bunch of views by calling `body` method,
+    /// but delay the actual rendering of the view until it is needed.
+    ///
+    /// So, if you want to execute some code when the view is visible, you should use this method
+    /// to add a handler that triggers when the view appears.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::reactive::binding;
+    ///
+    /// let count = binding(0);
+    /// text("Hello").on_appear(|| println!("Hello, World!"));
+    /// ```
     //// # Arguments
     /// * `handler` - The action to execute when the view appears
     fn on_appear<H: 'static>(
