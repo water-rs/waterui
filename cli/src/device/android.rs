@@ -236,7 +236,14 @@ impl Device for AndroidDevice {
 
         let sanitized = sanitize_package_name(project.bundle_identifier());
         self.clear_logcat_buffer()?;
-        let crash_collector = self.start_crash_collector(project, &sanitized)?;
+
+        // When hot reload is enabled, skip crash collector since we want to return
+        // immediately after launching the app. The run command handles waiting.
+        let crash_collector = if options.hot_reload.enabled {
+            None
+        } else {
+            Some(self.start_crash_collector(project, &sanitized)?)
+        };
 
         let mut install_cmd = adb_command(&self.adb_path, self.selection_identifier());
         install_cmd.args(["install", "-r", artifact_str]);
@@ -273,6 +280,17 @@ impl Device for AndroidDevice {
             bail!("Failed to launch Android activity");
         }
 
+        // When hot reload is enabled, return immediately after launching the app.
+        // The run command will handle waiting via wait_for_interrupt, which allows
+        // the file watcher to trigger rebuilds while the app is running.
+        // We use mem::forget on the reverse guard so the ADB tunnel stays active.
+        if options.hot_reload.enabled {
+            if let Some(guard) = reverse_guard {
+                std::mem::forget(guard);
+            }
+            return Ok(None);
+        }
+
         if !output::global_output_format().is_json() {
             println!(
                 "{} {}",
@@ -282,13 +300,17 @@ impl Device for AndroidDevice {
                 )
             );
         }
+
         self.wait_for_app_exit(&sanitized)?;
-        let crash_report = crash_collector.finish(
-            PlatformKind::Android,
-            Some(self.selection.name.clone()),
-            self.selection.identifier.clone(),
-            sanitized,
-        )?;
+        let crash_report = match crash_collector {
+            Some(collector) => collector.finish(
+                PlatformKind::Android,
+                Some(self.selection.name.clone()),
+                self.selection.identifier.clone(),
+                sanitized,
+            )?,
+            None => None,
+        };
 
         drop(reverse_guard);
 
