@@ -1,52 +1,44 @@
 //! File system watcher for triggering hot reload rebuilds.
 //!
-//! This module provides event-based file watching instead of callback-based.
-//! The watcher emits events through a channel, and the caller is responsible
-//! for handling them in their event loop.
+//! This module provides an async file watching interface. The watcher uses
+//! `notify` internally with a sync callback, but exposes an async receiver
+//! for use with `tokio::select!`.
 
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    sync::mpsc::{self, Receiver, TryRecvError},
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::mpsc;
 use tracing::debug;
 
 /// Event emitted when source files change.
 #[derive(Debug, Clone)]
 pub struct FileChanged;
 
-/// Watches source files and emits events when changes are detected.
-///
-/// The watcher debounces rapid changes internally to avoid emitting
-/// multiple events for a single save operation.
+/// Async file watcher that emits debounced change events.
 ///
 /// # Example
 ///
 /// ```ignore
-/// let (watcher, rx) = FileWatcher::new(vec![src_dir])?;
+/// let mut watcher = FileWatcher::new(vec![src_dir])?;
 ///
 /// loop {
-///     match rx.try_recv() {
-///         Ok(FileChanged) => rebuild(),
-///         Err(TryRecvError::Empty) => {},
-///         Err(TryRecvError::Disconnected) => break,
+///     tokio::select! {
+///         Some(FileChanged) = watcher.recv() => {
+///             rebuild().await;
+///         }
+///         // ... other branches
 ///     }
 /// }
 /// ```
 pub struct FileWatcher {
-    // Note: RecommendedWatcher doesn't implement Debug, so manual impl is not practical
     _watcher: RecommendedWatcher,
-    last_event: Instant,
+    rx: mpsc::Receiver<FileChanged>,
     debounce: Duration,
 }
 
 impl std::fmt::Debug for FileWatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileWatcher")
-            .field("last_event", &self.last_event)
             .field("debounce", &self.debounce)
             .finish_non_exhaustive()
     }
@@ -55,16 +47,14 @@ impl std::fmt::Debug for FileWatcher {
 impl FileWatcher {
     /// Create a new file watcher.
     ///
-    /// Returns the watcher and a receiver for change events. The watcher
-    /// must be kept alive for events to be emitted.
-    ///
     /// # Arguments
     /// * `watch_paths` - Directories to watch for changes
     ///
     /// # Errors
     /// Returns an error if the file watcher cannot be initialized.
-    pub fn new(watch_paths: Vec<PathBuf>) -> notify::Result<(Self, Receiver<FileChanged>)> {
-        let (tx, rx) = mpsc::channel();
+    pub fn new(watch_paths: Vec<PathBuf>) -> notify::Result<Self> {
+        // Use a bounded channel to avoid unbounded memory growth
+        let (tx, rx) = mpsc::channel(16);
 
         let mut watcher: RecommendedWatcher =
             notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
@@ -73,7 +63,8 @@ impl FileWatcher {
                         event.kind,
                         EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
                     ) {
-                        let _ = tx.send(FileChanged);
+                        // try_send avoids blocking the notify callback
+                        let _ = tx.try_send(FileChanged);
                     }
                 }
             })?;
@@ -90,42 +81,30 @@ impl FileWatcher {
             }
         }
 
-        Ok((
-            Self {
-                _watcher: watcher,
-                last_event: Instant::now() - Duration::from_secs(1), // Allow immediate first event
-                debounce: Duration::from_millis(250),
-            },
+        Ok(Self {
+            _watcher: watcher,
             rx,
-        ))
+            debounce: Duration::from_millis(250),
+        })
     }
 
-    /// Check if enough time has passed since the last event to trigger a rebuild.
+    /// Receive the next debounced file change event.
     ///
-    /// Call this when you receive a `FileChanged` event to determine if it
-    /// should be acted upon or debounced.
-    pub fn should_rebuild(&mut self) -> bool {
-        if self.last_event.elapsed() < self.debounce {
-            return false;
-        }
-        self.last_event = Instant::now();
-        true
+    /// This method waits for a file change event, then debounces by waiting
+    /// for the debounce duration and draining any additional events that
+    /// arrived during that time.
+    ///
+    /// Returns `None` if the watcher has been dropped.
+    pub async fn recv(&mut self) -> Option<FileChanged> {
+        // Wait for at least one event
+        self.rx.recv().await?;
+
+        // Debounce: wait a bit and drain any additional events
+        tokio::time::sleep(self.debounce).await;
+
+        // Drain pending events (they're part of the same "batch")
+        while self.rx.try_recv().is_ok() {}
+
+        Some(FileChanged)
     }
-}
-
-/// Convenience wrapper that drains and debounces a file change receiver.
-///
-/// Returns `true` if there are pending changes that should trigger a rebuild.
-pub fn poll_file_changes(rx: &Receiver<FileChanged>, watcher: &mut FileWatcher) -> bool {
-    let mut has_changes = false;
-
-    // Drain all pending events
-    loop {
-        match rx.try_recv() {
-            Ok(FileChanged) => has_changes = true,
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-        }
-    }
-
-    has_changes && watcher.should_rebuild()
 }
