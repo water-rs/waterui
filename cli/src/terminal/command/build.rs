@@ -68,6 +68,14 @@ pub fn run(args: BuildArgs) -> Result<BuildReport> {
 
     let project = Project::open(&project_dir)?;
 
+    // Playground projects cannot be built directly via CLI
+    if project.config().is_playground() {
+        bail!(
+            "Cannot build playground projects directly.\n\n\
+             Playground projects automatically build when running. Use `water run` instead."
+        );
+    }
+
     let options = BuildOptions::new()
         .with_release(args.release)
         .with_speedups(!args.no_sccache, args.mold);
