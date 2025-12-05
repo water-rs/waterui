@@ -165,11 +165,11 @@ impl Platform for ApplePlatform {
 
         let configuration = Self::configuration(release);
 
-        // Build the Rust library first (use internal to allow playground builds)
+        // Build the Rust library first
         let rust_target = self.target_triple();
         info!("Building Rust library for {rust_target}");
         let build_options = BuildOptions::new().with_release(release);
-        let build_result = build::build_for_target_internal(project, rust_target, &build_options)?;
+        let build_result = build::build_for_target(project, rust_target, &build_options)?;
 
         // Copy libwaterui_app.a to where Xcode expects it (BUILT_PRODUCTS_DIR)
         let products_dir = self.products_dir(&derived_root, configuration);

@@ -10,7 +10,7 @@ use nami::impl_constant;
 use waterui_color::Srgb;
 use waterui_core::Str;
 
-use crate::styled::{Style, StyledStr, ToStyledStr};
+use crate::styled::{Style, StyledStr};
 
 /// A trait for syntax highlighting implementations.
 pub trait Highlighter: Send + Sync {
@@ -343,6 +343,6 @@ impl HighlightChunk<'_> {
     /// Converts this chunk into a styled string.
     #[must_use]
     pub fn attributed(self) -> StyledStr {
-        self.text.to_string().foreground(self.color)
+        StyledStr::from(self.text.to_string()).foreground(self.color)
     }
 }
