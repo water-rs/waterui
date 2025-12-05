@@ -1,9 +1,7 @@
 [workspace]
 pr_draft = false
-changelog_config = "cliff.toml"
 pr_labels = ["release"]
 git_release_name = "{{ crate_name }}-v{{ version }}"
-commit_message = "chore(release): {{ crate_name }} v{{ version }} [skip ci]"
 publish = true
 git_tag_enable = true
 changelog_update = true
@@ -12,11 +10,6 @@ changelog_update = true
 name = "waterui"
 git_release_name = "v{{ version }}"
 git_tag_name = "v{{ version }}"
-
-[[package.files_to_update]]
-path = "README.md"
-search = 'waterui = "[0-9]+\\.[0-9]+(\\.[0-9]+)?"'
-replace = 'waterui = "{{ version }}"'
 
 [[package]]
 name = "waterui-core"
