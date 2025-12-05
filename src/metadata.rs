@@ -16,4 +16,37 @@ pub mod secure {
             Self
         }
     }
+
+    /// Apply standard dynamic range color for this views.
+    ///
+    /// By default, `WaterUI` enables high dynamic range color for all views.
+    ///
+    /// However, in some cases, you may want to apply standard dynamic range color for cetain views,
+    /// for instance, user avatar.
+    #[derive(Debug)]
+    pub struct StandardDynamicRange;
+    impl MetadataKey for StandardDynamicRange {}
+
+    impl StandardDynamicRange {
+        /// Creates a new StandardDynamicRange metadata.
+        pub const fn new() -> Self {
+            Self
+        }
+    }
+
+    /// Apply high dynamic range color for this views.
+    ///
+    /// By default, `WaterUI` already applies high dynamic range color for all views.
+    ///
+    /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
+    #[derive(Debug)]
+    pub struct HighDynamicRange;
+    impl MetadataKey for HighDynamicRange {}
+
+    impl HighDynamicRange {
+        /// Creates a new HighDynamicRange metadata.
+        pub const fn new() -> Self {
+            Self
+        }
+    }
 }
