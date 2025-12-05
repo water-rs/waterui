@@ -84,10 +84,15 @@ pub fn ensure_directory(path: &Path) -> Result<()> {
 }
 
 /// Inject standard environment variables that toggle `WaterUI` hot reload at runtime.
-/// Also sets the `--cfg waterui_enable_hot_reload` compile-time flag via RUSTFLAGS.
+/// Also sets the `--cfg waterui_hot_reload_lib` compile-time flag via RUSTFLAGS.
+///
+/// The `waterui_hot_reload_lib` flag indicates that the compiled dylib can be dynamically
+/// loaded for hot reload. The app internally switches the entry point from `waterui_main`
+/// to `waterui_hot_reload_main` to prevent infinite loading loops.
 pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u16>) {
+    const HOT_RELOAD_CFG: &str = "--cfg=waterui_hot_reload_lib";
+
     if enable {
-        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "0");
         cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
         cmd.env("WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
         if let Some(port) = port {
@@ -100,16 +105,28 @@ pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u1
             .map(|flags| flags.split_whitespace().map(ToString::to_string).collect())
             .unwrap_or_default();
 
-        const HOT_RELOAD_CFG: &str = "--cfg=waterui_enable_hot_reload";
         if !rustflags.iter().any(|f| f == HOT_RELOAD_CFG) {
             rustflags.push(HOT_RELOAD_CFG.to_string());
             cmd.env("RUSTFLAGS", rustflags.join(" "));
         }
     } else {
-        cmd.env("WATERUI_DISABLE_HOT_RELOAD", "1");
-        cmd.env("WATERUI_ENABLE_HOT_RELOAD", "0");
+        cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
         cmd.env_remove("WATERUI_HOT_RELOAD_HOST");
         cmd.env_remove("WATERUI_HOT_RELOAD_PORT");
+
+        // Remove hot reload cfg flag to avoid wrapping views in Hotreload
+        // This is important for incremental hot reload builds
+        let rustflags: Vec<String> = env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| {
+                flags
+                    .split_whitespace()
+                    .filter(|f| *f != HOT_RELOAD_CFG)
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        cmd.env("RUSTFLAGS", rustflags.join(" "));
     }
 }
 
