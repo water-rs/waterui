@@ -457,28 +457,9 @@ impl ArtifactKind {
 ///
 /// # Errors
 /// Returns an error if:
-/// - The project is a playground project (use `build_for_target_internal` for internal calls)
 /// - The target is invalid or unsupported
 /// - The cargo build fails
 pub fn build_for_target(
-    project: &crate::project::Project,
-    target: &str,
-    options: &BuildOptions,
-) -> Result<BuildResult> {
-    // Playground projects cannot use direct builds from CLI
-    if project.config().is_playground() {
-        bail!(
-            "Cannot build playground projects directly.\n\n\
-             Playground projects automatically build when running. Use `water run` instead."
-        );
-    }
-
-    build_for_target_internal(project, target, options)
-}
-
-/// Internal build function that skips playground check.
-/// Used by `water run` to build playground projects.
-pub fn build_for_target_internal(
     project: &crate::project::Project,
     target: &str,
     options: &BuildOptions,

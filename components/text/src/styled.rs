@@ -289,6 +289,10 @@ impl StyledStr {
         self.chunks
     }
 
+    pub fn set_style(self, style: Style) -> Self {
+        self.apply_style(|s| *s = style.clone())
+    }
+
     fn apply_style(mut self, f: impl Fn(&mut Style)) -> Self {
         if self.chunks.is_empty() {
             return self;
@@ -315,13 +319,15 @@ impl StyledStr {
 
     /// Sets the foreground color for all chunks.
     #[must_use]
-    pub fn foreground(self, color: &Color) -> Self {
+    pub fn foreground(self, color: impl Into<Color>) -> Self {
+        let color = color.into();
         self.apply_style(|s| s.foreground = Some(color.clone()))
     }
 
     /// Sets the background color for all chunks.
     #[must_use]
-    pub fn background_color(self, color: &Color) -> Self {
+    pub fn background_color(self, color: impl Into<Color>) -> Self {
+        let color = color.into();
         self.apply_style(|s| s.background = Some(color.clone()))
     }
 
@@ -560,55 +566,6 @@ impl From<String> for StyledStr {
 impl Display for StyledStr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.to_plain())
-    }
-}
-
-/// An extension trait for creating `StyledStr` from strings.
-pub trait ToStyledStr: Sized {
-    /// Converts the value into an `StyledStr` with the given style.
-    fn styled(self, style: Style) -> StyledStr;
-
-    /// Converts the value into an `StyledStr` with a bold style.
-    fn bold(self) -> StyledStr {
-        self.styled(Style::new().bold())
-    }
-
-    /// Converts the value into an `StyledStr` with an italic style.
-    fn italic(self) -> StyledStr {
-        self.styled(Style::new().italic())
-    }
-
-    /// Converts the value into an `StyledStr` with an underline style.
-    fn underline(self) -> StyledStr {
-        self.styled(Style::new().underline())
-    }
-
-    /// Converts the value into an `StyledStr` with a strikethrough style.
-    fn strikethrough(self) -> StyledStr {
-        self.styled(Style::new().strikethrough())
-    }
-
-    /// Converts the value into an `StyledStr` with a specific text color.
-    fn foreground(self, color: impl Into<Color>) -> StyledStr {
-        self.styled(Style::new().foreground(color))
-    }
-
-    /// Converts the value into an `StyledStr` with a specific background color.
-    fn background(self, color: Color) -> StyledStr {
-        self.styled(Style::new().background(color))
-    }
-
-    /// Converts the value into an `StyledStr` with a specific font.
-    fn font(self, font: Font) -> StyledStr {
-        self.styled(Style::new().font(font))
-    }
-}
-
-impl<T: Into<Str>> ToStyledStr for T {
-    fn styled(self, style: Style) -> StyledStr {
-        let mut s = StyledStr::empty();
-        s.push(self.into(), style);
-        s
     }
 }
 
