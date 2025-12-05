@@ -51,9 +51,9 @@ non_null_attribute = "_Nonnull"
 
 [parse]
 parse_deps = true
-include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","nami"]
+include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","waterui-graphics","nami"]
 
 
 [parse.expand]
-crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","nami"]
+crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","waterui-graphics"]
 
