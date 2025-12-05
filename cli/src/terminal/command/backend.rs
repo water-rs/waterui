@@ -77,6 +77,21 @@ pub struct BackendUpdateReport {
     pub message: Option<String>,
 }
 
+waterui_cli::impl_report!(BackendUpdateReport, |r| {
+    match r.status {
+        BackendUpdateStatus::Updated => {
+            if let (Some(from), Some(to)) = (&r.from_version, &r.to_version) {
+                format!("{} backend updated from {} to {}", r.backend, from, to)
+            } else {
+                format!("{} backend updated", r.backend)
+            }
+        }
+        BackendUpdateStatus::UpToDate => format!("{} backend is up to date", r.backend),
+        BackendUpdateStatus::Incompatible => format!("{} backend has incompatible update available", r.backend),
+        BackendUpdateStatus::Skipped => format!("{} backend update skipped", r.backend),
+    }
+});
+
 impl BackendUpdateReport {
     fn new(choice: BackendChoice, status: BackendUpdateStatus) -> Self {
         Self {
@@ -103,6 +118,15 @@ pub struct BackendListEntry {
 pub struct BackendListReport {
     pub entries: Vec<BackendListEntry>,
 }
+
+waterui_cli::impl_report!(BackendListReport, |r| {
+    if r.entries.is_empty() {
+        "No backends configured".to_string()
+    } else {
+        let backends: Vec<_> = r.entries.iter().map(|e| e.backend.as_str()).collect();
+        format!("Backends: {}", backends.join(", "))
+    }
+});
 
 pub fn update(args: BackendUpdateArgs) -> Result<BackendUpdateReport> {
     let project_dir = args

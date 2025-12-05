@@ -179,6 +179,10 @@ pub struct CaptureReport {
     pub output_path: PathBuf,
 }
 
+waterui_cli::impl_report!(CaptureReport, |r| {
+    format!("Screenshot saved to {}", r.output_path.display())
+});
+
 /// A rectangular region that changed between two screenshots
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangedRect {
@@ -211,6 +215,10 @@ pub struct TapReport {
     pub diff: Option<DiffResult>,
 }
 
+waterui_cli::impl_report!(TapReport, |r| {
+    format!("Tapped at ({}, {}) on {}", r.x, r.y, r.device)
+});
+
 #[derive(Debug, Serialize)]
 pub struct SwipeReport {
     pub device: String,
@@ -222,6 +230,10 @@ pub struct SwipeReport {
     pub diff: Option<DiffResult>,
 }
 
+waterui_cli::impl_report!(SwipeReport, |r| {
+    format!("Swiped from {:?} to {:?} on {}", r.start, r.end, r.device)
+});
+
 #[derive(Debug, Serialize)]
 pub struct TypeReport {
     pub device: String,
@@ -231,6 +243,10 @@ pub struct TypeReport {
     pub diff: Option<DiffResult>,
 }
 
+waterui_cli::impl_report!(TypeReport, |r| {
+    format!("Typed {} characters on {}", r.text_length, r.device)
+});
+
 #[derive(Debug, Serialize)]
 pub struct KeyReport {
     pub device: String,
@@ -239,6 +255,10 @@ pub struct KeyReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<DiffResult>,
 }
+
+waterui_cli::impl_report!(KeyReport, |r| {
+    format!("Sent {} key to {}", r.key, r.device)
+});
 
 /// Capture a screenshot from the specified device/simulator.
 ///

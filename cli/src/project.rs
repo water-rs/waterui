@@ -100,6 +100,14 @@ pub struct RunReport {
     pub crash_report: Option<CrashReport>,
 }
 
+crate::impl_report!(RunReport, |r| {
+    if r.crash_report.is_some() {
+        format!("App ran and crashed: {}", r.artifact.display())
+    } else {
+        format!("App ran: {}", r.artifact.display())
+    }
+});
+
 /// Build/run lifecycle milestones surfaced while executing [`Project::run`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStage {

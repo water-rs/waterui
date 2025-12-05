@@ -27,6 +27,14 @@ pub struct CrashReport {
     pub log_excerpt: Option<String>,
 }
 
+crate::impl_report!(CrashReport, |r| {
+    if let Some(ref summary) = r.summary {
+        format!("Crash detected: {} (log: {})", summary, r.log_path.display())
+    } else {
+        format!("Crash detected for {} (log: {})", r.app_identifier, r.log_path.display())
+    }
+});
+
 impl CrashReport {
     #[allow(clippy::too_many_arguments)]
     #[must_use]

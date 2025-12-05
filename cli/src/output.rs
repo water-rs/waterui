@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     io::{self, IsTerminal, Write},
     sync::{
         OnceLock,
@@ -8,6 +9,72 @@ use std::{
 
 use color_eyre::eyre::Result;
 use serde::Serialize;
+
+// ============================================================================
+// Report Trait
+// ============================================================================
+
+/// Trait for command reports that can be displayed or serialized.
+///
+/// Implement this trait for any command result type. The `Display` impl
+/// provides human-readable output, while `Serialize` provides JSON output.
+///
+/// Use the [`impl_report!`] macro to implement this trait along with `Display`.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(Debug, Serialize)]
+/// struct BuildReport {
+///     artifact: String,
+///     duration_ms: u64,
+/// }
+///
+/// impl_report!(BuildReport, |r| {
+///     format!("Built {} in {}ms", r.artifact, r.duration_ms)
+/// });
+/// ```
+pub trait Report: Display + Serialize {}
+
+/// Implement `Display` and `Report` for a type.
+///
+/// # Example
+///
+/// ```ignore
+/// impl_report!(BuildReport, |r| {
+///     format!("Built {} at {}", r.artifact, r.path)
+/// });
+/// ```
+#[macro_export]
+macro_rules! impl_report {
+    ($ty:ty, |$self:ident| $body:expr) => {
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let $self = self;
+                write!(f, "{}", $body)
+            }
+        }
+
+        impl $crate::output::Report for $ty {}
+    };
+}
+
+/// Emit a report in the appropriate format.
+///
+/// - In human mode: prints using `Display`
+/// - In JSON mode: serializes to JSON
+///
+/// # Errors
+/// Returns an error if JSON serialization fails.
+pub fn emit<R: Report>(report: &R) -> Result<()> {
+    match global_output_format() {
+        OutputFormat::Human => {
+            println!("{report}");
+            Ok(())
+        }
+        OutputFormat::Json | OutputFormat::JsonLines => emit_json(report),
+    }
+}
 
 // ============================================================================
 // Output Format
