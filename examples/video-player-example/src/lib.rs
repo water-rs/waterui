@@ -99,7 +99,7 @@ pub fn main() -> impl View {
     ));
 
     // Stack everything
-    zstack((video_layer, controls_overlay))
+    zstack((video_layer, controls_overlay)).ignore_safe_area(EdgeSet::ALL)
 }
 
 /// Pill-style selection button
