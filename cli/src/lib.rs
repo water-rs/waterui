@@ -28,11 +28,13 @@ pub mod build;
 pub mod crash;
 pub mod device;
 pub mod doctor;
+pub mod hot_reload;
 pub mod installer;
 pub mod output;
 pub mod package;
 pub mod permission;
 pub mod project;
+pub mod run_session;
 pub mod util;
 
 pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");

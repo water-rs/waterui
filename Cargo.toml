@@ -77,6 +77,7 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-tui = { version = "0.1.0", path = "backends/tui" }
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis" }
 waterui = { version = "0.1.0", path = "." }
+native-executor = { git = "https://github.com/water-rs/native_executor", branch = "dev" }
 waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -84,7 +85,7 @@ wgpu = "27.0"
 time = "0.3"
 tiny-skia = "0.11"
 vello = "0.2"
-zenwave = { git = "https://github.com/zen-rs/zenwave" }
+zenwave = { git = "https://github.com/zen-rs/zenwave", branch = "dev" }
 tracing-panic = "0.1.2"
 
 [dependencies]
@@ -94,6 +95,7 @@ waterui-str.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media.workspace = true
+native-executor.workspace = true
 waterui-navigation.workspace = true
 waterui-color.workspace = true
 waterui-form.workspace = true

@@ -27,13 +27,13 @@ pub mod color;
 pub mod components;
 pub mod event;
 pub mod gesture;
+mod type_id;
+pub use type_id::WuiTypeId;
 pub mod id;
 pub mod reactive;
 pub mod theme;
 mod ty;
 pub mod views;
-#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
-use core::ffi::CStr;
 use core::ptr::null_mut;
 
 use alloc::boxed::Box;
@@ -43,44 +43,6 @@ use waterui_core::Metadata;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
-
-#[cfg(all(
-    feature = "std",
-    not(target_arch = "wasm32"),
-    not(waterui_enable_hot_reload)
-))]
-fn install_panic_hook() {
-    // For non-hot-reload builds, initialize a simple tracing subscriber.
-    // Hot reload builds use their own subscriber in hot_reload.rs.
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt::Subscriber::builder()
-        .with_env_filter(filter)
-        .without_time()
-        .with_target(false)
-        .try_init();
-
-    // Route panics through tracing
-    std::panic::set_hook(Box::new(tracing_panic::panic_hook));
-}
-
-#[cfg(all(
-    feature = "std",
-    not(target_arch = "wasm32"),
-    waterui_enable_hot_reload
-))]
-fn install_panic_hook() {
-    // Hot reload mode: Do NOT initialize subscriber here.
-    // The subscriber is initialized in hot_reload.rs (install_tracing_forwarder)
-    // with CLI forwarding support.
-    //
-    // We only set the panic hook to route panics through tracing.
-    // The actual tracing subscriber will be set up by hot_reload later.
-    std::panic::set_hook(Box::new(tracing_panic::panic_hook));
-}
-
-#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
-fn install_panic_hook() {}
 #[macro_export]
 macro_rules! export {
     () => {
@@ -98,17 +60,20 @@ macro_rules! export {
             $crate::IntoFFI::into_ffi(env)
         }
 
+        #[cfg(waterui_hot_reload_lib)]
+        ::waterui::debug::hot_reloadable_library!(main);
+
         /// Creates the main view for the WaterUI application
         ///
         /// # Safety
         /// This function must be called on main thread.
         #[unsafe(no_mangle)]
+        #[allow(unexpected_cfgs)]
         pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
             let view = main();
 
-            #[cfg(waterui_enable_hot_reload)]
-            let view = waterui::hot_reload::Hotreload::new(view);
-
+            #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
+            let view = waterui::debug::hot_reload::Hotreload::new(view);
             $crate::IntoFFI::into_ffi(AnyView::new(view))
         }
     };
@@ -119,7 +84,6 @@ macro_rules! export {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __init() {
-    install_panic_hook();
     #[cfg(target_os = "android")]
     unsafe {
         native_executor::android::register_android_main_thread()
@@ -182,47 +146,7 @@ pub trait InvalidValue {
     fn invalid() -> Self;
 }
 
-#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_configure_hot_reload_endpoint(host: *const core::ffi::c_char, port: u16) {
-    use alloc::string::ToString;
-    use core::ffi::CStr;
-    if host.is_null() {
-        return;
-    }
-
-    // SAFETY: host is expected to be a valid null-terminated string supplied by the caller.
-    let host = unsafe { CStr::from_ptr(host) };
-    if let Ok(value) = host.to_str() {
-        waterui::hot_reload::configure_hot_reload_endpoint(value.to_string(), port);
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", not(waterui_enable_hot_reload)))]
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_configure_hot_reload_endpoint(
-    _host: *const core::ffi::c_char,
-    _port: u16,
-) {
-}
-
-#[cfg(all(not(target_arch = "wasm32"), waterui_enable_hot_reload))]
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_configure_hot_reload_directory(path: *const core::ffi::c_char) {
-    use alloc::string::ToString;
-    use core::ffi::CStr;
-    if path.is_null() {
-        return;
-    }
-    let path = unsafe { CStr::from_ptr(path) };
-    if let Ok(value) = path.to_str() {
-        waterui::hot_reload::configure_hot_reload_directory(value.to_string());
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", not(waterui_enable_hot_reload)))]
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_configure_hot_reload_directory(_path: *const core::ffi::c_char) {}
+// Hot reload configuration FFI functions are in hot_reload.rs
 
 /// Defines a marker trait for types that should be treated as opaque when crossing FFI boundaries.
 ///
@@ -387,102 +311,7 @@ pub unsafe extern "C" fn waterui_view_stretch_axis(
     unsafe { (&*view).stretch_axis().into() }
 }
 
-// ============================================================================
-// WuiTypeId - Optimized type identifier for O(1) comparison
-// ============================================================================
-
-/// Type ID as a 128-bit value for O(1) comparison.
-///
-/// - Normal build: Uses `std::any::TypeId` (guaranteed unique by Rust)
-/// - Hot reload: Uses 128-bit FNV-1a hash of `type_name()` (stable across dylib reloads)
-///
-/// The choice is controlled by the `waterui_enable_hot_reload` cfg flag.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WuiTypeId {
-    pub low: u64,
-    pub high: u64,
-}
-
-impl WuiTypeId {
-    /// Creates a type ID from a type parameter.
-    #[inline]
-    pub fn of<T: 'static>() -> Self {
-        #[cfg(waterui_enable_hot_reload)]
-        {
-            // Hash type_name for hot reload compatibility
-            Self::from_type_name(core::any::type_name::<T>())
-        }
-
-        #[cfg(not(waterui_enable_hot_reload))]
-        {
-            // Use TypeId directly (128-bit, guaranteed unique)
-            Self::from_type_id(core::any::TypeId::of::<T>())
-        }
-    }
-
-    /// Creates a type ID from a TypeId (normal build only).
-    #[cfg(not(waterui_enable_hot_reload))]
-    #[inline]
-    fn from_type_id(id: core::any::TypeId) -> Self {
-        // TypeId is internally a u128 - transmute to access it
-        // Safety: TypeId is repr(transparent) over u128 in current Rust
-        let value: u128 = unsafe { core::mem::transmute(id) };
-        Self {
-            low: value as u64,
-            high: (value >> 64) as u64,
-        }
-    }
-
-    /// Creates a type ID from a type name string (hot reload build).
-    #[cfg(waterui_enable_hot_reload)]
-    #[inline]
-    pub fn from_type_name(name: &str) -> Self {
-        let hash = fnv1a_128(name.as_bytes());
-        Self {
-            low: hash as u64,
-            high: (hash >> 64) as u64,
-        }
-    }
-
-    /// Creates a type ID from a runtime TypeId and type name.
-    /// Uses TypeId in normal builds, type name hash in hot reload builds.
-    #[inline]
-    pub fn from_runtime(type_id: core::any::TypeId, name: &'static str) -> Self {
-        #[cfg(waterui_enable_hot_reload)]
-        {
-            let _ = type_id; // unused in hot reload
-            Self::from_type_name(name)
-        }
-
-        #[cfg(not(waterui_enable_hot_reload))]
-        {
-            let _ = name; // unused in normal build
-            Self::from_type_id(type_id)
-        }
-    }
-}
-
-/// 128-bit FNV-1a hash function.
-///
-/// FNV-1a is fast and has good distribution properties.
-/// Using 128-bit output virtually eliminates collision risk
-/// (birthday paradox threshold: ~10^19 entries).
-#[cfg(waterui_enable_hot_reload)]
-const fn fnv1a_128(bytes: &[u8]) -> u128 {
-    // FNV-1a 128-bit constants
-    const FNV_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
-    const FNV_PRIME: u128 = 0x0000000001000000000000000000013b;
-
-    let mut hash = FNV_OFFSET;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u128;
-        hash = hash.wrapping_mul(FNV_PRIME);
-        i += 1;
-    }
-    hash
-}
+// WuiTypeId is defined in hot_reload.rs and re-exported from crate root
 
 // ============================================================================
 // WuiStr - UTF-8 string for FFI

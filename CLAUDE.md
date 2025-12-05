@@ -18,8 +18,8 @@ cargo build
 # Run tests
 cargo test
 
-# Check with hot reload feature (for development)
-RUSTFLAGS="--cfg waterui_enable_hot_reload" cargo check
+# Check with hot reload lib feature (for development)
+RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo check
 
 # Generate FFI C header (after modifying ffi/ APIs)
 cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
@@ -73,7 +73,7 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 The `water` CLI orchestrates builds across platforms:
 
 - `water create` - Scaffold new project
-- `water run` - Build and deploy to device/simulator with hot reload
+- `water run` - Build and deploy to device/simulator with hot reload. It is an interactive terminal, so LLMs should ask user to run it for you.
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
 - `water doctor` - Check development environment
 

@@ -1,6 +1,8 @@
 language = "C"
 
 header = """
+// Generate by generate_header.rs, do not modify by hand.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
