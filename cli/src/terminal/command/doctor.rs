@@ -79,6 +79,14 @@ pub struct DoctorReport {
     pub applied_fixes: Option<Vec<FixApplication>>,
 }
 
+waterui_cli::impl_report!(DoctorReport, |r| {
+    match r.status {
+        DoctorStatus::Pass => "All checks passed".to_string(),
+        DoctorStatus::Warn => format!("Checks completed with {} warnings", r.suggestions.len()),
+        DoctorStatus::Fail => format!("Checks failed with {} issues", r.suggestions.len()),
+    }
+});
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorStatus {
