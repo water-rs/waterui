@@ -1,8 +1,9 @@
-use std::{path::Path, process::Command};
+use std::{future::Future, path::Path, process::Command};
 
 use color_eyre::eyre::{self, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use which::which;
 
 use crate::{
@@ -37,6 +38,9 @@ pub struct DeviceBuildResult {
 ///
 /// For hot reload, use `build_for_hot_reload()` instead of `build()` to
 /// produce a dynamic library that can be swapped at runtime.
+///
+/// This trait uses native async fn (Rust 1.75+) without the `async_trait` crate.
+/// All async methods accept a `CancellationToken` for structured cancellation.
 pub trait Device: Send + Sync {
     type Platform: Platform + Clone;
 
@@ -46,17 +50,33 @@ pub trait Device: Send + Sync {
     /// Returns an error if preparation fails.
     fn prepare(&self, project: &Project, options: &RunOptions) -> eyre::Result<()>;
 
-    /// Build the Rust library for this device's target architecture.
+    /// Build the Rust library for this device's target architecture (async).
     ///
     /// This produces a static library (.a) that will be linked into the
     /// platform-specific app bundle during `package()`.
     ///
     /// # Errors
+    /// Returns an error if the build fails or is cancelled.
+    fn build_async(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = eyre::Result<DeviceBuildResult>> + Send;
+
+    /// Build the Rust library synchronously (deprecated, for backward compatibility).
+    ///
+    /// # Errors
     /// Returns an error if the build fails.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use build_async() with CancellationToken instead"
+    )]
     fn build(&self, project: &Project, options: &BuildOptions) -> eyre::Result<DeviceBuildResult> {
         // Default implementation delegates to the platform
         let platform = self.platform();
         let target = platform.target_triple();
+        #[allow(deprecated)]
         let result = crate::build::build_for_target(project, target, options)?;
         Ok(DeviceBuildResult {
             library_path: result.artifact_path,
@@ -64,15 +84,36 @@ pub trait Device: Send + Sync {
         })
     }
 
-    /// Build a hot-reloadable dynamic library for this device.
+    /// Build a hot-reloadable dynamic library for this device (async).
     ///
-    /// Unlike `build()`, this produces a cdylib that can be loaded at runtime
+    /// Unlike `build_async()`, this produces a cdylib that can be loaded at runtime
     /// without restarting the app. The `waterui_hot_reload_lib` cfg flag
     /// is set during compilation, which switches the entry point to
     /// `waterui_hot_reload_main` to prevent infinite loading loops.
     ///
     /// # Errors
-    /// Returns an error if the build fails.
+    /// Returns an error if the build fails or is cancelled.
+    fn build_for_hot_reload_async(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = eyre::Result<DeviceBuildResult>> + Send
+    where
+        Self: Sized,
+    {
+        // Hot reload builds need special handling - enable the hot reload flag
+        let mut hot_reload_options = options.clone();
+        hot_reload_options.hot_reload.enabled = true;
+
+        async move { self.build_async(project, &hot_reload_options, cancel).await }
+    }
+
+    /// Build a hot-reloadable dynamic library synchronously (deprecated).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use build_for_hot_reload_async() with CancellationToken instead"
+    )]
     fn build_for_hot_reload(
         &self,
         project: &Project,
@@ -82,6 +123,7 @@ pub trait Device: Send + Sync {
         let mut hot_reload_options = options.clone();
         hot_reload_options.hot_reload.enabled = true;
 
+        #[allow(deprecated)]
         self.build(project, &hot_reload_options)
     }
 
@@ -130,7 +172,15 @@ pub trait Device: Send + Sync {
 // pub type AnyDevice = Box<dyn Device<Platform = AnyPlatform>>;
 
 /// Scan for all available devices.
+///
+/// # Deprecation
+/// This function is deprecated. Use `Backend::scan_devices()` or
+/// `backend::scan_all_devices()` instead for async device scanning.
 #[must_use]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use Backend::scan_devices() or backend::scan_all_devices() instead"
+)]
 pub fn scan() -> Vec<Box<dyn std::any::Any>> {
     todo!("device scanning not implemented")
 }
@@ -179,27 +229,47 @@ impl DevicePlatformFilter {
 
 /// Collect a combined view of connected simulators and devices.
 ///
+/// # Deprecation
+/// This synchronous function is deprecated. Use `backend::scan_all_devices()`
+/// for async device scanning with cancellation support.
+///
 /// # Errors
 /// Returns an error if querying connected devices fails.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use backend::scan_all_devices() for async device scanning"
+)]
 pub fn list_devices() -> Result<Vec<DeviceInfo>> {
+    #[allow(deprecated)]
     list_devices_filtered(DevicePlatformFilter::All)
 }
 
 /// Collect devices filtered by platform family.
 ///
+/// # Deprecation
+/// This synchronous function is deprecated. Use `backend::scan_all_devices()`
+/// for async device scanning with cancellation support.
+///
 /// # Errors
 /// Returns an error if querying connected devices fails.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use backend::scan_all_devices() for async device scanning"
+)]
 pub fn list_devices_filtered(filter: DevicePlatformFilter) -> Result<Vec<DeviceInfo>> {
     let mut devices = Vec::new();
     if filter.includes_apple() {
+        #[allow(deprecated)]
         devices.extend(apple_devices()?);
     }
     if filter.includes_android() {
+        #[allow(deprecated)]
         devices.extend(android_devices()?);
     }
     Ok(devices)
 }
 
+#[deprecated(since = "0.2.0", note = "Use backend::apple::scan_apple_devices()")]
 fn apple_devices() -> Result<Vec<DeviceInfo>> {
     if !cfg!(target_os = "macos") {
         return Ok(Vec::new());
@@ -302,6 +372,7 @@ fn apple_devices() -> Result<Vec<DeviceInfo>> {
     Ok(results)
 }
 
+#[deprecated(since = "0.2.0", note = "Use backend::android::scan_android_devices()")]
 fn android_devices() -> Result<Vec<DeviceInfo>> {
     let mut results = Vec::new();
 
@@ -381,6 +452,7 @@ fn android_devices() -> Result<Vec<DeviceInfo>> {
     Ok(results)
 }
 
+#[deprecated(since = "0.2.0", note = "Moved to backend::apple")]
 fn apple_platform_friendly_name(identifier: &str) -> String {
     match identifier {
         "com.apple.platform.iphoneos" => "iOS device",
