@@ -50,7 +50,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: Determined by picker style and content (platform-determined)
     //
     // ═══════════════════════════════════════════════════════════════════════════

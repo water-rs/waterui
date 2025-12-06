@@ -684,7 +684,9 @@ impl Permissions {
     /// Get the custom description for a permission, if any.
     #[must_use]
     pub fn get_description(&self, name: &str) -> Option<String> {
-        self.detailed.get(name).and_then(PermissionConfig::description)
+        self.detailed
+            .get(name)
+            .and_then(PermissionConfig::description)
     }
 
     /// Add a permission to the enabled list (simple form).
@@ -700,10 +702,8 @@ impl Permissions {
         if let Some(pos) = self.enabled.iter().position(|p| p == &name) {
             self.enabled.remove(pos);
         }
-        self.detailed.insert(
-            name,
-            PermissionConfig::WithDescription { description },
-        );
+        self.detailed
+            .insert(name, PermissionConfig::WithDescription { description });
     }
 }
 
