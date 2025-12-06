@@ -37,6 +37,7 @@ pub struct HotReloadConfig {
 }
 
 impl HotReloadConfig {
+    #[must_use] 
     pub const fn new(host: String, port: u16) -> Self {
         Self { host, port }
     }
@@ -48,7 +49,7 @@ impl HotReloadConfig {
     ///
     /// Falls back to defaults if not set:
     /// - Host: "127.0.0.1"
-    /// - Port: 2006 (DEFAULT_HOT_RELOAD_PORT)
+    /// - Port: 2006 (`DEFAULT_HOT_RELOAD_PORT`)
     #[must_use]
     pub fn from_compile_env() -> Self {
         let host = option_env!("WATERUI_HOT_RELOAD_HOST")
@@ -60,10 +61,12 @@ impl HotReloadConfig {
         Self { host, port }
     }
 
+    #[must_use] 
     pub const fn host(&self) -> &str {
         self.host.as_str()
     }
 
+    #[must_use] 
     pub const fn port(&self) -> u16 {
         self.port
     }
@@ -170,7 +173,7 @@ impl StatusOverlay {
     }
 
     fn reconnecting(attempt: u32, max: u32) -> impl View {
-        let msg = alloc::format!("Reconnecting... ({}/{})", attempt, max);
+        let msg = alloc::format!("Reconnecting... ({attempt}/{max})");
         vstack((text("Hot Reload"), text(msg)))
             .spacing(8.0)
             .padding_with(16.0)
@@ -178,7 +181,7 @@ impl StatusOverlay {
     }
 
     fn error(err: ConnectionError, overlay_handler: DynamicHandler) -> impl View {
-        let msg = alloc::format!("{}", err);
+        let msg = alloc::format!("{err}");
 
         vstack((
             text("Hot Reload Error"),
