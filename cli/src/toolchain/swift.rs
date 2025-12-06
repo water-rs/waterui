@@ -32,13 +32,13 @@ impl Swift {
     }
 
     #[must_use]
-    pub fn with_ios(mut self) -> Self {
+    pub const fn with_ios(mut self) -> Self {
         self.require_ios = true;
         self
     }
 
     #[must_use]
-    pub fn with_macos(mut self) -> Self {
+    pub const fn with_macos(mut self) -> Self {
         self.require_macos = true;
         self
     }
@@ -181,7 +181,7 @@ impl Display for XcodeCliTools {
 impl Installation for XcodeCliTools {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Xcode Command Line Tools"
     }
 
@@ -195,7 +195,7 @@ impl Installation for XcodeCliTools {
                 .status()
                 .await
                 .map_err(|e| {
-                    progress.fail("xcode-cli-tools", &format!("{e}"));
+                    progress.fail("xcode-cli-tools", format!("{e}"));
                     ToolchainError::install_failed(format!("Failed to run xcode-select: {e}"))
                 })?;
 

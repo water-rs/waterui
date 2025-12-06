@@ -91,6 +91,7 @@ impl AnyBackend {
     }
 
     /// Check if the backend is already set up.
+    #[must_use] 
     pub fn is_existing(&self, project: &Project) -> bool {
         match self {
             Self::Apple(b) => b.is_existing(project),
