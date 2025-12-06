@@ -25,8 +25,8 @@ use tracing::{debug, info, warn};
 use crate::build::{BuildOptions, BuildResult, Builder};
 
 use super::{
-    DisconnectReason, FileChanged, FileWatcher, NativeConnectionEvent,
-    NativeConnectionEvents, Server,
+    DisconnectReason, FileChanged, FileWatcher, NativeConnectionEvent, NativeConnectionEvents,
+    Server,
 };
 
 /// Outcome of a hot reload session run.
@@ -141,10 +141,7 @@ impl<B: Builder + Clone + Send + 'static> HotReloadSession<B> {
     ///
     /// Returns an error if the file watcher or builder fails unexpectedly.
     pub async fn run(mut self, cancel: CancellationToken) -> Result<SessionOutcome> {
-        info!(
-            "Hot reload session started on {}",
-            self.server.address()
-        );
+        info!("Hot reload session started on {}", self.server.address());
 
         loop {
             // Check connection events (non-blocking)
@@ -346,12 +343,11 @@ impl HotReloadSessionBuilder {
     ) -> Result<HotReloadSession<B>> {
         let static_path = self.static_path.unwrap_or_else(|| PathBuf::from("."));
 
-        let (server, connection_events) =
-            Server::start(self.port, static_path, self.log_filter)
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        let (server, connection_events) = Server::start(self.port, static_path, self.log_filter)
+            .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
 
-        let watcher = FileWatcher::new(self.watch_paths)
-            .context("failed to initialize file watcher")?;
+        let watcher =
+            FileWatcher::new(self.watch_paths).context("failed to initialize file watcher")?;
 
         Ok(HotReloadSession::new(
             server,
