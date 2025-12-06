@@ -3,10 +3,25 @@
 
 extern crate alloc;
 
-/// High-performance GPU rendering surface using wgpu.
+/// High-performance GPU rendering surface using wgpu (advanced API).
 #[cfg(feature = "wgpu")]
 pub mod gpu_surface;
+
+/// Simplified shader-based GPU surface (intermediate API).
+#[cfg(feature = "wgpu")]
+pub mod shader_surface;
 
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+
+#[cfg(feature = "wgpu")]
+pub use shader_surface::ShaderSurface;
+
+// Re-export wgpu and bytemuck for users to access GPU types directly.
+#[cfg(feature = "wgpu")]
+pub use wgpu;
+
+/// Re-export bytemuck for safe byte conversions in GPU programming.
+#[cfg(feature = "wgpu")]
+pub use bytemuck;
