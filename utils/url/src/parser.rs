@@ -9,12 +9,22 @@ use crate::{BlobComponents, DataComponents, LocalComponents, ParsedComponents, S
 // Public API
 // ============================================================================
 
-/// Main entry point for URL parsing.
+/// Main entry point for URL parsing with validation.
 ///
 /// Detects the URL type and parses all components into a `ParsedComponents` struct.
 /// This function can be evaluated at compile time.
+///
+/// # Panics
+///
+/// Panics if the URL is malformed. This enables compile-time syntax checking
+/// when used in const contexts.
 pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
     let len = bytes.len();
+
+    // Check for empty URL
+    if len == 0 {
+        panic!("URL string is empty");
+    }
 
     // Check for data: URLs
     if len >= 5 && starts_with(bytes, b"data:") {
@@ -29,7 +39,9 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
     // Check for web URLs (http://, https://, etc.)
     if let Some(scheme_end) = find_scheme_end(bytes) {
         if is_web_scheme(bytes, scheme_end) {
-            return ParsedComponents::Web(parse_web_url(bytes, scheme_end));
+            let web = parse_web_url(bytes, scheme_end);
+            validate_web_url(&web, bytes);
+            return ParsedComponents::Web(web);
         }
     }
 
@@ -37,22 +49,46 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
     ParsedComponents::Local(parse_local_path(bytes))
 }
 
-/// Legacy API: detect URL kind only
-#[deprecated(note = "Use parse_url() for full parsing")]
-pub const fn detect_kind(s: &str) -> crate::UrlKind {
-    let components = parse_url(s.as_bytes());
-    match components {
-        ParsedComponents::Web(_) => crate::UrlKind::Web,
-        ParsedComponents::Local(_) => crate::UrlKind::Local,
-        ParsedComponents::Data(_) => crate::UrlKind::Data,
-        ParsedComponents::Blob(_) => crate::UrlKind::Blob,
+/// Validates a parsed web URL and panics if malformed.
+const fn validate_web_url(web: &WebComponents, bytes: &[u8]) {
+    // Scheme must be present
+    if !web.scheme.is_present() {
+        panic!("Web URL must have a scheme");
+    }
+
+    // Host must be present for web URLs
+    if !web.host.is_present() {
+        panic!("Web URL must have a host");
+    }
+
+    // Validate port if present (must be valid digits)
+    if web.port.is_present() {
+        let port_start = web.port.start as usize;
+        let port_end = web.port.end as usize;
+
+        if port_start >= port_end {
+            panic!("Invalid port: empty");
+        }
+
+        // Check all characters are digits
+        let mut i = port_start;
+        while i < port_end {
+            if !is_digit(bytes[i]) {
+                panic!("Invalid port: contains non-digit characters");
+            }
+            i += 1;
+        }
+
+        // Port number should be reasonable (1-65535)
+        if port_end - port_start > 5 {
+            panic!("Invalid port: too many digits");
+        }
     }
 }
 
-/// Legacy API: check if valid web URL
-#[deprecated(note = "Use parse_url() and match on ParsedComponents::Web")]
-pub const fn is_valid_web_url(s: &str) -> bool {
-    matches!(parse_url(s.as_bytes()), ParsedComponents::Web(_))
+/// Check if a byte is an ASCII digit
+const fn is_digit(b: u8) -> bool {
+    b >= b'0' && b <= b'9'
 }
 
 // ============================================================================
@@ -493,5 +529,62 @@ mod tests {
         // Verify const compatibility
         const PARSED: ParsedComponents = parse_url(b"https://example.com/test");
         assert!(matches!(PARSED, ParsedComponents::Web(_)));
+    }
+
+    // ========================================================================
+    // Error Validation Tests
+    // ========================================================================
+
+    #[test]
+    #[should_panic(expected = "URL string is empty")]
+    fn test_empty_url_panics() {
+        parse_url(b"");
+    }
+
+    #[test]
+    #[should_panic(expected = "Web URL must have a host")]
+    fn test_missing_host_panics() {
+        parse_url(b"https://");
+    }
+
+    #[test]
+    #[should_panic(expected = "Web URL must have a host")]
+    fn test_empty_host_panics() {
+        // URLs like "https:///path" have no authority section, so no host
+        parse_url(b"https:///path");
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid port: contains non-digit characters")]
+    fn test_invalid_port_characters_panics() {
+        parse_url(b"https://example.com:abc/path");
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid port: too many digits")]
+    fn test_port_too_long_panics() {
+        parse_url(b"https://example.com:123456/path");
+    }
+
+    #[test]
+    fn test_valid_port_accepted() {
+        // Should not panic
+        let components = parse_url(b"https://example.com:8080/path");
+        if let ParsedComponents::Web(web) = components {
+            assert!(web.port.is_present());
+        } else {
+            panic!("Expected Web components");
+        }
+    }
+
+    #[test]
+    fn test_max_valid_port() {
+        // Port 65535 is the max valid port number (5 digits)
+        let components = parse_url(b"https://example.com:65535/path");
+        if let ParsedComponents::Web(web) = components {
+            assert!(web.port.is_present());
+        } else {
+            panic!("Expected Web components");
+        }
     }
 }
