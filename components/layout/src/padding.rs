@@ -3,10 +3,7 @@
 use alloc::{vec, vec::Vec};
 use waterui_core::{AnyView, View};
 
-use crate::{
-    Layout, Point, ProposalSize, Rect, Size, SubView,
-    container::FixedContainer,
-};
+use crate::{Layout, Point, ProposalSize, Rect, Size, SubView, container::FixedContainer};
 
 /// Layout that insets its single child by the configured edge values.
 #[derive(Debug, Clone)]
@@ -15,11 +12,7 @@ pub struct PaddingLayout {
 }
 
 impl Layout for PaddingLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         // The horizontal and vertical space consumed by padding.
         let horizontal_padding = self.edges.leading + self.edges.trailing;
         let vertical_padding = self.edges.top + self.edges.bottom;
@@ -55,11 +48,7 @@ impl Layout for PaddingLayout {
         )
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &[&dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
@@ -195,7 +184,7 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Size = child size + padding on all sides
-        assert_eq!(size.width, 70.0);  // 50 + 10 + 10
+        assert_eq!(size.width, 70.0); // 50 + 10 + 10
         assert_eq!(size.height, 50.0); // 30 + 10 + 10
     }
 
@@ -218,7 +207,7 @@ mod tests {
         assert_eq!(rects[0].y(), 10.0);
 
         // Child size is bounds minus padding
-        assert_eq!(rects[0].width(), 60.0);  // 100 - 15 - 25
+        assert_eq!(rects[0].width(), 60.0); // 100 - 15 - 25
         assert_eq!(rects[0].height(), 70.0); // 100 - 10 - 20
     }
 }

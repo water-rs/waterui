@@ -289,7 +289,7 @@ impl StyledStr {
         self.chunks
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn set_style(self, style: Style) -> Self {
         self.apply_style(|s| *s = style.clone())
     }
