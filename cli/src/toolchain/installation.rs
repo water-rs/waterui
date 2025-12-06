@@ -69,6 +69,7 @@ impl Progress {
     }
 
     /// Create a no-op progress tracker.
+    #[must_use] 
     pub fn noop() -> Self {
         Self::new(|_, _| {})
     }
@@ -150,7 +151,7 @@ impl<A: Display, B: Display> Display for Sequence<A, B> {
 impl<A: Installation, B: Installation> Installation for Sequence<A, B> {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "sequential installation"
     }
 
@@ -180,7 +181,7 @@ impl<A: Display, B: Display> Display for Parallel<A, B> {
 impl<A: Installation, B: Installation> Installation for Parallel<A, B> {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "parallel installation"
     }
 
@@ -208,11 +209,13 @@ impl<I> Many<I> {
         Self { installations: iter.into_iter().collect() }
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use] 
+    pub const fn is_empty(&self) -> bool {
         self.installations.is_empty()
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use] 
+    pub const fn len(&self) -> usize {
         self.installations.len()
     }
 }
@@ -234,7 +237,7 @@ impl<I: Display> Display for Many<I> {
 impl<I: Installation> Installation for Many<I> {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "parallel installations"
     }
 
@@ -266,6 +269,7 @@ impl<I: Installation> Installation for Many<I> {
 pub struct Empty<T = ()>(PhantomData<T>);
 
 impl<T> Empty<T> {
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -286,7 +290,7 @@ impl<T> Display for Empty<T> {
 impl<T: Send> Installation for Empty<T> {
     type Future = std::future::Ready<Result<InstallationReport, ToolchainError>>;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "nothing"
     }
 
@@ -308,7 +312,8 @@ pub struct InstallationReport {
 }
 
 impl InstallationReport {
-    pub fn empty() -> Self {
+    #[must_use] 
+    pub const fn empty() -> Self {
         Self { completed: Vec::new(), warnings: Vec::new() }
     }
 

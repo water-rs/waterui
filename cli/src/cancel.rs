@@ -132,6 +132,7 @@ pub async fn wait_child_cancellable(
 /// Create a root cancellation token and register Ctrl+C handler.
 ///
 /// Returns a token that will be cancelled when the user presses Ctrl+C.
+#[must_use] 
 pub fn create_root_token() -> CancellationToken {
     let token = CancellationToken::new();
     let handler_token = token.clone();

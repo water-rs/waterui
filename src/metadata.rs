@@ -1,3 +1,10 @@
+//! Metadata definitions for `WaterUI`.
+//!
+//! `Metadata`s are some extra information that can be attached to `View`s to modify their behavior
+//! or appearance, but not affect their layout.
+//!
+//! They are defined as types that implement the `MetadataKey` trait.
+
 /// Secure metadata module.
 pub mod secure {
     use waterui_core::metadata::MetadataKey;
@@ -10,9 +17,15 @@ pub mod secure {
 
     impl MetadataKey for Secure {}
 
+    impl Default for Secure {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Secure {
         /// Creates a new Secure metadata.
-        #[must_use] 
+        #[must_use]
         pub const fn new() -> Self {
             Self
         }
@@ -30,9 +43,15 @@ pub mod secure {
 
     impl StandardDynamicRange {
         /// Creates a new `StandardDynamicRange` metadata.
-        #[must_use] 
+        #[must_use]
         pub const fn new() -> Self {
             Self
+        }
+    }
+
+    impl Default for StandardDynamicRange {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
@@ -47,9 +66,15 @@ pub mod secure {
 
     impl HighDynamicRange {
         /// Creates a new `HighDynamicRange` metadata.
-        #[must_use] 
+        #[must_use]
         pub const fn new() -> Self {
             Self
+        }
+    }
+
+    impl Default for HighDynamicRange {
+        fn default() -> Self {
+            Self::new()
         }
     }
 }

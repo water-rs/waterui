@@ -320,7 +320,7 @@ fn find_device<'a>(
         .iter()
         .filter(|device| device.identifier == query || device.name == query)
         .filter(|device| {
-            platform_filter.map_or(true, |filter| match filter {
+            platform_filter.is_none_or(|filter| match filter {
                 DevicePlatform::Apple => is_apple_platform(&device.platform),
                 DevicePlatform::Android => device.platform == "Android",
             })
@@ -330,7 +330,7 @@ fn find_device<'a>(
     match matches.len() {
         0 => {
             let filter_hint = platform_filter
-                .map(|p| format!(" for platform {:?}", p))
+                .map(|p| format!(" for platform {p:?}"))
                 .unwrap_or_default();
 
             // Provide helpful suggestions based on available devices
@@ -364,7 +364,7 @@ fn find_device<'a>(
             // Multiple matches - check if they're on different platforms
             let platforms: Vec<&str> = matches.iter().map(|d| d.platform.as_str()).collect();
             let has_apple = platforms.iter().any(|p| is_apple_platform(p));
-            let has_android = platforms.iter().any(|p| *p == "Android");
+            let has_android = platforms.contains(&"Android");
 
             if has_apple && has_android {
                 Err(eyre!(
@@ -1222,18 +1222,18 @@ fn compute_and_report_diff(
     let (changed_rects, total_changed, total_pixels) = compute_diff(before, after);
 
     let change_percentage = if total_pixels > 0 {
-        (total_changed as f64 / total_pixels as f64) * 100.0
+        (f64::from(total_changed) / f64::from(total_pixels)) * 100.0
     } else {
         0.0
     };
 
     let diff_image_path = if let Some(path) = output_path {
-        if !path.is_empty() {
+        if path.is_empty() {
+            None
+        } else {
             let path = PathBuf::from(path);
             generate_diff_image(before, after, &path)?;
             Some(path)
-        } else {
-            None
         }
     } else {
         None
@@ -1321,10 +1321,7 @@ fn generate_diff_image(before: &DynamicImage, after: &DynamicImage, output: &Pat
             };
             let after_pixel = *after_rgba.get_pixel(x, y);
 
-            if before_pixel != after_pixel {
-                // Highlight changed pixels in magenta
-                diff.put_pixel(x, y, Rgba([255, 0, 255, 255]));
-            } else {
+            if before_pixel == after_pixel {
                 // Dim unchanged pixels
                 let dimmed = Rgba([
                     after_pixel[0] / 2,
@@ -1333,6 +1330,9 @@ fn generate_diff_image(before: &DynamicImage, after: &DynamicImage, output: &Pat
                     after_pixel[3],
                 ]);
                 diff.put_pixel(x, y, dimmed);
+            } else {
+                // Highlight changed pixels in magenta
+                diff.put_pixel(x, y, Rgba([255, 0, 255, 255]));
             }
         }
     }

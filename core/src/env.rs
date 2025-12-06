@@ -247,7 +247,7 @@ impl<V: View, T: 'static> With<V, T> {
 }
 
 /// Wraps a view and provides an extended environment value.
-pub fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
+pub const fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
     With::new(view, value)
 }
 
