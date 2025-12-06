@@ -8,7 +8,7 @@ use alloc::string::String;
 use async_channel::Sender;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use serde::Deserialize;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -43,9 +43,9 @@ const RAPID_DISCONNECT_WINDOW_MS: u64 = 5000;
 ///     }
 /// }
 /// ```
+#[derive(Debug)]
 pub struct CliConnection {
     receiver: async_channel::Receiver<CliEvent>,
-    _task: (), // Task handle would go here if we needed to cancel
 }
 
 impl CliConnection {
@@ -53,33 +53,26 @@ impl CliConnection {
     ///
     /// Returns `None` if hot reload is disabled or no endpoint is configured.
     /// Also returns a sender for outbound messages (logs, panic reports).
-    #[must_use] 
+    #[must_use]
     pub fn connect(config: HotReloadConfig) -> (Self, Sender<String>) {
         let (event_tx, event_rx) = async_channel::unbounded();
         let (outbound_tx, outbound_rx) = async_channel::unbounded();
-
-        // Spawn the connection task
-        let task_event_tx = event_tx;
         executor_core::spawn_local(async move {
-            run_connection_loop(config, task_event_tx, outbound_rx).await;
+            run_connection_loop(config, event_tx, outbound_rx).await;
         })
         .detach();
 
-        (
-            Self {
-                receiver: event_rx,
-                _task: (),
-            },
-            outbound_tx,
-        )
+        (Self { receiver: event_rx }, outbound_tx)
     }
 }
 
 impl Stream for CliConnection {
     type Item = CliEvent;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.receiver).poll_next(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // SAFETY: receiver is never moved after pinning the parent.
+        let receiver = unsafe { self.map_unchecked_mut(|s| &mut s.receiver) };
+        receiver.poll_next(cx)
     }
 }
 
@@ -116,104 +109,128 @@ async fn run_connection_loop(
             std::thread::sleep(std::time::Duration::from_millis(RECONNECT_DELAY_MS));
         }
 
-        match zenwave::websocket::connect_with_config(&url, ws_config.clone()).await {
-            Ok(socket) => {
-                info!("Hot reload connected to CLI");
-                let _ = events.send(CliEvent::Connected).await;
-                attempt = 0;
-                last_connect = Some(Instant::now());
+        let socket =
+            match zenwave::websocket::connect_with_config(&url, ws_config.clone()).await {
+                Ok(socket) => socket,
+                Err(err) => {
+                    warn!(
+                        "Connection attempt {}/{} failed: {}",
+                        attempt, MAX_RECONNECT_ATTEMPTS, err
+                    );
 
-                // Run the socket until disconnection
-                let disconnect_reason = handle_socket(socket, &events, &outbound).await;
+                    if attempt >= MAX_RECONNECT_ATTEMPTS {
+                        let _ = events
+                            .send(CliEvent::Error(ConnectionError::MaxReconnectAttempts(
+                                MAX_RECONNECT_ATTEMPTS,
+                            )))
+                            .await;
+                        return;
+                    }
 
-                // Check for rapid disconnection
-                if let Some(connect_time) = last_connect {
-                    if connect_time.elapsed().as_millis() < u128::from(RAPID_DISCONNECT_WINDOW_MS) {
-                        rapid_disconnects += 1;
-                        warn!(
-                            "Rapid disconnection ({}/{})",
-                            rapid_disconnects, MAX_RAPID_DISCONNECTS
-                        );
+                    continue;
+                }
+            };
 
-                        if rapid_disconnects >= MAX_RAPID_DISCONNECTS {
-                            let _ = events
-                                .send(CliEvent::Error(ConnectionError::UnstableConnection(
-                                    rapid_disconnects,
-                                )))
-                                .await;
-                            return;
+        info!("Hot reload connected to CLI");
+        let _ = events.send(CliEvent::Connected).await;
+        attempt = 0;
+        last_connect = Some(Instant::now());
+
+        let mut disconnect_reason: Option<String> = None;
+        let mut outbound_closed = false;
+
+        loop {
+            if outbound_closed {
+                match socket.recv().await {
+                    Ok(Some(message)) => {
+                        if let Some(event) = handle_incoming_message(message) {
+                            let _ = events.send(event).await;
                         }
-                    } else {
-                        rapid_disconnects = 0;
+                    }
+                    Ok(None) => {
+                        debug!("Connection closed by server");
+                        break;
+                    }
+                    Err(err) => {
+                        disconnect_reason = Some(format!("Receive error: {err}"));
+                        break;
                     }
                 }
 
-                let _ = events.send(CliEvent::Disconnected).await;
+                continue;
+            }
 
-                if let Some(err) = disconnect_reason {
-                    warn!("Disconnected: {}", err);
+            futures::select_biased! {
+                outbound_msg = outbound.recv().fuse() => {
+                    match outbound_msg {
+                        Ok(text) => {
+                            if let Err(err) = socket.send_text(text).await {
+                                disconnect_reason = Some(format!("Send error: {err}"));
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            outbound_closed = true;
+                        }
+                    }
+                }
+                incoming = socket.recv().fuse() => {
+                    match incoming {
+                        Ok(Some(message)) => {
+                            if let Some(event) = handle_incoming_message(message) {
+                                let _ = events.send(event).await;
+                            }
+                        }
+                        Ok(None) => {
+                            debug!("Connection closed by server");
+                            break;
+                        }
+                        Err(err) => {
+                            disconnect_reason = Some(format!("Receive error: {err}"));
+                            break;
+                        }
+                    }
                 }
             }
-            Err(err) => {
+        }
+
+        if let Some(connect_time) = last_connect {
+            if connect_time.elapsed().as_millis() < u128::from(RAPID_DISCONNECT_WINDOW_MS) {
+                rapid_disconnects += 1;
                 warn!(
-                    "Connection attempt {}/{} failed: {}",
-                    attempt, MAX_RECONNECT_ATTEMPTS, err
+                    "Rapid disconnection ({}/{})",
+                    rapid_disconnects, MAX_RAPID_DISCONNECTS
                 );
 
-                if attempt >= MAX_RECONNECT_ATTEMPTS {
+                if rapid_disconnects >= MAX_RAPID_DISCONNECTS {
                     let _ = events
-                        .send(CliEvent::Error(ConnectionError::MaxReconnectAttempts(
-                            MAX_RECONNECT_ATTEMPTS,
+                        .send(CliEvent::Error(ConnectionError::UnstableConnection(
+                            rapid_disconnects,
                         )))
                         .await;
                     return;
                 }
+            } else {
+                rapid_disconnects = 0;
             }
+        }
+
+        let _ = events.send(CliEvent::Disconnected).await;
+
+        if let Some(err) = disconnect_reason {
+            warn!("Disconnected: {}", err);
         }
     }
 }
 
-/// Handle an active WebSocket connection.
-/// Returns the disconnect reason if any.
-async fn handle_socket(
-    mut socket: zenwave::websocket::WebSocket,
-    events: &Sender<CliEvent>,
-    outbound: &async_channel::Receiver<String>,
-) -> Option<String> {
-    let mut outbound_closed = false;
-
-    loop {
-        // Send pending outbound messages
-        if !outbound_closed && !outbound.is_closed() {
-            while let Ok(text) = outbound.try_recv() {
-                if let Err(err) = socket.send_text(text).await {
-                    return Some(format!("Send error: {err}"));
-                }
-            }
-            if outbound.is_closed() {
-                outbound_closed = true;
-            }
+fn handle_incoming_message(message: WebSocketMessage) -> Option<CliEvent> {
+    match message {
+        WebSocketMessage::Binary(data) => {
+            let path = library::create_library(&data);
+            Some(CliEvent::LibraryReady(path))
         }
-
-        // Receive messages
-        match socket.recv().await {
-            Ok(Some(WebSocketMessage::Binary(data))) => {
-                let path = library::create_library(&data);
-                let _ = events.send(CliEvent::LibraryReady(path)).await;
-            }
-            Ok(Some(WebSocketMessage::Text(text))) => {
-                if let Some(event) = parse_server_message(&text) {
-                    let _ = events.send(event).await;
-                }
-            }
-            Ok(None) => {
-                debug!("Connection closed by server");
-                return None;
-            }
-            Err(err) => {
-                return Some(format!("Receive error: {err}"));
-            }
-        }
+        WebSocketMessage::Text(text) => parse_server_message(&text),
+        _ => None,
     }
 }
 

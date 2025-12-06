@@ -122,7 +122,7 @@ use crate::Environment;
 
 /// A trait for types that can be resolved to a reactive value from an environment.
 ///
-/// This is the core abstraction for WaterUI's dynamic configuration system. Types that
+/// This is the core abstraction for `WaterUI`'s dynamic configuration system. Types that
 /// implement `Resolvable` don't hold their final value directly—instead, they know how
 /// to look up or compute that value from an [`Environment`].
 ///

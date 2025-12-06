@@ -609,9 +609,9 @@ where
         match line {
             Ok(line) => {
                 // Write to terminal
-                let _ = writeln!(terminal, "{}", line);
+                let _ = writeln!(terminal, "{line}");
                 // Write to log file
-                let _ = writeln!(log_file, "{}", line);
+                let _ = writeln!(log_file, "{line}");
             }
             Err(_) => break,
         }

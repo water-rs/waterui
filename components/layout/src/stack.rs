@@ -17,9 +17,9 @@ pub use zstack::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Axis {
-    /// Horizontal axis is the x-axis (HStack)
+    /// Horizontal axis is the x-axis (`HStack`)
     Horizontal,
-    /// Vertical axis is the y-axis (VStack)
+    /// Vertical axis is the y-axis (`VStack`)
     Vertical,
 }
 

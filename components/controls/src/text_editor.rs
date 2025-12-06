@@ -45,14 +45,14 @@ impl RichTextEditor {
     ///
     /// By default, the line limit is 1.
     #[must_use]
-    pub fn line_limit(mut self, line_limit: usize) -> Self {
+    pub const fn line_limit(mut self, line_limit: usize) -> Self {
         self.0.line_limit = NonZeroUsize::new(line_limit);
         self
     }
 
     /// Disables the line limit.
     #[must_use]
-    pub fn disable_line_limit(mut self) -> Self {
+    pub const fn disable_line_limit(mut self) -> Self {
         self.0.line_limit = None;
         self
     }

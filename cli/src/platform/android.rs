@@ -20,7 +20,7 @@ use crate::{
 /// - `config` - Android backend settings from Water.toml
 /// - `target_triples` - Which architectures to build for
 ///
-/// Build OPTIONS (release, hot_reload, sccache) are passed to `package()`
+/// Build OPTIONS (release, `hot_reload`, sccache) are passed to `package()`
 /// via `BuildOptions`, not stored here. This avoids parameter duplication.
 #[derive(Debug, Clone)]
 pub struct AndroidPlatform {
@@ -34,7 +34,7 @@ pub struct AndroidPlatform {
 impl AndroidPlatform {
     /// Create a new Android platform with the given configuration.
     #[must_use]
-    pub fn new(config: Android) -> Self {
+    pub const fn new(config: Android) -> Self {
         Self {
             backend: AndroidBackend,
             config,
@@ -51,13 +51,13 @@ impl AndroidPlatform {
 
     /// Get the Android configuration.
     #[must_use]
-    pub fn config(&self) -> &Android {
+    pub const fn config(&self) -> &Android {
         &self.config
     }
 
     /// Get the target triples.
     #[must_use]
-    pub fn target_triples(&self) -> Option<&Vec<String>> {
+    pub const fn target_triples(&self) -> Option<&Vec<String>> {
         self.target_triples.as_ref()
     }
 }

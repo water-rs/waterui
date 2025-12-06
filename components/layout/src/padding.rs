@@ -33,8 +33,7 @@ impl Layout for PaddingLayout {
         // Measure the child
         let child_size = children
             .first()
-            .map(|c| c.size_that_fits(child_proposal))
-            .unwrap_or(Size::zero());
+            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
 
         // Handle infinite dimensions
         let child_width = if child_size.width.is_infinite() {

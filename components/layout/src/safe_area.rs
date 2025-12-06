@@ -1,6 +1,6 @@
 //! Safe area handling for layout containers.
 //!
-//! WaterUI uses metadata to signal to native renderers which views should extend
+//! `WaterUI` uses metadata to signal to native renderers which views should extend
 //! into unsafe screen regions (areas obscured by notches, home indicators, status bars, etc.).
 //!
 //! # Architecture
