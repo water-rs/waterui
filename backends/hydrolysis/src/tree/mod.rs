@@ -134,8 +134,7 @@ impl RenderTree {
     pub fn children(&self, id: NodeId) -> &[NodeId] {
         self.nodes
             .get(id.index())
-            .map(|entry| entry.children.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], |entry| entry.children.as_slice())
     }
 
     /// Marks a node as dirty for the provided reason.
@@ -173,7 +172,7 @@ impl RenderTree {
 
     /// Returns the total number of nodes stored in this tree.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.nodes.len()
     }
 }

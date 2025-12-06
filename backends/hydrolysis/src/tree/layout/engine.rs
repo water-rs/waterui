@@ -4,7 +4,7 @@ use waterui_core::Environment;
 
 use crate::{LayoutCtx, NodeId, RenderTree};
 
-/// Layout executor that drives WaterUI layout trait objects and writes results back to nodes.
+/// Layout executor that drives `WaterUI` layout trait objects and writes results back to nodes.
 #[derive(Debug)]
 pub struct LayoutEngine<'a> {
     tree: &'a mut RenderTree,
@@ -13,7 +13,7 @@ pub struct LayoutEngine<'a> {
 
 impl<'a> LayoutEngine<'a> {
     /// Creates a new engine bound to the provided render tree.
-    pub fn new(tree: &'a mut RenderTree, env: &'a Environment) -> Self {
+    pub const fn new(tree: &'a mut RenderTree, env: &'a Environment) -> Self {
         Self { tree, env }
     }
 

@@ -63,7 +63,7 @@ impl TinySkiaBackend {
 
     /// Returns a reference to the backing pixmap for presenting or copying.
     #[must_use]
-    pub fn pixmap(&self) -> &Pixmap {
+    pub const fn pixmap(&self) -> &Pixmap {
         &self.pixmap
     }
 
@@ -74,12 +74,12 @@ impl TinySkiaBackend {
     }
 
     /// Updates the scale factor (callers are responsible for resizing the pixmap accordingly).
-    pub fn set_scale_factor(&mut self, factor: f32) {
+    pub const fn set_scale_factor(&mut self, factor: f32) {
         self.scale_factor = factor;
     }
 
     /// Sets the color used to clear the pixmap each frame.
-    pub fn set_clear_color(&mut self, color: Color) {
+    pub const fn set_clear_color(&mut self, color: Color) {
         self.clear_color = color;
     }
 
