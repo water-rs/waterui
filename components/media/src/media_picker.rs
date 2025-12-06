@@ -48,11 +48,11 @@ pub enum MediaFilter {
     /// Filter for images.
     Image,
     /// Filter for all of the specified filters.
-    All(Vec<MediaFilter>),
+    All(Vec<Self>),
     /// Filter for none of the specified filters.
-    Not(Vec<MediaFilter>),
+    Not(Vec<Self>),
     /// Filter for any of the specified filters.
-    Any(Vec<MediaFilter>),
+    Any(Vec<Self>),
 }
 
 impl Selected {

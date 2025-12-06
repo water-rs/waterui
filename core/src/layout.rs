@@ -1,16 +1,16 @@
-//! Layout primitives and geometry types for the WaterUI layout system.
+//! Layout primitives and geometry types for the `WaterUI` layout system.
 //!
 //! # Logical Pixels (Points)
 //!
-//! All layout values in WaterUI use **logical pixels** (also called "points" or "dp").
+//! All layout values in `WaterUI` use **logical pixels** (also called "points" or "dp").
 //! This is the same unit system used by design tools like Figma, Sketch, and Adobe XD,
 //! allowing seamless translation from design to implementation.
 //!
 //! - **1 logical pixel** = 1 point in design tools
 //! - Native backends handle conversion to physical pixels based on screen density
-//! - iOS: UIKit uses points natively (1pt = 1-3 physical pixels depending on device)
+//! - iOS: `UIKit` uses points natively (1pt = 1-3 physical pixels depending on device)
 //! - Android: Backend converts dp to physical pixels using `displayMetrics.density`
-//! - macOS: AppKit uses points (1pt = 1-2 physical pixels on Retina displays)
+//! - macOS: `AppKit` uses points (1pt = 1-2 physical pixels on Retina displays)
 //!
 //! This means `spacing: 8.0` or `width: 100.0` will appear the same physical size
 //! across all platforms and screen densities.
@@ -47,11 +47,11 @@ pub enum StretchAxis {
     /// Stretch in both directions (expand width and height)
     Both,
     /// Stretch along the parent container's main axis.
-    /// In VStack: expands vertically. In HStack: expands horizontally.
+    /// In `VStack`: expands vertically. In `HStack`: expands horizontally.
     /// Used by Spacer.
     MainAxis,
     /// Stretch along the parent container's cross axis.
-    /// In VStack: expands horizontally. In HStack: expands vertically.
+    /// In `VStack`: expands horizontally. In `HStack`: expands vertically.
     /// Used by Divider.
     CrossAxis,
 }
@@ -105,13 +105,13 @@ pub trait SubView {
     /// Which axis (or axes) this view stretches to fill available space.
     ///
     /// - `StretchAxis::None`: Content-sized, uses intrinsic size
-    /// - `StretchAxis::Horizontal`: Expands width only (e.g., TextField, Slider)
+    /// - `StretchAxis::Horizontal`: Expands width only (e.g., `TextField`, Slider)
     /// - `StretchAxis::Vertical`: Expands height only
     /// - `StretchAxis::Both`: Greedy, fills all space (e.g., Spacer, Color)
     ///
     /// Layout containers use this to distribute remaining space appropriately:
-    /// - VStack checks `stretches_vertical()` for height distribution
-    /// - HStack checks `stretches_horizontal()` for width distribution
+    /// - `VStack` checks `stretches_vertical()` for height distribution
+    /// - `HStack` checks `stretches_horizontal()` for width distribution
     fn stretch_axis(&self) -> StretchAxis;
 
     /// Layout priority for space distribution.
@@ -166,9 +166,9 @@ pub trait Layout: Debug {
 
     /// Which axis this container stretches to fill available space.
     ///
-    /// - VStack: `.horizontal` (fills available width, intrinsic height)
-    /// - HStack: `.vertical` (fills available height, intrinsic width)
-    /// - ZStack: `.both` (fills all available space)
+    /// - `VStack`: `.horizontal` (fills available width, intrinsic height)
+    /// - `HStack`: `.vertical` (fills available height, intrinsic width)
+    /// - `ZStack`: `.both` (fills all available space)
     /// - Other layouts: `.none` by default
     ///
     /// This allows parent containers to know whether to expand this container

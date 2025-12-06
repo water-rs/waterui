@@ -1,4 +1,4 @@
-#![doc = "Graphics primitives for WaterUI."]
+#![doc = "Graphics primitives for `WaterUI`."]
 #![allow(clippy::multiple_crate_versions)]
 
 extern crate alloc;

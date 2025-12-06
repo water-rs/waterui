@@ -90,7 +90,7 @@ struct WebComponents {
     scheme: Span,
     /// Full authority section (user:pass@host:port)
     authority: Span,
-    /// Host portion (e.g., "example.com" or "[::1]")
+    /// Host portion (e.g., "example.com" or "[`::1`]")
     host: Span,
     /// Port number as string (e.g., "8080"), if present
     port: Span,
@@ -207,6 +207,7 @@ impl Url {
     /// const LOCAL_PATH: Url = Url::new("/absolute/path");
     /// const RELATIVE: Url = Url::new("./relative/path");
     /// ```
+    #[must_use] 
     pub const fn new(url: &'static str) -> Self {
         Self {
             inner: Str::from_static(url),
@@ -228,7 +229,7 @@ impl Url {
     /// assert!(Url::parse("/local/path").is_none());
     /// ```
     pub fn parse(url: impl AsRef<str>) -> Option<Self> {
-        url.as_ref().parse::<Url>().ok().filter(|u| u.is_web())
+        url.as_ref().parse::<Self>().ok().filter(Url::is_web)
     }
 
     /// Creates a URL from a file path.
@@ -341,7 +342,7 @@ impl Url {
 
     /// Returns true if this is a relative path.
     #[must_use]
-    pub fn is_relative(&self) -> bool {
+    pub const fn is_relative(&self) -> bool {
         !self.is_absolute()
     }
 
@@ -624,7 +625,7 @@ impl core::str::FromStr for Url {
 
 impl From<&'static str> for Url {
     fn from(value: &'static str) -> Self {
-        Url::new(value)
+        Self::new(value)
     }
 }
 

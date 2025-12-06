@@ -388,8 +388,8 @@ pub fn available(args: AvailablePermissionsArgs) -> Result<AvailablePermissionsR
         ui::section("Available Permissions");
         println!();
         println!(
-            "{:<25} {:<5} {:<8} {}",
-            "Permission", "iOS", "Android", "Key/Permission"
+            "{:<25} {:<5} {:<8} Key/Permission",
+            "Permission", "iOS", "Android"
         );
         println!("{}", "-".repeat(75));
         for entry in &permissions {

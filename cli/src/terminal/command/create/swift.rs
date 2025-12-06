@@ -156,8 +156,7 @@ fn generate_ios_permission_keys(permissions: &[ResolvedPermission]) -> String {
                 // e.g., NSCameraUsageDescription -> INFOPLIST_KEY_NSCameraUsageDescription
                 let escaped_description = description.replace('"', "\\\"");
                 entries.push(format!(
-                    "\t\t\t\tINFOPLIST_KEY_{} = \"{}\";",
-                    key, escaped_description
+                    "\t\t\t\tINFOPLIST_KEY_{key} = \"{escaped_description}\";"
                 ));
             }
         }

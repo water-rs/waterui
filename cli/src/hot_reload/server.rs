@@ -87,8 +87,7 @@ impl Server {
         let startup_result = startup_rx
             .recv()
             .map_err(|_| {
-                HotReloadError::ServerStart(io::Error::new(
-                    io::ErrorKind::Other,
+                HotReloadError::ServerStart(io::Error::other(
                     "hot reload server failed to report its status",
                 ))
             })?
@@ -174,7 +173,7 @@ fn wait_for_server_ready(address: SocketAddr) -> Result<(), HotReloadError> {
     let delay = Duration::from_millis(20);
 
     for attempt in 0..max_attempts {
-        match TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)) {
+        match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
             Ok(_) => {
                 debug!("Hot reload server ready after {} attempts", attempt + 1);
                 return Ok(());
@@ -193,7 +192,7 @@ fn wait_for_server_ready(address: SocketAddr) -> Result<(), HotReloadError> {
 
 fn build_router(state: Arc<ServerState>, static_path: PathBuf) -> skyzen::routing::Router {
     let native_state = state.clone();
-    let web_state = state.clone();
+    let web_state = state;
 
     Route::new((
         "/hot-reload-native".at(move |ws: WebSocketUpgrade| {
@@ -514,7 +513,7 @@ pub struct NativeConnectionEvents {
 }
 
 impl NativeConnectionEvents {
-    fn new(receiver: mpsc::Receiver<NativeConnectionEvent>) -> Self {
+    const fn new(receiver: mpsc::Receiver<NativeConnectionEvent>) -> Self {
         Self { receiver }
     }
 

@@ -7,7 +7,7 @@ use core::ops::{Bound, RangeBounds, RangeInclusive};
 use alloc::{rc::Rc, string::ToString};
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{AnyView, View, configurable};
-use waterui_text::{Text, styled::StyledStr, text};
+use waterui_text::{styled::StyledStr, text};
 
 #[derive(Debug)]
 #[non_exhaustive]

@@ -168,7 +168,7 @@ pub fn run(args: AddBackendArgs) -> Result<AddBackendReport> {
                 .or(local_path);
             config.backends.swift = Some(Swift {
                 project_path: "apple".to_string(),
-                scheme: crate_name.clone(),
+                scheme: crate_name,
                 project_file: Some(format!("{app_name}.xcodeproj")),
                 version,
                 branch,

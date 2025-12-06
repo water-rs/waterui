@@ -148,14 +148,14 @@ impl Video {
 
     /// Sets the aspect ratio mode for the video.
     #[must_use]
-    pub fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
+    pub const fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
         self.0.aspect_ratio = aspect_ratio;
         self
     }
 
     /// Sets whether the video should loop when it ends.
     #[must_use]
-    pub fn loops(mut self, loops: bool) -> Self {
+    pub const fn loops(mut self, loops: bool) -> Self {
         self.0.loops = loops;
         self
     }
@@ -262,14 +262,14 @@ impl VideoPlayer {
 
     /// Sets the aspect ratio mode for the video player.
     #[must_use]
-    pub fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
+    pub const fn aspect_ratio(mut self, aspect_ratio: AspectRatio) -> Self {
         self.0.aspect_ratio = aspect_ratio;
         self
     }
 
     /// Sets whether to show native playback controls.
     #[must_use]
-    pub fn show_controls(mut self, show_controls: bool) -> Self {
+    pub const fn show_controls(mut self, show_controls: bool) -> Self {
         self.0.show_controls = show_controls;
         self
     }

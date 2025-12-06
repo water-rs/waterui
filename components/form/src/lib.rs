@@ -149,7 +149,7 @@ impl FormBuilder for i32 {
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
         waterui_controls::Stepper::new(binding)
             .label(label)
-            .range(i32::MIN..=i32::MAX)
+            .range(Self::MIN..=Self::MAX)
     }
 }
 
@@ -185,8 +185,8 @@ impl FormBuilder for f32 {
             0.0..=1.0,
             &Binding::mapping(
                 binding,
-                |val| val as f64,
-                |binding, val| binding.set(val as f32),
+                |val| f64::from(val),
+                |binding, val| binding.set(val as Self),
             ),
         )
         .label(label)

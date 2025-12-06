@@ -111,7 +111,7 @@ pub trait GpuRenderer: Send + 'static {
 ///
 /// `GpuSurface` provides direct access to wgpu for custom rendering at
 /// display refresh rates (60-120fps+). It stretches to fill available
-/// space by default, similar to SwiftUI's `Color`.
+/// space by default, similar to `SwiftUI`'s `Color`.
 ///
 /// # Layout Behavior
 ///

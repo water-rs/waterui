@@ -22,13 +22,13 @@ pub use apple::{AppleSimulatorDevice, MacosDevice};
 /// Result of a device build operation.
 #[derive(Debug, Clone)]
 pub struct DeviceBuildResult {
-    /// Path to the built library artifact (e.g., libwaterui_app.a or .so)
+    /// Path to the built library artifact (e.g., `libwaterui_app.a` or .so)
     pub library_path: std::path::PathBuf,
     /// Target triple that was built
     pub target_triple: &'static str,
 }
 
-/// Abstraction for a device that can build, package, and run WaterUI apps.
+/// Abstraction for a device that can build, package, and run `WaterUI` apps.
 ///
 /// The Device trait encapsulates the full lifecycle of deploying an app:
 /// 1. `prepare()` - Set up toolchain and device (e.g., launch emulator)
