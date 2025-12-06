@@ -45,15 +45,16 @@ pub struct Server {
 }
 
 impl Server {
-    /// Start the hot reload server.
+    /// Start the hot reload server on the specified port.
     ///
     /// Returns the server and a receiver for connection events. The server
     /// sends notifications to connected clients, while the receiver allows
     /// monitoring connection state.
     ///
     /// # Errors
-    /// Returns an error if the server fails to start or bind to a port.
+    /// Returns an error if the server fails to start or bind to the port.
     pub fn start(
+        port: u16,
         static_path: PathBuf,
         log_filter: Option<String>,
     ) -> Result<(Self, NativeConnectionEvents), HotReloadError> {
@@ -73,7 +74,7 @@ impl Server {
         let thread = thread::spawn(move || {
             skyzen_runtime::init_logging();
             let router = build_router(app_state, static_path);
-            let address = reserve_loopback_addr().expect("Failed to reserve loopback address");
+            let address = SocketAddr::from(([127, 0, 0, 1], port));
 
             // SAFETY: The address string is well-formed and under our control.
             unsafe {
@@ -165,13 +166,6 @@ struct ServerState {
     connection_event_tx: mpsc::Sender<NativeConnectionEvent>,
     log_filter: Option<String>,
     shutdown: Arc<AtomicBool>,
-}
-
-fn reserve_loopback_addr() -> io::Result<SocketAddr> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    drop(listener);
-    Ok(addr)
 }
 
 fn wait_for_server_ready(address: SocketAddr) -> Result<(), HotReloadError> {
