@@ -1,8 +1,8 @@
 use crate::array::WuiArray;
+use crate::closure::WuiFn;
 use crate::components::text::WuiText;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, WuiAnyView, ffi_view};
-use crate::closure::WuiFn;
+use crate::{IntoFFI, WuiAnyView};
 use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
