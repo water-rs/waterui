@@ -10,7 +10,7 @@ use tokio::process::Command as AsyncCommand;
 use which::which;
 
 use super::{
-    ToolchainError, Toolchain,
+    Toolchain, ToolchainError,
     installation::{Empty, Installation, InstallationReport, Progress},
 };
 
@@ -114,13 +114,17 @@ impl Toolchain for Swift {
 
     async fn check(&self) -> Result<(), ToolchainError> {
         if !cfg!(target_os = "macos") {
-            return Err(ToolchainError::unfixable("Swift development requires macOS")
-                .with_suggestion("Use a Mac or set up a macOS CI environment"));
+            return Err(
+                ToolchainError::unfixable("Swift development requires macOS")
+                    .with_suggestion("Use a Mac or set up a macOS CI environment"),
+            );
         }
 
         if !Self::has_xcode_cli_tools() {
-            return Err(ToolchainError::unfixable("Xcode Command Line Tools are not installed")
-                .with_suggestion("Run: xcode-select --install"));
+            return Err(
+                ToolchainError::unfixable("Xcode Command Line Tools are not installed")
+                    .with_suggestion("Run: xcode-select --install"),
+            );
         }
 
         if !Self::has_swift() {
@@ -148,7 +152,9 @@ impl Toolchain for Swift {
 
     fn fix(&self) -> Result<Self::Installation, ToolchainError> {
         if !cfg!(target_os = "macos") {
-            return Err(ToolchainError::unfixable("Swift development requires macOS"));
+            return Err(ToolchainError::unfixable(
+                "Swift development requires macOS",
+            ));
         }
 
         if !Self::has_xcode_cli_tools() {

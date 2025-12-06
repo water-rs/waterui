@@ -28,6 +28,7 @@ impl core::fmt::Debug for TextNode {
 
 impl TextNode {
     /// Builds a text node from the provided `TextConfig`.
+    #[must_use]
     pub fn new(config: TextConfig, _env: &Environment) -> Self {
         let content = NodeSignal::new(config.content);
         let plain = content.current().to_plain().to_string();

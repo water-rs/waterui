@@ -108,10 +108,7 @@ impl DrawingContext<'_> {
     /// Returns the center point of the canvas.
     #[must_use]
     pub fn center(&self) -> kurbo::Point {
-        kurbo::Point::new(
-            f64::from(self.width) / 2.0,
-            f64::from(self.height) / 2.0,
-        )
+        kurbo::Point::new(f64::from(self.width) / 2.0, f64::from(self.height) / 2.0)
     }
 
     /// Fills a shape with a color.
@@ -149,13 +146,8 @@ impl DrawingContext<'_> {
         color: peniko::Color,
         transform: kurbo::Affine,
     ) {
-        self.scene.fill(
-            peniko::Fill::NonZero,
-            transform,
-            color,
-            None,
-            &shape,
-        );
+        self.scene
+            .fill(peniko::Fill::NonZero, transform, color, None, &shape);
     }
 
     /// Strokes a shape with a color and line width.
@@ -167,30 +159,15 @@ impl DrawingContext<'_> {
     /// ```
     pub fn stroke(&mut self, shape: impl kurbo::Shape, color: peniko::Color, width: f64) {
         let stroke = kurbo::Stroke::new(width);
-        self.scene.stroke(
-            &stroke,
-            kurbo::Affine::IDENTITY,
-            color,
-            None,
-            &shape,
-        );
+        self.scene
+            .stroke(&stroke, kurbo::Affine::IDENTITY, color, None, &shape);
     }
 
     /// Strokes a shape with a brush and line width.
-    pub fn stroke_brush(
-        &mut self,
-        shape: impl kurbo::Shape,
-        brush: &peniko::Brush,
-        width: f64,
-    ) {
+    pub fn stroke_brush(&mut self, shape: impl kurbo::Shape, brush: &peniko::Brush, width: f64) {
         let stroke = kurbo::Stroke::new(width);
-        self.scene.stroke(
-            &stroke,
-            kurbo::Affine::IDENTITY,
-            brush,
-            None,
-            &shape,
-        );
+        self.scene
+            .stroke(&stroke, kurbo::Affine::IDENTITY, brush, None, &shape);
     }
 
     /// Strokes a shape with custom stroke style.
@@ -200,13 +177,8 @@ impl DrawingContext<'_> {
         color: peniko::Color,
         stroke: &kurbo::Stroke,
     ) {
-        self.scene.stroke(
-            stroke,
-            kurbo::Affine::IDENTITY,
-            color,
-            None,
-            &shape,
-        );
+        self.scene
+            .stroke(stroke, kurbo::Affine::IDENTITY, color, None, &shape);
     }
 
     /// Strokes a shape with custom stroke style and transform.
@@ -313,13 +285,7 @@ where
         };
 
         renderer
-            .render_to_texture(
-                frame.device,
-                frame.queue,
-                &self.scene,
-                &frame.view,
-                &params,
-            )
+            .render_to_texture(frame.device, frame.queue, &self.scene, &frame.view, &params)
             .expect("Failed to render Vello scene");
     }
 }

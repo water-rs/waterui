@@ -288,12 +288,20 @@ pub fn capture(args: CaptureArgs) -> Result<CaptureReport> {
             || p.starts_with("visionOS")
             || p == "macOS" =>
         {
-            capture_apple_simulator(&device_info.identifier, &output_path)
-                .with_context(|| format!("Failed to capture screenshot from Apple device '{}'", device_info.name))?;
+            capture_apple_simulator(&device_info.identifier, &output_path).with_context(|| {
+                format!(
+                    "Failed to capture screenshot from Apple device '{}'",
+                    device_info.name
+                )
+            })?;
         }
         "Android" => {
-            capture_android_device(device_info, &output_path)
-                .with_context(|| format!("Failed to capture screenshot from Android device '{}'", device_info.name))?;
+            capture_android_device(device_info, &output_path).with_context(|| {
+                format!(
+                    "Failed to capture screenshot from Android device '{}'",
+                    device_info.name
+                )
+            })?;
         }
         _ => {
             bail!(
@@ -344,10 +352,7 @@ fn find_device<'a>(
             let suggestion = if available_platforms.is_empty() {
                 "No devices are currently available.".to_string()
             } else {
-                format!(
-                    "Available platforms: {}",
-                    available_platforms.join(", ")
-                )
+                format!("Available platforms: {}", available_platforms.join(", "))
             };
 
             Err(eyre!(
@@ -611,7 +616,11 @@ pub fn tap(args: TapArgs) -> Result<TapReport> {
         // Small delay to let UI settle
         thread::sleep(Duration::from_millis(300));
         let after = capture_temp_screenshot(device_info)?;
-        Some(compute_and_report_diff(&before, &after, args.diff.as_deref())?)
+        Some(compute_and_report_diff(
+            &before,
+            &after,
+            args.diff.as_deref(),
+        )?)
     } else {
         None
     };
@@ -666,7 +675,14 @@ pub fn swipe(args: SwipeArgs) -> Result<SwipeReport> {
             )?;
         }
         "Android" => {
-            swipe_android(device_info, args.x1, args.y1, args.x2, args.y2, args.duration)?;
+            swipe_android(
+                device_info,
+                args.x1,
+                args.y1,
+                args.x2,
+                args.y2,
+                args.duration,
+            )?;
         }
         _ => {
             bail!(
@@ -680,7 +696,11 @@ pub fn swipe(args: SwipeArgs) -> Result<SwipeReport> {
     let diff_result = if let Some(before) = before_image {
         thread::sleep(Duration::from_millis(300));
         let after = capture_temp_screenshot(device_info)?;
-        Some(compute_and_report_diff(&before, &after, args.diff.as_deref())?)
+        Some(compute_and_report_diff(
+            &before,
+            &after,
+            args.diff.as_deref(),
+        )?)
     } else {
         None
     };
@@ -742,7 +762,11 @@ pub fn type_text(args: TypeArgs) -> Result<TypeReport> {
     let diff_result = if let Some(before) = before_image {
         thread::sleep(Duration::from_millis(300));
         let after = capture_temp_screenshot(device_info)?;
-        Some(compute_and_report_diff(&before, &after, args.diff.as_deref())?)
+        Some(compute_and_report_diff(
+            &before,
+            &after,
+            args.diff.as_deref(),
+        )?)
     } else {
         None
     };
@@ -802,7 +826,11 @@ pub fn key(args: KeyArgs) -> Result<KeyReport> {
     let diff_result = if let Some(before) = before_image {
         thread::sleep(Duration::from_millis(300));
         let after = capture_temp_screenshot(device_info)?;
-        Some(compute_and_report_diff(&before, &after, args.diff.as_deref())?)
+        Some(compute_and_report_diff(
+            &before,
+            &after,
+            args.diff.as_deref(),
+        )?)
     } else {
         None
     };
@@ -1190,10 +1218,8 @@ fn check_idb_output(output: &std::process::Output, action: &str) -> Result<()> {
 // ============================================================================
 
 fn capture_temp_screenshot(device_info: &DeviceInfo) -> Result<DynamicImage> {
-    let temp_path = std::env::temp_dir().join(format!(
-        "waterui_screenshot_{}.png",
-        std::process::id()
-    ));
+    let temp_path =
+        std::env::temp_dir().join(format!("waterui_screenshot_{}.png", std::process::id()));
 
     match device_info.platform.as_str() {
         p if is_apple_platform(p) => {

@@ -104,7 +104,11 @@ pub fn error(message: impl AsRef<str>) {
     if output::global_output_format().is_json() {
         return;
     }
-    println!("{} {}", style("✗").red().bold(), style(message.as_ref()).red().bold());
+    println!(
+        "{} {}",
+        style("✗").red().bold(),
+        style(message.as_ref()).red().bold()
+    );
 }
 
 /// Print a dimmed/muted line (for less important info like frame numbers).

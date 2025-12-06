@@ -12,7 +12,7 @@ use tokio::process::Command as AsyncCommand;
 use which::which;
 
 use super::{
-    ToolchainError, Toolchain,
+    Toolchain, ToolchainError,
     installation::{Empty, Installation, InstallationReport, Many, Progress, Sequence},
     rust::RustTarget,
 };
@@ -283,12 +283,13 @@ impl Toolchain for Android {
         }
 
         if !Self::has_java() {
-            return Err(ToolchainError::missing("JDK not found")
-                .with_suggestion(if cfg!(target_os = "macos") {
+            return Err(ToolchainError::missing("JDK not found").with_suggestion(
+                if cfg!(target_os = "macos") {
                     "Run: brew install --cask temurin@17"
                 } else {
                     "Install JDK 17 and set JAVA_HOME"
-                }));
+                },
+            ));
         }
 
         if self.require_cmake && !Self::has_cmake() {
@@ -298,8 +299,11 @@ impl Toolchain for Android {
 
         let missing = self.missing_rust_targets();
         if !missing.is_empty() {
-            return Err(ToolchainError::missing(format!("Missing Rust targets: {}", missing.join(", ")))
-                .with_suggestion(format!("Run: rustup target add {}", missing.join(" "))));
+            return Err(ToolchainError::missing(format!(
+                "Missing Rust targets: {}",
+                missing.join(", ")
+            ))
+            .with_suggestion(format!("Run: rustup target add {}", missing.join(" "))));
         }
 
         Ok(())
@@ -307,23 +311,27 @@ impl Toolchain for Android {
 
     fn fix(&self) -> Result<Self::Installation, ToolchainError> {
         let mut sdk_components = Vec::new();
-        let need_java;
 
         if Self::find_sdk_path().is_none() {
-            return Err(ToolchainError::unfixable("Android SDK not found")
-                .with_suggestion("Install Android Studio from https://developer.android.com/studio"));
+            return Err(
+                ToolchainError::unfixable("Android SDK not found").with_suggestion(
+                    "Install Android Studio from https://developer.android.com/studio",
+                ),
+            );
         }
 
         if Self::find_ndk_path().is_none() {
             if Self::find_sdkmanager().is_some() {
                 sdk_components.push(SdkComponent::new("ndk;26.1.10909125", "Android NDK"));
             } else {
-                return Err(ToolchainError::unfixable("NDK not found, sdkmanager unavailable")
-                    .with_suggestion("Install NDK via Android Studio"));
+                return Err(
+                    ToolchainError::unfixable("NDK not found, sdkmanager unavailable")
+                        .with_suggestion("Install NDK via Android Studio"),
+                );
             }
         }
 
-        need_java = !Self::has_java();
+        let need_java = !Self::has_java();
 
         if self.require_cmake && !Self::has_cmake() {
             if Self::find_sdkmanager().is_some() {
@@ -334,7 +342,8 @@ impl Toolchain for Android {
             }
         }
 
-        let missing_targets: Vec<_> = self.missing_rust_targets()
+        let missing_targets: Vec<_> = self
+            .missing_rust_targets()
             .into_iter()
             .map(RustTarget::new)
             .collect();
@@ -387,7 +396,10 @@ pub struct SdkComponent {
 
 impl SdkComponent {
     pub fn new(package: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { package: package.into(), name: name.into() }
+        Self {
+            package: package.into(),
+            name: name.into(),
+        }
     }
 }
 
@@ -424,12 +436,18 @@ impl Installation for SdkComponent {
 
             if !status.success() {
                 progress.fail(&self.name, "failed");
-                return Err(ToolchainError::install_failed(format!("Failed to install {}", self.package))
-                    .with_suggestion("Try: sdkmanager --licenses"));
+                return Err(ToolchainError::install_failed(format!(
+                    "Failed to install {}",
+                    self.package
+                ))
+                .with_suggestion("Try: sdkmanager --licenses"));
             }
 
             progress.done(&self.name, "installed");
-            Ok(InstallationReport::completed(format!("Installed {}", self.name)))
+            Ok(InstallationReport::completed(format!(
+                "Installed {}",
+                self.name
+            )))
         }
     }
 }
@@ -475,7 +493,9 @@ impl Installation for HomebrewJdk {
             }
 
             progress.done("jdk", "installed");
-            Ok(InstallationReport::completed("Installed JDK 17 via Homebrew"))
+            Ok(InstallationReport::completed(
+                "Installed JDK 17 via Homebrew",
+            ))
         }
     }
 }

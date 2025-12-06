@@ -8,7 +8,7 @@ use crate::{
     build_tree,
 };
 
-/// Entry point for rendering WaterUI views through Hydrolysis.
+/// Entry point for rendering `WaterUI` views through Hydrolysis.
 ///
 /// # TODO
 /// - diff and reuse render trees rather than rebuilding every frame.
@@ -29,7 +29,7 @@ impl<B: RenderBackend> core::fmt::Debug for HydrolysisRenderer<B> {
 impl<B: RenderBackend> HydrolysisRenderer<B> {
     /// Creates a renderer backed by the provided surface implementation.
     #[must_use]
-    pub fn new(backend: B) -> Self {
+    pub const fn new(backend: B) -> Self {
         Self {
             backend,
             tree: RenderTree::new(),
@@ -48,12 +48,12 @@ impl<B: RenderBackend> HydrolysisRenderer<B> {
     }
 
     /// Returns a reference to the underlying backend.
-    pub fn backend(&self) -> &B {
+    pub const fn backend(&self) -> &B {
         &self.backend
     }
 
     /// Returns a mutable reference to the underlying backend.
-    pub fn backend_mut(&mut self) -> &mut B {
+    pub const fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
 }
