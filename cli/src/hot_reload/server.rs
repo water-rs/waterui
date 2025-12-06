@@ -223,7 +223,7 @@ async fn handle_native_socket(mut socket: WebSocket, state: Arc<ServerState>) {
             "filter": filter,
         })
         .to_string();
-        if let Err(err) = socket.send(WebSocketMessage::Text(message.into())).await {
+        if let Err(err) = socket.send_text(message).await {
             warn!("Failed to send log filter to CLI: {err}");
         }
     }
@@ -257,9 +257,9 @@ async fn handle_native_socket(mut socket: WebSocket, state: Arc<ServerState>) {
                         break;
                     }
                     Ok(WebSocketMessage::Ping(payload)) => {
-                        let _ = socket.send(WebSocketMessage::Pong(payload)).await;
+                        let _ = socket.send_message(WebSocketMessage::Pong(payload)).await;
                     }
-                    Ok(WebSocketMessage::Binary(_) | WebSocketMessage::Pong(_) | WebSocketMessage::Frame(_)) => {}
+                    Ok(WebSocketMessage::Binary(_) | WebSocketMessage::Pong(_)) => {}
                     Err(err) => {
                         let reason = DisconnectReason::Abnormal {
                             details: err.to_string(),
@@ -281,7 +281,7 @@ async fn handle_native_socket(mut socket: WebSocket, state: Arc<ServerState>) {
                                     path.display(),
                                     data.len()
                                 );
-                                if let Err(err) = socket.send(WebSocketMessage::Binary(data.into())).await {
+                                if let Err(err) = socket.send_message(WebSocketMessage::Binary(data.into())).await {
                                     let reason = DisconnectReason::Abnormal {
                                         details: err.to_string(),
                                     };
@@ -329,11 +329,7 @@ async fn handle_web_socket(mut socket: WebSocket, state: Arc<ServerState>) {
             msg = rx.recv() => {
                 match msg {
                     Ok(HotReloadMessage::Web) => {
-                        if socket
-                            .send(WebSocketMessage::Text("reload".to_string().into()))
-                            .await
-                            .is_err()
-                        {
+                        if socket.send_text("reload").await.is_err() {
                             break;
                         }
                     }

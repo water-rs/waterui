@@ -26,6 +26,7 @@ pub mod platform;
 
 pub mod backend;
 pub mod build;
+pub mod cancel;
 pub mod crash;
 pub mod device;
 pub mod doctor;
