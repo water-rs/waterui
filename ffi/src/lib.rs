@@ -46,36 +46,38 @@ use crate::array::WuiArray;
 #[macro_export]
 macro_rules! export {
     () => {
-        /// Initializes a new WaterUI environment
-        ///
-        /// # Safety
-        ///
-        /// This function must be called on main thread.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
-            unsafe {
-                $crate::__init();
+        const _: () = {
+            /// Initializes a new WaterUI environment
+            ///
+            /// # Safety
+            ///
+            /// This function must be called on main thread.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
+                unsafe {
+                    $crate::__init();
+                }
+                let env: waterui::Environment = init();
+                $crate::IntoFFI::into_ffi(env)
             }
-            let env: waterui::Environment = init();
-            $crate::IntoFFI::into_ffi(env)
-        }
 
-        #[cfg(waterui_hot_reload_lib)]
-        ::waterui::debug::hot_reloadable_library!(main);
+            #[cfg(waterui_hot_reload_lib)]
+            ::waterui::debug::hot_reloadable_library!(main);
 
-        /// Creates the main view for the WaterUI application
-        ///
-        /// # Safety
-        /// This function must be called on main thread.
-        #[unsafe(no_mangle)]
-        #[allow(unexpected_cfgs)]
-        pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
-            let view = main();
+            /// Creates the main view for the WaterUI application
+            ///
+            /// # Safety
+            /// This function must be called on main thread.
+            #[unsafe(no_mangle)]
+            #[allow(unexpected_cfgs)]
+            pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
+                let view = main();
 
-            #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
-            let view = waterui::debug::hot_reload::Hotreload::new(view);
-            $crate::IntoFFI::into_ffi(AnyView::new(view))
-        }
+                #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
+                let view = waterui::debug::hot_reload::Hotreload::with_compile_env(view);
+                $crate::IntoFFI::into_ffi(AnyView::new(view))
+            }
+        };
     };
 }
 
