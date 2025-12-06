@@ -4,21 +4,21 @@
 //! that can be used to create a clear distinction between different sections
 //! or elements in a user interface.
 
-use waterui_color::{Color, Grey};
-use waterui_core::{View, layout::StretchAxis, raw_view};
+use waterui_color::Grey;
+use waterui_core::View;
 use waterui_layout::stack;
 
 use crate::ViewExt;
 
 /// A thin line that separates content.
 ///
-/// Divider adapts to its parent container: in VStack it spans horizontally,
-/// in HStack it spans vertically.
+/// Divider adapts to its parent container: in `VStack` it spans horizontally,
+/// in `HStack` it spans vertically.
 ///
 /// # Layout Behavior
 ///
-/// - **In VStack:** Horizontal line spanning full width (1pt height)
-/// - **In HStack:** Vertical line spanning full height (1pt width)
+/// - **In `VStack`:** Horizontal line spanning full width (1pt height)
+/// - **In `HStack`:** Vertical line spanning full height (1pt width)
 ///
 /// # Examples
 ///
