@@ -44,7 +44,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: Determined by wrapped content + badge indicator overlay
     //
     // ═══════════════════════════════════════════════════════════════════════════

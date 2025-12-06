@@ -73,6 +73,5 @@ pub enum DrawCommand {
         size: f32,
     },
     /// Reserved for future commands (gradients, images, strokes, etc.).
-    
     Placeholder(&'static str),
 }

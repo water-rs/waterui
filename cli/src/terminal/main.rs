@@ -379,9 +379,7 @@ fn collect_error_messages(error: &Report) -> Vec<String> {
         })
         .filter(|message| !message.is_empty())
         .fold(Vec::new(), |mut messages, message| {
-            if messages
-                .last() != Some(&message)
-            {
+            if messages.last() != Some(&message) {
                 messages.push(message);
             }
             messages

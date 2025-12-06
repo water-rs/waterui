@@ -37,7 +37,7 @@ pub struct HotReloadConfig {
 }
 
 impl HotReloadConfig {
-    #[must_use] 
+    #[must_use]
     pub const fn new(host: String, port: u16) -> Self {
         Self { host, port }
     }
@@ -61,12 +61,12 @@ impl HotReloadConfig {
         Self { host, port }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn host(&self) -> &str {
         self.host.as_str()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn port(&self) -> u16 {
         self.port
     }

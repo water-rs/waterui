@@ -11,8 +11,7 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, SubView,
-    container::FixedContainer, stack::Alignment,
+    Layout, Point, ProposalSize, Rect, Size, SubView, container::FixedContainer, stack::Alignment,
 };
 
 /// Cached measurement for a child during layout
@@ -73,11 +72,7 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         // Overlay size is driven entirely by the base child (index 0). If the base
         // provides no intrinsic size, fall back to the parent's constraints.
         let base_size = children
@@ -102,11 +97,7 @@ impl Layout for OverlayLayout {
         Size::new(width.max(0.0), height.max(0.0))
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &[&dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }
@@ -135,7 +126,10 @@ impl Layout for OverlayLayout {
             } else {
                 base.size.height
             };
-            placements.push(Rect::new(bounds.origin(), Size::new(base_width, base_height)));
+            placements.push(Rect::new(
+                bounds.origin(),
+                Size::new(base_width, base_height),
+            ));
         }
 
         // Overlay children are aligned within the bounds

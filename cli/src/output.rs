@@ -475,7 +475,11 @@ impl StructuredError {
     /// Create from a `color_eyre` Report.
     #[must_use]
     pub fn from_report(report: &color_eyre::eyre::Report) -> Self {
-        let causes: Vec<String> = report.chain().skip(1).map(std::string::ToString::to_string).collect();
+        let causes: Vec<String> = report
+            .chain()
+            .skip(1)
+            .map(std::string::ToString::to_string)
+            .collect();
 
         Self {
             message: report.to_string(),
