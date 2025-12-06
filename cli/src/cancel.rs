@@ -28,7 +28,10 @@ pub trait CancellationTokenExt {
     ///
     /// Returns `Err(Cancelled)` if the token is cancelled before the future completes,
     /// otherwise returns the result of the future.
-    fn run_result<F, T, E>(&self, future: F) -> impl Future<Output = Result<T, CancelledOr<E>>> + Send
+    fn run_result<F, T, E>(
+        &self,
+        future: F,
+    ) -> impl Future<Output = Result<T, CancelledOr<E>>> + Send
     where
         F: Future<Output = Result<T, E>> + Send,
         T: Send,
@@ -51,7 +54,10 @@ impl CancellationTokenExt for CancellationToken {
         }
     }
 
-    fn run_result<F, T, E>(&self, future: F) -> impl Future<Output = Result<T, CancelledOr<E>>> + Send
+    fn run_result<F, T, E>(
+        &self,
+        future: F,
+    ) -> impl Future<Output = Result<T, CancelledOr<E>>> + Send
     where
         F: Future<Output = Result<T, E>> + Send,
         T: Send,
@@ -132,7 +138,7 @@ pub async fn wait_child_cancellable(
 /// Create a root cancellation token and register Ctrl+C handler.
 ///
 /// Returns a token that will be cancelled when the user presses Ctrl+C.
-#[must_use] 
+#[must_use]
 pub fn create_root_token() -> CancellationToken {
     let token = CancellationToken::new();
     let handler_token = token.clone();

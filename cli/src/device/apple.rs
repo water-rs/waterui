@@ -21,7 +21,7 @@ use which::which;
 use crate::WATERUI_TRACING_PREFIX;
 use crate::{
     backend::apple::ensure_macos_host,
-    build::{Builder, BuildOptions, CargoBuilder},
+    build::{BuildOptions, Builder, CargoBuilder},
     crash::CrashReport,
     device::{Device, DeviceBuildResult},
     output,
@@ -214,8 +214,8 @@ impl Device for AppleSimulatorDevice {
         let target = self.simulator_target();
         let device_reference = target.reference();
 
-        let already_booted = simulator_current_state(device_reference)?
-            .as_deref() == Some("Booted");
+        let already_booted =
+            simulator_current_state(device_reference)?.as_deref() == Some("Booted");
 
         if already_booted {
             debug!("Simulator {device_reference} is already booted; skipping boot step");

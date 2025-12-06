@@ -1,4 +1,4 @@
-//! Collection of render nodes that correspond to WaterUI components.
+//! Collection of render nodes that correspond to `WaterUI` components.
 
 pub mod controls;
 pub mod divider;
