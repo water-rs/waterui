@@ -1,4 +1,4 @@
-//! Debug utilities for WaterUI.
+//! Debug utilities for `WaterUI`.
 //!
 //! This module provides development-time features including hot reload support.
 //! Only available in debug builds (`debug_assertions`).
