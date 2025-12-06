@@ -34,9 +34,6 @@ mod parser;
 
 pub use error::ParseError;
 
-// Re-export parser for documentation and testing
-pub use parser::parse_url;
-
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 
@@ -74,16 +71,6 @@ impl Span {
     #[inline]
     const fn is_present(self) -> bool {
         self.start != 0xFFFF
-    }
-
-    /// Get the length of the span in bytes
-    #[inline]
-    const fn len(self) -> usize {
-        if self.is_present() {
-            (self.end - self.start) as usize
-        } else {
-            0
-        }
     }
 }
 
@@ -199,6 +186,17 @@ impl Url {
     ///
     /// For runtime string parsing, use the `FromStr` trait instead:
     /// `url_string.parse::<Url>()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the URL is malformed. This enables compile-time syntax checking:
+    /// invalid URLs will cause compilation errors when used in const contexts.
+    ///
+    /// ```compile_fail
+    /// # use waterui_url::Url;
+    /// // This will fail at compile time - missing host
+    /// const INVALID: Url = Url::new("https://");
+    /// ```
     ///
     /// # Examples
     ///
