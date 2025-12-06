@@ -687,11 +687,13 @@ fn idb_fix_suggestion() -> Option<FixSuggestion> {
 }
 
 fn check_apple_cmake() -> RowOutcome {
-    if let Ok(path) = which("cmake") { RowOutcome::new(
-        Row::pass("`cmake` available for Apple builds")
-            .with_indent(1)
-            .with_detail(path.display().to_string()),
-    ) } else {
+    if let Ok(path) = which("cmake") {
+        RowOutcome::new(
+            Row::pass("`cmake` available for Apple builds")
+                .with_indent(1)
+                .with_detail(path.display().to_string()),
+        )
+    } else {
         let row = Row::fail("`cmake` not found for Apple builds")
             .with_indent(1)
             .with_detail(

@@ -28,7 +28,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: Determined by platform color picker UI
     //
     // ═══════════════════════════════════════════════════════════════════════════

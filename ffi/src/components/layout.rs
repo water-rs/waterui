@@ -262,7 +262,7 @@ impl IntoFFI for Rect {
     fn into_ffi(self) -> Self::FFI {
         WuiRect {
             origin: self.origin().into_ffi(),
-            size: self.size().clone().into_ffi(),
+            size: (*self.size()).into_ffi(),
         }
     }
 }

@@ -3,7 +3,9 @@
 //! This module provides complete URL parsing logic that can be evaluated at compile time.
 //! All functions use byte-level operations to work in const contexts.
 
-use crate::{BlobComponents, DataComponents, LocalComponents, ParsedComponents, Span, WebComponents};
+use crate::{
+    BlobComponents, DataComponents, LocalComponents, ParsedComponents, Span, WebComponents,
+};
 
 // ============================================================================
 // Public API
@@ -65,12 +67,15 @@ const fn validate_web_url(web: &WebComponents, bytes: &[u8]) {
         // Check all characters are digits
         let mut i = port_start;
         while i < port_end {
-            assert!(is_digit(bytes[i]), "Invalid port: contains non-digit characters");
+            assert!(
+                is_digit(bytes[i]),
+                "Invalid port: contains non-digit characters"
+            );
             i += 1;
         }
 
         // Port number should be reasonable (1-65535)
-        assert!(port_end - port_start <= 5, "Invalid port: too many digits")
+        assert!(port_end - port_start <= 5, "Invalid port: too many digits");
     }
 }
 

@@ -283,11 +283,20 @@ pub struct CleanReport {
 }
 
 waterui_cli::impl_report!(CleanReport, |r| {
-    let actions_count = r.actions.iter().filter(|a| a.result == CleanActionResult::Removed || a.result == CleanActionResult::Done).count();
+    let actions_count = r
+        .actions
+        .iter()
+        .filter(|a| a.result == CleanActionResult::Removed || a.result == CleanActionResult::Done)
+        .count();
     if r.errors.is_empty() {
         format!("Cleaned {} items in {}", actions_count, r.workspace)
     } else {
-        format!("Cleaned {} items with {} errors in {}", actions_count, r.errors.len(), r.workspace)
+        format!(
+            "Cleaned {} items with {} errors in {}",
+            actions_count,
+            r.errors.len(),
+            r.workspace
+        )
     }
 });
 

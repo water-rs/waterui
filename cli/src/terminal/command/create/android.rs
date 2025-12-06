@@ -669,7 +669,8 @@ fn generate_android_permissions(permissions: &[ResolvedPermission]) -> String {
     use std::collections::HashSet;
 
     // Always include INTERNET permission by default
-    let mut entries = vec!["    <uses-permission android:name=\"android.permission.INTERNET\" />".to_string()];
+    let mut entries =
+        vec!["    <uses-permission android:name=\"android.permission.INTERNET\" />".to_string()];
     let mut seen: HashSet<String> = HashSet::new();
     seen.insert("android.permission.INTERNET".to_string());
 
