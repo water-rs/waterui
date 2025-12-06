@@ -1,0 +1,14 @@
+[package]
+name = "canvas-demo"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui = { path = "../..", features = ["graphics"] }
+waterui-ffi = { path = "../../ffi" }
+
+[workspace]
