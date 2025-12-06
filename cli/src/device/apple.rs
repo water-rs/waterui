@@ -14,17 +14,19 @@ use std::{
 
 use color_eyre::eyre::{Context, Report, Result, bail};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use which::which;
 
 use crate::WATERUI_TRACING_PREFIX;
 use crate::{
     backend::apple::ensure_macos_host,
+    build::{Builder, BuildOptions, CargoBuilder},
     crash::CrashReport,
-    device::Device,
+    device::{Device, DeviceBuildResult},
     output,
     platform::{
-        PlatformKind,
+        Platform, PlatformKind,
         apple::{ApplePlatform, AppleSimulatorKind, AppleSimulatorTarget, AppleTarget},
     },
     project::{Project, RunOptions, Swift},
@@ -60,6 +62,24 @@ impl Device for MacosDevice {
     fn prepare(&self, _project: &Project, _options: &RunOptions) -> Result<()> {
         ensure_macos_host("macOS runtime")?;
         Ok(())
+    }
+
+    fn build_async(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<DeviceBuildResult>> + Send {
+        let target = self.platform.target_triple();
+        let builder = CargoBuilder::from_project(project, target);
+
+        async move {
+            let result = builder.build(options, cancel).await?;
+            Ok(DeviceBuildResult {
+                library_path: result.artifact_path,
+                target_triple: target,
+            })
+        }
     }
 
     fn run(
@@ -165,6 +185,24 @@ impl Device for AppleSimulatorDevice {
         )?;
         debug_launch_simulator_app()?;
         Ok(())
+    }
+
+    fn build_async(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<DeviceBuildResult>> + Send {
+        let target = self.platform.target_triple();
+        let builder = CargoBuilder::from_project(project, target);
+
+        async move {
+            let result = builder.build(options, cancel).await?;
+            Ok(DeviceBuildResult {
+                library_path: result.artifact_path,
+                target_triple: target,
+            })
+        }
     }
 
     fn run(
