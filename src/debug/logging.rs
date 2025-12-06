@@ -44,9 +44,10 @@ pub fn register_sender(sender: Sender<String>) {
 /// Clear the outbound sender.
 pub fn clear_sender() {
     if let Some(slot) = OUTBOUND_SENDER.get()
-        && let Ok(mut guard) = slot.lock() {
-            guard.take();
-        }
+        && let Ok(mut guard) = slot.lock()
+    {
+        guard.take();
+    }
 }
 
 fn get_sender() -> Option<Sender<String>> {

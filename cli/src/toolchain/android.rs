@@ -41,7 +41,7 @@ impl Android {
     }
 
     #[must_use]
-    pub fn with_cmake(mut self) -> Self {
+    pub const fn with_cmake(mut self) -> Self {
         self.require_cmake = true;
         self
     }
@@ -323,17 +323,7 @@ impl Toolchain for Android {
             }
         }
 
-        if !Self::has_java() {
-            #[cfg(target_os = "macos")]
-            { need_java = true; }
-            #[cfg(not(target_os = "macos"))]
-            {
-                return Err(ToolchainError::unfixable("JDK not found")
-                    .with_suggestion("Install JDK 17 from https://adoptium.net"));
-            }
-        } else {
-            need_java = false;
-        }
+        need_java = !Self::has_java();
 
         if self.require_cmake && !Self::has_cmake() {
             if Self::find_sdkmanager().is_some() {
@@ -428,7 +418,7 @@ impl Installation for SdkComponent {
                 .status()
                 .await
                 .map_err(|e| {
-                    progress.fail(&self.name, &format!("{e}"));
+                    progress.fail(&self.name, format!("{e}"));
                     ToolchainError::install_failed(format!("Failed to run sdkmanager: {e}"))
                 })?;
 
@@ -460,7 +450,7 @@ impl Display for HomebrewJdk {
 impl Installation for HomebrewJdk {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "JDK 17"
     }
 
@@ -474,7 +464,7 @@ impl Installation for HomebrewJdk {
                 .status()
                 .await
                 .map_err(|e| {
-                    progress.fail("jdk", &format!("{e}"));
+                    progress.fail("jdk", format!("{e}"));
                     ToolchainError::install_failed(format!("Failed to run brew: {e}"))
                 })?;
 

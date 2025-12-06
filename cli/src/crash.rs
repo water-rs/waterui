@@ -17,7 +17,7 @@ pub struct CrashReport {
     pub device_identifier: Option<String>,
     /// Bundle identifier / package name used to launch the app.
     pub app_identifier: String,
-    /// Milliseconds since UNIX_EPOCH when the crash was recorded.
+    /// Milliseconds since `UNIX_EPOCH` when the crash was recorded.
     pub timestamp_ms: u64,
     /// Path to the log file saved on disk.
     pub log_path: PathBuf,

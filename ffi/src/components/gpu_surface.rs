@@ -293,23 +293,11 @@ fn create_surface_from_layer(
     instance: &wgpu::Instance,
     layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
-    use raw_window_handle::{AppKitWindowHandle, RawWindowHandle};
-    use std::ptr::NonNull;
-
-    // On macOS, layer is a CAMetalLayer*
-    let layer_ptr = NonNull::new(layer)?;
-    let handle = AppKitWindowHandle::new(layer_ptr);
-
-    // Safety: We're creating a surface from a raw layer pointer
-    // The caller guarantees the layer remains valid
+    // On macOS, layer is a CAMetalLayer*. Use the CoreAnimationLayer target
+    // so wgpu treats the pointer as a CA layer rather than an NSView.
     unsafe {
         instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: raw_window_handle::RawDisplayHandle::AppKit(
-                    raw_window_handle::AppKitDisplayHandle::new(),
-                ),
-                raw_window_handle: RawWindowHandle::AppKit(handle),
-            })
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
             .ok()
     }
 }
@@ -319,21 +307,10 @@ fn create_surface_from_layer(
     instance: &wgpu::Instance,
     layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
-    use raw_window_handle::{RawWindowHandle, UiKitWindowHandle};
-    use std::ptr::NonNull;
-
-    // On iOS, layer is a CAMetalLayer*
-    let layer_ptr = NonNull::new(layer)?;
-    let handle = UiKitWindowHandle::new(layer_ptr);
-
+    // On iOS, layer is also a CAMetalLayer*; use CoreAnimationLayer here too.
     unsafe {
         instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: raw_window_handle::RawDisplayHandle::UiKit(
-                    raw_window_handle::UiKitDisplayHandle::new(),
-                ),
-                raw_window_handle: RawWindowHandle::UiKit(handle),
-            })
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
             .ok()
     }
 }

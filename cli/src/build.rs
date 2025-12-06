@@ -1,4 +1,4 @@
-//! Unified build system for WaterUI CLI.
+//! Unified build system for `WaterUI` CLI.
 //!
 //! This module provides:
 //! - `BuildOptions` - Unified build configuration (replaces scattered parameters)
@@ -28,12 +28,14 @@
 
 use std::{
     collections::HashMap,
+    env,
     path::{Path, PathBuf},
     process::Command,
     time::SystemTime,
 };
 
 use color_eyre::eyre::{Context, Result, bail};
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::util;
@@ -340,8 +342,8 @@ impl BuildCoordinator {
 
         // Determine output path
         let lib_name = crate_name.replace('-', "_");
-        let lib_path = project_dir
-            .join("target")
+        let target_dir = resolve_target_dir(project_dir);
+        let lib_path = target_dir
             .join(target)
             .join(opts.profile_name())
             .join(library_filename(&lib_name, target));
@@ -367,7 +369,7 @@ impl BuildCoordinator {
 
 /// Get the host target triple.
 #[must_use]
-pub fn host_target() -> &'static str {
+pub const fn host_target() -> &'static str {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         "aarch64-apple-darwin"
@@ -416,6 +418,57 @@ fn library_filename(crate_name: &str, target: &str) -> String {
     };
 
     format!("{prefix}{crate_name}.{ext}")
+}
+
+/// Resolve the Cargo target directory for a project, respecting workspaces and overrides.
+///
+/// Falls back to `<project>/target` if metadata cannot be read.
+fn resolve_target_dir(project_dir: &Path) -> PathBuf {
+    if let Some(env_dir) = env::var_os("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(env_dir);
+        return if path.is_absolute() {
+            path
+        } else {
+            project_dir.join(path)
+        };
+    }
+
+    match cargo_metadata_target_dir(project_dir) {
+        Ok(dir) => dir,
+        Err(error) => {
+            debug!(error = ?error, "Falling back to default target dir");
+            project_dir.join("target")
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CargoMetadata {
+    target_directory: String,
+}
+
+/// Read `cargo metadata` to find the resolved target directory.
+fn cargo_metadata_target_dir(project_dir: &Path) -> Result<PathBuf> {
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--no-deps")
+        .arg("--format-version")
+        .arg("1")
+        .current_dir(project_dir)
+        .output()
+        .with_context(|| format!("failed to run cargo metadata in {}", project_dir.display()))?;
+
+    if !output.status.success() {
+        bail!(
+            "cargo metadata failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)
+        .context("failed to parse cargo metadata output")?;
+    Ok(PathBuf::from(metadata.target_directory))
 }
 
 /// Check if a path appears to be an Android target.
@@ -469,16 +522,16 @@ impl ArtifactKind {
 
 /// Build a Rust library for the specified target.
 ///
-/// This is the main entry point for building WaterUI projects. It handles:
+/// This is the main entry point for building `WaterUI` projects. It handles:
 /// - Project validation (must not be playground)
 /// - Target resolution and validation
 /// - Rust library compilation via cargo
-/// - Copying to standardized name (libwaterui_app.*)
+/// - Copying to standardized name (`libwaterui_app`.*)
 ///
 /// The output is always placed at `target/<target>/<profile>/libwaterui_app.*`
 ///
 /// # Arguments
-/// * `project` - The WaterUI project to build
+/// * `project` - The `WaterUI` project to build
 /// * `target` - Target triple to build for (e.g., "aarch64-linux-android")
 /// * `options` - Build options (release mode, speedups, etc.)
 ///
@@ -560,8 +613,8 @@ pub fn build_for_target(
     let (artifact_kind, cargo_filename) = cargo_output_filename(&lib_name, target);
     let standard_filename = standard_output_filename(target);
 
-    let cargo_output = project_dir
-        .join("target")
+    let target_dir = resolve_target_dir(project_dir);
+    let cargo_output = target_dir
         .join(target)
         .join(options.profile_name())
         .join(&cargo_filename);
@@ -574,8 +627,7 @@ pub fn build_for_target(
     }
 
     // Copy to target directory with standardized name (libwaterui_app.*)
-    let out_dir = project_dir
-        .join("target")
+    let out_dir = target_dir
         .join(target)
         .join(options.profile_name());
 
@@ -618,7 +670,7 @@ fn cargo_output_filename(crate_name: &str, target: &str) -> (ArtifactKind, Strin
     }
 }
 
-/// Standardized library name for WaterUI apps.
+/// Standardized library name for `WaterUI` apps.
 ///
 /// This convention allows users to rename their crate without breaking builds,
 /// and ensures the Android/Apple backends always know what library to load.
@@ -709,7 +761,7 @@ pub struct CargoBuilder {
 impl CargoBuilder {
     /// Create a new Cargo builder.
     #[must_use]
-    pub fn new(project_dir: PathBuf, crate_name: String, target: String) -> Self {
+    pub const fn new(project_dir: PathBuf, crate_name: String, target: String) -> Self {
         Self {
             project_dir,
             crate_name,
@@ -783,9 +835,8 @@ impl Builder for CargoBuilder {
         let (artifact_kind, cargo_filename) = cargo_output_filename(&lib_name, &self.target);
         let standard_filename = standard_output_filename(&self.target);
 
-        let cargo_output = self
-            .project_dir
-            .join("target")
+        let target_dir = resolve_target_dir(&self.project_dir);
+        let cargo_output = target_dir
             .join(&self.target)
             .join(options.profile_name())
             .join(&cargo_filename);
@@ -798,9 +849,7 @@ impl Builder for CargoBuilder {
         }
 
         // Copy to target directory with standardized name (libwaterui_app.*)
-        let out_dir = self
-            .project_dir
-            .join("target")
+        let out_dir = target_dir
             .join(&self.target)
             .join(options.profile_name());
 
@@ -866,15 +915,14 @@ fn configure_cargo_env(cmd: &mut tokio::process::Command, options: &BuildOptions
 /// Configure cargo command with build speedups (sccache, mold).
 fn configure_cargo_speedups(cmd: &mut tokio::process::Command, options: &BuildOptions) {
     // sccache
-    if options.speedups.sccache {
-        if std::env::var_os("RUSTC_WRAPPER").is_none() {
+    if options.speedups.sccache
+        && std::env::var_os("RUSTC_WRAPPER").is_none() {
             if let Ok(path) = which::which("sccache") {
                 cmd.env("RUSTC_WRAPPER", path);
             } else {
                 warn!("`sccache` not found on PATH; proceeding without build cache");
             }
         }
-    }
 
     // mold (Linux only)
     #[cfg(target_os = "linux")]

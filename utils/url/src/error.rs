@@ -15,7 +15,7 @@ enum ParseErrorKind {
 }
 
 impl ParseError {
-    /// Creates a new ParseError for empty URL strings.
+    /// Creates a new `ParseError` for empty URL strings.
     pub(crate) const fn empty() -> Self {
         Self {
             kind: ParseErrorKind::Empty,

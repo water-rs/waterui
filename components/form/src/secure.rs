@@ -31,7 +31,7 @@ impl Secure {
     ///
     /// A new Secure instance wrapping the provided string.
     #[must_use]
-    pub fn new(value: String) -> Self {
+    pub const fn new(value: String) -> Self {
         Self(value)
     }
 

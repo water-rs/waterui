@@ -100,7 +100,7 @@ impl<B: Builder + Clone + Send + 'static> HotReloadSession<B> {
     ///
     /// The session does not start running until `run()` is called.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         server: Server,
         connection_events: NativeConnectionEvents,
         watcher: FileWatcher,
@@ -156,7 +156,7 @@ impl<B: Builder + Clone + Send + 'static> HotReloadSession<B> {
                     biased;
 
                     // Global cancellation (Ctrl+C)
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         self.cancel_current_build();
                         return Ok(SessionOutcome::Cancelled);
                     }
@@ -185,7 +185,7 @@ impl<B: Builder + Clone + Send + 'static> HotReloadSession<B> {
                     biased;
 
                     // Global cancellation (Ctrl+C)
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         return Ok(SessionOutcome::Cancelled);
                     }
 

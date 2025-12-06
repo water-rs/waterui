@@ -98,7 +98,7 @@ impl core::fmt::Debug for DrawingContext<'_> {
     }
 }
 
-impl<'a> DrawingContext<'a> {
+impl DrawingContext<'_> {
     /// Returns the size of the canvas as a `kurbo::Size`.
     #[must_use]
     pub fn size(&self) -> kurbo::Size {
@@ -248,12 +248,12 @@ impl<'a> DrawingContext<'a> {
     ///
     /// Use this when you need features not exposed by the simplified API.
     #[must_use]
-    pub fn scene(&mut self) -> &mut vello::Scene {
+    pub const fn scene(&mut self) -> &mut vello::Scene {
         self.scene
     }
 }
 
-/// Internal renderer that bridges Canvas to GpuSurface.
+/// Internal renderer that bridges Canvas to `GpuSurface`.
 struct CanvasRenderer<F> {
     draw_fn: F,
     scene: vello::Scene,

@@ -26,8 +26,12 @@ pub enum Background {
 #[derive(Debug)]
 pub struct Shader {}
 
+/// Represents the material type for backgrounds.
 #[derive(Debug)]
-pub enum Material {}
+pub enum Material {
+    /// A blur material.
+    Blur,
+}
 
 impl MetadataKey for Background {}
 

@@ -687,24 +687,21 @@ fn idb_fix_suggestion() -> Option<FixSuggestion> {
 }
 
 fn check_apple_cmake() -> RowOutcome {
-    match which("cmake") {
-        Ok(path) => RowOutcome::new(
-            Row::pass("`cmake` available for Apple builds")
-                .with_indent(1)
-                .with_detail(path.display().to_string()),
-        ),
-        Err(_) => {
-            let row = Row::fail("`cmake` not found for Apple builds")
-                .with_indent(1)
-                .with_detail(
-                    "Install CMake so `water build apple` can compile dependencies. \
-                     Run `water doctor --fix` or `brew install cmake`.",
-                );
-            if let Some(fix) = cmake_fix_suggestion() {
-                RowOutcome::with_fix(row, fix)
-            } else {
-                RowOutcome::new(row)
-            }
+    if let Ok(path) = which("cmake") { RowOutcome::new(
+        Row::pass("`cmake` available for Apple builds")
+            .with_indent(1)
+            .with_detail(path.display().to_string()),
+    ) } else {
+        let row = Row::fail("`cmake` not found for Apple builds")
+            .with_indent(1)
+            .with_detail(
+                "Install CMake so `water build apple` can compile dependencies. \
+                 Run `water doctor --fix` or `brew install cmake`.",
+            );
+        if let Some(fix) = cmake_fix_suggestion() {
+            RowOutcome::with_fix(row, fix)
+        } else {
+            RowOutcome::new(row)
         }
     }
 }
@@ -894,7 +891,7 @@ fn check_android_prerequisites(_mode: CheckMode) -> Result<Vec<RowOutcome>> {
         .ndk
         .clone()
         .or_else(backend::android::resolve_ndk_path);
-    let sdk = env_status.root.clone().map(AndroidSdk::new);
+    let sdk = env_status.root.map(AndroidSdk::new);
 
     if let Some(sdk_ref) = sdk.as_ref() {
         outcomes.extend(sdk_ref.check_components()?);
@@ -947,7 +944,7 @@ fn check_java_environment() -> RowOutcome {
         }
     }
 
-    if let Some(home) = env::var("JAVA_HOME").ok() {
+    if let Ok(home) = env::var("JAVA_HOME") {
         java_candidates.push(Box::new(move || {
             let java_exe = Path::new(&home).join("bin/java");
             java_exe.exists().then(|| Command::new(java_exe))
@@ -1235,50 +1232,33 @@ fn check_android_cmake(sdk: Option<&AndroidSdk>) -> RowOutcome {
 }
 
 fn check_android_ndk_toolchain(sdk: Option<&AndroidSdk>, ndk_path: &Path) -> RowOutcome {
-    match backend::android::ndk_toolchain_bin(ndk_path) {
-        Some((host_tag, bin_dir)) => {
-            let clang_present = fs::read_dir(&bin_dir)
-                .ok()
-                .and_then(|entries| {
-                    entries
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                        .find(|name| {
-                            name.starts_with("aarch64-linux-android")
-                                && name.contains("-clang")
-                                && !name.contains("clang++")
-                        })
-                })
-                .is_some();
+    if let Some((host_tag, bin_dir)) = backend::android::ndk_toolchain_bin(ndk_path) {
+        let clang_present = fs::read_dir(&bin_dir)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .find(|name| {
+                        name.starts_with("aarch64-linux-android")
+                            && name.contains("-clang")
+                            && !name.contains("clang++")
+                    })
+            })
+            .is_some();
 
-            if clang_present {
-                RowOutcome::new(
-                    Row::pass("Android NDK clang toolchain available")
-                        .with_indent(1)
-                        .with_detail(format!("Host {host_tag}, {}", bin_dir.display())),
-                )
-            } else {
-                let row = Row::fail("Android NDK clang for aarch64 not found")
+        if clang_present {
+            RowOutcome::new(
+                Row::pass("Android NDK clang toolchain available")
                     .with_indent(1)
-                    .with_detail(format!(
-                        "Missing aarch64-linux-android*-clang under {}",
-                        bin_dir.display()
-                    ));
-                if let Some(fix) = sdk.and_then(|sdk| {
-                    sdk.install_fix("android-ndk", "Install Android NDK", &["ndk;26.1.10909125"])
-                }) {
-                    RowOutcome::with_fix(row, fix)
-                } else {
-                    RowOutcome::new(row)
-                }
-            }
-        }
-        None => {
-            let row = Row::fail("Android NDK LLVM toolchain not found")
+                    .with_detail(format!("Host {host_tag}, {}", bin_dir.display())),
+            )
+        } else {
+            let row = Row::fail("Android NDK clang for aarch64 not found")
                 .with_indent(1)
                 .with_detail(format!(
-                    "Missing prebuilt toolchain under {}",
-                    ndk_path.display()
+                    "Missing aarch64-linux-android*-clang under {}",
+                    bin_dir.display()
                 ));
             if let Some(fix) = sdk.and_then(|sdk| {
                 sdk.install_fix("android-ndk", "Install Android NDK", &["ndk;26.1.10909125"])
@@ -1287,6 +1267,20 @@ fn check_android_ndk_toolchain(sdk: Option<&AndroidSdk>, ndk_path: &Path) -> Row
             } else {
                 RowOutcome::new(row)
             }
+        }
+    } else {
+        let row = Row::fail("Android NDK LLVM toolchain not found")
+            .with_indent(1)
+            .with_detail(format!(
+                "Missing prebuilt toolchain under {}",
+                ndk_path.display()
+            ));
+        if let Some(fix) = sdk.and_then(|sdk| {
+            sdk.install_fix("android-ndk", "Install Android NDK", &["ndk;26.1.10909125"])
+        }) {
+            RowOutcome::with_fix(row, fix)
+        } else {
+            RowOutcome::new(row)
         }
     }
 }

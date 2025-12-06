@@ -7,15 +7,15 @@ use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 
 /// A flexible space that expands to push views apart.
 ///
-/// Spacer adapts to its parent container: in HStack it expands horizontally,
-/// in VStack it expands vertically. Use it to push views to opposite edges
+/// Spacer adapts to its parent container: in `HStack` it expands horizontally,
+/// in `VStack` it expands vertically. Use it to push views to opposite edges
 /// or distribute space evenly.
 ///
 /// # Layout Behavior
 ///
-/// - **In HStack:** Expands horizontally only
-/// - **In VStack:** Expands vertically only
-/// - **In ZStack:** No expansion (falls back to minimum length)
+/// - **In `HStack`:** Expands horizontally only
+/// - **In `VStack`:** Expands vertically only
+/// - **In `ZStack`:** No expansion (falls back to minimum length)
 ///
 /// # Examples
 ///

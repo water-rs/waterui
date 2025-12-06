@@ -17,10 +17,10 @@ use waterui_cli::{
     },
 };
 
-/// Validated WaterUI repository path for dev mode.
+/// Validated `WaterUI` repository path for dev mode.
 #[derive(Debug, Clone)]
 pub struct ValidatedWaterUIPath {
-    /// The root path to the WaterUI repository (canonicalized for internal use).
+    /// The root path to the `WaterUI` repository (canonicalized for internal use).
     pub root: PathBuf,
     /// Path to the Android backend within the repository.
     pub android_backend: PathBuf,
@@ -90,7 +90,7 @@ pub struct CreateArgs {
     #[arg(long)]
     pub dev: bool,
 
-    /// Path to local WaterUI repository for dev mode (contains backends/android and backends/apple as submodules)
+    /// Path to local `WaterUI` repository for dev mode (contains backends/android and backends/apple as submodules)
     #[arg(long)]
     pub waterui_path: Option<PathBuf>,
 
@@ -507,7 +507,7 @@ fn build_report(
 pub struct ProjectDependencies {
     rust_toml: String,
     pub swift: SwiftDependency,
-    /// If set, the local path to the WaterUI repository for dev mode.
+    /// If set, the local path to the `WaterUI` repository for dev mode.
     pub local_waterui_path: Option<ValidatedWaterUIPath>,
 }
 
@@ -515,7 +515,7 @@ impl ProjectDependencies {
     /// Get the Cargo.toml dependency string for a specific project directory.
     ///
     /// For dev mode with local paths, this computes the relative path from the
-    /// project directory to the WaterUI repository. For normal mode, returns
+    /// project directory to the `WaterUI` repository. For normal mode, returns
     /// the crates.io version string.
     pub fn rust_toml_for_project(&self, project_dir: &Path) -> String {
         if let Some(ref validated_path) = self.local_waterui_path {
@@ -539,7 +539,7 @@ pub enum SwiftDependency {
     },
 }
 
-/// Validate that the given path is a valid WaterUI repository with android and apple backends.
+/// Validate that the given path is a valid `WaterUI` repository with android and apple backends.
 ///
 /// # Errors
 /// Returns an error if the path doesn't exist or doesn't contain the required backend directories.
@@ -610,7 +610,7 @@ pub fn validate_waterui_path(path: &Path) -> Result<ValidatedWaterUIPath> {
     })
 }
 
-/// Resolve the template dependencies with an optional local WaterUI path for dev mode.
+/// Resolve the template dependencies with an optional local `WaterUI` path for dev mode.
 ///
 /// # Errors
 /// Returns an error if the crates index cannot be queried or if the local path is invalid.
@@ -715,7 +715,7 @@ fn prepare_playground_directory(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a playground project - a simplified WaterUI project without platform backends.
+/// Create a playground project - a simplified `WaterUI` project without platform backends.
 /// Platform projects will be created in a temporary directory at runtime.
 fn run_playground(args: CreateArgs) -> Result<CreateReport> {
     use crate::ui;
