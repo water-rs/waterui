@@ -1,10 +1,10 @@
-use alloc::string::String;
 use crate::WuiStr;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, IntoRust, WuiAnyView};
-use nami::signal::IntoComputed;
+use alloc::string::String;
 use nami::SignalExt;
+use nami::signal::IntoComputed;
 use waterui_media::{
     AspectRatio, Url,
     live::{LivePhotoConfig, LivePhotoSource},
@@ -350,7 +350,7 @@ impl IntoRust for WuiComputedVideo {
     unsafe fn into_rust(self) -> Self::Rust {
         unsafe {
             let url_str: waterui::Str = self.url.into_rust();
-            Video::new(Url::new(url_str))
+            Video::new(url_str.parse().unwrap())
         }
     }
 }
