@@ -12,6 +12,7 @@ pub mod secure {
 
     impl Secure {
         /// Creates a new Secure metadata.
+        #[must_use] 
         pub const fn new() -> Self {
             Self
         }
@@ -28,7 +29,8 @@ pub mod secure {
     impl MetadataKey for StandardDynamicRange {}
 
     impl StandardDynamicRange {
-        /// Creates a new StandardDynamicRange metadata.
+        /// Creates a new `StandardDynamicRange` metadata.
+        #[must_use] 
         pub const fn new() -> Self {
             Self
         }
@@ -44,7 +46,8 @@ pub mod secure {
     impl MetadataKey for HighDynamicRange {}
 
     impl HighDynamicRange {
-        /// Creates a new HighDynamicRange metadata.
+        /// Creates a new `HighDynamicRange` metadata.
+        #[must_use] 
         pub const fn new() -> Self {
             Self
         }

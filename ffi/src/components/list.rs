@@ -1,7 +1,6 @@
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui::component::list::{ListConfig, ListItem};
-use waterui::prelude::list::List;
 use waterui::views::ViewsExt;
 
 into_ffi! {
