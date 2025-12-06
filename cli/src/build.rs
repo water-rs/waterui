@@ -3,6 +3,8 @@
 //! This module provides:
 //! - `BuildOptions` - Unified build configuration (replaces scattered parameters)
 //! - `BuildCoordinator` - Tracks build state to avoid redundant builds
+//! - `Builder` trait - Async build interface with cancellation support
+//! - `CargoBuilder` - Async cargo build implementation
 //!
 //! ## Design Philosophy
 //!
@@ -15,6 +17,14 @@
 //! - `Platform` structs only store platform-specific CONFIG (e.g., `Android` config, target triples)
 //! - `BuildOptions` is passed when building, not when creating the platform
 //! - The `BuildCoordinator` ensures no redundant builds across hot reload + packaging
+//!
+//! ## Async Building
+//!
+//! The `Builder` trait and `CargoBuilder` provide async build support with
+//! structured cancellation via `CancellationToken`. This allows:
+//! - Immediate response to Ctrl+C (no waiting for cargo to finish)
+//! - Cancel-and-restart strategy for hot reload
+//! - Parallel builds for multiple targets
 
 use std::{
     collections::HashMap,
@@ -169,6 +179,14 @@ pub struct BuildSpeedups {
 /// // Later, when packaging, this returns the cached artifact
 /// let artifact = coordinator.build_library(project_dir, crate_name, "aarch64-linux-android")?;
 /// ```
+///
+/// # Deprecation
+/// This synchronous coordinator is deprecated. Use `CargoBuilder` with async
+/// builds and `CancellationToken` for better cancellation support.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use CargoBuilder with async builds for cancellation support"
+)]
 #[derive(Debug)]
 pub struct BuildCoordinator {
     options: BuildOptions,
@@ -468,6 +486,14 @@ impl ArtifactKind {
 /// Returns an error if:
 /// - The target is invalid or unsupported
 /// - The cargo build fails
+///
+/// # Deprecation
+/// This synchronous function is deprecated. Use `CargoBuilder::build()` for
+/// async builds with cancellation support via `CancellationToken`.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use CargoBuilder::build() for async builds with cancellation support"
+)]
 pub fn build_for_target(
     project: &crate::project::Project,
     target: &str,
@@ -640,4 +666,235 @@ pub fn is_valid_target(target: &str) -> bool {
     // Format: <arch>-<vendor>-<os>[-<env>]
     let parts: Vec<&str> = target.split('-').collect();
     parts.len() >= 3
+}
+
+// ============================================================================
+// Async Builder Trait and Implementations
+// ============================================================================
+
+use std::future::Future;
+use tokio_util::sync::CancellationToken;
+
+/// Async builder trait for building Rust libraries with cancellation support.
+///
+/// This trait uses native async fn (Rust 1.75+) without the `async_trait` crate.
+/// Implementations should check the cancellation token periodically and abort
+/// gracefully when cancelled.
+pub trait Builder: Send + Sync {
+    /// Build a library asynchronously with cancellation support.
+    ///
+    /// Returns `BuildResult` on success, or an error if the build fails
+    /// or is cancelled.
+    fn build(
+        &self,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = Result<BuildResult>> + Send;
+}
+
+/// Async Cargo builder for Rust libraries.
+///
+/// This builder runs `cargo build` as an async subprocess that can be
+/// cancelled via `CancellationToken`.
+#[derive(Debug, Clone)]
+pub struct CargoBuilder {
+    /// Project root directory
+    project_dir: PathBuf,
+    /// Crate name to build
+    crate_name: String,
+    /// Target triple to build for
+    target: String,
+}
+
+impl CargoBuilder {
+    /// Create a new Cargo builder.
+    #[must_use]
+    pub fn new(project_dir: PathBuf, crate_name: String, target: String) -> Self {
+        Self {
+            project_dir,
+            crate_name,
+            target,
+        }
+    }
+
+    /// Create a builder from a project and target.
+    #[must_use]
+    pub fn from_project(project: &crate::project::Project, target: &str) -> Self {
+        Self::new(
+            project.root().to_path_buf(),
+            project.crate_name().to_string(),
+            target.to_string(),
+        )
+    }
+
+    /// Get the target triple.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Prepare the cargo command with all necessary flags and environment.
+    fn prepare_command(&self, options: &BuildOptions) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("cargo");
+        cmd.arg("build")
+            .arg("--package")
+            .arg(&self.crate_name)
+            .arg("--target")
+            .arg(&self.target);
+
+        if options.is_release() {
+            cmd.arg("--release");
+        }
+
+        cmd.current_dir(&self.project_dir);
+
+        // Configure hot reload environment
+        configure_cargo_env(&mut cmd, options);
+
+        // Configure build speedups
+        configure_cargo_speedups(&mut cmd, options);
+
+        cmd
+    }
+}
+
+impl Builder for CargoBuilder {
+    async fn build(&self, options: &BuildOptions, cancel: CancellationToken) -> Result<BuildResult> {
+        info!("Building {} for target {}", self.crate_name, self.target);
+
+        let mut cmd = self.prepare_command(options);
+        debug!("Running: {:?}", cmd);
+
+        let mut child = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to spawn cargo build for {}", self.target))?;
+
+        // Wait for child with cancellation support
+        let status = crate::cancel::wait_child_cancellable(&mut child, &cancel).await?;
+
+        if !status.success() {
+            bail!("cargo build failed for {} (exit code: {:?})", self.target, status.code());
+        }
+
+        // Determine artifact paths
+        let lib_name = self.crate_name.replace('-', "_");
+        let (artifact_kind, cargo_filename) = cargo_output_filename(&lib_name, &self.target);
+        let standard_filename = standard_output_filename(&self.target);
+
+        let cargo_output = self
+            .project_dir
+            .join("target")
+            .join(&self.target)
+            .join(options.profile_name())
+            .join(&cargo_filename);
+
+        if !cargo_output.exists() {
+            bail!(
+                "Expected library not found at {} after build",
+                cargo_output.display()
+            );
+        }
+
+        // Copy to target directory with standardized name (libwaterui_app.*)
+        let out_dir = self
+            .project_dir
+            .join("target")
+            .join(&self.target)
+            .join(options.profile_name());
+
+        let artifact_path = out_dir.join(&standard_filename);
+        tokio::fs::copy(&cargo_output, &artifact_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    cargo_output.display(),
+                    artifact_path.display()
+                )
+            })?;
+
+        Ok(BuildResult {
+            artifact_path,
+            target: self.target.clone(),
+            profile: options.profile_name().to_string(),
+            artifact_kind,
+        })
+    }
+}
+
+/// Configure cargo command with hot reload environment variables.
+fn configure_cargo_env(cmd: &mut tokio::process::Command, options: &BuildOptions) {
+    const HOT_RELOAD_CFG: &str = "--cfg=waterui_hot_reload_lib";
+
+    if options.hot_reload.enabled {
+        cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
+        cmd.env("WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
+        cmd.env("WATERUI_HOT_RELOAD_PORT", options.hot_reload.port.to_string());
+
+        // Set compile-time cfg flag
+        let mut rustflags: Vec<String> = std::env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| flags.split_whitespace().map(ToString::to_string).collect())
+            .unwrap_or_default();
+
+        if !rustflags.iter().any(|f| f == HOT_RELOAD_CFG) {
+            rustflags.push(HOT_RELOAD_CFG.to_string());
+            cmd.env("RUSTFLAGS", rustflags.join(" "));
+        }
+    } else {
+        cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
+        cmd.env_remove("WATERUI_HOT_RELOAD_HOST");
+        cmd.env_remove("WATERUI_HOT_RELOAD_PORT");
+
+        // Remove hot reload cfg flag
+        let rustflags: Vec<String> = std::env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| {
+                flags
+                    .split_whitespace()
+                    .filter(|f| *f != HOT_RELOAD_CFG)
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        cmd.env("RUSTFLAGS", rustflags.join(" "));
+    }
+}
+
+/// Configure cargo command with build speedups (sccache, mold).
+fn configure_cargo_speedups(cmd: &mut tokio::process::Command, options: &BuildOptions) {
+    // sccache
+    if options.speedups.sccache {
+        if std::env::var_os("RUSTC_WRAPPER").is_none() {
+            if let Ok(path) = which::which("sccache") {
+                cmd.env("RUSTC_WRAPPER", path);
+            } else {
+                warn!("`sccache` not found on PATH; proceeding without build cache");
+            }
+        }
+    }
+
+    // mold (Linux only)
+    #[cfg(target_os = "linux")]
+    if options.speedups.mold {
+        const MOLD_FLAG: &str = "-C";
+        const MOLD_VALUE: &str = "link-arg=-fuse-ld=mold";
+
+        let mut rustflags: Vec<String> = std::env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| flags.split_whitespace().map(ToString::to_string).collect())
+            .unwrap_or_default();
+
+        let already_set = rustflags
+            .windows(2)
+            .any(|win| win == [MOLD_FLAG, MOLD_VALUE]);
+
+        if !already_set {
+            rustflags.push(MOLD_FLAG.to_string());
+            rustflags.push(MOLD_VALUE.to_string());
+            cmd.env("RUSTFLAGS", rustflags.join(" "));
+        }
+    }
 }

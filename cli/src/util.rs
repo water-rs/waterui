@@ -13,20 +13,45 @@ use which::which;
 
 /// Global flag to track if we've received a termination signal.
 /// This is shared across all child process runs.
+///
+/// # Deprecation
+/// This global flag approach is deprecated. Use `CancellationToken` from
+/// the `cancel` module instead for structured cancellation.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// Check if the process has been interrupted by a signal.
+///
+/// # Deprecation
+/// This function is deprecated. Use `CancellationToken::is_cancelled()` instead.
 #[inline]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use CancellationToken from the cancel module instead"
+)]
 pub fn is_interrupted() -> bool {
     INTERRUPTED.load(Ordering::Relaxed)
 }
 
 /// Mark the process as interrupted (called from signal handlers).
+///
+/// # Deprecation
+/// This function is deprecated. Use `CancellationToken::cancel()` instead.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use CancellationToken from the cancel module instead"
+)]
 pub fn set_interrupted() {
     INTERRUPTED.store(true, Ordering::Relaxed);
 }
 
 /// Reset the interrupted flag (call at start of commands).
+///
+/// # Deprecation
+/// This function is deprecated. Create a new `CancellationToken` instead.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use CancellationToken from the cancel module instead"
+)]
 pub fn reset_interrupted() {
     INTERRUPTED.store(false, Ordering::Relaxed);
 }
@@ -39,8 +64,17 @@ pub fn reset_interrupted() {
 ///
 /// This solves the "double Ctrl+C" problem where the first Ctrl+C goes to the
 /// child process but the parent is blocked in `.status()`.
+///
+/// # Deprecation
+/// This function is deprecated. Use async command execution with
+/// `cancel::wait_child_cancellable()` instead.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use async command execution with cancel::wait_child_cancellable() instead"
+)]
 pub fn run_command_interruptible(mut cmd: Command) -> Result<ExitStatus> {
     let mut child = cmd.spawn().context("failed to spawn command")?;
+    #[allow(deprecated)]
     wait_for_child_interruptible(&mut child)
 }
 
@@ -48,9 +82,18 @@ pub fn run_command_interruptible(mut cmd: Command) -> Result<ExitStatus> {
 ///
 /// Polls the child for completion every 50ms, checking for interrupt signals.
 /// If interrupted, kills the child and returns an error.
+///
+/// # Deprecation
+/// This function is deprecated. Use async command execution with
+/// `cancel::wait_child_cancellable()` instead.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use async command execution with cancel::wait_child_cancellable() instead"
+)]
 pub fn wait_for_child_interruptible(child: &mut Child) -> Result<ExitStatus> {
     loop {
         // Check for interrupt signal
+        #[allow(deprecated)]
         if is_interrupted() {
             // Kill the child process
             let _ = child.kill();
