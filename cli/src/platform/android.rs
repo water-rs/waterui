@@ -9,9 +9,9 @@ use crate::{
         android::{AndroidBackend, AndroidNativeBuildOptions, build_android_apk, build_android_native_libraries},
     },
     build::BuildOptions,
-    doctor::AnyToolchainIssue,
     platform::Platform,
     project::{Android, Project},
+    toolchain::ToolchainError,
 };
 
 /// Android platform implementation.
@@ -63,14 +63,13 @@ impl AndroidPlatform {
 }
 
 impl Platform for AndroidPlatform {
-    type ToolchainIssue = AnyToolchainIssue;
     type Backend = AndroidBackend;
 
     fn target_triple(&self) -> &'static str {
         "aarch64-linux-android"
     }
 
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>> {
         self.backend.check_requirements(project)
     }
 
@@ -91,6 +90,7 @@ impl Platform for AndroidPlatform {
             crate_name: project.crate_name(),
             release: options.is_release(),
             hot_reload: options.hot_reload.enabled,
+            hot_reload_port: options.hot_reload.port,
             enable_sccache: options.speedups.sccache,
             enable_mold: options.speedups.mold,
             requested_triples: self.target_triples.clone(),
@@ -107,6 +107,7 @@ impl Platform for AndroidPlatform {
             &self.config,
             options.is_release(),
             options.hot_reload.enabled,
+            options.hot_reload.port,
             project.bundle_identifier(),
         )
     }

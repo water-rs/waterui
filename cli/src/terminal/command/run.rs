@@ -26,10 +26,8 @@ use waterui_cli::{
         self, AndroidDevice, AndroidSelection, AppleSimulatorDevice, Device, DeviceInfo,
         DeviceKind, DevicePlatformFilter, MacosDevice,
     },
-    doctor::{
-        AnyToolchainIssue,
-        toolchain::{self, CheckMode, CheckTarget},
-    },
+    doctor::toolchain::{self, CheckMode, CheckTarget},
+    toolchain::ToolchainError,
     hot_reload::{
         DisconnectReason, FileWatcher, NativeConnectionEvent, NativeConnectionEvents, Server,
         WaitOutcome,
@@ -749,12 +747,13 @@ async fn run_platform(
         None
     };
 
-    // Build run options for packaging (no port yet - server starts after build)
+    // Build run options for packaging - use configured port from Water.toml
+    let hot_reload_port = config.hot_reload.port;
     let package_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
             enabled: hot_reload_enabled,
-            port: None, // Port not needed for packaging
+            port: hot_reload_port,
         },
         log_filter: log_filter.clone(),
     };
@@ -844,16 +843,14 @@ async fn run_platform(
 
     // Now start the hot reload server (after build succeeded)
     let (server, connection_events) = if hot_reload_enabled {
-        let (server, events) = Server::start(project_dir.to_path_buf(), log_filter.clone())
+        let (server, events) = Server::start(hot_reload_port, project_dir.to_path_buf(), log_filter.clone())
             .context("Failed to start hot reload server")?;
         (Some(server), Some(events))
     } else {
         (None, None)
     };
 
-    let hot_reload_port = server.as_ref().map(|s| s.address().port());
-
-    // Build run options with the actual port for launching
+    // Build run options with the configured port for launching
     let run_options = RunOptions {
         release,
         hot_reload: HotReloadOptions {
@@ -995,7 +992,7 @@ struct HotReloadContext<'a> {
     project_dir: &'a Path,
     package_name: &'a str,
     release: bool,
-    hot_reload_port: Option<u16>,
+    hot_reload_port: u16,
     enable_sccache: bool,
     mold_requested: bool,
     target_triple: &'a str,
@@ -1216,7 +1213,7 @@ fn convert_run_error(err: FailToRun) -> color_eyre::eyre::Report {
     }
 }
 
-fn emit_toolchain_error(label: &str, issues: &[AnyToolchainIssue]) {
+fn emit_toolchain_error(label: &str, issues: &[ToolchainError]) {
     if output::global_output_format().is_json() {
         // JSON consumers rely on stderr being quiet, so let the structured error bubble up.
         return;
@@ -1231,10 +1228,8 @@ fn emit_toolchain_error(label: &str, issues: &[AnyToolchainIssue]) {
     );
 
     for issue in issues {
-        eprintln!("  {} {}", style("•").red(), style(issue).bold());
-        let suggestion_text = issue.suggestion();
-        let suggestion = suggestion_text.trim();
-        if !suggestion.is_empty() {
+        eprintln!("  {} {}", style("•").red(), style(&issue.message).bold());
+        if let Some(ref suggestion) = issue.suggestion {
             eprintln!(
                 "    {} {}",
                 style("suggestion:").dim(),
@@ -1255,7 +1250,7 @@ fn run_cargo_build(
     package: &str,
     release: bool,
     hot_reload_enabled: bool,
-    hot_reload_port: Option<u16>,
+    hot_reload_port: u16,
     enable_sccache: bool,
     mold_requested: bool,
     target: &str,
@@ -1292,7 +1287,7 @@ fn run_cargo_build(
         .with_context(|| format!("failed to run cargo build in {}", project_dir.display()))?;
     if status.success() {
         if hot_reload_enabled {
-            ensure_cdylib(project_dir, package, release, target)?;
+            ensure_cdylib(project_dir, package, release, target, hot_reload_port)?;
         }
         // For Android, copy the .so to jniLibs so Gradle can package it
         if target.contains("android") {
@@ -1315,7 +1310,7 @@ fn run_cargo_build(
         if retry_status.success() {
             info!("cargo build succeeded after disabling sccache");
             if hot_reload_enabled {
-                ensure_cdylib(project_dir, package, release, target)?;
+                ensure_cdylib(project_dir, package, release, target, hot_reload_port)?;
             }
             return Ok(());
         }
@@ -1329,6 +1324,7 @@ fn ensure_cdylib(
     package: &str,
     release: bool,
     target: &str,
+    hot_reload_port: u16,
 ) -> Result<()> {
     let expected = hot_reload_library_path(project_dir, package, release, target);
     if expected.exists() {
@@ -1354,7 +1350,7 @@ fn ensure_cdylib(
     cmd.arg("--");
     cmd.arg("--crate-type").arg("cdylib");
     cmd.current_dir(project_dir);
-    cli_util::configure_hot_reload_env(&mut cmd, true, None);
+    cli_util::configure_hot_reload_env(&mut cmd, true, hot_reload_port);
     configure_hot_reload_build_profile(&mut cmd, release);
     debug!("Running command: {:?}", cmd);
     let status = cmd.status().with_context(|| {
@@ -1630,6 +1626,8 @@ async fn run_web(
         );
     }
 
+    let hot_reload_port = config.hot_reload.port;
+
     build_web_app(
         project_dir,
         crate_name,
@@ -1637,16 +1635,16 @@ async fn run_web(
         release,
         &wasm_pack,
         false,
+        hot_reload_port,
     )?;
-
-    let (server, _connection_events) = Server::start(web_dir.clone(), log_filter)?;
+    let (server, _connection_events) = Server::start(hot_reload_port, web_dir.clone(), log_filter)?;
     let address = server.address();
     let url = format!("http://{address}/");
 
     // Hot reload is always enabled - set up file watcher
     let main_js_path = web_dir.join("main.js");
     let main_js_template = std::fs::read_to_string(&main_js_path)?;
-    let main_js = main_js_template.replace("__HOT_RELOAD_PORT__", &address.port().to_string());
+    let main_js = main_js_template.replace("__HOT_RELOAD_PORT__", &hot_reload_port.to_string());
     std::fs::write(&main_js_path, main_js)?;
 
     let mut watch_paths = vec![project_dir.join("src")];
@@ -1680,6 +1678,7 @@ async fn run_web(
                     release,
                     &wasm_pack,
                     false,
+                    hot_reload_port,
                 ) {
                     warn!("Rebuild failed: {err}");
                 } else {
@@ -1712,6 +1711,7 @@ fn build_web_app(
     release: bool,
     wasm_pack: &Path,
     hot_reload_enabled: bool,
+    hot_reload_port: u16,
 ) -> Result<()> {
     let mut cmd = Command::new(wasm_pack);
     cmd.arg("build")
@@ -1727,7 +1727,7 @@ fn build_web_app(
         cmd.arg("--dev");
     }
     cmd.current_dir(project_dir);
-    cli_util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
+    cli_util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, hot_reload_port);
 
     debug!("Running command: {:?}", cmd);
     let status = cmd
