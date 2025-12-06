@@ -75,7 +75,7 @@ impl BuildOptions {
 
     /// Configure hot reload.
     #[must_use]
-    pub const fn with_hot_reload(mut self, enabled: bool, port: Option<u16>) -> Self {
+    pub const fn with_hot_reload(mut self, enabled: bool, port: u16) -> Self {
         self.hot_reload = HotReloadConfig { enabled, port };
         self
     }
@@ -123,10 +123,19 @@ impl BuildProfile {
 }
 
 /// Hot reload configuration.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct HotReloadConfig {
     pub enabled: bool,
-    pub port: Option<u16>,
+    pub port: u16,
+}
+
+impl Default for HotReloadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: crate::project::DEFAULT_HOT_RELOAD_PORT,
+        }
+    }
 }
 
 /// Build speedup options.

@@ -9,13 +9,12 @@ use std::{
 
 use crate::{
     backend::Backend,
-    doctor::{AnyToolchainIssue, ToolchainIssue},
     impl_display,
     project::{Android, Project},
+    toolchain::ToolchainError,
     util,
 };
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use thiserror::Error;
 use tracing::{debug, info, warn};
 use which::which;
 
@@ -68,48 +67,7 @@ pub struct AndroidBackend;
 
 impl_display!(AndroidBackend, "android");
 
-#[derive(Debug, Clone, Error)]
-pub enum AndroidToolchainIssue {
-    #[error("Android SDK tools (adb) were not found.")]
-    SdkMissing,
-    #[error("Android NDK was not detected.")]
-    NdkMissing,
-    #[error("CMake was not found.")]
-    CmakeMissing,
-    #[error("Java was not found.")]
-    JavaMissing,
-    #[error("Rust target `{0}` is not installed.")]
-    RustTargetMissing(String),
-}
-
-impl ToolchainIssue for AndroidToolchainIssue {
-    fn suggestion(&self) -> String {
-        match self {
-            Self::SdkMissing => {
-                "Install Android Studio or set ANDROID_SDK_ROOT to your SDK installation."
-                    .to_string()
-            }
-            Self::NdkMissing => {
-                "Install the Android NDK via SDK Manager or set ANDROID_NDK_HOME.".to_string()
-            }
-            Self::CmakeMissing => crate::installer::cmake_suggestion(),
-            Self::JavaMissing => crate::installer::java_suggestion(),
-            Self::RustTargetMissing(target) => crate::installer::rust_target_suggestion(target),
-        }
-    }
-
-    fn fix(&self) -> color_eyre::eyre::Result<()> {
-        match self {
-            Self::RustTargetMissing(target) => crate::installer::rust_target(target),
-            Self::JavaMissing => crate::installer::java_jdk(),
-            _ => bail!("No automatic fix available for this issue."),
-        }
-    }
-}
-
 impl Backend for AndroidBackend {
-    type ToolchainIssue = AnyToolchainIssue;
-
     fn init(&self, _project: &Project, _dev: bool) -> Result<()> {
         Ok(())
     }
@@ -143,46 +101,62 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn check_requirements(&self, _project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, _project: &Project) -> Result<(), Vec<ToolchainError>> {
         let mut issues = Vec::new();
 
         // Check Android SDK (adb)
         if find_android_tool("adb").is_none() {
-            issues.push(AndroidToolchainIssue::SdkMissing);
+            issues.push(
+                ToolchainError::unfixable("Android SDK not found")
+                    .with_suggestion("Install Android Studio or set ANDROID_SDK_ROOT"),
+            );
         }
 
         // Check Android NDK
         if resolve_ndk_path().is_none() {
-            issues.push(AndroidToolchainIssue::NdkMissing);
+            issues.push(
+                ToolchainError::unfixable("Android NDK not found")
+                    .with_suggestion("Install NDK via SDK Manager or set ANDROID_NDK_HOME"),
+            );
         }
 
         // Check CMake
         if resolve_cmake_path().is_none() {
-            issues.push(AndroidToolchainIssue::CmakeMissing);
+            issues.push(
+                ToolchainError::missing("CMake not found").with_suggestion(if cfg!(target_os = "macos") {
+                    "Install CMake via SDK Manager or: brew install cmake"
+                } else {
+                    "Install CMake via SDK Manager or system package manager"
+                }),
+            );
         }
 
         // Check Java (required for Gradle)
         if !is_java_available() {
-            issues.push(AndroidToolchainIssue::JavaMissing);
+            issues.push(
+                ToolchainError::missing("Java Development Kit not found").with_suggestion(
+                    if cfg!(target_os = "macos") {
+                        "Install JDK: brew install --cask temurin@17"
+                    } else {
+                        "Install JDK 17 or later and set JAVA_HOME"
+                    },
+                ),
+            );
         }
 
         // Check required Rust target
         // On ARM64 hosts (Apple Silicon, ARM Linux), aarch64-linux-android is essential
-        if cfg!(target_arch = "aarch64") {
-            if !is_rust_target_installed("aarch64-linux-android") {
-                issues.push(AndroidToolchainIssue::RustTargetMissing(
-                    "aarch64-linux-android".to_string(),
-                ));
-            }
+        if cfg!(target_arch = "aarch64") && !is_rust_target_installed("aarch64-linux-android") {
+            issues.push(
+                ToolchainError::missing("Rust target aarch64-linux-android not installed")
+                    .with_suggestion("Run: rustup target add aarch64-linux-android"),
+            );
         }
 
         if issues.is_empty() {
             Ok(())
         } else {
-            Err(issues
-                .into_iter()
-                .map(|issue| Box::new(issue) as AnyToolchainIssue)
-                .collect())
+            Err(issues)
         }
     }
 }
@@ -217,7 +191,21 @@ fn is_java_available() -> bool {
 
 /// Check if a Rust target is installed.
 fn is_rust_target_installed(target: &str) -> bool {
-    crate::installer::is_rust_target_installed(target)
+    if which("rustup").is_err() {
+        // No rustup means we can't check; assume it's fine (system Rust)
+        return true;
+    }
+
+    Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .ok()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.trim() == target)
+        })
+        .unwrap_or(true)
 }
 
 // ============================================================================
@@ -974,6 +962,7 @@ pub struct AndroidNativeBuildOptions<'a> {
     pub enable_sccache: bool,
     pub enable_mold: bool,
     pub hot_reload: bool,
+    pub hot_reload_port: u16,
 }
 
 #[derive(Debug)]
@@ -1033,6 +1022,7 @@ pub fn build_android_native_libraries(
             &cmake_path,
             &ndk_path,
             opts.hot_reload,
+            opts.hot_reload_port,
             opts.enable_sccache,
             opts.enable_mold,
         )?;
@@ -1113,6 +1103,7 @@ fn build_single_target(
     cmake_path: &Path,
     ndk_path: &Path,
     hot_reload: bool,
+    hot_reload_port: u16,
     enable_sccache: bool,
     enable_mold: bool,
 ) -> Result<bool> {
@@ -1164,7 +1155,7 @@ fn build_single_target(
         cmd.env("ANDROID_NDK_ROOT", ndk_path);
         cmd.env("ANDROID_NDK", ndk_path);
 
-        util::configure_hot_reload_env(&mut cmd, hot_reload, None);
+        util::configure_hot_reload_env(&mut cmd, hot_reload, hot_reload_port);
         cmd
     };
 
@@ -1231,6 +1222,7 @@ pub fn build_android_apk(
     android_config: &Android,
     release: bool,
     hot_reload_enabled: bool,
+    hot_reload_port: u16,
     bundle_identifier: &str,
 ) -> Result<PathBuf> {
     prepare_android_package(project_dir, bundle_identifier)?;
@@ -1272,7 +1264,7 @@ pub fn build_android_apk(
     // Skip Rust build in Gradle's build script - water run already built the library
     cmd.env("WATERUI_SKIP_RUST_BUILD", "1");
 
-    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, None);
+    util::configure_hot_reload_env(&mut cmd, hot_reload_enabled, hot_reload_port);
 
     // Configure JVM options
     let ipv4_flag = "-Djava.net.preferIPv4Stack=true";
