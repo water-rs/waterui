@@ -1,9 +1,8 @@
-use crate::{WuiAnyView, WuiStr};
 use crate::components::text::WuiText;
 use crate::id::WuiId;
 use crate::reactive::{WuiBinding, WuiComputed};
+use crate::{WuiAnyView, WuiStr};
 use alloc::vec::Vec;
-use waterui::prelude::{Slider, Stepper, TextField, Toggle};
 use waterui::{
     Color, Str,
     component::{
@@ -15,7 +14,7 @@ use waterui::{
 };
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
-use waterui_form::picker::{ColorPicker, Picker, PickerConfig, PickerItem};
+use waterui_form::picker::{PickerConfig, PickerItem};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
 into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {

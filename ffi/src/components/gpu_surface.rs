@@ -14,7 +14,7 @@ use alloc::vec;
 
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
-use crate::{IntoFFI, WuiTypeId, ffi_view};
+use crate::IntoFFI;
 
 /// FFI representation of a GpuSurface view.
 ///

@@ -1,11 +1,11 @@
 //! # Theme System
 //!
 //! The theme system provides a **type-safe bundle of colors and fonts** that can be
-//! installed into an [`Environment`] to style all WaterUI components consistently.
+//! installed into an [`Environment`] to style all `WaterUI` components consistently.
 //!
 //! ## Design Principles
 //!
-//! - **System neutral**: WaterUI doesn't impose default colors. Native backends inject
+//! - **System neutral**: `WaterUI` doesn't impose default colors. Native backends inject
 //!   system colors, and the theme system just provides the wiring.
 //! - **Reactive by design**: All theme values can be reactive (`Binding`, `Computed`)
 //!   or static. When color scheme changes, all dependent colors update automatically.
@@ -97,10 +97,8 @@ use core::marker::PhantomData;
 use nami::{
     Computed, SignalExt, impl_constant,
     signal::IntoSignal,
-    zip::{FlattenMap, zip},
 };
 use waterui_core::{Environment, env::Store, plugin::Plugin};
-use waterui_text::font::FontWeight;
 
 use crate::{
     View,
@@ -510,7 +508,7 @@ struct ColorSlotValue<T> {
 }
 
 impl<T> ColorSlotValue<T> {
-    fn new(signal: Computed<ResolvedColor>) -> Self {
+    const fn new(signal: Computed<ResolvedColor>) -> Self {
         Self {
             signal,
             _marker: PhantomData,
@@ -546,9 +544,7 @@ fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> 
 /// If no color scheme is installed, returns a constant `Light` signal.
 #[must_use]
 pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
-    env.get::<ColorSchemeSignal>()
-        .map(|s| s.0.clone())
-        .unwrap_or_else(|| Computed::constant(ColorScheme::Light))
+    env.get::<ColorSchemeSignal>().map_or_else(|| Computed::constant(ColorScheme::Light), |s| s.0.clone())
 }
 
 /// Installs an explicit color signal for a specific slot.
