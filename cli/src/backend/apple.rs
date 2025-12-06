@@ -14,15 +14,14 @@ use color_eyre::{
     eyre::{self, Context, Result as EyreResult, bail},
 };
 use heck::ToUpperCamelCase;
-use thiserror::Error;
 use tracing::info;
 use which::which;
 
 use crate::{
     backend::Backend,
-    doctor::{AnyToolchainIssue, ToolchainIssue},
     impl_display,
     project::{Project, Swift},
+    toolchain::ToolchainError,
     util,
 };
 
@@ -31,28 +30,7 @@ pub struct Apple;
 
 impl_display!(Apple, "apple");
 
-#[derive(Debug, Clone, Error)]
-pub enum AppleToolchainIssue {
-    #[error("Xcode is not installed.")]
-    XcodeNotInstalled,
-    #[error("Xcode Command Line Tools are not installed.")]
-    CommandLineToolsNotInstalled,
-}
-
-impl ToolchainIssue for AppleToolchainIssue {
-    fn suggestion(&self) -> String {
-        match self {
-            Self::XcodeNotInstalled => "Install Xcode from the App Store.".to_string(),
-            Self::CommandLineToolsNotInstalled => {
-                "Install Xcode Command Line Tools by running `xcode-select --install`.".to_string()
-            }
-        }
-    }
-}
-
 impl Backend for Apple {
-    type ToolchainIssue = AnyToolchainIssue;
-
     fn init(&self, _project: &Project, _dev: bool) -> eyre::Result<()> {
         Ok(())
     }
@@ -65,29 +43,34 @@ impl Backend for Apple {
         clean_project(project)
     }
 
-    fn check_requirements(&self, _: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, _: &Project) -> Result<(), Vec<ToolchainError>> {
         let mut issues = Vec::new();
 
         if cfg!(target_os = "macos") {
             if which("xcodebuild").is_err() {
-                issues.push(AppleToolchainIssue::XcodeNotInstalled);
+                issues.push(
+                    ToolchainError::unfixable("Xcode is not installed")
+                        .with_suggestion("Install Xcode from the Mac App Store"),
+                );
             }
 
             if which("xcode-select").is_err() {
-                issues.push(AppleToolchainIssue::CommandLineToolsNotInstalled);
+                issues.push(
+                    ToolchainError::unfixable("Xcode Command Line Tools are not installed")
+                        .with_suggestion("Run: xcode-select --install"),
+                );
             }
         } else {
-            issues.push(AppleToolchainIssue::XcodeNotInstalled);
-            issues.push(AppleToolchainIssue::CommandLineToolsNotInstalled);
+            issues.push(
+                ToolchainError::unfixable("Apple development requires macOS")
+                    .with_suggestion("Use a Mac for iOS/macOS development"),
+            );
         }
 
         if issues.is_empty() {
             Ok(())
         } else {
-            Err(issues
-                .into_iter()
-                .map(|issue| Box::new(issue) as AnyToolchainIssue)
-                .collect())
+            Err(issues)
         }
     }
 }

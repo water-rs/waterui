@@ -9,8 +9,8 @@ use serde::Serialize;
 use crate::{
     backend::{AnyBackend, Backend},
     build::BuildOptions,
-    doctor::{AnyToolchainIssue, ToolchainIssue},
     project::Project,
+    toolchain::ToolchainError,
 };
 
 /// Platform abstraction for building and packaging WaterUI apps.
@@ -19,7 +19,6 @@ use crate::{
 /// Build OPTIONS (release, hot_reload, sccache) are passed via `BuildOptions`
 /// to avoid parameter duplication across platforms.
 pub trait Platform: Send + Sync {
-    type ToolchainIssue: ToolchainIssue;
     type Backend: Backend;
 
     fn target_triple(&self) -> &'static str;
@@ -27,8 +26,8 @@ pub trait Platform: Send + Sync {
     /// Check if the required toolchain and dependencies are installed for this platform.
     ///
     /// # Errors
-    /// Returns a list of issues found during the check.
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>>;
+    /// Returns a list of toolchain errors found during the check.
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>>;
 
     /// Package the project for distribution on this platform.
     ///
@@ -60,14 +59,13 @@ pub trait Platform: Send + Sync {
 }
 
 impl<T: Platform> Platform for &T {
-    type ToolchainIssue = T::ToolchainIssue;
     type Backend = T::Backend;
 
     fn target_triple(&self) -> &'static str {
         (*self).target_triple()
     }
 
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>> {
         (*self).check_requirements(project)
     }
 
@@ -88,7 +86,7 @@ impl<T: Platform> Platform for &T {
     }
 }
 
-pub type AnyPlatform = Box<dyn Platform<ToolchainIssue = AnyToolchainIssue, Backend = AnyBackend>>;
+pub type AnyPlatform = Box<dyn Platform<Backend = AnyBackend>>;
 
 /// High-level platform choices used throughout the library.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize)]
