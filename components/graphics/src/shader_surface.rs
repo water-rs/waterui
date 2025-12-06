@@ -85,7 +85,7 @@ impl ShaderSurface {
         }
     }
 
-    /// Consumes the ShaderSurface and returns the inner GpuSurface.
+    /// Consumes the `ShaderSurface` and returns the inner `GpuSurface`.
     #[must_use]
     pub fn into_inner(self) -> GpuSurface {
         self.inner
@@ -147,7 +147,7 @@ impl ShaderRenderer {
 
     fn build_full_shader(&self) -> String {
         // Prepend the uniform struct and vertex shader to user's fragment shader
-        let prelude = r#"
+        let prelude = r"
 // === ShaderSurface Prelude (auto-generated) ===
 
 struct Uniforms {
@@ -186,7 +186,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 // === User Fragment Shader ===
 
-"#;
+";
         let mut full = String::with_capacity(prelude.len() + self.fragment_source.len());
         full.push_str(prelude);
         full.push_str(&self.fragment_source);

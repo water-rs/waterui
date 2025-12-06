@@ -23,10 +23,10 @@ fn emit_git_commit_hash() {
     match output {
         Ok(output) if output.status.success() => {
             let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !hash.is_empty() {
-                println!("cargo:rustc-env=GIT_COMMIT_HASH={hash}");
-            } else {
+            if hash.is_empty() {
                 println!("cargo:rustc-env=GIT_COMMIT_HASH=unknown");
+            } else {
+                println!("cargo:rustc-env=GIT_COMMIT_HASH={hash}");
             }
         }
         _ => {

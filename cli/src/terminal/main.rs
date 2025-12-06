@@ -369,7 +369,7 @@ fn render_friendly_error(error: &Report) {
 fn collect_error_messages(error: &Report) -> Vec<String> {
     error
         .chain()
-        .map(|cause| cause.to_string())
+        .map(std::string::ToString::to_string)
         .map(|message| {
             message
                 .trim()
@@ -380,8 +380,7 @@ fn collect_error_messages(error: &Report) -> Vec<String> {
         .filter(|message| !message.is_empty())
         .fold(Vec::new(), |mut messages, message| {
             if messages
-                .last()
-                .map_or(true, |previous| previous != &message)
+                .last() != Some(&message)
             {
                 messages.push(message);
             }

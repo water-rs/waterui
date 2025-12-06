@@ -46,7 +46,7 @@ pub struct AndroidSelection {
 #[derive(Debug)]
 pub struct AndroidDevice {
     platform: AndroidPlatform,
-    /// Detected device target architectures, set during prepare()
+    /// Detected device target architectures, set during `prepare()`
     detected_targets: RwLock<Option<Vec<String>>>,
     selection: AndroidSelection,
     adb_path: std::path::PathBuf,
@@ -363,7 +363,7 @@ impl AdbReverseGuard {
 
         Ok(Self {
             adb_path: adb_path.to_path_buf(),
-            identifier: identifier.map(|value| value.to_string()),
+            identifier: identifier.map(std::string::ToString::to_string),
             port,
             active: true,
         })

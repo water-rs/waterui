@@ -13,10 +13,10 @@ use crate::{
     toolchain::ToolchainError,
 };
 
-/// Platform abstraction for building and packaging WaterUI apps.
+/// Platform abstraction for building and packaging `WaterUI` apps.
 ///
 /// Implementations handle platform-specific build and packaging logic.
-/// Build OPTIONS (release, hot_reload, sccache) are passed via `BuildOptions`
+/// Build OPTIONS (release, `hot_reload`, sccache) are passed via `BuildOptions`
 /// to avoid parameter duplication across platforms.
 pub trait Platform: Send + Sync {
     type Backend: Backend;

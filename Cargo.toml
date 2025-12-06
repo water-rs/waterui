@@ -111,6 +111,7 @@ tracing-panic = "0.1.2"
 pulldown-cmark = "0.13"
 waterui-derive.workspace = true
 async-channel = "1.9"
+pin-project-lite = "0.2"
 libloading = "0.8"
 thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4"] }

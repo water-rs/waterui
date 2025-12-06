@@ -1,6 +1,6 @@
 //! Run command implementation.
 //!
-//! This module orchestrates building and running WaterUI projects.
+//! This module orchestrates building and running `WaterUI` projects.
 //! Heavy logic is delegated to library modules:
 //! - `waterui_cli::hot_reload` - Hot reload server and file watcher
 //! - `waterui_cli::run_session` - Last run persistence
@@ -27,7 +27,6 @@ use waterui_cli::{
         DeviceKind, DevicePlatformFilter, MacosDevice,
     },
     doctor::toolchain::{self, CheckMode, CheckTarget},
-    toolchain::ToolchainError,
     hot_reload::{
         DisconnectReason, FileWatcher, NativeConnectionEvent, NativeConnectionEvents, Server,
         WaitOutcome,
@@ -39,6 +38,7 @@ use waterui_cli::{
     },
     project::{Config, FailToRun, HotReloadOptions, Project, RunOptions, RunReport, RunStage},
     run_session::{self, LastRunSnapshot},
+    toolchain::ToolchainError,
     util as cli_util,
 };
 type Platform = PlatformKind;
@@ -123,7 +123,7 @@ pub struct RunArgs {
     #[arg(value_name = "PLATFORM|again", value_parser = parse_run_target)]
     platform: Option<RunTarget>,
 
-    /// Log filter (RUST_LOG syntax) for logs forwarded to the CLI
+    /// Log filter (`RUST_LOG` syntax) for logs forwarded to the CLI
     #[arg(long, value_name = "RUST_LOG")]
     log_filter: Option<String>,
 
@@ -843,8 +843,12 @@ async fn run_platform(
 
     // Now start the hot reload server (after build succeeded)
     let (server, connection_events) = if hot_reload_enabled {
-        let (server, events) = Server::start(hot_reload_port, project_dir.to_path_buf(), log_filter.clone())
-            .context("Failed to start hot reload server")?;
+        let (server, events) = Server::start(
+            hot_reload_port,
+            project_dir.to_path_buf(),
+            log_filter.clone(),
+        )
+        .context("Failed to start hot reload server")?;
         (Some(server), Some(events))
     } else {
         (None, None)
@@ -913,7 +917,8 @@ async fn run_platform(
 
     // Server was already started above, unwrap it (we know it exists when hot_reload_enabled)
     let server = server.expect("server should exist when hot reload is enabled");
-    let connection_events = connection_events.expect("connection_events should exist when hot reload is enabled");
+    let connection_events =
+        connection_events.expect("connection_events should exist when hot reload is enabled");
 
     // Set up file watcher for hot reload
     let mut watch_paths = vec![project_dir.join("src")];
@@ -921,8 +926,8 @@ async fn run_platform(
         watch_paths.push(project_dir.join(path));
     }
 
-    let mut file_watcher = FileWatcher::new(watch_paths)
-        .context("Failed to initialize file watcher")?;
+    let mut file_watcher =
+        FileWatcher::new(watch_paths).context("Failed to initialize file watcher")?;
 
     if !output::global_output_format().is_json() {
         ui::info("App launched with hot reload enabled");
@@ -1510,7 +1515,7 @@ fn strip_artifact_if_needed(path: &Path, target_triple: &str) {
         return;
     }
 
-    let before = path.metadata().ok().map(|m| m.len()).unwrap_or(0);
+    let before = path.metadata().ok().map_or(0, |m| m.len());
     if let Some(strip) = find_llvm_strip() {
         // Use --strip-debug to only remove debug symbols while preserving the
         // dynamic symbol table needed for FFI exports (dlopen/dlsym)
@@ -1524,7 +1529,7 @@ fn strip_artifact_if_needed(path: &Path, target_triple: &str) {
             });
         if let Ok(status) = status {
             if status.success() {
-                let after = path.metadata().ok().map(|m| m.len()).unwrap_or(before);
+                let after = path.metadata().ok().map_or(before, |m| m.len());
                 info!(
                     "Stripped hot reload artifact ({} -> {} bytes)",
                     before, after
@@ -1641,8 +1646,8 @@ async fn run_web(
         watch_paths.push(project_dir.join(path));
     }
 
-    let mut file_watcher = FileWatcher::new(watch_paths)
-        .context("Failed to initialize file watcher")?;
+    let mut file_watcher =
+        FileWatcher::new(watch_paths).context("Failed to initialize file watcher")?;
 
     if output::global_output_format().is_json() {
         let _ = webbrowser::open(&url);
