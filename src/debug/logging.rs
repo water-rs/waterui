@@ -43,11 +43,10 @@ pub fn register_sender(sender: Sender<String>) {
 
 /// Clear the outbound sender.
 pub fn clear_sender() {
-    if let Some(slot) = OUTBOUND_SENDER.get() {
-        if let Ok(mut guard) = slot.lock() {
+    if let Some(slot) = OUTBOUND_SENDER.get()
+        && let Ok(mut guard) = slot.lock() {
             guard.take();
         }
-    }
 }
 
 fn get_sender() -> Option<Sender<String>> {
@@ -171,8 +170,8 @@ impl PanicReport {
         Self {
             message: extract_panic_message(info),
             file: loc.map(|l| l.file().to_string()),
-            line: loc.map(|l| l.line()),
-            column: loc.map(|l| l.column()),
+            line: loc.map(std::panic::Location::line),
+            column: loc.map(std::panic::Location::column),
             thread: thread::current().name().map(String::from),
             backtrace: Backtrace::force_capture().to_string(),
         }
@@ -253,7 +252,7 @@ where
     }
 }
 
-fn level_allows(filter: LevelFilter, level: Level) -> bool {
+const fn level_allows(filter: LevelFilter, level: Level) -> bool {
     match filter {
         LevelFilter::OFF => false,
         LevelFilter::ERROR => matches!(level, Level::ERROR),

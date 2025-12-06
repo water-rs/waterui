@@ -1,7 +1,4 @@
-use waterui::{
-    component::progress::{ProgressConfig, ProgressStyle},
-    prelude::Progress,
-};
+use waterui::component::progress::{ProgressConfig, ProgressStyle};
 
 use crate::{WuiAnyView, reactive::WuiComputed};
 
