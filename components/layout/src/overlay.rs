@@ -82,8 +82,7 @@ impl Layout for OverlayLayout {
         // provides no intrinsic size, fall back to the parent's constraints.
         let base_size = children
             .first()
-            .map(|c| c.size_that_fits(proposal))
-            .unwrap_or(Size::zero());
+            .map_or(Size::zero(), |c| c.size_that_fits(proposal));
 
         let base_width = if base_size.width.is_finite() && base_size.width > 0.0 {
             base_size.width
