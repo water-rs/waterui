@@ -175,7 +175,7 @@ impl Toolchain for Rust {
                     .with_suggestion("Install rustup from https://rustup.rs to manage Rust targets"));
             }
 
-            let targets: Vec<_> = self.targets.iter().map(|t| RustTarget::new(t)).collect();
+            let targets: Vec<_> = self.targets.iter().map(RustTarget::new).collect();
             return Ok(RustInstallation::Full(Sequence {
                 first: Rustup,
                 second: Many::new(targets),
@@ -209,7 +209,7 @@ impl Display for Rustup {
 impl Installation for Rustup {
     type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "rustup"
     }
 
@@ -226,7 +226,7 @@ impl Installation for Rustup {
                 .status()
                 .await
                 .map_err(|e| {
-                    progress.fail("rustup", &format!("{e}"));
+                    progress.fail("rustup", format!("{e}"));
                     ToolchainError::install_failed(format!("Failed to run rustup installer: {e}"))
                 })?;
 
@@ -277,7 +277,7 @@ impl Installation for RustTarget {
                 .status()
                 .await
                 .map_err(|e| {
-                    progress.fail(&self.target, &format!("{e}"));
+                    progress.fail(&self.target, format!("{e}"));
                     ToolchainError::install_failed(format!("Failed to run rustup: {e}"))
                 })?;
 

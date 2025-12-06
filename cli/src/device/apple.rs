@@ -215,8 +215,7 @@ impl Device for AppleSimulatorDevice {
         let device_reference = target.reference();
 
         let already_booted = simulator_current_state(device_reference)?
-            .as_deref()
-            .map_or(false, |state| state == "Booted");
+            .as_deref() == Some("Booted");
 
         if already_booted {
             debug!("Simulator {device_reference} is already booted; skipping boot step");
@@ -299,7 +298,7 @@ fn simulator_device_labels(target: &AppleSimulatorTarget) -> (Option<String>, Op
     }
 }
 
-fn simulator_platform_kind(kind: AppleSimulatorKind) -> PlatformKind {
+const fn simulator_platform_kind(kind: AppleSimulatorKind) -> PlatformKind {
     match kind {
         AppleSimulatorKind::Ios => PlatformKind::Ios,
         AppleSimulatorKind::Ipados => PlatformKind::Ipados,
@@ -365,7 +364,7 @@ impl AppleCrashCollector {
         if show_lines {
             let header = format!("Apple logs ({label})");
             println!();
-            println!("{}", header);
+            println!("{header}");
         }
 
         let handle = thread::spawn(move || {
@@ -548,7 +547,7 @@ fn is_forwarded_tracing_line(message: &str) -> bool {
 /// - Logs that mention waterui or the app explicitly
 ///
 /// We want to hide:
-/// - System framework noise (CoreMedia, MediaToolbox, etc.)
+/// - System framework noise (`CoreMedia`, `MediaToolbox`, etc.)
 /// - Generic Apple subsystem logs
 fn should_display_apple_log(parsed: Option<&Value>, message: &str) -> bool {
     // Never show tracing-forwarded lines (they're displayed via hot reload channel)

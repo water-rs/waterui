@@ -26,21 +26,21 @@ struct ChildMeasurement {
 }
 
 impl ChildMeasurement {
-    /// Returns true if this child stretches vertically (for VStack height distribution).
-    /// In VStack context:
-    /// - MainAxis means vertical (VStack's main axis)
-    /// - CrossAxis means horizontal (VStack's cross axis)
-    fn stretches_main_axis(&self) -> bool {
+    /// Returns true if this child stretches vertically (for `VStack` height distribution).
+    /// In `VStack` context:
+    /// - `MainAxis` means vertical (`VStack`'s main axis)
+    /// - `CrossAxis` means horizontal (`VStack`'s cross axis)
+    const fn stretches_main_axis(&self) -> bool {
         matches!(
             self.stretch_axis,
             StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
         )
     }
 
-    /// Returns true if this child stretches horizontally (for VStack width expansion).
-    /// In VStack context:
-    /// - CrossAxis means horizontal (VStack's cross axis)
-    fn stretches_cross_axis(&self) -> bool {
+    /// Returns true if this child stretches horizontally (for `VStack` width expansion).
+    /// In `VStack` context:
+    /// - `CrossAxis` means horizontal (`VStack`'s cross axis)
+    const fn stretches_cross_axis(&self) -> bool {
         matches!(
             self.stretch_axis,
             StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
@@ -67,7 +67,7 @@ impl Layout for VStackLayout {
             .collect();
 
         // VStack checks for main-axis (vertical) stretching
-        let has_main_axis_stretch = measurements.iter().any(|m| m.stretches_main_axis());
+        let has_main_axis_stretch = measurements.iter().any(ChildMeasurement::stretches_main_axis);
 
         // Height: sum of children that don't stretch on main axis (vertically) + spacing
         // (axis-expanding components like TextField report their intrinsic height here)
@@ -190,7 +190,7 @@ impl Layout for VStackLayout {
         rects
     }
 
-    /// VStack stretches horizontally to fill available width (cross-axis).
+    /// `VStack` stretches horizontally to fill available width (cross-axis).
     /// It uses intrinsic height based on children (main-axis).
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Horizontal
