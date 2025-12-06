@@ -50,10 +50,7 @@ mod tests {
     fn test_parse_error_debug() {
         use alloc::format;
         let error = ParseError::empty();
-        assert_eq!(
-            format!("{error:?}"),
-            "ParseError { kind: Empty }"
-        );
+        assert_eq!(format!("{error:?}"), "ParseError { kind: Empty }");
     }
 
     #[test]
