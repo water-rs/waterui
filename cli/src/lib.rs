@@ -17,8 +17,9 @@
 //! - **`Platform`** - Abstracts platform-specific build and packaging
 //! - **`Device`** - Abstracts device-specific deployment and running
 //! - **`Backend`** - Handles project initialization and requirements checking
-//! - **`ToolchainIssue`** - Represents problems that `water doctor` can diagnose/fix
+//! - **`Toolchain`** - Unified interface for checking and installing toolchain dependencies
 
+#![feature(impl_trait_in_assoc_type)]
 #![allow(missing_docs)]
 
 pub mod platform;
@@ -29,13 +30,13 @@ pub mod crash;
 pub mod device;
 pub mod doctor;
 pub mod hot_reload;
-pub mod installer;
 pub mod output;
 pub mod package;
 pub mod permission;
 pub mod project;
 pub mod run_session;
 pub mod runtime;
+pub mod toolchain;
 pub mod util;
 
 pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");

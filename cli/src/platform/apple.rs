@@ -17,9 +17,9 @@ use crate::{
         },
     },
     build::{self, BuildOptions},
-    doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
     project::{Project, Swift},
+    toolchain::ToolchainError,
 };
 
 /// Target describing how Xcode should build artifacts for Apple platforms.
@@ -106,7 +106,6 @@ impl ApplePlatform {
 }
 
 impl Platform for ApplePlatform {
-    type ToolchainIssue = AnyToolchainIssue;
     type Backend = Apple;
 
     fn target_triple(&self) -> &'static str {
@@ -135,7 +134,7 @@ impl Platform for ApplePlatform {
         }
     }
 
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>> {
         let mut issues = Vec::new();
 
         if let Err(mut backend_issues) = self.backend.check_requirements(project) {
@@ -144,7 +143,7 @@ impl Platform for ApplePlatform {
 
         if let Some(target) = self.required_rust_target() {
             if let Err(issue) = verify_rust_target_installed(target) {
-                issues.push(Box::new(issue) as AnyToolchainIssue);
+                issues.push(issue);
             }
         }
 
@@ -247,58 +246,20 @@ impl AppleSimulatorKind {
     }
 }
 
-#[derive(Debug)]
-enum ApplePlatformIssue {
-    RustupMissing,
-    MissingRustTarget { target: &'static str },
-}
-
-impl core::fmt::Display for ApplePlatformIssue {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::RustupMissing => write!(f, "`rustup` was not found on PATH"),
-            Self::MissingRustTarget { target } => {
-                write!(f, "Rust target `{target}` is not installed")
-            }
-        }
-    }
-}
-
-impl ToolchainIssue for ApplePlatformIssue {
-    fn suggestion(&self) -> String {
-        match self {
-            Self::RustupMissing => {
-                "Install Rust using https://rustup.rs/ so additional Apple targets can be added."
-                    .to_string()
-            }
-            Self::MissingRustTarget { target } => {
-                crate::installer::rust_target_suggestion(target)
-            }
-        }
-    }
-
-    fn fix(&self) -> color_eyre::eyre::Result<()> {
-        match self {
-            Self::MissingRustTarget { target } => crate::installer::rust_target(target),
-            Self::RustupMissing => crate::installer::rust_toolchain(),
-        }
-    }
-}
-
-fn verify_rust_target_installed(target: &'static str) -> Result<(), ApplePlatformIssue> {
+fn verify_rust_target_installed(target: &'static str) -> Result<(), ToolchainError> {
     if which("rustup").is_err() {
-        return Err(ApplePlatformIssue::RustupMissing);
+        return Err(ToolchainError::unfixable("rustup not found")
+            .with_suggestion("Install Rust from https://rustup.rs"));
     }
 
-    if crate::installer::is_rust_target_installed(target) {
-        return Ok(());
-    }
-
-    // Double-check with direct query for more detailed error
+    // Check if target is installed
     let output = Command::new("rustup")
         .args(["target", "list", "--installed"])
         .output()
-        .map_err(|_| ApplePlatformIssue::RustupMissing)?;
+        .map_err(|_| {
+            ToolchainError::unfixable("Failed to run rustup")
+                .with_suggestion("Ensure rustup is properly installed")
+        })?;
 
     let installed = String::from_utf8_lossy(&output.stdout);
     let has_target = installed
@@ -309,7 +270,8 @@ fn verify_rust_target_installed(target: &'static str) -> Result<(), ApplePlatfor
     if has_target {
         Ok(())
     } else {
-        Err(ApplePlatformIssue::MissingRustTarget { target })
+        Err(ToolchainError::missing(format!("Rust target {target} not installed"))
+            .with_suggestion(format!("Run: rustup target add {target}")))
     }
 }
 
