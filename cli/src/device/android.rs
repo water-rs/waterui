@@ -256,17 +256,15 @@ impl Device for AndroidDevice {
         let mut reverse_guard = None;
         let mut launch_cmd = adb_command(&self.adb_path, self.selection_identifier());
         launch_cmd.args(["shell", "am", "start", "-n", &activity]);
+        // Hot reload host/port are embedded at compile time via build.rs,
+        // so we only need to signal whether hot reload is enabled and set up the ADB tunnel.
         if options.hot_reload.enabled {
-            let port = options.hot_reload.port;
             reverse_guard = Some(AdbReverseGuard::new(
                 &self.adb_path,
                 self.selection_identifier(),
-                port,
+                options.hot_reload.port,
             )?);
-            launch_cmd
-                .args(["--es", "WATERUI_HOT_RELOAD_HOST", "127.0.0.1"])
-                .args(["--es", "WATERUI_HOT_RELOAD_PORT", &port.to_string()])
-                .args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "false"]);
+            launch_cmd.args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "false"]);
         } else {
             launch_cmd.args(["--ez", "WATERUI_DISABLE_HOT_RELOAD", "true"]);
         }
