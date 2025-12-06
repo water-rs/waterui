@@ -10,7 +10,7 @@ use tokio::process::Command as AsyncCommand;
 use which::which;
 
 use super::{
-    ToolchainError, Toolchain,
+    Toolchain, ToolchainError,
     installation::{Empty, Installation, InstallationReport, Many, Progress, Sequence},
 };
 
@@ -161,8 +161,10 @@ impl Toolchain for Rust {
         let missing = self.missing_targets().await;
         if !missing.is_empty() {
             let targets = missing.join(", ");
-            return Err(ToolchainError::missing(format!("Missing Rust targets: {targets}"))
-                .with_suggestion(format!("Run: rustup target add {}", missing.join(" "))));
+            return Err(
+                ToolchainError::missing(format!("Missing Rust targets: {targets}"))
+                    .with_suggestion(format!("Run: rustup target add {}", missing.join(" "))),
+            );
         }
 
         Ok(())
@@ -171,8 +173,11 @@ impl Toolchain for Rust {
     fn fix(&self) -> Result<Self::Installation, ToolchainError> {
         if !Self::has_rustup() {
             if Self::has_rustc() {
-                return Err(ToolchainError::unfixable("Rust was installed without rustup")
-                    .with_suggestion("Install rustup from https://rustup.rs to manage Rust targets"));
+                return Err(
+                    ToolchainError::unfixable("Rust was installed without rustup").with_suggestion(
+                        "Install rustup from https://rustup.rs to manage Rust targets",
+                    ),
+                );
             }
 
             let targets: Vec<_> = self.targets.iter().map(RustTarget::new).collect();
@@ -237,7 +242,9 @@ impl Installation for Rustup {
             }
 
             progress.done("rustup", "installed");
-            Ok(InstallationReport::completed("Rust toolchain installed via rustup"))
+            Ok(InstallationReport::completed(
+                "Rust toolchain installed via rustup",
+            ))
         }
     }
 }
@@ -250,7 +257,9 @@ pub struct RustTarget {
 
 impl RustTarget {
     pub fn new(target: impl Into<String>) -> Self {
-        Self { target: target.into() }
+        Self {
+            target: target.into(),
+        }
     }
 }
 
@@ -291,7 +300,10 @@ impl Installation for RustTarget {
             }
 
             progress.done(&self.target, "installed");
-            Ok(InstallationReport::completed(format!("Installed Rust target: {}", self.target)))
+            Ok(InstallationReport::completed(format!(
+                "Installed Rust target: {}",
+                self.target
+            )))
         }
     }
 }

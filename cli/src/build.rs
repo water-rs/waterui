@@ -466,8 +466,8 @@ fn cargo_metadata_target_dir(project_dir: &Path) -> Result<PathBuf> {
         );
     }
 
-    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)
-        .context("failed to parse cargo metadata output")?;
+    let metadata: CargoMetadata =
+        serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata output")?;
     Ok(PathBuf::from(metadata.target_directory))
 }
 
@@ -627,9 +627,7 @@ pub fn build_for_target(
     }
 
     // Copy to target directory with standardized name (libwaterui_app.*)
-    let out_dir = target_dir
-        .join(target)
-        .join(options.profile_name());
+    let out_dir = target_dir.join(target).join(options.profile_name());
 
     let artifact_path = out_dir.join(&standard_filename);
     std::fs::copy(&cargo_output, &artifact_path).with_context(|| {
@@ -811,7 +809,11 @@ impl CargoBuilder {
 }
 
 impl Builder for CargoBuilder {
-    async fn build(&self, options: &BuildOptions, cancel: CancellationToken) -> Result<BuildResult> {
+    async fn build(
+        &self,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> Result<BuildResult> {
         info!("Building {} for target {}", self.crate_name, self.target);
 
         let mut cmd = self.prepare_command(options);
@@ -827,7 +829,11 @@ impl Builder for CargoBuilder {
         let status = crate::cancel::wait_child_cancellable(&mut child, &cancel).await?;
 
         if !status.success() {
-            bail!("cargo build failed for {} (exit code: {:?})", self.target, status.code());
+            bail!(
+                "cargo build failed for {} (exit code: {:?})",
+                self.target,
+                status.code()
+            );
         }
 
         // Determine artifact paths
@@ -849,9 +855,7 @@ impl Builder for CargoBuilder {
         }
 
         // Copy to target directory with standardized name (libwaterui_app.*)
-        let out_dir = target_dir
-            .join(&self.target)
-            .join(options.profile_name());
+        let out_dir = target_dir.join(&self.target).join(options.profile_name());
 
         let artifact_path = out_dir.join(&standard_filename);
         tokio::fs::copy(&cargo_output, &artifact_path)
@@ -880,7 +884,10 @@ fn configure_cargo_env(cmd: &mut tokio::process::Command, options: &BuildOptions
     if options.hot_reload.enabled {
         cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
         cmd.env("WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
-        cmd.env("WATERUI_HOT_RELOAD_PORT", options.hot_reload.port.to_string());
+        cmd.env(
+            "WATERUI_HOT_RELOAD_PORT",
+            options.hot_reload.port.to_string(),
+        );
 
         // Set compile-time cfg flag
         let mut rustflags: Vec<String> = std::env::var("RUSTFLAGS")
@@ -915,14 +922,13 @@ fn configure_cargo_env(cmd: &mut tokio::process::Command, options: &BuildOptions
 /// Configure cargo command with build speedups (sccache, mold).
 fn configure_cargo_speedups(cmd: &mut tokio::process::Command, options: &BuildOptions) {
     // sccache
-    if options.speedups.sccache
-        && std::env::var_os("RUSTC_WRAPPER").is_none() {
-            if let Ok(path) = which::which("sccache") {
-                cmd.env("RUSTC_WRAPPER", path);
-            } else {
-                warn!("`sccache` not found on PATH; proceeding without build cache");
-            }
+    if options.speedups.sccache && std::env::var_os("RUSTC_WRAPPER").is_none() {
+        if let Ok(path) = which::which("sccache") {
+            cmd.env("RUSTC_WRAPPER", path);
+        } else {
+            warn!("`sccache` not found on PATH; proceeding without build cache");
         }
+    }
 
     // mold (Linux only)
     #[cfg(target_os = "linux")]

@@ -87,7 +87,9 @@ waterui_cli::impl_report!(BackendUpdateReport, |r| {
             }
         }
         BackendUpdateStatus::UpToDate => format!("{} backend is up to date", r.backend),
-        BackendUpdateStatus::Incompatible => format!("{} backend has incompatible update available", r.backend),
+        BackendUpdateStatus::Incompatible => {
+            format!("{} backend has incompatible update available", r.backend)
+        }
         BackendUpdateStatus::Skipped => format!("{} backend update skipped", r.backend),
     }
 });

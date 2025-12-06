@@ -60,10 +60,11 @@ pub fn create_xcode_project_with_permissions(
     let (package_reference_entry, package_reference_section) = match swift_dependency {
         SwiftDependency::Local { path } => {
             // Local package - use XCLocalSwiftPackageReference
-            let local_path = pathdiff::diff_paths(path, &apple_root)
-                .unwrap_or_else(|| path.clone());
+            let local_path =
+                pathdiff::diff_paths(path, &apple_root).unwrap_or_else(|| path.clone());
             (
-                r#"D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "waterui-swift" */,"#.to_string(),
+                r#"D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "waterui-swift" */,"#
+                    .to_string(),
                 format!(
                     r#"/* Begin XCLocalSwiftPackageReference section */
         D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "waterui-swift" */ = {{
@@ -97,7 +98,8 @@ pub fn create_xcode_project_with_permissions(
 
             let repo_url = swift_backend_repo_url();
             (
-                r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */,"#.to_string(),
+                r#"D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */,"#
+                    .to_string(),
                 format!(
                     r#"/* Begin XCRemoteSwiftPackageReference section */
         D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "waterui-swift" */ = {{

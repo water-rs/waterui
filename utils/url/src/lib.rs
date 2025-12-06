@@ -207,7 +207,7 @@ impl Url {
     /// const LOCAL_PATH: Url = Url::new("/absolute/path");
     /// const RELATIVE: Url = Url::new("./relative/path");
     /// ```
-    #[must_use] 
+    #[must_use]
     pub const fn new(url: &'static str) -> Self {
         Self {
             inner: Str::from_static(url),
@@ -229,7 +229,7 @@ impl Url {
     /// assert!(Url::parse("/local/path").is_none());
     /// ```
     pub fn parse(url: impl AsRef<str>) -> Option<Self> {
-        url.as_ref().parse::<Self>().ok().filter(Url::is_web)
+        url.as_ref().parse::<Self>().ok().filter(Self::is_web)
     }
 
     /// Creates a URL from a file path.

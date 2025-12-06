@@ -3,9 +3,9 @@
 //! This example demonstrates the Canvas API for drawing shapes,
 //! paths, and animations using GPU-accelerated 2D rendering.
 
+use waterui::graphics::Canvas;
 use waterui::graphics::kurbo::{Circle, Point, Rect, RoundedRect};
 use waterui::graphics::peniko::Color;
-use waterui::graphics::Canvas;
 use waterui::prelude::*;
 
 pub fn init() -> Environment {
@@ -34,10 +34,7 @@ pub fn main() -> impl View {
             );
 
             // Circle in center
-            ctx.fill(
-                Circle::new(center, 60.0),
-                Color::new([0.9, 0.3, 0.4, 1.0]),
-            );
+            ctx.fill(Circle::new(center, 60.0), Color::new([0.9, 0.3, 0.4, 1.0]));
 
             // Stroked circle
             ctx.stroke(

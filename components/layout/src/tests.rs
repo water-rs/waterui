@@ -5,8 +5,8 @@
 
 use alloc::{format, vec, vec::Vec};
 
+use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
 use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
-use crate::stack::{HStackLayout, VStackLayout, HorizontalAlignment, VerticalAlignment};
 
 // ============================================================================
 // Test Infrastructure
@@ -137,22 +137,30 @@ fn assert_rect_within_bounds(rect: &Rect, bounds: &Rect, msg: &str) {
     assert!(
         rect.x() >= bounds.x() - 0.001,
         "{}: rect.x ({}) < bounds.x ({})",
-        msg, rect.x(), bounds.x()
+        msg,
+        rect.x(),
+        bounds.x()
     );
     assert!(
         rect.y() >= bounds.y() - 0.001,
         "{}: rect.y ({}) < bounds.y ({})",
-        msg, rect.y(), bounds.y()
+        msg,
+        rect.y(),
+        bounds.y()
     );
     assert!(
         rect.x() + rect.width() <= bounds.x() + bounds.width() + 0.001,
         "{}: rect.right ({}) > bounds.right ({})",
-        msg, rect.x() + rect.width(), bounds.x() + bounds.width()
+        msg,
+        rect.x() + rect.width(),
+        bounds.x() + bounds.width()
     );
     assert!(
         rect.y() + rect.height() <= bounds.y() + bounds.height() + 0.001,
         "{}: rect.bottom ({}) > bounds.bottom ({})",
-        msg, rect.y() + rect.height(), bounds.y() + bounds.height()
+        msg,
+        rect.y() + rect.height(),
+        bounds.y() + bounds.height()
     );
 }
 
@@ -178,7 +186,11 @@ fn assert_no_overlap(rects: &[Rect], axis: &str) {
                 _ => false,
             };
 
-            assert!(!overlap, "Children {} and {} overlap on {} axis", i, j, axis);
+            assert!(
+                !overlap,
+                "Children {} and {} overlap on {} axis",
+                i, j, axis
+            );
         }
     }
 }
@@ -199,9 +211,13 @@ fn test_hstack_children_exceed_bounds() {
     };
 
     // Two texts that together (60 + 60 + 10 spacing = 130) exceed 100
-    let mut text1 = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut text1 = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
     let mut spacer = SpacerView;
-    let mut text2 = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut text2 = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
     let children: Vec<&dyn SubView> = vec![&mut text1, &mut spacer, &mut text2];
@@ -229,7 +245,9 @@ fn test_hstack_single_child_exceeds_bounds() {
         spacing: 0.0,
     };
 
-    let mut wide_child = FixedSizeView { size: Size::new(200.0, 30.0) };
+    let mut wide_child = FixedSizeView {
+        size: Size::new(200.0, 30.0),
+    };
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut wide_child];
 
@@ -240,7 +258,8 @@ fn test_hstack_single_child_exceeds_bounds() {
     assert!(
         rects[0].width() <= bounds.width() + 0.001,
         "Child width {} exceeds bounds width {}",
-        rects[0].width(), bounds.width()
+        rects[0].width(),
+        bounds.width()
     );
 }
 
@@ -252,9 +271,15 @@ fn test_hstack_multiple_children_total_exceeds_bounds() {
         spacing: 10.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(50.0, 20.0) };
-    let mut child2 = FixedSizeView { size: Size::new(50.0, 20.0) };
-    let mut child3 = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
+    let mut child2 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
+    let mut child3 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
 
     // Total: 50 + 10 + 50 + 10 + 50 = 170, bounds = 100
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
@@ -288,7 +313,9 @@ fn test_hstack_with_flexible_text() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut long_text = FlexibleTextView::new(200.0, 20.0); // 200pt wide text
 
     // bounds width = 150, spacing = 10, available = 140
@@ -337,7 +364,9 @@ fn test_hstack_single_child() {
         spacing: 10.0,
     };
 
-    let mut child = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
     let children: Vec<&dyn SubView> = vec![&mut child];
 
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
@@ -353,24 +382,42 @@ fn test_hstack_multiple_spacers() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(20.0, 30.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(20.0, 30.0),
+    };
     let mut spacer1 = SpacerView;
-    let mut child2 = FixedSizeView { size: Size::new(20.0, 30.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(20.0, 30.0),
+    };
     let mut spacer2 = SpacerView;
-    let mut child3 = FixedSizeView { size: Size::new(20.0, 30.0) };
+    let mut child3 = FixedSizeView {
+        size: Size::new(20.0, 30.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 50.0));
     let children: Vec<&dyn SubView> = vec![
-        &mut child1, &mut spacer1, &mut child2, &mut spacer2, &mut child3
+        &mut child1,
+        &mut spacer1,
+        &mut child2,
+        &mut spacer2,
+        &mut child3,
     ];
 
     let rects = layout.place(bounds, &children);
 
     // Remaining space = 200 - 60 = 140, divided by 2 spacers = 70 each
     assert_eq!(rects[0].width(), 20.0);
-    assert!((rects[1].width() - 70.0).abs() < 0.001, "Spacer 1 width: {}", rects[1].width());
+    assert!(
+        (rects[1].width() - 70.0).abs() < 0.001,
+        "Spacer 1 width: {}",
+        rects[1].width()
+    );
     assert_eq!(rects[2].width(), 20.0);
-    assert!((rects[3].width() - 70.0).abs() < 0.001, "Spacer 2 width: {}", rects[3].width());
+    assert!(
+        (rects[3].width() - 70.0).abs() < 0.001,
+        "Spacer 2 width: {}",
+        rects[3].width()
+    );
     assert_eq!(rects[4].width(), 20.0);
 }
 
@@ -381,8 +428,12 @@ fn test_hstack_alignment_top() {
         spacing: 10.0,
     };
 
-    let mut short = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut tall = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut short = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut tall = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
 
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
@@ -401,8 +452,12 @@ fn test_hstack_alignment_bottom() {
         spacing: 10.0,
     };
 
-    let mut short = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut tall = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut short = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut tall = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
 
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
@@ -421,8 +476,12 @@ fn test_hstack_alignment_center() {
         spacing: 10.0,
     };
 
-    let mut short = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut tall = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut short = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut tall = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
 
     let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
@@ -447,9 +506,15 @@ fn test_vstack_children_exceed_bounds() {
     };
 
     // Three children that together exceed bounds height
-    let mut child1 = FixedSizeView { size: Size::new(50.0, 50.0) };
-    let mut child2 = FixedSizeView { size: Size::new(50.0, 50.0) };
-    let mut child3 = FixedSizeView { size: Size::new(50.0, 50.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(50.0, 50.0),
+    };
+    let mut child2 = FixedSizeView {
+        size: Size::new(50.0, 50.0),
+    };
+    let mut child3 = FixedSizeView {
+        size: Size::new(50.0, 50.0),
+    };
 
     // Total: 50 + 10 + 50 + 10 + 50 = 170, bounds height = 100
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 100.0));
@@ -469,7 +534,9 @@ fn test_vstack_child_width_exceeds_bounds() {
         spacing: 0.0,
     };
 
-    let mut wide_child = FixedSizeView { size: Size::new(200.0, 30.0) };
+    let mut wide_child = FixedSizeView {
+        size: Size::new(200.0, 30.0),
+    };
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut wide_child];
 
@@ -525,7 +592,9 @@ fn test_vstack_with_axis_expanding_child() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut text_field = HorizontalExpandingView { height: 30.0 };
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
@@ -562,8 +631,12 @@ fn test_vstack_alignment_leading() {
         spacing: 10.0,
     };
 
-    let mut narrow = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut wide = FixedSizeView { size: Size::new(80.0, 20.0) };
+    let mut narrow = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut wide = FixedSizeView {
+        size: Size::new(80.0, 20.0),
+    };
 
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
@@ -582,8 +655,12 @@ fn test_vstack_alignment_trailing() {
         spacing: 10.0,
     };
 
-    let mut narrow = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut wide = FixedSizeView { size: Size::new(80.0, 20.0) };
+    let mut narrow = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut wide = FixedSizeView {
+        size: Size::new(80.0, 20.0),
+    };
 
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
@@ -602,8 +679,12 @@ fn test_vstack_alignment_center() {
         spacing: 10.0,
     };
 
-    let mut narrow = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut wide = FixedSizeView { size: Size::new(80.0, 20.0) };
+    let mut narrow = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut wide = FixedSizeView {
+        size: Size::new(80.0, 20.0),
+    };
 
     let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
@@ -623,24 +704,42 @@ fn test_vstack_multiple_spacers() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut spacer1 = SpacerView;
-    let mut child2 = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut spacer2 = SpacerView;
-    let mut child3 = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut child3 = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
     let children: Vec<&dyn SubView> = vec![
-        &mut child1, &mut spacer1, &mut child2, &mut spacer2, &mut child3
+        &mut child1,
+        &mut spacer1,
+        &mut child2,
+        &mut spacer2,
+        &mut child3,
     ];
 
     let rects = layout.place(bounds, &children);
 
     // Remaining height = 200 - 60 = 140, divided by 2 spacers = 70 each
     assert_eq!(rects[0].height(), 20.0);
-    assert!((rects[1].height() - 70.0).abs() < 0.001, "Spacer 1 height: {}", rects[1].height());
+    assert!(
+        (rects[1].height() - 70.0).abs() < 0.001,
+        "Spacer 1 height: {}",
+        rects[1].height()
+    );
     assert_eq!(rects[2].height(), 20.0);
-    assert!((rects[3].height() - 70.0).abs() < 0.001, "Spacer 2 height: {}", rects[3].height());
+    assert!(
+        (rects[3].height() - 70.0).abs() < 0.001,
+        "Spacer 2 height: {}",
+        rects[3].height()
+    );
     assert_eq!(rects[4].height(), 20.0);
 }
 
@@ -660,8 +759,12 @@ fn test_hstack_in_vstack_respects_width() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
-    let mut long_text = FixedSizeView { size: Size::new(500.0, 20.0) }; // Very long text
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
+    let mut long_text = FixedSizeView {
+        size: Size::new(500.0, 20.0),
+    }; // Very long text
 
     // Constrained bounds (like inside a VStack)
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 30.0));
@@ -695,16 +798,17 @@ fn test_hstack_size_respects_proposal() {
         spacing: 10.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(100.0, 30.0) };
-    let mut child2 = FixedSizeView { size: Size::new(100.0, 30.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(100.0, 30.0),
+    };
+    let mut child2 = FixedSizeView {
+        size: Size::new(100.0, 30.0),
+    };
 
     // Intrinsic width would be 210 (100 + 10 + 100)
     // But with proposal width = 150, should report 150 (capped to proposal)
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
-    let size = layout.size_that_fits(
-        ProposalSize::new(Some(150.0), None),
-        &children
-    );
+    let size = layout.size_that_fits(ProposalSize::new(Some(150.0), None), &children);
 
     // HStack without spacers should cap its reported width to the proposal
     // This ensures parent layouts get accurate sizing information
@@ -718,16 +822,17 @@ fn test_vstack_size_respects_proposal() {
         spacing: 10.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(100.0, 50.0) };
-    let mut child2 = FixedSizeView { size: Size::new(80.0, 50.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(100.0, 50.0),
+    };
+    let mut child2 = FixedSizeView {
+        size: Size::new(80.0, 50.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
     // With width proposal, VStack should report min(max_child_width, proposal)
-    let size = layout.size_that_fits(
-        ProposalSize::new(Some(90.0), None),
-        &children
-    );
+    let size = layout.size_that_fits(ProposalSize::new(Some(90.0), None), &children);
 
     assert_eq!(size.width, 90.0); // Clamped to proposal
     assert_eq!(size.height, 110.0); // 50 + 10 + 50
@@ -742,7 +847,9 @@ fn test_zero_bounds() {
     let hstack = HStackLayout::default();
     let vstack = VStackLayout::default();
 
-    let mut child = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
     let bounds = Rect::new(Point::zero(), Size::zero());
 
     let children: Vec<&dyn SubView> = vec![&mut child];
@@ -751,7 +858,9 @@ fn test_zero_bounds() {
     // Should handle gracefully - child clamped to zero
     assert!(rects[0].width() <= 0.001 || rects[0].width() <= 50.0);
 
-    let mut child = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
     let children: Vec<&dyn SubView> = vec![&mut child];
     let rects = vstack.place(bounds, &children);
 
@@ -766,9 +875,13 @@ fn test_negative_remaining_space_with_spacer() {
         spacing: 10.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
     let mut spacer = SpacerView;
-    let mut child2 = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
 
     // Total non-spacer width = 60 + 10 + 10 + 60 = 140, bounds = 100
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 30.0));
@@ -777,8 +890,16 @@ fn test_negative_remaining_space_with_spacer() {
     let rects = layout.place(bounds, &children);
 
     // Spacer should never have negative dimensions
-    assert!(rects[1].width() >= 0.0, "Spacer has negative width: {}", rects[1].width());
-    assert!(rects[1].height() >= 0.0, "Spacer has negative height: {}", rects[1].height());
+    assert!(
+        rects[1].width() >= 0.0,
+        "Spacer has negative width: {}",
+        rects[1].width()
+    );
+    assert!(
+        rects[1].height() >= 0.0,
+        "Spacer has negative height: {}",
+        rects[1].height()
+    );
 }
 
 #[test]
@@ -789,8 +910,12 @@ fn test_bounds_with_offset() {
         spacing: 10.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(30.0, 20.0) };
-    let mut child2 = FixedSizeView { size: Size::new(40.0, 25.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(30.0, 20.0),
+    };
+    let mut child2 = FixedSizeView {
+        size: Size::new(40.0, 25.0),
+    };
 
     let bounds = Rect::new(Point::new(50.0, 100.0), Size::new(200.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
@@ -819,9 +944,13 @@ fn test_vstack_horizontal_expanding_child_height() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut text_field = HorizontalExpandingView { height: 40.0 }; // Fixed 40pt height
-    let mut button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     // Size that fits: no stretching child should share height
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
@@ -832,16 +961,24 @@ fn test_vstack_horizontal_expanding_child_height() {
     assert_eq!(size.height, 124.0);
 
     // Rebuild children for place
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut text_field = HorizontalExpandingView { height: 40.0 };
-    let mut button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 300.0));
     let rects = layout.place(bounds, &children);
 
     // TextField should keep its 40pt height, not stretch to fill remaining space
-    assert_eq!(rects[1].height(), 40.0, "TextField height should be intrinsic, not stretched");
+    assert_eq!(
+        rects[1].height(),
+        40.0,
+        "TextField height should be intrinsic, not stretched"
+    );
 }
 
 #[test]
@@ -853,7 +990,9 @@ fn test_vstack_with_both_spacer_and_horizontal_expanding() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut spacer = SpacerView; // StretchAxis::Both
     let mut text_field = HorizontalExpandingView { height: 40.0 }; // StretchAxis::Horizontal
 
@@ -867,7 +1006,11 @@ fn test_vstack_with_both_spacer_and_horizontal_expanding() {
     // TextField: 40pt (intrinsic, doesn't stretch vertically)
     assert_eq!(rects[2].height(), 40.0);
     // Spacer gets remaining: 200 - 20 - 10 - 10 - 40 = 120pt
-    assert!((rects[1].height() - 120.0).abs() < 0.001, "Spacer height: {}", rects[1].height());
+    assert!(
+        (rects[1].height() - 120.0).abs() < 0.001,
+        "Spacer height: {}",
+        rects[1].height()
+    );
 }
 
 #[test]
@@ -878,9 +1021,13 @@ fn test_hstack_vertical_expanding_child_width() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Fixed 60pt width
-    let mut button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![&mut label, &mut vertical_component, &mut button];
     let size = layout.size_that_fits(ProposalSize::new(Some(400.0), None), &children);
@@ -898,9 +1045,13 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(80.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(80.0, 20.0),
+    };
     let mut text_field = HorizontalExpandingView { height: 40.0 }; // Returns INFINITY width when unspecified
-    let mut button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
@@ -918,9 +1069,13 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Returns INFINITY height
-    let mut button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![&mut label, &mut vertical_component, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
@@ -938,14 +1093,24 @@ fn test_vstack_multiple_vertical_stretch_children() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
     let mut spacer1 = SpacerView; // Both - stretches vertically
-    let mut child2 = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
     let mut spacer2 = SpacerView; // Both - stretches vertically
-    let mut child3 = FixedSizeView { size: Size::new(50.0, 30.0) };
+    let mut child3 = FixedSizeView {
+        size: Size::new(50.0, 30.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![
-        &mut child1, &mut spacer1, &mut child2, &mut spacer2, &mut child3
+        &mut child1,
+        &mut spacer1,
+        &mut child2,
+        &mut spacer2,
+        &mut child3,
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
@@ -955,9 +1120,17 @@ fn test_vstack_multiple_vertical_stretch_children() {
     // Remaining: 200 - 90 = 110
     // Each spacer: 110 / 2 = 55
     assert_eq!(rects[0].height(), 30.0);
-    assert!((rects[1].height() - 55.0).abs() < 0.001, "Spacer 1 height: {}", rects[1].height());
+    assert!(
+        (rects[1].height() - 55.0).abs() < 0.001,
+        "Spacer 1 height: {}",
+        rects[1].height()
+    );
     assert_eq!(rects[2].height(), 30.0);
-    assert!((rects[3].height() - 55.0).abs() < 0.001, "Spacer 2 height: {}", rects[3].height());
+    assert!(
+        (rects[3].height() - 55.0).abs() < 0.001,
+        "Spacer 2 height: {}",
+        rects[3].height()
+    );
     assert_eq!(rects[4].height(), 30.0);
 }
 
@@ -969,14 +1142,24 @@ fn test_hstack_multiple_horizontal_stretch_children() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
     let mut spacer1 = SpacerView; // Both - stretches horizontally
-    let mut child2 = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
     let mut spacer2 = SpacerView; // Both - stretches horizontally
-    let mut child3 = FixedSizeView { size: Size::new(30.0, 50.0) };
+    let mut child3 = FixedSizeView {
+        size: Size::new(30.0, 50.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![
-        &mut child1, &mut spacer1, &mut child2, &mut spacer2, &mut child3
+        &mut child1,
+        &mut spacer1,
+        &mut child2,
+        &mut spacer2,
+        &mut child3,
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
@@ -986,9 +1169,17 @@ fn test_hstack_multiple_horizontal_stretch_children() {
     // Remaining: 200 - 90 = 110
     // Each spacer: 110 / 2 = 55
     assert_eq!(rects[0].width(), 30.0);
-    assert!((rects[1].width() - 55.0).abs() < 0.001, "Spacer 1 width: {}", rects[1].width());
+    assert!(
+        (rects[1].width() - 55.0).abs() < 0.001,
+        "Spacer 1 width: {}",
+        rects[1].width()
+    );
     assert_eq!(rects[2].width(), 30.0);
-    assert!((rects[3].width() - 55.0).abs() < 0.001, "Spacer 2 width: {}", rects[3].width());
+    assert!(
+        (rects[3].width() - 55.0).abs() < 0.001,
+        "Spacer 2 width: {}",
+        rects[3].width()
+    );
     assert_eq!(rects[4].width(), 30.0);
 }
 
@@ -1001,16 +1192,24 @@ fn test_vstack_form_layout() {
         spacing: 8.0,
     };
 
-    let mut name_label = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut name_label = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
     let mut name_field = HorizontalExpandingView { height: 34.0 };
-    let mut email_label = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut email_label = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
     let mut email_field = HorizontalExpandingView { height: 34.0 };
-    let mut submit_button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut submit_button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![
-        &mut name_label, &mut name_field,
-        &mut email_label, &mut email_field,
-        &mut submit_button
+        &mut name_label,
+        &mut name_field,
+        &mut email_label,
+        &mut email_field,
+        &mut submit_button,
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 500.0));
@@ -1022,7 +1221,11 @@ fn test_vstack_form_layout() {
 
     // Each TextField should expand to container width
     assert_eq!(rects[1].width(), 300.0, "Name field should expand to width");
-    assert_eq!(rects[3].width(), 300.0, "Email field should expand to width");
+    assert_eq!(
+        rects[3].width(),
+        300.0,
+        "Email field should expand to width"
+    );
 
     // No overlapping
     assert_no_overlap(&rects, "vertical");
@@ -1036,14 +1239,20 @@ fn test_vstack_form_with_spacer() {
         spacing: 8.0,
     };
 
-    let mut name_label = FixedSizeView { size: Size::new(60.0, 20.0) };
+    let mut name_label = FixedSizeView {
+        size: Size::new(60.0, 20.0),
+    };
     let mut name_field = HorizontalExpandingView { height: 34.0 };
     let mut spacer = SpacerView;
-    let mut submit_button = FixedSizeView { size: Size::new(100.0, 44.0) };
+    let mut submit_button = FixedSizeView {
+        size: Size::new(100.0, 44.0),
+    };
 
     let children: Vec<&dyn SubView> = vec![
-        &mut name_label, &mut name_field,
-        &mut spacer, &mut submit_button
+        &mut name_label,
+        &mut name_field,
+        &mut spacer,
+        &mut submit_button,
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 300.0));
@@ -1056,7 +1265,11 @@ fn test_vstack_form_with_spacer() {
     assert_eq!(rects[0].height(), 20.0);
     assert_eq!(rects[1].height(), 34.0, "TextField keeps intrinsic height");
     // Button at bottom
-    assert_eq!(rects[3].y() + rects[3].height(), 300.0, "Button should be at bottom");
+    assert_eq!(
+        rects[3].y() + rects[3].height(),
+        300.0,
+        "Button should be at bottom"
+    );
 }
 
 // ============================================================================
@@ -1106,9 +1319,13 @@ fn test_vstack_main_axis_spacer() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(100.0, 30.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(100.0, 30.0),
+    };
     let mut spacer = MainAxisSpacerView;
-    let mut child2 = FixedSizeView { size: Size::new(100.0, 30.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(100.0, 30.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
@@ -1118,7 +1335,11 @@ fn test_vstack_main_axis_spacer() {
     // Fixed children: 30 + 30 = 60
     // MainAxis spacer should expand: 200 - 60 = 140
     assert_eq!(rects[0].height(), 30.0);
-    assert_eq!(rects[1].height(), 140.0, "MainAxis spacer should expand vertically in VStack");
+    assert_eq!(
+        rects[1].height(),
+        140.0,
+        "MainAxis spacer should expand vertically in VStack"
+    );
     assert_eq!(rects[2].height(), 30.0);
 }
 
@@ -1130,9 +1351,13 @@ fn test_hstack_main_axis_spacer() {
         spacing: 0.0,
     };
 
-    let mut child1 = FixedSizeView { size: Size::new(30.0, 100.0) };
+    let mut child1 = FixedSizeView {
+        size: Size::new(30.0, 100.0),
+    };
     let mut spacer = MainAxisSpacerView;
-    let mut child2 = FixedSizeView { size: Size::new(30.0, 100.0) };
+    let mut child2 = FixedSizeView {
+        size: Size::new(30.0, 100.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
@@ -1142,7 +1367,11 @@ fn test_hstack_main_axis_spacer() {
     // Fixed children: 30 + 30 = 60
     // MainAxis spacer should expand: 200 - 60 = 140
     assert_eq!(rects[0].width(), 30.0);
-    assert_eq!(rects[1].width(), 140.0, "MainAxis spacer should expand horizontally in HStack");
+    assert_eq!(
+        rects[1].width(),
+        140.0,
+        "MainAxis spacer should expand horizontally in HStack"
+    );
     assert_eq!(rects[2].width(), 30.0);
 }
 
@@ -1154,9 +1383,13 @@ fn test_vstack_cross_axis_divider() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut divider = CrossAxisDividerView { thickness: 1.0 };
-    let mut button = FixedSizeView { size: Size::new(80.0, 30.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(80.0, 30.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
@@ -1164,9 +1397,17 @@ fn test_vstack_cross_axis_divider() {
     let rects = layout.place(bounds, &children);
 
     // Divider should expand to full width of VStack (cross axis)
-    assert_eq!(rects[1].width(), 200.0, "CrossAxis divider should expand to full width in VStack");
+    assert_eq!(
+        rects[1].width(),
+        200.0,
+        "CrossAxis divider should expand to full width in VStack"
+    );
     // Divider height should be its intrinsic thickness
-    assert_eq!(rects[1].height(), 1.0, "CrossAxis divider should keep intrinsic height in VStack");
+    assert_eq!(
+        rects[1].height(),
+        1.0,
+        "CrossAxis divider should keep intrinsic height in VStack"
+    );
 }
 
 #[test]
@@ -1177,9 +1418,13 @@ fn test_hstack_cross_axis_divider() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
     let mut divider = CrossAxisDividerView { thickness: 1.0 };
-    let mut button = FixedSizeView { size: Size::new(80.0, 30.0) };
+    let mut button = FixedSizeView {
+        size: Size::new(80.0, 30.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
@@ -1187,9 +1432,17 @@ fn test_hstack_cross_axis_divider() {
     let rects = layout.place(bounds, &children);
 
     // Divider should expand to full height of HStack (cross axis)
-    assert_eq!(rects[1].height(), 100.0, "CrossAxis divider should expand to full height in HStack");
+    assert_eq!(
+        rects[1].height(),
+        100.0,
+        "CrossAxis divider should expand to full height in HStack"
+    );
     // Divider width should be its intrinsic thickness
-    assert_eq!(rects[1].width(), 1.0, "CrossAxis divider should keep intrinsic width in HStack");
+    assert_eq!(
+        rects[1].width(),
+        1.0,
+        "CrossAxis divider should keep intrinsic width in HStack"
+    );
 }
 
 /// A mock TextField/Slider that uses StretchAxis::Horizontal.
@@ -1202,7 +1455,10 @@ struct HorizontalStretchView {
 impl SubView for HorizontalStretchView {
     fn size_that_fits(&self, proposal: ProposalSize) -> Size {
         // When proposed width, use it (but not less than minimum)
-        let width = proposal.width.map(|w| w.max(self.min_width)).unwrap_or(self.min_width);
+        let width = proposal
+            .width
+            .map(|w| w.max(self.min_width))
+            .unwrap_or(self.min_width);
         Size::new(width, self.height)
     }
     fn stretch_axis(&self) -> StretchAxis {
@@ -1222,9 +1478,16 @@ fn test_vstack_horizontal_stretch_textfield() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
-    let mut textfield = HorizontalStretchView { min_width: 100.0, height: 34.0 };
-    let mut button = FixedSizeView { size: Size::new(80.0, 40.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
+    let mut textfield = HorizontalStretchView {
+        min_width: 100.0,
+        height: 34.0,
+    };
+    let mut button = FixedSizeView {
+        size: Size::new(80.0, 40.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 200.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
@@ -1234,7 +1497,11 @@ fn test_vstack_horizontal_stretch_textfield() {
     // Label keeps its intrinsic width (alignment is Leading, not stretched)
     assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
     // TextField should expand to full container width
-    assert_eq!(rects[1].width(), 300.0, "Horizontal stretch TextField should expand to full width in VStack");
+    assert_eq!(
+        rects[1].width(),
+        300.0,
+        "Horizontal stretch TextField should expand to full width in VStack"
+    );
     // Button keeps its intrinsic width
     assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
 }
@@ -1248,9 +1515,16 @@ fn test_hstack_horizontal_stretch_textfield() {
         spacing: 10.0,
     };
 
-    let mut label = FixedSizeView { size: Size::new(50.0, 20.0) };
-    let mut textfield = HorizontalStretchView { min_width: 100.0, height: 34.0 };
-    let mut button = FixedSizeView { size: Size::new(80.0, 40.0) };
+    let mut label = FixedSizeView {
+        size: Size::new(50.0, 20.0),
+    };
+    let mut textfield = HorizontalStretchView {
+        min_width: 100.0,
+        height: 34.0,
+    };
+    let mut button = FixedSizeView {
+        size: Size::new(80.0, 40.0),
+    };
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
@@ -1260,6 +1534,10 @@ fn test_hstack_horizontal_stretch_textfield() {
     // Fixed children: 50 + 80 = 130, spacing: 20
     // Remaining for textfield: 300 - 130 - 20 = 150
     assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
-    assert_eq!(rects[1].width(), 150.0, "Horizontal stretch TextField should expand in HStack");
+    assert_eq!(
+        rects[1].width(),
+        150.0,
+        "Horizontal stretch TextField should expand in HStack"
+    );
     assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
 }

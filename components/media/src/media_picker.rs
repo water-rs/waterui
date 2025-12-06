@@ -63,7 +63,6 @@ impl Selected {
     }
 }
 
-
 struct WithContinuationFuture<F, T> {
     f: F,
     state: SharedContinuationState<T>,

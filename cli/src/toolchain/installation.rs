@@ -69,7 +69,7 @@ impl Progress {
     }
 
     /// Create a no-op progress tracker.
-    #[must_use] 
+    #[must_use]
     pub fn noop() -> Self {
         Self::new(|_, _| {})
     }
@@ -81,10 +81,13 @@ impl Progress {
 
     /// Report progress (0-100%).
     pub fn update(&self, name: &str, percent: u8, message: impl Into<String>) {
-        (self.inner)(name, &Status::Progress {
-            percent: percent.min(100),
-            message: message.into(),
-        });
+        (self.inner)(
+            name,
+            &Status::Progress {
+                percent: percent.min(100),
+                message: message.into(),
+            },
+        );
     }
 
     /// Report task done.
@@ -121,12 +124,18 @@ pub trait Installation: Display + Send + Sized {
 
     /// Run another installation after this one.
     fn then<I: Installation>(self, next: I) -> Sequence<Self, I> {
-        Sequence { first: self, second: next }
+        Sequence {
+            first: self,
+            second: next,
+        }
     }
 
     /// Run another installation in parallel.
     fn and<I: Installation>(self, other: I) -> Parallel<Self, I> {
-        Parallel { left: self, right: other }
+        Parallel {
+            left: self,
+            right: other,
+        }
     }
 }
 
@@ -206,15 +215,17 @@ pub struct Many<I> {
 
 impl<I> Many<I> {
     pub fn new(iter: impl IntoIterator<Item = I>) -> Self {
-        Self { installations: iter.into_iter().collect() }
+        Self {
+            installations: iter.into_iter().collect(),
+        }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.installations.is_empty()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.installations.len()
     }
@@ -245,7 +256,8 @@ impl<I: Installation> Installation for Many<I> {
         async move {
             use futures_util::future::try_join_all;
 
-            let futures: Vec<_> = self.installations
+            let futures: Vec<_> = self
+                .installations
                 .into_iter()
                 .map(|inst| inst.install(progress.clone()))
                 .collect();
@@ -269,7 +281,7 @@ impl<I: Installation> Installation for Many<I> {
 pub struct Empty<T = ()>(PhantomData<T>);
 
 impl<T> Empty<T> {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -312,13 +324,19 @@ pub struct InstallationReport {
 }
 
 impl InstallationReport {
-    #[must_use] 
+    #[must_use]
     pub const fn empty() -> Self {
-        Self { completed: Vec::new(), warnings: Vec::new() }
+        Self {
+            completed: Vec::new(),
+            warnings: Vec::new(),
+        }
     }
 
     pub fn completed(step: impl Into<String>) -> Self {
-        Self { completed: vec![step.into()], warnings: Vec::new() }
+        Self {
+            completed: vec![step.into()],
+            warnings: Vec::new(),
+        }
     }
 
     pub fn add_completed(&mut self, step: impl Into<String>) {

@@ -1,8 +1,8 @@
 //! FFI bindings for gesture types.
 
-use alloc::boxed::Box;
-use crate::action::WuiAction;
 use crate::IntoFFI;
+use crate::action::WuiAction;
+use alloc::boxed::Box;
 use waterui::gesture::{Gesture, GestureObserver};
 
 /// FFI-safe representation of a gesture type.

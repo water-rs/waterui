@@ -20,6 +20,7 @@ pub struct ViewDispatcher<T, C, R> {
 
 impl<T: Default, C, R> ViewDispatcher<T, C, R> {
     /// Creates a new [`ViewDispatcher`] with the given default state.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: T::default(),
