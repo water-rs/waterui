@@ -41,16 +41,19 @@ pub use hot_reload::Hotreload;
 #[cfg(waterui_hot_reload_lib)]
 macro_rules! hot_reloadable_library {
     ($f:expr) => {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn waterui_hot_reload_main() -> *mut () {
-            let view = $f();
-            Box::into_raw(Box::new($crate::AnyView::new(view))).cast::<()>()
-        }
+        const _: () = {
+            pub type Ipv4Addr = [u16; 4];
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn waterui_hot_reload_main() -> *mut () {
+                let view = $f();
+                Box::into_raw(Box::new($crate::AnyView::new(view))).cast::<()>()
+            }
 
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn waterui_hot_reload_init() {
-            unsafe { $crate::debug::__setup_local_executor() };
-        }
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn waterui_hot_reload_init() {
+                unsafe { $crate::debug::__setup_executor() };
+            }
+        };
     };
 }
 
@@ -61,6 +64,7 @@ macro_rules! hot_reloadable_library {
 #[cfg(waterui_hot_reload_lib)]
 #[doc(hidden)]
 #[inline(always)]
-pub unsafe fn __setup_local_executor() {
+pub unsafe fn __setup_executor() {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = executor_core::try_init_local_executor(native_executor::NativeExecutor::new());
 }

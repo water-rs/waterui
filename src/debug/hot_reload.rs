@@ -27,6 +27,9 @@ pub struct Hotreload<V> {
     config: HotReloadConfig,
 }
 
+/// Default hot reload server port (must match CLI default).
+pub const DEFAULT_HOT_RELOAD_PORT: u16 = 2006;
+
 #[derive(Debug, Clone)]
 pub struct HotReloadConfig {
     host: String,
@@ -35,6 +38,25 @@ pub struct HotReloadConfig {
 
 impl HotReloadConfig {
     pub const fn new(host: String, port: u16) -> Self {
+        Self { host, port }
+    }
+
+    /// Create config from compile-time environment variables.
+    ///
+    /// Reads `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` that are
+    /// set by the CLI via `cargo:rustc-env` in the user project's build.rs.
+    ///
+    /// Falls back to defaults if not set:
+    /// - Host: "127.0.0.1"
+    /// - Port: 2006 (DEFAULT_HOT_RELOAD_PORT)
+    #[must_use]
+    pub fn from_compile_env() -> Self {
+        let host = option_env!("WATERUI_HOT_RELOAD_HOST")
+            .unwrap_or("127.0.0.1")
+            .to_string();
+        let port = option_env!("WATERUI_HOT_RELOAD_PORT")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_HOT_RELOAD_PORT);
         Self { host, port }
     }
 
@@ -48,9 +70,20 @@ impl HotReloadConfig {
 }
 
 impl<V: View> Hotreload<V> {
-    /// Create a new hot-reloadable view.
+    /// Create a new hot-reloadable view with explicit config.
     pub const fn new(initial: V, config: HotReloadConfig) -> Self {
         Self { initial, config }
+    }
+
+    /// Create a new hot-reloadable view using compile-time config.
+    ///
+    /// This reads the hot reload configuration from environment variables
+    /// that were set at compile time by the CLI.
+    pub fn with_compile_env(initial: V) -> Self {
+        Self {
+            initial,
+            config: HotReloadConfig::from_compile_env(),
+        }
     }
 }
 

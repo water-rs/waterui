@@ -84,7 +84,7 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
 time = "0.3"
 tiny-skia = "0.11"
-vello = "0.2"
+vello = { git = "https://github.com/linebender/vello", branch = "main" }
 zenwave = { git = "https://github.com/zen-rs/zenwave", branch = "dev" }
 tracing-panic = "0.1.2"
 
@@ -115,11 +115,14 @@ thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4"] }
 serde_json = "1.0"
 zenwave.workspace = true
+waterui-graphics = { workspace = true, optional = true }
 
 [features]
 default = []
 std = []
 all = ["std"]
+graphics = ["dep:waterui-graphics"]  # includes canvas by default
+graphics-minimal = ["dep:waterui-graphics", "waterui-graphics/wgpu"]  # only GpuSurface, no canvas
 
 
 [lints]
