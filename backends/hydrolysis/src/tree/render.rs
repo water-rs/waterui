@@ -17,7 +17,7 @@ pub struct RenderCtx<'a> {
 impl<'a> RenderCtx<'a> {
     /// Creates a new [`RenderCtx`].
     #[must_use]
-    pub fn new(env: &'a Environment) -> Self {
+    pub const fn new(env: &'a Environment) -> Self {
         Self {
             env,
             builder: SceneBuilder::new(),

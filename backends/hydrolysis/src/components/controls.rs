@@ -22,7 +22,7 @@ impl SliderNode {
     #[must_use]
     pub fn new(config: SliderConfig) -> Self {
         let range = (*config.range.start(), *config.range.end());
-        let binding = config.value.clone();
+        let binding = config.value;
         let value = NodeSignal::new(binding.clone().computed());
         Self {
             range,
@@ -58,7 +58,7 @@ impl ToggleNode {
     #[must_use]
     /// Creates a toggle node from its config binding.
     pub fn new(config: ToggleConfig) -> Self {
-        let binding = config.toggle.clone();
+        let binding = config.toggle;
         let value = NodeSignal::new(binding.clone().computed());
         Self { binding, value }
     }
@@ -126,7 +126,7 @@ impl TextFieldNode {
     #[must_use]
     /// Creates a text field node from the provided configuration.
     pub fn new(config: TextFieldConfig) -> Self {
-        let binding = config.value.clone();
+        let binding = config.value;
         let value = NodeSignal::new(binding.clone().computed());
         Self { binding, value }
     }

@@ -38,7 +38,7 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    
+
     // Size: Determined by content and picker style (platform-determined)
     //
     // Note: Segmented picker style may use `Horizontal` stretch axis.

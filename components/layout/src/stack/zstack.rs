@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size, SubView,
-    container::FixedContainer, stack::Alignment,
+    Container, Layout, Point, ProposalSize, Rect, Size, SubView, container::FixedContainer,
+    stack::Alignment,
 };
 
 /// Cached measurement for a child during layout
@@ -28,11 +28,7 @@ pub struct ZStackLayout {
 }
 
 impl Layout for ZStackLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
@@ -72,11 +68,7 @@ impl Layout for ZStackLayout {
         Size::new(final_width, final_height)
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &[&dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];
         }

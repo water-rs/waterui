@@ -17,6 +17,7 @@ use crate::{
 };
 
 /// Builds a [`RenderTree`] from a root [`AnyView`].
+#[must_use]
 pub fn build_tree(env: &Environment, view: AnyView) -> RenderTree {
     let mut builder = TreeBuilder::new(env);
     builder.build_root(view);
@@ -29,7 +30,7 @@ struct TreeBuilder<'env> {
 }
 
 impl<'env> TreeBuilder<'env> {
-    fn new(env: &'env Environment) -> Self {
+    const fn new(env: &'env Environment) -> Self {
         Self {
             env,
             tree: RenderTree::new(),

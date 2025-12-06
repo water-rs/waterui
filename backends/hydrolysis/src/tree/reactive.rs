@@ -44,7 +44,7 @@ where
 
     /// Returns the cached value.
     #[must_use]
-    pub fn current(&self) -> &T {
+    pub const fn current(&self) -> &T {
         &self.current
     }
 

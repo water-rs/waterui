@@ -1,4 +1,4 @@
-//! Hydrolysis – the WaterUI self-drawn renderer.
+//! Hydrolysis – the `WaterUI` self-drawn renderer.
 //!
 //! The crate hosts reusable infrastructure shared by every backend (GPU, CPU, terminal).
 //! It exposes a dispatcher for parsing views, a render tree with [`RenderNode`]s, and

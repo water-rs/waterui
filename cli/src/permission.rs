@@ -732,10 +732,7 @@ impl ResolvedPermission {
         ios_perms
             .iter()
             .map(|p| {
-                let desc = self
-                    .description
-                    .as_deref()
-                    .unwrap_or(p.default_description);
+                let desc = self.description.as_deref().unwrap_or(p.default_description);
                 (p.info_plist_key.to_string(), desc.to_string())
             })
             .collect()
@@ -752,8 +749,10 @@ impl ResolvedPermission {
         android_perms
             .iter()
             .map(|p| {
-                let mut entry =
-                    format!("    <uses-permission android:name=\"{}\"", p.manifest_permission);
+                let mut entry = format!(
+                    "    <uses-permission android:name=\"{}\"",
+                    p.manifest_permission
+                );
                 if p.min_sdk > 0 && p.max_sdk > 0 {
                     entry.push_str(&format!(
                         " android:minSdkVersion=\"{}\" android:maxSdkVersion=\"{}\"",

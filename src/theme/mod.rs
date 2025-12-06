@@ -94,10 +94,7 @@
 
 use core::marker::PhantomData;
 
-use nami::{
-    Computed, SignalExt, impl_constant,
-    signal::IntoSignal,
-};
+use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
@@ -544,7 +541,8 @@ fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> 
 /// If no color scheme is installed, returns a constant `Light` signal.
 #[must_use]
 pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
-    env.get::<ColorSchemeSignal>().map_or_else(|| Computed::constant(ColorScheme::Light), |s| s.0.clone())
+    env.get::<ColorSchemeSignal>()
+        .map_or_else(|| Computed::constant(ColorScheme::Light), |s| s.0.clone())
 }
 
 /// Installs an explicit color signal for a specific slot.
