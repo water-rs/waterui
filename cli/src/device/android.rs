@@ -22,7 +22,7 @@ use crate::{
         adb_command, configure_rust_android_linker_env, device_preferred_targets,
         find_android_tool, sanitize_package_name, wait_for_android_device,
     },
-    build::{Builder, BuildOptions, CargoBuilder},
+    build::{BuildOptions, Builder, CargoBuilder},
     crash::CrashReport,
     device::{Device, DeviceBuildResult, DeviceKind},
     output,

@@ -117,7 +117,9 @@ impl Layout for HStackLayout {
             .collect();
 
         // HStack checks for main-axis (horizontal) stretching
-        let has_main_axis_stretch = measurements.iter().any(ChildMeasurement::stretches_main_axis);
+        let has_main_axis_stretch = measurements
+            .iter()
+            .any(ChildMeasurement::stretches_main_axis);
         let main_axis_stretch_count = measurements
             .iter()
             .filter(|m| m.stretches_main_axis())

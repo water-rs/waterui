@@ -109,27 +109,26 @@ async fn run_connection_loop(
             std::thread::sleep(std::time::Duration::from_millis(RECONNECT_DELAY_MS));
         }
 
-        let socket =
-            match zenwave::websocket::connect_with_config(&url, ws_config.clone()).await {
-                Ok(socket) => socket,
-                Err(err) => {
-                    warn!(
-                        "Connection attempt {}/{} failed: {}",
-                        attempt, MAX_RECONNECT_ATTEMPTS, err
-                    );
+        let socket = match zenwave::websocket::connect_with_config(&url, ws_config.clone()).await {
+            Ok(socket) => socket,
+            Err(err) => {
+                warn!(
+                    "Connection attempt {}/{} failed: {}",
+                    attempt, MAX_RECONNECT_ATTEMPTS, err
+                );
 
-                    if attempt >= MAX_RECONNECT_ATTEMPTS {
-                        let _ = events
-                            .send(CliEvent::Error(ConnectionError::MaxReconnectAttempts(
-                                MAX_RECONNECT_ATTEMPTS,
-                            )))
-                            .await;
-                        return;
-                    }
-
-                    continue;
+                if attempt >= MAX_RECONNECT_ATTEMPTS {
+                    let _ = events
+                        .send(CliEvent::Error(ConnectionError::MaxReconnectAttempts(
+                            MAX_RECONNECT_ATTEMPTS,
+                        )))
+                        .await;
+                    return;
                 }
-            };
+
+                continue;
+            }
+        };
 
         info!("Hot reload connected to CLI");
         let _ = events.send(CliEvent::Connected).await;

@@ -370,16 +370,12 @@ pub fn available(args: AvailablePermissionsArgs) -> Result<AvailablePermissionsR
                     .as_ref()
                     .and_then(|v| v.first())
                     .map(|p| p.info_plist_key.to_string()),
-                android_permission: mapping
-                    .android
-                    .as_ref()
-                    .and_then(|v| v.first())
-                    .map(|p| {
-                        p.manifest_permission
-                            .strip_prefix("android.permission.")
-                            .unwrap_or(p.manifest_permission)
-                            .to_string()
-                    }),
+                android_permission: mapping.android.as_ref().and_then(|v| v.first()).map(|p| {
+                    p.manifest_permission
+                        .strip_prefix("android.permission.")
+                        .unwrap_or(p.manifest_permission)
+                        .to_string()
+                }),
             })
         })
         .collect();

@@ -178,7 +178,11 @@ impl Platform for ApplePlatform {
         std::fs::create_dir_all(&products_dir)?;
         let dest_lib = products_dir.join("libwaterui_app.a");
         std::fs::copy(&build_result.artifact_path, &dest_lib)?;
-        info!("Copied {} to {}", build_result.artifact_path.display(), dest_lib.display());
+        info!(
+            "Copied {} to {}",
+            build_result.artifact_path.display(),
+            dest_lib.display()
+        );
 
         let mut build_cmd = xcodebuild_base(&xcode, configuration, &derived_root);
 
@@ -270,8 +274,10 @@ fn verify_rust_target_installed(target: &'static str) -> Result<(), ToolchainErr
     if has_target {
         Ok(())
     } else {
-        Err(ToolchainError::missing(format!("Rust target {target} not installed"))
-            .with_suggestion(format!("Run: rustup target add {target}")))
+        Err(
+            ToolchainError::missing(format!("Rust target {target} not installed"))
+                .with_suggestion(format!("Run: rustup target add {target}")),
+        )
     }
 }
 

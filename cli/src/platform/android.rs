@@ -6,7 +6,10 @@ use tracing::info;
 use crate::{
     backend::{
         Backend,
-        android::{AndroidBackend, AndroidNativeBuildOptions, build_android_apk, build_android_native_libraries},
+        android::{
+            AndroidBackend, AndroidNativeBuildOptions, build_android_apk,
+            build_android_native_libraries,
+        },
     },
     build::BuildOptions,
     platform::Platform,

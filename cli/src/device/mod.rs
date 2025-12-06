@@ -134,7 +134,11 @@ pub trait Device: Send + Sync {
     ///
     /// # Errors
     /// Returns an error if packaging fails.
-    fn package(&self, project: &Project, options: &BuildOptions) -> eyre::Result<std::path::PathBuf> {
+    fn package(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+    ) -> eyre::Result<std::path::PathBuf> {
         // Default implementation delegates to the platform
         self.platform().package_with_options(project, options)
     }

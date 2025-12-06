@@ -37,11 +37,7 @@ impl GridLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
-    fn size_that_fits(
-        &self,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Size {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
@@ -86,17 +82,10 @@ impl Layout for GridLayout {
         Size::new(final_width, total_height)
     }
 
-    fn place(
-        &self,
-        bounds: Rect,
-        children: &[&dyn SubView],
-    ) -> Vec<Rect> {
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() || !bounds.width().is_finite() {
             // A grid cannot be placed in an infinitely wide space. Return zero-rects.
-            return vec![
-                Rect::new(Point::zero(), Size::zero());
-                children.len()
-            ];
+            return vec![Rect::new(Point::zero(), Size::zero()); children.len()];
         }
 
         let num_columns = self.columns.get();
@@ -304,8 +293,8 @@ pub fn row(contents: impl TupleViews) -> GridRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::num::NonZeroUsize;
     use crate::StretchAxis;
+    use core::num::NonZeroUsize;
 
     struct MockSubView {
         size: Size,
@@ -331,20 +320,22 @@ mod tests {
             Alignment::Center,
         );
 
-        let mut child1 = MockSubView { size: Size::new(50.0, 30.0) };
-        let mut child2 = MockSubView { size: Size::new(50.0, 40.0) };
-        let mut child3 = MockSubView { size: Size::new(50.0, 20.0) };
-        let mut child4 = MockSubView { size: Size::new(50.0, 50.0) };
+        let mut child1 = MockSubView {
+            size: Size::new(50.0, 30.0),
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(50.0, 40.0),
+        };
+        let mut child3 = MockSubView {
+            size: Size::new(50.0, 20.0),
+        };
+        let mut child4 = MockSubView {
+            size: Size::new(50.0, 50.0),
+        };
 
-        let children: Vec<&dyn SubView> = vec![
-            &mut child1, &mut child2,
-            &mut child3, &mut child4,
-        ];
+        let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2, &mut child3, &mut child4];
 
-        let size = layout.size_that_fits(
-            ProposalSize::new(Some(200.0), None),
-            &children,
-        );
+        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), None), &children);
 
         // Width is parent-proposed
         assert_eq!(size.width, 200.0);
@@ -360,8 +351,12 @@ mod tests {
             Alignment::TopLeading,
         );
 
-        let mut child1 = MockSubView { size: Size::new(40.0, 30.0) };
-        let mut child2 = MockSubView { size: Size::new(40.0, 30.0) };
+        let mut child1 = MockSubView {
+            size: Size::new(40.0, 30.0),
+        };
+        let mut child2 = MockSubView {
+            size: Size::new(40.0, 30.0),
+        };
 
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 

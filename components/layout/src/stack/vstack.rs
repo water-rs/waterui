@@ -67,7 +67,9 @@ impl Layout for VStackLayout {
             .collect();
 
         // VStack checks for main-axis (vertical) stretching
-        let has_main_axis_stretch = measurements.iter().any(ChildMeasurement::stretches_main_axis);
+        let has_main_axis_stretch = measurements
+            .iter()
+            .any(ChildMeasurement::stretches_main_axis);
 
         // Height: sum of children that don't stretch on main axis (vertically) + spacing
         // (axis-expanding components like TextField report their intrinsic height here)

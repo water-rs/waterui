@@ -48,7 +48,10 @@ pub struct BuildReport {
 }
 
 waterui_cli::impl_report!(BuildReport, |r| {
-    format!("Built {} for {} at {}", r.artifact_kind, r.target, r.artifact_path)
+    format!(
+        "Built {} for {} at {}",
+        r.artifact_kind, r.target, r.artifact_path
+    )
 });
 
 pub fn run(args: BuildArgs) -> Result<BuildReport> {
