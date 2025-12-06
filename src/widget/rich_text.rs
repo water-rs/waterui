@@ -82,14 +82,14 @@ pub enum RichTextElement {
     /// A table with headers and rows.
     Table {
         /// Table headers.
-        headers: Vec<RichTextElement>,
+        headers: Vec<Self>,
         /// Table rows.
-        rows: Vec<Vec<RichTextElement>>,
+        rows: Vec<Vec<Self>>,
     },
     /// A list of items.
     List {
         /// List items.
-        items: Vec<RichTextElement>,
+        items: Vec<Self>,
         /// Whether the list is ordered.
         ordered: bool,
     },
@@ -103,13 +103,13 @@ pub enum RichTextElement {
     /// A quotation block.
     Quote {
         /// The quoted content.
-        content: Vec<RichTextElement>,
+        content: Vec<Self>,
     },
     /// A group of elements arranged either inline (horizontally) or stacked
     /// vertically.
     Group {
         /// Child elements.
-        elements: Vec<RichTextElement>,
+        elements: Vec<Self>,
         /// When `true`, children are rendered in a horizontal stack.
         inline: bool,
     },
