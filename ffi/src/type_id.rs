@@ -17,12 +17,12 @@ impl WuiTypeId {
     /// Creates a type ID from a type parameter.
     #[inline]
     pub fn of<T: 'static>() -> Self {
-        #[cfg(waterui_enable_hot_reload)]
+        #[cfg(waterui_hot_reload_lib)]
         {
             Self::from_type_name(core::any::type_name::<T>())
         }
 
-        #[cfg(not(waterui_enable_hot_reload))]
+        #[cfg(not(waterui_hot_reload_lib))]
         {
             Self::from_type_id(core::any::TypeId::of::<T>())
         }
@@ -32,13 +32,13 @@ impl WuiTypeId {
     /// Uses TypeId in normal builds, type name hash in hot reload builds.
     #[inline]
     pub fn from_runtime(type_id: core::any::TypeId, name: &'static str) -> Self {
-        #[cfg(waterui_enable_hot_reload)]
+        #[cfg(waterui_hot_reload_lib)]
         {
             let _ = type_id;
             Self::from_type_name(name)
         }
 
-        #[cfg(not(waterui_enable_hot_reload))]
+        #[cfg(not(waterui_hot_reload_lib))]
         {
             let _ = name;
             Self::from_type_id(type_id)
@@ -59,7 +59,7 @@ impl WuiTypeId {
     }
 
     /// Creates a type ID from a type name string (hot reload build).
-    #[cfg(waterui_enable_hot_reload)]
+    #[cfg(waterui_hot_reload_lib)]
     #[inline]
     pub fn from_type_name(name: &str) -> Self {
         let hash = fnv1a_128(name.as_bytes());
@@ -75,7 +75,7 @@ impl WuiTypeId {
 /// FNV-1a is fast and has good distribution properties.
 /// Using 128-bit output virtually eliminates collision risk
 /// (birthday paradox threshold: ~10^19 entries).
-#[cfg(waterui_enable_hot_reload)]
+#[cfg(waterui_hot_reload_lib)]
 const fn fnv1a_128(bytes: &[u8]) -> u128 {
     const FNV_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
     const FNV_PRIME: u128 = 0x0000000001000000000000000000013b;
