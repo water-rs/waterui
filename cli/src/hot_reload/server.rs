@@ -5,8 +5,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, TryRecvError},
     },
@@ -247,9 +246,9 @@ async fn handle_native_socket(mut socket: WebSocket, state: Arc<ServerState>) {
                     Ok(WebSocketMessage::Text(payload)) => {
                         handle_native_client_message(&payload);
                     }
-                    Ok(WebSocketMessage::Close(frame)) => {
+                    Ok(WebSocketMessage::Close) => {
                         let reason = DisconnectReason::Graceful {
-                            code: frame.map(|f| f.code.into()),
+                            code: None, // TODO: extract code from close frame
                         };
                         let _ = state.connection_event_tx.send(
                             NativeConnectionEvent::Disconnected(reason)
@@ -315,7 +314,6 @@ async fn handle_native_socket(mut socket: WebSocket, state: Arc<ServerState>) {
 }
 
 async fn handle_web_socket(mut socket: WebSocket, state: Arc<ServerState>) {
-
     let mut rx = state.hot_reload_tx.subscribe();
     let mut shutdown_check = tokio::time::interval(tokio::time::Duration::from_millis(100));
 
