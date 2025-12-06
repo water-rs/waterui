@@ -252,8 +252,12 @@ pub fn available_playground_backends() -> Vec<BackendChoice> {
 pub fn clean_playground_cache(project_dir: &Path) -> Result<()> {
     let cache_dir = playground_cache_dir(project_dir);
     if cache_dir.exists() {
-        std::fs::remove_dir_all(&cache_dir)
-            .with_context(|| format!("failed to remove playground cache at {}", cache_dir.display()))?;
+        std::fs::remove_dir_all(&cache_dir).with_context(|| {
+            format!(
+                "failed to remove playground cache at {}",
+                cache_dir.display()
+            )
+        })?;
     }
     Ok(())
 }

@@ -124,13 +124,13 @@ impl Backend for AndroidBackend {
 
         // Check CMake
         if resolve_cmake_path().is_none() {
-            issues.push(
-                ToolchainError::missing("CMake not found").with_suggestion(if cfg!(target_os = "macos") {
+            issues.push(ToolchainError::missing("CMake not found").with_suggestion(
+                if cfg!(target_os = "macos") {
                     "Install CMake via SDK Manager or: brew install cmake"
                 } else {
                     "Install CMake via SDK Manager or system package manager"
-                }),
-            );
+                },
+            ));
         }
 
         // Check Java (required for Gradle)
