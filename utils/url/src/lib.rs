@@ -2,13 +2,44 @@
 //!
 //! This crate provides ergonomic URL handling for the `WaterUI` framework,
 //! supporting both web URLs and local file paths with reactive fetching capabilities.
+//!
+//! # Compile-Time URLs
+//!
+//! URLs can be created at compile time using const evaluation:
+//!
+//! ```
+//! use waterui_url::Url;
+//!
+//! const LOGO: Url = Url::new("https://waterui.dev/logo.png");
+//! const STYLESHEET: Url = Url::new("/styles/main.css");
+//! ```
+//!
+//! # Runtime URLs
+//!
+//! For dynamic URLs, use the `FromStr` trait:
+//!
+//! ```
+//! use waterui_url::Url;
+//!
+//! let url: Url = "https://example.com".parse()?;
+//! # Ok::<(), waterui_url::ParseError>(())
+//! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
+mod error;
+mod parser;
+
+pub use error::ParseError;
+
+// Re-export parser for documentation and testing
+pub use parser::parse_url;
+
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
+
 use alloc::string::{String, ToString};
 use core::fmt;
 use nami_core::Signal;
@@ -16,6 +47,102 @@ use waterui_str::Str;
 
 #[cfg(feature = "std")]
 use std::path::{Path, PathBuf};
+
+// ============================================================================
+// Parsed Component Types
+// ============================================================================
+
+/// Compact byte range representation using u16 indices.
+///
+/// Special sentinel value `0xFFFF` indicates "not present".
+/// This allows representing optional URL components without using `Option<Span>`,
+/// saving memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Span {
+    start: u16,
+    end: u16,
+}
+
+impl Span {
+    /// Sentinel value indicating the span is not present
+    const NONE: Self = Self {
+        start: 0xFFFF,
+        end: 0xFFFF,
+    };
+
+    /// Check if this span represents a present component
+    #[inline]
+    const fn is_present(self) -> bool {
+        self.start != 0xFFFF
+    }
+
+    /// Get the length of the span in bytes
+    #[inline]
+    const fn len(self) -> usize {
+        if self.is_present() {
+            (self.end - self.start) as usize
+        } else {
+            0
+        }
+    }
+}
+
+/// Parsed components for different URL types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum ParsedComponents {
+    Web(WebComponents),
+    Local(LocalComponents),
+    Data(DataComponents),
+    Blob(BlobComponents),
+}
+
+/// Components specific to web URLs (http://, https://, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct WebComponents {
+    /// URL scheme (e.g., "https")
+    scheme: Span,
+    /// Full authority section (user:pass@host:port)
+    authority: Span,
+    /// Host portion (e.g., "example.com" or "[::1]")
+    host: Span,
+    /// Port number as string (e.g., "8080"), if present
+    port: Span,
+    /// Path component (e.g., "/api/v1/users")
+    path: Span,
+    /// Query string without '?' (e.g., "id=123&name=foo")
+    query: Span,
+    /// Fragment without '#' (e.g., "section")
+    fragment: Span,
+}
+
+/// Components for local file paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct LocalComponents {
+    /// The full path
+    path: Span,
+    /// Whether this is an absolute path
+    is_absolute: bool,
+    /// Whether this is a Windows-style path (contains backslashes or drive letter)
+    is_windows: bool,
+}
+
+/// Components for data URLs (data:...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct DataComponents {
+    /// MIME type (e.g., "image/png")
+    mime_type: Span,
+    /// Encoding (e.g., "base64"), if present
+    encoding: Span,
+    /// The actual data content
+    data: Span,
+}
+
+/// Components for blob URLs (blob:...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct BlobComponents {
+    /// The blob identifier
+    identifier: Span,
+}
 
 /// A URL that can represent either a web URL or a local file path.
 ///
@@ -45,12 +172,15 @@ use std::path::{Path, PathBuf};
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Url {
+    /// The original URL string
     inner: Str,
-    kind: UrlKind,
+    /// Parsed component offsets (zero-allocation, const-compatible)
+    components: ParsedComponents,
 }
 
+/// The kind of URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum UrlKind {
+pub enum UrlKind {
     /// A web URL (http/https/ftp etc)
     Web,
     /// A local file path (absolute or relative)
@@ -62,23 +192,28 @@ enum UrlKind {
 }
 
 impl Url {
-    /// Creates a new URL from a string, automatically detecting the type.
+    /// Creates a URL from a static string at compile time.
     ///
-    /// This will try to determine if the input is a web URL or a local path.
+    /// This function can be evaluated at compile time and automatically
+    /// detects the URL type (web, local, data, or blob).
+    ///
+    /// For runtime string parsing, use the `FromStr` trait instead:
+    /// `url_string.parse::<Url>()`.
     ///
     /// # Examples
     ///
     /// ```
     /// use waterui_url::Url;
     ///
-    /// let url1 = Url::new("https://example.com");
-    /// let url2 = Url::new("/absolute/path");
-    /// let url3 = Url::new("./relative/path");
+    /// const WEB_URL: Url = Url::new("https://example.com");
+    /// const LOCAL_PATH: Url = Url::new("/absolute/path");
+    /// const RELATIVE: Url = Url::new("./relative/path");
     /// ```
-    pub fn new(url: impl Into<Str>) -> Self {
-        let inner = url.into();
-        let kind = Self::detect_kind(&inner);
-        Self { inner, kind }
+    pub const fn new(url: &'static str) -> Self {
+        Self {
+            inner: Str::from_static(url),
+            components: parser::parse_url(url.as_bytes()),
+        }
     }
 
     /// Parses a URL string, validating it as a proper web URL.
@@ -95,17 +230,7 @@ impl Url {
     /// assert!(Url::parse("/local/path").is_none());
     /// ```
     pub fn parse(url: impl AsRef<str>) -> Option<Self> {
-        let url_str = url.as_ref();
-
-        // Check if it's a valid web URL
-        if Self::is_valid_web_url(url_str) {
-            Some(Self {
-                inner: Str::from(url_str.to_string()),
-                kind: UrlKind::Web,
-            })
-        } else {
-            None
-        }
+        url.as_ref().parse::<Url>().ok().filter(|u| u.is_web())
     }
 
     /// Creates a URL from a file path.
@@ -124,18 +249,16 @@ impl Url {
     #[cfg(feature = "std")]
     pub fn from_file_path(path: impl AsRef<Path>) -> Self {
         let path_str = path.as_ref().display().to_string();
-        Self {
-            inner: Str::from(path_str),
-            kind: UrlKind::Local,
-        }
+        let inner = Str::from(path_str);
+        let components = parser::parse_url(inner.as_bytes());
+        Self { inner, components }
     }
 
     /// Creates a URL from a file path string.
     pub fn from_file_path_str(path: impl Into<Str>) -> Self {
-        Self {
-            inner: path.into(),
-            kind: UrlKind::Local,
-        }
+        let inner = path.into();
+        let components = parser::parse_url(inner.as_bytes());
+        Self { inner, components }
     }
 
     /// Creates a data URL from content and MIME type.
@@ -156,49 +279,59 @@ impl Url {
         let encoded = base64_encode(data);
         let url_str = format!("data:{mime_type};base64,{encoded}");
 
-        Self {
-            inner: Str::from(url_str),
-            kind: UrlKind::Data,
+        let inner = Str::from(url_str);
+        let components = parser::parse_url(inner.as_bytes());
+        Self { inner, components }
+    }
+
+    /// Helper method to extract a string slice from a Span.
+    ///
+    /// # Safety
+    /// The parser ensures that all Span boundaries are valid UTF-8 boundaries.
+    #[inline]
+    fn slice(&self, span: Span) -> &str {
+        if !span.is_present() {
+            return "";
         }
+        let bytes = self.inner.as_bytes();
+        let start = span.start as usize;
+        let end = span.end as usize;
+        // SAFETY: Parser ensures valid UTF-8 boundaries
+        unsafe { core::str::from_utf8_unchecked(&bytes[start..end]) }
     }
 
     /// Returns true if this is a web URL (http/https/ftp etc).
     #[must_use]
     pub const fn is_web(&self) -> bool {
-        matches!(self.kind, UrlKind::Web)
+        matches!(self.components, ParsedComponents::Web(_))
     }
 
     /// Returns true if this is a local file path.
     #[must_use]
     pub const fn is_local(&self) -> bool {
-        matches!(self.kind, UrlKind::Local)
+        matches!(self.components, ParsedComponents::Local(_))
     }
 
     /// Returns true if this is a data URL.
     #[must_use]
     pub const fn is_data(&self) -> bool {
-        matches!(self.kind, UrlKind::Data)
+        matches!(self.components, ParsedComponents::Data(_))
     }
 
     /// Returns true if this is a blob URL.
     #[must_use]
     pub const fn is_blob(&self) -> bool {
-        matches!(self.kind, UrlKind::Blob)
+        matches!(self.components, ParsedComponents::Blob(_))
     }
 
     /// Returns true if this is an absolute path or URL.
     #[must_use]
-    pub fn is_absolute(&self) -> bool {
-        match self.kind {
-            UrlKind::Web | UrlKind::Data | UrlKind::Blob => true,
-            UrlKind::Local => {
-                let s = self.inner.as_str();
-                s.starts_with('/')
-                    || s.starts_with('\\')
-                    || (s.len() >= 3
-                        && s.as_bytes()[1] == b':'
-                        && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
+    pub const fn is_absolute(&self) -> bool {
+        match self.components {
+            ParsedComponents::Web(_) | ParsedComponents::Data(_) | ParsedComponents::Blob(_) => {
+                true
             }
+            ParsedComponents::Local(local) => local.is_absolute,
         }
     }
 
@@ -215,51 +348,109 @@ impl Url {
     }
 
     /// Gets the URL scheme (e.g., "http", "https", "file", "data").
+    ///
+    /// This is now O(1) - no parsing required!
     #[must_use]
     pub fn scheme(&self) -> Option<&str> {
-        match self.kind {
-            UrlKind::Web => {
-                let s = self.inner.as_str();
-                s.find("://").map(|idx| &s[..idx])
-            }
-            UrlKind::Data => Some("data"),
-            UrlKind::Blob => Some("blob"),
-            UrlKind::Local => Some("file"),
+        match self.components {
+            ParsedComponents::Web(web) if web.scheme.is_present() => Some(self.slice(web.scheme)),
+            ParsedComponents::Data(_) => Some("data"),
+            ParsedComponents::Blob(_) => Some("blob"),
+            ParsedComponents::Local(_) => Some("file"),
+            _ => None,
         }
     }
 
     /// Gets the host for web URLs.
+    ///
+    /// This is now O(1) - no parsing required!
     #[must_use]
     pub fn host(&self) -> Option<&str> {
-        if !self.is_web() {
-            return None;
+        match self.components {
+            ParsedComponents::Web(web) if web.host.is_present() => Some(self.slice(web.host)),
+            _ => None,
         }
-
-        let s = self.inner.as_str();
-        let start = s.find("://").map(|idx| idx + 3)?;
-        let end = s[start..]
-            .find(&['/', '?', '#'][..])
-            .map_or(s.len(), |idx| start + idx);
-
-        Some(&s[start..end])
     }
 
     /// Gets the path component of the URL.
+    ///
+    /// This is now O(1) - no parsing required!
     #[must_use]
     pub fn path(&self) -> &str {
-        match self.kind {
-            UrlKind::Local => self.inner.as_str(),
-            UrlKind::Web => {
-                let s = self.inner.as_str();
-                s.find("://").map_or(s, |start_idx| {
-                    let after_scheme = &s[start_idx + 3..];
-                    after_scheme.find('/').map_or("/", |path_start| {
-                        let path = &after_scheme[path_start..];
-                        path.find(&['?', '#'][..]).map_or(path, |idx| &path[..idx])
-                    })
-                })
+        match self.components {
+            ParsedComponents::Web(web) if web.path.is_present() => self.slice(web.path),
+            ParsedComponents::Web(_) => "/", // No path means root
+            ParsedComponents::Local(local) => self.slice(local.path),
+            ParsedComponents::Data(_) | ParsedComponents::Blob(_) => "",
+        }
+    }
+
+    /// Gets the port number for web URLs.
+    ///
+    /// This is a new method enabled by the parsed component structure!
+    /// Returns the port as a u16, or None if not present.
+    #[must_use]
+    pub fn port(&self) -> Option<u16> {
+        match self.components {
+            ParsedComponents::Web(web) if web.port.is_present() => {
+                self.slice(web.port).parse().ok()
             }
-            UrlKind::Data | UrlKind::Blob => "",
+            _ => None,
+        }
+    }
+
+    /// Gets the query string (without the '?') for web URLs.
+    ///
+    /// This is a new method enabled by the parsed component structure!
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_url::Url;
+    ///
+    /// const URL: Url = Url::new("https://example.com/path?foo=bar&baz=qux");
+    /// assert_eq!(URL.query(), Some("foo=bar&baz=qux"));
+    /// ```
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        match self.components {
+            ParsedComponents::Web(web) if web.query.is_present() => Some(self.slice(web.query)),
+            _ => None,
+        }
+    }
+
+    /// Gets the fragment (without the '#') for web URLs.
+    ///
+    /// This is a new method enabled by the parsed component structure!
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_url::Url;
+    ///
+    /// const URL: Url = Url::new("https://example.com/path#section");
+    /// assert_eq!(URL.fragment(), Some("section"));
+    /// ```
+    #[must_use]
+    pub fn fragment(&self) -> Option<&str> {
+        match self.components {
+            ParsedComponents::Web(web) if web.fragment.is_present() => {
+                Some(self.slice(web.fragment))
+            }
+            _ => None,
+        }
+    }
+
+    /// Gets the authority section (user:pass@host:port) for web URLs.
+    ///
+    /// This is a new method enabled by the parsed component structure!
+    #[must_use]
+    pub fn authority(&self) -> Option<&str> {
+        match self.components {
+            ParsedComponents::Web(web) if web.authority.is_present() => {
+                Some(self.slice(web.authority))
+            }
+            _ => None,
         }
     }
 
@@ -302,12 +493,16 @@ impl Url {
         }
 
         // If path is absolute, return it as-is
-        if Self::is_valid_web_url(path) || path.starts_with('/') {
-            return Self::new(path.to_string());
+        if matches!(parser::parse_url(path.as_bytes()), ParsedComponents::Web(_))
+            || path.starts_with('/')
+        {
+            return path
+                .parse()
+                .unwrap_or_else(|_| Self::from_file_path_str(path.to_string()));
         }
 
-        match self.kind {
-            UrlKind::Web => {
+        match self.components {
+            ParsedComponents::Web(_) => {
                 let base = self.inner.as_str();
                 let mut result = String::from(base);
 
@@ -341,9 +536,11 @@ impl Url {
                 }
 
                 result.push_str(path);
-                Self::new(result)
+                result
+                    .parse()
+                    .unwrap_or_else(|_| Self::from_file_path_str(result))
             }
-            UrlKind::Local => {
+            ParsedComponents::Local(_) => {
                 #[cfg(feature = "std")]
                 {
                     let base_path = PathBuf::from(self.inner.as_str());
@@ -398,30 +595,6 @@ impl Url {
             None
         }
     }
-
-    // Helper methods
-
-    #[must_use]
-    fn detect_kind(s: &str) -> UrlKind {
-        if Self::is_valid_web_url(s) {
-            UrlKind::Web
-        } else if s.starts_with("data:") {
-            UrlKind::Data
-        } else if s.starts_with("blob:") {
-            UrlKind::Blob
-        } else {
-            UrlKind::Local
-        }
-    }
-
-    fn is_valid_web_url(s: &str) -> bool {
-        // Common web URL schemes
-        const WEB_SCHEMES: &[&str] = &[
-            "http://", "https://", "ftp://", "ftps://", "ws://", "wss://", "rtsp://", "rtmp://",
-        ];
-
-        WEB_SCHEMES.iter().any(|scheme| s.starts_with(scheme))
-    }
 }
 
 impl fmt::Display for Url {
@@ -436,29 +609,54 @@ impl AsRef<str> for Url {
     }
 }
 
-impl From<Str> for Url {
-    fn from(value: Str) -> Self {
-        Self::new(value)
-    }
-}
+impl core::str::FromStr for Url {
+    type Err = ParseError;
 
-impl From<String> for Url {
-    fn from(value: String) -> Self {
-        Self::new(value)
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(ParseError::empty());
+        }
+
+        Ok(Self {
+            inner: Str::from(s.to_string()),
+            components: parser::parse_url(s.as_bytes()),
+        })
     }
 }
 
 impl From<&'static str> for Url {
     fn from(value: &'static str) -> Self {
-        Self::new(value)
+        Url::new(value)
+    }
+}
+
+impl From<String> for Url {
+    fn from(value: String) -> Self {
+        // Infallible: treat parse failures as local paths
+        value
+            .as_str()
+            .parse()
+            .unwrap_or_else(|_| Self::from_file_path_str(value))
+    }
+}
+
+impl From<Str> for Url {
+    fn from(value: Str) -> Self {
+        // Infallible: treat parse failures as local paths
+        value
+            .as_str()
+            .parse()
+            .unwrap_or_else(|_| Self::from_file_path_str(value))
     }
 }
 
 impl<'a> From<Cow<'a, str>> for Url {
     fn from(value: Cow<'a, str>) -> Self {
         match value {
-            Cow::Borrowed(s) => Self::new(s.to_string()),
-            Cow::Owned(s) => Self::new(s),
+            Cow::Borrowed(s) => s
+                .parse()
+                .unwrap_or_else(|_| Self::from_file_path_str(s.to_string())),
+            Cow::Owned(s) => s.parse().unwrap_or_else(|_| Self::from_file_path_str(s)),
         }
     }
 }
@@ -533,6 +731,68 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_const_url_creation() {
+        const WEB: Url = Url::new("https://example.com");
+        const LOCAL: Url = Url::new("/path/to/file");
+        const DATA: Url = Url::new("data:text/plain,hello");
+        const BLOB: Url = Url::new("blob:https://example.com/uuid");
+
+        assert!(WEB.is_web());
+        assert!(LOCAL.is_local());
+        assert!(DATA.is_data());
+        assert!(BLOB.is_blob());
+    }
+
+    #[test]
+    fn test_fromstr_valid_web_urls() {
+        let urls = [
+            "http://example.com",
+            "https://example.com:443/path",
+            "ftp://server.com/file",
+            "ws://example.com",
+            "wss://example.com",
+        ];
+
+        for url_str in urls {
+            let url: Url = url_str.parse().unwrap();
+            assert!(url.is_web(), "Failed for: {url_str}");
+        }
+    }
+
+    #[test]
+    fn test_fromstr_local_paths() {
+        let paths = [
+            "/absolute/path",
+            "./relative",
+            "file.txt",
+            "C:\\Windows\\file.txt",
+        ];
+
+        for path in paths {
+            let url: Url = path.parse().unwrap();
+            assert!(url.is_local(), "Failed for: {path}");
+        }
+    }
+
+    #[test]
+    fn test_fromstr_data_urls() {
+        let url: Url = "data:text/plain,hello".parse().unwrap();
+        assert!(url.is_data());
+    }
+
+    #[test]
+    fn test_fromstr_blob_urls() {
+        let url: Url = "blob:https://example.com/uuid".parse().unwrap();
+        assert!(url.is_blob());
+    }
+
+    #[test]
+    fn test_fromstr_empty_error() {
+        let result: Result<Url, _> = "".parse();
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_web_url_detection() {
@@ -639,13 +899,64 @@ mod tests {
         assert_eq!(url1.host(), Some("example.com"));
 
         let url2 = Url::new("http://localhost:8080/api");
-        assert_eq!(url2.host(), Some("localhost:8080"));
+        assert_eq!(url2.host(), Some("localhost")); // host() now returns only the host, not host:port
+        assert_eq!(url2.port(), Some(8080)); // port() is now available!
 
         let url3 = Url::new("https://sub.domain.com");
         assert_eq!(url3.host(), Some("sub.domain.com"));
 
         let url4 = Url::new("/local/path");
         assert_eq!(url4.host(), None);
+    }
+
+    #[test]
+    fn test_complete_url_parsing() {
+        // Test a URL with all components
+        const FULL_URL: Url =
+            Url::new("https://user:pass@example.com:8080/path/to/resource?query=1&foo=bar#section");
+
+        assert_eq!(FULL_URL.scheme(), Some("https"));
+        assert_eq!(FULL_URL.host(), Some("example.com"));
+        assert_eq!(FULL_URL.port(), Some(8080));
+        assert_eq!(FULL_URL.path(), "/path/to/resource");
+        assert_eq!(FULL_URL.query(), Some("query=1&foo=bar"));
+        assert_eq!(FULL_URL.fragment(), Some("section"));
+        assert_eq!(FULL_URL.authority(), Some("user:pass@example.com:8080"));
+    }
+
+    #[test]
+    fn test_minimal_url() {
+        const MIN_URL: Url = Url::new("https://example.com");
+
+        assert_eq!(MIN_URL.scheme(), Some("https"));
+        assert_eq!(MIN_URL.host(), Some("example.com"));
+        assert_eq!(MIN_URL.port(), None);
+        assert_eq!(MIN_URL.path(), "/");
+        assert_eq!(MIN_URL.query(), None);
+        assert_eq!(MIN_URL.fragment(), None);
+    }
+
+    #[test]
+    fn test_ipv6_url() {
+        const IPV6: Url = Url::new("http://[::1]:8080/test");
+        assert_eq!(IPV6.host(), Some("[::1]"));
+        assert_eq!(IPV6.port(), Some(8080));
+        assert_eq!(IPV6.path(), "/test");
+    }
+
+    #[test]
+    fn test_query_and_fragment() {
+        const URL1: Url = Url::new("https://example.com?foo=bar");
+        assert_eq!(URL1.query(), Some("foo=bar"));
+        assert_eq!(URL1.fragment(), None);
+
+        const URL2: Url = Url::new("https://example.com#section");
+        assert_eq!(URL2.query(), None);
+        assert_eq!(URL2.fragment(), Some("section"));
+
+        const URL3: Url = Url::new("https://example.com?foo=bar#section");
+        assert_eq!(URL3.query(), Some("foo=bar"));
+        assert_eq!(URL3.fragment(), Some("section"));
     }
 
     #[test]
