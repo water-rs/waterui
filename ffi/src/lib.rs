@@ -62,7 +62,7 @@ macro_rules! export {
             }
 
             #[cfg(waterui_hot_reload_lib)]
-            ::waterui::debug::hot_reloadable_library!(main);
+            ::waterui::hot_reloadable_library!(main);
 
             /// Creates the main view for the WaterUI application
             ///
