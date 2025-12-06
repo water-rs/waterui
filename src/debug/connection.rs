@@ -10,8 +10,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use futures::Stream;
 use serde::Deserialize;
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use zenwave::websocket::{WebSocketConfig, WebSocketMessage};
@@ -55,12 +53,13 @@ impl CliConnection {
     ///
     /// Returns `None` if hot reload is disabled or no endpoint is configured.
     /// Also returns a sender for outbound messages (logs, panic reports).
+    #[must_use] 
     pub fn connect(config: HotReloadConfig) -> (Self, Sender<String>) {
         let (event_tx, event_rx) = async_channel::unbounded();
         let (outbound_tx, outbound_rx) = async_channel::unbounded();
 
         // Spawn the connection task
-        let task_event_tx = event_tx.clone();
+        let task_event_tx = event_tx;
         executor_core::spawn_local(async move {
             run_connection_loop(config, task_event_tx, outbound_rx).await;
         })
@@ -129,7 +128,7 @@ async fn run_connection_loop(
 
                 // Check for rapid disconnection
                 if let Some(connect_time) = last_connect {
-                    if connect_time.elapsed().as_millis() < RAPID_DISCONNECT_WINDOW_MS as u128 {
+                    if connect_time.elapsed().as_millis() < u128::from(RAPID_DISCONNECT_WINDOW_MS) {
                         rapid_disconnects += 1;
                         warn!(
                             "Rapid disconnection ({}/{})",

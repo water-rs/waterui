@@ -432,11 +432,10 @@ ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
 // ========== Metadata<Background> FFI ==========
 // Used to apply background colors or images to views
 
-use crate::color::{WuiColor, WuiResolvedColor};
+use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
 use waterui::Color;
 use waterui::background::Background;
-use waterui_color::ResolvedColor;
 
 /// FFI-safe representation of a background.
 #[repr(C)]

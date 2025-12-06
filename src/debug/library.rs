@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use waterui_core::View;
 
 /// Create a library file from binary data.
+#[must_use] 
 pub fn create_library(data: &[u8]) -> PathBuf {
     let dir = std::env::temp_dir().join("hot_reload");
     if !dir.exists() {

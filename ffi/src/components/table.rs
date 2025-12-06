@@ -3,7 +3,6 @@ use waterui::{
     prelude::table::{TableColumn, TableConfig},
     views::ViewsExt,
 };
-use waterui_core::Native;
 
 use crate::{
     IntoFFI, array::WuiArray, components::text::WuiText, ffi_computed, reactive::WuiComputed,
