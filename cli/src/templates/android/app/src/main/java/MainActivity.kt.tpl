@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import dev.waterui.android.runtime.WaterUiRootView
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
 import dev.waterui.android.runtime.configureHotReloadDirectory
-import dev.waterui.android.runtime.configureHotReloadEndpoint
 import java.lang.Runtime
 
 class MainActivity : ComponentActivity() {
@@ -56,12 +55,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Hot reload host/port are embedded at compile time via build.rs.
+        // We only need to configure the directory for downloading dylibs.
         val hotReloadDisabled = intent?.getBooleanExtra("WATERUI_DISABLE_HOT_RELOAD", false) ?: false
-        val hotReloadPort = intent?.getStringExtra("WATERUI_HOT_RELOAD_PORT")?.toIntOrNull()
-        val hotReloadHost = intent?.getStringExtra("WATERUI_HOT_RELOAD_HOST")
-        if (!hotReloadDisabled && hotReloadHost != null && hotReloadPort != null) {
+        if (!hotReloadDisabled) {
             configureHotReloadDirectory(codeCacheDir.absolutePath)
-            configureHotReloadEndpoint(hotReloadHost, hotReloadPort)
         }
 
         val rootView = WaterUiRootView(this)
