@@ -14,6 +14,7 @@ use std::{
 
 use color_eyre::eyre::{Context, Report, Result, bail};
 use console::style;
+use tokio_util::sync::CancellationToken;
 
 use crate::WATERUI_TRACING_PREFIX;
 use crate::{
@@ -21,10 +22,11 @@ use crate::{
         adb_command, configure_rust_android_linker_env, device_preferred_targets,
         find_android_tool, sanitize_package_name, wait_for_android_device,
     },
+    build::{Builder, BuildOptions, CargoBuilder},
     crash::CrashReport,
-    device::{Device, DeviceKind},
+    device::{Device, DeviceBuildResult, DeviceKind},
     output,
-    platform::{PlatformKind, android::AndroidPlatform},
+    platform::{Platform, PlatformKind, android::AndroidPlatform},
     project::{Project, RunOptions},
     util,
 };
@@ -222,6 +224,24 @@ impl Device for AndroidDevice {
             Some(targets.iter().map(|s| (*s).to_string()).collect());
 
         Ok(())
+    }
+
+    fn build_async(
+        &self,
+        project: &Project,
+        options: &BuildOptions,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<DeviceBuildResult>> + Send {
+        let target = self.platform().target_triple();
+        let builder = CargoBuilder::from_project(project, target);
+
+        async move {
+            let result = builder.build(options, cancel).await?;
+            Ok(DeviceBuildResult {
+                library_path: result.artifact_path,
+                target_triple: target,
+            })
+        }
     }
 
     fn run(
