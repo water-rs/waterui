@@ -8,7 +8,5 @@ authors = ["Lexo Liu"]
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
-waterui = { path = "../..", features = ["graphics"] }
-waterui-ffi = { path = "../../ffi" }
-
-[workspace]
+waterui = { workspace = true, features = ["graphics"] }
+waterui-ffi.workspace = true
