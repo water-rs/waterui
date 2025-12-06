@@ -7,16 +7,15 @@ use core::fmt::{Debug, Display};
 
 use color_eyre::eyre;
 
-use crate::{doctor::AnyToolchainIssue, project::Project};
+use crate::{project::Project, toolchain::ToolchainError};
 
 /// A backend for building and packaging `WaterUI` projects.
-///  Implementors should provide methods for initializing, cleaning,
-///  and checking requirements for the backend.
+///
+/// Implementors should provide methods for initializing, cleaning,
+/// and checking requirements for the backend.
 pub trait Backend: Display + Debug {
-    /// The type of toolchain issues that can be reported by this backend.
-    type ToolchainIssue;
-
     /// Initialize the backend for the given project.
+    ///
     /// If `dev` is true, initialize in development mode.
     /// This may include setting up debug configurations or
     /// installing development dependencies.
@@ -24,27 +23,29 @@ pub trait Backend: Display + Debug {
     /// # Errors
     /// Returns an error if initialization fails.
     fn init(&self, project: &Project, dev: bool) -> eyre::Result<()>;
+
     /// Check if the backend is already set up for the given project.
     fn is_existing(&self, project: &Project) -> bool;
+
     /// Clean up any files or configurations added by this backend
     /// for the given project.
-    ///  # Errors
+    ///
+    /// # Errors
     /// Returns an error if cleaning fails.
     fn clean(&self, project: &Project) -> eyre::Result<()>;
 
     /// Check if the required toolchain components are available
     /// for this backend to function correctly.
-    ///  # Errors
-    /// Returns a list of toolchain issues if requirements are not met.
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>>;
+    ///
+    /// # Errors
+    /// Returns a list of toolchain errors if requirements are not met.
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>>;
 }
 
 /// A type alias for any backend with dynamic dispatch.
-pub type AnyBackend = Box<dyn 'static + Backend<ToolchainIssue = AnyToolchainIssue>>;
+pub type AnyBackend = Box<dyn Backend>;
 
-impl<B: Backend> Backend for &B {
-    type ToolchainIssue = B::ToolchainIssue;
-
+impl<B: Backend + ?Sized> Backend for &B {
     fn init(&self, project: &Project, dev: bool) -> eyre::Result<()> {
         (*self).init(project, dev)
     }
@@ -57,8 +58,26 @@ impl<B: Backend> Backend for &B {
         (*self).clean(project)
     }
 
-    fn check_requirements(&self, project: &Project) -> Result<(), Vec<Self::ToolchainIssue>> {
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>> {
         (*self).check_requirements(project)
+    }
+}
+
+impl<B: Backend + ?Sized> Backend for Box<B> {
+    fn init(&self, project: &Project, dev: bool) -> eyre::Result<()> {
+        (**self).init(project, dev)
+    }
+
+    fn is_existing(&self, project: &Project) -> bool {
+        (**self).is_existing(project)
+    }
+
+    fn clean(&self, project: &Project) -> eyre::Result<()> {
+        (**self).clean(project)
+    }
+
+    fn check_requirements(&self, project: &Project) -> Result<(), Vec<ToolchainError>> {
+        (**self).check_requirements(project)
     }
 }
 

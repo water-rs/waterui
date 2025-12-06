@@ -221,9 +221,7 @@ impl Device for AppleSimulatorDevice {
         if options.hot_reload.enabled {
             launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "0");
             launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
-            if let Some(port) = options.hot_reload.port {
-                launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT", port.to_string());
-            }
+            launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT", options.hot_reload.port.to_string());
         } else {
             launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "1");
             launch_cmd.env_remove("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST");

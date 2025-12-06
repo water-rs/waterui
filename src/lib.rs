@@ -109,6 +109,10 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use task::task;
 
+/// Graphics primitives including GPU rendering surface.
+#[cfg(feature = "graphics")]
+pub use waterui_graphics as graphics;
+
 #[cfg(debug_assertions)]
 #[macro_use]
 pub mod debug;
