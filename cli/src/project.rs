@@ -44,7 +44,7 @@ impl CargoManifest {
 
         let authors = match package.authors {
             cargo_toml::Inheritable::Set(authors) => authors,
-            cargo_toml::Inheritable::Inherited { .. } => Vec::new(),
+            cargo_toml::Inheritable::Inherited => Vec::new(),
         };
 
         Ok(Self { name, authors })
@@ -67,7 +67,7 @@ pub struct RunOptions {
     pub release: bool,
     /// Hot reload configuration forwarded to platforms/devices.
     pub hot_reload: HotReloadOptions,
-    /// Log filter (RUST_LOG syntax) forwarded to hot reload clients.
+    /// Log filter (`RUST_LOG` syntax) forwarded to hot reload clients.
     pub log_filter: Option<String>,
 }
 
@@ -309,7 +309,7 @@ impl Project {
         &self.cargo_manifest.name
     }
 
-    /// Get the unique identifier of the project (snake_case from crate name).
+    /// Get the unique identifier of the project (`snake_case` from crate name).
     #[must_use]
     pub fn identifier(&self) -> &str {
         &self.identifier
@@ -334,8 +334,7 @@ impl Project {
         self.cargo_manifest
             .authors
             .first()
-            .map(String::as_str)
-            .unwrap_or("")
+            .map_or("", String::as_str)
     }
 
     /// Bundle identifier used for Apple/Android targets.
@@ -370,7 +369,7 @@ impl Project {
 
     /// Get the package type.
     #[must_use]
-    pub fn package_type(&self) -> PackageType {
+    pub const fn package_type(&self) -> PackageType {
         self.config.package.package_type
     }
 }
@@ -385,7 +384,7 @@ pub struct Config {
     pub hot_reload: HotReload,
     #[serde(default, skip_serializing_if = "is_false")]
     pub dev_dependencies: bool,
-    /// Path to local WaterUI repository for dev mode.
+    /// Path to local `WaterUI` repository for dev mode.
     /// When set, all dependencies use local paths instead of git/crates.io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
@@ -394,7 +393,7 @@ pub struct Config {
     pub permissions: Permissions,
 }
 
-fn is_false(b: &bool) -> bool {
+const fn is_false(b: &bool) -> bool {
     !*b
 }
 
@@ -498,7 +497,7 @@ pub struct Backends {
 }
 
 impl Backends {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.swift.is_none() && self.android.is_none() && self.web.is_none() && self.tui.is_none()
     }
 }
@@ -621,12 +620,12 @@ impl Default for HotReload {
     }
 }
 
-fn default_hot_reload_port() -> u16 {
+const fn default_hot_reload_port() -> u16 {
     DEFAULT_HOT_RELOAD_PORT
 }
 
 impl HotReload {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.port == DEFAULT_HOT_RELOAD_PORT && self.watch.is_empty()
     }
 }
@@ -685,7 +684,7 @@ impl Permissions {
     /// Get the custom description for a permission, if any.
     #[must_use]
     pub fn get_description(&self, name: &str) -> Option<String> {
-        self.detailed.get(name).and_then(|c| c.description())
+        self.detailed.get(name).and_then(PermissionConfig::description)
     }
 
     /// Add a permission to the enabled list (simple form).
@@ -721,7 +720,7 @@ pub enum PermissionConfig {
 impl PermissionConfig {
     /// Check if this permission is enabled.
     #[must_use]
-    pub fn is_enabled(&self) -> bool {
+    pub const fn is_enabled(&self) -> bool {
         match self {
             Self::Enabled(enabled) => *enabled,
             Self::WithDescription { .. } => true,

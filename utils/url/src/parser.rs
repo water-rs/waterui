@@ -22,9 +22,7 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
     let len = bytes.len();
 
     // Check for empty URL
-    if len == 0 {
-        panic!("URL string is empty");
-    }
+    assert!(len != 0, "URL string is empty");
 
     // Check for data: URLs
     if len >= 5 && starts_with(bytes, b"data:") {
@@ -52,37 +50,27 @@ pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
 /// Validates a parsed web URL and panics if malformed.
 const fn validate_web_url(web: &WebComponents, bytes: &[u8]) {
     // Scheme must be present
-    if !web.scheme.is_present() {
-        panic!("Web URL must have a scheme");
-    }
+    assert!(web.scheme.is_present(), "Web URL must have a scheme");
 
     // Host must be present for web URLs
-    if !web.host.is_present() {
-        panic!("Web URL must have a host");
-    }
+    assert!(web.host.is_present(), "Web URL must have a host");
 
     // Validate port if present (must be valid digits)
     if web.port.is_present() {
         let port_start = web.port.start as usize;
         let port_end = web.port.end as usize;
 
-        if port_start >= port_end {
-            panic!("Invalid port: empty");
-        }
+        assert!(port_start < port_end, "Invalid port: empty");
 
         // Check all characters are digits
         let mut i = port_start;
         while i < port_end {
-            if !is_digit(bytes[i]) {
-                panic!("Invalid port: contains non-digit characters");
-            }
+            assert!(is_digit(bytes[i]), "Invalid port: contains non-digit characters");
             i += 1;
         }
 
         // Port number should be reasonable (1-65535)
-        if port_end - port_start > 5 {
-            panic!("Invalid port: too many digits");
-        }
+        assert!(port_end - port_start <= 5, "Invalid port: too many digits")
     }
 }
 
@@ -121,7 +109,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
 
     // Find authority end (first '/', '?', or '#')
     let authority_start = pos;
-    let authority_end = find_char_or_end(bytes, pos, &[b'/', b'?', b'#']);
+    let authority_end = find_char_or_end(bytes, pos, b"/?#");
 
     let authority = if authority_end > authority_start {
         Span {
@@ -140,7 +128,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
     // Parse path
     let path = if pos < len && bytes[pos] == b'/' {
         let path_start = pos;
-        let path_end = find_char_or_end(bytes, pos, &[b'?', b'#']);
+        let path_end = find_char_or_end(bytes, pos, b"?#");
         pos = path_end;
 
         Span {
@@ -155,7 +143,7 @@ const fn parse_web_url(bytes: &[u8], scheme_end: usize) -> WebComponents {
     let query = if pos < len && bytes[pos] == b'?' {
         pos += 1; // Skip '?'
         let query_start = pos;
-        let query_end = find_char_or_end(bytes, pos, &[b'#']);
+        let query_end = find_char_or_end(bytes, pos, b"#");
         pos = query_end;
 
         Span {
