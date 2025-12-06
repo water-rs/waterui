@@ -36,9 +36,11 @@
 //! ```
 
 mod server;
+mod session;
 mod watcher;
 
 pub use server::{NativeConnectionEvent, NativeConnectionEvents, Server};
+pub use session::{HotReloadSession, HotReloadSessionBuilder, SessionOutcome};
 pub use watcher::{FileChanged, FileWatcher};
 
 use std::{fmt, path::PathBuf};
