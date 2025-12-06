@@ -89,15 +89,13 @@ pub fn ensure_directory(path: &Path) -> Result<()> {
 /// The `waterui_hot_reload_lib` flag indicates that the compiled dylib can be dynamically
 /// loaded for hot reload. The app internally switches the entry point from `waterui_main`
 /// to `waterui_hot_reload_main` to prevent infinite loading loops.
-pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: Option<u16>) {
+pub fn configure_hot_reload_env(cmd: &mut Command, enable: bool, port: u16) {
     const HOT_RELOAD_CFG: &str = "--cfg=waterui_hot_reload_lib";
 
     if enable {
         cmd.env("WATERUI_ENABLE_HOT_RELOAD", "1");
         cmd.env("WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
-        if let Some(port) = port {
-            cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
-        }
+        cmd.env("WATERUI_HOT_RELOAD_PORT", port.to_string());
 
         // Set compile-time cfg flag
         let mut rustflags: Vec<String> = env::var("RUSTFLAGS")

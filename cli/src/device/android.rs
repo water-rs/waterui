@@ -257,9 +257,7 @@ impl Device for AndroidDevice {
         let mut launch_cmd = adb_command(&self.adb_path, self.selection_identifier());
         launch_cmd.args(["shell", "am", "start", "-n", &activity]);
         if options.hot_reload.enabled {
-            let port = options.hot_reload.port.ok_or_else(|| {
-                Report::msg("Hot reload server port missing; restart the CLI and try again.")
-            })?;
+            let port = options.hot_reload.port;
             reverse_guard = Some(AdbReverseGuard::new(
                 &self.adb_path,
                 self.selection_identifier(),
