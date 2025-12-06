@@ -292,12 +292,11 @@ fn is_rust_target_installed(target: &str) -> bool {
         .args(["target", "list", "--installed"])
         .output()
         .ok()
-        .map(|output| {
+        .is_none_or(|output| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .any(|line| line.trim() == target)
         })
-        .unwrap_or(true)
 }
 
 // ============================================================================
@@ -354,7 +353,7 @@ pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
     None
 }
 
-/// Resolve the Android NDK path, preferring ANDROID_NDK_HOME if set.
+/// Resolve the Android NDK path, preferring `ANDROID_NDK_HOME` if set.
 #[must_use]
 pub fn resolve_ndk_path() -> Option<PathBuf> {
     // Check environment variable first
@@ -457,7 +456,7 @@ pub(crate) fn ndk_toolchain_bin(ndk_root: &Path) -> Option<(String, PathBuf)> {
 // CMake Resolution (Prefer SDK CMake)
 // ============================================================================
 
-/// Find CMake, preferring Android SDK cmake over system cmake.
+/// Find `CMake`, preferring Android SDK cmake over system cmake.
 #[must_use]
 pub fn resolve_cmake_path() -> Option<PathBuf> {
     // Priority 1: Android SDK cmake (includes Ninja, designed for cross-compilation)
@@ -512,7 +511,7 @@ fn find_sdk_cmake(sdk_root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Prepare CMake environment for Android builds.
+/// Prepare `CMake` environment for Android builds.
 pub fn prepare_cmake_env(targets: &[&str]) -> Result<PathBuf> {
     let cmake_path = resolve_cmake_path().ok_or_else(|| {
         eyre!(
@@ -1304,7 +1303,7 @@ fn build_single_target(
 /// 2. `water build android` compiles Rust and copies `.so` files to `jniLibs/`
 /// 3. Gradle packages everything into the APK
 ///
-/// This design enables two ways to build WaterUI apps:
+/// This design enables two ways to build `WaterUI` apps:
 /// - **CLI**: `water run` → checks preconditions → runs Gradle → launches device
 /// - **IDE**: Click "Run" in Android Studio → Gradle runs → calls `water build` → launches
 ///
