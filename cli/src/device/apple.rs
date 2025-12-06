@@ -218,15 +218,12 @@ impl Device for AppleSimulatorDevice {
         launch_cmd.args(["simctl", "launch", "--terminate-running-process"]);
         // Enable Rust backtraces for easier debugging of panics
         launch_cmd.env("SIMCTL_CHILD_RUST_BACKTRACE", "1");
-        if options.hot_reload.enabled {
-            launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "0");
-            launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST", "127.0.0.1");
-            launch_cmd.env("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT", options.hot_reload.port.to_string());
-        } else {
-            launch_cmd.env("SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD", "1");
-            launch_cmd.env_remove("SIMCTL_CHILD_WATERUI_HOT_RELOAD_HOST");
-            launch_cmd.env_remove("SIMCTL_CHILD_WATERUI_HOT_RELOAD_PORT");
-        }
+        // Hot reload host/port are embedded at compile time via build.rs,
+        // so we only need to signal whether hot reload is enabled.
+        launch_cmd.env(
+            "SIMCTL_CHILD_WATERUI_DISABLE_HOT_RELOAD",
+            if options.hot_reload.enabled { "0" } else { "1" },
+        );
         if let Some(filter) = &options.log_filter {
             launch_cmd.env("SIMCTL_CHILD_RUST_LOG", filter);
         }
