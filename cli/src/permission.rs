@@ -71,43 +71,43 @@ pub enum Permission {
 impl Permission {
     /// Returns all available permissions.
     #[must_use]
-    pub fn all() -> &'static [Permission] {
+    pub const fn all() -> &'static [Self] {
         &[
-            Permission::Camera,
-            Permission::Microphone,
-            Permission::Location,
-            Permission::LocationAlways,
-            Permission::LocationWhenInUse,
-            Permission::Photos,
-            Permission::PhotosAddOnly,
-            Permission::MediaLibrary,
-            Permission::Contacts,
-            Permission::Calendar,
-            Permission::Reminders,
-            Permission::Notifications,
-            Permission::Internet,
-            Permission::Bluetooth,
-            Permission::BluetoothPeripheral,
-            Permission::Nfc,
-            Permission::WifiState,
-            Permission::Biometrics,
-            Permission::Motion,
-            Permission::HealthRead,
-            Permission::HealthWrite,
-            Permission::SpeechRecognition,
-            Permission::Siri,
-            Permission::HomeKit,
-            Permission::AppleMusic,
-            Permission::ReadExternalStorage,
-            Permission::WriteExternalStorage,
-            Permission::Vibrate,
-            Permission::WakeLock,
-            Permission::ReceiveBootCompleted,
-            Permission::ReadPhoneState,
-            Permission::CallPhone,
-            Permission::SendSms,
-            Permission::ReceiveSms,
-            Permission::ReadSms,
+            Self::Camera,
+            Self::Microphone,
+            Self::Location,
+            Self::LocationAlways,
+            Self::LocationWhenInUse,
+            Self::Photos,
+            Self::PhotosAddOnly,
+            Self::MediaLibrary,
+            Self::Contacts,
+            Self::Calendar,
+            Self::Reminders,
+            Self::Notifications,
+            Self::Internet,
+            Self::Bluetooth,
+            Self::BluetoothPeripheral,
+            Self::Nfc,
+            Self::WifiState,
+            Self::Biometrics,
+            Self::Motion,
+            Self::HealthRead,
+            Self::HealthWrite,
+            Self::SpeechRecognition,
+            Self::Siri,
+            Self::HomeKit,
+            Self::AppleMusic,
+            Self::ReadExternalStorage,
+            Self::WriteExternalStorage,
+            Self::Vibrate,
+            Self::WakeLock,
+            Self::ReceiveBootCompleted,
+            Self::ReadPhoneState,
+            Self::CallPhone,
+            Self::SendSms,
+            Self::ReceiveSms,
+            Self::ReadSms,
         ]
     }
 
@@ -685,11 +685,11 @@ impl std::error::Error for ParsePermissionError {}
 /// iOS Info.plist permission entry.
 #[derive(Debug, Clone)]
 pub struct IosPermission {
-    /// The NSUsageDescription key (e.g., "NSCameraUsageDescription")
+    /// The `NSUsageDescription` key (e.g., "`NSCameraUsageDescription`")
     pub info_plist_key: &'static str,
     /// Default usage description if none provided
     pub default_description: &'static str,
-    /// Optional entitlement key (e.g., for HealthKit)
+    /// Optional entitlement key (e.g., for `HealthKit`)
     pub entitlement: Option<&'static str>,
 }
 

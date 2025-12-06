@@ -48,8 +48,7 @@ impl Layout for FrameLayout {
         // Measure the child with our constrained proposal
         let child_size = children
             .first()
-            .map(|c| c.size_that_fits(child_proposal))
-            .unwrap_or(Size::zero());
+            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
 
         // 1. Determine the frame's ideal width based on its own properties and its child.
         let mut target_width = self.ideal_width.unwrap_or(child_size.width);
@@ -97,8 +96,7 @@ impl Layout for FrameLayout {
 
         let child_size = children
             .first()
-            .map(|c| c.size_that_fits(child_proposal))
-            .unwrap_or(Size::zero());
+            .map_or(Size::zero(), |c| c.size_that_fits(child_proposal));
 
         // Handle infinite dimensions (axis-expanding views)
         let child_width = if child_size.width.is_infinite() {

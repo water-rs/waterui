@@ -1,6 +1,6 @@
 //! A text input component wired to a reactive string binding.
 //!
-//! ![TextField](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
+//! ![`TextField`](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
 use core::num::NonZeroUsize;
 
 use nami::Binding;
@@ -117,7 +117,7 @@ impl TextField {
 
     /// Disables the line limit.
     #[must_use]
-    pub fn disable_line_limit(mut self) -> Self {
+    pub const fn disable_line_limit(mut self) -> Self {
         self.0.line_limit = None;
         self
     }

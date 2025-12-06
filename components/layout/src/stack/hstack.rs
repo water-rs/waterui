@@ -71,21 +71,21 @@ struct ChildMeasurement {
 }
 
 impl ChildMeasurement {
-    /// Returns true if this child stretches horizontally (for HStack width distribution).
-    /// In HStack context:
-    /// - MainAxis means horizontal (HStack's main axis)
-    /// - CrossAxis means vertical (HStack's cross axis)
-    fn stretches_main_axis(&self) -> bool {
+    /// Returns true if this child stretches horizontally (for `HStack` width distribution).
+    /// In `HStack` context:
+    /// - `MainAxis` means horizontal (`HStack`'s main axis)
+    /// - `CrossAxis` means vertical (`HStack`'s cross axis)
+    const fn stretches_main_axis(&self) -> bool {
         matches!(
             self.stretch_axis,
             StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
         )
     }
 
-    /// Returns true if this child stretches vertically (for HStack height expansion).
-    /// In HStack context:
-    /// - CrossAxis means vertical (HStack's cross axis)
-    fn stretches_cross_axis(&self) -> bool {
+    /// Returns true if this child stretches vertically (for `HStack` height expansion).
+    /// In `HStack` context:
+    /// - `CrossAxis` means vertical (`HStack`'s cross axis)
+    const fn stretches_cross_axis(&self) -> bool {
         matches!(
             self.stretch_axis,
             StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
@@ -117,7 +117,7 @@ impl Layout for HStackLayout {
             .collect();
 
         // HStack checks for main-axis (horizontal) stretching
-        let has_main_axis_stretch = measurements.iter().any(|m| m.stretches_main_axis());
+        let has_main_axis_stretch = measurements.iter().any(ChildMeasurement::stretches_main_axis);
         let main_axis_stretch_count = measurements
             .iter()
             .filter(|m| m.stretches_main_axis())

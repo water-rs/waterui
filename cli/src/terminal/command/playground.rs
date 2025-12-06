@@ -8,14 +8,14 @@
 //!
 //! - No `[backends.*]` sections in Water.toml - backends are auto-generated
 //! - Backend projects are created in `.water/playground/` cache directory
-//! - Users cannot customize backend settings (scheme, local_path, etc.)
-//! - `waterui_path` and `dev_dependencies` still work for local WaterUI development
+//! - Users cannot customize backend settings (scheme, `local_path`, etc.)
+//! - `waterui_path` and `dev_dependencies` still work for local `WaterUI` development
 //!
 //! ## Version tracking
 //!
 //! Each platform backend stores a `.cli-version` file containing the CLI version
 //! that generated it. When the CLI version changes, the backend is regenerated
-//! (preserving build caches like Gradle's `build/` or Xcode's DerivedData).
+//! (preserving build caches like Gradle's `build/` or Xcode's `DerivedData`).
 
 use std::path::{Path, PathBuf};
 
@@ -38,9 +38,9 @@ const CLI_VERSION_FILE: &str = ".cli-version";
 /// The backend is regenerated when:
 /// - It doesn't exist yet
 /// - The CLI version has changed (ensures users get latest templates/fixes)
-/// - Dev mode is enabled (waterui_path is set) - always regenerate for local development
+/// - Dev mode is enabled (`waterui_path` is set) - always regenerate for local development
 ///
-/// Build caches (Gradle's `build/`, Xcode's DerivedData) are preserved during regeneration.
+/// Build caches (Gradle's `build/`, Xcode's `DerivedData`) are preserved during regeneration.
 ///
 /// Returns the modified config with the backend configuration pointing to the cache.
 pub fn ensure_playground_backend(
@@ -175,25 +175,22 @@ fn should_regenerate_backend(backend_dir: &Path, dev_mode: bool) -> bool {
 
     // Check if CLI version matches
     let version_file = backend_dir.join(CLI_VERSION_FILE);
-    match std::fs::read_to_string(&version_file) {
-        Ok(stored_version) => {
-            let current_version = waterui_cli::WATERUI_VERSION;
-            if stored_version.trim() != current_version {
-                info!(
-                    "CLI version changed ({} -> {}), regenerating playground backend",
-                    stored_version.trim(),
-                    current_version
-                );
-                true
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            // No version file means old backend, regenerate
-            info!("No CLI version found, regenerating playground backend");
+    if let Ok(stored_version) = std::fs::read_to_string(&version_file) {
+        let current_version = waterui_cli::WATERUI_VERSION;
+        if stored_version.trim() == current_version {
+            false
+        } else {
+            info!(
+                "CLI version changed ({} -> {}), regenerating playground backend",
+                stored_version.trim(),
+                current_version
+            );
             true
         }
+    } else {
+        // No version file means old backend, regenerate
+        info!("No CLI version found, regenerating playground backend");
+        true
     }
 }
 

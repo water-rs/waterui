@@ -32,7 +32,7 @@ impl<T: 'static + NativeView> View for Native<T> {
 /// A trait for all views handled by the native backend.
 ///
 /// This includes:
-/// - Configurable views (TextField, Slider, Toggle, etc.)
+/// - Configurable views (`TextField`, Slider, Toggle, etc.)
 /// - Raw views (Color, Spacer, Divider, Container, etc.)
 ///
 /// The native backend uses this trait to query layout behavior.
