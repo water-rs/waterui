@@ -915,17 +915,6 @@ async fn run_platform(
     let server = server.expect("server should exist when hot reload is enabled");
     let connection_events = connection_events.expect("connection_events should exist when hot reload is enabled");
 
-    // Notify the hot reload server if a library already exists from the build
-    let library_path = hot_reload_library_path(
-        project_dir,
-        project.crate_name(),
-        release,
-        target_triple,
-    );
-    if library_path.exists() {
-        server.notify_native_reload(library_path);
-    }
-
     // Set up file watcher for hot reload
     let mut watch_paths = vec![project_dir.join("src")];
     for path in &config.hot_reload.watch {
@@ -2114,4 +2103,3 @@ fn wait_for_hot_reload_connection(events: &NativeConnectionEvents) -> Result<()>
         }
     }
 }
-
