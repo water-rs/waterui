@@ -11,8 +11,8 @@ use crate::{
     backend::{AnyBackend, Backend, scan_backends},
     crash::CrashReport,
     device::Device,
-    doctor::{AnyToolchainIssue, ToolchainIssue},
     platform::Platform,
+    toolchain::ToolchainError,
 };
 
 #[derive(Debug)]
@@ -83,12 +83,21 @@ impl RunOptions {
 }
 
 /// Toggle hot reload metadata generation and runtime wiring.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct HotReloadOptions {
     /// Whether hot reload support is enabled end-to-end.
     pub enabled: bool,
-    /// TCP port used by the dev server, when enabled.
-    pub port: Option<u16>,
+    /// TCP port used by the dev server.
+    pub port: u16,
+}
+
+impl Default for HotReloadOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_HOT_RELOAD_PORT,
+        }
+    }
 }
 
 /// Structured description of a successful `Project::run`.
@@ -143,60 +152,28 @@ pub enum FailToPackage {
     #[error("Build error: {0}")]
     BuildError(String),
     #[error("Toolchain requirement not met")]
-    RequirementNotMet(Vec<AnyToolchainIssue>),
+    RequirementNotMet(Vec<ToolchainError>),
     #[error("Packaging error: {0}")]
     Other(#[from] eyre::Report),
 }
 
-macro_rules! tool_chain_requirement {
-    ($ty:ty) => {
-        impl<T: ToolchainIssue> From<T> for $ty {
-            fn from(issue: T) -> Self {
-                let any_issue = AnyToolchainIssue::from(Box::new(issue));
-                Self::RequirementNotMet(vec![any_issue])
-            }
-        }
-
-        impl<T: ToolchainIssue> From<Vec<T>> for $ty {
-            fn from(issues: Vec<T>) -> Self {
-                let any_issues = issues
-                    .into_iter()
-                    .map(|issue| AnyToolchainIssue::from(Box::new(issue)))
-                    .collect();
-                Self::RequirementNotMet(any_issues)
-            }
-        }
-    };
-}
-
-tool_chain_requirement!(FailToPackage);
-tool_chain_requirement!(FailToRun);
-
-#[derive(Debug, Clone, Error)]
-pub enum BasicToolchainIssue {
-    /// Rust is not installed
-    #[error("Rust is not installed")]
-    RustNotInstalled,
-}
-
-impl ToolchainIssue for BasicToolchainIssue {
-    fn suggestion(&self) -> String {
-        match self {
-            Self::RustNotInstalled => {
-                "Install Rust from https://www.rust-lang.org/tools/install".to_string()
-            }
-        }
-    }
-
-    fn fix(&self) -> eyre::Result<()> {
-        todo!()
+impl From<Vec<ToolchainError>> for FailToPackage {
+    fn from(issues: Vec<ToolchainError>) -> Self {
+        Self::RequirementNotMet(issues)
     }
 }
 
-fn check_requirements() -> Result<(), BasicToolchainIssue> {
+impl From<ToolchainError> for FailToPackage {
+    fn from(issue: ToolchainError) -> Self {
+        Self::RequirementNotMet(vec![issue])
+    }
+}
+
+fn check_requirements() -> Result<(), ToolchainError> {
     // check rust basic toolchain
     if which("rustc").is_err() {
-        return Err(BasicToolchainIssue::RustNotInstalled);
+        return Err(ToolchainError::unfixable("Rust is not installed")
+            .with_suggestion("Install Rust from https://rustup.rs"));
     }
 
     Ok(())
@@ -210,10 +187,22 @@ pub enum FailToRun {
     BuildError(String),
     /// Toolchain requirement not met
     #[error("Toolchain requirement not met")]
-    RequirementNotMet(Vec<AnyToolchainIssue>),
+    RequirementNotMet(Vec<ToolchainError>),
     /// Other runtime error
     #[error("Runtime error: {0}")]
     Other(#[from] eyre::Report),
+}
+
+impl From<Vec<ToolchainError>> for FailToRun {
+    fn from(issues: Vec<ToolchainError>) -> Self {
+        Self::RequirementNotMet(issues)
+    }
+}
+
+impl From<ToolchainError> for FailToRun {
+    fn from(issue: ToolchainError) -> Self {
+        Self::RequirementNotMet(vec![issue])
+    }
 }
 
 impl Project {
@@ -609,16 +598,36 @@ fn is_default_tui_project_path(s: &str) -> bool {
     s == "tui"
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// Default hot reload server port.
+pub const DEFAULT_HOT_RELOAD_PORT: u16 = 2006;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HotReload {
+    /// TCP port for the hot reload WebSocket server.
+    /// Defaults to 2006.
+    #[serde(default = "default_hot_reload_port")]
+    pub port: u16,
     /// Additional paths to watch for triggering rebuilds
     #[serde(default)]
     pub watch: Vec<String>,
 }
 
+impl Default for HotReload {
+    fn default() -> Self {
+        Self {
+            port: DEFAULT_HOT_RELOAD_PORT,
+            watch: Vec::new(),
+        }
+    }
+}
+
+fn default_hot_reload_port() -> u16 {
+    DEFAULT_HOT_RELOAD_PORT
+}
+
 impl HotReload {
     fn is_empty(&self) -> bool {
-        self.watch.is_empty()
+        self.port == DEFAULT_HOT_RELOAD_PORT && self.watch.is_empty()
     }
 }
 
