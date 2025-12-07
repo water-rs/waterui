@@ -1,8 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-
-use crate::backend::Backend;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AndroidBackend {
@@ -30,19 +28,11 @@ impl AndroidBackend {
     }
 }
 
-impl Backend for AndroidBackend {
-    async fn init(
-        project: &crate::project::Project,
-    ) -> Result<Self, crate::backend::FailToInitBackend> {
-        todo!()
-    }
-}
-
 #[must_use]
-pub fn default_android_project_path() -> PathBuf {
-    PathBuf::from("android")
+pub fn default_android_project_path() -> String {
+    "android".to_string()
 }
 
-fn is_default_android_project_path(s: &Path) -> bool {
-    s == Path::new("android")
+fn is_default_android_project_path(s: &str) -> bool {
+    s == "android"
 }

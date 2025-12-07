@@ -1,43 +1,53 @@
-use smol::process::Command;
+use target_lexicon::Triple;
 
 use crate::{
-    android::{backend::AndroidBackend, device::AndroidDevice},
+    android::{device::AndroidDevice, toolchain::AndroidToolchain},
+    build::RustBuild,
     platform::Platform,
-    project::Project,
-    utils::run_command,
 };
 
 pub struct AndroidPlatform {
-    backend: AndroidBackend,
+    triple: Triple,
+}
+
+impl AndroidPlatform {
+    pub fn new(triple: Triple) -> Self {
+        Self { triple }
+    }
 }
 
 impl Platform for AndroidPlatform {
     type Device = AndroidDevice;
     type Toolchain = AndroidToolchain;
-    async fn clean(&self, project: &Project) -> color_eyre::eyre::Result<()> {
-        let project_path = project
-            .android_backend()
-            .expect("Android backend missing")
-            .project_path();
+    async fn scan(&self) -> color_eyre::eyre::Result<Vec<Self::Device>> {
+        todo!()
+    }
 
-        let gradlew = self.backend.gradlew_path();
+    fn toolchain(&self) -> &Self::Toolchain {
+        todo!()
+    }
 
-        let mut command = Command::new(gradlew);
+    async fn clean(&self, project: &crate::project::Project) -> color_eyre::eyre::Result<()> {
+        todo!()
+    }
 
-        let command = command.arg("clean").current_dir(&project_path);
+    async fn build(
+        &self,
+        options: crate::build::BuildOptions,
+    ) -> color_eyre::eyre::Result<std::path::PathBuf> {
+        //RustBuild::new(path, triple)
+        todo!()
+    }
 
-        run_command(command).await
+    fn triple(&self) -> target_lexicon::Triple {
+        self.triple.clone()
     }
 
     async fn package(
         &self,
-        project: &Project,
-        options: &crate::platform::PackageOptions,
-    ) -> color_eyre::eyre::Result<()> {
-        todo!()
-    }
-
-    async fn scan(&self) -> color_eyre::eyre::Result<Vec<Self::Device>> {
+        project: &crate::project::Project,
+        options: crate::platform::PackageOptions,
+    ) -> color_eyre::eyre::Result<std::path::PathBuf> {
         todo!()
     }
 }
