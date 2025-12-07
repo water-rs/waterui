@@ -1,28 +1,66 @@
-use crate::toolchain::{Installation, Toolchain};
+use color_eyre::eyre;
 
+use crate::{
+    brew::Brew,
+    toolchain::{Installation, Toolchain},
+    utils::which,
+};
+
+/// Toolchain for `CMake`
+#[derive(Debug, Clone)]
 pub struct Cmake {}
 
 impl Toolchain for Cmake {
     type Installation = CmakeInstallation;
 
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        todo!()
-    }
-
-    async fn fix(&self) -> Result<Self::Installation, <Self::Installation as Installation>::Error> {
-        todo!()
+        // Check if CMake is installed
+        // TODO: Also detect android-cmake toolchain files if needed
+        if which("cmake").await.is_ok() {
+            Ok(())
+        } else {
+            Err(crate::toolchain::ToolchainError::fixable(CmakeInstallation))
+        }
     }
 }
 
-pub struct CmakeInstallation {}
+/// Installation for `CMake`
+#[derive(Debug, Clone)]
+pub struct CmakeInstallation;
 
+/// Errors that can occur during `CMake` installation
 #[derive(Debug, thiserror::Error)]
-pub enum FailToInstallCmake {}
+pub enum FailToInstallCmake {
+    /// Homebrew not found error
+    #[error("Homebrew not found. Please install Homebrew to proceed.")]
+    BrewNotFound,
+
+    /// Other installation errors
+    #[error("Failed to install CMake via Homebrew: {0}")]
+    Other(eyre::Report),
+
+    /// Unsupported platform error
+    #[error(
+        "Automatic installation of CMake is not supported on this platform. Please install CMake manually."
+    )]
+    UnsupportedPlatform,
+}
 
 impl Installation for CmakeInstallation {
     type Error = FailToInstallCmake;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        todo!()
+        if cfg!(target_os = "macos") {
+            let brew = Brew::new()
+                .await
+                .map_err(|_| FailToInstallCmake::BrewNotFound)?;
+            brew.install("cmake")
+                .await
+                .map_err(FailToInstallCmake::Other)?;
+
+            Ok(())
+        } else {
+            Err(FailToInstallCmake::UnsupportedPlatform)
+        }
     }
 }

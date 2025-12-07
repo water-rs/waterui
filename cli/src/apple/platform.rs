@@ -1,7 +1,6 @@
 use crate::{
     apple::{device::AppleDevice, toolchain::AppleToolchain},
     platform::Platform,
-    toolchain::Toolchain,
 };
 
 pub struct ApplePlatform {}
