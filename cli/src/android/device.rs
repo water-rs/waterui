@@ -14,21 +14,13 @@ use std::{
 
 use color_eyre::eyre::{Context, Report, Result, bail};
 use console::style;
-use tokio_util::sync::CancellationToken;
 
 use crate::WATERUI_TRACING_PREFIX;
 use crate::{
-    backend::android::{
-        adb_command, configure_rust_android_linker_env, device_preferred_targets,
-        find_android_tool, sanitize_package_name, wait_for_android_device,
-    },
-    build::{BuildOptions, Builder, CargoBuilder},
-    crash::CrashReport,
-    device::{Device, DeviceBuildResult, DeviceKind},
+    device::{Device, DeviceBuildResult},
     output,
-    platform::{Platform, PlatformKind, android::AndroidPlatform},
-    project::{Project, RunOptions},
-    util,
+    platform::Platform,
+    project::Project,
 };
 const PID_APPEAR_TIMEOUT: Duration = Duration::from_secs(10);
 const PID_DISAPPEAR_GRACE: Duration = Duration::from_secs(2);
