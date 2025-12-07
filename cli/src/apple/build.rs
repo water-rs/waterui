@@ -15,15 +15,13 @@ use color_eyre::{
 };
 use heck::ToUpperCamelCase;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 use which::which;
 
 use crate::{
     backend::Backend,
-    device::{DeviceInfo, DeviceKind},
     impl_display,
-    project::Project,
+    project::{Project, manifest::AppleBackend},
     toolchain::ToolchainError,
     util,
 };
@@ -116,11 +114,8 @@ pub fn ensure_macos_host(feature: &str) -> EyreResult<()> {
 ///
 /// # Errors
 /// Returns an error if the expected project directory or file is missing.
-pub fn resolve_xcode_project<'a>(
-    project_dir: &Path,
-    swift_config: &'a Swift,
-) -> EyreResult<XcodeProject<'a>> {
-    let project_root = project_dir.join(&swift_config.project_path);
+pub fn resolve_xcode_project<'a>(backend: &'a AppleBackend) -> EyreResult<XcodeProject<'a>> {
+    let project_root = backend.project_root();
     if !project_root.exists() {
         bail!(
             "Xcode project directory not found at {}. Did you run 'water create'?",
@@ -128,8 +123,8 @@ pub fn resolve_xcode_project<'a>(
         );
     }
 
-    let project_file = swift_config.project_file.as_ref().map_or_else(
-        || project_root.join(format!("{}.xcodeproj", swift_config.scheme)),
+    let project_file = backend.project_file.as_ref().map_or_else(
+        || project_root.join(format!("{}.xcodeproj", backend.scheme)),
         |custom| project_root.join(custom),
     );
 
@@ -138,7 +133,7 @@ pub fn resolve_xcode_project<'a>(
     }
 
     Ok(XcodeProject {
-        scheme: &swift_config.scheme,
+        scheme: &backend.scheme,
         project_file,
     })
 }
