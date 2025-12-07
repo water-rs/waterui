@@ -5,15 +5,13 @@ use std::{
     fmt::{self, Display},
     future::Future,
     path::PathBuf,
-    process::Command,
 };
 
-use tokio::process::Command as AsyncCommand;
 use which::which;
 
 use super::{
     Toolchain, ToolchainError,
-    installation::{Empty, Installation, InstallationReport, Many, Progress, Sequence},
+    installation::{Installation, InstallationReport, Many, Sequence},
     rust::RustTarget,
 };
 
@@ -169,7 +167,6 @@ impl Android {
 /// Installation type for Android toolchain.
 #[derive(Debug)]
 pub enum AndroidInstallation {
-    Empty(Empty),
     RustTargets(Many<RustTarget>),
     SdkThenRust(Sequence<Many<SdkComponent>, Many<RustTarget>>),
     SdkOnly(Many<SdkComponent>),
@@ -180,7 +177,6 @@ pub enum AndroidInstallation {
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub enum AndroidInstallationRest {
-    Empty(Empty),
     RustTargets(Many<RustTarget>),
     SdkThenRust(Sequence<Many<SdkComponent>, Many<RustTarget>>),
     SdkOnly(Many<SdkComponent>),
