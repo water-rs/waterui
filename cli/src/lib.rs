@@ -31,6 +31,7 @@ pub mod device;
 pub mod output;
 pub mod package;
 pub mod permission;
+pub mod platform;
 pub mod project;
 pub mod run;
 pub mod toolchain;
