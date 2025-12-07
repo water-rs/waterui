@@ -9,7 +9,7 @@ use smol::fs::read_to_string;
 use thiserror::Error;
 
 use crate::android::backend::AndroidBackend;
-use crate::platform::Platform;
+use crate::platform::{BuildOptions, Platform};
 use crate::project::manifest::{AppleBackend, FailToOpenManifest, Manifest, PackageType};
 
 #[derive(Debug)]
@@ -80,6 +80,10 @@ impl Project {
     }
 
     pub async fn create_playground() -> Self {
+        todo!()
+    }
+
+    pub async fn build(&self, options: BuildOptions) -> color_eyre::eyre::Result<()> {
         todo!()
     }
 

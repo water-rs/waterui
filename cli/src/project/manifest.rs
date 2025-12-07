@@ -73,18 +73,18 @@ pub struct AppleBackend {
         default = "default_apple_project_path",
         skip_serializing_if = "is_default_apple_project_path"
     )]
-    project_path: String,
-    scheme: String,
+    pub project_path: String,
+    pub scheme: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    project_file: Option<String>,
+    pub project_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    branch: Option<String>,
+    pub branch: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    revision: Option<String>,
+    pub revision: Option<String>,
     /// Local path to the Apple backend for local dev.
     #[serde(skip_serializing_if = "Option::is_none")]
-    backend_path: Option<String>,
+    pub backend_path: Option<String>,
 }
 
 impl AppleBackend {

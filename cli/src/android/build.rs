@@ -66,14 +66,6 @@ impl Backend for AndroidBackend {
     async fn init(&self, _project: &Project, _dev: bool) -> Result<()> {
         Ok(())
     }
-
-    async fn build(
-        &self,
-        project: &Project,
-        options: &crate::backend::BuildOptions,
-    ) -> color_eyre::eyre::Result<()> {
-        todo!()
-    }
 }
 
 /// Check if Java is available for Gradle builds.
