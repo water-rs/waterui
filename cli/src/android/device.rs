@@ -1,12 +1,24 @@
+use color_eyre::eyre;
 use target_lexicon::Triple;
 
-use crate::{android::platform::AndroidPlatform, device::Device};
+use crate::{
+    android::platform::AndroidPlatform,
+    device::{Device, DeviceKind, DeviceState},
+    utils::run_command,
+};
 
-pub struct AndroidDevice {}
+pub struct AndroidDevice {
+    name: String,
+    identifier: String,
+    kind: DeviceKind,
+    state: DeviceState,
+}
 
 impl Device for AndroidDevice {
-    async fn launch(&self) -> color_eyre::eyre::Result<()> {
-        todo!()
+    async fn launch(&self) -> eyre::Result<()> {
+        run_command("adb", ["-s", &self.identifier, "wait-for-device"]).await?;
+
+        Ok(())
     }
 
     async fn run(
