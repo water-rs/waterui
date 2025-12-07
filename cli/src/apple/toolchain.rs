@@ -7,15 +7,18 @@ use crate::{
     utils::{run_command, which},
 };
 
+/// Represents the complete Apple toolchain consisting of Xcode and an Apple SDK
 pub type AppleToolchain = (Xcode, AppleSdk);
 
+/// Represents the Xcode toolchain
+#[derive(Debug, Clone)]
 pub struct Xcode;
 
 impl Toolchain for Xcode {
     type Installation = Infallible;
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         // Check if Xcode is installed and available
-        if which("xcodebuild").await && which("xcode-select").await {
+        if which("xcodebuild").await.is_ok() && which("xcode-select").await.is_ok() {
             Ok(())
         } else {
             Err(ToolchainError::unfixable(
@@ -26,17 +29,22 @@ impl Toolchain for Xcode {
     }
 }
 
+/// Represents an Apple SDK (e.g., iOS, macOS)
 #[derive(Debug, Deserialize, Serialize)]
 pub enum AppleSdk {
+    /// iOS SDK
     #[serde(rename = "iOS")]
     Ios,
+    /// macOS SDK
     #[serde(rename = "MacOS")]
     Macos,
     // TODO: more SDKs
 }
 
 impl AppleSdk {
-    pub fn sdk_name(&self) -> &str {
+    /// Get the SDK name as used by `xcrun`
+    #[must_use]
+    pub const fn sdk_name(&self) -> &str {
         match self {
             Self::Ios => "iphoneos",
             Self::Macos => "macosx",
@@ -54,14 +62,13 @@ impl Toolchain for AppleSdk {
     type Installation = Infallible;
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         // Check if the required Apple SDK is available
-        let result = run_command("xcrun", &["--sdk", self.sdk_name(), "--show-sdk-path"]).await;
+        let result = run_command("xcrun", ["--sdk", self.sdk_name(), "--show-sdk-path"]).await;
 
         if result.is_err() {
             return Err(ToolchainError::unfixable(
-                format!("{} SDK is not installed or not available", self),
+                format!("{self} SDK is not installed or not available"),
                 format!(
-                    "Please install {} SDK through Xcode or use xcode-select to configure the active developer directory.",
-                    self
+                    "Please install {self} SDK through Xcode or use xcode-select to configure the active developer directory."
                 ),
             ));
         }
