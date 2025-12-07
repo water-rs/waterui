@@ -65,9 +65,7 @@ impl<I: Installation> ToolchainError<I> {
     pub fn fixable(install: I) -> Self {
         Self::Fixable(install)
     }
-}
 
-impl ToolchainError<Infallible> {
     pub fn unfixable(message: impl Into<String>, suggestion: impl Into<String>) -> Self {
         Self::Unfixable(UnfixableToolchain::new(message, suggestion))
     }
