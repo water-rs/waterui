@@ -2,19 +2,21 @@ use core::fmt::{Debug, Display};
 use std::future::Future;
 
 use color_eyre::eyre;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     android::backend::AndroidBackend,
     project::{Project, manifest::AppleBackend},
 };
 
-/// A backend for `WaterUI` projects
+/// A backend configured for a project.
+///
 ///
 /// `Backend` take the responsibility to build rust code.
 ///
 /// One `Backend` may not support all platforms.
-pub trait Backend: Display + Debug + Send + Sync {
+pub trait Backend: Display + Debug + Send + Sync + DeserializeOwned + Serialize {
+    /// Initialize the backend within the given project.
     fn init(project: &Project) -> impl Future<Output = eyre::Result<()>> + Send;
 }
 
