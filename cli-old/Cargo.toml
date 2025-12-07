@@ -1,0 +1,59 @@
+[package]
+name = "waterui-cli"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cargo_toml = "0.22"
+clap = { version = "4.5.49", features = ["derive"] }
+const_format = "0.2"
+console = "0.16.1"
+ctrlc = "3.5.0"
+dialoguer = "0.12.0"
+fs2 = "0.4"
+heck = "0.5.0"
+home = "0.5.11"
+include_dir = "0.7.4"
+notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+toml = "0.9.8"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
+walkdir = "2.5.0"
+which = "8.0.0"
+crates-index = "3.11.0"
+semver = "1.0.27"
+webbrowser = "1.0.5"
+color-eyre = { version = "0.6.5", features = ["issue-url"] }
+futures-util = "0.3.31"
+indexmap = "2.6.0"
+tungstenite = "0.23"
+thiserror = "2.0.17"
+smol = "2.0.2"
+atty = "0.2.14"
+pathdiff = "0.2.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+zenwave.workspace = true
+skyzen = { git = "https://github.com/zen-rs/skyzen" , branch = "dev", default-features = true, features = ["websocket", "rt"] }
+target-lexicon = "0.13.3"
+
+[[bin]]
+name = "water"
+path = "src/terminal/main.rs"
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+which = "8.0.0"
+
+
+[lints]
+workspace = true
