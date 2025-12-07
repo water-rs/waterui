@@ -48,17 +48,13 @@
 //! }
 //! ```
 
-mod android;
 mod error;
 pub mod installation;
 mod rust;
-mod swift;
 
-pub use android::Android;
-pub use error::{ToolchainError, ToolchainErrorKind};
-pub use installation::{Installation, InstallationReport, Progress, Status};
+pub use error::ToolchainError;
+pub use installation::{Installation, InstallationReport};
 pub use rust::{Rust, RustTarget, Rustup};
-pub use swift::Swift;
 
 use std::future::Future;
 
@@ -90,7 +86,7 @@ pub trait Toolchain: Send + Sync {
     ///
     /// The returned [`Installation`] is a pending operation that must have
     /// `.install()` called to actually perform the installation.
-    fn fix(&self) -> Result<Self::Installation, ToolchainError>;
+    fn fix(&self) -> impl Future<Output = Result<Self::Installation, ToolchainError>> + Send;
 
     /// Human-readable name for this toolchain (e.g., "Rust", "Android SDK").
     fn name(&self) -> &'static str;

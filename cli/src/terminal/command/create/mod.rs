@@ -82,10 +82,6 @@ pub struct CreateArgs {
     #[arg(long)]
     pub bundle_identifier: Option<String>,
 
-    /// Apple Development Team ID
-    #[arg(long)]
-    pub team_id: Option<String>,
-
     /// Use the development version of `WaterUI` from GitHub
     #[arg(long)]
     pub dev: bool,

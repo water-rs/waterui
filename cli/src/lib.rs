@@ -19,27 +19,22 @@
 //! - **`Backend`** - Handles project initialization and requirements checking
 //! - **`Toolchain`** - Unified interface for checking and installing toolchain dependencies
 
-#![feature(impl_trait_in_assoc_type)]
 #![allow(missing_docs)]
 
-pub mod platform;
-
+pub mod android;
+pub mod app;
+pub mod apple;
 pub mod backend;
-pub mod build;
-pub mod cancel;
-pub mod crash;
+pub mod debug;
 pub mod device;
-pub mod doctor;
-pub mod hot_reload;
 pub mod output;
 pub mod package;
 pub mod permission;
+pub mod platform;
 pub mod project;
-pub mod run_session;
-pub mod runtime;
+pub mod run;
 pub mod toolchain;
-pub mod util;
-
+pub mod utils;
 pub const WATERUI_VERSION: &str = env!("WATERUI_VERSION");
 pub const WATERUI_SWIFT_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_SWIFT_VERSION");
 pub const WATERUI_ANDROID_BACKEND_VERSION: &str = env!("WATERUI_BACKEND_ANDROID_VERSION");

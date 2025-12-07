@@ -55,6 +55,24 @@ pub enum HotReloadMessage {
     Web,
 }
 
+/// Toggle hot reload metadata generation and runtime wiring.
+#[derive(Debug, Clone, Copy)]
+pub struct HotReloadOptions {
+    /// Whether hot reload support is enabled end-to-end.
+    pub enabled: bool,
+    /// TCP port used by the dev server.
+    pub port: u16,
+}
+
+impl Default for HotReloadOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_HOT_RELOAD_PORT,
+        }
+    }
+}
+
 /// Errors that can occur during hot reload operations.
 #[derive(Debug, Error)]
 pub enum HotReloadError {
