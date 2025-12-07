@@ -95,10 +95,8 @@ impl Project {
         &self.cargo_manifest.name
     }
 
-    /// Get the unique identifier of the project (`snake_case` from crate name).
-    #[must_use]
-    pub fn identifier(&self) -> &str {
-        &self.identifier
+    pub fn crate_name(&self) -> &str {
+        &self.manifest.package.name
     }
 
     pub const fn manifest(&self) -> &Manifest {
@@ -115,7 +113,7 @@ impl Project {
     /// Bundle identifier used for Apple/Android targets.
     #[must_use]
     pub fn bundle_identifier(&self) -> &str {
-        &self.config.package.bundle_identifier
+        &self.manifest.package.bundle_identifier
     }
 
     /// Get the root directory of the project.
