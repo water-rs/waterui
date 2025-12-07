@@ -14,131 +14,59 @@ use std::{
 
 use color_eyre::eyre::{Context, Report, Result, bail};
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
-use which::which;
+use target_lexicon::Triple;
 
-use crate::WATERUI_TRACING_PREFIX;
-use crate::{
-    backend::apple::ensure_macos_host,
-    build::{BuildOptions, Builder, CargoBuilder},
-    crash::CrashReport,
-    device::{Device, DeviceBuildResult},
-    output,
-    platform::{
-        Platform, PlatformKind,
-        apple::{ApplePlatform, AppleSimulatorKind, AppleSimulatorTarget, AppleTarget},
-    },
-    project::{Project, RunOptions, Swift},
-    util,
-};
+use crate::{apple::platform::ApplePlatform, device::Device};
 
 const APPLE_CRASH_OBSERVATION: Duration = Duration::from_secs(8);
 const APPLE_LOG_EXCERPT_LINES: usize = 32;
 
+pub struct AppleDevice {}
+
+impl Device for AppleDevice {
+    type Platform = ApplePlatform;
+    async fn prepare(&self) -> Result<(), color_eyre::eyre::Report> {
+        todo!()
+    }
+
+    async fn run(
+        &self,
+        artifact: &Path,
+        options: &crate::device::RunOptions,
+    ) -> Result<(), crate::device::FailToRun> {
+        todo!()
+    }
+
+    fn platform(&self) -> &Self::Platform {
+        todo!()
+    }
+}
+
+impl AppleDevice {
+    pub fn to_macos(&self) -> Option<MacosDevice> {
+        todo!()
+    }
+}
+
 /// Launches the packaged macOS application on the local host.
 #[derive(Clone, Debug)]
 pub struct MacosDevice {
-    platform: ApplePlatform,
+    triple: Triple,
 }
 
 impl MacosDevice {
     #[must_use]
-    pub const fn new(swift: Swift) -> Self {
-        Self {
-            platform: ApplePlatform::new(swift, AppleTarget::Macos),
-        }
+    pub fn new(triple: Triple) -> Self {
+        debug_assert!(
+            triple.operating_system == target_lexicon::OperatingSystem::MacOS,
+            "MacosDevice must be constructed with a macOS target triple"
+        );
+        Self { triple }
     }
 
     fn executable_path(&self, artifact: &Path) -> PathBuf {
         let scheme = &self.platform.swift_config().scheme;
         artifact.join("Contents").join("MacOS").join(scheme)
-    }
-}
-
-impl Device for MacosDevice {
-    type Platform = ApplePlatform;
-
-    fn prepare(&self, _project: &Project, _options: &RunOptions) -> Result<()> {
-        ensure_macos_host("macOS runtime")?;
-        Ok(())
-    }
-
-    fn build_async(
-        &self,
-        project: &Project,
-        options: &BuildOptions,
-        cancel: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<DeviceBuildResult>> + Send {
-        let target = self.platform.target_triple();
-        let builder = CargoBuilder::from_project(project, target);
-
-        async move {
-            let result = builder.build(options, cancel).await?;
-            Ok(DeviceBuildResult {
-                library_path: result.artifact_path,
-                target_triple: target,
-            })
-        }
-    }
-
-    fn run(
-        &self,
-        project: &Project,
-        artifact: &Path,
-        options: &RunOptions,
-    ) -> Result<Option<CrashReport>> {
-        let bundle_id = project.bundle_identifier().to_string();
-        let process_name = self.platform.swift_config().scheme.clone();
-        let crash_collector = AppleCrashCollector::start_macos(project, &process_name, &bundle_id)
-            .map(Some)
-            .unwrap_or_else(|err| {
-                warn!("Failed to start macOS crash collector: {err:?}");
-                None
-            });
-        if options.hot_reload.enabled {
-            let executable = self.executable_path(artifact);
-            if !executable.exists() {
-                bail!("App executable not found at {}", executable.display());
-            }
-            let mut cmd = Command::new(&executable);
-            // Enable Rust backtraces for easier debugging of panics
-            cmd.env("RUST_BACKTRACE", "1");
-            util::configure_hot_reload_env(&mut cmd, true, options.hot_reload.port);
-            if let Some(filter) = &options.log_filter {
-                cmd.env("RUST_LOG", filter);
-            }
-            cmd.spawn()
-                .context("failed to launch macOS app executable")?;
-        } else {
-            let status = Command::new("open")
-                .arg(artifact)
-                .status()
-                .context("failed to open app bundle")?;
-            if !status.success() {
-                bail!("Failed to launch macOS app");
-            }
-        }
-
-        if crash_collector.is_some() {
-            thread::sleep(APPLE_CRASH_OBSERVATION);
-        }
-
-        let crash_report = match crash_collector {
-            Some(collector) => collector.finish(
-                PlatformKind::Macos,
-                Some("macOS".to_string()),
-                None,
-                bundle_id,
-            )?,
-            None => None,
-        };
-
-        Ok(crash_report)
-    }
-
-    fn platform(&self) -> Self::Platform {
-        self.platform.clone()
     }
 }
 

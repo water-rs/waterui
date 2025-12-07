@@ -5,8 +5,6 @@ use std::{
 
 use serde::Serialize;
 
-use crate::platform::PlatformKind;
-
 /// Structured crash diagnostics captured while launching or monitoring an app.
 #[derive(Debug, Clone, Serialize)]
 pub struct CrashReport {

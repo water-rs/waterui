@@ -2,20 +2,21 @@ use std::{
     collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
     thread,
     time::Duration,
 };
 
 use crate::{
+    android::{backend::AndroidBackend, platform::AndroidPlatform},
     backend::Backend,
-    device::{DeviceInfo, DeviceKind},
     impl_display,
     project::Project,
     toolchain::ToolchainError,
+    utils::run_command,
 };
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
+use smol::process::Command;
 use tracing::{debug, info, warn};
 use which::which;
 
@@ -66,96 +67,12 @@ impl Backend for AndroidBackend {
         Ok(())
     }
 
-    fn is_existing(&self, project: &Project) -> bool {
-        project.root().join("android").exists()
-    }
-
-    fn clean(&self, project: &Project) -> Result<()> {
-        let gradle_dir = project.root().join("android");
-        if !gradle_dir.exists() {
-            return Ok(());
-        }
-
-        let gradlew = if cfg!(target_os = "windows") {
-            "gradlew.bat"
-        } else {
-            "./gradlew"
-        };
-
-        let status = Command::new(gradlew)
-            .arg("clean")
-            .current_dir(&gradle_dir)
-            .status()
-            .context("failed to execute Gradle clean")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(eyre!("Gradle clean failed with status {status}"))
-        }
-    }
-
-    fn check_requirements(&self, _project: &Project) -> Result<(), Vec<ToolchainError>> {
-        let mut issues = Vec::new();
-
-        // Check Android SDK (adb)
-        if find_android_tool("adb").is_none() {
-            issues.push(
-                ToolchainError::unfixable("Android SDK not found")
-                    .with_suggestion("Install Android Studio or set ANDROID_SDK_ROOT"),
-            );
-        }
-
-        // Check Android NDK
-        if resolve_ndk_path().is_none() {
-            issues.push(
-                ToolchainError::unfixable("Android NDK not found")
-                    .with_suggestion("Install NDK via SDK Manager or set ANDROID_NDK_HOME"),
-            );
-        }
-
-        // Check CMake
-        if resolve_cmake_path().is_none() {
-            issues.push(ToolchainError::missing("CMake not found").with_suggestion(
-                if cfg!(target_os = "macos") {
-                    "Install CMake via SDK Manager or: brew install cmake"
-                } else {
-                    "Install CMake via SDK Manager or system package manager"
-                },
-            ));
-        }
-
-        // Check Java (required for Gradle)
-        if !is_java_available() {
-            issues.push(
-                ToolchainError::missing("Java Development Kit not found").with_suggestion(
-                    if cfg!(target_os = "macos") {
-                        "Install JDK: brew install --cask temurin@17"
-                    } else {
-                        "Install JDK 17 or later and set JAVA_HOME"
-                    },
-                ),
-            );
-        }
-
-        // Check required Rust target
-        // On ARM64 hosts (Apple Silicon, ARM Linux), aarch64-linux-android is essential
-        if cfg!(target_arch = "aarch64") && !is_rust_target_installed("aarch64-linux-android") {
-            issues.push(
-                ToolchainError::missing("Rust target aarch64-linux-android not installed")
-                    .with_suggestion("Run: rustup target add aarch64-linux-android"),
-            );
-        }
-
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(issues)
-        }
-    }
-
-    async fn scan_devices(&self, _cancel: CancellationToken) -> Result<Vec<DeviceInfo>> {
-        scan_android_devices().await
+    async fn build(
+        &self,
+        project: &Project,
+        options: &crate::backend::BuildOptions,
+    ) -> color_eyre::eyre::Result<()> {
+        todo!()
     }
 }
 
@@ -236,67 +153,99 @@ pub fn resolve_android_sdk_path() -> Option<PathBuf> {
     sdk_roots().into_iter().next()
 }
 
-#[must_use]
-pub fn find_android_tool(tool: &str) -> Option<PathBuf> {
-    if let Ok(path) = which(tool) {
-        return Some(path);
-    }
-
-    let suffixes: &[&str] = match tool {
-        "adb" => &["platform-tools/adb", "platform-tools/adb.exe"],
-        "emulator" => &["emulator/emulator", "emulator/emulator.exe"],
-        _ => return None,
-    };
-
-    for root in sdk_roots() {
-        for suffix in suffixes {
-            let candidate = root.join(suffix);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// Resolve the Android NDK path, preferring `ANDROID_NDK_HOME` if set.
-#[must_use]
-pub fn resolve_ndk_path() -> Option<PathBuf> {
-    // Check environment variable first
-    if let Ok(path) = env::var("ANDROID_NDK_HOME") {
-        let path = PathBuf::from(path);
-        if path.exists() && ndk_toolchain_bin(&path).is_some() {
+impl AndroidPlatform {
+    #[must_use]
+    pub fn find_tool(tool: &str) -> Option<PathBuf> {
+        if let Ok(path) = which(tool) {
             return Some(path);
         }
-    }
 
-    // Search in SDK roots
-    for sdk_root in sdk_roots() {
-        // Check ndk-bundle (legacy location)
-        let ndk_bundle = sdk_root.join("ndk-bundle");
-        if ndk_bundle.exists() && ndk_toolchain_bin(&ndk_bundle).is_some() {
-            return Some(ndk_bundle);
-        }
+        let suffixes: &[&str] = match tool {
+            "adb" => &["platform-tools/adb", "platform-tools/adb.exe"],
+            "emulator" => &["emulator/emulator", "emulator/emulator.exe"],
+            _ => return None,
+        };
 
-        // Check versioned NDK directories (prefer newest)
-        let ndk_dir = sdk_root.join("ndk");
-        if let Ok(entries) = fs::read_dir(&ndk_dir) {
-            let mut candidates: Vec<PathBuf> = entries
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect();
-            candidates.sort_by(|a, b| b.cmp(a)); // Newest first
-
-            for candidate in candidates {
-                if ndk_toolchain_bin(&candidate).is_some() {
+        for root in sdk_roots() {
+            for suffix in suffixes {
+                let candidate = root.join(suffix);
+                if candidate.exists() {
                     return Some(candidate);
                 }
             }
         }
+        None
     }
-    None
+
+    pub fn java_path() -> Option<PathBuf> {
+        // Check JAVA_HOME first
+        if let Ok(home) = env::var("JAVA_HOME") {
+            let java_path = PathBuf::from(home).join("bin/java");
+            if java_path.exists() {
+                return Some(java_path);
+            }
+        }
+
+        // Check Android Studio's bundled JBR on macOS
+        #[cfg(target_os = "macos")]
+        {
+            const ANDROID_STUDIO_JBRS: &[&str] = &[
+                "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
+                "/Applications/Android Studio Preview.app/Contents/jbr/Contents/Home/bin/java",
+            ];
+            for path in ANDROID_STUDIO_JBRS {
+                let java_path = PathBuf::from(path);
+                if java_path.exists() {
+                    return Some(java_path);
+                }
+            }
+        }
+
+        // Check PATH
+        which("java").ok()
+    }
+
+    pub fn ndk_path() -> Option<PathBuf> {
+        // Check environment variable first
+        if let Ok(path) = env::var("ANDROID_NDK_HOME") {
+            let path = PathBuf::from(path);
+            if path.exists() && ndk_toolchain_bin(&path).is_some() {
+                return Some(path);
+            }
+        }
+
+        // Search in SDK roots
+        for sdk_root in sdk_roots() {
+            // Check ndk-bundle (legacy location)
+            let ndk_bundle = sdk_root.join("ndk-bundle");
+            if ndk_bundle.exists() && ndk_toolchain_bin(&ndk_bundle).is_some() {
+                return Some(ndk_bundle);
+            }
+
+            // Check versioned NDK directories (prefer newest)
+            let ndk_dir = sdk_root.join("ndk");
+            if let Ok(entries) = fs::read_dir(&ndk_dir) {
+                let mut candidates: Vec<PathBuf> = entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                candidates.sort_by(|a, b| b.cmp(a)); // Newest first
+
+                for candidate in candidates {
+                    if ndk_toolchain_bin(&candidate).is_some() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
+
+/// Resolve the Android NDK path, preferring `ANDROID_NDK_HOME` if set.
+#[must_use]
+pub fn resolve_ndk_path() -> Option<PathBuf> {}
 
 /// Resolve the NDK path, setting environment variables as needed.
 fn resolve_and_configure_ndk() -> Result<PathBuf> {

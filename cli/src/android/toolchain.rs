@@ -7,12 +7,13 @@ use std::{
     path::PathBuf,
 };
 
+use smol::{fs::read_dir, process::Command, stream::StreamExt};
+use target_lexicon::Triple;
 use which::which;
 
-use super::{
-    Toolchain, ToolchainError,
-    installation::{Installation, InstallationReport, Many, Sequence},
-    rust::RustTarget,
+use crate::{
+    toolchain::{Rust, ToolchainError},
+    utils::task::Progress,
 };
 
 // ============================================================================
@@ -20,27 +21,24 @@ use super::{
 // ============================================================================
 
 /// Android SDK toolchain configuration.
-#[derive(Debug, Clone, Default)]
-pub struct Android {
-    rust_targets: Vec<String>,
+#[derive(Debug, Clone)]
+pub struct AndroidToolchain {
+    target: Triple,
     require_cmake: bool,
 }
 
-impl Android {
+impl AndroidToolchain {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(target: Triple) -> Self {
+        Self {
+            target,
+            require_cmake: true,
+        }
     }
 
     #[must_use]
-    pub fn with_rust_target(mut self, target: impl Into<String>) -> Self {
-        self.rust_targets.push(target.into());
-        self
-    }
-
-    #[must_use]
-    pub const fn with_cmake(mut self) -> Self {
-        self.require_cmake = true;
+    pub const fn require_cmake(mut self, require: bool) -> Self {
+        self.require_cmake = require;
         self
     }
 
@@ -68,26 +66,33 @@ impl Android {
         if path.exists() { Some(path) } else { None }
     }
 
-    pub fn find_ndk_path() -> Option<PathBuf> {
-        env::var("ANDROID_NDK_HOME")
+    pub async fn find_ndk_path() -> Option<PathBuf> {
+        let ndk_home = env::var("ANDROID_NDK_HOME")
             .or_else(|_| env::var("NDK_HOME"))
             .ok()
             .map(PathBuf::from)
-            .filter(|p| p.exists())
-            .or_else(|| {
-                let sdk = Self::find_sdk_path()?;
-                let ndk_dir = sdk.join("ndk");
-                if ndk_dir.exists() {
-                    std::fs::read_dir(&ndk_dir)
-                        .ok()?
-                        .filter_map(Result::ok)
-                        .map(|e| e.path())
-                        .filter(|p| p.is_dir())
-                        .max()
-                } else {
-                    None
-                }
-            })
+            .filter(|p| p.exists());
+
+        if ndk_home.is_some() {
+            return ndk_home;
+        }
+
+        let sdk = Self::find_sdk_path()?;
+        let ndk_dir = sdk.join("ndk");
+        if ndk_dir.exists() {
+            read_dir(&ndk_dir)
+                .await
+                .ok()?
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .max()
+        } else {
+            None
+        }
     }
 
     fn has_java() -> bool {
@@ -164,34 +169,16 @@ impl Android {
     }
 }
 
+pub struct JdkInstallation {}
+
+pub struct AndroidSdkInstallation {}
+
 /// Installation type for Android toolchain.
 #[derive(Debug)]
-pub enum AndroidInstallation {
-    RustTargets(Many<RustTarget>),
-    SdkThenRust(Sequence<Many<SdkComponent>, Many<RustTarget>>),
-    SdkOnly(Many<SdkComponent>),
-    #[cfg(target_os = "macos")]
-    Jdk(Sequence<HomebrewJdk, AndroidInstallationRest>),
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-pub enum AndroidInstallationRest {
-    RustTargets(Many<RustTarget>),
-    SdkThenRust(Sequence<Many<SdkComponent>, Many<RustTarget>>),
-    SdkOnly(Many<SdkComponent>),
-}
-
-#[cfg(target_os = "macos")]
-impl Display for AndroidInstallationRest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty(e) => write!(f, "{e}"),
-            Self::RustTargets(r) => write!(f, "{r}"),
-            Self::SdkThenRust(s) => write!(f, "{s}"),
-            Self::SdkOnly(s) => write!(f, "{s}"),
-        }
-    }
+pub struct AndroidInstallation {
+    rust: Option<Rust>,
+    jdk: Option<JdkInstallation>,
+    sdk: Option<AndroidSdkInstallation>,
 }
 
 #[cfg(target_os = "macos")]
@@ -260,7 +247,7 @@ impl Installation for AndroidInstallation {
     }
 }
 
-impl Toolchain for Android {
+impl Toolchain for AndroidToolchain {
     type Installation = AndroidInstallation;
 
     fn name(&self) -> &'static str {
@@ -320,10 +307,10 @@ impl Toolchain for Android {
             if Self::find_sdkmanager().is_some() {
                 sdk_components.push(SdkComponent::new("ndk;26.1.10909125", "Android NDK"));
             } else {
-                return Err(
-                    ToolchainError::unfixable("NDK not found, sdkmanager unavailable")
-                        .with_suggestion("Install NDK via Android Studio"),
-                );
+                return Err(ToolchainError::Unfixable {
+                    message: "NDK not found, sdkmanager unavailable".into(),
+                    suggestion: "Install NDK via Android Studio".into(),
+                });
             }
         }
 
@@ -406,8 +393,6 @@ impl Display for SdkComponent {
 }
 
 impl Installation for SdkComponent {
-    type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
-
     fn description(&self) -> &str {
         &self.name
     }
@@ -420,7 +405,7 @@ impl Installation for SdkComponent {
             progress.start(&self.name);
             progress.update(&self.name, 0, "installing");
 
-            let status = AsyncCommand::new(&sdkmanager)
+            let status = Command::new(&sdkmanager)
                 .args(["--install", &self.package])
                 .env("JAVA_TOOL_OPTIONS", "-Dfile.encoding=UTF8")
                 .status()
@@ -462,8 +447,6 @@ impl Display for HomebrewJdk {
 
 #[cfg(target_os = "macos")]
 impl Installation for HomebrewJdk {
-    type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
-
     fn description(&self) -> &'static str {
         "JDK 17"
     }

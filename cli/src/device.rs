@@ -1,6 +1,8 @@
+use std::path::Path;
+
 use color_eyre::eyre::{self, Result};
 
-use crate::{debug::crash::CrashReport, platform::Platform, project::Project};
+use crate::debug::crash::CrashReport;
 
 /// Result of a device build operation.
 #[derive(Debug, Clone)]
@@ -22,14 +24,14 @@ pub enum FailToRun {
 }
 
 pub trait Device: Send + Sync {
-    type Platform: Platform + Clone;
+    type Platform: Platform;
 
     /// Prepare the device for building and running apps.
     fn prepare(&self) -> impl Future<Output = Result<(), eyre::Report>> + Send;
 
     fn run(
         &self,
-        project: &Project,
+        artifact: &Path,
         options: &RunOptions,
     ) -> impl Future<Output = Result<(), FailToRun>> + Send;
 
