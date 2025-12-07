@@ -2,7 +2,7 @@ use std::path::Path;
 
 use color_eyre::eyre::{self, Result};
 
-use crate::debug::crash::CrashReport;
+use crate::{debug::crash::CrashReport, platform::Platform};
 
 /// Result of a device build operation.
 #[derive(Debug, Clone)]
