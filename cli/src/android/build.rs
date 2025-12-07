@@ -233,33 +233,28 @@ impl AndroidPlatform {
         }
         None
     }
-}
 
-/// Resolve the Android NDK path, preferring `ANDROID_NDK_HOME` if set.
-#[must_use]
-pub fn resolve_ndk_path() -> Option<PathBuf> {}
+    pub fn resolve_and_configure_ndk() -> Option<PathBuf> {
+        let ndk_path = Self::resolve_ndk_path()
+            .ok_or_else(|| eyre!("Android NDK not found. Install it and set ANDROID_NDK_HOME."))?;
 
-/// Resolve the NDK path, setting environment variables as needed.
-fn resolve_and_configure_ndk() -> Result<PathBuf> {
-    let ndk_path = resolve_ndk_path()
-        .ok_or_else(|| eyre!("Android NDK not found. Install it and set ANDROID_NDK_HOME."))?;
+        let was_set = env::var("ANDROID_NDK_HOME").is_ok();
+        // SAFETY: environment mutation happens on the main CLI thread before other threads run.
+        unsafe {
+            env::set_var("ANDROID_NDK_HOME", &ndk_path);
+            env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+            env::set_var("ANDROID_NDK", &ndk_path);
+        }
 
-    let was_set = env::var("ANDROID_NDK_HOME").is_ok();
-    // SAFETY: environment mutation happens on the main CLI thread before other threads run.
-    unsafe {
-        env::set_var("ANDROID_NDK_HOME", &ndk_path);
-        env::set_var("ANDROID_NDK_ROOT", &ndk_path);
-        env::set_var("ANDROID_NDK", &ndk_path);
+        if !was_set {
+            info!(
+                "ANDROID_NDK_HOME not set; using auto-detected NDK at {}",
+                ndk_path.display()
+            );
+        }
+
+        Ok(ndk_path)
     }
-
-    if !was_set {
-        info!(
-            "ANDROID_NDK_HOME not set; using auto-detected NDK at {}",
-            ndk_path.display()
-        );
-    }
-
-    Ok(ndk_path)
 }
 
 pub(crate) fn ndk_toolchain_bin(ndk_root: &Path) -> Option<(String, PathBuf)> {
