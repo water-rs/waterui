@@ -13,6 +13,7 @@ members = [
     "derive",
     "cli",
     "examples/*"]
+exclude = ["cli-old"]
 resolver = "2"
 
 [package]
