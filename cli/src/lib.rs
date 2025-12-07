@@ -24,13 +24,13 @@
 pub mod android;
 pub mod app;
 pub mod apple;
+
 pub mod backend;
 pub mod debug;
 pub mod device;
 pub mod output;
 pub mod package;
 pub mod permission;
-pub mod platform;
 pub mod project;
 pub mod run;
 pub mod toolchain;
