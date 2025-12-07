@@ -34,8 +34,6 @@ crates-index = "3.11.0"
 semver = "1.0.27"
 webbrowser = "1.0.5"
 color-eyre = { version = "0.6.5", features = ["issue-url"] }
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3.31"
 indexmap = "2.6.0"
 tungstenite = "0.23"
@@ -46,6 +44,7 @@ pathdiff = "0.2.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 zenwave.workspace = true
 skyzen = { git = "https://github.com/zen-rs/skyzen" , branch = "dev", default-features = true, features = ["websocket", "rt"] }
+target-lexicon = "0.13.3"
 
 [[bin]]
 name = "water"

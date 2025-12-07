@@ -1,17 +1,16 @@
 //! Swift/Xcode toolchain implementation.
 
 use std::{
+    convert::Infallible,
     fmt::{self, Display},
     future::Future,
-    process::Command,
 };
 
-use tokio::process::Command as AsyncCommand;
 use which::which;
 
 use super::{
     Toolchain, ToolchainError,
-    installation::{Empty, Installation, InstallationReport, Progress},
+    installation::{Installation, InstallationReport},
 };
 
 // ============================================================================
@@ -69,44 +68,8 @@ impl Swift {
     }
 }
 
-/// Installation type for Swift toolchain.
-#[derive(Debug)]
-pub enum SwiftInstallation {
-    Empty(Empty),
-    XcodeCliTools(XcodeCliTools),
-}
-
-impl Display for SwiftInstallation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty(e) => write!(f, "{e}"),
-            Self::XcodeCliTools(x) => write!(f, "{x}"),
-        }
-    }
-}
-
-impl Installation for SwiftInstallation {
-    type Future = impl Future<Output = Result<InstallationReport, ToolchainError>> + Send;
-
-    fn description(&self) -> &str {
-        match self {
-            Self::Empty(_) => "nothing",
-            Self::XcodeCliTools(_) => "Xcode Command Line Tools",
-        }
-    }
-
-    fn install(self, progress: Progress) -> Self::Future {
-        async move {
-            match self {
-                Self::Empty(e) => e.install(progress).await,
-                Self::XcodeCliTools(x) => x.install(progress).await,
-            }
-        }
-    }
-}
-
 impl Toolchain for Swift {
-    type Installation = SwiftInstallation;
+    type Installation = Infallible;
 
     fn name(&self) -> &'static str {
         "Swift"

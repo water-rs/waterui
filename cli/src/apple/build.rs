@@ -23,15 +23,10 @@ use crate::{
     backend::Backend,
     device::{DeviceInfo, DeviceKind},
     impl_display,
-    project::{Project, Swift},
+    project::Project,
     toolchain::ToolchainError,
     util,
 };
-
-#[derive(Clone, Copy, Debug)]
-pub struct Apple;
-
-impl_display!(Apple, "apple");
 
 impl Backend for Apple {
     fn init(&self, _project: &Project, _dev: bool) -> eyre::Result<()> {
@@ -80,111 +75,6 @@ impl Backend for Apple {
     async fn scan_devices(&self, _cancel: CancellationToken) -> eyre::Result<Vec<DeviceInfo>> {
         scan_apple_devices().await
     }
-}
-
-/// Scan for Apple devices and simulators.
-async fn scan_apple_devices() -> eyre::Result<Vec<DeviceInfo>> {
-    if !cfg!(target_os = "macos") {
-        return Ok(Vec::new());
-    }
-    if which("xcrun").is_err() {
-        return Ok(Vec::new());
-    }
-
-    let output = tokio::process::Command::new("xcrun")
-        .args(["xcdevice", "list", "--timeout=1"])
-        .output()
-        .await
-        .context("failed to execute xcrun xcdevice list")?;
-
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-    let mut results = Vec::new();
-
-    if let Some(array) = value.as_array() {
-        for item in array {
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown")
-                .to_string();
-            let identifier = item
-                .get("identifier")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if identifier.is_empty() {
-                continue;
-            }
-
-            let raw_platform = item
-                .get("platform")
-                .and_then(Value::as_str)
-                .map(std::string::ToString::to_string);
-            let simulator = item
-                .get("simulator")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let available = item
-                .get("available")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            let operating_system = item
-                .get("operatingSystemVersion")
-                .and_then(Value::as_str)
-                .map(std::string::ToString::to_string);
-
-            let detail = item.get("error").map_or(operating_system, |error| {
-                let description = error
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let suggestion = error
-                    .get("recoverySuggestion")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let mut message = description.to_string();
-                if !suggestion.is_empty() {
-                    if !message.is_empty() {
-                        message.push_str(" – ");
-                    }
-                    message.push_str(suggestion);
-                }
-                if message.is_empty() {
-                    None
-                } else {
-                    Some(message)
-                }
-            });
-
-            let platform_label = raw_platform
-                .as_deref()
-                .map_or_else(|| "Apple".to_string(), apple_platform_friendly_name);
-
-            results.push(DeviceInfo {
-                platform: platform_label,
-                raw_platform,
-                name,
-                identifier,
-                kind: if simulator {
-                    DeviceKind::Simulator
-                } else {
-                    DeviceKind::Device
-                },
-                state: Some(if available {
-                    "available".to_string()
-                } else {
-                    "unavailable".to_string()
-                }),
-                detail,
-            });
-        }
-    }
-
-    Ok(results)
 }
 
 fn apple_platform_friendly_name(identifier: &str) -> String {
