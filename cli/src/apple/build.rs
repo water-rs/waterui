@@ -94,27 +94,6 @@ fn apple_platform_friendly_name(identifier: &str) -> String {
     .to_string()
 }
 
-fn clean_project(project: &Project) -> eyre::Result<()> {
-    // run command, clean xcode build artifacts
-    let ident = project.identifier().to_upper_camel_case();
-    let status = Command::new("xcodebuild")
-        .arg("-workspace")
-        .arg(format!("apple/{ident}.xcworkspace"))
-        .arg("-scheme")
-        .arg(ident)
-        .arg("clean")
-        .current_dir(project.root())
-        .status()?;
-
-    if !status.success() {
-        return Err(
-            eyre::eyre!("Failed to clean Xcode project.").with_section(move || status.to_string())
-        );
-    }
-
-    Ok(())
-}
-
 #[derive(Debug)]
 pub struct XcodeProject<'a> {
     pub scheme: &'a str,
@@ -131,17 +110,6 @@ pub fn ensure_macos_host(feature: &str) -> EyreResult<()> {
     } else {
         bail!("{feature} requires macOS")
     }
-}
-
-fn ensure_cmake_available_for_apple() -> EyreResult<()> {
-    if which("cmake").is_ok() {
-        return Ok(());
-    }
-
-    bail!(
-        "CMake is required to build the Apple Rust static library but was not found on PATH. \
-         Run `water doctor --fix` (Swift section) or install it via `brew install cmake`."
-    )
 }
 
 /// Locate the Xcode project described by the Swift configuration.
