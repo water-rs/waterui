@@ -23,57 +23,7 @@ use crate::{
     impl_display,
     project::{Project, manifest::AppleBackend},
     toolchain::ToolchainError,
-    util,
 };
-
-impl Backend for Apple {
-    fn init(&self, _project: &Project, _dev: bool) -> eyre::Result<()> {
-        Ok(())
-    }
-
-    fn is_existing(&self, project: &Project) -> bool {
-        project.root().join("apple").exists()
-    }
-
-    fn clean(&self, project: &Project) -> eyre::Result<()> {
-        clean_project(project)
-    }
-
-    fn check_requirements(&self, _: &Project) -> Result<(), Vec<ToolchainError>> {
-        let mut issues = Vec::new();
-
-        if cfg!(target_os = "macos") {
-            if which("xcodebuild").is_err() {
-                issues.push(
-                    ToolchainError::unfixable("Xcode is not installed")
-                        .with_suggestion("Install Xcode from the Mac App Store"),
-                );
-            }
-
-            if which("xcode-select").is_err() {
-                issues.push(
-                    ToolchainError::unfixable("Xcode Command Line Tools are not installed")
-                        .with_suggestion("Run: xcode-select --install"),
-                );
-            }
-        } else {
-            issues.push(
-                ToolchainError::unfixable("Apple development requires macOS")
-                    .with_suggestion("Use a Mac for iOS/macOS development"),
-            );
-        }
-
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(issues)
-        }
-    }
-
-    async fn scan_devices(&self, _cancel: CancellationToken) -> eyre::Result<Vec<DeviceInfo>> {
-        scan_apple_devices().await
-    }
-}
 
 fn apple_platform_friendly_name(identifier: &str) -> String {
     match identifier {
@@ -143,14 +93,6 @@ pub fn derived_data_dir(project_dir: &Path) -> PathBuf {
     project_dir.join(".water/DerivedData")
 }
 
-/// Ensure the derived data directory exists for Xcode builds.
-///
-/// # Errors
-/// Returns an error if the directory cannot be created.
-pub fn prepare_derived_data_dir(dir: &Path) -> EyreResult<()> {
-    util::ensure_directory(dir)
-}
-
 #[must_use]
 pub fn xcodebuild_base(
     project: &XcodeProject<'_>,
@@ -199,8 +141,6 @@ pub struct AppleRustBuildReport {
 pub fn build_apple_static_library(
     opts: AppleRustBuildOptions<'_>,
 ) -> EyreResult<AppleRustBuildReport> {
-    ensure_cmake_available_for_apple()?;
-
     let profile = if opts.release { "release" } else { "debug" };
     let env_platform = opts
         .platform_name
@@ -266,6 +206,8 @@ pub fn build_apple_static_library(
             );
         }
     }
+
+    // Copy
 
     let lib_name = opts.crate_name.replace('-', "_");
     let rust_lib = opts
