@@ -1,18 +1,27 @@
-use std::path::Path;
-
 use color_eyre::eyre;
 
-use crate::project::Project;
+use crate::{device::Device, project::Project, toolchain::Toolchain};
 
 pub struct BuildOptions {}
 
 pub struct PackageOptions {}
 
 pub trait Platform {
-    // build rust code for this platform
-    fn build(&self, project: &Project, options: &BuildOptions) -> eyre::Result<Path>;
+    type Toolchain: Toolchain;
+    type Device: Device;
 
-    fn package(&self, project: &Project, options: &PackageOptions) -> eyre::Result<Path>;
+    /// Clean build artifacts for this platform
+    fn clean(&self, project: &Project) -> impl Future<Output = eyre::Result<()>> + Send;
+
+    fn package(
+        &self,
+        project: &Project,
+        options: &PackageOptions,
+    ) -> impl Future<Output = eyre::Result<()>> + Send;
+
+    fn toolchain(&self) -> &Self::Toolchain;
+
+    fn scan(&self) -> impl Future<Output = eyre::Result<Vec<Self::Device>>> + Send;
 
     fn description(&self) -> String;
 }
