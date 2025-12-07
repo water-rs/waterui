@@ -54,7 +54,7 @@ mod rust;
 
 pub use error::ToolchainError;
 pub use installation::{Installation, InstallationReport};
-pub use rust::{Rust, RustTarget, Rustup};
+pub use rust::{Rust, Rustup};
 
 use std::future::Future;
 
