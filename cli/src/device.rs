@@ -70,3 +70,16 @@ pub enum DeviceEvent {
     Log { level: u8, message: String },
     Crashed(String),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    Simulator,
+    Physical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceState {
+    Booted,
+    Shutdown,
+    Disconnected,
+}

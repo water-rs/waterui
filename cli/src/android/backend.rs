@@ -38,8 +38,7 @@ impl Backend for AndroidBackend {
     }
 }
 
-#[must_use]
-pub fn default_android_project_path() -> PathBuf {
+fn default_android_project_path() -> PathBuf {
     PathBuf::from("android")
 }
 

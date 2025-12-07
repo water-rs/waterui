@@ -1,6 +1,7 @@
 pub mod android;
 pub mod apple;
 pub mod backend;
+pub mod brew;
 pub mod build;
 pub mod debug;
 pub mod device;
