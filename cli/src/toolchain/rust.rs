@@ -9,10 +9,7 @@ use which::which;
 
 use crate::utils::task::Progress;
 
-use super::{
-    Toolchain, ToolchainError,
-    installation::{Installation, InstallationReport},
-};
+use super::{Toolchain, ToolchainError, installation::Installation};
 
 // ============================================================================
 // Toolchain
@@ -21,13 +18,18 @@ use super::{
 /// Rust toolchain configuration.
 #[derive(Debug)]
 pub struct Rust {
-    target: Vec<RustTarget>,
+    targets: Vec<Triple>,
 }
 
 impl Rust {
-    pub fn new(target: Vec<Triple>) -> Self {
-        let targets = target.into_iter().map(RustTarget::new).collect();
-        Self { target: targets }
+    pub fn new(target: Triple) -> Self {
+        Self {
+            targets: vec![target],
+        }
+    }
+
+    pub const fn new_with_targets(targets: Vec<Triple>) -> Self {
+        Self { targets }
     }
 
     fn has_rustup() -> bool {
@@ -95,6 +97,12 @@ impl Toolchain for Rust {
             });
         }
 
+        if !Self::has_rustup() {
+            return Err(ToolchainError::Fixable {
+                message: "rustup (Rust toolchain manager) is not installed".to_string(),
+            });
+        }
+
         let missing = self.missing_targets().await;
         let missing = missing
             .into_iter()
@@ -110,7 +118,7 @@ impl Toolchain for Rust {
         Ok(())
     }
 
-    fn fix(&self) -> Result<Self::Installation, ToolchainError> {
+    async fn fix(&self) -> Result<Self::Installation, ToolchainError> {
         todo!()
     }
 }
