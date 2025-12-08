@@ -9,6 +9,7 @@ pub struct Backends {
 }
 
 impl Backends {
+    #[must_use] 
     pub const fn is_empty(&self) -> bool {
         self.android.is_none() && self.apple.is_none()
     }
