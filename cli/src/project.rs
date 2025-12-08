@@ -15,6 +15,9 @@ impl Project {
     /// Equivalent to running `water build` in the project directory.
     ///
     /// Unlike `Platform::build`, this method returns the path to the built artifact, instead of the target directory.
+    ///
+    /// # Errors
+    /// - If the build process fails for any reason.
     pub async fn build(
         &self,
         platform: impl Platform,
@@ -23,6 +26,12 @@ impl Project {
         platform.build(self, options).await
     }
 
+    /// Run the `WaterUI` project on the specified device.
+    ///
+    /// This method handles building, packaging, and running the project.
+    ///
+    /// # Errors
+    /// - If any step in the build, package, or run process fails.
     pub async fn run(&self, device: impl Device, _hot_reload: bool) -> Result<Running, FailToRun> {
         let platform = device.platform();
 
@@ -34,7 +43,7 @@ impl Project {
 
         // Package the build artifacts for the target platform
         let artifact = platform
-            .package(self, PackageOptions::new(false))
+            .package(self, PackageOptions::new(false, true))
             .await
             .map_err(FailToRun::Package)?;
 
@@ -45,44 +54,62 @@ impl Project {
         Ok(running)
     }
 
-    #[must_use] 
+    /// Get the root path of the project.
+    ///
+    /// Same as the directory containing `Water.toml`.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    #[must_use] 
+    /// Get the backends configured for the project.
+    #[must_use]
     pub const fn backends(&self) -> &Backends {
         &self.manifest.backends
     }
 
-    #[must_use] 
+    /// Get the crate name of the project.
+    #[must_use]
     pub fn crate_name(&self) -> &str {
         &self.crate_name
     }
 
-    #[must_use] 
-    pub fn apple_backend(&self) -> Option<&AppleBackend> {
+    /// Get the Apple backend configuration if available.
+    #[must_use]
+    pub const fn apple_backend(&self) -> Option<&AppleBackend> {
         self.manifest.backends.apple()
     }
 
-    #[must_use] 
-    pub fn android_backend(&self) -> Option<&AndroidBackend> {
+    /// Get the Android backend configuration if available.
+    #[must_use]
+    pub const fn android_backend(&self) -> Option<&AndroidBackend> {
         self.manifest.backends.android()
     }
 
-    pub async fn doctor(&self) {
-        todo!()
+    /// Get the manifest of the project.
+    #[must_use]
+    pub const fn manifest(&self) -> &Manifest {
+        &self.manifest
     }
 
+    /// Get the bundle identifier of the project.
+    #[must_use]
+    pub const fn bundle_identifier(&self) -> &str {
+        self.manifest.package.bundle_identifier.as_str()
+    }
+
+    /// Clean build artifacts for the project on the specified platform.
     pub async fn clean(&self, platform: impl Platform) -> Result<(), eyre::Report> {
         // Parrelly clean rust build artifacts and platform specific build artifacts
         platform.clean(self).await
     }
 
+    /// Clean all build artifacts for the project.
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         todo!()
     }
 
+    /// Package the project for the specified platform.
     pub async fn package(
         &self,
         platform: impl Platform,
