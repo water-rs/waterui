@@ -13,6 +13,7 @@ use smol::{
 use tracing::info;
 
 use crate::{
+    apple::platform::ApplePlatform,
     device::{Artifact, Device, DeviceEvent, FailToRun, Running},
     utils::run_command,
 };
@@ -46,10 +47,15 @@ impl Drop for AppleRunning {
 }
 
 impl Device for MacOS {
+    type Platform = ApplePlatform;
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
         // No need to launch anything for MacOS physical device
         // This is the current machine
         Ok(())
+    }
+
+    fn platform(&self) -> Self::Platform {
+        todo!()
     }
 
     async fn run(
@@ -138,6 +144,7 @@ impl Device for MacOS {
 }
 
 impl Device for AppleDevice {
+    type Platform = ApplePlatform;
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
         match self {
             Self::Simulator(simulator) => simulator.launch().await,
@@ -146,6 +153,13 @@ impl Device for AppleDevice {
                 // This is the current machine
                 Ok(())
             }
+        }
+    }
+
+    fn platform(&self) -> Self::Platform {
+        match self {
+            Self::Simulator(simulator) => simulator.platform(),
+            Self::Current(mac_os) => mac_os.platform(),
         }
     }
 
@@ -225,10 +239,15 @@ impl AppleSimulator {
 }
 
 impl Device for AppleSimulator {
+    type Platform = ApplePlatform;
     /// Launch the Apple device
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
         run_command("xcrun", ["simctl", "boot", &self.udid]).await?;
         Ok(())
+    }
+
+    fn platform(&self) -> Self::Platform {
+        todo!()
     }
 
     /// Run an artifact on the Apple device
