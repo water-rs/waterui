@@ -14,11 +14,13 @@ impl Backends {
         self.android.is_none() && self.apple.is_none()
     }
 
-    pub fn android(&self) -> Option<&AndroidBackend> {
+    #[must_use] 
+    pub const fn android(&self) -> Option<&AndroidBackend> {
         self.android.as_ref()
     }
 
-    pub fn apple(&self) -> Option<&AppleBackend> {
+    #[must_use] 
+    pub const fn apple(&self) -> Option<&AppleBackend> {
         self.apple.as_ref()
     }
 }

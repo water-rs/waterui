@@ -1,4 +1,3 @@
-use crate::apple::toolchain::{AppleToolchain, Xcode};
 
 pub struct DoctorReport {}
 

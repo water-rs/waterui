@@ -1,6 +1,5 @@
 use color_eyre::eyre;
-use smol::fs::{hard_link, remove_dir_all};
-use target_lexicon::{OperatingSystem, Triple};
+use target_lexicon::{Aarch64Architecture, Architecture, DefaultToHost, OperatingSystem, Triple};
 
 use crate::{
     apple::{
@@ -15,7 +14,30 @@ use crate::{
 };
 
 pub struct ApplePlatform {
-    triple: Triple,
+    arch: Architecture,
+    kind: ApplePlatformKind,
+}
+
+impl ApplePlatform {
+    pub fn from_device_type_identifier(id: &str) -> Self {
+        let chunks = id.split('.').collect::<Vec<_>>();
+
+        // If it is a simualtor, then it has a same architecture as the host machine
+        // Otherwise, it is an actual device, which is always arm64
+        let arch = if chunks.contains(&"CoreSimulator") {
+            DefaultToHost::default().0.architecture
+        } else {
+            Architecture::Aarch64(Aarch64Architecture::Aarch64)
+        };
+
+        todo!()
+    }
+}
+
+pub enum ApplePlatformKind {
+    MacOS,
+    Ios,
+    IosSimulator,
 }
 
 impl Platform for ApplePlatform {
@@ -30,8 +52,8 @@ impl Platform for ApplePlatform {
         project: &Project,
         options: BuildOptions,
     ) -> eyre::Result<std::path::PathBuf> {
-        let build = RustBuild::new(project.root(), self.triple.clone());
-        let target_dir = build.build_lib(options.is_release()).await?;
+        let build = RustBuild::new(project.root(), self.triple());
+        let _target_dir = build.build_lib(options.is_release()).await?;
 
         // Then copy the built library to the project's build output directory
 
@@ -42,20 +64,24 @@ impl Platform for ApplePlatform {
     }
 
     fn toolchain(&self) -> Self::Toolchain {
-        let sdk = match self.triple.operating_system {
-            OperatingSystem::MacOSX(_) => AppleSdk::Macos,
-            OperatingSystem::IOS(_) => AppleSdk::Ios,
-            _ => unimplemented!(),
+        let sdk = match self.kind {
+            ApplePlatformKind::MacOS => AppleSdk::Macos,
+            ApplePlatformKind::Ios | ApplePlatformKind::IosSimulator => AppleSdk::Ios,
         };
-        (Xcode::default(), sdk)
+        (Xcode, sdk)
     }
 
-    fn triple(&self) -> target_lexicon::Triple {
-        self.triple.clone()
+    fn triple(&self) -> Triple {
+        todo!()
     }
 
-    async fn clean(&self, _project: &crate::project::Project) -> color_eyre::eyre::Result<()> {
+    async fn clean(&self, project: &Project) -> color_eyre::eyre::Result<()> {
         // Clean build artifacts of a specific platform
+
+        let apple_dir = project
+            .apple_backend()
+            .expect("Apple backend must be configured")
+            .project_path();
 
         todo!()
     }
@@ -63,7 +89,7 @@ impl Platform for ApplePlatform {
     async fn package(
         &self,
         project: &crate::project::Project,
-        options: crate::platform::PackageOptions,
+        _options: crate::platform::PackageOptions,
     ) -> color_eyre::eyre::Result<Artifact> {
         /*
 
