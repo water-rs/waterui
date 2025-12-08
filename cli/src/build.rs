@@ -12,7 +12,24 @@ pub struct RustBuild {
     triple: Triple,
 }
 
-pub struct BuildOptions {}
+#[derive(Debug, Clone)]
+pub struct BuildOptions {
+    release: bool,
+}
+
+impl BuildOptions {
+    /// Create new build options
+    #[must_use]
+    pub const fn new(release: bool) -> Self {
+        Self { release }
+    }
+
+    /// Whether to build in release mode
+    #[must_use]
+    pub const fn is_release(&self) -> bool {
+        self.release
+    }
+}
 
 /// Errors that can occur during the Rust build process.
 #[derive(Debug, thiserror::Error)]
@@ -45,11 +62,26 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn dev_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build(false, "staticlib").await
+        self.build_inner(false, "staticlib").await
+    }
+
+    /// Build a library with the specified crate type.
+    ///
+    /// Return the path to the built library.
+    ///
+    /// # Errors
+    /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
+    /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
+    pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
+        self.build_inner(release, "staticlib").await
     }
 
     /// Return target directory path
-    async fn build(&self, release: bool, crate_type: &str) -> Result<PathBuf, RustBuildError> {
+    async fn build_inner(
+        &self,
+        release: bool,
+        crate_type: &str,
+    ) -> Result<PathBuf, RustBuildError> {
         // cargo rustc --lib -- --crate-type staticlib
 
         let mut command = Command::new("cargo");
@@ -99,7 +131,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn release_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build(true, "staticlib").await
+        self.build_inner(true, "staticlib").await
     }
 
     /// Build a hot-reloadable `.dylib` library.
@@ -110,6 +142,6 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_hot_reload_lib(&self) -> Result<PathBuf, RustBuildError> {
-        self.build(false, "dylib").await
+        self.build_inner(false, "dylib").await
     }
 }

@@ -1,11 +1,9 @@
-
 use color_eyre::eyre::{self, eyre};
 use tracing::error;
 
 use crate::{
-    device::{
-        Artifact, Device, DeviceKind, DeviceState, FailToRun, RunOptions, Running,
-    },
+    android::platform::AndroidPlatform,
+    device::{Artifact, Device, DeviceKind, DeviceState, FailToRun, RunOptions, Running},
     utils::run_command,
 };
 
@@ -17,10 +15,15 @@ pub struct AndroidDevice {
 }
 
 impl Device for AndroidDevice {
+    type Platform = AndroidPlatform;
     async fn launch(&self) -> eyre::Result<()> {
         run_command("adb", ["-s", &self.identifier, "wait-for-device"]).await?;
 
         Ok(())
+    }
+
+    fn platform(&self) -> Self::Platform {
+        todo!()
     }
 
     async fn run(
