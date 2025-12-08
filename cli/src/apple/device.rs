@@ -10,6 +10,7 @@ use smol::{
     spawn,
     stream::StreamExt,
 };
+use target_lexicon::OperatingSystem;
 use tracing::info;
 
 use crate::{
@@ -247,6 +248,13 @@ impl Device for AppleSimulator {
     }
 
     fn platform(&self) -> Self::Platform {
+        // Simulator must have a same architecture triple as the host machine
+        let host_triple = target_lexicon::Triple::host();
+
+        // it looks like this: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
+        // So we have to use keyword matching to determine the OS, quite hacky but works for now
+        let device_type_id = &self.device_type_identifier;
+
         todo!()
     }
 
