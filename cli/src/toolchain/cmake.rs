@@ -6,25 +6,15 @@ use color_eyre::eyre;
 
 use crate::{
     brew::Brew,
-    toolchain::{Installation, Toolchain, ToolchainError},
+    toolchain::{Installation, Toolchain},
     utils::which,
 };
 
 /// Toolchain for `CMake`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Cmake {}
 
 impl Cmake {
-    /// Create a new `Cmake` toolchain instance after checking its availability.
-    ///
-    /// # Errors
-    /// - If `CMake` is not installed or not found in the system PATH.
-    pub async fn new() -> Result<Self, ToolchainError<CmakeInstallation>> {
-        let cmake = Self {};
-        cmake.check().await?;
-        Ok(cmake)
-    }
-
     /// Get the path to the `cmake` executable.
     ///
     /// # Errors
@@ -75,7 +65,9 @@ impl Installation for CmakeInstallation {
 
     async fn install(&self) -> Result<(), Self::Error> {
         if cfg!(target_os = "macos") {
-            let brew = Brew::new()
+            let brew = Brew::default();
+
+            brew.check()
                 .await
                 .map_err(|_| FailToInstallCmake::BrewNotFound)?;
             brew.install("cmake")
