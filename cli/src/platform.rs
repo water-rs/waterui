@@ -24,20 +24,46 @@ pub struct PackageOptions {
     ///
     /// When `false`, the package will be prepared for direct distribution
     /// or development purposes.
+    ///
+    /// # Warning
+    ///
+    /// Enable this option only change your packaging format, it does not change your build configuration.
+    /// For a real world distribution build, you may also want to disable `debug` in `BuildOptions`.
     distribution: bool,
+
+    /// Whether to enable debug mode in the packaged application.
+    ///
+    /// When `true`, the application will include additional debug information
+    /// and logging capabilities to facilitate troubleshooting during development.
+    ///
+    /// When `false`, the application will be optimized for release with
+    /// minimal debug information.
+    ///
+    /// This flag is not conflict with `distribution`, since `distribution` decide the package format,
+    /// while `debug` decide the build configuration.
+    debug: bool,
 }
 
 impl PackageOptions {
     /// Create new package options
     #[must_use]
-    pub const fn new(distribution: bool) -> Self {
-        Self { distribution }
+    pub const fn new(distribution: bool, debug: bool) -> Self {
+        Self {
+            distribution,
+            debug,
+        }
     }
 
     /// Whether to package in distribution mode
     #[must_use]
     pub const fn is_distribution(&self) -> bool {
         self.distribution
+    }
+
+    /// Whether to package in debug mode
+    #[must_use]
+    pub const fn is_debug(&self) -> bool {
+        self.debug
     }
 }
 

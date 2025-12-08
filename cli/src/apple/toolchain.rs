@@ -1,3 +1,5 @@
+//! Apple toolchain module
+
 use std::convert::Infallible;
 
 use serde::{Deserialize, Serialize};

@@ -53,8 +53,11 @@ pub struct Artifact {
 impl Artifact {
     /// Create a new artifact
     #[must_use]
-    pub const fn new(bundle_id: String, path: PathBuf) -> Self {
-        Self { bundle_id, path }
+    pub fn new(bundle_id: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            bundle_id: bundle_id.into(),
+            path,
+        }
     }
 
     /// Get the bundle identifier of the artifact

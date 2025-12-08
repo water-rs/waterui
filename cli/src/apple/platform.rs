@@ -43,7 +43,8 @@ pub enum ApplePlatformKind {
 impl Platform for ApplePlatform {
     type Device = AppleDevice;
     type Toolchain = AppleToolchain;
-    async fn scan(&self) -> color_eyre::eyre::Result<Vec<Self::Device>> {
+    async fn scan(&self) -> eyre::Result<Vec<Self::Device>> {
+        // Scan for Apple devices (both simulators and physical devices)
         todo!()
     }
 

@@ -138,7 +138,8 @@ impl Device for MacOS {
                 },
             )
             .await;
-        });
+        })
+        .detach();
 
         Ok(running)
     }
