@@ -10,6 +10,8 @@ use smol::{
     stream::Stream,
 };
 
+use crate::platform::Platform;
+
 /// Options for running an application on a device
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -70,6 +72,7 @@ impl Artifact {
 
 /// Trait representing a device (e.g., emulator, simulator, physical device)
 pub trait Device: Send {
+    type Platform: Platform;
     /// Lanuch the device emulator or simulator.
     ///
     /// If the device is a physical device, this should do nothing.
@@ -81,6 +84,8 @@ pub trait Device: Send {
         artifact: Artifact,
         options: RunOptions,
     ) -> impl Future<Output = Result<Running, FailToRun>> + Send;
+
+    fn platform(&self) -> Self::Platform;
 }
 
 /// Represents a running application on a device.
@@ -153,6 +158,12 @@ pub enum FailToRun {
     /// Failed to run the application on the device.
     #[error("Failed to run application on device: {0}")]
     Run(eyre::Report),
+
+    #[error("Failed to package the artifacts: {0}")]
+    Package(eyre::Report),
+
+    #[error("Failed to build the project: {0}")]
+    Build(eyre::Report),
 
     /// Application crashed.
     #[error("Application crashed: {0}")]
