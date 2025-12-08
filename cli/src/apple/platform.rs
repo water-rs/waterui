@@ -1,3 +1,4 @@
+
 use crate::{
     apple::{device::AppleDevice, toolchain::AppleToolchain},
     platform::Platform,
@@ -14,8 +15,10 @@ impl Platform for ApplePlatform {
 
     async fn build(
         &self,
-        options: crate::build::BuildOptions,
+        _options: crate::build::BuildOptions,
     ) -> color_eyre::eyre::Result<std::path::PathBuf> {
+        // RustBuild::new(path, triple)
+
         todo!()
     }
 
@@ -27,15 +30,15 @@ impl Platform for ApplePlatform {
         todo!()
     }
 
-    async fn clean(&self, project: &crate::project::Project) -> color_eyre::eyre::Result<()> {
+    async fn clean(&self, _project: &crate::project::Project) -> color_eyre::eyre::Result<()> {
         // Clean build artifacts of a specific platform
         todo!()
     }
 
     async fn package(
         &self,
-        project: &crate::project::Project,
-        options: crate::platform::PackageOptions,
+        _project: &crate::project::Project,
+        _options: crate::platform::PackageOptions,
     ) -> color_eyre::eyre::Result<std::path::PathBuf> {
         todo!()
     }
