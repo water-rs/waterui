@@ -52,7 +52,7 @@ fn is_default_apple_project_path(s: &Path) -> bool {
 
 impl Backend for AppleBackend {
     async fn init(
-        project: &crate::project::Project,
+        _project: &crate::project::Project,
     ) -> Result<Self, crate::backend::FailToInitBackend> {
         // create a Xcode project here
         todo!()

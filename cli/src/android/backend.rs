@@ -16,10 +16,12 @@ pub struct AndroidBackend {
 }
 
 impl AndroidBackend {
-    pub fn project_path(&self) -> &PathBuf {
+    #[must_use]
+    pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
     }
 
+    #[must_use]
     pub fn gradlew_path(&self) -> PathBuf {
         let base = &self.project_path;
         if cfg!(windows) {
@@ -32,7 +34,7 @@ impl AndroidBackend {
 
 impl Backend for AndroidBackend {
     async fn init(
-        project: &crate::project::Project,
+        _project: &crate::project::Project,
     ) -> Result<Self, crate::backend::FailToInitBackend> {
         todo!()
     }
