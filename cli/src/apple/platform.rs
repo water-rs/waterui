@@ -1,3 +1,5 @@
+use std::env;
+
 use color_eyre::eyre;
 use target_lexicon::{Aarch64Architecture, Architecture, DefaultToHost, OperatingSystem, Triple};
 
@@ -90,8 +92,13 @@ impl Platform for ApplePlatform {
     async fn package(
         &self,
         project: &crate::project::Project,
-        _options: crate::platform::PackageOptions,
+        options: crate::platform::PackageOptions,
     ) -> color_eyre::eyre::Result<Artifact> {
+        // Ask Xcode do not call `water build` again
+        unsafe {
+            env::set_var("WATERUI_SKIP_RUST_BUILD", "1");
+        }
+
         /*
 
               xcodebuild \
@@ -110,6 +117,10 @@ impl Platform for ApplePlatform {
         run_command("xcodebuild", ["-scheme", &backend.scheme, "archive"]).await?;
 
         /// Then package the built artifact into an IPA or DMG file
+        unsafe {
+            env::set_var("WATERUI_SKIP_RUST_BUILD", "0");
+        }
+
         todo!()
     }
 }
