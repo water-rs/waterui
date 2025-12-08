@@ -10,6 +10,7 @@ pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Cmake);
 pub struct AndroidSdk;
 
 impl AndroidSdk {
+    #[must_use] 
     pub fn detect_path() -> Option<PathBuf> {
         // Check ANDROID_HOME environment variable
         if let Ok(android_home) = env::var("ANDROID_HOME") {
@@ -106,7 +107,7 @@ impl AndroidNdk {
             // Find the latest NDK version
             if let Ok(entries) = std::fs::read_dir(&ndk_dir) {
                 let mut versions: Vec<PathBuf> = entries
-                    .filter_map(|e| e.ok())
+                    .filter_map(std::result::Result::ok)
                     .map(|e| e.path())
                     .filter(|p| p.is_dir())
                     .collect();
