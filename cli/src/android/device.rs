@@ -7,6 +7,7 @@ use crate::{
     utils::run_command,
 };
 
+#[derive(Debug)]
 pub struct AndroidDevice {
     name: String,
     identifier: String,
@@ -18,7 +19,6 @@ impl Device for AndroidDevice {
     type Platform = AndroidPlatform;
     async fn launch(&self) -> eyre::Result<()> {
         run_command("adb", ["-s", &self.identifier, "wait-for-device"]).await?;
-
         Ok(())
     }
 
