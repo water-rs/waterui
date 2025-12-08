@@ -33,7 +33,7 @@ pub fn set_std_output(enabled: bool) {
 /// # Errors
 /// - If the command fails to execute or returns a non-zero exit status.
 pub(crate) async fn run_command(
-    name: &'static str,
+    name: &str,
     args: impl IntoIterator<Item = &str>,
 ) -> eyre::Result<String> {
     let result = Command::new(name)
