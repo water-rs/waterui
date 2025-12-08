@@ -1,21 +1,22 @@
-use target_lexicon::Triple;
+use target_lexicon::{Architecture, Triple};
 
 use crate::{
     android::{device::AndroidDevice, toolchain::AndroidToolchain},
     build::BuildOptions,
     device::Artifact,
-    platform::Platform,
+    platform::{PackageOptions, Platform},
     project::Project,
+    utils::run_command,
 };
 
 pub struct AndroidPlatform {
-    triple: Triple,
+    architecture: Architecture,
 }
 
 impl AndroidPlatform {
     #[must_use]
-    pub const fn new(triple: Triple) -> Self {
-        Self { triple }
+    pub const fn new(architecture: Architecture) -> Self {
+        Self { architecture }
     }
 }
 
@@ -42,15 +43,62 @@ impl Platform for AndroidPlatform {
         todo!()
     }
 
-    fn triple(&self) -> target_lexicon::Triple {
-        self.triple.clone()
+    fn triple(&self) -> Triple {
+        Triple {
+            architecture: self.architecture,
+            vendor: target_lexicon::Vendor::Unknown,
+            operating_system: target_lexicon::OperatingSystem::Linux,
+            environment: target_lexicon::Environment::Android,
+            binary_format: target_lexicon::BinaryFormat::Elf,
+        }
     }
 
     async fn package(
         &self,
-        _project: &Project,
-        _options: crate::platform::PackageOptions,
+        project: &Project,
+        options: PackageOptions,
     ) -> color_eyre::eyre::Result<Artifact> {
-        todo!()
+        let backend = project
+            .android_backend()
+            .expect("Android backend must be configured");
+
+        let project_path = backend.project_path();
+        let gradlew = backend.gradlew_path();
+
+        let (command_name, path) = if options.is_distribution() && !options.is_debug() {
+            (
+                "bundleRelease",
+                project_path.join("app/build/outputs/bundle/release/app-release.aab"),
+            )
+        } else if !options.is_distribution() && !options.is_debug() {
+            (
+                "assembleRelease",
+                project_path.join("app/build/outputs/apk/release/app-release.apk"),
+            )
+        } else if !options.is_distribution() && options.is_debug() {
+            (
+                "assembleDebug",
+                project_path.join("app/build/outputs/apk/debug/app-debug.apk"),
+            )
+        } else if options.is_distribution() && options.is_debug() {
+            (
+                "bundleDebug",
+                project_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
+            )
+        } else {
+            unreachable!()
+        };
+
+        run_command(
+            gradlew.to_str().unwrap(),
+            [
+                command_name,
+                "--project-dir",
+                backend.project_path().to_str().unwrap(),
+            ],
+        )
+        .await?;
+
+        Ok(Artifact::new(project.bundle_identifier(), path))
     }
 }
