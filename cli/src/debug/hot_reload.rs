@@ -4,7 +4,7 @@ pub struct HotreloadServer {}
 pub enum FailToLaunch {}
 
 impl HotreloadServer {
-    pub async fn launch(port: u16) -> Result<Self, FailToLaunch> {
+    pub async fn launch(_port: u16) -> Result<Self, FailToLaunch> {
         todo!()
     }
 }
