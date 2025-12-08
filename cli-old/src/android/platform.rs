@@ -34,6 +34,10 @@ impl Platform for AndroidPlatform {
         project: &Project,
         options: &crate::platform::PackageOptions,
     ) -> color_eyre::eyre::Result<()> {
+        /// Ask gradle do not call `water build` again
+        env::set_var("WATERUI_SKIP_RUST_BUILD", "1");
+        todo!();
+        env::set_var("WATERUI_SKIP_RUST_BUILD", "0");
         todo!()
     }
 
