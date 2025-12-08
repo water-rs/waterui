@@ -11,7 +11,7 @@ use crate::{
 pub type AppleToolchain = (Xcode, AppleSdk);
 
 /// Represents the Xcode toolchain
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Xcode;
 
 impl Toolchain for Xcode {
