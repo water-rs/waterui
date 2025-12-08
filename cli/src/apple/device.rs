@@ -19,12 +19,22 @@ use crate::{
     utils::run_command,
 };
 
+#[derive(Debug)]
+pub struct ApplePhysicalDevice {}
+
 /// Represents an Apple device (simulator or physical)
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum AppleDevice {
     /// An Apple Simulator device
     Simulator(AppleSimulator),
 
+    /// A physical Apple device
+    Physical(ApplePhysicalDevice),
+
+    /// The current physical `macOS` device
+    ///
+    /// Apple do not provide macOS simulator, so this represents the current physical machine
     Current(MacOS),
 }
 
@@ -155,6 +165,7 @@ impl Device for AppleDevice {
                 // This is the current machine
                 Ok(())
             }
+            Self::Physical(apple_physical_device) => todo!(),
         }
     }
 
@@ -162,6 +173,7 @@ impl Device for AppleDevice {
         match self {
             Self::Simulator(simulator) => simulator.platform(),
             Self::Current(mac_os) => mac_os.platform(),
+            Self::Physical(apple_physical_device) => todo!(),
         }
     }
 
@@ -173,6 +185,7 @@ impl Device for AppleDevice {
         match self {
             Self::Simulator(simulator) => simulator.run(artifact, options).await,
             Self::Current(_mac_os) => todo!(),
+            Self::Physical(apple_physical_device) => todo!(),
         }
     }
 }
