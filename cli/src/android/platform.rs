@@ -2,7 +2,10 @@ use target_lexicon::Triple;
 
 use crate::{
     android::{device::AndroidDevice, toolchain::AndroidToolchain},
+    build::BuildOptions,
+    device::Artifact,
     platform::Platform,
+    project::Project,
 };
 
 pub struct AndroidPlatform {
@@ -10,7 +13,7 @@ pub struct AndroidPlatform {
 }
 
 impl AndroidPlatform {
-    #[must_use] 
+    #[must_use]
     pub const fn new(triple: Triple) -> Self {
         Self { triple }
     }
@@ -23,8 +26,8 @@ impl Platform for AndroidPlatform {
         todo!()
     }
 
-    fn toolchain(&self) -> &Self::Toolchain {
-        todo!()
+    fn toolchain(&self) -> Self::Toolchain {
+        AndroidToolchain::default()
     }
 
     async fn clean(&self, _project: &crate::project::Project) -> color_eyre::eyre::Result<()> {
@@ -33,9 +36,9 @@ impl Platform for AndroidPlatform {
 
     async fn build(
         &self,
-        _options: crate::build::BuildOptions,
+        project: &Project,
+        options: BuildOptions,
     ) -> color_eyre::eyre::Result<std::path::PathBuf> {
-        //RustBuild::new(path, triple)
         todo!()
     }
 
@@ -45,9 +48,9 @@ impl Platform for AndroidPlatform {
 
     async fn package(
         &self,
-        _project: &crate::project::Project,
-        _options: crate::platform::PackageOptions,
-    ) -> color_eyre::eyre::Result<std::path::PathBuf> {
+        project: &Project,
+        options: crate::platform::PackageOptions,
+    ) -> color_eyre::eyre::Result<Artifact> {
         todo!()
     }
 }
