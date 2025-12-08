@@ -36,8 +36,8 @@ impl Platform for AndroidPlatform {
 
     async fn build(
         &self,
-        project: &Project,
-        options: BuildOptions,
+        _project: &Project,
+        _options: BuildOptions,
     ) -> color_eyre::eyre::Result<std::path::PathBuf> {
         todo!()
     }
@@ -48,8 +48,8 @@ impl Platform for AndroidPlatform {
 
     async fn package(
         &self,
-        project: &Project,
-        options: crate::platform::PackageOptions,
+        _project: &Project,
+        _options: crate::platform::PackageOptions,
     ) -> color_eyre::eyre::Result<Artifact> {
         todo!()
     }
