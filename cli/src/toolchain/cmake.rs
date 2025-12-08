@@ -1,14 +1,38 @@
+//! Toolchain support for `CMake`.
+
+use std::path::PathBuf;
+
 use color_eyre::eyre;
 
 use crate::{
     brew::Brew,
-    toolchain::{Installation, Toolchain},
+    toolchain::{Installation, Toolchain, ToolchainError},
     utils::which,
 };
 
 /// Toolchain for `CMake`
 #[derive(Debug, Clone)]
 pub struct Cmake {}
+
+impl Cmake {
+    /// Create a new `Cmake` toolchain instance after checking its availability.
+    ///
+    /// # Errors
+    /// - If `CMake` is not installed or not found in the system PATH.
+    pub async fn new() -> Result<Self, ToolchainError<CmakeInstallation>> {
+        let cmake = Self {};
+        cmake.check().await?;
+        Ok(cmake)
+    }
+
+    /// Get the path to the `cmake` executable.
+    ///
+    /// # Errors
+    /// - If `CMake` is not found in the system PATH.
+    pub async fn path(&self) -> eyre::Result<PathBuf> {
+        which("cmake").await.map_err(|e| eyre::eyre!(e))
+    }
+}
 
 impl Toolchain for Cmake {
     type Installation = CmakeInstallation;
