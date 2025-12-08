@@ -16,7 +16,7 @@ impl Project {
         todo!()
     }
 
-    pub async fn run(&self, device: impl Device) -> Result<Running, FailToRun> {
+    pub async fn run(&self, _device: impl Device) -> Result<Running, FailToRun> {
         todo!()
     }
 

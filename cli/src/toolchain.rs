@@ -62,10 +62,14 @@ impl<I: Installation> ToolchainError<I> {
         matches!(self, Self::Fixable(_))
     }
 
-    pub fn fixable(install: I) -> Self {
+    /// Create a new `ToolchainError` indicating that the toolchain can be fixed automatically.
+    #[must_use]
+    pub const fn fixable(install: I) -> Self {
         Self::Fixable(install)
     }
 
+    /// Create a new `ToolchainError` indicating that the toolchain cannot be fixed automatically.
+    #[must_use]
     pub fn unfixable(message: impl Into<String>, suggestion: impl Into<String>) -> Self {
         Self::Unfixable(UnfixableToolchain::new(message, suggestion))
     }
@@ -90,7 +94,7 @@ pub trait Toolchain: Send + Sync {
 }
 
 impl Installation for Infallible {
-    type Error = Infallible;
+    type Error = Self;
 
     async fn install(&self) -> Result<(), Self::Error> {
         unreachable!()
@@ -98,7 +102,7 @@ impl Installation for Infallible {
 }
 
 impl Toolchain for Infallible {
-    type Installation = Infallible;
+    type Installation = Self;
 
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         unreachable!()
