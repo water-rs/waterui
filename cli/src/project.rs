@@ -23,7 +23,7 @@ impl Project {
         platform.build(self, options).await
     }
 
-    pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
+    pub async fn run(&self, device: impl Device, _hot_reload: bool) -> Result<Running, FailToRun> {
         let platform = device.platform();
 
         // Build rust library for the target platform
@@ -34,7 +34,7 @@ impl Project {
 
         // Package the build artifacts for the target platform
         let artifact = platform
-            .package(&self, PackageOptions::new(false))
+            .package(self, PackageOptions::new(false))
             .await
             .map_err(FailToRun::Package)?;
 
@@ -45,22 +45,27 @@ impl Project {
         Ok(running)
     }
 
+    #[must_use] 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn backends(&self) -> &Backends {
+    #[must_use] 
+    pub const fn backends(&self) -> &Backends {
         &self.manifest.backends
     }
 
+    #[must_use] 
     pub fn crate_name(&self) -> &str {
         &self.crate_name
     }
 
+    #[must_use] 
     pub fn apple_backend(&self) -> Option<&AppleBackend> {
         self.manifest.backends.apple()
     }
 
+    #[must_use] 
     pub fn android_backend(&self) -> Option<&AndroidBackend> {
         self.manifest.backends.android()
     }
@@ -155,7 +160,7 @@ use smol::{fs::read_to_string, unblock};
 
 use crate::{
     android::backend::AndroidBackend,
-    apple::{backend::AppleBackend, platform::ApplePlatform},
+    apple::backend::AppleBackend,
     backend::Backends,
     build::BuildOptions,
     device::{Artifact, Device, FailToRun, RunOptions, Running},

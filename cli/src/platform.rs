@@ -72,6 +72,7 @@ pub trait Platform: Send {
     /// Scan for connected devices for this platform
     fn scan(&self) -> impl Future<Output = eyre::Result<Vec<Self::Device>>> + Send;
 
+    /// Get the target triple for this platform
     fn triple(&self) -> Triple;
 
     /// Build the Rust library for this platform
