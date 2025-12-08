@@ -7,10 +7,11 @@ use crate::{
 
 pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Cmake);
 
+#[derive(Debug, Clone, Default)]
 pub struct AndroidSdk;
 
 impl AndroidSdk {
-    #[must_use] 
+    #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
         // Check ANDROID_HOME environment variable
         if let Ok(android_home) = env::var("ANDROID_HOME") {
@@ -49,6 +50,7 @@ impl AndroidSdk {
 
 pub struct AndroidSdkInstallation;
 
+#[derive(Debug, Clone, Default)]
 pub struct AndroidNdk;
 pub struct Java;
 

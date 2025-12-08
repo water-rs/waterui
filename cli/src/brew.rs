@@ -6,23 +6,10 @@ use crate::{
 };
 
 /// Homebrew toolchain manager
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Brew {}
 
 impl Brew {
-    pub async fn new() -> Result<Self, ToolchainError<BrewInstallation>> {
-        if which("brew").await.is_ok() {
-            Ok(Self {})
-        } else if cfg!(target_os = "macos") {
-            Err(ToolchainError::fixable(BrewInstallation))
-        } else {
-            Err(ToolchainError::unfixable(
-                "Homebrew is only supported on macOS",
-                "Why did you try to use Homebrew on a non-macOS system?",
-            ))
-        }
-    }
-
     /// Install a formula via Homebrew
     ///
     /// # Arguments
@@ -54,7 +41,16 @@ impl Brew {
 impl Toolchain for Brew {
     type Installation = BrewInstallation;
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        Self::new().await.map(|_| ())
+        if which("brew").await.is_ok() {
+            Ok(())
+        } else if cfg!(target_os = "macos") {
+            Err(ToolchainError::fixable(BrewInstallation))
+        } else {
+            Err(ToolchainError::unfixable(
+                "Homebrew is only supported on macOS",
+                "Why did you try to use Homebrew on a non-macOS system?",
+            ))
+        }
     }
 }
 

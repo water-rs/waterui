@@ -1,4 +1,5 @@
 use cargo_toml::Manifest as CargoManifest;
+use color_eyre::eyre;
 
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
@@ -12,30 +13,78 @@ impl Project {
     /// Build the `WaterUI` project.
     ///
     /// Equivalent to running `water build` in the project directory.
-    pub async fn build(&self) {
-        todo!()
+    ///
+    /// Unlike `Platform::build`, this method returns the path to the built artifact, instead of the target directory.
+    pub async fn build(
+        &self,
+        platform: impl Platform,
+        options: BuildOptions,
+    ) -> Result<PathBuf, eyre::Report> {
+        platform.build(self, options).await
     }
 
-    pub async fn run(&self, _device: impl Device) -> Result<Running, FailToRun> {
-        todo!()
+    pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
+        let platform = device.platform();
+
+        // Build rust library for the target platform
+        platform
+            .build(self, BuildOptions::new(false))
+            .await
+            .map_err(FailToRun::Build)?;
+
+        // Package the build artifacts for the target platform
+        let artifact = platform
+            .package(&self, PackageOptions::new(false))
+            .await
+            .map_err(FailToRun::Package)?;
+
+        // TODO: Set up hot reload
+
+        let running = device.run(artifact, RunOptions::new()).await?;
+
+        Ok(running)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn backends(&self) -> &Backends {
+        &self.manifest.backends
+    }
+
+    pub fn crate_name(&self) -> &str {
+        &self.crate_name
+    }
+
+    pub fn apple_backend(&self) -> Option<&AppleBackend> {
+        self.manifest.backends.apple()
+    }
+
+    pub fn android_backend(&self) -> Option<&AndroidBackend> {
+        self.manifest.backends.android()
     }
 
     pub async fn doctor(&self) {
         todo!()
     }
 
-    pub async fn clean(&self) {
+    pub async fn clean(&self, platform: impl Platform) -> Result<(), eyre::Report> {
+        // Parrelly clean rust build artifacts and platform specific build artifacts
+        platform.clean(self).await
+    }
+
+    pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         todo!()
     }
 
-    pub async fn package(&self) {
-        todo!()
+    pub async fn package(
+        &self,
+        platform: impl Platform,
+        options: PackageOptions,
+    ) -> Result<Artifact, eyre::Report> {
+        platform.package(self, options).await
     }
-
-    pub async fn list_devices(&self) {}
-
-    pub async fn list_apple_devices(&self) {}
-    pub async fn list_android_devices(&self) {}
 }
 
 /// Errors that can occur when opening a `WaterUI` project.
@@ -105,8 +154,12 @@ use serde::{Deserialize, Serialize};
 use smol::{fs::read_to_string, unblock};
 
 use crate::{
+    android::backend::AndroidBackend,
+    apple::{backend::AppleBackend, platform::ApplePlatform},
     backend::Backends,
-    device::{Device, FailToRun, Running},
+    build::BuildOptions,
+    device::{Artifact, Device, FailToRun, RunOptions, Running},
+    platform::{PackageOptions, Platform},
 };
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
