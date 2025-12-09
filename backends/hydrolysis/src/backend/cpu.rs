@@ -108,7 +108,7 @@ impl RenderBackend for TinySkiaBackend {
         self.clear();
 
         let root = tree.root();
-        if let Some(root_id) = root {
+        root.map_or(FrameResult::Idle, |root_id| {
             let mut engine = LayoutEngine::new(tree, env);
             engine.run();
 
@@ -117,9 +117,7 @@ impl RenderBackend for TinySkiaBackend {
             let scene = render_ctx.finish();
             self.rasterize(&scene);
             FrameResult::Presented
-        } else {
-            FrameResult::Idle
-        }
+        })
     }
 }
 
