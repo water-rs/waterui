@@ -38,6 +38,32 @@ pub struct AppleBackend {
 }
 
 impl AppleBackend {
+    /// Create a new Apple backend configuration with the given scheme.
+    #[must_use]
+    pub fn new(scheme: impl Into<String>) -> Self {
+        Self {
+            project_path: default_apple_project_path(),
+            scheme: scheme.into(),
+            branch: None,
+            revision: None,
+            backend_path: None,
+        }
+    }
+
+    /// Set a custom project path (defaults to "apple").
+    #[must_use]
+    pub fn with_project_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.project_path = path.into();
+        self
+    }
+
+    /// Set the local backend path for development.
+    #[must_use]
+    pub fn with_backend_path(mut self, path: impl Into<String>) -> Self {
+        self.backend_path = Some(path.into());
+        self
+    }
+
     /// Get the path to the Apple project within the `WaterUI` project.
     #[must_use]
     pub fn project_path(&self) -> &Path {
