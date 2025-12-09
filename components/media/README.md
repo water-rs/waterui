@@ -2,6 +2,24 @@
 
 Media handling and display components for the WaterUI framework.
 
+## Platform Support
+
+| Component    | Apple (iOS/macOS) | Android |
+|--------------|-------------------|---------|
+| Photo        | ✅                | ✅      |
+| Video (raw)  | ✅                | ✅      |
+| VideoPlayer  | ✅                | ✅      |
+| LivePhoto    | Rust-only         | Rust-only |
+| MediaPicker  | ✅                | ✅      |
+
+Notes:
+
+- **LivePhoto**: Native renderers removed; use Rust-side composition with Photo + Video + Gesture instead
+- **Photo**: Uses `UIImageView`/`NSImageView` on Apple, `ImageView` on Android
+- **Video (raw)**: Uses `AVPlayer` on Apple, `SurfaceView` + `MediaPlayer` on Android (no controls)
+- **VideoPlayer**: Uses `AVPlayerViewController` on Apple, `VideoView` on Android (with native controls)
+- **MediaPicker**: Uses `PHPickerViewController` on iOS, `NSOpenPanel` on macOS, intent-based picker on Android
+
 ## Overview
 
 `waterui-media` provides components for displaying and handling various media types including images, videos, and Live Photos. The library offers a unified interface for working with different media formats and provides reactive, configurable components that integrate seamlessly with the WaterUI framework.
@@ -10,22 +28,16 @@ Media handling and display components for the WaterUI framework.
 
 ### Photo
 
-Display static images with customizable placeholder views:
+Display static images from URLs:
 
 ```rust
 use waterui_media::Photo;
-use waterui_core::{Text, AnyView};
 
 // Basic image from URL
 let photo = Photo::new("https://example.com/image.jpg");
 
-// With placeholder
-let photo_with_placeholder = Photo::new("https://example.com/image.jpg")
-    .placeholder(Text::new("Loading..."));
-
-// Placeholder can be any view
-let custom_placeholder = Photo::new("path/to/image.png")
-    .placeholder(AnyView::new(custom_loading_view()));
+// Local file
+let photo = Photo::new("file:///path/to/image.png");
 ```
 
 ### Video
@@ -96,28 +108,24 @@ let live_photo = Media::LivePhoto(LivePhotoSource::new(
 // when used as a View - no need to match manually
 ```
 
-## Media Picker (Feature: `media-picker`)
+## Media Picker
 
 Platform-native media selection interface:
 
 ```rust
-#[cfg(feature = "media-picker")]
-use waterui_media::picker::{MediaPicker, MediaFilter, Selected};
+use waterui_media::media_picker::{MediaPicker, MediaFilter, Selected};
 use nami::{binding, s};
 
-#[cfg(feature = "media-picker")]
-{
-    let selection = binding(Selected(0));
-    let filter = s!(MediaFilter::Image);
-    
-    let picker = MediaPicker::new()
-        .selection(selection.clone())
-        .filter(filter);
-    
-    // Load the selected media asynchronously
-    let selected = selection.get();
-    let media = selected.load().await;
-}
+let selection = binding(Selected::new(0));
+let filter = s!(MediaFilter::Image);
+
+let picker = MediaPicker::new()
+    .selection(selection.clone())
+    .filter(filter);
+
+// Load the selected media asynchronously
+let selected = selection.get();
+let media = selected.load().await;
 ```
 
 ### Media Filters
@@ -194,6 +202,7 @@ let player = VideoPlayer::new(video)
 ```
 
 The volume system works as follows:
+
 - Positive values (> 0): Audible volume
 - Negative values (< 0): Muted state, but preserves the volume level
 - When unmuting, the absolute value is restored
@@ -203,10 +212,8 @@ The volume system works as follows:
 Media picker provides async loading capabilities:
 
 ```rust
-#[cfg(feature = "media-picker")]
-use waterui_media::picker::Selected;
+use waterui_media::media_picker::Selected;
 
-#[cfg(feature = "media-picker")]
 async fn load_selected_media(selected: Selected) -> Media {
     // This will asynchronously load the selected media
     selected.load().await
@@ -216,11 +223,6 @@ async fn load_selected_media(selected: Selected) -> Media {
 ## Dependencies
 
 - `waterui-core`: Core framework functionality providing the View trait, reactive system, and configuration macros
-
-## Features
-
-- `default = ["media-picker"]`: Includes media picker functionality
-- `media-picker`: Enables platform-native media selection interface
 
 ## Architecture
 
@@ -250,12 +252,11 @@ impl View for PhotoGallery {
     fn body(self, _env: &Environment) -> impl View {
         vstack((
             // Main photo display
-            Photo::new(&self.photos[self.current_index.get()])
-                .placeholder(text("Loading...")),
-                
+            Photo::new(&self.photos[self.current_index.get()]),
+
             // Photo counter - using text! macro for reactivity
-            text!("{} of {}", 
-                self.current_index.get() + 1, 
+            text!("{} of {}",
+                self.current_index.get() + 1,
                 self.photos.len()
             ),
         ))

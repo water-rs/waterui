@@ -70,7 +70,6 @@ pub mod live;
 /// with customizable placeholder views.
 pub mod photo;
 
-#[cfg(feature = "media-picker")]
 /// Media picker functionality for platform-native media selection.
 pub mod media_picker;
 /// Video components and types.
