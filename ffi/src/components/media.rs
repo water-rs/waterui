@@ -68,7 +68,6 @@ impl IntoFFI for PhotoEvent {
 #[repr(C)]
 pub struct WuiPhoto {
     pub source: WuiStr,
-    pub placeholder: *mut WuiAnyView,
     pub on_event: WuiFn<WuiPhotoEvent>,
 }
 
@@ -76,7 +75,7 @@ impl IntoFFI for PhotoConfig {
     type FFI = WuiPhoto;
     fn into_ffi(self) -> Self::FFI {
         // Convert the Rust closure to a WuiFn
-        // Swift will call this with WuiPhotoEvent, we convert to Rust Event and call the closure
+        // Native code will call this with WuiPhotoEvent, we convert to Rust Event and call the closure
         let on_event_fn = WuiFn::from(move |ffi_event: WuiPhotoEvent| {
             // Convert FFI event to Rust event
             let rust_event = match ffi_event.event_type {
@@ -93,7 +92,6 @@ impl IntoFFI for PhotoConfig {
 
         WuiPhoto {
             source: self.source.into_ffi(),
-            placeholder: self.placeholder.into_ffi(),
             on_event: on_event_fn,
         }
     }
