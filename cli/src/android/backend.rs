@@ -82,6 +82,8 @@ impl Backend for AndroidBackend {
             .as_ref()
             .map(|p| PathBuf::from(p).join("backends/android"));
 
+        let project_path = default_android_project_path();
+
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
             app_name,
@@ -91,9 +93,8 @@ impl Backend for AndroidBackend {
             android_backend_path,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            backend_project_path: Some(project_path.clone()),
         };
-
-        let project_path = default_android_project_path();
         let output_dir = project.root().join(&project_path);
 
         templates::android::scaffold(&output_dir, &ctx)
