@@ -48,6 +48,10 @@ pub struct TemplateContext {
     pub use_remote_dev_backend: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
+    /// Relative path from project root to where the Xcode/Android project is located.
+    /// Used to compute correct relative paths. Defaults to "apple" for standard projects.
+    /// For playground projects, this would be ".water/apple".
+    pub backend_project_path: Option<PathBuf>,
 }
 
 impl TemplateContext {
@@ -94,14 +98,37 @@ impl TemplateContext {
         PathBuf::from(path_str.replace("AppName", &self.app_name))
     }
 
+    /// Compute the relative path from the Xcode project to the WaterUI Swift backend.
+    ///
+    /// This accounts for the Xcode project being in a subdirectory (e.g., `.water/apple`).
+    fn compute_backend_path(&self) -> Option<String> {
+        let waterui_path = self.waterui_path.as_ref()?;
+
+        // Count how many levels deep the Xcode project is from the project root
+        // Default is "apple" (1 level), playground uses ".water/apple" (2 levels)
+        let project_depth = self
+            .backend_project_path
+            .as_ref()
+            .map_or(1, |p| p.components().count());
+
+        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/apple
+        let mut backend_path = String::new();
+        for _ in 0..project_depth {
+            backend_path.push_str("../");
+        }
+        backend_path.push_str(&normalize_path_for_config(waterui_path));
+        backend_path.push_str("/backends/apple");
+
+        Some(backend_path)
+    }
+
     /// Generate the XCode package reference entry line for the project file.
     fn swift_package_reference_entry(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
 
-        match &self.waterui_path {
-            Some(path) => {
-                let backend_path = format!("{}/backends/apple", path.display());
+        match self.compute_backend_path() {
+            Some(backend_path) => {
                 format!(
                     "{INDENT}{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */,"
                 )
@@ -120,9 +147,8 @@ impl TemplateContext {
         const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
         const MIN_VERSION: &str = "1.0.0";
 
-        match &self.waterui_path {
-            Some(path) => {
-                let backend_path = format!("{}/backends/apple", path.display());
+        match self.compute_backend_path() {
+            Some(backend_path) => {
                 format!(
                     "/* Begin XCLocalSwiftPackageReference section */\n\
                     \t\t{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */ = {{\n\
