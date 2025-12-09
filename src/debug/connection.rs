@@ -10,10 +10,12 @@ pub struct CliSender {}
 
 pub struct CliReceiver {}
 impl CliConnection {
+    #[must_use] 
     pub fn connect(_config: HotReloadConfig) -> Self {
         todo!()
     }
 
+    #[must_use] 
     pub fn split(self) -> (CliSender, CliReceiver) {
         todo!()
     }
