@@ -168,6 +168,10 @@ pub enum FailToRun {
     #[error("Failed to build the project: {0}")]
     Build(eyre::Report),
 
+    /// Failed to start hot reload server.
+    #[error("Failed to start hot reload server: {0}")]
+    HotReload(crate::debug::hot_reload::FailToLaunch),
+
     /// Application crashed.
     #[error("Application crashed: {0}")]
     Crashed(String),
