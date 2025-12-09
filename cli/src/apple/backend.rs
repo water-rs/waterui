@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::Backend;
+use crate::{
+    backend::Backend,
+    templates::{self, TemplateContext},
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 // Warn: You cannot use both revision and local_path at the same time.
@@ -52,9 +55,42 @@ fn is_default_apple_project_path(s: &Path) -> bool {
 
 impl Backend for AppleBackend {
     async fn init(
-        _project: &crate::project::Project,
+        project: &crate::project::Project,
     ) -> Result<Self, crate::backend::FailToInitBackend> {
-        // create a Xcode project here
-        todo!()
+        let manifest = project.manifest();
+
+        // Derive app name from the display name (remove spaces for filesystem)
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+
+        let ctx = TemplateContext {
+            app_display_name: manifest.package.name.clone(),
+            app_name: app_name.clone(),
+            crate_name: project.crate_name().to_string(),
+            bundle_identifier: manifest.package.bundle_identifier.clone(),
+            author: String::new(), // Could be extracted from git config
+            android_backend_path: None,
+            use_remote_dev_backend: manifest.waterui_path.is_none(),
+            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+        };
+
+        let project_path = default_apple_project_path();
+        let output_dir = project.root().join(&project_path);
+
+        templates::apple::scaffold(&output_dir, &ctx)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+
+        Ok(Self {
+            project_path,
+            scheme: app_name,
+            branch: None,
+            revision: None,
+            backend_path: manifest.waterui_path.clone(),
+        })
     }
 }

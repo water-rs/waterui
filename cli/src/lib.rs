@@ -7,5 +7,6 @@ pub mod debug;
 pub mod device;
 pub mod platform;
 pub mod project;
+pub mod templates;
 pub mod toolchain;
 pub mod utils;
