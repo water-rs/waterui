@@ -1,0 +1,4 @@
+[package]
+type = "playground"
+name = "fun"
+bundle_identifier = "com.example.fun"
