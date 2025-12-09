@@ -1,14 +1,13 @@
 //! Hot reload library loading utilities.
 
+use futures::AsyncWriteExt;
 use libloading::Library;
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use waterui_core::View;
 
 /// Create a library file from binary data.
 #[must_use]
-pub fn create_library(data: &[u8]) -> PathBuf {
+pub async fn create_library(data: &[u8]) -> PathBuf {
     let dir = std::env::temp_dir().join("hot_reload");
     if !dir.exists() {
         std::fs::create_dir_all(&dir).expect("Failed to create hot_reload directory");
@@ -26,8 +25,13 @@ pub fn create_library(data: &[u8]) -> PathBuf {
         path.set_extension("so");
     }
 
-    let mut file = File::create(&path).expect("Failed to create library file");
-    file.write_all(data).expect("Failed to write library data");
+    let mut file = async_fs::File::create(&path)
+        .await
+        .expect("Failed to create library file");
+
+    file.write_all(data)
+        .await
+        .expect("Failed to write library data");
 
     path
 }

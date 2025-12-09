@@ -33,6 +33,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
 
+[target.'cfg(target_os = "android")'.dependencies]
+tracing-android = "0.2"
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+tracing-oslog = "0.1"
+
 
 [[bin]]
 name = "generate_header"
