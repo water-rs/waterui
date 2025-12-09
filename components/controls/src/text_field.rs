@@ -108,6 +108,10 @@ impl TextField {
     /// Sets the maximum number of lines to show.
     ///
     /// By default, the line limit is 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `line_limit` is 0.
     #[must_use]
     pub fn line_limit(mut self, line_limit: usize) -> Self {
         assert!(line_limit > 0, "Line limit must be greater than 0");

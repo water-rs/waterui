@@ -76,8 +76,8 @@ impl Layout for FrameLayout {
         }
 
         // Create constrained proposal for child
-        let proposed_width = self.ideal_width.unwrap_or(bounds.width());
-        let proposed_height = self.ideal_height.unwrap_or(bounds.height());
+        let proposed_width = self.ideal_width.unwrap_or_else(|| bounds.width());
+        let proposed_height = self.ideal_height.unwrap_or_else(|| bounds.height());
 
         let child_proposal = ProposalSize {
             width: Some(
