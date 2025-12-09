@@ -88,7 +88,7 @@ time = "0.3"
 tiny-skia = "0.11"
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
 zenwave = { git = "https://github.com/zen-rs/zenwave", branch = "dev" }
-skyzen = { git = "https://github.com/zen-rs/skyzen" , branch = "dev" }
+skyzen = { git = "https://github.com/zen-rs/skyzen", branch = "dev", default-features = false }
 
 tracing-panic = "0.1.2"
 

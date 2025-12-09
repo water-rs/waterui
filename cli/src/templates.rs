@@ -11,6 +11,12 @@ use std::{
 use include_dir::{Dir, include_dir};
 use smol::fs;
 
+/// Normalize a path to use forward slashes for config files (Cargo.toml, Xcode projects, etc.)
+/// This is necessary because Windows uses backslashes but these config files expect forward slashes.
+fn normalize_path_for_config(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 /// Embedded template directories.
 mod embedded {
     use super::{Dir, include_dir};
@@ -56,7 +62,7 @@ impl TemplateContext {
                 &self
                     .android_backend_path
                     .as_ref()
-                    .map_or(String::new(), |p| p.display().to_string()),
+                    .map_or(String::new(), |p| normalize_path_for_config(p)),
             )
             .replace(
                 "__USE_REMOTE_DEV_BACKEND__",
@@ -89,7 +95,7 @@ impl TemplateContext {
     fn waterui_deps(&self) -> String {
         self.waterui_path.as_ref().map_or_else(
             || "waterui = \"0.1\"".to_string(),
-            |p| format!("waterui = {{ path = \"{}\" }}", p.display()),
+            |p| format!("waterui = {{ path = \"{}\" }}", normalize_path_for_config(p)),
         )
     }
 
