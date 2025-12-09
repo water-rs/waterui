@@ -1,34 +1,16 @@
 //! Hotreload view component.
 
 use super::event::{CliEvent, ConnectionError};
-use super::{CliConnection, library, logging};
+use super::{CliConnection, library};
 use crate::ViewExt;
 use crate::prelude::*;
-use futures::StreamExt;
+use executor_core::spawn_local;
 
-/// A view wrapper that enables hot reloading.
-///
-/// Wraps an initial view and sets up the hot reload infrastructure:
-/// - WebSocket connection to CLI
-/// - Panic forwarding
-/// - Log forwarding
-/// - Status overlay
-///
-/// # Example
-///
-/// ```ignore
-/// fn main() -> impl View {
-///     Hotreload::new(app_content())
-/// }
-/// ```
 #[derive(Debug)]
 pub struct Hotreload<V> {
     initial: V,
     config: HotReloadConfig,
 }
-
-/// Default hot reload server port (must match CLI default).
-pub const DEFAULT_HOT_RELOAD_PORT: u16 = 2006;
 
 #[derive(Debug, Clone)]
 pub struct HotReloadConfig {
@@ -42,23 +24,16 @@ impl HotReloadConfig {
         Self { host, port }
     }
 
-    /// Create config from compile-time environment variables.
-    ///
-    /// Reads `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` that are
-    /// set by the CLI via `cargo:rustc-env` in the user project's build.rs.
-    ///
-    /// Falls back to defaults if not set:
-    /// - Host: "127.0.0.1"
-    /// - Port: 2006 (`DEFAULT_HOT_RELOAD_PORT`)
+    /// Create hot reload config from environment variables.
     #[must_use]
-    pub fn from_compile_env() -> Self {
-        let host = option_env!("WATERUI_HOT_RELOAD_HOST")
-            .unwrap_or("127.0.0.1")
-            .to_string();
-        let port = option_env!("WATERUI_HOT_RELOAD_PORT")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_HOT_RELOAD_PORT);
-        Self { host, port }
+    pub fn from_env() -> Self {
+        let host =
+            std::env::var("WATERUI_HOT_RELOAD_HOST").expect("WATERUI_HOT_RELOAD_HOST not set");
+        let port = std::env::var("WATERUI_HOT_RELOAD_PORT")
+            .expect("WATERUI_HOT_RELOAD_PORT not set")
+            .parse::<u16>()
+            .expect("WATERUI_HOT_RELOAD_PORT is not a valid u16");
+        Self::new(host, port)
     }
 
     #[must_use]
@@ -78,14 +53,11 @@ impl<V: View> Hotreload<V> {
         Self { initial, config }
     }
 
-    /// Create a new hot-reloadable view using compile-time config.
-    ///
-    /// This reads the hot reload configuration from environment variables
-    /// that were set at compile time by the CLI.
-    pub fn with_compile_env(initial: V) -> Self {
+    /// Create a new hot-reloadable view using environment variables for config.
+    pub fn with_env(initial: V) -> Self {
         Self {
             initial,
-            config: HotReloadConfig::from_compile_env(),
+            config: HotReloadConfig::from_env(),
         }
     }
 }
@@ -98,69 +70,17 @@ impl<V: View> View for Hotreload<V> {
 
         content_handler.set(self.initial);
 
-        logging::install_panic_forwarder();
-        logging::install_tracing_forwarder();
-
-        let (connection, outbound) = CliConnection::connect(self.config);
-
-        logging::register_sender(outbound);
+        let connection = CliConnection::connect(self.config);
+        let (_sender, _receiver) = connection.split();
 
         // Show connecting overlay
         overlay_handler.set(StatusOverlay::connecting());
 
-        executor_core::spawn_local(async move {
-            run_event_loop(connection, content_handler, overlay_handler).await;
-            logging::clear_sender();
-        })
-        .detach();
+        spawn_local(async move { todo!() }).detach();
 
         overlay(content_dynamic, overlay_dynamic)
     }
 }
-
-/// Process events from CLI connection.
-async fn run_event_loop(
-    mut connection: CliConnection,
-    content_handler: DynamicHandler,
-    overlay_handler: DynamicHandler,
-) {
-    while let Some(event) = connection.next().await {
-        match event {
-            CliEvent::Connected => {
-                overlay_handler.set(());
-            }
-
-            CliEvent::Disconnected => {
-                // Will show reconnecting on next event
-            }
-
-            CliEvent::Reconnecting {
-                attempt,
-                max_attempts,
-            } => {
-                overlay_handler.set(StatusOverlay::reconnecting(attempt, max_attempts));
-            }
-
-            CliEvent::LibraryReady(path) => {
-                let view = unsafe { library::load_view(&path) };
-                content_handler.set(view);
-            }
-
-            CliEvent::LogFilterChanged(level) => {
-                logging::set_log_level(&level);
-            }
-
-            CliEvent::Error(err) => {
-                overlay_handler.set(StatusOverlay::error(err, overlay_handler.clone()));
-                break;
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Status Overlay Views
-// ============================================================================
 
 struct StatusOverlay;
 

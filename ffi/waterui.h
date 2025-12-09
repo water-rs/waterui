@@ -1343,7 +1343,6 @@ typedef struct WuiFn_WuiPhotoEvent {
 
 typedef struct WuiPhoto {
   struct WuiStr source;
-  struct WuiAnyView *placeholder;
   struct WuiFn_WuiPhotoEvent on_event;
 } WuiPhoto;
 

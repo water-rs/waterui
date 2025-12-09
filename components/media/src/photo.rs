@@ -7,19 +7,18 @@
 //! use waterui_media::url::Url;
 //!
 //! let url = Url::parse("https://example.com/image.jpg").unwrap();
-//! let _photo = Photo::new(url).placeholder(waterui_core::AnyView::new(()));
+//! let _photo = Photo::new(url);
 //! ```
 use crate::image::Image;
-use waterui_core::{AnyView, configurable};
+use waterui_core::configurable;
 
 use crate::Url;
 
-/// Configuration for the Photo component, including the image source and placeholder view.
+/// Configuration for the Photo component.
 pub struct PhotoConfig {
     /// The URL of the image to display.
     pub source: Url,
-    /// The view to display while the image is loading or unavailable.
-    pub placeholder: AnyView,
+    /// Event handler for photo loading events.
     pub on_event: OnEvent,
 }
 
@@ -48,22 +47,10 @@ impl Photo {
     pub fn new(source: impl Into<Url>) -> Self {
         Self(PhotoConfig {
             source: source.into(),
-            placeholder: AnyView::default(),
             on_event: Box::new(|_event| {
                 // No-op default handler
             }),
         })
-    }
-
-    /// Sets the placeholder view to display while the image is loading or unavailable.
-    ///
-    /// # Arguments
-    ///
-    /// * `placeholder` - The view to display as a placeholder.
-    #[must_use]
-    pub fn placeholder(mut self, placeholder: impl Into<AnyView>) -> Self {
-        self.0.placeholder = placeholder.into();
-        self
     }
 
     /// Sets the event handler for the photo.
