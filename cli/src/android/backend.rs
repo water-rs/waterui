@@ -22,6 +22,22 @@ pub struct AndroidBackend {
 }
 
 impl AndroidBackend {
+    /// Create a new Android backend configuration with default settings.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            project_path: default_android_project_path(),
+            version: None,
+        }
+    }
+
+    /// Set a custom project path (defaults to "android").
+    #[must_use]
+    pub fn with_project_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.project_path = path.into();
+        self
+    }
+
     /// Get the path to the Android project within the `WaterUI` project.
     #[must_use]
     pub const fn project_path(&self) -> &PathBuf {
@@ -37,6 +53,12 @@ impl AndroidBackend {
         } else {
             base.join("gradlew")
         }
+    }
+}
+
+impl Default for AndroidBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
