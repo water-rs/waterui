@@ -1,10 +1,11 @@
 use color_eyre::eyre::{self, eyre};
+use smol::{future::block_on, process::Command};
 use tracing::error;
 
 use crate::{
     android::platform::AndroidPlatform,
     device::{Artifact, Device, FailToRun, RunOptions, Running},
-    utils::run_command,
+    utils::{command, run_command},
 };
 
 /// Represents an Android device (physical or emulator).
@@ -118,9 +119,12 @@ impl Device for AndroidDevice {
             .map_err(|e| FailToRun::Launch(eyre!("Failed to parse PID from adb output: {e}")))?;
 
         let (running, _sender) = Running::new(move || {
-            let result = std::process::Command::new("adb")
-                .args(["shell", "kill", &pid.to_string()])
-                .output();
+            let result = block_on(async move {
+                let mut cmd = Command::new("adb");
+                command(cmd.args(["shell", "kill", &pid.to_string()]))
+                    .output()
+                    .await
+            });
 
             if let Err(e) = result {
                 error!("Failed to kill process {}: {}", pid, e);

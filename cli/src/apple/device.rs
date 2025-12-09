@@ -1,14 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, process::Stdio};
+use std::{collections::HashMap, path::PathBuf};
 
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
-use smol::{
-    future::zip,
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-    spawn,
-    stream::StreamExt,
-};
+use smol::{future::block_on, process::Command, spawn};
 use tracing::info;
 
 use crate::{
@@ -58,14 +52,6 @@ impl Device for MacOS {
         artifact: Artifact,
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
-        // No need to install, let's run it directly
-
-        // `launchctl` and `open` require to set up environment variables for all GUI apps
-        // So we execute the binary directly
-        // However, some functionalities may be limited without going through `open`
-        // For instance, URL schemes may not work properly
-        // In the future, we may consider to support `open` with proper environment setup
-
         // Artifact must end with `.app` for MacOS
         let artifact_path = artifact.path();
 
@@ -73,65 +59,37 @@ impl Device for MacOS {
             return Err(FailToRun::InvalidArtifact);
         }
 
-        let app_name = artifact_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or(FailToRun::InvalidArtifact)?;
-
         info!("Launching app on MacOS: {}", artifact.path().display());
-        let executable = artifact_path.join("Contents/MacOS").join(app_name);
 
-        // Configure environment variables and launch the app
-        let mut command = Command::new(executable);
+        // Build the `open` command
+        // Note: We can't easily capture stdout/stderr with `open`, so we just launch the app
+        // For debugging output, use Console.app or run the executable directly
+        let mut command = Command::new("open");
+        command
+            .arg("-W") // Wait for app to exit
+            .arg("-n"); // Open a new instance
+
+        // Add environment variables
         for (key, value) in options.env_vars() {
-            command.env(key, value);
+            command.arg("--env").arg(format!("{key}={value}"));
         }
 
+        command.arg(artifact_path);
         command.kill_on_drop(true);
 
         let (running, sender) = Running::new(|| {
             // no-op, since kill_on_drop is set
         });
 
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
+        // Spawn the open command
+        let child = command
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
-        let mut stdout =
-            BufReader::new(child.stdout.take().expect("Failed to take stdout")).lines();
-
-        let mut stderr =
-            BufReader::new(child.stderr.take().expect("Failed to take stderr")).lines();
-
+        // Spawn a task to wait for the child to exit and send Exited event
         spawn(async move {
-            zip(
-                {
-                    let sender = sender.clone();
-                    async move {
-                        while let Ok(Some(line)) = stdout.try_next().await {
-                            if sender
-                                .try_send(DeviceEvent::Stdout { message: line })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                },
-                async move {
-                    while let Ok(Some(line)) = stderr.try_next().await {
-                        if sender
-                            .try_send(DeviceEvent::Stderr { message: line })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                },
-            )
-            .await;
+            let _ = child.output().await;
+            let _ = sender.try_send(DeviceEvent::Exited);
         })
         .detach();
 
@@ -306,9 +264,11 @@ impl Device for AppleSimulator {
         let (running, _sender) = Running::new(move || {
             // Terminate the app when Running is dropped
             // This runs synchronously in drop, so we use std::process::Command
-            let _ = std::process::Command::new("xcrun")
-                .args(["simctl", "terminate", &udid, &bundle_id])
-                .output();
+
+            let fut = run_command("xcrun", ["simctl", "terminate", &udid, &bundle_id]);
+            if let Err(err) = block_on(fut) {
+                tracing::error!("Failed to terminate app on simulator: {err}");
+            }
         });
 
         Ok(running)

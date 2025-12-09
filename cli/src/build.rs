@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use smol::{process::Command, unblock};
-use target_lexicon::Triple;
+use target_lexicon::{Environment, OperatingSystem, Triple};
+
+use crate::utils::{command, run_command};
 
 /// Represents a Rust build for a specific target triple.
 #[derive(Debug)]
@@ -63,7 +65,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn dev_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(false, "staticlib").await
+        self.build_inner(false).await
     }
 
     /// Build a library with the specified crate type.
@@ -74,36 +76,43 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        let path = self.build_inner(release, "staticlib").await?;
-        Ok(path)
+        self.build_inner(release).await
     }
 
     /// Return target directory path
-    async fn build_inner(
-        &self,
-        release: bool,
-        crate_type: &str,
-    ) -> Result<PathBuf, RustBuildError> {
-        // cargo rustc --lib -- --crate-type staticlib
+    async fn build_inner(&self, release: bool) -> Result<PathBuf, RustBuildError> {
+        // Build the library - Cargo.toml defines crate-type = ["staticlib", "cdylib", "rlib"]
 
-        let mut command = Command::new("cargo");
-
-        let mut command = command
-            .arg("rustc")
+        let mut cmd = Command::new("cargo");
+        let mut cmd = command(&mut cmd)
+            .arg("build")
             .arg("--lib")
             .args(["--target", self.triple.to_string().as_str()])
-            .arg("--lib")
-            .args(["--", "--crate-type", crate_type])
             .current_dir(&self.path);
 
-        if release {
-            command = command.arg("--release");
+        // Set BINDGEN_EXTRA_CLANG_ARGS for iOS/tvOS/watchOS/visionOS simulator builds
+        // This fixes bindgen issues with the *-apple-*-sim target triples
+        if self.triple.environment == Environment::Sim {
+            if let Some(clang_args) = self.bindgen_clang_args_for_simulator().await {
+                cmd = cmd.env("BINDGEN_EXTRA_CLANG_ARGS", clang_args);
+            }
         }
 
-        command
+        if release {
+            cmd = cmd.arg("--release");
+        }
+
+        let status = cmd
             .status()
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)?;
+
+        if !status.success() {
+            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Cargo build failed",
+            )));
+        }
 
         // use `cargo metadata` to get the target directory
 
@@ -137,7 +146,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn release_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(true, "staticlib").await
+        self.build_inner(true).await
     }
 
     /// Build a hot-reloadable `.dylib` library.
@@ -148,6 +157,45 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_hot_reload_lib(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(false, "dylib").await
+        self.build_inner(false).await
+    }
+
+    /// Generate BINDGEN_EXTRA_CLANG_ARGS for simulator builds.
+    ///
+    /// Bindgen has issues with the `*-apple-*-sim` target triples, so we need to
+    /// provide explicit clang arguments with a proper target and SDK path.
+    async fn bindgen_clang_args_for_simulator(&self) -> Option<String> {
+        let (sdk_name, target_os) = match self.triple.operating_system {
+            OperatingSystem::IOS(_) => ("iphonesimulator", "ios"),
+            OperatingSystem::TvOS(_) => ("appletvsimulator", "tvos"),
+            OperatingSystem::WatchOS(_) => ("watchsimulator", "watchos"),
+            OperatingSystem::VisionOS(_) => ("xrsimulator", "xros"),
+            _ => return None,
+        };
+
+        let arch = match self.triple.architecture {
+            target_lexicon::Architecture::Aarch64(_) => "arm64",
+            target_lexicon::Architecture::X86_64 => "x86_64",
+            _ => return None,
+        };
+
+        // Get SDK path using xcrun
+        let sdk_path = run_command("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())?;
+
+        // Use a reasonable minimum deployment target
+        let min_version = match target_os {
+            "ios" => "17.0",
+            "tvos" => "17.0",
+            "watchos" => "10.0",
+            "xros" => "1.0",
+            _ => "17.0",
+        };
+
+        Some(format!(
+            "--target={arch}-apple-{target_os}{min_version}-simulator -isysroot {sdk_path}"
+        ))
     }
 }
