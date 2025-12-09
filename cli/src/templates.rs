@@ -8,6 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const WATERUI_VERSION: &str = "0.1.0";
+const WATERUI_FFI_VERSION: &str = "0.1.0";
+
 use include_dir::{Dir, include_dir};
 use smol::fs;
 
@@ -72,7 +75,6 @@ impl TemplateContext {
                     "false"
                 },
             )
-            .replace("__WATERUI_DEPS__", &self.waterui_deps())
             .replace(
                 "__SWIFT_PACKAGE_REFERENCE_ENTRY__",
                 &self.swift_package_reference_entry(),
@@ -92,60 +94,59 @@ impl TemplateContext {
         PathBuf::from(path_str.replace("AppName", &self.app_name))
     }
 
-    fn waterui_deps(&self) -> String {
-        self.waterui_path.as_ref().map_or_else(
-            || "waterui = \"0.1\"".to_string(),
-            |p| {
-                format!(
-                    "waterui = {{ path = \"{}\" }}",
-                    normalize_path_for_config(p)
-                )
-            },
-        )
-    }
-
+    /// Generate the XCode package reference entry line for the project file.
     fn swift_package_reference_entry(&self) -> String {
-        self.waterui_path.as_ref().map_or_else(
-            || {
-                "\t\t\t\tD01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference \"apple-backend\" */,"
-                    .to_string()
-            },
-            |p| {
+        const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
+        const INDENT: &str = "\t\t\t\t";
+
+        match &self.waterui_path {
+            Some(path) => {
+                let backend_path = format!("{}/backends/apple", path.display());
                 format!(
-                    "\t\t\t\tD01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference \"{}/backends/apple\" */,",
-                    p.display()
+                    "{INDENT}{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */,"
                 )
-            },
-        )
+            }
+            None => {
+                format!(
+                    "{INDENT}{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */,"
+                )
+            }
+        }
     }
 
+    /// Generate the XCode package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
-        self.waterui_path.as_ref().map_or_else(
-            || {
-                r#"/* Begin XCRemoteSwiftPackageReference section */
-		D01867782E6C82CA00802E96 /* XCRemoteSwiftPackageReference "apple-backend" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/user/waterui-apple.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */"#
-                    .to_string()
-            },
-            |p| {
+        const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
+        const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
+        const MIN_VERSION: &str = "1.0.0";
+
+        match &self.waterui_path {
+            Some(path) => {
+                let backend_path = format!("{}/backends/apple", path.display());
                 format!(
-                    r#"/* Begin XCLocalSwiftPackageReference section */
-		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "{0}/backends/apple" */ = {{
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "{0}/backends/apple";
-		}};
-/* End XCLocalSwiftPackageReference section */"#,
-                    p.display()
+                    "/* Begin XCLocalSwiftPackageReference section */\n\
+                    \t\t{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */ = {{\n\
+                    \t\t\tisa = XCLocalSwiftPackageReference;\n\
+                    \t\t\trelativePath = \"{backend_path}\";\n\
+                    \t\t}};\n\
+                    /* End XCLocalSwiftPackageReference section */"
                 )
-            },
-        )
+            }
+            None => {
+                format!(
+                    "/* Begin XCRemoteSwiftPackageReference section */\n\
+                    \t\t{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */ = {{\n\
+                    \t\t\tisa = XCRemoteSwiftPackageReference;\n\
+                    \t\t\trepositoryURL = \"{REPO_URL}\";\n\
+                    \t\t\trequirement = {{\n\
+                    \t\t\t\tkind = upToNextMajorVersion;\n\
+                    \t\t\t\tminimumVersion = {MIN_VERSION};\n\
+                    \t\t\t}};\n\
+                    \t\t}};\n\
+                    /* End XCRemoteSwiftPackageReference section */"
+                )
+            }
+        }
     }
 }
 
@@ -271,13 +272,19 @@ pub mod android {
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
 pub mod root {
-    use super::{Path, TemplateContext, embedded, fs, io};
+    use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
 
-    /// Root template files (only .tpl files at the root level).
-    static ROOT_TEMPLATES: &[&str] = &["Cargo.toml.tpl", "lib.rs.tpl", ".gitignore.tpl"];
+    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config};
+
+    /// Root template files (only .tpl files at the root level, excluding Cargo.toml).
+    static ROOT_TEMPLATES: &[&str] = &["lib.rs.tpl", ".gitignore.tpl"];
 
     /// Write root templates to the given directory.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        // Generate Cargo.toml programmatically using toml_edit
+        generate_cargo_toml(base_dir, ctx).await?;
+
+        // Process remaining templates
         for template_name in ROOT_TEMPLATES {
             if let Some(file) = embedded::ROOT.get_file(template_name) {
                 let dest_name = template_name.strip_suffix(".tpl").unwrap_or(template_name);
@@ -299,6 +306,106 @@ pub mod root {
                 fs::write(&dest_path, rendered).await?;
             }
         }
+        Ok(())
+    }
+
+    /// Generate Cargo.toml programmatically using serde-compatible structs for type safety.
+    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        use serde::Serialize;
+        use std::collections::BTreeMap;
+
+        #[derive(Serialize)]
+        struct CargoManifest {
+            package: PackageSection,
+            lib: LibSection,
+            dependencies: BTreeMap<String, DependencyValue>,
+            workspace: WorkspaceSection,
+        }
+
+        #[derive(Serialize)]
+        struct PackageSection {
+            name: String,
+            version: String,
+            edition: String,
+            authors: Vec<String>,
+        }
+
+        #[derive(Serialize)]
+        struct LibSection {
+            #[serde(rename = "crate-type")]
+            crate_type: Vec<String>,
+        }
+
+        #[derive(Serialize)]
+        struct WorkspaceSection {}
+
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        enum DependencyValue {
+            Simple(String),
+            Detailed(DependencyDetail),
+        }
+
+        #[derive(Serialize)]
+        struct DependencyDetail {
+            path: String,
+        }
+
+        let mut dependencies = BTreeMap::new();
+
+        if let Some(waterui_path) = &ctx.waterui_path {
+            // Local path dependencies
+            dependencies.insert(
+                "waterui".to_string(),
+                DependencyValue::Detailed(DependencyDetail {
+                    path: normalize_path_for_config(waterui_path),
+                }),
+            );
+
+            let ffi_path = waterui_path.join("ffi");
+            dependencies.insert(
+                "waterui-ffi".to_string(),
+                DependencyValue::Detailed(DependencyDetail {
+                    path: normalize_path_for_config(&ffi_path),
+                }),
+            );
+        } else {
+            // Registry dependencies
+            dependencies.insert(
+                "waterui".to_string(),
+                DependencyValue::Simple(WATERUI_VERSION.to_string()),
+            );
+            dependencies.insert(
+                "waterui-ffi".to_string(),
+                DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
+            );
+        }
+
+        let manifest = CargoManifest {
+            package: PackageSection {
+                name: ctx.crate_name.clone(),
+                version: "0.1.0".to_string(),
+                edition: "2024".to_string(),
+                authors: vec![ctx.author.clone()],
+            },
+            lib: LibSection {
+                crate_type: vec![
+                    "staticlib".to_string(),
+                    "cdylib".to_string(),
+                    "rlib".to_string(),
+                ],
+            },
+            dependencies,
+            workspace: WorkspaceSection {},
+        };
+
+        // Serialize to TOML
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let cargo_path = base_dir.join("Cargo.toml");
+        fs::write(&cargo_path, toml_string).await?;
+
         Ok(())
     }
 }

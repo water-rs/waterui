@@ -20,11 +20,29 @@ pub(crate) async fn which(name: &'static str) -> Result<PathBuf, which::Error> {
     unblock(move || which::which(name)).await
 }
 
-static STD_OUTPUT: AtomicBool = AtomicBool::new(true);
+/// Enable or disable standard output for command executions.
+///
+/// By default, standard output is disabled.
+static STD_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable standard output for command executions.
 pub fn set_std_output(enabled: bool) {
     STD_OUTPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn command(command: &mut Command) -> &mut Command {
+    command
+        .kill_on_drop(true)
+        .stdout(if STD_OUTPUT.load(Ordering::SeqCst) {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .stderr(if STD_OUTPUT.load(Ordering::SeqCst) {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
 }
 
 /// Run a command with the specified name and arguments.
@@ -70,7 +88,7 @@ pub(crate) async fn run_command(
 ///
 /// # Errors
 /// - If the copy operation fails.
-pub(crate) async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
     let from = from.as_ref().to_path_buf();
     let to = to.as_ref().to_path_buf();
     unblock(move || reflink::reflink_or_copy(from, to).map(|_| ())).await
