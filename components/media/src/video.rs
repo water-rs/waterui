@@ -78,7 +78,10 @@ pub enum Event {
     /// The video has resumed playing after buffering.
     BufferingEnded,
     /// An error occurred while loading or playing the video.
-    Error { message: String },
+    Error {
+        /// The error message describing what went wrong.
+        message: String
+    },
 }
 
 type OnEvent = Box<dyn Fn(Event) + 'static>;

@@ -84,7 +84,7 @@ impl HotReloadServer {
         for port in starting_port..end_port {
             match Self::try_launch_on_port(port).await {
                 Ok(server) => return Ok(server),
-                Err(FailToLaunch::BindError(_, _)) => continue,
+                Err(FailToLaunch::BindError(_, _)) => {}
                 Err(e) => return Err(e),
             }
         }

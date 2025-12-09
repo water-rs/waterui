@@ -1,3 +1,5 @@
+//! Project management and build utilities for `WaterUI` CLI.
+
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 
@@ -33,7 +35,7 @@ impl Project {
     /// # Errors
     /// - If any step in the build, package, or run process fails.
     pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
-        use crate::debug::hot_reload::{HotReloadServer, DEFAULT_PORT};
+        use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
 
         let platform = device.platform();
 
@@ -59,10 +61,7 @@ impl Project {
                 .map_err(FailToRun::HotReload)?;
 
             // Set environment variables for the app to connect back
-            run_options.insert_env_var(
-                "WATERUI_HOT_RELOAD_HOST".to_string(),
-                server.host(),
-            );
+            run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
             run_options.insert_env_var(
                 "WATERUI_HOT_RELOAD_PORT".to_string(),
                 server.port().to_string(),
@@ -130,6 +129,10 @@ impl Project {
     }
 
     /// Clean build artifacts for the project on the specified platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cleaning fails.
     pub async fn clean(&self, platform: impl Platform) -> Result<(), eyre::Report> {
         // Parrelly clean rust build artifacts and platform specific build artifacts
         platform.clean(self).await
@@ -141,6 +144,10 @@ impl Project {
     /// - Rust target directory
     /// - Apple build artifacts (if backend configured)
     /// - Android build artifacts (if backend configured)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any cleaning operation fails.
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
             android::platform::AndroidPlatform, apple::platform::ApplePlatform, platform::Platform,
@@ -168,6 +175,10 @@ impl Project {
     }
 
     /// Package the project for the specified platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if packaging fails.
     pub async fn package(
         &self,
         platform: impl Platform,
@@ -191,6 +202,7 @@ pub enum FailToOpenProject {
     #[error("Invalid Cargo.toml: missing crate name")]
     MissingCrateName,
 
+    /// Project permissions are not allowed in non-playground projects.
     #[error("Project permissions are not allowed in non-playground projects")]
     PermissionsNotAllowedInNonPlayground,
 }

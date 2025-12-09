@@ -131,7 +131,11 @@ impl Device for AndroidDevice {
     }
 }
 
+/// Android emulator/simulator device.
+#[derive(Debug)]
 pub struct AndroidSimulator {
+    /// Name of the simulator.
     pub name: String,
+    /// Unique identifier.
     pub id: String,
 }
