@@ -9,17 +9,20 @@ use super::event::ConnectionError;
 use crate::debug::hot_reload::HotReloadConfig;
 
 /// Connection to the CLI hot reload server.
+#[derive(Debug)]
 pub struct CliConnection {
     socket: zenwave::websocket::WebSocket,
 }
 
 /// Sender half of the CLI connection (for future app-to-CLI communication).
+#[derive(Debug)]
 pub struct CliSender {
     #[allow(dead_code)]
     socket: zenwave::websocket::WebSocket,
 }
 
 /// Receiver half of the CLI connection.
+#[derive(Debug)]
 pub struct CliReceiver {
     socket: zenwave::websocket::WebSocket,
 }
@@ -63,23 +66,16 @@ impl CliReceiver {
                         binary: data.to_vec(),
                     });
                 }
-                Ok(Some(WebSocketMessage::Text(_))) => {
-                    // Ignore text messages for now
-                    continue;
-                }
                 Ok(Some(
-                    WebSocketMessage::Ping(_)
+                    WebSocketMessage::Text(_)
+                    | WebSocketMessage::Ping(_)
                     | WebSocketMessage::Pong(_)
                     | WebSocketMessage::Close,
                 )) => {
-                    // Ignore control messages
-                    continue;
+                    // Ignore text and control messages
                 }
-                Ok(None) => {
+                Ok(None) | Err(_) => {
                     // Connection closed
-                    return None;
-                }
-                Err(_) => {
                     return None;
                 }
             }

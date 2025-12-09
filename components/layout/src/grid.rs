@@ -338,9 +338,9 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::new(Some(200.0), None), &children);
 
         // Width is parent-proposed
-        assert_eq!(size.width, 200.0);
+        assert!((size.width - 200.0).abs() < f32::EPSILON);
         // Height: row1 max(30, 40) + spacing + row2 max(20, 50) = 40 + 10 + 50 = 100
-        assert_eq!(size.height, 100.0);
+        assert!((size.height - 100.0).abs() < f32::EPSILON);
     }
 
     #[test]

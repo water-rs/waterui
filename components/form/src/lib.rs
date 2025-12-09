@@ -183,6 +183,7 @@ impl FormBuilder for f32 {
     fn view(binding: &Binding<Self>, label: AnyView, placeholder: Str) -> Self::View {
         waterui_controls::Slider::new(
             0.0..=1.0,
+            #[allow(clippy::cast_possible_truncation)]
             &Binding::mapping(binding, f64::from, |binding, val| binding.set(val as Self)),
         )
         .label(label)
