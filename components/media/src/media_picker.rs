@@ -58,7 +58,7 @@ impl Selected {
     ///
     /// # Returns
     ///
-    /// Returns the loaded [`Media`] item (Image, Video, or LivePhoto).
+    /// Returns the loaded [`Media`] item (Image, Video, or `LivePhoto`).
     ///
     /// # Example
     ///
@@ -128,7 +128,7 @@ pub struct MediaLoadResult {
     pub video_url_ptr: *const u8,
     /// Length of the video URL string in bytes.
     pub video_url_len: usize,
-    /// Media type: 0 = Image, 1 = Video, 2 = LivePhoto.
+    /// Media type: 0 = Image, 1 = Video, 2 = `LivePhoto`.
     pub media_type: u8,
 }
 
@@ -210,12 +210,12 @@ impl MediaLoadCallback {
             F2: FnOnce(MediaLoadResult),
         {
             unsafe {
-                let f = alloc::boxed::Box::from_raw(data as *mut F2);
+                let f = alloc::boxed::Box::from_raw(data.cast::<F2>());
                 f(result);
             }
         }
 
-        let data = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(f)) as *mut ();
+        let data = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(f)).cast::<()>();
         Self {
             data,
             call: call_impl::<F>,
