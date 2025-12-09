@@ -138,6 +138,29 @@ typedef enum WuiVideoEventType {
   WuiVideoEventType_BufferingEnded = 4,
 } WuiVideoEventType;
 
+/**
+ * FFI representation of a simple media filter type.
+ * Complex nested filters (All, Not, Any) are not supported via FFI.
+ */
+typedef enum WuiMediaFilterType {
+  /**
+   * Filter for live photos only.
+   */
+  WuiMediaFilterType_LivePhoto = 0,
+  /**
+   * Filter for videos only.
+   */
+  WuiMediaFilterType_Video = 1,
+  /**
+   * Filter for images only.
+   */
+  WuiMediaFilterType_Image = 2,
+  /**
+   * Filter for all media types.
+   */
+  WuiMediaFilterType_All = 3,
+} WuiMediaFilterType;
+
 typedef enum WuiProgressStyle {
   WuiProgressStyle_Linear,
   WuiProgressStyle_Circular,
@@ -390,6 +413,14 @@ typedef struct Computed_ResolvedColor Computed_ResolvedColor;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_ResolvedFont Computed_ResolvedFont;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Selected Computed_Selected;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1440,6 +1471,48 @@ typedef struct WuiComputedVideo {
 } WuiComputedVideo;
 
 typedef struct Computed_Video WuiComputed_Video;
+
+typedef struct Computed_Selected WuiComputed_Selected;
+
+/**
+ * FFI representation of a selected media item.
+ */
+typedef struct WuiSelected {
+  /**
+   * The unique identifier of the selected media item.
+   */
+  uint32_t id;
+} WuiSelected;
+
+/**
+ * A C-compatible function wrapper that can be called multiple times.
+ *
+ * This structure wraps a Rust `Fn` closure to allow it to be passed across
+ * the FFI boundary while maintaining proper memory management.
+ */
+typedef struct WuiFn_WuiSelected {
+  void *data;
+  void (*call)(const void*, struct WuiSelected);
+  void (*drop)(void*);
+} WuiFn_WuiSelected;
+
+/**
+ * FFI representation of the MediaPicker component.
+ */
+typedef struct WuiMediaPicker {
+  /**
+   * Pointer to Computed<Selected> for the current selection.
+   */
+  WuiComputed_Selected *selection;
+  /**
+   * The filter type to apply.
+   */
+  enum WuiMediaFilterType filter;
+  /**
+   * Callback when selection changes.
+   */
+  struct WuiFn_WuiSelected on_selection;
+} WuiMediaPicker;
 
 typedef struct WuiListItem {
   struct WuiAnyView *content;
@@ -2522,6 +2595,19 @@ struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
                                                                 struct WuiComputedVideo,
                                                                 struct WuiWatcherMetadata*),
                                                    void (*drop)(void*));
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiMediaPicker waterui_force_as_media_picker(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_media_picker_id(void);
 
 /**
  * # Safety
