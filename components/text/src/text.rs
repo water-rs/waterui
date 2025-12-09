@@ -174,6 +174,8 @@ impl Text {
         self
     }
 
+    /// Applies an underline to the text.
+    #[must_use]
     pub fn underline(mut self, underline: impl IntoSignal<bool>) -> Self {
         let underline = underline.into_signal();
         self.0.content = self
@@ -185,6 +187,8 @@ impl Text {
         self
     }
 
+    /// Sets the foreground (text) color.
+    #[must_use]
     pub fn foreground(mut self, color: impl Into<Color>) -> Self {
         let color = color.into();
         self.0.content = self
@@ -195,6 +199,8 @@ impl Text {
         self
     }
 
+    /// Sets the background color for the text.
+    #[must_use]
     pub fn background_color(mut self, color: impl Into<Color>) -> Self {
         let color = color.into();
         self.0.content = self

@@ -22,13 +22,13 @@ fn ndk_host_tag() -> &'static str {
 
     let host = Triple::host();
 
+    // TODO: Better ARM support
     match (&host.operating_system, &host.architecture) {
-        (OperatingSystem::Darwin(_), Architecture::Aarch64(_)) => "darwin-x86_64", // NDK uses x86_64 even on ARM Macs (Rosetta)
-        (OperatingSystem::Darwin(_), _) => "darwin-x86_64",
-        (OperatingSystem::Linux, Architecture::Aarch64(_)) => "linux-x86_64", // NDK doesn't have native ARM64 Linux builds
-        (OperatingSystem::Linux, _) => "linux-x86_64",
+        (OperatingSystem::Darwin(_), Architecture::Aarch64(_) | _) => "darwin-x86_64", // NDK uses x86_64 even on ARM Macs (Rosetta)
         (OperatingSystem::Windows, _) => "windows-x86_64",
-        _ => "linux-x86_64", // Fallback
+        // NDK doesn't have native ARM64 Linux builds
+        (OperatingSystem::Linux, _) => "linux-x86_64",
+        _ => unimplemented!(),
     }
 }
 
@@ -39,7 +39,7 @@ fn ndk_linker_path(ndk_path: &Path, abi: &str) -> PathBuf {
         "x86_64" => "x86_64-linux-android",
         "armeabi-v7a" => "armv7a-linux-androideabi",
         "x86" => "i686-linux-android",
-        _ => "aarch64-linux-android",
+        _ => unimplemented!(),
     };
 
     // Use API level 21 as minimum (Android 5.0)
@@ -105,7 +105,7 @@ impl AndroidPlatform {
             Architecture::X86_64 => "x86_64",
             Architecture::Arm(_) => "armeabi-v7a",
             Architecture::X86_32(_) => "x86",
-            _ => "arm64-v8a", // Default to arm64
+            _ => unimplemented!(),
         }
     }
 
@@ -117,7 +117,7 @@ impl AndroidPlatform {
             "x86_64" => Architecture::X86_64,
             "armeabi-v7a" => Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
             "x86" => Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
-            _ => Architecture::Aarch64(Aarch64Architecture::Aarch64),
+            _ => unimplemented!(),
         };
         Self { architecture }
     }
@@ -139,15 +139,12 @@ impl Platform for AndroidPlatform {
                 let identifier = parts[0].to_string();
 
                 // Query the device's primary ABI
-                let abi = match run_command(
+                let abi = run_command(
                     "adb",
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                 )
                 .await
-                {
-                    Ok(abi) => abi.trim().to_string(),
-                    Err(_) => "arm64-v8a".to_string(), // Fallback to arm64
-                };
+                .map_or_else(|_| "arm64-v8a".to_string(), |abi| abi.trim().to_string());
 
                 devices.push(AndroidDevice::new(identifier, abi));
             }
@@ -182,10 +179,15 @@ impl Platform for AndroidPlatform {
         Ok(())
     }
 
-    async fn build(&self, project: &Project, options: BuildOptions) -> eyre::Result<std::path::PathBuf> {
+    async fn build(
+        &self,
+        project: &Project,
+        options: BuildOptions,
+    ) -> eyre::Result<std::path::PathBuf> {
         // Get NDK path for configuring the linker
-        let ndk_path = AndroidNdk::detect_path()
-            .ok_or_else(|| eyre::eyre!("Android NDK not found. Please install it via Android Studio."))?;
+        let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
+            eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
+        })?;
 
         // Configure NDK environment for cargo
         let linker = ndk_linker_path(&ndk_path, self.abi());
