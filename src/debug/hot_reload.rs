@@ -48,7 +48,7 @@ impl HotReloadConfig {
 
     /// Get the host address.
     #[must_use]
-    pub fn host(&self) -> &str {
+    pub const fn host(&self) -> &str {
         self.host.as_str()
     }
 
