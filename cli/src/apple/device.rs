@@ -3,14 +3,12 @@ use std::{collections::HashMap, path::PathBuf, process::Stdio};
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
 use smol::{
-    Task,
     future::zip,
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     spawn,
     stream::StreamExt,
 };
-use target_lexicon::OperatingSystem;
 use tracing::info;
 
 use crate::{
@@ -42,21 +40,6 @@ pub enum AppleDevice {
 #[derive(Debug)]
 pub struct MacOS;
 
-/// Represents a running application on an Apple device
-///
-/// Drop the `AppleRunning` to terminate the application
-///
-/// Using `log stream --predicate` to track logs and events
-pub struct AppleRunning {
-    app: Task<()>, // Drop the task to terminate the app
-}
-
-impl Drop for AppleRunning {
-    fn drop(&mut self) {
-        todo!()
-    }
-}
-
 impl Device for MacOS {
     type Platform = ApplePlatform;
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
@@ -66,7 +49,7 @@ impl Device for MacOS {
     }
 
     fn platform(&self) -> Self::Platform {
-        todo!()
+        ApplePlatform::macos()
     }
 
     async fn run(
@@ -165,7 +148,11 @@ impl Device for AppleDevice {
                 // This is the current machine
                 Ok(())
             }
-            Self::Physical(apple_physical_device) => todo!(),
+            Self::Physical(_) => {
+                // Physical devices don't need to be "launched" - they're already running
+                // Connection is handled during run()
+                Ok(())
+            }
         }
     }
 
@@ -173,7 +160,7 @@ impl Device for AppleDevice {
         match self {
             Self::Simulator(simulator) => simulator.platform(),
             Self::Current(mac_os) => mac_os.platform(),
-            Self::Physical(apple_physical_device) => todo!(),
+            Self::Physical(_) => ApplePlatform::ios(), // Physical devices are iOS
         }
     }
 
@@ -184,8 +171,15 @@ impl Device for AppleDevice {
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         match self {
             Self::Simulator(simulator) => simulator.run(artifact, options).await,
-            Self::Current(_mac_os) => todo!(),
-            Self::Physical(apple_physical_device) => todo!(),
+            Self::Current(mac_os) => mac_os.run(artifact, options).await,
+            Self::Physical(_) => {
+                // Physical device deployment requires ios-deploy or similar tooling
+                // For now, return an error indicating this is not yet implemented
+                Err(FailToRun::Run(eyre!(
+                    "Physical iOS device deployment is not yet implemented. \
+                     Please use a simulator or deploy manually via Xcode."
+                )))
+            }
         }
     }
 }
@@ -236,12 +230,12 @@ pub struct AppleSimulator {
 
 impl AppleSimulator {
     pub async fn scan() -> eyre::Result<Vec<Self>> {
-        let content = run_command("xcrun", ["simctl", "list", "devices"]).await?;
-
         #[derive(Deserialize)]
         struct Root {
             devices: HashMap<String, Vec<AppleSimulator>>,
         }
+
+        let content = run_command("xcrun", ["simctl", "list", "devices"]).await?;
 
         let simulators = serde_json::from_str::<Root>(&content)?
             .devices
@@ -255,33 +249,29 @@ impl AppleSimulator {
 
 impl Device for AppleSimulator {
     type Platform = ApplePlatform;
-    /// Launch the Apple device
+
+    /// Launch the Apple simulator (boot it)
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
-        run_command("xcrun", ["simctl", "boot", &self.udid]).await?;
+        // Only boot if not already booted
+        if self.state != "Booted" {
+            run_command("xcrun", ["simctl", "boot", &self.udid]).await?;
+        }
         Ok(())
     }
 
     fn platform(&self) -> Self::Platform {
-        // Simulator must have a same architecture triple as the host machine
-        let host_triple = target_lexicon::Triple::host();
-
-        // it looks like this: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
-        // So we have to use keyword matching to determine the OS, quite hacky but works for now
-        let device_type_id = &self.device_type_identifier;
-
-        todo!()
+        // Parse device type identifier to determine platform
+        ApplePlatform::from_device_type_identifier(&self.device_type_identifier)
     }
 
-    /// Run an artifact on the Apple device
+    /// Run an artifact on the Apple simulator
     ///
-    /// Please lanuch the device before calling this method
+    /// Please launch the device before calling this method
     async fn run(
         &self,
         artifact: Artifact,
         _options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
-        // Fail to run an artifact on an Apple device
-
         info!("Installing app on apple simulator {}", self.name);
         run_command(
             "xcrun",
@@ -293,7 +283,7 @@ impl Device for AppleSimulator {
             ],
         )
         .await
-        .map_err(|e| crate::device::FailToRun::Install(eyre!("Failed to install app: {e}")))?;
+        .map_err(|e| FailToRun::Install(eyre!("Failed to install app: {e}")))?;
 
         info!("Launching app on apple simulator {}", self.name);
 
@@ -302,11 +292,19 @@ impl Device for AppleSimulator {
             ["simctl", "launch", &self.udid, artifact.bundle_id()],
         )
         .await
-        .map_err(|e| crate::device::FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
-        let (running, _sender) = Running::new(|| todo!());
+        // Create a Running instance - termination will use simctl terminate
+        let udid = self.udid.clone();
+        let bundle_id = artifact.bundle_id().to_string();
+        let (running, _sender) = Running::new(move || {
+            // Terminate the app when Running is dropped
+            // This runs synchronously in drop, so we use std::process::Command
+            let _ = std::process::Command::new("xcrun")
+                .args(["simctl", "terminate", &udid, &bundle_id])
+                .output();
+        });
 
-        // TODO: Track the launched app process and return a Running handler
         Ok(running)
     }
 }
