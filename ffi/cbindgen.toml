@@ -38,6 +38,9 @@ WuiAnyView* waterui_main(void);
 #endif
 """
 
+[export]
+include = ["MediaLoadCallback", "MediaLoadResult"]
+
 [export.rename]
 
 
@@ -56,4 +59,3 @@ include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text",
 
 [parse.expand]
 crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","waterui-graphics"]
-

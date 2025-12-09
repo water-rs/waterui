@@ -22,31 +22,32 @@ fi
 
 # Determine Rust target triple from Xcode environment variables
 # PLATFORM_NAME: macosx, iphoneos, iphonesimulator, etc.
-# ARCHS: arm64, x86_64, etc.
+# ARCHS: arm64, x86_64, or "arm64 x86_64" for universal builds
 PLATFORM_NAME="${PLATFORM_NAME:-macosx}"
 ARCHS="${ARCHS:-arm64}"
 
-# Map Xcode platform/arch to Rust target triple
+# When Xcode passes multiple architectures (e.g., "arm64 x86_64"), pick the native one.
+# For Apple Silicon Macs, prefer arm64; for Intel Macs, prefer x86_64.
+if [[ "$ARCHS" == *" "* ]]; then
+    NATIVE_ARCH=$(uname -m)
+    if [[ "$ARCHS" == *"$NATIVE_ARCH"* ]]; then
+        ARCHS="$NATIVE_ARCH"
+    else
+        # Fallback to first architecture in the list
+        ARCHS="${ARCHS%% *}"
+    fi
+fi
+
+# Map Xcode platform to water CLI platform name
 case "$PLATFORM_NAME" in
     macosx)
-        case "$ARCHS" in
-            arm64) TARGET="aarch64-apple-darwin" ;;
-            x86_64) TARGET="x86_64-apple-darwin" ;;
-            *) echo "error: unsupported macOS architecture: $ARCHS" >&2; exit 1 ;;
-        esac
+        WATER_PLATFORM="macos"
         ;;
     iphoneos)
-        case "$ARCHS" in
-            arm64) TARGET="aarch64-apple-ios" ;;
-            *) echo "error: unsupported iOS architecture: $ARCHS" >&2; exit 1 ;;
-        esac
+        WATER_PLATFORM="ios"
         ;;
     iphonesimulator)
-        case "$ARCHS" in
-            arm64) TARGET="aarch64-apple-ios-sim" ;;
-            x86_64) TARGET="x86_64-apple-ios" ;;
-            *) echo "error: unsupported iOS simulator architecture: $ARCHS" >&2; exit 1 ;;
-        esac
+        WATER_PLATFORM="ios-simulator"
         ;;
     *)
         echo "error: unsupported platform: $PLATFORM_NAME" >&2
@@ -55,7 +56,7 @@ case "$PLATFORM_NAME" in
 esac
 
 CONFIGURATION_VALUE="${CONFIGURATION:-Debug}"
-CLI_ARGS=(build "$TARGET" --project "$PROJECT_ROOT")
+CLI_ARGS=(build --platform "$WATER_PLATFORM" --path "$PROJECT_ROOT")
 if [ "$CONFIGURATION_VALUE" = "Release" ]; then
     CLI_ARGS+=(--release)
 fi
