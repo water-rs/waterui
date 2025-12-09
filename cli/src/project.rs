@@ -32,7 +32,9 @@ impl Project {
     ///
     /// # Errors
     /// - If any step in the build, package, or run process fails.
-    pub async fn run(&self, device: impl Device, _hot_reload: bool) -> Result<Running, FailToRun> {
+    pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
+        use crate::debug::hot_reload::{HotReloadServer, DEFAULT_PORT};
+
         let platform = device.platform();
 
         // Build rust library for the target platform
@@ -47,9 +49,38 @@ impl Project {
             .await
             .map_err(FailToRun::Package)?;
 
-        // TODO: Set up hot reload
+        // Set up run options with hot reload environment variables if enabled
+        let mut run_options = RunOptions::new();
 
-        let running = device.run(artifact, RunOptions::new()).await?;
+        if hot_reload {
+            // Start the hot reload server
+            let server = HotReloadServer::launch(DEFAULT_PORT)
+                .await
+                .map_err(FailToRun::HotReload)?;
+
+            // Set environment variables for the app to connect back
+            run_options.insert_env_var(
+                "WATERUI_HOT_RELOAD_HOST".to_string(),
+                server.host(),
+            );
+            run_options.insert_env_var(
+                "WATERUI_HOT_RELOAD_PORT".to_string(),
+                server.port().to_string(),
+            );
+
+            tracing::info!(
+                "Hot reload server started on {}:{}",
+                server.host(),
+                server.port()
+            );
+
+            // TODO: The server will be dropped here. We need to keep it alive
+            // by storing it somewhere (e.g., in Running) or spawning a task.
+            // For now, we leak it to keep it running.
+            Box::leak(Box::new(server));
+        }
+
+        let running = device.run(artifact, run_options).await?;
 
         Ok(running)
     }
