@@ -15,6 +15,7 @@ use waterui_core::configurable;
 use crate::Url;
 
 /// Configuration for the Photo component.
+#[allow(missing_debug_implementations)]
 pub struct PhotoConfig {
     /// The URL of the image to display.
     pub source: Url,
@@ -24,6 +25,7 @@ pub struct PhotoConfig {
 
 type OnEvent = Box<dyn Fn(Event) + 'static>;
 
+/// Events emitted by the Photo component.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// The image has finished loading.

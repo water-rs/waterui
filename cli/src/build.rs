@@ -12,6 +12,7 @@ pub struct RustBuild {
     triple: Triple,
 }
 
+/// Options for building Rust libraries.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
     release: bool,
