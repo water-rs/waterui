@@ -222,6 +222,10 @@ pub enum FailToCreateProject {
     /// Failed to save manifest.
     #[error("Failed to save manifest: {0}")]
     SaveManifest(#[from] FailToSaveManifest),
+
+    /// Failed to initialize git repository.
+    #[error("Failed to initialize git repository: {0}")]
+    GitInit(std::io::Error),
 }
 
 /// Options for creating a new `WaterUI` project.
@@ -233,7 +237,7 @@ pub struct CreateOptions {
     pub bundle_identifier: String,
     /// Whether to create a playground project.
     pub playground: bool,
-    /// Path to local WaterUI repository for development.
+    /// Path to local `WaterUI` repository for development.
     pub waterui_path: Option<PathBuf>,
     /// Author name for Cargo.toml.
     pub author: String,
@@ -324,11 +328,41 @@ impl Project {
         // Save Water.toml
         manifest.save(&path).await?;
 
+        // Initialize git repository if not already in one
+        Self::ensure_git_init(&path).await?;
+
         Ok(Self {
             root: path,
             manifest,
             crate_name,
         })
+    }
+
+    /// Ensure the project is initialized with git.
+    ///
+    /// Checks if the project directory is already part of a git repository.
+    /// If not, initializes a new git repository.
+    async fn ensure_git_init(path: &Path) -> Result<(), FailToCreateProject> {
+        // Check if already in a git repository
+        let is_in_git = Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .current_dir(path)
+            .output()
+            .await
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+        if !is_in_git {
+            // Initialize a new git repository
+            Command::new("git")
+                .args(["init"])
+                .current_dir(path)
+                .status()
+                .await
+                .map_err(FailToCreateProject::GitInit)?;
+        }
+
+        Ok(())
     }
 
     /// Initialize the Apple backend for this project.
@@ -412,7 +446,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use smol::{fs::read_to_string, unblock};
+use smol::{fs::read_to_string, process::Command, unblock};
 
 use crate::{
     android::backend::AndroidBackend,
