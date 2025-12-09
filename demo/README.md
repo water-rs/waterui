@@ -1,3 +1,0 @@
-# Demo
-
-![screenshot](screenshot.png)
