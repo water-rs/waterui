@@ -1,3 +1,5 @@
+//! Platform abstraction for `WaterUI` CLI
+
 use std::path::PathBuf;
 
 use color_eyre::eyre;

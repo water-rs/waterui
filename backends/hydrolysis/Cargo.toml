@@ -30,4 +30,4 @@ cpu = ["dep:tiny-skia"]
 gpu = ["dep:vello", "dep:wgpu"]
 
 [lints]
-workspace = true
+rust.dead_code="allow"

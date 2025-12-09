@@ -5,9 +5,14 @@ use waterui_core::configurable;
 use waterui_layout::StretchAxis;
 use waterui_text::{Text, styled::StyledStr};
 
+/// Configuration for the rich text editor component.
+#[derive(Debug)]
 pub struct RichTextEditorConfig {
+    /// The binding to the text value being edited.
     pub value: Binding<StyledStr>,
+    /// Placeholder text to display when the editor is empty.
     pub placeholder: Text,
+    /// Optional line limit for the editor.
     pub line_limit: Option<NonZeroUsize>,
 }
 

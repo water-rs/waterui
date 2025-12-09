@@ -95,7 +95,12 @@ impl TemplateContext {
     fn waterui_deps(&self) -> String {
         self.waterui_path.as_ref().map_or_else(
             || "waterui = \"0.1\"".to_string(),
-            |p| format!("waterui = {{ path = \"{}\" }}", normalize_path_for_config(p)),
+            |p| {
+                format!(
+                    "waterui = {{ path = \"{}\" }}",
+                    normalize_path_for_config(p)
+                )
+            },
         )
     }
 
@@ -208,6 +213,10 @@ pub mod apple {
     use super::{Path, TemplateContext, embedded, fs, io, scaffold_dir};
 
     /// Write all Apple templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         scaffold_dir(&embedded::APPLE, base_dir, ctx).await?;
 
@@ -232,6 +241,9 @@ pub mod android {
     use super::{Path, TemplateContext, embedded, fs, io, scaffold_dir};
 
     /// Write all Android templates to the given directory.
+    ///
+    /// # Errors
+    /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         scaffold_dir(&embedded::ANDROID, base_dir, ctx).await?;
 

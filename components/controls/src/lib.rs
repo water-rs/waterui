@@ -16,6 +16,8 @@ pub use toggle::{Toggle, toggle};
 pub mod stepper;
 pub use stepper::{Stepper, stepper};
 
+/// Button component and related utilities.
 pub mod button;
 pub use button::{Button, button};
+/// Text editor component.
 pub mod text_editor;

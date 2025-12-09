@@ -1,3 +1,5 @@
+//! Device management and application running utilities for `WaterUI` CLI.
+
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -75,6 +77,7 @@ impl Artifact {
 
 /// Trait representing a device (e.g., emulator, simulator, physical device)
 pub trait Device: Send {
+    /// Associated platform type for the device.
     type Platform: Platform;
     /// Lanuch the device emulator or simulator.
     ///
@@ -88,6 +91,7 @@ pub trait Device: Send {
         options: RunOptions,
     ) -> impl Future<Output = Result<Running, FailToRun>> + Send;
 
+    /// Get the platform this device belongs to.
     fn platform(&self) -> Self::Platform;
 }
 
@@ -162,9 +166,11 @@ pub enum FailToRun {
     #[error("Failed to run application on device: {0}")]
     Run(eyre::Report),
 
+    /// Failed to package the artifacts.
     #[error("Failed to package the artifacts: {0}")]
     Package(eyre::Report),
 
+    /// Failed to build the project.
     #[error("Failed to build the project: {0}")]
     Build(eyre::Report),
 

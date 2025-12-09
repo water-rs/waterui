@@ -5,7 +5,14 @@ use libloading::Library;
 use std::path::{Path, PathBuf};
 use waterui_core::View;
 
+use crate::ViewExt;
+
 /// Create a library file from binary data.
+///
+/// # Panics
+///
+/// Panics if the `hot_reload` directory cannot be created, or if the library file
+/// cannot be created or written.
 #[must_use]
 pub async fn create_library(data: &[u8]) -> PathBuf {
     let dir = std::env::temp_dir().join("hot_reload");
@@ -41,6 +48,10 @@ pub async fn create_library(data: &[u8]) -> PathBuf {
 /// # Safety
 ///
 /// Must be called on the main thread. The library must export the symbol correctly.
+///
+/// # Panics
+///
+/// Panics if the library cannot be loaded or if required symbols are not found.
 pub unsafe fn load_view(path: &Path) -> impl View {
     let lib = unsafe { Library::new(path) }.expect("Failed to load library");
 
@@ -57,6 +68,5 @@ pub unsafe fn load_view(path: &Path) -> impl View {
     let view = unsafe { Box::from_raw(view_ptr) };
 
     // Retain the library so it stays loaded as long as the view exists
-    use crate::ViewExt;
     (*view).retain(lib)
 }
