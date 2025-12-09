@@ -11,3 +11,4 @@ pub mod project;
 pub mod templates;
 pub mod toolchain;
 pub mod utils;
+pub mod water_dir;
