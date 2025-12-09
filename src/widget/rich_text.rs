@@ -120,10 +120,9 @@ impl View for RichTextElement {
         match self {
             Self::Text(s) => text(s).anyview(),
             Self::Link { label, url } => link(label, url).anyview(),
-            Self::Image { src, alt: _ } => match Url::parse(&*src) {
-                Some(url) => media_photo(url).anyview(),
-                None => ().anyview(),
-            },
+            Self::Image { src, alt: _ } => {
+                Url::parse(&*src).map_or_else(|| ().anyview(), |url| media_photo(url).anyview())
+            }
             Self::Table { headers, rows } => {
                 let mut table_rows = Vec::new();
                 if !headers.is_empty() {
