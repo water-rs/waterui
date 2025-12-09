@@ -93,6 +93,8 @@ impl Backend for AppleBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
+        let project_path = default_apple_project_path();
+
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
             app_name: app_name.clone(),
@@ -102,9 +104,8 @@ impl Backend for AppleBackend {
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            backend_project_path: Some(project_path.clone()),
         };
-
-        let project_path = default_apple_project_path();
         let output_dir = project.root().join(&project_path);
 
         templates::apple::scaffold(&output_dir, &ctx)

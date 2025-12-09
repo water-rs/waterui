@@ -87,12 +87,8 @@ impl Device for MacOS {
         command.arg(artifact_path);
         command.kill_on_drop(true);
 
-        let (running, sender) = Running::new(|| {
-            // no-op, since kill_on_drop is set
-        });
-
         // Spawn the open command
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
@@ -100,7 +96,7 @@ impl Device for MacOS {
         smol::Timer::after(std::time::Duration::from_millis(500)).await;
 
         // Get the PID of the launched app using pgrep
-        let pid_output = Command::new("pgrep")
+        let app_pid = Command::new("pgrep")
             .arg("-n") // Newest matching process
             .arg("-x") // Exact match
             .arg(&app_name)
@@ -110,8 +106,20 @@ impl Device for MacOS {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| s.trim().parse::<u32>().ok());
 
+        // Create Running instance - kill the app process on drop
+        let pid_for_termination = app_pid;
+        let (running, sender) = Running::new(move || {
+            // pkill the app by name to ensure it's terminated
+            if pid_for_termination.is_some() {
+                let _ = std::process::Command::new("pkill")
+                    .arg("-x")
+                    .arg(&app_name)
+                    .status();
+            }
+        });
+
         // Start log streaming if we got a PID
-        if let Some(pid) = pid_output {
+        if let Some(pid) = app_pid {
             let log_sender = sender.clone();
 
             // Spawn log stream process
@@ -160,10 +168,62 @@ impl Device for MacOS {
             }
         }
 
-        // Spawn a task to wait for the child to exit and send Exited event
+        // Spawn a task to wait for the app to exit and detect crashes
         spawn(async move {
-            let _ = child.output().await;
-            let _ = sender.try_send(DeviceEvent::Exited);
+            let status = child.status().await;
+
+            match status {
+                Ok(exit_status) => {
+                    // Check if the app crashed (killed by signal or non-zero exit)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(signal) = exit_status.signal() {
+                            // SIGINT(2) and SIGTERM(15) are normal termination signals, not crashes
+                            // SIGKILL(9) is also intentional termination
+                            match signal {
+                                2 | 9 | 15 => {
+                                    // Normal termination via signal
+                                    let _ = sender.try_send(DeviceEvent::Exited);
+                                }
+                                6 => {
+                                    let _ = sender.try_send(DeviceEvent::Crashed(
+                                        "App terminated by SIGABRT".to_string(),
+                                    ));
+                                }
+                                10 => {
+                                    let _ = sender.try_send(DeviceEvent::Crashed(
+                                        "App terminated by SIGBUS".to_string(),
+                                    ));
+                                }
+                                11 => {
+                                    let _ = sender.try_send(DeviceEvent::Crashed(
+                                        "App terminated by SIGSEGV".to_string(),
+                                    ));
+                                }
+                                _ => {
+                                    let _ = sender.try_send(DeviceEvent::Crashed(format!(
+                                        "App terminated by signal {signal}"
+                                    )));
+                                }
+                            }
+                            return;
+                        }
+                    }
+
+                    if !exit_status.success() {
+                        let _ = sender.try_send(DeviceEvent::Crashed(format!(
+                            "App exited with code {:?}",
+                            exit_status.code()
+                        )));
+                    } else {
+                        let _ = sender.try_send(DeviceEvent::Exited);
+                    }
+                }
+                Err(e) => {
+                    let _ = sender.try_send(DeviceEvent::Crashed(format!("Failed to wait: {e}")));
+                }
+            }
         })
         .detach();
 
