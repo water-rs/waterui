@@ -32,15 +32,23 @@ impl Toolchain for Xcode {
 }
 
 /// Represents an Apple SDK (e.g., iOS, macOS)
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 pub enum AppleSdk {
     /// iOS SDK
     #[serde(rename = "iOS")]
     Ios,
     /// macOS SDK
-    #[serde(rename = "MacOS")]
+    #[serde(rename = "macOS")]
     Macos,
-    // TODO: more SDKs
+    /// tvOS SDK
+    #[serde(rename = "tvOS")]
+    TvOs,
+    /// watchOS SDK
+    #[serde(rename = "watchOS")]
+    WatchOs,
+    /// visionOS SDK
+    #[serde(rename = "visionOS")]
+    VisionOs,
 }
 
 impl AppleSdk {
@@ -50,6 +58,9 @@ impl AppleSdk {
         match self {
             Self::Ios => "iphoneos",
             Self::Macos => "macosx",
+            Self::TvOs => "appletvos",
+            Self::WatchOs => "watchos",
+            Self::VisionOs => "xros",
         }
     }
 }

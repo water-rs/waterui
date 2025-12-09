@@ -105,8 +105,35 @@ impl Project {
     }
 
     /// Clean all build artifacts for the project.
+    ///
+    /// This cleans:
+    /// - Rust target directory
+    /// - Apple build artifacts (if backend configured)
+    /// - Android build artifacts (if backend configured)
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
-        todo!()
+        use crate::{
+            android::platform::AndroidPlatform, apple::platform::ApplePlatform, platform::Platform,
+        };
+
+        // Clean Rust target directory
+        let target_dir = self.root.join("target");
+        if target_dir.exists() {
+            smol::fs::remove_dir_all(&target_dir).await?;
+        }
+
+        // Clean Apple backend if configured
+        if self.apple_backend().is_some() {
+            // Use a default platform for cleaning - the actual platform doesn't matter
+            // since clean() operates on the project-level build artifacts
+            ApplePlatform::macos().clean(self).await?;
+        }
+
+        // Clean Android backend if configured
+        if self.android_backend().is_some() {
+            AndroidPlatform::arm64().clean(self).await?;
+        }
+
+        Ok(())
     }
 
     /// Package the project for the specified platform.
