@@ -9,6 +9,7 @@ pub struct Project {
     root: PathBuf,
     manifest: Manifest,
     crate_name: String,
+    target_dir: PathBuf,
 }
 
 impl Project {
@@ -198,6 +199,9 @@ pub enum FailToOpenProject {
     #[error("Failed to read Cargo.toml: {0}")]
     CargoManifest(cargo_toml::Error),
 
+    #[error("Failed to get Cargo metadata: {0}")]
+    TargetDirError(#[from] cargo_metadata::Error),
+
     /// Missing crate name in Cargo.toml.
     #[error("Invalid Cargo.toml: missing crate name")]
     MissingCrateName,
@@ -222,6 +226,10 @@ pub enum FailToCreateProject {
     /// Failed to save manifest.
     #[error("Failed to save manifest: {0}")]
     SaveManifest(#[from] FailToSaveManifest),
+
+    /// Failed to get Cargo metadata.
+    #[error("Failed to get Cargo metadata: {0}")]
+    TargetDirError(#[from] cargo_metadata::Error),
 
     /// Failed to initialize git repository.
     #[error("Failed to initialize git repository: {0}")]
@@ -297,6 +305,7 @@ impl Project {
                 .map(|p| p.join("backends/android")),
             use_remote_dev_backend: options.waterui_path.is_none(),
             waterui_path: options.waterui_path.clone(),
+            backend_project_path: None, // Root files don't need this
         };
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
@@ -331,10 +340,15 @@ impl Project {
         // Initialize git repository if not already in one
         Self::ensure_git_init(&path).await?;
 
+        let target_dir = get_target_dir(&path)
+            .await
+            .map_err(FailToCreateProject::TargetDirError)?;
+
         Ok(Self {
             root: path,
             manifest,
             crate_name,
+            target_dir,
         })
     }
 
@@ -436,12 +450,32 @@ impl Project {
             return Err(FailToOpenProject::PermissionsNotAllowedInNonPlayground);
         }
 
+        let target_dir = get_target_dir(&path)
+            .await
+            .map_err(FailToOpenProject::TargetDirError)?;
+
         Ok(Self {
             root: path,
             manifest,
             crate_name,
+            target_dir,
         })
     }
+}
+
+async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::Error> {
+    let current_dir = current_dir.to_path_buf();
+    let metadata = unblock(|| {
+        cargo_metadata::MetadataCommand::new()
+            .no_deps()
+            .current_dir(current_dir)
+            .exec()
+    })
+    .await?;
+
+    let target_dir = metadata.target_directory.as_std_path();
+
+    Ok(target_dir.to_path_buf())
 }
 
 use std::{

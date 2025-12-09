@@ -31,7 +31,7 @@ use waterui_core::{AnyView, Binding, Str, View};
 /// pub struct UserProfile {
 ///     /// User's display name
 ///     pub name: String,
-///     /// Account active status  
+///     /// Account active status
 ///     pub active: bool,
 ///     /// User's current level
 ///     pub level: i32,
@@ -250,7 +250,7 @@ pub use secure::{SecureField, secure};
 /// # struct ContactForm { name: String, email: String }
 /// fn form_with_output() -> impl View {
 ///     let form_binding = ContactForm::binding();
-///     
+///
 ///     vstack((
 ///         form(&form_binding),
 ///         // Display current form values
