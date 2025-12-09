@@ -11,6 +11,10 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "water"
+path = "src/terminal/main.rs"
+
 [dependencies]
 cargo_metadata = "0.23.1"
 cargo_toml = "0.22.3"
@@ -29,6 +33,16 @@ time = { workspace = true, features = ["serde"] }
 toml = "0.9.8"
 tracing.workspace = true
 which = "8.0.0"
+
+# Terminal UI dependencies
+clap = { version = "4", features = ["derive"] }
+dialoguer = "0.11"
+indicatif = "0.17"
+anstream = "0.6"              # Auto-detected ANSI output stream
+anstyle = "1"                 # ANSI styling without manual escape codes
+ctrlc = "3.4"
+whoami = "1.5"
+heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 
 [lints]
 workspace = true
