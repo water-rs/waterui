@@ -30,6 +30,16 @@ impl Backends {
     pub const fn apple(&self) -> Option<&AppleBackend> {
         self.apple.as_ref()
     }
+
+    /// Set the Apple backend configuration.
+    pub fn set_apple(&mut self, backend: AppleBackend) {
+        self.apple = Some(backend);
+    }
+
+    /// Set the Android backend configuration.
+    pub fn set_android(&mut self, backend: AndroidBackend) {
+        self.android = Some(backend);
+    }
 }
 
 /// Error type for failing to initialize a backend.
