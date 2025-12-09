@@ -28,6 +28,8 @@ pub mod components;
 pub mod event;
 pub mod gesture;
 mod type_id;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 pub use type_id::WuiTypeId;
 pub mod id;
 pub mod reactive;
@@ -74,7 +76,7 @@ macro_rules! export {
                 let view = main();
 
                 #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
-                let view = waterui::debug::hot_reload::Hotreload::with_compile_env(view);
+                let view = waterui::debug::hot_reload::Hotreload::with_env(view);
                 $crate::IntoFFI::into_ffi(AnyView::new(view))
             }
         };
@@ -91,6 +93,36 @@ pub unsafe fn __init() {
         native_executor::android::register_android_main_thread()
             .expect("Failed to register Android main thread");
     }
+    // Forwards panics to tracing
+    std::panic::set_hook(Box::new(|info| {
+        tracing_panic::panic_hook(info);
+    }));
+
+    // Forwards tracing to platform's logging system
+    #[cfg(target_os = "android")]
+    {
+        tracing_subscriber::registry()
+            .with(tracing_android::layer("WaterUI"))
+            .init();
+    }
+
+    #[cfg(target_vendor = "apple")]
+    {
+        tracing_subscriber::registry()
+            .with(tracing_oslog::OsLogger::new(
+                "dev.waterui",
+                "default",
+            ))
+            .init();
+    }
+
+    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    }
+
     init_global_executor(native_executor::NativeExecutor::new());
     init_local_executor(native_executor::NativeExecutor::new());
 }
