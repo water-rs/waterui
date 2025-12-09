@@ -1,8 +1,9 @@
 use crate::WuiStr;
 use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, IntoRust, WuiAnyView};
+use crate::{IntoFFI, IntoRust};
 use alloc::string::String;
+use nami::Signal;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
 use waterui_media::{
@@ -355,3 +356,103 @@ impl IntoRust for WuiComputedVideo {
 
 // Generate computed FFI functions for Video type
 crate::ffi_computed!(Video, WuiComputedVideo, video);
+
+// =============================================================================
+// MediaPicker
+// =============================================================================
+
+use waterui_media::media_picker::{MediaFilter, MediaPickerConfig, Selected};
+
+/// FFI representation of a simple media filter type.
+/// Complex nested filters (All, Not, Any) are not supported via FFI.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiMediaFilterType {
+    /// Filter for live photos only.
+    LivePhoto = 0,
+    /// Filter for videos only.
+    Video = 1,
+    /// Filter for images only.
+    Image = 2,
+    /// Filter for all media types.
+    All = 3,
+}
+
+/// FFI representation of a selected media item.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiSelected {
+    /// The unique identifier of the selected media item.
+    pub id: u32,
+}
+
+impl IntoFFI for Selected {
+    type FFI = WuiSelected;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSelected { id: self.id() }
+    }
+}
+
+impl IntoRust for WuiSelected {
+    type Rust = Selected;
+    unsafe fn into_rust(self) -> Self::Rust {
+        Selected::new(self.id)
+    }
+}
+
+impl IntoFFI for MediaFilter {
+    type FFI = WuiMediaFilterType;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            MediaFilter::LivePhoto => WuiMediaFilterType::LivePhoto,
+            MediaFilter::Video => WuiMediaFilterType::Video,
+            MediaFilter::Image => WuiMediaFilterType::Image,
+            // Complex filters default to All for simplicity
+            MediaFilter::All(_) | MediaFilter::Not(_) | MediaFilter::Any(_) => {
+                WuiMediaFilterType::All
+            }
+        }
+    }
+}
+
+/// FFI representation of the MediaPicker component.
+#[repr(C)]
+pub struct WuiMediaPicker {
+    /// Pointer to Computed<Selected> for the current selection.
+    pub selection: *mut WuiComputed<Selected>,
+    /// The filter type to apply.
+    pub filter: WuiMediaFilterType,
+    /// Callback when selection changes.
+    pub on_selection: WuiFn<WuiSelected>,
+}
+
+impl IntoFFI for MediaPickerConfig {
+    type FFI = WuiMediaPicker;
+    fn into_ffi(self) -> Self::FFI {
+        // Get filter value from computed
+        let filter_value = self.filter.get();
+        let filter_type = filter_value.into_ffi();
+
+        // Create a no-op callback for selection changes
+        let on_selection = WuiFn::from(|_selected: WuiSelected| {
+            // Selection changes are handled via the Computed<Selected> signal
+        });
+
+        WuiMediaPicker {
+            selection: self.selection.into_ffi(),
+            filter: filter_type,
+            on_selection,
+        }
+    }
+}
+
+// Register MediaPicker FFI view
+ffi_view!(MediaPickerConfig, WuiMediaPicker, media_picker);
+
+// =============================================================================
+// Media Loading Callback
+// =============================================================================
+
+// Re-export the media loading types from waterui-media for native use
+pub use waterui_media::media_picker::{MediaLoadCallback, MediaLoadResult};
+

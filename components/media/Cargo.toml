@@ -19,10 +19,10 @@ mime = "0.3.17"
 image = "0.25.8"
 blocking = "1.6.2"
 base64 = "0.22.1"
+async-oneshot = "0.5"
 
 [features]
-default = ["media-picker", "std"]
-media-picker = []
+default = ["std"]
 std = ["waterui-core/std"]
 
 
