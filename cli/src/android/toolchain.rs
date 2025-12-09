@@ -84,7 +84,9 @@ impl Java {
 }
 
 impl AndroidNdk {
-    async fn detect_path() -> Option<PathBuf> {
+    /// Detect the Android NDK path from environment variables or standard locations.
+    #[must_use]
+    pub fn detect_path() -> Option<PathBuf> {
         // Check ANDROID_NDK_ROOT environment variable
         if let Ok(ndk_root) = env::var("ANDROID_NDK_ROOT") {
             let ndk_path = PathBuf::from(ndk_root);
@@ -132,7 +134,26 @@ impl Toolchain for AndroidSdk {
     type Installation = AndroidSdkInstallation;
 
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        todo!()
+        use crate::toolchain::ToolchainError;
+
+        let sdk_path = Self::detect_path().ok_or_else(|| {
+            ToolchainError::unfixable(
+                "Android SDK not found",
+                "Install Android Studio from https://developer.android.com/studio \
+                 or set ANDROID_HOME environment variable to your SDK path.",
+            )
+        })?;
+
+        // Check for platform-tools (contains adb)
+        let platform_tools = sdk_path.join("platform-tools");
+        if !platform_tools.exists() {
+            return Err(ToolchainError::unfixable(
+                "Android SDK platform-tools not found",
+                "Open Android Studio -> SDK Manager -> SDK Tools -> check 'Android SDK Platform-Tools'",
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -140,17 +161,40 @@ impl Installation for AndroidSdkInstallation {
     type Error = FailToInstallAndroidSdk;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        todo!()
+        // Android SDK installation is complex and platform-specific
+        // We guide the user to install it manually via Android Studio
+        // This is intentionally a no-op as the check returns unfixable errors
+        Ok(())
     }
 }
 
-pub struct AndroidNdkInstallation {}
+pub struct AndroidNdkInstallation;
 
 impl Toolchain for AndroidNdk {
     type Installation = AndroidNdkInstallation;
 
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
-        todo!()
+        use crate::toolchain::ToolchainError;
+
+        let ndk_path = Self::detect_path().ok_or_else(|| {
+            ToolchainError::unfixable(
+                "Android NDK not found",
+                "Open Android Studio -> SDK Manager -> SDK Tools -> check 'NDK (Side by side)' \
+                 or set ANDROID_NDK_ROOT environment variable.",
+            )
+        })?;
+
+        // Check for LLVM toolchain (required for building)
+        let llvm_dir = ndk_path.join("toolchains/llvm/prebuilt");
+        if !llvm_dir.exists() {
+            return Err(ToolchainError::unfixable(
+                "Android NDK LLVM toolchain not found",
+                "The NDK installation appears to be incomplete. \
+                 Try reinstalling the NDK via Android Studio SDK Manager.",
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -158,7 +202,9 @@ impl Installation for AndroidNdkInstallation {
     type Error = FailToInstallAndroidNdk;
 
     async fn install(&self) -> Result<(), Self::Error> {
-        todo!()
+        // NDK installation is handled via Android Studio SDK Manager
+        // This is intentionally a no-op as the check returns unfixable errors
+        Ok(())
     }
 }
 
