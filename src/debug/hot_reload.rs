@@ -1,7 +1,7 @@
 //! Hotreload view component.
 
-use super::event::{CliEvent, ConnectionError};
-use super::{CliConnection, library};
+use super::event::ConnectionError;
+use super::CliConnection;
 use crate::ViewExt;
 use crate::prelude::*;
 use executor_core::spawn_local;
