@@ -76,7 +76,7 @@ macro_rules! export {
                 let view = main();
 
                 #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
-                let view = waterui::debug::hot_reload::Hotreload::with_env(view);
+                let view = waterui::debug::hot_reload::Hotreload::try_from_env(view);
                 $crate::IntoFFI::into_ffi(AnyView::new(view))
             }
         };
