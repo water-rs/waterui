@@ -119,6 +119,7 @@ pub enum MediaFilter {
 /// For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
 /// are populated. For regular images/videos, only `url_ptr` is used.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MediaLoadResult {
     /// Pointer to UTF-8 encoded URL string (image URL for Live Photos).
     pub url_ptr: *const u8,
@@ -192,6 +193,7 @@ impl MediaLoadResult {
 ///
 /// This is a C-compatible closure that native code calls with the result.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MediaLoadCallback {
     /// Opaque pointer to the callback data.
     pub data: *mut (),

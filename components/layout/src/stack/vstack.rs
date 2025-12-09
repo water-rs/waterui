@@ -101,10 +101,9 @@ impl Layout for VStackLayout {
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        let final_width = match proposal.width {
-            Some(proposed) => max_width.min(proposed),
-            None => max_width,
-        };
+        let final_width = proposal
+            .width
+            .map_or(max_width, |proposed| max_width.min(proposed));
 
         Size::new(final_width, final_height)
     }

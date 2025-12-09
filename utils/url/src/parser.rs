@@ -3,6 +3,10 @@
 //! This module provides complete URL parsing logic that can be evaluated at compile time.
 //! All functions use byte-level operations to work in const contexts.
 
+// URLs longer than 65535 bytes are not supported to keep Span compact (uses u16).
+// This is intentional and a reasonable limit for most use cases.
+#![allow(clippy::cast_possible_truncation)]
+
 use crate::{
     BlobComponents, DataComponents, LocalComponents, ParsedComponents, Span, WebComponents,
 };
