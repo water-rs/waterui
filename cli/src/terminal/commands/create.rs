@@ -78,9 +78,26 @@ pub async fn run(args: Args) -> Result<()> {
         None => return Err(color_eyre::eyre::eyre!("Project name is required")),
     };
 
-    // Resolve waterui_path (--dev uses current directory)
+    // Resolve waterui_path (--dev prompts for local path)
     let waterui_path = if args.dev {
-        Some(std::env::current_dir()?)
+        let user_input = if interactive {
+            prompt_waterui_path()?
+        } else {
+            ".".to_string()
+        };
+
+        // Convert user input to a path relative to the new project directory
+        // If user inputs ".", it becomes "../" in the new project
+        let input_path = std::path::Path::new(&user_input);
+        let relative_to_new_project = if input_path.is_relative() {
+            // For relative paths, prepend "../" since we're going one level deeper
+            std::path::PathBuf::from("..").join(input_path)
+        } else {
+            // For absolute paths, use as-is
+            input_path.to_path_buf()
+        };
+
+        Some(relative_to_new_project)
     } else {
         args.waterui_path.clone()
     };
@@ -123,7 +140,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Initialize backends (skip for playground projects)
     if !args.playground {
-        let has_apple = platforms.iter().any(|p| matches!(p, Platform::Ios | Platform::MacOs));
+        let has_apple = platforms
+            .iter()
+            .any(|p| matches!(p, Platform::Ios | Platform::MacOs));
         let has_android = platforms.iter().any(|p| matches!(p, Platform::Android));
 
         if has_apple {
@@ -162,8 +181,15 @@ fn prompt_name() -> Result<String> {
         .interact_text()?)
 }
 
+fn prompt_waterui_path() -> Result<String> {
+    Ok(Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Local WaterUI path")
+        .default(".".to_string())
+        .interact_text()?)
+}
+
 fn default_bundle_id(app_name: &str) -> String {
-    format!("com.example.{}", app_name.to_lowercase().replace(' ', ""))
+    format!("com.example.{}", app_name.to_kebab_case())
 }
 
 fn prompt_bundle_id(app_name: &str) -> Result<String> {

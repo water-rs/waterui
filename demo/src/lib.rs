@@ -20,7 +20,7 @@ pub fn main() -> impl View {
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    scroll(
+    let view = scroll(
         vstack((
             // App header
             vstack((
@@ -63,8 +63,10 @@ pub fn main() -> impl View {
             Divider,
             "Built with WaterUI - Cross-platform Reactive UI Framework",
         ))
-        .padding_with(EdgeInsets::all(16.0)),
-    )
+        .padding(),
+    );
+
+    view
 }
 
 waterui_ffi::export!();

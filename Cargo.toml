@@ -8,7 +8,6 @@ members = [
     "backends/hydrolysis",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
-    "demo",
     "ffi",
     "derive",
     "cli",

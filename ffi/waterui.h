@@ -1629,6 +1629,51 @@ typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
+/**
+ * Result of loading media from native platform.
+ *
+ * For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
+ * are populated. For regular images/videos, only `url_ptr` is used.
+ */
+typedef struct MediaLoadResult {
+  /**
+   * Pointer to UTF-8 encoded URL string (image URL for Live Photos).
+   */
+  const uint8_t *url_ptr;
+  /**
+   * Length of the URL string in bytes.
+   */
+  uintptr_t url_len;
+  /**
+   * Pointer to UTF-8 encoded video URL (only for Live Photos).
+   */
+  const uint8_t *video_url_ptr;
+  /**
+   * Length of the video URL string in bytes.
+   */
+  uintptr_t video_url_len;
+  /**
+   * Media type: 0 = Image, 1 = Video, 2 = `LivePhoto`.
+   */
+  uint8_t media_type;
+} MediaLoadResult;
+
+/**
+ * A callback for receiving loaded media from native code.
+ *
+ * This is a C-compatible closure that native code calls with the result.
+ */
+typedef struct MediaLoadCallback {
+  /**
+   * Opaque pointer to the callback data.
+   */
+  void *data;
+  /**
+   * Function to call with the result. This consumes the callback.
+   */
+  void (*call)(void*, struct MediaLoadResult);
+} MediaLoadCallback;
+
 
 
 
