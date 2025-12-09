@@ -29,7 +29,6 @@ pub mod event;
 pub mod hot_reload;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod library;
-pub mod logging;
 
 pub use connection::CliConnection;
 pub use event::{CliEvent, ConnectionError};
