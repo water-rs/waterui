@@ -4,7 +4,7 @@ use std::env;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, bail};
-use smol::fs;
+use smol::{fs, unblock};
 use target_lexicon::{
     Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
@@ -21,6 +21,7 @@ use crate::{
     project::{PackageType, Project},
     templates::{self, TemplateContext},
     utils::{copy_file, run_command},
+    water_dir,
 };
 
 // ============================================================================
@@ -48,33 +49,34 @@ pub trait ApplePlatformExt: Platform {
 
 /// Initialize the Apple backend for a playground project.
 async fn init_playground_backend(project: &Project) -> eyre::Result<AppleBackend> {
+    // Ensure .water directory is valid for current CLI version
+    water_dir::ensure_valid(project.root()).await?;
+
     let manifest = project.manifest();
 
-    // Derive app name from the display name (remove spaces for filesystem)
-    let app_name = manifest
-        .package
-        .name
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect::<String>();
+    // Playground projects always use "WaterUIApp" as the scheme name
+    const PLAYGROUND_SCHEME: &str = "WaterUIApp";
+
+    // Use .water/apple for playground projects to hide from user
+    let project_path = PathBuf::from(".water/apple");
 
     let ctx = TemplateContext {
         app_display_name: manifest.package.name.clone(),
-        app_name: app_name.clone(),
-        crate_name: project.crate_name().to_string(),
+        app_name: PLAYGROUND_SCHEME.to_string(),
+        // Use WaterUIApp for crate_name too since template uses __CRATE_NAME__ for scheme
+        crate_name: PLAYGROUND_SCHEME.to_string(),
         bundle_identifier: manifest.package.bundle_identifier.clone(),
         author: String::new(),
         android_backend_path: None,
         use_remote_dev_backend: manifest.waterui_path.is_none(),
         waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+        backend_project_path: Some(project_path.clone()),
     };
-
-    let project_path = PathBuf::from("apple");
     let output_dir = project.root().join(&project_path);
 
     templates::apple::scaffold(&output_dir, &ctx).await?;
 
-    Ok(AppleBackend::new(app_name)
+    Ok(AppleBackend::new(PLAYGROUND_SCHEME)
         .with_project_path(project_path)
         .with_backend_path(manifest.waterui_path.clone().unwrap_or_default()))
 }
@@ -174,17 +176,24 @@ async fn package_apple<P: ApplePlatformExt>(
 
     let derived_data = project_path.join(".water/DerivedData");
 
+    // Get the actual target directory using cargo metadata
+    let project_root = project.root().to_path_buf();
+    let metadata = unblock(move || {
+        cargo_metadata::MetadataCommand::new()
+            .current_dir(&project_root)
+            .no_deps()
+            .exec()
+    })
+    .await?;
+    let target_dir = metadata.target_directory.as_std_path();
+
     // Copy the built Rust library to where Xcode expects it
     let profile = if options.is_debug() {
         "debug"
     } else {
         "release"
     };
-    let lib_dir = project
-        .root()
-        .join("target")
-        .join(platform.triple().to_string())
-        .join(profile);
+    let lib_dir = target_dir.join(platform.triple().to_string()).join(profile);
     let lib_name = project.crate_name().replace('-', "_");
     let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
