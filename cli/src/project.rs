@@ -207,7 +207,166 @@ pub enum FailToOpenProject {
     PermissionsNotAllowedInNonPlayground,
 }
 
+/// Errors that can occur when creating a new `WaterUI` project.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToCreateProject {
+    /// The project directory already exists.
+    #[error("Directory already exists: {0}")]
+    DirectoryExists(PathBuf),
+    /// Failed to create project directory.
+    #[error("Failed to create directory: {0}")]
+    CreateDir(std::io::Error),
+    /// Failed to scaffold project files.
+    #[error("Failed to scaffold project: {0}")]
+    Scaffold(std::io::Error),
+    /// Failed to save manifest.
+    #[error("Failed to save manifest: {0}")]
+    SaveManifest(#[from] FailToSaveManifest),
+}
+
+/// Options for creating a new `WaterUI` project.
+#[derive(Debug, Clone)]
+pub struct CreateOptions {
+    /// Application display name (e.g., "Water Example").
+    pub name: String,
+    /// Bundle identifier (e.g., "com.example.waterexample").
+    pub bundle_identifier: String,
+    /// Whether to create a playground project.
+    pub playground: bool,
+    /// Path to local WaterUI repository for development.
+    pub waterui_path: Option<PathBuf>,
+    /// Author name for Cargo.toml.
+    pub author: String,
+}
+
 impl Project {
+    /// Create a new `WaterUI` project at the specified path.
+    ///
+    /// This creates the project directory, scaffolds root files (Cargo.toml, src/lib.rs),
+    /// and saves the Water.toml manifest. Use `init_apple_backend()` and `init_android_backend()`
+    /// to scaffold platform backends after creation.
+    ///
+    /// # Errors
+    /// - `FailToCreateProject::DirectoryExists`: If the directory already exists.
+    /// - `FailToCreateProject::CreateDir`: If creating the directory fails.
+    /// - `FailToCreateProject::Scaffold`: If scaffolding files fails.
+    /// - `FailToCreateProject::SaveManifest`: If saving the manifest fails.
+    pub async fn create(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+    ) -> Result<Self, FailToCreateProject> {
+        let path = path.as_ref().to_path_buf();
+
+        // Check if directory already exists
+        if path.exists() {
+            return Err(FailToCreateProject::DirectoryExists(path));
+        }
+
+        // Create project directory
+        smol::fs::create_dir_all(&path)
+            .await
+            .map_err(FailToCreateProject::CreateDir)?;
+
+        // Derive crate name from display name
+        let crate_name = options
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+
+        // Build template context for root files
+        let ctx = TemplateContext {
+            app_display_name: options.name.clone(),
+            app_name: options.name.replace(' ', ""),
+            crate_name: crate_name.clone(),
+            bundle_identifier: options.bundle_identifier.clone(),
+            author: options.author.clone(),
+            android_backend_path: options
+                .waterui_path
+                .as_ref()
+                .map(|p| p.join("backends/android")),
+            use_remote_dev_backend: options.waterui_path.is_none(),
+            waterui_path: options.waterui_path.clone(),
+        };
+
+        // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
+        templates::root::scaffold(&path, &ctx)
+            .await
+            .map_err(FailToCreateProject::Scaffold)?;
+
+        // Build manifest
+        let package_type = if options.playground {
+            PackageType::Playground
+        } else {
+            PackageType::App
+        };
+
+        let manifest = Manifest {
+            package: Package {
+                package_type,
+                name: options.name.clone(),
+                bundle_identifier: options.bundle_identifier.clone(),
+            },
+            backends: Backends::default(),
+            waterui_path: options
+                .waterui_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            permissions: HashMap::default(),
+        };
+
+        // Save Water.toml
+        manifest.save(&path).await?;
+
+        Ok(Self {
+            root: path,
+            manifest,
+            crate_name,
+        })
+    }
+
+    /// Initialize the Apple backend for this project.
+    ///
+    /// This scaffolds the Apple backend files and updates the manifest.
+    ///
+    /// # Errors
+    /// Returns an error if scaffolding fails.
+    pub async fn init_apple_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::backend::Backend;
+
+        let backend = AppleBackend::init(self).await?;
+        self.manifest.backends.set_apple(backend);
+        self.manifest
+            .save(&self.root)
+            .await
+            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+        Ok(())
+    }
+
+    /// Initialize the Android backend for this project.
+    ///
+    /// This scaffolds the Android backend files and updates the manifest.
+    ///
+    /// # Errors
+    /// Returns an error if scaffolding fails.
+    pub async fn init_android_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::backend::Backend;
+
+        let backend = AndroidBackend::init(self).await?;
+        self.manifest.backends.set_android(backend);
+        self.manifest
+            .save(&self.root)
+            .await
+            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+        Ok(())
+    }
+
     /// Open a `WaterUI` project located at the specified path.
     ///
     /// This loads both the `Water.toml` manifest and the `Cargo.toml` file.
@@ -218,7 +377,7 @@ impl Project {
     /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, FailToOpenProject> {
         let path = path.as_ref().to_path_buf();
-        let manifest = Manifest::open(&path)
+        let manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
 
@@ -262,6 +421,7 @@ use crate::{
     build::BuildOptions,
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     platform::{PackageOptions, Platform},
+    templates::{self, TemplateContext},
 };
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
@@ -303,6 +463,17 @@ pub enum FailToOpenManifest {
     #[error("Manifest file not found at the specified path")]
     NotFound,
 }
+
+/// Errors that can occur when saving a `Water.toml` manifest file.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToSaveManifest {
+    /// Failed to serialize the manifest to TOML.
+    #[error("Failed to serialize manifest: {0}")]
+    Serialize(toml::ser::Error),
+    /// Failed to write the manifest file to disk.
+    #[error("Failed to write manifest file: {0}")]
+    Write(std::io::Error),
+}
 impl Manifest {
     /// Open and parse a `Water.toml` manifest file from the specified path.
     ///
@@ -319,6 +490,19 @@ impl Manifest {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(FailToOpenManifest::NotFound),
             Err(e) => Err(FailToOpenManifest::ReadError(e)),
         }
+    }
+
+    /// Save the manifest to a `Water.toml` file at the specified directory.
+    ///
+    /// # Errors
+    /// - If there was an error serializing the manifest to TOML.
+    /// - If there was an error writing the file.
+    pub async fn save(&self, dir: impl AsRef<Path>) -> Result<(), FailToSaveManifest> {
+        let path = dir.as_ref().join("Water.toml");
+        let content = toml::to_string_pretty(self).map_err(FailToSaveManifest::Serialize)?;
+        smol::fs::write(&path, content)
+            .await
+            .map_err(FailToSaveManifest::Write)
     }
 
     /// Create a new `Manifest` with the specified package information.
