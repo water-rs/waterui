@@ -101,7 +101,7 @@ impl Layout for ZStackLayout {
             };
 
             let child_size = Size::new(child_width, child_height);
-            let (x, y) = self.calculate_position(&bounds, &child_size);
+            let (x, y) = self.calculate_position(&bounds, child_size);
 
             rects.push(Rect::new(Point::new(x, y), child_size));
         }
@@ -112,7 +112,7 @@ impl Layout for ZStackLayout {
 
 impl ZStackLayout {
     /// Calculate the position of a child within the `ZStack` bounds based on alignment
-    fn calculate_position(&self, bound: &Rect, child_size: &Size) -> (f32, f32) {
+    fn calculate_position(&self, bound: &Rect, child_size: Size) -> (f32, f32) {
         let available_width = bound.width();
         let available_height = bound.height();
 
