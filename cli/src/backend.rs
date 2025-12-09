@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{android::backend::AndroidBackend, apple::backend::AppleBackend, project::Project};
 
+/// Configuration for all backends in a `WaterUI` project.
+///
+/// `[backend]` in `Water.toml`
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Backends {
     android: Option<AndroidBackend>,
@@ -9,17 +12,19 @@ pub struct Backends {
 }
 
 impl Backends {
+    /// Check if no backends are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.android.is_none() && self.apple.is_none()
     }
-
-    #[must_use] 
+    /// Get the Android backend configuration, if any.
+    #[must_use]
     pub const fn android(&self) -> Option<&AndroidBackend> {
         self.android.as_ref()
     }
 
-    #[must_use] 
+    /// Get the Apple backend configuration, if any.
+    #[must_use]
     pub const fn apple(&self) -> Option<&AppleBackend> {
         self.apple.as_ref()
     }
@@ -32,6 +37,13 @@ pub enum FailToInitBackend {
     Io(#[from] std::io::Error),
 }
 
+/// Trait for backends in a `WaterUI` project.
 pub trait Backend: Sized + Send + Sync {
+    /// Initialize the backend for the given project.
+    ///
+    /// Always, it would create necessary files/folders for the backend.
+    ///
+    /// # Warnings
+    /// You cannot initialize any backend for a playground project.
     fn init(project: &Project) -> impl Future<Output = Result<Self, FailToInitBackend>> + Send;
 }
