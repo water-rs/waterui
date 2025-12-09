@@ -1,4 +1,4 @@
-//! Hot reload server for WaterUI CLI.
+//! Hot reload server for `WaterUI` CLI.
 //!
 //! Provides a WebSocket server that broadcasts dylib updates to connected apps.
 
@@ -7,12 +7,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_tungstenite::tungstenite::Message;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, stream};
+use skyzen::hyper::Hyper;
+use skyzen::routing::{CreateRouteNode, Route, Router};
+use skyzen::websocket::{WebSocketMessage, WebSocketUpgrade};
+use skyzen::{Responder, Server};
+use smol::Task;
 use smol::channel::{self, Receiver, Sender};
 use smol::lock::Mutex;
-use smol::net::{TcpListener, TcpStream};
-use smol::Task;
+use smol::net::TcpListener;
 
 /// Default starting port for hot reload server.
 pub const DEFAULT_PORT: u16 = 2006;
@@ -51,7 +54,7 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             clients: Vec::new(),
         }
@@ -61,9 +64,10 @@ impl ServerState {
         self.clients.push(sender);
     }
 
-    fn broadcast(&mut self, data: Vec<u8>) {
+    fn broadcast(&mut self, data: &[u8]) {
         // Remove disconnected clients and send to remaining ones
-        self.clients.retain(|sender| sender.try_send(data.clone()).is_ok());
+        self.clients
+            .retain(|sender| sender.try_send(data.to_vec()).is_ok());
     }
 }
 
@@ -110,13 +114,34 @@ impl HotReloadServer {
         let broadcast_task = smol::spawn(async move {
             while let Ok(data) = broadcast_rx.recv().await {
                 let mut state = state_for_broadcast.lock().await;
-                state.broadcast(data);
+                state.broadcast(&data);
             }
         });
 
-        // Spawn the server task
+        // Build the router with WebSocket endpoint
+        let router = build_router(state);
+
+        // Convert TcpListener to an owned Stream of connections
+        let connections = Box::pin(stream::unfold(listener, |listener| async move {
+            let result = listener.accept().await;
+            Some((result.map(|(stream, _addr)| stream), listener))
+        }));
+
+        // Spawn the server task using smol's global executor
         let server_task = smol::spawn(async move {
-            Self::run_server(listener, state).await;
+            // Create a new executor for the server
+            let executor = smol::Executor::new();
+
+            // Serve using the Hyper backend with smol's executor
+            Hyper
+                .serve(
+                    executor,
+                    |err| tracing::warn!("Hot reload connection error: {err}"),
+                    connections,
+                    router,
+                )
+                .await;
+
             drop(broadcast_task);
         });
 
@@ -126,82 +151,6 @@ impl HotReloadServer {
             broadcast_tx,
             _server_task: server_task,
         })
-    }
-
-    /// Run the server loop accepting connections.
-    async fn run_server(listener: TcpListener, state: Arc<Mutex<ServerState>>) {
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    let state = state.clone();
-                    smol::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, addr, state).await {
-                            tracing::debug!("WebSocket connection error from {addr}: {e}");
-                        }
-                    })
-                    .detach();
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to accept connection: {e}");
-                }
-            }
-        }
-    }
-
-    /// Handle a single WebSocket connection.
-    async fn handle_connection(
-        stream: TcpStream,
-        addr: SocketAddr,
-        state: Arc<Mutex<ServerState>>,
-    ) -> Result<(), async_tungstenite::tungstenite::Error> {
-        // smol's TcpStream implements futures::AsyncRead/Write
-        let mut ws_stream = async_tungstenite::accept_async(stream).await?;
-        tracing::info!("Hot reload client connected from {addr}");
-
-        // Create a channel for this client to receive broadcasts
-        let (client_tx, client_rx) = channel::unbounded::<Vec<u8>>();
-
-        // Register this client
-        {
-            let mut state = state.lock().await;
-            state.add_client(client_tx);
-        }
-
-        // Handle the WebSocket connection - interleave sending and receiving
-        loop {
-            futures::select! {
-                // Check for data to send to client
-                data = client_rx.recv().fuse() => {
-                    match data {
-                        Ok(data) => {
-                            if ws_stream.send(Message::Binary(data.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break, // Channel closed
-                    }
-                }
-                // Check for messages from client
-                msg = ws_stream.next().fuse() => {
-                    match msg {
-                        Some(Ok(Message::Close(_))) | None => break,
-                        Some(Ok(Message::Ping(data))) => {
-                            // Respond with pong
-                            if ws_stream.send(Message::Pong(data)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Some(Ok(_)) => {
-                            // Ignore other messages from client for now
-                        }
-                        Some(Err(_)) => break,
-                    }
-                }
-            }
-        }
-
-        tracing::info!("Hot reload client disconnected from {addr}");
-        Ok(())
     }
 
     /// Get the port the server is listening on.
@@ -240,6 +189,65 @@ impl HotReloadServer {
         self.send_library(data);
         Ok(())
     }
+}
+
+/// Build the skyzen router with WebSocket endpoint.
+fn build_router(state: Arc<Mutex<ServerState>>) -> Router {
+    Route::new("/".at(move |ws: WebSocketUpgrade| {
+        let state = state.clone();
+        async move { handle_websocket(ws, state) }
+    }))
+    .build()
+}
+
+/// Handle a single WebSocket connection.
+fn handle_websocket(upgrade: WebSocketUpgrade, state: Arc<Mutex<ServerState>>) -> impl Responder {
+    upgrade.on_upgrade(move |mut socket| async move {
+        tracing::info!("Hot reload client connected");
+
+        // Create a channel for this client to receive broadcasts
+        let (client_tx, client_rx) = channel::unbounded::<Vec<u8>>();
+
+        // Register this client
+        {
+            let mut state = state.lock().await;
+            state.add_client(client_tx);
+        }
+
+        // Handle the WebSocket connection - interleave sending and receiving
+        loop {
+            futures::select! {
+                // Check for data to send to client
+                data = client_rx.recv().fuse() => {
+                    match data {
+                        Ok(data) => {
+                            if socket.send_binary(data).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break, // Channel closed
+                    }
+                }
+                // Check for messages from client
+                msg = socket.next().fuse() => {
+                    match msg {
+                        Some(Ok(WebSocketMessage::Close) | Err(_)) | None => break,
+                        Some(Ok(WebSocketMessage::Ping(data))) => {
+                            // Respond with pong
+                            if socket.send_pong(data).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(Ok(_)) => {
+                            // Ignore other messages from client for now
+                        }
+                        }
+                }
+            }
+        }
+
+        tracing::info!("Hot reload client disconnected");
+    })
 }
 
 /// Manages hot reload builds with debouncing and cancellation.
@@ -325,13 +333,13 @@ impl BuildManager {
 
     /// Check if a build is currently in progress.
     #[must_use]
-    pub fn is_building(&self) -> bool {
+    pub const fn is_building(&self) -> bool {
         self.current_build.is_some()
     }
 
     /// Check if we're waiting for debounce.
     #[must_use]
-    pub fn is_debouncing(&self) -> bool {
+    pub const fn is_debouncing(&self) -> bool {
         self.debounce_rx.is_some()
     }
 }
