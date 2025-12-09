@@ -3,16 +3,14 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
+use smol::fs;
 
 use crate::shell;
 use crate::{error, header, success};
 use waterui_cli::{
-    android::platform::AndroidPlatform,
-    apple::platform::ApplePlatform,
-    build::BuildOptions,
-    project::Project,
-    toolchain::Toolchain,
+    android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
+    project::Project, toolchain::Toolchain, utils::copy_file,
 };
 
 /// Target platform for building.
@@ -42,6 +40,11 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Output directory to copy the built library to.
+    /// The library will be copied as `libwaterui_app.a` (Apple) or `libwaterui_app.so` (Android).
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
 }
 
 /// Run the build command.
@@ -96,8 +99,30 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     match result {
-        Ok(lib_path) => {
-            success!("Built library at {}", lib_path.display());
+        Ok(lib_dir) => {
+            success!("Built library at {}", lib_dir.display());
+
+            // If output_dir is specified, copy the library there with a fixed name
+            if let Some(output_dir) = args.output_dir {
+                let crate_name = project.crate_name().replace('-', "_");
+                let (src_ext, dst_ext) = match args.platform {
+                    TargetPlatform::Android => ("so", "so"),
+                    _ => ("a", "a"), // Apple platforms use static libraries
+                };
+
+                let src_lib = lib_dir.join(format!("lib{crate_name}.{src_ext}"));
+                let dst_lib = output_dir.join(format!("libwaterui_app.{dst_ext}"));
+
+                if src_lib.exists() {
+                    fs::create_dir_all(&output_dir).await?;
+                    copy_file(&src_lib, &dst_lib).await?;
+                    success!("Copied library to {}", dst_lib.display());
+                } else {
+                    error!("Source library not found: {}", src_lib.display());
+                    bail!("Failed to copy library: source not found");
+                }
+            }
+
             Ok(())
         }
         Err(e) => {

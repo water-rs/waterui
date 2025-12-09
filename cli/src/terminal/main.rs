@@ -11,6 +11,8 @@ use futures::future::{self, Either};
 
 use commands::{build, clean, create, devices, doctor, package, run};
 
+use crate::shell::is_interactive;
+
 /// Flag to track if Ctrl+C was pressed.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -61,12 +63,20 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    color_eyre::config::HookBuilder::default()
+        .display_location_section(false)
+        .display_env_section(false)
+        .install()?;
 
     let cli = Cli::parse();
 
     // Initialize global shell
     shell::init(cli.json);
+
+    if is_interactive() {
+        // Print all executed commands to stdout/stderr in interactive mode
+        waterui_cli::utils::set_std_output(true);
+    }
 
     // Set up Ctrl+C handler
     ctrlc::set_handler(set_cancelled).expect("failed to set Ctrl+C handler");
