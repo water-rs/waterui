@@ -17,6 +17,7 @@ use crate::{
     utils::run_command,
 };
 
+/// Represents a physical Apple device
 #[derive(Debug)]
 pub struct ApplePhysicalDevice {}
 
@@ -229,6 +230,11 @@ pub struct AppleSimulator {
 }
 
 impl AppleSimulator {
+    /// Scan for available simulators using `simctl`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `simctl` command fails or output cannot be parsed.
     pub async fn scan() -> eyre::Result<Vec<Self>> {
         #[derive(Deserialize)]
         struct Root {

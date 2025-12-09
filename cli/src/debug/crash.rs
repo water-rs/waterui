@@ -1,3 +1,5 @@
+//! Structured crash diagnostics captured while launching or monitoring an app.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

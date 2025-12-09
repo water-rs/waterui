@@ -117,7 +117,7 @@ impl<V: View> View for Hotreload<V> {
                 let connection = match CliConnection::connect(config).await {
                     Ok(conn) => conn,
                     Err(e) => {
-                        overlay_handler.set(StatusOverlay::error(e, overlay_handler.clone()));
+                        overlay_handler.set(StatusOverlay::error(&e, overlay_handler.clone()));
                         return;
                     }
                 };
@@ -179,7 +179,7 @@ impl StatusOverlay {
             .background(Color::srgb_f32(0.5, 0.3, 0.1).with_opacity(0.9))
     }
 
-    fn error(err: ConnectionError, overlay_handler: DynamicHandler) -> impl View {
+    fn error(err: &ConnectionError, overlay_handler: DynamicHandler) -> impl View {
         let msg = alloc::format!("{err}");
 
         vstack((

@@ -13,7 +13,12 @@ pub enum CliEvent {
     Disconnected,
 
     /// Attempting to reconnect.
-    Reconnecting { attempt: u32, max_attempts: u32 },
+    Reconnecting {
+        /// Current reconnection attempt number.
+        attempt: u32,
+        /// Maximum number of reconnection attempts.
+        max_attempts: u32
+    },
 
     /// A new library is available for hot reload.
     LibraryReady(PathBuf),

@@ -1,3 +1,5 @@
+//! Toolchain management for `WaterUI` CLI
+
 use std::convert::Infallible;
 
 use color_eyre::eyre;
