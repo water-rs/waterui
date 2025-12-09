@@ -26,7 +26,11 @@ impl Backends {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum FailToInitBackend {}
+pub enum FailToInitBackend {
+    /// I/O error while scaffolding templates.
+    #[error("Failed to write template files: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 pub trait Backend: Sized + Send + Sync {
     fn init(project: &Project) -> impl Future<Output = Result<Self, FailToInitBackend>> + Send;
