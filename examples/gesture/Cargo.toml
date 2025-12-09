@@ -1,0 +1,12 @@
+[package]
+name = "gesture-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
