@@ -1,101 +1,67 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Exit on error
-set -e
+# Skip Rust build when invoked by `water run` (it already builds the library)
+if [ "${WATERUI_SKIP_RUST_BUILD:-}" = "1" ]; then
+    echo "Skipping Rust build (managed by water run)"
+    exit 0
+fi
 
-# Debug output
-echo "Starting Rust build script..."
-echo "Current directory: $(pwd)"
-echo "SRCROOT: $SRCROOT"
-echo "BUILT_PRODUCTS_DIR: $BUILT_PRODUCTS_DIR"
-
-# Get the directory of this script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$SCRIPT_DIR/../.."
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 
-# Configuration
-RUST_TARGET_DIR="$PROJECT_ROOT/target"
-CARGO_MANIFEST="$PROJECT_ROOT/demo/Cargo.toml"
+# Xcode runs build scripts in a restricted shell environment without the user's
+# full PATH. Add common tool locations explicitly.
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# Determine target architecture based on Xcode build settings
-if [ "$PLATFORM_NAME" = "iphonesimulator" ]; then
-    if [ "$ARCHS" = "x86_64" ]; then
-        RUST_TARGET="x86_64-apple-ios"
-    else
-        RUST_TARGET="aarch64-apple-ios-sim"
-    fi
-elif [ "$PLATFORM_NAME" = "iphoneos" ]; then
-    RUST_TARGET="aarch64-apple-ios"
-elif [ "$PLATFORM_NAME" = "macosx" ]; then
-    if [ "$ARCHS" = "x86_64" ]; then
-        RUST_TARGET="x86_64-apple-darwin"
-    else
-        RUST_TARGET="aarch64-apple-darwin"
-    fi
-else
-    # Default to macOS native architecture
-    if [ "$(uname -m)" = "x86_64" ]; then
-        RUST_TARGET="x86_64-apple-darwin"
-    else
-        RUST_TARGET="aarch64-apple-darwin"
-    fi
-fi
-
-# Determine build profile
-if [ "$CONFIGURATION" = "Release" ]; then
-    CARGO_PROFILE="release"
-    CARGO_ARGS="--release"
-    PROFILE_DIR="release"
-else
-    CARGO_PROFILE="debug"
-    CARGO_ARGS=""
-    PROFILE_DIR="debug"
-fi
-
-echo "Building Rust library for target: $RUST_TARGET"
-echo "Configuration: $CONFIGURATION"
-echo "Cargo profile: $CARGO_PROFILE"
-
-# Ensure cargo is in PATH (Xcode doesn't inherit user's PATH)
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# Ensure cargo is available
-if ! command -v cargo &> /dev/null; then
-    echo "Error: cargo not found. Please install Rust."
-    echo "Visit https://rustup.rs to install Rust"
+if ! command -v water >/dev/null 2>&1; then
+    echo "error: the 'water' CLI is not on PATH. Install it with 'cargo install waterui-cli'." >&2
+    echo "error: Searched in PATH: $PATH" >&2
     exit 1
 fi
 
-# Build the Rust library
-cd "$PROJECT_ROOT/demo"
+# Determine Rust target triple from Xcode environment variables
+# PLATFORM_NAME: macosx, iphoneos, iphonesimulator, etc.
+# ARCHS: arm64, x86_64, or "arm64 x86_64" for universal builds
+PLATFORM_NAME="${PLATFORM_NAME:-macosx}"
+ARCHS="${ARCHS:-arm64}"
 
-# Install target if needed
-rustup target add "$RUST_TARGET" 2>/dev/null || true
-
-# Build for the specific target
-RUSTFLAGS="-C link-arg=-lc++" cargo build --target "$RUST_TARGET" $CARGO_ARGS
-
-# Create output directory if it doesn't exist
-OUTPUT_DIR="$BUILT_PRODUCTS_DIR"
-if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="$SCRIPT_DIR/build"
-fi
-mkdir -p "$OUTPUT_DIR"
-
-# Path to the built library
-RUST_LIB="$RUST_TARGET_DIR/$RUST_TARGET/$PROFILE_DIR/libdemo.a"
-
-# Verify the library was built
-if [ ! -f "$RUST_LIB" ]; then
-    echo "Error: Rust library not found at $RUST_LIB"
-    exit 1
+# When Xcode passes multiple architectures (e.g., "arm64 x86_64"), pick the native one.
+# For Apple Silicon Macs, prefer arm64; for Intel Macs, prefer x86_64.
+if [[ "$ARCHS" == *" "* ]]; then
+    NATIVE_ARCH=$(uname -m)
+    if [[ "$ARCHS" == *"$NATIVE_ARCH"* ]]; then
+        ARCHS="$NATIVE_ARCH"
+    else
+        # Fallback to first architecture in the list
+        ARCHS="${ARCHS%% *}"
+    fi
 fi
 
-# Copy library to build products directory for easy access
-cp "$RUST_LIB" "$OUTPUT_DIR/libdemo.a"
+# Map Xcode platform to water CLI platform name
+case "$PLATFORM_NAME" in
+    macosx)
+        WATER_PLATFORM="macos"
+        ;;
+    iphoneos)
+        WATER_PLATFORM="ios"
+        ;;
+    iphonesimulator)
+        WATER_PLATFORM="ios-simulator"
+        ;;
+    *)
+        echo "error: unsupported platform: $PLATFORM_NAME" >&2
+        exit 1
+        ;;
+esac
 
-echo "Successfully built Rust library at: $RUST_LIB"
-echo "Copied to: $OUTPUT_DIR/libdemo.a"
+CONFIGURATION_VALUE="${CONFIGURATION:-Debug}"
+CLI_ARGS=(build --platform "$WATER_PLATFORM" --path "$PROJECT_ROOT")
+if [ "$CONFIGURATION_VALUE" = "Release" ]; then
+    CLI_ARGS+=(--release)
+fi
+if [ -n "${BUILT_PRODUCTS_DIR:-}" ]; then
+    CLI_ARGS+=(--output-dir "$BUILT_PRODUCTS_DIR")
+fi
 
-# Export the library path for Xcode to use
-echo "RUST_LIBRARY_PATH=$RUST_LIB" > "$SCRIPT_DIR/rust_build_info.xcconfig"
+exec water "${CLI_ARGS[@]}"

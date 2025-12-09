@@ -18,7 +18,7 @@ path = "src/terminal/main.rs"
 [dependencies]
 cargo_metadata = "0.23.1"
 cargo_toml = "0.22.3"
-color-eyre = "0.6.5"
+color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
 skyzen = { workspace = true, default-features = false, features = ["json", "ws", "hyper"] }
 futures.workspace = true

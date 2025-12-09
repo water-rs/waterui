@@ -344,7 +344,10 @@ impl Project {
     /// If not, initializes a new git repository.
     async fn ensure_git_init(path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
-        let is_in_git = Command::new("git")
+
+        let mut cmd = Command::new("git");
+
+        let is_in_git = command(&mut cmd)
             .args(["rev-parse", "--git-dir"])
             .current_dir(path)
             .output()
@@ -354,7 +357,8 @@ impl Project {
 
         if !is_in_git {
             // Initialize a new git repository
-            Command::new("git")
+            let mut cmd = Command::new("git");
+            command(&mut cmd)
                 .args(["init"])
                 .current_dir(path)
                 .status()
@@ -456,6 +460,7 @@ use crate::{
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     platform::{PackageOptions, Platform},
     templates::{self, TemplateContext},
+    utils::command,
 };
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.

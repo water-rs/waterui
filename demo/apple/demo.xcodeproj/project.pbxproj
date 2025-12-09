@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D01867772E6C81BF00802E96 /* libdemo.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libdemo.a */; };
+		D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libwaterui_app.a */; };
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		D018675E2E6C7BBB00802E96 /* demo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = demo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* libdemo.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libdemo.a; path = "$(BUILT_PRODUCTS_DIR)/libdemo.a"; sourceTree = "<group>"; };
+		D01867752E6C818300802E96 /* libwaterui_app.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libwaterui_app.a; path = "$(BUILT_PRODUCTS_DIR)/libwaterui_app.a"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -30,7 +30,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */,
-				D01867772E6C81BF00802E96 /* libdemo.a in Frameworks */,
+				D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,7 +57,7 @@
 		D01867742E6C818200802E96 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				D01867752E6C818300802E96 /* libdemo.a */,
+				D01867752E6C818300802E96 /* libwaterui_app.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -65,9 +65,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D018675D2E6C7BBB00802E96 /* demo */ = {
+        D018675D2E6C7BBB00802E96 /* demo */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "demo" */;
+            buildConfigurationList = D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "demo" */;
 			buildPhases = (
 				D0000001000000000000001 /* Build Rust Library */,
 				D018675A2E6C7BBB00802E96 /* Sources */,
@@ -81,18 +81,18 @@
 			fileSystemSynchronizedGroups = (
 				D01867602E6C7BBB00802E96 /* demo */,
 			);
-			name = demo;
-			packageProductDependencies = (
-				D01867792E6C82CA00802E96 /* WaterUI */,
-			);
-			productName = demo;
-			productReference = D018675E2E6C7BBB00802E96 /* demo.app */;
-			productType = "com.apple.product-type.application";
-		};
+            name = "demo";
+            packageProductDependencies = (
+                D01867792E6C82CA00802E96 /* WaterUI */,
+            );
+            productName = "demo";
+            productReference = D018675E2E6C7BBB00802E96 /* demo.app */;
+            productType = "com.apple.product-type.application";
+        };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		D01867562E6C7BBB00802E96 /* Project object */ = {
+        D01867562E6C7BBB00802E96 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
@@ -104,7 +104,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "demo" */;
+            buildConfigurationList = D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "demo" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -114,16 +114,16 @@
 			mainGroup = D01867552E6C7BBB00802E96;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/apple" */,
+				D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "/Users/lexoliu/Coding/waterui/backends/apple" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D018675F2E6C7BBB00802E96 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D018675D2E6C7BBB00802E96 /* demo */,
-			);
-		};
+                D018675D2E6C7BBB00802E96 /* demo */,
+            );
+        };
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -146,18 +146,20 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/../../demo/Cargo.toml",
-				"$(SRCROOT)/../../demo/src/lib.rs",
+				"$(SRCROOT)/../Cargo.toml",
+				"$(SRCROOT)/../src/lib.rs",
+				"$(PROJECT_DIR)/build-rust.sh",
 			);
 			name = "Build Rust Library";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libdemo.a",
+				"$(BUILT_PRODUCTS_DIR)/libwaterui_app.a",
+				"$(PROJECT_DIR)/rust_build_info.xcconfig",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "# Build Rust library\nset -e\n\n# Ensure cargo is in PATH (Xcode doesn't inherit user's PATH)\nexport PATH=\"$HOME/.cargo/bin:$PATH\"\n\n# Get project directories\nPROJECT_ROOT=\"$SRCROOT/../..\"\nCARGO_MANIFEST=\"$PROJECT_ROOT/demo/Cargo.toml\"\n\n# Determine target architecture based on platform and architecture\nif [ \"$PLATFORM_NAME\" = \"macosx\" ]; then\n    if [ \"$ARCHS\" = \"x86_64\" ]; then\n        RUST_TARGET=\"x86_64-apple-darwin\"\n    else\n        RUST_TARGET=\"aarch64-apple-darwin\"\n    fi\nelif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n    if [ \"$ARCHS\" = \"x86_64\" ]; then\n        RUST_TARGET=\"x86_64-apple-ios\"\n    else\n        RUST_TARGET=\"aarch64-apple-ios-sim\"\n    fi\nelif [ \"$PLATFORM_NAME\" = \"iphoneos\" ]; then\n    RUST_TARGET=\"aarch64-apple-ios\"\nelif [ \"$PLATFORM_NAME\" = \"xrsimulator\" ]; then\n    RUST_TARGET=\"aarch64-apple-ios-sim\"\nelif [ \"$PLATFORM_NAME\" = \"xros\" ]; then\n    RUST_TARGET=\"aarch64-apple-ios\"\nelse\n    # Default to native arch\n    if [ \"$(uname -m)\" = \"x86_64\" ]; then\n        RUST_TARGET=\"x86_64-apple-darwin\"\n    else\n        RUST_TARGET=\"aarch64-apple-darwin\"\n    fi\nfi\n\n# Determine build profile\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    CARGO_ARGS=\"--release\"\n    PROFILE_DIR=\"release\"\nelse\n    CARGO_ARGS=\"\"\n    PROFILE_DIR=\"debug\"\nfi\n\necho \"Building Rust library for platform: $PLATFORM_NAME\"\necho \"Architecture: $ARCHS\"\necho \"Rust target: $RUST_TARGET\"\necho \"Configuration: $CONFIGURATION\"\n\n# Build the Rust library\ncd \"$PROJECT_ROOT/demo\"\ncargo build --target \"$RUST_TARGET\" $CARGO_ARGS\n\n# Copy library to build products\nRUST_LIB=\"$PROJECT_ROOT/target/$RUST_TARGET/$PROFILE_DIR/libdemo.a\"\ncp \"$RUST_LIB\" \"$BUILT_PRODUCTS_DIR/libdemo.a\"\n\necho \"Successfully built and copied Rust library\"\n";
+			shellScript = "bash \"${PROJECT_DIR}/build-rust.sh\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -206,8 +208,6 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 4AZ53N9R83;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -269,7 +269,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 4AZ53N9R83;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -294,10 +293,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = demo/demo.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "demo/demo.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4AZ53N9R83;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -318,17 +316,14 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"-ldemo",
-					"-lc++",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = waterui.demo;
+				OTHER_LDFLAGS = "-lwaterui_app -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.demo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -341,8 +336,10 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2,4,7";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 				XROS_DEPLOYMENT_TARGET = 2.5;
+
 			};
 			name = Debug;
 		};
@@ -352,10 +349,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = demo/demo.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "demo/demo.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4AZ53N9R83;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -376,17 +372,14 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"-ldemo",
-					"-lc++",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = waterui.demo;
+				OTHER_LDFLAGS = "-lwaterui_app -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.demo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -399,15 +392,17 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TARGETED_DEVICE_FAMILY = "1,2,4,7";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 				XROS_DEPLOYMENT_TARGET = 2.5;
+
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "demo" */ = {
+        D01867592E6C7BBB00802E96 /* Build configuration list for PBXProject "demo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D01867682E6C7BBD00802E96 /* Debug */,
@@ -416,7 +411,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "demo" */ = {
+        D018676A2E6C7BBD00802E96 /* Build configuration list for PBXNativeTarget "demo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D018676B2E6C7BBD00802E96 /* Debug */,
@@ -428,9 +423,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "../../backends/apple" */ = {
+		D01867782E6C82CA00802E96 /* XCLocalSwiftPackageReference "/Users/lexoliu/Coding/waterui/backends/apple" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../backends/apple;
+			relativePath = "/Users/lexoliu/Coding/waterui/backends/apple";
 		};
 /* End XCLocalSwiftPackageReference section */
 

@@ -18,6 +18,10 @@ cargo build
 # Run tests
 cargo test
 
+# Run tests for specific crate
+cargo test -p waterui-core
+cargo test -p waterui-cli
+
 # Check with hot reload lib feature (for development)
 RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo check
 
@@ -33,6 +37,9 @@ cd backends/apple && swift build
 # Run demo app (after creating a project)
 water run --platform ios
 water run --platform android
+
+# Create a playground for quick experimentation
+water create --playground --name my-playground
 ```
 
 ## Architecture Overview
@@ -72,10 +79,22 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 
 The `water` CLI orchestrates builds across platforms:
 
-- `water create` - Scaffold new project
+- `water create` - Scaffold new project (supports `--playground` for quick experiments)
 - `water run` - Build and deploy to device/simulator with hot reload. It is an interactive terminal, so LLMs should ask user to run it for you.
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
+- `water package` - Package built artifacts for distribution
+- `water clean` - Remove build artifacts
 - `water doctor` - Check development environment
+- `water devices` - List available devices and simulators
+
+**CLI Architecture Notes:**
+- Entry point: `cli/src/terminal/main.rs` - Uses `clap` for parsing, `smol` async runtime
+- Commands in `cli/src/terminal/commands/` - Each command is async and returns `Result<()>`
+- Hot reload: `cli/src/debug/hot_reload.rs` - WebSocket server with 150ms debounced builds
+- Platform abstraction: `Platform` trait in `cli/src/platform.rs` implemented by `ApplePlatform` and `AndroidPlatform`
+- Shell output: `cli/src/terminal/shell.rs` - Global singleton with human-readable (ANSI) or JSON modes
+
+Note: `/terminal/*` (waterui-cli binary) only provide a friendly interface for CLI commands. All real logic should be implemented in the waterui-cli library part.
 
 ### FFI Contract
 
@@ -123,5 +142,27 @@ waterui_ffi::export!();  // Generates FFI entry points
 - Rust edition 2024, minimum rustc 1.87
 - Workspace lints enforce strict clippy rules including pedantic/nursery
 - `backends/apple` and `backends/android` are git submodules
-- The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date
+- The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
 - When adding new components, update: Rust view → FFI exports → regenerate header → Swift component → Android component + JNI
+
+### Hot Reload System
+
+The hot reload system uses a WebSocket-based architecture:
+1. CLI launches `HotReloadServer` on port 2006+ (tries up to 50 variations)
+2. Server broadcasts dylib updates to connected apps via WebSocket
+3. `BuildManager` debounces file changes (150ms) and manages incremental builds
+4. Environment variables `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` are passed to running apps
+5. Apps wrapped in `Hotreload` component check for updates and reload dynamically
+
+### Testing Patterns
+
+- Most tests use `#[cfg(test)] mod tests` pattern
+- Run workspace tests: `cargo test`
+- Run specific crate tests: `cargo test -p <crate-name>`
+- No explicit CLI unit tests found; likely relies on integration testing
+
+### Error Handling
+
+- All command functions return `Result<(), eyre::Report>` for rich error context
+- Custom error enums use `thiserror` derive macro
+- Shell provides `success!()`, `error!()`, `warn!()`, `note!()` macros for user feedback
