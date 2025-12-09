@@ -97,14 +97,13 @@ impl Shell {
         match &self.output {
             ShellOut::Human => {
                 let mut stderr = anstream::stderr().lock();
-                write!(
+                writeln!(
                     stderr,
-                    "{}{:>12}{} ",
+                    "{}{}{} {message}",
                     styles::HEADER,
                     status,
                     styles::HEADER.render_reset()
                 )?;
-                writeln!(stderr, "{message}")?;
                 stderr.flush()
             }
             ShellOut::Json => {

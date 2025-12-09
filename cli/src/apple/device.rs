@@ -2,7 +2,13 @@ use std::{collections::HashMap, path::PathBuf};
 
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
-use smol::{future::block_on, process::Command, spawn};
+use smol::{
+    future::block_on,
+    io::{AsyncBufReadExt, BufReader},
+    process::{Command, Stdio},
+    spawn,
+    stream::StreamExt,
+};
 use tracing::info;
 
 use crate::{
@@ -59,11 +65,15 @@ impl Device for MacOS {
             return Err(FailToRun::InvalidArtifact);
         }
 
+        let app_name = artifact_path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .ok_or(FailToRun::InvalidArtifact)?
+            .to_string();
+
         info!("Launching app on MacOS: {}", artifact.path().display());
 
         // Build the `open` command
-        // Note: We can't easily capture stdout/stderr with `open`, so we just launch the app
-        // For debugging output, use Console.app or run the executable directly
         let mut command = Command::new("open");
         command
             .arg("-W") // Wait for app to exit
@@ -85,6 +95,70 @@ impl Device for MacOS {
         let child = command
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+
+        // Give the app a moment to start, then get its PID
+        smol::Timer::after(std::time::Duration::from_millis(500)).await;
+
+        // Get the PID of the launched app using pgrep
+        let pid_output = Command::new("pgrep")
+            .arg("-n") // Newest matching process
+            .arg("-x") // Exact match
+            .arg(&app_name)
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok());
+
+        // Start log streaming if we got a PID
+        if let Some(pid) = pid_output {
+            let log_sender = sender.clone();
+
+            // Spawn log stream process
+            let mut log_cmd = Command::new("log");
+            log_cmd
+                .arg("stream")
+                .arg("--process")
+                .arg(pid.to_string())
+                .arg("--level")
+                .arg("debug")
+                .arg("--style")
+                .arg("compact")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+
+            if let Ok(mut log_child) = log_cmd.spawn() {
+                if let Some(stdout) = log_child.stdout.take() {
+                    spawn(async move {
+                        let mut lines = BufReader::new(stdout).lines();
+                        while let Some(Ok(line)) = lines.next().await {
+                            // Parse log level from the line (compact format: timestamp level ...)
+                            let level = if line.contains(" Error ") || line.contains(" Fault ") {
+                                tracing::Level::ERROR
+                            } else if line.contains(" Warning ") {
+                                tracing::Level::WARN
+                            } else if line.contains(" Debug ") {
+                                tracing::Level::DEBUG
+                            } else {
+                                tracing::Level::INFO
+                            };
+
+                            if log_sender
+                                .try_send(DeviceEvent::Log {
+                                    level,
+                                    message: line,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+            }
+        }
 
         // Spawn a task to wait for the child to exit and send Exited event
         spawn(async move {
