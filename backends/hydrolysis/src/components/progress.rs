@@ -60,7 +60,7 @@ impl RenderNode for ProgressNode {
             headroom: 0.0,
             opacity: 1.0,
         };
-        let fraction = self.value.current().clamp(0.0, 1.0).min(1.0).max(0.0) as f32;
+        let fraction = self.value.current().clamp(0.0, 1.0).clamp(0.0, 1.0) as f32;
 
         match self.style {
             ProgressStyle::Linear => {

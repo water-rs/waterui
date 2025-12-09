@@ -175,4 +175,8 @@ impl RenderTree {
     pub const fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    pub const fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
 }

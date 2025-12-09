@@ -188,18 +188,22 @@ impl Platform for ApplePlatform {
             .filter(|sim| {
                 let sim_platform = Self::from_device_type_identifier(&sim.device_type_identifier);
                 // Match simulator platforms
-                match (&self.kind, &sim_platform.kind) {
-                    (ApplePlatformKind::IosSimulator, ApplePlatformKind::IosSimulator) => true,
-                    (ApplePlatformKind::TvOsSimulator, ApplePlatformKind::TvOsSimulator) => true,
-                    (ApplePlatformKind::WatchOsSimulator, ApplePlatformKind::WatchOsSimulator) => {
-                        true
-                    }
+                matches!(
+                    (&self.kind, &sim_platform.kind),
                     (
+                        ApplePlatformKind::IosSimulator,
+                        ApplePlatformKind::IosSimulator
+                    ) | (
+                        ApplePlatformKind::TvOsSimulator,
+                        ApplePlatformKind::TvOsSimulator
+                    ) | (
+                        ApplePlatformKind::WatchOsSimulator,
+                        ApplePlatformKind::WatchOsSimulator
+                    ) | (
                         ApplePlatformKind::VisionOsSimulator,
                         ApplePlatformKind::VisionOsSimulator,
-                    ) => true,
-                    _ => false,
-                }
+                    )
+                )
             })
             .map(AppleDevice::Simulator)
             .collect();
@@ -249,7 +253,9 @@ impl Platform for ApplePlatform {
             ApplePlatformKind::Ios | ApplePlatformKind::IosSimulator => AppleSdk::Ios,
             ApplePlatformKind::TvOs | ApplePlatformKind::TvOsSimulator => AppleSdk::TvOs,
             ApplePlatformKind::WatchOs | ApplePlatformKind::WatchOsSimulator => AppleSdk::WatchOs,
-            ApplePlatformKind::VisionOs | ApplePlatformKind::VisionOsSimulator => AppleSdk::VisionOs,
+            ApplePlatformKind::VisionOs | ApplePlatformKind::VisionOsSimulator => {
+                AppleSdk::VisionOs
+            }
         };
         (Xcode, sdk)
     }
@@ -274,7 +280,9 @@ impl Platform for ApplePlatform {
             ApplePlatformKind::TvOs => (OperatingSystem::TvOS(None), Environment::Unknown),
             ApplePlatformKind::TvOsSimulator => (OperatingSystem::TvOS(None), Environment::Sim),
             ApplePlatformKind::WatchOs => (OperatingSystem::WatchOS(None), Environment::Unknown),
-            ApplePlatformKind::WatchOsSimulator => (OperatingSystem::WatchOS(None), Environment::Sim),
+            ApplePlatformKind::WatchOsSimulator => {
+                (OperatingSystem::WatchOS(None), Environment::Sim)
+            }
             ApplePlatformKind::VisionOs => (OperatingSystem::VisionOS(None), Environment::Unknown),
             ApplePlatformKind::VisionOsSimulator => {
                 (OperatingSystem::VisionOS(None), Environment::Sim)

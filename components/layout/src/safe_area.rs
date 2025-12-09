@@ -24,6 +24,7 @@ use waterui_core::metadata::MetadataKey;
 /// Used with `IgnoreSafeArea` to control which edges of a view
 /// should extend into the unsafe screen regions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct EdgeSet {
     /// Ignore safe area on the top edge.
     pub top: bool,
@@ -86,6 +87,7 @@ impl EdgeSet {
 
     /// Creates a custom edge set.
     #[must_use]
+    #[allow(clippy::fn_params_excessive_bools)]
     pub const fn new(top: bool, leading: bool, bottom: bool, trailing: bool) -> Self {
         Self {
             top,

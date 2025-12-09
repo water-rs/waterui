@@ -5,12 +5,15 @@ use crate::{
     utils::which,
 };
 
+/// Complete Android toolchain including SDK, NDK, and `CMake`.
 pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Cmake);
 
+/// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
 pub struct AndroidSdk;
 
 impl AndroidSdk {
+    /// Detect the path to the Android SDK installation.
     #[must_use]
     pub fn detect_path() -> Option<PathBuf> {
         // Check ANDROID_HOME environment variable
@@ -48,13 +51,20 @@ impl AndroidSdk {
     }
 }
 
+/// Installation procedure for the Android SDK.
+#[derive(Debug, Clone, Default)]
 pub struct AndroidSdkInstallation;
 
+/// An Android NDK toolchain component.
 #[derive(Debug, Clone, Default)]
 pub struct AndroidNdk;
+
+/// Java toolchain component for Android development.
+#[derive(Debug)]
 pub struct Java;
 
 impl Java {
+    /// Detect the path to the Java installation.
     pub async fn detect_path() -> Option<PathBuf> {
         // Check JAVA_HOME first
         if let Ok(home) = env::var("JAVA_HOME") {
@@ -127,6 +137,7 @@ impl AndroidNdk {
     }
 }
 
+/// Errors that can occur when installing the Android SDK.
 #[derive(Debug, thiserror::Error)]
 pub enum FailToInstallAndroidSdk {}
 
@@ -168,6 +179,8 @@ impl Installation for AndroidSdkInstallation {
     }
 }
 
+/// Android NDK installation handler.
+#[derive(Debug)]
 pub struct AndroidNdkInstallation;
 
 impl Toolchain for AndroidNdk {
@@ -208,5 +221,6 @@ impl Installation for AndroidNdkInstallation {
     }
 }
 
+/// Errors that can occur when installing the Android NDK.
 #[derive(Debug, thiserror::Error)]
 pub enum FailToInstallAndroidNdk {}

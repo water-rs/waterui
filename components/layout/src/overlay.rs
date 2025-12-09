@@ -40,7 +40,7 @@ impl OverlayLayout {
         self.alignment
     }
 
-    fn aligned_origin(&self, bounds: &Rect, size: &Size) -> Point {
+    fn aligned_origin(&self, bounds: &Rect, size: Size) -> Point {
         match self.alignment {
             Alignment::TopLeading => Point::new(bounds.x(), bounds.y()),
             Alignment::Top => {
@@ -145,7 +145,7 @@ impl Layout for OverlayLayout {
                 measurement.size.height.min(bounds.height()).max(0.0)
             };
             let size = Size::new(width, height);
-            let origin = self.aligned_origin(&bounds, &size);
+            let origin = self.aligned_origin(&bounds, size);
             placements.push(Rect::new(origin, size));
         }
 
@@ -207,6 +207,7 @@ pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Lay
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::StretchAxis;

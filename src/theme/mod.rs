@@ -98,7 +98,6 @@ use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
-    View,
     color::ResolvedColor,
     text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title},
 };
@@ -155,7 +154,7 @@ impl_constant!(ColorScheme);
 ///     .accent(my_accent_color)
 ///     .foreground(my_text_color);
 /// ```
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ColorSettings {
     background: Option<Computed<ResolvedColor>>,
     surface: Option<Computed<ResolvedColor>>,
@@ -280,6 +279,7 @@ impl ColorSettings {
 ///     .title(my_title_font);
 /// ```
 #[derive(Default)]
+#[derive(Debug)]
 pub struct FontSettings {
     body: Option<Computed<ResolvedFont>>,
     title: Option<Computed<ResolvedFont>>,
@@ -385,7 +385,7 @@ impl FontSettings {
 ///     .fonts(FontSettings::new().body(my_body_font))
 ///     .install(&mut env);
 /// ```
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Theme {
     color_scheme: Option<Computed<ColorScheme>>,
     colors: Option<ColorSettings>,
@@ -519,17 +519,19 @@ impl<T> ColorSlotValue<T> {
 /// should always install proper defaults.
 fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> {
     env.get::<ColorSlotValue<T>>()
-        .map(|v| v.signal.clone())
-        .unwrap_or_else(|| {
-            // Fallback: transparent (native should provide real defaults)
-            Computed::constant(ResolvedColor {
-                red: 0.0,
-                green: 0.0,
-                blue: 0.0,
-                headroom: 0.0,
-                opacity: 0.0,
-            })
-        })
+        .map_or_else(
+            || {
+                // Fallback: transparent (native should provide real defaults)
+                Computed::constant(ResolvedColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    headroom: 0.0,
+                    opacity: 0.0,
+                })
+            },
+            |v| v.signal.clone(),
+        )
 }
 
 // ============================================================================

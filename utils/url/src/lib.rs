@@ -356,7 +356,7 @@ impl Url {
             ParsedComponents::Data(_) => Some("data"),
             ParsedComponents::Blob(_) => Some("blob"),
             ParsedComponents::Local(_) => Some("file"),
-            _ => None,
+            ParsedComponents::Web(_) => None,
         }
     }
 
@@ -946,14 +946,15 @@ mod tests {
     #[test]
     fn test_query_and_fragment() {
         const URL1: Url = Url::new("https://example.com?foo=bar");
+        const URL2: Url = Url::new("https://example.com#section");
+        const URL3: Url = Url::new("https://example.com?foo=bar#section");
+
         assert_eq!(URL1.query(), Some("foo=bar"));
         assert_eq!(URL1.fragment(), None);
 
-        const URL2: Url = Url::new("https://example.com#section");
         assert_eq!(URL2.query(), None);
         assert_eq!(URL2.fragment(), Some("section"));
 
-        const URL3: Url = Url::new("https://example.com?foo=bar#section");
         assert_eq!(URL3.query(), Some("foo=bar"));
         assert_eq!(URL3.fragment(), Some("section"));
     }

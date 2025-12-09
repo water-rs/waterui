@@ -3,6 +3,8 @@
 //! These tests define the expected behavior of the layout system for various
 //! edge cases and ensure consistency across all layout containers.
 
+#![allow(clippy::float_cmp)]
+
 use alloc::{format, vec, vec::Vec};
 
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
@@ -226,7 +228,7 @@ fn test_hstack_children_exceed_bounds() {
 
     // All children must fit within bounds
     for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {}", i));
+        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
     }
 
     // Spacer should have zero or minimal width since children exceed bounds
@@ -289,7 +291,7 @@ fn test_hstack_multiple_children_total_exceeds_bounds() {
 
     // All children must fit within bounds
     for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {}", i));
+        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
     }
 
     // Children should not overlap
@@ -327,19 +329,17 @@ fn test_hstack_with_flexible_text() {
     let rects = layout.place(bounds, &children);
 
     // All children should fit within bounds
-    let total_children_width: f32 = rects.iter().map(|r| r.width()).sum();
+    let total_children_width: f32 = rects.iter().map(waterui_core::layout::Rect::width).sum();
     let expected_max = bounds.width() - 10.0; // minus spacing
 
     assert!(
         total_children_width <= expected_max + 0.001,
-        "Total children width {} exceeds available space {}",
-        total_children_width,
-        expected_max
+        "Total children width {total_children_width} exceeds available space {expected_max}"
     );
 
     // Children should not overflow bounds
     for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {}", i));
+        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
     }
 }
 
@@ -774,7 +774,7 @@ fn test_hstack_in_vstack_respects_width() {
 
     // All children must fit within bounds
     for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {}", i));
+        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
     }
 
     // The last child's right edge should not exceed bounds
@@ -927,7 +927,7 @@ fn test_bounds_with_offset() {
 
     // All children should be within bounds
     for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {} with offset", i));
+        assert_rect_within_bounds(rect, &bounds, &format!("child {i} with offset"));
     }
 }
 
@@ -1276,8 +1276,8 @@ fn test_vstack_form_with_spacer() {
 // MainAxis / CrossAxis Tests
 // ============================================================================
 
-/// A mock Spacer that uses StretchAxis::MainAxis.
-/// Should expand along VStack's main axis (vertical) and HStack's main axis (horizontal).
+/// A mock Spacer that uses [`StretchAxis::MainAxis`].
+/// Should expand along [`VStack`]'s main axis (vertical) and [`HStack`]'s main axis (horizontal).
 struct MainAxisSpacerView;
 
 impl SubView for MainAxisSpacerView {
@@ -1292,8 +1292,8 @@ impl SubView for MainAxisSpacerView {
     }
 }
 
-/// A mock Divider that uses StretchAxis::CrossAxis.
-/// Should expand along VStack's cross axis (horizontal) and HStack's cross axis (vertical).
+/// A mock Divider that uses [`StretchAxis::CrossAxis`].
+/// Should expand along [`VStack`]'s cross axis (horizontal) and [`HStack`]'s cross axis (vertical).
 struct CrossAxisDividerView {
     thickness: f32,
 }
@@ -1445,7 +1445,7 @@ fn test_hstack_cross_axis_divider() {
     );
 }
 
-/// A mock TextField/Slider that uses StretchAxis::Horizontal.
+/// A mock TextField/Slider that uses [`StretchAxis::Horizontal`].
 /// Should expand horizontally in any stack (not context-dependent like MainAxis/CrossAxis).
 struct HorizontalStretchView {
     min_width: f32,
@@ -1457,8 +1457,7 @@ impl SubView for HorizontalStretchView {
         // When proposed width, use it (but not less than minimum)
         let width = proposal
             .width
-            .map(|w| w.max(self.min_width))
-            .unwrap_or(self.min_width);
+            .map_or(self.min_width, |w| w.max(self.min_width));
         Size::new(width, self.height)
     }
     fn stretch_axis(&self) -> StretchAxis {

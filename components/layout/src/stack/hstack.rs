@@ -138,10 +138,9 @@ impl Layout for HStackLayout {
         let final_width = if has_main_axis_stretch {
             proposal.width.unwrap_or(intrinsic_width)
         } else {
-            match proposal.width {
-                Some(proposed) => intrinsic_width.min(proposed),
-                None => intrinsic_width,
-            }
+            proposal
+                .width
+                .map_or(intrinsic_width, |proposed| intrinsic_width.min(proposed))
         };
 
         // If width is constrained, we need to distribute space properly
@@ -206,6 +205,7 @@ impl Layout for HStackLayout {
         Size::new(final_width, max_height)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         if children.is_empty() {
             return vec![];

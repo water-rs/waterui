@@ -109,10 +109,7 @@ pub unsafe fn __init() {
     #[cfg(target_vendor = "apple")]
     {
         tracing_subscriber::registry()
-            .with(tracing_oslog::OsLogger::new(
-                "dev.waterui",
-                "default",
-            ))
+            .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
             .init();
     }
 

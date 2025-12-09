@@ -496,7 +496,7 @@ pub unsafe extern "C" fn waterui_set_binding_secure(
 ) {
     unsafe {
         let str_value: Str = value.into_rust();
-        (*binding).set(Secure::from_str(&str_value));
+        (*binding).set(Secure::new(str_value.into_string()));
     }
 }
 

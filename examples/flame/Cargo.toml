@@ -3,6 +3,12 @@ name = "flame-example"
 version = "0.1.0"
 edition = "2024"
 authors = ["Lexo Liu"]
+description = "Flame example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "flame"]
+categories = ["gui"]
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

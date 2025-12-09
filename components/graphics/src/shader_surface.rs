@@ -255,7 +255,7 @@ impl GpuRenderer for ShaderRenderer {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     buffers: &[],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -265,7 +265,7 @@ impl GpuRenderer for ShaderRenderer {
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -296,6 +296,7 @@ impl GpuRenderer for ShaderRenderer {
 
         // Update uniforms
         let elapsed = self.start_time.elapsed().as_secs_f32();
+        #[allow(clippy::cast_precision_loss)]
         let uniforms = [elapsed, frame.width as f32, frame.height as f32, 0.0f32];
         frame
             .queue

@@ -3,7 +3,7 @@
 //! This module provides utilities for handling sensitive form data such as
 //! passwords and other secrets with automatic memory zeroing for security.
 
-use core::fmt::Debug;
+use core::{fmt::Debug, str::FromStr};
 
 use alloc::string::{String, ToString};
 use nami::Binding;
@@ -20,6 +20,14 @@ impl Debug for Secure {
     }
 }
 
+impl FromStr for Secure {
+    type Err = core::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
+}
+
 impl Secure {
     /// Creates a new Secure value from a string.
     ///
@@ -33,20 +41,6 @@ impl Secure {
     #[must_use]
     pub const fn new(value: String) -> Self {
         Self(value)
-    }
-
-    /// Creates a new Secure value from a string slice.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The string slice to secure
-    ///
-    /// # Returns
-    ///
-    /// A new Secure instance wrapping a copy of the provided string.
-    #[must_use]
-    pub fn from_str(value: &str) -> Self {
-        Self(value.to_string())
     }
 
     /// Returns the inner string as a string slice.

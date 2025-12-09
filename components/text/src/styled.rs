@@ -289,8 +289,9 @@ impl StyledStr {
         self.chunks
     }
 
+    /// Sets the style for all text in this styled text.
     #[must_use]
-    pub fn set_style(self, style: Style) -> Self {
+    pub fn set_style(self, style: &Style) -> Self {
         self.apply_style(|s| *s = style.clone())
     }
 

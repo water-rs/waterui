@@ -81,6 +81,7 @@ pub struct Store<K, V> {
 }
 
 impl<K, V> Store<K, V> {
+    /// Creates a new store with the given value.
     #[must_use]
     pub const fn new(value: V) -> Self {
         Self {
@@ -89,6 +90,7 @@ impl<K, V> Store<K, V> {
         }
     }
 
+    /// Returns a reference to the stored value.
     #[must_use]
     pub const fn value(&self) -> &V {
         &self.value

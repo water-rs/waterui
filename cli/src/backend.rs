@@ -1,3 +1,5 @@
+//! Backend configuration and initialization for `WaterUI` projects.
+
 use serde::{Deserialize, Serialize};
 
 use crate::{android::backend::AndroidBackend, apple::backend::AppleBackend, project::Project};
@@ -30,6 +32,7 @@ impl Backends {
     }
 }
 
+/// Error type for failing to initialize a backend.
 #[derive(Debug, thiserror::Error)]
 pub enum FailToInitBackend {
     /// I/O error while scaffolding templates.
