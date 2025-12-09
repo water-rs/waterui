@@ -343,6 +343,7 @@ where
 
 /// Represents a single transformed item, pairing data with a generator function to produce a view.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ForEachItem<T, F, V>
 where
     F: Fn(T) -> V,

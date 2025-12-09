@@ -269,6 +269,7 @@ where
         self.scene.reset();
 
         // Create drawing context and invoke user's draw function
+        #[allow(clippy::cast_precision_loss)]
         let mut ctx = DrawingContext {
             scene: &mut self.scene,
             width: frame.width as f32,
