@@ -73,7 +73,8 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(release, "staticlib").await
+        let path = self.build_inner(release, "staticlib").await?;
+        Ok(path)
     }
 
     /// Return target directory path
@@ -120,7 +121,11 @@ impl RustBuild {
 
         let target_directory = metadata.target_directory.as_std_path();
 
-        Ok(target_directory.to_path_buf())
+        let dir = target_directory
+            .join(self.triple.to_string())
+            .join(if release { "release" } else { "debug" });
+
+        Ok(dir)
     }
 
     /// Build a `.a` or `.so` library for linking.
