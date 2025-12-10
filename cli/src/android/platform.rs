@@ -6,6 +6,7 @@ use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 
 use crate::{
     android::{
+        backend::AndroidBackend,
         device::AndroidDevice,
         toolchain::{AndroidNdk, AndroidSdk, AndroidToolchain},
     },
@@ -42,8 +43,8 @@ fn ndk_linker_path(ndk_path: &Path, abi: &str) -> PathBuf {
         _ => unimplemented!(),
     };
 
-    // Use API level 21 as minimum (Android 5.0)
-    let api_level = 21;
+    // Use API level 24 as minimum (Android 7.0)
+    let api_level = 24;
 
     ndk_path
         .join("toolchains/llvm/prebuilt")
@@ -60,8 +61,52 @@ fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
         .join("bin/llvm-ar")
 }
 
+/// Get the NDK clang++ (C++ compiler) path for the given ABI.
+fn ndk_cxx_path(ndk_path: &Path, abi: &str) -> PathBuf {
+    let target = match abi {
+        "arm64-v8a" => "aarch64-linux-android",
+        "x86_64" => "x86_64-linux-android",
+        "armeabi-v7a" => "armv7a-linux-androideabi",
+        "x86" => "i686-linux-android",
+        _ => unimplemented!(),
+    };
+
+    // Use API level 24 as minimum (Android 7.0)
+    let api_level = 24;
+
+    ndk_path
+        .join("toolchains/llvm/prebuilt")
+        .join(ndk_host_tag())
+        .join("bin")
+        .join(format!("{target}{api_level}-clang++"))
+}
+
 /// Get the path to libc++_shared.so in the NDK.
+///
+/// NDK r23+ moved libc++_shared.so to the sysroot. We check both locations.
 fn ndk_libcxx_path(ndk_path: &Path, abi: &str) -> PathBuf {
+    // Map ABI to target triple for the new sysroot path
+    let target_triple = match abi {
+        "arm64-v8a" => "aarch64-linux-android",
+        "x86_64" => "x86_64-linux-android",
+        "armeabi-v7a" => "arm-linux-androideabi",
+        "x86" => "i686-linux-android",
+        _ => abi,
+    };
+
+    // New path in NDK r23+ (sysroot)
+    let new_path = ndk_path
+        .join("toolchains/llvm/prebuilt")
+        .join(ndk_host_tag())
+        .join("sysroot/usr/lib")
+        .join(target_triple)
+        .join("libc++_shared.so");
+
+    if new_path.exists() {
+        return new_path;
+    }
+
+    // Old path in NDK r22 and earlier
     ndk_path
         .join("sources/cxx-stl/llvm-libc++/libs")
         .join(abi)
@@ -123,6 +168,31 @@ impl AndroidPlatform {
     }
 }
 
+impl AndroidPlatform {
+    /// List available Android Virtual Devices (emulators).
+    ///
+    /// # Errors
+    /// Returns an error if the emulator tool is not found.
+    pub async fn list_avds() -> eyre::Result<Vec<String>> {
+        let emulator_path =
+            AndroidSdk::emulator_path().ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+
+        let output = smol::process::Command::new(&emulator_path)
+            .arg("-list-avds")
+            .output()
+            .await?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let avds: Vec<String> = stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(String::from)
+            .collect();
+
+        Ok(avds)
+    }
+}
+
 impl Platform for AndroidPlatform {
     type Device = AndroidDevice;
     type Toolchain = AndroidToolchain;
@@ -161,12 +231,12 @@ impl Platform for AndroidPlatform {
     }
 
     async fn clean(&self, project: &Project) -> eyre::Result<()> {
-        let backend = project
-            .android_backend()
-            .ok_or_else(|| eyre::eyre!("Android backend must be configured"))?;
-
-        let gradlew = backend.gradlew_path();
-        let project_path = backend.project_path();
+        let backend_path = project.backend_path::<AndroidBackend>();
+        let gradlew = backend_path.join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
 
         if !gradlew.exists() {
             // No Android project to clean
@@ -175,7 +245,7 @@ impl Platform for AndroidPlatform {
 
         run_command(
             gradlew.to_str().unwrap(),
-            ["clean", "--project-dir", project_path.to_str().unwrap()],
+            ["clean", "--project-dir", backend_path.to_str().unwrap()],
         )
         .await?;
 
@@ -195,6 +265,7 @@ impl Platform for AndroidPlatform {
         // Configure NDK environment for cargo
         let linker = ndk_linker_path(&ndk_path, self.abi());
         let ar = ndk_ar_path(&ndk_path);
+        let cxx = ndk_cxx_path(&ndk_path, self.abi());
 
         // Set environment variables for the linker
         let target_upper = self.triple().to_string().replace('-', "_").to_uppercase();
@@ -202,11 +273,23 @@ impl Platform for AndroidPlatform {
         // Build with RustBuild
         let build = RustBuild::new(project.root(), self.triple());
 
-        // Set linker environment variables before building
+        // Set environment variables for cargo, cc-rs, and cmake before building
         // SAFETY: CLI is single-threaded at this point
         unsafe {
+            // For cargo/rustc linker
             std::env::set_var(format!("CARGO_TARGET_{target_upper}_LINKER"), &linker);
             std::env::set_var(format!("CARGO_TARGET_{target_upper}_AR"), &ar);
+
+            // For cc-rs crate (used by ring, aws-lc-sys, etc.) - uses underscore format
+            let target_underscore = self.triple().to_string().replace('-', "_");
+            std::env::set_var(format!("CC_{target_underscore}"), &linker);
+            std::env::set_var(format!("CXX_{target_underscore}"), &cxx);
+            std::env::set_var(format!("AR_{target_underscore}"), &ar);
+
+            // For CMake-based builds (aws-lc-sys, etc.)
+            // Set both variants as different crates check different env vars
+            std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
+            std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
         }
 
         let lib_dir = build.build_lib(options.is_release()).await?;
@@ -222,27 +305,25 @@ impl Platform for AndroidPlatform {
             );
         }
 
-        // Get the Android backend configuration
-        let backend = project
-            .android_backend()
-            .ok_or_else(|| eyre::eyre!("Android backend must be configured"))?;
-
-        // Copy to jniLibs directory
-        let jni_libs_dir = project
-            .root()
-            .join(backend.project_path())
-            .join("app/src/main/jniLibs")
-            .join(self.abi());
-        fs::create_dir_all(&jni_libs_dir).await?;
+        // Determine output directory: use specified output_dir or default to jniLibs
+        let output_dir = if let Some(dir) = options.output_dir() {
+            dir.to_path_buf()
+        } else {
+            project
+                .backend_path::<AndroidBackend>()
+                .join("app/src/main/jniLibs")
+                .join(self.abi())
+        };
+        fs::create_dir_all(&output_dir).await?;
 
         // Copy with standardized name
-        let dest_lib = jni_libs_dir.join("libwaterui_app.so");
+        let dest_lib = output_dir.join("libwaterui_app.so");
         copy_file(&source_lib, &dest_lib).await?;
 
         // Also copy libc++_shared.so from NDK if it exists
         let libcxx_path = ndk_libcxx_path(&ndk_path, self.abi());
         if libcxx_path.exists() {
-            let dest_libcxx = jni_libs_dir.join("libc++_shared.so");
+            let dest_libcxx = output_dir.join("libc++_shared.so");
             copy_file(&libcxx_path, &dest_libcxx).await?;
         }
 
@@ -264,32 +345,32 @@ impl Platform for AndroidPlatform {
         project: &Project,
         options: PackageOptions,
     ) -> color_eyre::eyre::Result<Artifact> {
-        let backend = project
-            .android_backend()
-            .expect("Android backend must be configured");
-
-        let project_path = backend.project_path();
-        let gradlew = backend.gradlew_path();
+        let backend_path = project.backend_path::<AndroidBackend>();
+        let gradlew = backend_path.join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
 
         let (command_name, path) = if options.is_distribution() && !options.is_debug() {
             (
                 "bundleRelease",
-                project_path.join("app/build/outputs/bundle/release/app-release.aab"),
+                backend_path.join("app/build/outputs/bundle/release/app-release.aab"),
             )
         } else if !options.is_distribution() && !options.is_debug() {
             (
                 "assembleRelease",
-                project_path.join("app/build/outputs/apk/release/app-release.apk"),
+                backend_path.join("app/build/outputs/apk/release/app-release.apk"),
             )
         } else if !options.is_distribution() && options.is_debug() {
             (
                 "assembleDebug",
-                project_path.join("app/build/outputs/apk/debug/app-debug.apk"),
+                backend_path.join("app/build/outputs/apk/debug/app-debug.apk"),
             )
         } else if options.is_distribution() && options.is_debug() {
             (
                 "bundleDebug",
-                project_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
+                backend_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
             )
         } else {
             unreachable!()
@@ -300,7 +381,7 @@ impl Platform for AndroidPlatform {
             [
                 command_name,
                 "--project-dir",
-                backend.project_path().to_str().unwrap(),
+                backend_path.to_str().unwrap(),
             ],
         )
         .await?;
