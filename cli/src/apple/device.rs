@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::{
     apple::platform::ApplePlatform,
-    device::{Artifact, Device, DeviceEvent, FailToRun, Running},
+    device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, Running},
     utils::{command, run_command},
 };
 
@@ -22,13 +22,19 @@ use crate::{
 ///
 /// This works for both macOS apps and iOS simulators by using the `log stream` command.
 /// For simulators, use `--predicate` with the subsystem; for macOS, use `--process` with PID.
-fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>) {
+///
+/// If `log_level` is `None`, no log streaming is started.
+fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>, log_level: Option<LogLevel>) {
+    let Some(level) = log_level else {
+        return;
+    };
+
     let mut log_cmd = Command::new("log");
     log_cmd
         .arg("stream")
         .args(&args)
         .arg("--level")
-        .arg("debug")
+        .arg(level.to_apple_level())
         .arg("--style")
         .arg("compact")
         .stdout(Stdio::piped())
@@ -214,11 +220,12 @@ impl Device for MacOS {
             }
         });
 
-        // Start log streaming if we got a PID
+        // Start log streaming if we got a PID and log level is set
         if let Some(pid) = app_pid {
             start_log_stream(
                 sender.clone(),
                 vec!["--process".to_string(), pid.to_string()],
+                options.log_level(),
             );
         }
 
@@ -398,7 +405,7 @@ impl Device for AppleSimulator {
     async fn run(
         &self,
         artifact: Artifact,
-        _options: crate::device::RunOptions,
+        options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         info!("Installing app on apple simulator {}", self.name);
         run_command(
@@ -442,11 +449,12 @@ impl Device for AppleSimulator {
             }
         });
 
-        // Start log streaming if we got a PID
+        // Start log streaming if we got a PID and log level is set
         if let Some(pid) = app_pid {
             start_log_stream(
                 sender.clone(),
                 vec!["--process".to_string(), pid.to_string()],
+                options.log_level(),
             );
         }
 
