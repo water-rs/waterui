@@ -102,7 +102,7 @@ pub unsafe fn __init() {
     #[cfg(target_os = "android")]
     {
         tracing_subscriber::registry()
-            .with(tracing_android::layer("WaterUI"))
+            .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
             .init();
     }
 
