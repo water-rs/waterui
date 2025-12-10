@@ -90,13 +90,35 @@ impl Backend for AppleBackend {
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
 
-        // Derive scheme from app name
-        let scheme = manifest
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect::<String>();
+        // For playground projects, use fixed scheme name "WaterUIApp"
+        // For regular projects, scheme name must match the Xcode target name (crate name)
+        let is_playground =
+            manifest.package.package_type == crate::project::PackageType::Playground;
+
+        // For playground projects, use fixed names
+        // For regular projects, derive from crate name
+        let (scheme, app_name, crate_name_for_template) = if is_playground {
+            (
+                "WaterUIApp".to_string(),
+                "WaterUIApp".to_string(),
+                "WaterUIApp".to_string(),
+            )
+        } else {
+            let crate_name = project.crate_name().to_string();
+            // App name for Swift code must be a valid Swift identifier (no hyphens)
+            // Convert "video-player-example" to "VideoPlayerExample"
+            let app_name = crate_name
+                .split('-')
+                .map(|s| {
+                    let mut chars = s.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                    }
+                })
+                .collect::<String>();
+            (crate_name.clone(), app_name, crate_name)
+        };
 
         // Get the relative path to the backend from project root (e.g., "apple" or ".water/apple")
         let backend_relative_path = project.backend_relative_path::<Self>();
@@ -105,14 +127,15 @@ impl Backend for AppleBackend {
 
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
-            app_name: scheme.clone(),
-            crate_name: project.crate_name().to_string(),
+            app_name,
+            crate_name: crate_name_for_template,
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: Some(backend_relative_path),
+            android_permissions: Vec::new(),
         };
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
