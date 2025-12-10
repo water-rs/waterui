@@ -63,6 +63,12 @@ impl Default for AndroidBackend {
 }
 
 impl Backend for AndroidBackend {
+    const DEFAULT_PATH: &'static str = "android";
+
+    fn path(&self) -> &Path {
+        &self.project_path
+    }
+
     async fn init(
         project: &crate::project::Project,
     ) -> Result<Self, crate::backend::FailToInitBackend> {
@@ -76,7 +82,11 @@ impl Backend for AndroidBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
-        // Determine the Android backend path
+        // Get the relative path to the backend from project root (e.g., "android" or ".water/android")
+        let backend_relative_path = project.backend_relative_path::<Self>();
+
+        // Determine the Android backend path - this is unused for local dev,
+        // kept for potential future remote backend support
         let android_backend_path = manifest
             .waterui_path
             .as_ref()
@@ -93,11 +103,10 @@ impl Backend for AndroidBackend {
             android_backend_path,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            backend_project_path: Some(project_path.clone()),
+            backend_project_path: Some(backend_relative_path),
         };
-        let output_dir = project.root().join(&project_path);
 
-        templates::android::scaffold(&output_dir, &ctx)
+        templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
             .await
             .map_err(crate::backend::FailToInitBackend::Io)?;
 
