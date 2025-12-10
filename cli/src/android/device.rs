@@ -239,14 +239,19 @@ async fn monitor_android_process(
     loop {
         smol::Timer::after(std::time::Duration::from_secs(1)).await;
 
-        // Check if process is still running
-        let result = run_command(
-            adb_str,
-            ["-s", device_id, "shell", "kill", "-0", &pid.to_string()],
-        )
-        .await;
+        // Check if process is still running using pidof
+        // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
+        // when the shell user doesn't have permission to send signals to the app process
+        let result = run_command(adb_str, ["-s", device_id, "shell", "pidof", bundle_id]).await;
 
-        if result.is_err() {
+        // Check if the process with the same PID is still running
+        let still_running = result
+            .as_ref()
+            .ok()
+            .and_then(|output| output.trim().parse::<u32>().ok())
+            .is_some_and(|current_pid| current_pid == pid);
+
+        if !still_running {
             // Process is no longer running - fetch crash logs
             let crash_info = run_command(
                 adb_str,
