@@ -26,6 +26,8 @@ pub struct DoctorItem {
     pub status: CheckStatus,
     /// Optional message with details or suggestions.
     pub message: Option<String>,
+    /// Whether the issue can be fixed automatically.
+    pub fixable: bool,
 }
 
 impl DoctorItem {
@@ -34,6 +36,7 @@ impl DoctorItem {
             name,
             status: CheckStatus::Ok,
             message: None,
+            fixable: false,
         }
     }
 
@@ -42,6 +45,7 @@ impl DoctorItem {
             name,
             status: CheckStatus::Missing,
             message: Some(message.into()),
+            fixable: false,
         }
     }
 
@@ -50,6 +54,7 @@ impl DoctorItem {
             name,
             status: CheckStatus::Skipped,
             message: None,
+            fixable: false,
         }
     }
 }

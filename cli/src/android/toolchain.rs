@@ -49,6 +49,38 @@ impl AndroidSdk {
 
         None
     }
+
+    /// Get the path to the `adb` executable.
+    #[must_use]
+    pub fn adb_path() -> Option<PathBuf> {
+        let sdk_path = Self::detect_path()?;
+        let adb = sdk_path
+            .join("platform-tools")
+            .join(if cfg!(target_os = "windows") {
+                "adb.exe"
+            } else {
+                "adb"
+            });
+        if adb.exists() { Some(adb) } else { None }
+    }
+
+    /// Get the path to the `emulator` executable.
+    #[must_use]
+    pub fn emulator_path() -> Option<PathBuf> {
+        let sdk_path = Self::detect_path()?;
+        let emulator = sdk_path
+            .join("emulator")
+            .join(if cfg!(target_os = "windows") {
+                "emulator.exe"
+            } else {
+                "emulator"
+            });
+        if emulator.exists() {
+            Some(emulator)
+        } else {
+            None
+        }
+    }
 }
 
 /// Installation procedure for the Android SDK.
@@ -147,17 +179,16 @@ impl Toolchain for AndroidSdk {
     async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         use crate::toolchain::ToolchainError;
 
-        let sdk_path = Self::detect_path().ok_or_else(|| {
-            ToolchainError::unfixable(
+        if Self::detect_path().is_none() {
+            return Err(ToolchainError::unfixable(
                 "Android SDK not found",
                 "Install Android Studio from https://developer.android.com/studio \
                  or set ANDROID_HOME environment variable to your SDK path.",
-            )
-        })?;
+            ));
+        }
 
-        // Check for platform-tools (contains adb)
-        let platform_tools = sdk_path.join("platform-tools");
-        if !platform_tools.exists() {
+        // Check for adb executable
+        if Self::adb_path().is_none() {
             return Err(ToolchainError::unfixable(
                 "Android SDK platform-tools not found",
                 "Open Android Studio -> SDK Manager -> SDK Tools -> check 'Android SDK Platform-Tools'",
