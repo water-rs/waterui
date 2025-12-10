@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use anstyle::{AnsiColor, Style};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Serialize;
+use waterui_cli::utils::set_std_output;
 
 /// Global shell instance.
 static SHELL: OnceLock<Shell> = OnceLock::new();
@@ -285,6 +286,17 @@ pub fn println(message: impl Display) {
 #[doc(hidden)]
 pub fn header_fn(message: impl Display) {
     let _ = get().header(message);
+}
+
+pub async fn display_output<Fut: Future>(fut: Fut) -> Fut::Output {
+    if is_interactive() {
+        set_std_output(true);
+        let result = fut.await;
+        set_std_output(false);
+        result
+    } else {
+        fut.await
+    }
 }
 
 /// Create a spinner.
