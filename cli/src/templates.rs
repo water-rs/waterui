@@ -58,18 +58,19 @@ impl TemplateContext {
     /// Render a template string by replacing all placeholders.
     #[must_use]
     pub fn render(&self, template: &str) -> String {
+        // Android namespace must be a valid Java package name (no hyphens)
+        let android_namespace = self.bundle_identifier.replace('-', "_");
+
         template
             .replace("__APP_DISPLAY_NAME__", &self.app_display_name)
             .replace("__APP_NAME__", &self.app_name)
             .replace("__CRATE_NAME__", &self.crate_name)
+            .replace("__ANDROID_NAMESPACE__", &android_namespace)
             .replace("__BUNDLE_IDENTIFIER__", &self.bundle_identifier)
             .replace("__AUTHOR__", &self.author)
             .replace(
                 "__ANDROID_BACKEND_PATH__",
-                &self
-                    .android_backend_path
-                    .as_ref()
-                    .map_or(String::new(), |p| normalize_path_for_config(p)),
+                &self.compute_android_backend_path().unwrap_or_default(),
             )
             .replace(
                 "__USE_REMOTE_DEV_BACKEND__",
@@ -98,28 +99,39 @@ impl TemplateContext {
         PathBuf::from(path_str.replace("AppName", &self.app_name))
     }
 
-    /// Compute the relative path from the Xcode project to the WaterUI Swift backend.
+    /// Compute the relative path from the backend project to a WaterUI backend.
     ///
-    /// This accounts for the Xcode project being in a subdirectory (e.g., `.water/apple`).
-    fn compute_backend_path(&self) -> Option<String> {
+    /// This accounts for the project being in a subdirectory (e.g., `.water/android`).
+    fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
         let waterui_path = self.waterui_path.as_ref()?;
 
-        // Count how many levels deep the Xcode project is from the project root
-        // Default is "apple" (1 level), playground uses ".water/apple" (2 levels)
+        // Count how many levels deep the project is from the project root
+        // Default is 1 level (e.g., "android"), playground uses 2 levels (e.g., ".water/android")
         let project_depth = self
             .backend_project_path
             .as_ref()
             .map_or(1, |p| p.components().count());
 
-        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/apple
+        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/<backend>
         let mut backend_path = String::new();
         for _ in 0..project_depth {
             backend_path.push_str("../");
         }
         backend_path.push_str(&normalize_path_for_config(waterui_path));
-        backend_path.push_str("/backends/apple");
+        backend_path.push_str("/backends/");
+        backend_path.push_str(backend_subdir);
 
         Some(backend_path)
+    }
+
+    /// Compute the relative path from the Xcode project to the WaterUI Swift backend.
+    fn compute_apple_backend_path(&self) -> Option<String> {
+        self.compute_relative_backend_path("apple")
+    }
+
+    /// Compute the relative path from the Android project to the WaterUI Android backend.
+    fn compute_android_backend_path(&self) -> Option<String> {
+        self.compute_relative_backend_path("android")
     }
 
     /// Generate the XCode package reference entry line for the project file.
@@ -127,7 +139,7 @@ impl TemplateContext {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
 
-        match self.compute_backend_path() {
+        match self.compute_apple_backend_path() {
             Some(backend_path) => {
                 format!(
                     "{INDENT}{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */,"
@@ -147,7 +159,7 @@ impl TemplateContext {
         const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
         const MIN_VERSION: &str = "1.0.0";
 
-        match self.compute_backend_path() {
+        match self.compute_apple_backend_path() {
             Some(backend_path) => {
                 format!(
                     "/* Begin XCLocalSwiftPackageReference section */\n\
@@ -265,7 +277,9 @@ pub mod apple {
 
 /// Android backend templates.
 pub mod android {
-    use super::{Path, TemplateContext, embedded, fs, io, scaffold_dir};
+    use crate::android::toolchain::AndroidSdk;
+
+    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
 
     /// Write all Android templates to the given directory.
     ///
@@ -290,6 +304,13 @@ pub mod android {
         for abi in ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"] {
             let jni_dir = base_dir.join(format!("app/src/main/jniLibs/{abi}"));
             fs::create_dir_all(&jni_dir).await?;
+        }
+
+        // Generate local.properties with Android SDK path
+        if let Some(sdk_path) = AndroidSdk::detect_path() {
+            let local_props = base_dir.join("local.properties");
+            let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
+            fs::write(&local_props, content).await?;
         }
 
         Ok(())

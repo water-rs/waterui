@@ -4,13 +4,12 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
-use smol::fs;
 
 use crate::shell::{self, display_output};
 use crate::{error, header, success};
 use waterui_cli::{
     android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
-    project::Project, toolchain::Toolchain, utils::copy_file,
+    project::Project, toolchain::Toolchain,
 };
 
 /// Target platform for building.
@@ -26,12 +25,29 @@ pub enum TargetPlatform {
     Macos,
 }
 
+/// Target architecture for building.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TargetArch {
+    /// ARM64 / AArch64 (Apple Silicon, modern Android devices).
+    Arm64,
+    /// x86_64 (Intel Macs, Android emulators on Intel/AMD).
+    X86_64,
+    /// ARMv7 (older 32-bit Android devices).
+    Armv7,
+    /// x86 (older 32-bit Android emulators).
+    X86,
+}
+
 /// Arguments for the build command.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
     /// Target platform to build for.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
+
+    /// Target architecture. Defaults to arm64 for iOS/Android, native for macOS/iOS Simulator.
+    #[arg(short, long, value_enum)]
+    arch: Option<TargetArch>,
 
     /// Build in release mode (optimized).
     #[arg(long)]
@@ -55,7 +71,12 @@ pub async fn run(args: Args) -> Result<()> {
         .unwrap_or_else(|_| args.path.clone());
     let project = Project::open(&project_path).await?;
 
-    let build_options = BuildOptions::new(args.release);
+    // Build options with optional output directory
+    let build_options = if let Some(ref output_dir) = args.output_dir {
+        BuildOptions::new(args.release).with_output_dir(output_dir)
+    } else {
+        BuildOptions::new(args.release)
+    };
     let mode = if args.release { "release" } else { "debug" };
 
     header!(
@@ -76,22 +97,76 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 2: Build
     let spinner = shell::spinner("Compiling Rust library...");
     let result = display_output(async {
-        match args.platform {
-            TargetPlatform::Ios => {
-                let platform = ApplePlatform::ios();
-                project.build(platform, build_options).await
+        match (args.platform, args.arch) {
+            // iOS physical device - only arm64 supported
+            (TargetPlatform::Ios, None | Some(TargetArch::Arm64)) => {
+                project.build(ApplePlatform::ios(), build_options).await
             }
-            TargetPlatform::IosSimulator => {
-                let platform = ApplePlatform::ios_simulator();
-                project.build(platform, build_options).await
+            (TargetPlatform::Ios, Some(arch)) => {
+                bail!("iOS physical devices only support arm64, not {:?}", arch)
             }
-            TargetPlatform::Android => {
-                let platform = AndroidPlatform::arm64();
-                project.build(platform, build_options).await
+
+            // iOS Simulator - arm64 (Apple Silicon) or x86_64 (Intel)
+            (TargetPlatform::IosSimulator, None) => {
+                // Default to native architecture
+                project
+                    .build(ApplePlatform::ios_simulator(), build_options)
+                    .await
             }
-            TargetPlatform::Macos => {
-                let platform = ApplePlatform::macos();
-                project.build(platform, build_options).await
+            (TargetPlatform::IosSimulator, Some(TargetArch::Arm64)) => {
+                project
+                    .build(ApplePlatform::ios_simulator_arm64(), build_options)
+                    .await
+            }
+            (TargetPlatform::IosSimulator, Some(TargetArch::X86_64)) => {
+                project
+                    .build(ApplePlatform::ios_simulator_x86_64(), build_options)
+                    .await
+            }
+            (TargetPlatform::IosSimulator, Some(arch)) => {
+                bail!(
+                    "iOS Simulator only supports arm64 or x86_64, not {:?}",
+                    arch
+                )
+            }
+
+            // Android - all architectures supported
+            (TargetPlatform::Android, None | Some(TargetArch::Arm64)) => {
+                project.build(AndroidPlatform::arm64(), build_options).await
+            }
+            (TargetPlatform::Android, Some(TargetArch::X86_64)) => {
+                project
+                    .build(AndroidPlatform::x86_64(), build_options)
+                    .await
+            }
+            (TargetPlatform::Android, Some(TargetArch::Armv7)) => {
+                project
+                    .build(AndroidPlatform::from_abi("armeabi-v7a"), build_options)
+                    .await
+            }
+            (TargetPlatform::Android, Some(TargetArch::X86)) => {
+                project
+                    .build(AndroidPlatform::from_abi("x86"), build_options)
+                    .await
+            }
+
+            // macOS - arm64 (Apple Silicon) or x86_64 (Intel)
+            (TargetPlatform::Macos, None) => {
+                // Default to native architecture
+                project.build(ApplePlatform::macos(), build_options).await
+            }
+            (TargetPlatform::Macos, Some(TargetArch::Arm64)) => {
+                project
+                    .build(ApplePlatform::macos_arm64(), build_options)
+                    .await
+            }
+            (TargetPlatform::Macos, Some(TargetArch::X86_64)) => {
+                project
+                    .build(ApplePlatform::macos_x86_64(), build_options)
+                    .await
+            }
+            (TargetPlatform::Macos, Some(arch)) => {
+                bail!("macOS only supports arm64 or x86_64, not {:?}", arch)
             }
         }
     })
@@ -104,28 +179,9 @@ pub async fn run(args: Args) -> Result<()> {
     match result {
         Ok(lib_dir) => {
             success!("Built library at {}", lib_dir.display());
-
-            // If output_dir is specified, copy the library there with a fixed name
             if let Some(output_dir) = args.output_dir {
-                let crate_name = project.crate_name().replace('-', "_");
-                let (src_ext, dst_ext) = match args.platform {
-                    TargetPlatform::Android => ("so", "so"),
-                    _ => ("a", "a"), // Apple platforms use static libraries
-                };
-
-                let src_lib = lib_dir.join(format!("lib{crate_name}.{src_ext}"));
-                let dst_lib = output_dir.join(format!("libwaterui_app.{dst_ext}"));
-
-                if src_lib.exists() {
-                    fs::create_dir_all(&output_dir).await?;
-                    copy_file(&src_lib, &dst_lib).await?;
-                    success!("Copied library to {}", dst_lib.display());
-                } else {
-                    error!("Source library not found: {}", src_lib.display());
-                    bail!("Failed to copy library: source not found");
-                }
+                success!("Copied library to {}", output_dir.display());
             }
-
             Ok(())
         }
         Err(e) => {
