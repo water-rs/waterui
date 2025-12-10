@@ -3,4 +3,4 @@ waterui_path = "../.."
 [package]
 type = "playground"
 name = "Video Player Example"
-bundle_identifier = "com.waterui.video-player-example"
+bundle_identifier = "com.waterui.video_player_example"

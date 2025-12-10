@@ -18,7 +18,7 @@ use crate::{
     build::{BuildOptions, RustBuild},
     device::Artifact,
     platform::{PackageOptions, Platform},
-    project::{PackageType, Project},
+    project::Project,
     utils::{copy_file, run_command},
 };
 
@@ -45,20 +45,6 @@ pub trait ApplePlatformExt: Platform {
 // Shared Implementation Helpers
 // ============================================================================
 
-/// Get or initialize the Apple backend for a project.
-async fn get_or_init_backend(project: &Project) -> eyre::Result<AppleBackend> {
-    match project.apple_backend() {
-        Some(backend) => Ok(backend.clone()),
-        None => {
-            if project.manifest().package.package_type == PackageType::Playground {
-                AppleBackend::init_backend(project, true).await
-            } else {
-                bail!("Apple backend must be configured")
-            }
-        }
-    }
-}
-
 /// Build Rust library for an Apple platform.
 async fn build_rust_lib(
     project: &Project,
@@ -66,22 +52,31 @@ async fn build_rust_lib(
     options: BuildOptions,
 ) -> eyre::Result<PathBuf> {
     let build = RustBuild::new(project.root(), triple);
-    Ok(build.build_lib(options.is_release()).await?)
+    let lib_dir = build.build_lib(options.is_release()).await?;
+
+    // If output_dir is specified, copy the library there
+    if let Some(output_dir) = options.output_dir() {
+        let lib_name = project.crate_name().replace('-', "_");
+        let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
+
+        if source_lib.exists() {
+            fs::create_dir_all(output_dir).await?;
+            let dest_lib = output_dir.join("libwaterui_app.a");
+            copy_file(&source_lib, &dest_lib).await?;
+        }
+    }
+
+    Ok(lib_dir)
 }
 
 /// Clean Xcode build artifacts for an Apple platform.
 async fn clean_apple(project: &Project) -> eyre::Result<()> {
     let backend = match project.apple_backend() {
-        Some(backend) => backend.clone(),
-        None => {
-            if project.manifest().package.package_type == PackageType::Playground {
-                return Ok(());
-            }
-            bail!("Apple backend must be configured")
-        }
+        Some(backend) => backend,
+        None => return Ok(()), // Nothing to clean if no backend configured
     };
 
-    let project_path = project.root().join(backend.project_path());
+    let project_path = project.backend_path::<AppleBackend>();
     let xcodeproj = project_path.join(format!("{}.xcodeproj", backend.scheme));
 
     if !xcodeproj.exists() {
@@ -114,9 +109,11 @@ async fn package_apple<P: ApplePlatformExt>(
     project: &Project,
     options: PackageOptions,
 ) -> eyre::Result<Artifact> {
-    let backend = get_or_init_backend(project).await?;
+    let backend = project
+        .apple_backend()
+        .ok_or_else(|| eyre::eyre!("Apple backend must be configured"))?;
 
-    let project_path = project.root().join(backend.project_path());
+    let project_path = project.backend_path::<AppleBackend>();
     let xcodeproj = project_path.join(format!("{}.xcodeproj", backend.scheme));
 
     if !xcodeproj.exists() {
@@ -510,12 +507,48 @@ impl ApplePlatform {
         }
     }
 
-    /// Create an Apple platform for iOS Simulator.
+    /// Create an Apple platform for iOS Simulator (native architecture).
     #[must_use]
     pub fn ios_simulator() -> Self {
         Self {
             arch: DefaultToHost::default().0.architecture,
             kind: ApplePlatformKind::IosSimulator,
+        }
+    }
+
+    /// Create an Apple platform for iOS Simulator on ARM64 (Apple Silicon).
+    #[must_use]
+    pub const fn ios_simulator_arm64() -> Self {
+        Self {
+            arch: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+            kind: ApplePlatformKind::IosSimulator,
+        }
+    }
+
+    /// Create an Apple platform for iOS Simulator on x86_64 (Intel).
+    #[must_use]
+    pub const fn ios_simulator_x86_64() -> Self {
+        Self {
+            arch: Architecture::X86_64,
+            kind: ApplePlatformKind::IosSimulator,
+        }
+    }
+
+    /// Create an Apple platform for macOS on ARM64 (Apple Silicon).
+    #[must_use]
+    pub const fn macos_arm64() -> Self {
+        Self {
+            arch: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+            kind: ApplePlatformKind::MacOS,
+        }
+    }
+
+    /// Create an Apple platform for macOS on x86_64 (Intel).
+    #[must_use]
+    pub const fn macos_x86_64() -> Self {
+        Self {
+            arch: Architecture::X86_64,
+            kind: ApplePlatformKind::MacOS,
         }
     }
 

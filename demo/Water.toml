@@ -1,6 +1,0 @@
-waterui_path = "/Users/lexoliu/Coding/waterui"
-
-[package]
-type = "playground"
-name = "demo"
-bundle_identifier = "com.example.demo"

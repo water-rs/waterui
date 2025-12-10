@@ -4,6 +4,8 @@ use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use tracing::info;
 
+use crate::backend::Backend;
+
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -80,9 +82,6 @@ impl Project {
             None
         };
 
-        // Launch the device (boot simulator, etc.) before installing
-        device.launch().await.map_err(FailToRun::Launch)?;
-
         info!("Running on device");
 
         let mut running = device.run(artifact, run_options).await?;
@@ -118,6 +117,24 @@ impl Project {
     #[must_use]
     pub const fn apple_backend(&self) -> Option<&AppleBackend> {
         self.manifest.backends.apple()
+    }
+
+    /// Get the full path to a backend directory.
+    ///
+    /// Returns `project.root() / backends.path / B::DEFAULT_PATH`.
+    #[must_use]
+    pub fn backend_path<B: Backend>(&self) -> PathBuf {
+        self.root
+            .join(self.manifest.backends.path())
+            .join(B::DEFAULT_PATH)
+    }
+
+    /// Get the relative path to a backend directory from project root.
+    ///
+    /// Returns `backends.path / B::DEFAULT_PATH`.
+    #[must_use]
+    pub fn backend_relative_path<B: Backend>(&self) -> PathBuf {
+        self.manifest.backends.path().join(B::DEFAULT_PATH)
     }
 
     /// Get the Android backend configuration if available.
@@ -218,6 +235,14 @@ pub enum FailToOpenProject {
     /// Project permissions are not allowed in non-playground projects.
     #[error("Project permissions are not allowed in non-playground projects")]
     PermissionsNotAllowedInNonPlayground,
+
+    /// Backends configuration is not allowed in playground manifests.
+    #[error("Backends configuration is not allowed in playground projects")]
+    BackendsNotAllowedInPlayground,
+
+    /// Failed to initialize backend for playground project.
+    #[error("Failed to initialize backend: {0}")]
+    BackendInit(#[from] crate::backend::FailToInitBackend),
 }
 
 /// Errors that can occur when creating a new `WaterUI` project.
@@ -431,14 +456,17 @@ impl Project {
     /// Open a `WaterUI` project located at the specified path.
     ///
     /// This loads both the `Water.toml` manifest and the `Cargo.toml` file.
+    /// For playground projects, backends are automatically initialized if not configured.
     ///
     /// # Errors
     /// - `FailToOpenProject::Manifest`: If there was an error opening the `Water.toml` manifest.
     /// - `FailToOpenProject::CargoManifest`: If there was an error reading the `Cargo.toml` file.
     /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, FailToOpenProject> {
+        use crate::backend::Backend;
+
         let path = path.as_ref().to_path_buf();
-        let manifest = Manifest::open(path.join("Water.toml"))
+        let mut manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
 
@@ -452,23 +480,64 @@ impl Project {
             .map(|p| p.name)
             .ok_or(FailToOpenProject::MissingCrateName)?;
 
+        let is_playground = manifest.package.package_type == PackageType::Playground;
+
         // Check that permissions are only set for playground projects
-        if !matches!(manifest.package.package_type, PackageType::Playground)
-            && !manifest.permissions.is_empty()
-        {
+        if !is_playground && !manifest.permissions.is_empty() {
             return Err(FailToOpenProject::PermissionsNotAllowedInNonPlayground);
+        }
+
+        // Check that backends are not configured in playground manifests
+        if is_playground && !manifest.backends.is_empty() {
+            return Err(FailToOpenProject::BackendsNotAllowedInPlayground);
+        }
+
+        // For playground projects, backends are stored in .water directory
+        if is_playground {
+            manifest.backends.set_path(".water");
         }
 
         let target_dir = get_target_dir(&path)
             .await
             .map_err(FailToOpenProject::TargetDirError)?;
 
-        Ok(Self {
+        let mut project = Self {
             root: path,
             manifest,
             crate_name,
             target_dir,
-        })
+        };
+
+        // For playground projects, auto-initialize backends
+        if is_playground {
+            // Apple backend
+            let apple_path = project.backend_path::<AppleBackend>();
+            let apple_backend = if apple_path.exists() {
+                // Backend files exist, derive config from manifest
+                AppleBackend::new(project.manifest.package.name.clone())
+            } else {
+                // Initialize backend (creates files and returns config)
+                AppleBackend::init(&project)
+                    .await
+                    .map_err(FailToOpenProject::BackendInit)?
+            };
+            project.manifest.backends.set_apple(apple_backend);
+
+            // Android backend
+            let android_path = project.backend_path::<AndroidBackend>();
+            let android_backend = if android_path.exists() {
+                // Backend files exist, use default config
+                AndroidBackend::new()
+            } else {
+                // Initialize backend (creates files and returns config)
+                AndroidBackend::init(&project)
+                    .await
+                    .map_err(FailToOpenProject::BackendInit)?
+            };
+            project.manifest.backends.set_android(android_backend);
+        }
+
+        Ok(project)
     }
 }
 
