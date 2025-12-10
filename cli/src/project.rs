@@ -340,6 +340,7 @@ impl Project {
             use_remote_dev_backend: options.waterui_path.is_none(),
             waterui_path: options.waterui_path.clone(),
             backend_project_path: None, // Root files don't need this
+            android_permissions: Vec::new(),
         };
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
@@ -509,31 +510,30 @@ impl Project {
         };
 
         // For playground projects, auto-initialize backends
-        if is_playground {
-            // Apple backend
-            let apple_path = project.backend_path::<AppleBackend>();
-            let apple_backend = if apple_path.exists() {
-                // Backend files exist, derive config from manifest
-                AppleBackend::new(project.manifest.package.name.clone())
-            } else {
-                // Initialize backend (creates files and returns config)
-                AppleBackend::init(&project)
-                    .await
-                    .map_err(FailToOpenProject::BackendInit)?
-            };
+        // Always re-scaffold templates on each run to pick up manifest changes (e.g., permissions)
+        // Build cache (build/, .gradle/, DerivedData/) is preserved since scaffold only writes template files
+        //
+        // Skip backend initialization when:
+        // 1. Running inside Xcode's sandboxed build script phase (WATERUI_SKIP_RUST_BUILD=1)
+        // 2. Running inside any sandbox (sandbox-exec sets __XCODE_BUILT_PRODUCTS_DIR_PATHS or similar)
+        // 3. Xcode is the current build tool (ACTION env var is set by Xcode)
+        let skip_backend_init = std::env::var("WATERUI_SKIP_RUST_BUILD")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+            || std::env::var("ACTION").is_ok() // Xcode sets this during builds
+            || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
+
+        if is_playground && !skip_backend_init {
+            // Apple backend - always re-scaffold to pick up manifest changes
+            let apple_backend = AppleBackend::init(&project)
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
             project.manifest.backends.set_apple(apple_backend);
 
-            // Android backend
-            let android_path = project.backend_path::<AndroidBackend>();
-            let android_backend = if android_path.exists() {
-                // Backend files exist, use default config
-                AndroidBackend::new()
-            } else {
-                // Initialize backend (creates files and returns config)
-                AndroidBackend::init(&project)
-                    .await
-                    .map_err(FailToOpenProject::BackendInit)?
-            };
+            // Android backend - always re-scaffold to pick up manifest changes
+            let android_backend = AndroidBackend::init(&project)
+                .await
+                .map_err(FailToOpenProject::BackendInit)?;
             project.manifest.backends.set_android(android_backend);
         }
 
@@ -598,6 +598,14 @@ pub struct PermissionEntry {
     enable: bool,
     /// Explain why this permission is needed.
     description: String,
+}
+
+impl PermissionEntry {
+    /// Check if this permission is enabled.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.enable
+    }
 }
 
 /// Errors that can occur when opening a `Water.toml` manifest file.

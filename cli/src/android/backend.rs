@@ -94,6 +94,14 @@ impl Backend for AndroidBackend {
 
         let project_path = default_android_project_path();
 
+        // Extract enabled permissions from the manifest
+        let android_permissions: Vec<String> = manifest
+            .permissions
+            .iter()
+            .filter(|(_, entry)| entry.is_enabled())
+            .map(|(name, _)| name.clone())
+            .collect();
+
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
             app_name,
@@ -104,6 +112,7 @@ impl Backend for AndroidBackend {
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: Some(backend_relative_path),
+            android_permissions,
         };
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
