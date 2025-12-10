@@ -47,6 +47,7 @@ pub(crate) fn command(command: &mut Command) -> &mut Command {
 
 /// Run a command with the specified name and arguments.
 ///
+/// Always captures output. When `STD_OUTPUT` is enabled, also prints to terminal.
 ///
 /// Return the standard output as a `String` if successful.
 /// # Errors
@@ -58,18 +59,17 @@ pub(crate) async fn run_command(
     let result = Command::new(name)
         .args(args)
         .kill_on_drop(true)
-        .stdout(if STD_OUTPUT.load(Ordering::SeqCst) {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        })
-        .stderr(if STD_OUTPUT.load(Ordering::SeqCst) {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
         .await?;
+
+    // If STD_OUTPUT is enabled, also print to terminal
+    if STD_OUTPUT.load(Ordering::SeqCst) {
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&result.stdout);
+        let _ = std::io::stderr().write_all(&result.stderr);
+    }
 
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
