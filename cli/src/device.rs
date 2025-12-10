@@ -14,6 +14,48 @@ use smol::{
 
 use crate::platform::Platform;
 
+/// Minimum log level for streaming device logs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    /// Only errors
+    Error,
+    /// Warnings and errors
+    Warn,
+    /// Info, warnings, and errors
+    #[default]
+    Info,
+    /// Debug and above
+    Debug,
+    /// All logs including verbose
+    Verbose,
+}
+
+impl LogLevel {
+    /// Convert to Android logcat priority character.
+    #[must_use]
+    pub const fn to_android_priority(self) -> char {
+        match self {
+            Self::Error => 'E',
+            Self::Warn => 'W',
+            Self::Info => 'I',
+            Self::Debug => 'D',
+            Self::Verbose => 'V',
+        }
+    }
+
+    /// Convert to iOS/macOS log level string.
+    #[must_use]
+    pub const fn to_apple_level(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "fault",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Verbose => "debug",
+        }
+    }
+}
+
 /// Options for running an application on a device
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
@@ -25,6 +67,9 @@ pub struct RunOptions {
     /// As a workaround, we would set system property `waterui.env.<KEY>` to `<VALUE>` on Android,
     /// and read them to set environment variables in the application.
     env_vars: HashMap<String, String>,
+
+    /// If set, stream device logs at or above this level.
+    log_level: Option<LogLevel>,
 }
 
 impl RunOptions {
@@ -42,6 +87,17 @@ impl RunOptions {
     /// Get an iterator over the environment variables
     pub fn env_vars(&self) -> impl Iterator<Item = (&str, &str)> {
         self.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Set the minimum log level to stream.
+    pub fn set_log_level(&mut self, level: LogLevel) {
+        self.log_level = Some(level);
+    }
+
+    /// Get the log level if set.
+    #[must_use]
+    pub const fn log_level(&self) -> Option<LogLevel> {
+        self.log_level
     }
 }
 
@@ -149,10 +205,14 @@ impl Stream for Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        eprintln!("[DEBUG] Running::drop() called - executing {} cleanup handlers", self.on_drop.len());
         let _ = self.sender.try_send(DeviceEvent::Stopped);
-        for f in self.on_drop.drain(..) {
+        for (i, f) in self.on_drop.drain(..).enumerate() {
+            eprintln!("[DEBUG] Executing cleanup handler {}", i);
             f();
+            eprintln!("[DEBUG] Cleanup handler {} completed", i);
         }
+        eprintln!("[DEBUG] Running::drop() completed");
     }
 }
 
