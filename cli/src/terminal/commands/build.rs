@@ -6,7 +6,7 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use smol::fs;
 
-use crate::shell;
+use crate::shell::{self, display_output};
 use crate::{error, header, success};
 use waterui_cli::{
     android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
@@ -75,24 +75,27 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Step 2: Build
     let spinner = shell::spinner("Compiling Rust library...");
-    let result = match args.platform {
-        TargetPlatform::Ios => {
-            let platform = ApplePlatform::ios();
-            project.build(platform, build_options).await
+    let result = display_output(async {
+        match args.platform {
+            TargetPlatform::Ios => {
+                let platform = ApplePlatform::ios();
+                project.build(platform, build_options).await
+            }
+            TargetPlatform::IosSimulator => {
+                let platform = ApplePlatform::ios_simulator();
+                project.build(platform, build_options).await
+            }
+            TargetPlatform::Android => {
+                let platform = AndroidPlatform::arm64();
+                project.build(platform, build_options).await
+            }
+            TargetPlatform::Macos => {
+                let platform = ApplePlatform::macos();
+                project.build(platform, build_options).await
+            }
         }
-        TargetPlatform::IosSimulator => {
-            let platform = ApplePlatform::ios_simulator();
-            project.build(platform, build_options).await
-        }
-        TargetPlatform::Android => {
-            let platform = AndroidPlatform::arm64();
-            project.build(platform, build_options).await
-        }
-        TargetPlatform::Macos => {
-            let platform = ApplePlatform::macos();
-            project.build(platform, build_options).await
-        }
-    };
+    })
+    .await;
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();
