@@ -3,17 +3,13 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
 
-use crate::shell;
+use crate::shell::{self, display_output};
 use crate::{header, success};
 use waterui_cli::{
-    android::platform::AndroidPlatform,
-    apple::platform::ApplePlatform,
-    build::BuildOptions,
-    platform::PackageOptions,
-    project::Project,
-    toolchain::Toolchain,
+    android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
+    platform::PackageOptions, project::Project, toolchain::Toolchain,
 };
 
 /// Target platform for packaging.
@@ -83,7 +79,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 2: Build (package requires a built library)
     let spinner = shell::spinner("Building Rust library...");
     let build_options = BuildOptions::new(args.release);
-    build_for_platform(&project, args.platform, build_options).await?;
+    display_output(build_for_platform(&project, args.platform, build_options)).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -92,7 +88,12 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 3: Package
     let spinner = shell::spinner("Packaging application...");
     let package_options = PackageOptions::new(args.distribution, !args.release);
-    let artifact = package_for_platform(&project, args.platform, package_options).await?;
+    let artifact = display_output(package_for_platform(
+        &project,
+        args.platform,
+        package_options,
+    ))
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
