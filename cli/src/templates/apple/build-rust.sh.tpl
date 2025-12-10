@@ -8,7 +8,7 @@ if [ "${WATERUI_SKIP_RUST_BUILD:-}" = "1" ]; then
 fi
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/__PROJECT_ROOT_RELATIVE_PATH__" && pwd )"
 
 # Xcode runs build scripts in a restricted shell environment without the user's
 # full PATH. Add common tool locations explicitly.

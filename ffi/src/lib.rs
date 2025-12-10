@@ -63,6 +63,7 @@ macro_rules! export {
                 $crate::IntoFFI::into_ffi(env)
             }
 
+            #[allow(unexpected_cfgs)]
             #[cfg(waterui_hot_reload_lib)]
             ::waterui::hot_reloadable_library!(main);
 

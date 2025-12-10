@@ -52,6 +52,8 @@ pub struct TemplateContext {
     /// Used to compute correct relative paths. Defaults to "apple" for standard projects.
     /// For playground projects, this would be ".water/apple".
     pub backend_project_path: Option<PathBuf>,
+    /// Android permissions to include in the manifest (e.g., "internet", "camera")
+    pub android_permissions: Vec<String>,
 }
 
 impl TemplateContext {
@@ -89,7 +91,11 @@ impl TemplateContext {
                 &self.swift_package_reference_section(),
             )
             .replace("__IOS_PERMISSION_KEYS__", "")
-            .replace("__ANDROID_PERMISSIONS__", "")
+            .replace("__ANDROID_PERMISSIONS__", &self.android_permissions_xml())
+            .replace(
+                "__PROJECT_ROOT_RELATIVE_PATH__",
+                &self.project_root_relative_path(),
+            )
     }
 
     /// Transform a path by replacing "`AppName`" with the actual app name.
@@ -132,6 +138,49 @@ impl TemplateContext {
     /// Compute the relative path from the Android project to the WaterUI Android backend.
     fn compute_android_backend_path(&self) -> Option<String> {
         self.compute_relative_backend_path("android")
+    }
+
+    /// Compute the relative path from the backend project directory to the project root.
+    ///
+    /// For a backend at `apple/`, returns `..` (go up 1 level).
+    /// For a backend at `.water/apple/`, returns `../..` (go up 2 levels).
+    fn project_root_relative_path(&self) -> String {
+        let depth = self
+            .backend_project_path
+            .as_ref()
+            .map_or(1, |p| p.components().count());
+
+        (0..depth).map(|_| "..").collect::<Vec<_>>().join("/")
+    }
+
+    /// Generate Android permission XML entries for the manifest.
+    fn android_permissions_xml(&self) -> String {
+        if self.android_permissions.is_empty() {
+            return String::new();
+        }
+
+        self.android_permissions
+            .iter()
+            .map(|perm| {
+                let android_perm = match perm.to_lowercase().as_str() {
+                    "internet" => "android.permission.INTERNET",
+                    "camera" => "android.permission.CAMERA",
+                    "microphone" => "android.permission.RECORD_AUDIO",
+                    "location" => "android.permission.ACCESS_FINE_LOCATION",
+                    "coarse_location" => "android.permission.ACCESS_COARSE_LOCATION",
+                    "storage" => "android.permission.READ_EXTERNAL_STORAGE",
+                    "write_storage" => "android.permission.WRITE_EXTERNAL_STORAGE",
+                    "bluetooth" => "android.permission.BLUETOOTH",
+                    "bluetooth_admin" => "android.permission.BLUETOOTH_ADMIN",
+                    "vibrate" => "android.permission.VIBRATE",
+                    "wake_lock" => "android.permission.WAKE_LOCK",
+                    // Allow raw Android permission names
+                    other => return format!("    <uses-permission android:name=\"{other}\" />"),
+                };
+                format!("    <uses-permission android:name=\"{android_perm}\" />")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Generate the XCode package reference entry line for the project file.
