@@ -73,11 +73,6 @@ fn main() -> Result<()> {
     // Initialize global shell
     shell::init(cli.json);
 
-    if is_interactive() {
-        // Print all executed commands to stdout/stderr in interactive mode
-        waterui_cli::utils::set_std_output(true);
-    }
-
     // Set up Ctrl+C handler
     ctrlc::set_handler(set_cancelled).expect("failed to set Ctrl+C handler");
 

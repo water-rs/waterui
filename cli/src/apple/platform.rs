@@ -19,9 +19,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, Platform},
     project::{PackageType, Project},
-    templates::{self, TemplateContext},
     utils::{copy_file, run_command},
-    water_dir,
 };
 
 // ============================================================================
@@ -47,47 +45,13 @@ pub trait ApplePlatformExt: Platform {
 // Shared Implementation Helpers
 // ============================================================================
 
-/// Initialize the Apple backend for a playground project.
-async fn init_playground_backend(project: &Project) -> eyre::Result<AppleBackend> {
-    // Ensure .water directory is valid for current CLI version
-    water_dir::ensure_valid(project.root()).await?;
-
-    let manifest = project.manifest();
-
-    // Playground projects always use "WaterUIApp" as the scheme name
-    const PLAYGROUND_SCHEME: &str = "WaterUIApp";
-
-    // Use .water/apple for playground projects to hide from user
-    let project_path = PathBuf::from(".water/apple");
-
-    let ctx = TemplateContext {
-        app_display_name: manifest.package.name.clone(),
-        app_name: PLAYGROUND_SCHEME.to_string(),
-        // Use WaterUIApp for crate_name too since template uses __CRATE_NAME__ for scheme
-        crate_name: PLAYGROUND_SCHEME.to_string(),
-        bundle_identifier: manifest.package.bundle_identifier.clone(),
-        author: String::new(),
-        android_backend_path: None,
-        use_remote_dev_backend: manifest.waterui_path.is_none(),
-        waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-        backend_project_path: Some(project_path.clone()),
-    };
-    let output_dir = project.root().join(&project_path);
-
-    templates::apple::scaffold(&output_dir, &ctx).await?;
-
-    Ok(AppleBackend::new(PLAYGROUND_SCHEME)
-        .with_project_path(project_path)
-        .with_backend_path(manifest.waterui_path.clone().unwrap_or_default()))
-}
-
 /// Get or initialize the Apple backend for a project.
 async fn get_or_init_backend(project: &Project) -> eyre::Result<AppleBackend> {
     match project.apple_backend() {
         Some(backend) => Ok(backend.clone()),
         None => {
             if project.manifest().package.package_type == PackageType::Playground {
-                init_playground_backend(project).await
+                AppleBackend::init_backend(project, true).await
             } else {
                 bail!("Apple backend must be configured")
             }
@@ -197,12 +161,26 @@ async fn package_apple<P: ApplePlatformExt>(
     let lib_name = project.crate_name().replace('-', "_");
     let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
-    let products_dir = derived_data.join("Build/Products").join(configuration);
+    // Xcode uses "Debug-iphonesimulator" for simulators, "Debug" for macOS
+    let products_config = if platform.sdk_name() == "macosx" {
+        configuration.to_string()
+    } else {
+        format!("{configuration}-{}", platform.sdk_name())
+    };
+    let products_dir = derived_data.join("Build/Products").join(&products_config);
     fs::create_dir_all(&products_dir).await?;
     let dest_lib = products_dir.join("libwaterui_app.a");
     copy_file(&source_lib, &dest_lib).await?;
 
     // Build with xcodebuild
+    // Determine the Xcode arch name from the platform architecture
+    let arch_name = match platform.arch() {
+        Architecture::Aarch64(_) => "arm64",
+        Architecture::X86_64 => "x86_64",
+        _ => "arm64", // Default to arm64 for unknown architectures
+    };
+    let archs_arg = format!("ARCHS={arch_name}");
+
     let mut args = vec![
         "-project",
         xcodeproj.to_str().unwrap_or_default(),
@@ -214,6 +192,8 @@ async fn package_apple<P: ApplePlatformExt>(
         platform.sdk_name(),
         "-derivedDataPath",
         derived_data.to_str().unwrap_or_default(),
+        &archs_arg,
+        "ONLY_ACTIVE_ARCHITECTURE=YES",
         "build",
     ];
 

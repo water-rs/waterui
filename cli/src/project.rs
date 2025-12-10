@@ -2,6 +2,7 @@
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
+use tracing::info;
 
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
@@ -55,7 +56,7 @@ impl Project {
         // Set up run options with hot reload environment variables if enabled
         let mut run_options = RunOptions::new();
 
-        if hot_reload {
+        let server = if hot_reload {
             // Start the hot reload server
             let server = HotReloadServer::launch(DEFAULT_PORT)
                 .await
@@ -68,19 +69,27 @@ impl Project {
                 server.port().to_string(),
             );
 
-            tracing::info!(
+            info!(
                 "Hot reload server started on {}:{}",
                 server.host(),
                 server.port()
             );
 
-            // TODO: The server will be dropped here. We need to keep it alive
-            // by storing it somewhere (e.g., in Running) or spawning a task.
-            // For now, we leak it to keep it running.
-            Box::leak(Box::new(server));
-        }
+            Some(server)
+        } else {
+            None
+        };
 
-        let running = device.run(artifact, run_options).await?;
+        // Launch the device (boot simulator, etc.) before installing
+        device.launch().await.map_err(FailToRun::Launch)?;
+
+        info!("Running on device");
+
+        let mut running = device.run(artifact, run_options).await?;
+
+        if let Some(server) = server {
+            running.retain(server)
+        }
 
         Ok(running)
     }

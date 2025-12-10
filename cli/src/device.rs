@@ -101,7 +101,7 @@ pub trait Device: Send {
 pub struct Running {
     sender: Sender<DeviceEvent>,
     receiver: Receiver<DeviceEvent>,
-    on_drop: Option<Box<dyn FnOnce() + Send>>,
+    on_drop: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 impl Debug for Running {
@@ -120,10 +120,16 @@ impl Running {
             Self {
                 sender: sender.clone(),
                 receiver,
-                on_drop: Some(Box::new(on_drop)),
+                on_drop: vec![Box::new(on_drop)],
             },
             sender,
         )
+    }
+
+    pub fn retain<T: Send + 'static>(&mut self, value: T) {
+        self.on_drop.push(Box::new(move || {
+            drop(value);
+        }));
     }
 }
 
@@ -144,7 +150,9 @@ impl Stream for Running {
 impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.sender.try_send(DeviceEvent::Stopped);
-        self.on_drop.take().unwrap()();
+        for f in self.on_drop.drain(..) {
+            f();
+        }
     }
 }
 
