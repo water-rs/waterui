@@ -11,7 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, SubView, container::FixedContainer, stack::Alignment,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
+    stack::Alignment,
 };
 
 /// Cached measurement for a child during layout
@@ -72,6 +73,12 @@ impl OverlayLayout {
 }
 
 impl Layout for OverlayLayout {
+    /// Overlay stretches in both directions, allowing the base child to fill available space.
+    /// The actual size is determined by the base child in `size_that_fits`.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         // Overlay size is driven entirely by the base child (index 0). If the base
         // provides no intrinsic size, fall back to the parent's constraints.
