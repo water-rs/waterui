@@ -3,7 +3,7 @@ use smol::{future::block_on, process::Command};
 use tracing::error;
 
 use crate::{
-    android::platform::AndroidPlatform,
+    android::{platform::AndroidPlatform, toolchain::AndroidSdk},
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     utils::{command, run_command},
 };
@@ -39,7 +39,13 @@ impl AndroidDevice {
 impl Device for AndroidDevice {
     type Platform = AndroidPlatform;
     async fn launch(&self) -> eyre::Result<()> {
-        run_command("adb", ["-s", &self.identifier, "wait-for-device"]).await?;
+        let adb = AndroidSdk::adb_path()
+            .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
+        run_command(
+            adb.to_str().unwrap(),
+            ["-s", &self.identifier, "wait-for-device"],
+        )
+        .await?;
         Ok(())
     }
 
@@ -52,6 +58,10 @@ impl Device for AndroidDevice {
         artifact: Artifact,
         options: RunOptions,
     ) -> Result<Running, crate::device::FailToRun> {
+        let adb = AndroidSdk::adb_path()
+            .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
+        let adb_str = adb.to_str().unwrap();
+
         // Set environment variables as system properties
         // Android doesn't support direct environment variable passing, so we use
         // system properties with prefix "waterui.env." which the app reads at startup
@@ -59,7 +69,7 @@ impl Device for AndroidDevice {
             let prop_key = format!("waterui.env.{key}");
             // Note: setprop requires root or adb shell access, but adb shell grants this
             let result = run_command(
-                "adb",
+                adb_str,
                 ["-s", &self.identifier, "shell", "setprop", &prop_key, value],
             )
             .await;
@@ -70,7 +80,7 @@ impl Device for AndroidDevice {
 
         // Install the APK on the device
         run_command(
-            "adb",
+            adb_str,
             [
                 "-s",
                 &self.identifier,
@@ -82,7 +92,7 @@ impl Device for AndroidDevice {
         .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
 
         run_command(
-            "adb",
+            adb_str,
             [
                 "-s",
                 &self.identifier,
@@ -101,7 +111,7 @@ impl Device for AndroidDevice {
         let _bundle_id = artifact.bundle_id().to_string();
 
         let pid = run_command(
-            "adb",
+            adb_str,
             [
                 "-s",
                 &self.identifier,
@@ -118,9 +128,10 @@ impl Device for AndroidDevice {
             .parse::<u32>()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to parse PID from adb output: {e}")))?;
 
+        let adb_for_kill = adb;
         let (running, _sender) = Running::new(move || {
             let result = block_on(async move {
-                let mut cmd = Command::new("adb");
+                let mut cmd = Command::new(&adb_for_kill);
                 command(cmd.args(["shell", "kill", &pid.to_string()]))
                     .output()
                     .await
