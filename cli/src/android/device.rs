@@ -1,11 +1,11 @@
 use color_eyre::eyre::{self, eyre};
-use smol::{future::block_on, process::Command};
+use smol::process::Command;
 use tracing::error;
 
 use crate::{
     android::{platform::AndroidPlatform, toolchain::AndroidSdk},
-    device::{Artifact, Device, DeviceEvent, FailToRun, RunOptions, Running},
-    utils::{command, run_command},
+    device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
+    utils::run_command,
 };
 
 /// Represents an Android device (physical or emulator).
@@ -191,35 +191,68 @@ impl Device for AndroidDevice {
         };
 
         let adb_for_kill = adb.clone();
+        let identifier_for_kill = self.identifier.clone();
         let identifier_for_monitor = self.identifier.clone();
+        let bundle_id_for_kill = artifact.bundle_id().to_string();
         let bundle_id_for_monitor = artifact.bundle_id().to_string();
+        let log_level = options.log_level();
 
         let (running, sender) = Running::new(move || {
-            let result = block_on(async move {
-                let mut cmd = Command::new(&adb_for_kill);
-                command(cmd.args(["shell", "kill", &pid.to_string()]))
-                    .output()
-                    .await
-            });
+            // Use std::process::Command for synchronous execution in Drop context
+            // This avoids issues with block_on when the async executor is shutting down
+            // Use 'am force-stop' instead of 'kill' because shell doesn't have permission
+            // to kill app processes directly on Android
 
-            if let Err(e) = result {
-                error!("Failed to kill process {}: {}", pid, e);
+            let result = std::process::Command::new(&adb_for_kill)
+                .args([
+                    "-s",
+                    &identifier_for_kill,
+                    "shell",
+                    "am",
+                    "force-stop",
+                    &bundle_id_for_kill,
+                ])
+                .output();
+
+            match result {
+                Ok(output) => {
+                    tracing::debug!(
+                        "Force-stop command executed: status={}, stdout={}, stderr={}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
+                }
             }
         });
 
         // Spawn a background task to monitor the process
-        let adb_for_monitor = adb;
+        let adb_for_monitor = adb.clone();
+        let sender_for_monitor = sender.clone();
         smol::spawn(async move {
             monitor_android_process(
                 adb_for_monitor,
                 &identifier_for_monitor,
                 &bundle_id_for_monitor,
                 pid,
-                sender,
+                sender_for_monitor,
             )
             .await;
         })
         .detach();
+
+        // Spawn a background task to stream logs if log_level is set
+        if let Some(level) = log_level {
+            let adb_for_logs = adb;
+            let identifier_for_logs = self.identifier.clone();
+            smol::spawn(async move {
+                stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
+            })
+            .detach();
+        }
 
         Ok(running)
     }
@@ -296,6 +329,155 @@ async fn monitor_android_process(
             let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
             break;
         }
+    }
+}
+
+/// Stream logs from an Android process using logcat.
+async fn stream_android_logs(
+    adb: std::path::PathBuf,
+    device_id: &str,
+    pid: u32,
+    level: LogLevel,
+    sender: smol::channel::Sender<DeviceEvent>,
+) {
+    use futures::io::{AsyncBufReadExt, BufReader};
+    use smol::process::Command;
+
+    let priority = level.to_android_priority();
+
+    // Build logcat command with PID filter and minimum priority
+    // Format: `adb -s <device> logcat --pid=<pid> *:<priority>`
+    let mut cmd = Command::new(&adb);
+    cmd.args(["-s", device_id, "logcat", "--pid", &pid.to_string()])
+        .arg(format!("*:{priority}"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to spawn logcat: {e}");
+            return;
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+
+    // Parse logcat output and send as DeviceEvent::Log
+    // Logcat format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
+    use futures::StreamExt;
+    while let Some(result) = lines.next().await {
+        let line = match result {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        let (parsed_level, message) = parse_logcat_line(&line);
+
+        let _ = sender
+            .send(DeviceEvent::Log {
+                level: parsed_level,
+                message,
+            })
+            .await;
+    }
+
+    // Clean up child process
+    let _ = child.kill();
+}
+
+/// Parsed logcat line with level, tag, and message.
+struct LogcatParsed {
+    level: tracing::Level,
+    tag: String,
+    message: String,
+}
+
+/// Parse a logcat line into level, tag, and message.
+/// Logcat threadtime format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
+fn parse_logcat_line(line: &str) -> (tracing::Level, String) {
+    // Try to parse the structured format
+    if let Some(parsed) = try_parse_logcat(line) {
+        let formatted = format!("[{}] {}", parsed.tag, parsed.message);
+        return (parsed.level, formatted);
+    }
+
+    // Fallback: return raw line with default level
+    (tracing::Level::INFO, line.to_string())
+}
+
+/// Try to parse a logcat line. Returns None if parsing fails.
+fn try_parse_logcat(line: &str) -> Option<LogcatParsed> {
+    // Logcat threadtime format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
+    // Example: "12-10 23:04:40.190 28184 28184 D WaterUI : Touch..."
+
+    // Split by whitespace, but we need to be careful about the message part
+    let parts: Vec<&str> = line.splitn(7, char::is_whitespace).collect();
+
+    // We need at least: date, time, pid, tid, level, tag, message
+    if parts.len() < 6 {
+        return None;
+    }
+
+    // Find the level character (should be single char: V, D, I, W, E, F)
+    let mut level_idx = None;
+    for (i, part) in parts.iter().enumerate() {
+        if part.len() == 1 {
+            let c = part.chars().next()?;
+            if matches!(c, 'V' | 'D' | 'I' | 'W' | 'E' | 'F') {
+                level_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    let level_idx = level_idx?;
+    if level_idx + 1 >= parts.len() {
+        return None;
+    }
+
+    let level = match parts[level_idx] {
+        "E" | "F" => tracing::Level::ERROR,
+        "W" => tracing::Level::WARN,
+        "I" => tracing::Level::INFO,
+        "D" => tracing::Level::DEBUG,
+        "V" => tracing::Level::TRACE,
+        _ => tracing::Level::INFO,
+    };
+
+    // The rest after level is "TAG: message" or "TAG     : message"
+    // Find the position of the level character in the original line (after timestamp)
+    // Skip past timestamp "MM-DD HH:MM:SS.mmm" which is about 18 chars
+    let level_char = parts[level_idx].chars().next()?;
+    let search_start = 18.min(line.len());
+    let level_pos = line[search_start..]
+        .find(level_char)
+        .map(|p| p + search_start)?;
+
+    let after_level = line.get(level_pos + 1..)?.trim_start();
+
+    // Split by ": " to get tag and message
+    if let Some(colon_pos) = after_level.find(": ") {
+        let tag = after_level[..colon_pos].trim();
+        let message = after_level[colon_pos + 2..].to_string();
+        Some(LogcatParsed {
+            level,
+            tag: tag.to_string(),
+            message,
+        })
+    } else {
+        // No colon found, use everything as message
+        Some(LogcatParsed {
+            level,
+            tag: "unknown".to_string(),
+            message: after_level.to_string(),
+        })
     }
 }
 
@@ -500,41 +682,67 @@ impl Device for AndroidEmulator {
 
         let adb_for_kill = adb.clone();
         let identifier_for_kill = identifier.clone();
-        let identifier_for_monitor = identifier;
+        let identifier_for_monitor = identifier.clone();
+        let bundle_id_for_kill = artifact.bundle_id().to_string();
         let bundle_id_for_monitor = artifact.bundle_id().to_string();
+        let log_level = options.log_level();
 
         let (running, sender) = Running::new(move || {
-            let result = block_on(async move {
-                let mut cmd = Command::new(&adb_for_kill);
-                command(cmd.args([
+            // Use std::process::Command for synchronous execution in Drop context
+            // This avoids issues with block_on when the async executor is shutting down
+            // Use 'am force-stop' instead of 'kill' because shell doesn't have permission
+            // to kill app processes directly on Android
+
+            let result = std::process::Command::new(&adb_for_kill)
+                .args([
                     "-s",
                     &identifier_for_kill,
                     "shell",
-                    "kill",
-                    &pid.to_string(),
-                ]))
-                .output()
-                .await
-            });
+                    "am",
+                    "force-stop",
+                    &bundle_id_for_kill,
+                ])
+                .output();
 
-            if let Err(e) = result {
-                error!("Failed to kill process {}: {}", pid, e);
+            match result {
+                Ok(output) => {
+                    tracing::debug!(
+                        "Force-stop command executed: status={}, stdout={}, stderr={}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
+                }
             }
         });
 
         // Spawn a background task to monitor the process
-        let adb_for_monitor = adb;
+        let adb_for_monitor = adb.clone();
+        let sender_for_monitor = sender.clone();
         smol::spawn(async move {
             monitor_android_process(
                 adb_for_monitor,
                 &identifier_for_monitor,
                 &bundle_id_for_monitor,
                 pid,
-                sender,
+                sender_for_monitor,
             )
             .await;
         })
         .detach();
+
+        // Spawn a background task to stream logs if log_level is set
+        if let Some(level) = log_level {
+            let adb_for_logs = adb;
+            let identifier_for_logs = identifier;
+            smol::spawn(async move {
+                stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
+            })
+            .detach();
+        }
 
         Ok(running)
     }

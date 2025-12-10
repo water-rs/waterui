@@ -19,7 +19,7 @@ use waterui_cli::{
     },
     build::BuildOptions,
     debug::hot_reload::{DEFAULT_PORT, HotReloadServer},
-    device::{Artifact, Device, DeviceEvent, RunOptions, Running},
+    device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
     platform::{PackageOptions, Platform},
     project::Project,
     toolchain::Toolchain,
@@ -54,6 +54,39 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Minimum log level to display (error, warn, info, debug, verbose).
+    /// Streams device logs at or above this level.
+    #[arg(long, value_enum)]
+    logs: Option<CliLogLevel>,
+}
+
+/// Log level for filtering device logs (CLI argument wrapper).
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum CliLogLevel {
+    /// Only errors
+    Error,
+    /// Warnings and errors
+    Warn,
+    /// Info, warnings, and errors
+    #[default]
+    Info,
+    /// Debug and above
+    Debug,
+    /// All logs including verbose
+    Verbose,
+}
+
+impl From<CliLogLevel> for LogLevel {
+    fn from(level: CliLogLevel) -> Self {
+        match level {
+            CliLogLevel::Error => Self::Error,
+            CliLogLevel::Warn => Self::Warn,
+            CliLogLevel::Info => Self::Info,
+            CliLogLevel::Debug => Self::Debug,
+            CliLogLevel::Verbose => Self::Verbose,
+        }
+    }
 }
 
 /// Run the run command.
@@ -95,8 +128,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Step 3: Build, package, launch device, and run
     // Launch happens in background while building for efficiency
+    let log_level = args.logs.map(LogLevel::from);
     let running = display_output(async {
-        run_on_device(&project, device, needs_launch, args.hot_reload).await
+        run_on_device(&project, device, needs_launch, args.hot_reload, log_level).await
     })
     .await?;
 
@@ -121,11 +155,13 @@ pub async fn run(args: Args) -> Result<()> {
             DeviceEvent::Stderr { message } => {
                 warn!("[stderr] {message}");
             }
-            DeviceEvent::Log { level, message } => match level {
-                tracing::Level::ERROR => error!("{message}"),
-                tracing::Level::WARN => warn!("{message}"),
-                _ => line!("[{level}] {message}"),
-            },
+            DeviceEvent::Log { level, message } => {
+                let platform_name = match args.platform {
+                    TargetPlatform::Android => "Android",
+                    TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
+                };
+                shell::device_log(platform_name, level, message);
+            }
             DeviceEvent::Exited => {
                 note!("Application exited");
                 break;
@@ -146,6 +182,7 @@ async fn run_on_device(
     device: SelectedDevice,
     needs_launch: bool,
     hot_reload: bool,
+    log_level: Option<LogLevel>,
 ) -> Result<Running> {
     match device {
         SelectedDevice::AppleSimulator(sim) => {
@@ -174,7 +211,7 @@ async fn run_on_device(
             let sim = launch_task.await?;
 
             shell::status("▶", "Running...");
-            run_with_options(sim, artifact, hot_reload).await
+            run_with_options(sim, artifact, hot_reload, log_level).await
         }
         SelectedDevice::AppleMacos(macos) => {
             let platform = macos.platform();
@@ -188,7 +225,7 @@ async fn run_on_device(
                 .await?;
 
             shell::status("▶", "Running...");
-            run_with_options(macos, artifact, hot_reload).await
+            run_with_options(macos, artifact, hot_reload, log_level).await
         }
         SelectedDevice::AndroidDevice(dev) => {
             let platform = dev.platform();
@@ -202,7 +239,7 @@ async fn run_on_device(
                 .await?;
 
             shell::status("▶", "Running...");
-            run_with_options(dev, artifact, hot_reload).await
+            run_with_options(dev, artifact, hot_reload, log_level).await
         }
         SelectedDevice::AndroidEmulator(emu) => {
             let platform = emu.platform();
@@ -230,7 +267,7 @@ async fn run_on_device(
             let emu = launch_task.await?;
 
             shell::status("▶", "Running...");
-            run_with_options(emu, artifact, hot_reload).await
+            run_with_options(emu, artifact, hot_reload, log_level).await
         }
     }
 }
@@ -240,8 +277,13 @@ async fn run_with_options<D: Device>(
     device: D,
     artifact: Artifact,
     hot_reload: bool,
+    log_level: Option<LogLevel>,
 ) -> Result<Running> {
     let mut run_options = RunOptions::new();
+
+    if let Some(level) = log_level {
+        run_options.set_log_level(level);
+    }
 
     let server = if hot_reload {
         let server = HotReloadServer::launch(DEFAULT_PORT).await?;
