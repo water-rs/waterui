@@ -376,15 +376,23 @@ impl Platform for AndroidPlatform {
             unreachable!()
         };
 
-        run_command(
-            gradlew.to_str().unwrap(),
-            [
+        // Skip Rust build in Gradle - we already built the library via `water build`
+        // The Gradle build.gradle.kts checks this env var and skips its buildRust tasks
+        let output = smol::process::Command::new(gradlew.to_str().unwrap())
+            .args([
                 command_name,
                 "--project-dir",
                 backend_path.to_str().unwrap(),
-            ],
-        )
-        .await?;
+            ])
+            .env("WATERUI_SKIP_RUST_BUILD", "1")
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            bail!("Gradle build failed:\n{}\n{}", stdout.trim(), stderr.trim());
+        }
 
         Ok(Artifact::new(project.bundle_identifier(), path))
     }

@@ -4,3 +4,7 @@ waterui_path = "../.."
 type = "playground"
 name = "Video Player Example"
 bundle_identifier = "com.waterui.video_player_example"
+
+[permissions.internet]
+enable = true
+description = "Required to stream video content from the internet"
