@@ -78,7 +78,7 @@ waterui-web = { version = "0.1.0", path = "backends/web" }
 waterui-tui = { version = "0.1.0", path = "backends/tui" }
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis" }
 waterui = { version = "0.1.0", path = "." }
-native-executor = { git = "https://github.com/water-rs/native_executor", branch = "dev" }
+native-executor = { version = "0.7.0" }
 waterui-derive = { version = "0.1.0", path = "derive" }
 waterkit-location = { version = "0.1.0", path = "kit/location" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -86,7 +86,7 @@ wgpu = "27.0.1"
 time = "0.3"
 tiny-skia = "0.11"
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
-zenwave = "0.1.0"
+zenwave = "0.2.0"
 skyzen = { version = "0.1.0", default-features = false }
 
 tracing-panic = "0.1.2"

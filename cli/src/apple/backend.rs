@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::Backend,
     project::Project,
     templates::{self, TemplateContext},
-    water_dir,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -82,60 +80,44 @@ fn is_default_apple_project_path(s: &Path) -> bool {
     s == Path::new("apple")
 }
 
-/// Scheme name used for all playground projects.
-const PLAYGROUND_SCHEME: &str = "WaterUIApp";
+impl Backend for AppleBackend {
+    const DEFAULT_PATH: &'static str = "apple";
 
-impl AppleBackend {
-    /// Initialize the Apple backend for a project.
-    ///
-    /// For playground projects, the backend is created in `.water/apple` with a fixed
-    /// scheme name `WaterUIApp`. For regular apps, the backend is created in `apple/`
-    /// with a scheme derived from the app name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if scaffolding fails.
-    pub async fn init_backend(project: &Project, playground: bool) -> eyre::Result<Self> {
-        if playground {
-            // Ensure .water directory is valid for current CLI version
-            water_dir::ensure_valid(project.root()).await?;
-        }
+    fn path(&self) -> &Path {
+        &self.project_path
+    }
 
+    async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
 
-        // For playground: use fixed scheme and .water/apple path
-        // For app: derive scheme from app name and use apple/ path
-        let (scheme, project_path) = if playground {
-            (PLAYGROUND_SCHEME.to_string(), PathBuf::from(".water/apple"))
-        } else {
-            let app_name = manifest
-                .package
-                .name
-                .chars()
-                .filter(|c| c.is_alphanumeric())
-                .collect::<String>();
-            (app_name, default_apple_project_path())
-        };
+        // Derive scheme from app name
+        let scheme = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+
+        // Get the relative path to the backend from project root (e.g., "apple" or ".water/apple")
+        let backend_relative_path = project.backend_relative_path::<Self>();
+
+        let project_path = default_apple_project_path();
 
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
             app_name: scheme.clone(),
-            // For playground, use scheme for crate_name too (Xcode uses __CRATE_NAME__ for scheme)
-            crate_name: if playground {
-                scheme.clone()
-            } else {
-                project.crate_name().to_string()
-            },
+            crate_name: project.crate_name().to_string(),
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            backend_project_path: Some(project_path.clone()),
+            backend_project_path: Some(backend_relative_path),
         };
 
-        let output_dir = project.root().join(&project_path);
-        templates::apple::scaffold(&output_dir, &ctx).await?;
+        templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
 
         Ok(Self {
             project_path,
@@ -144,13 +126,5 @@ impl AppleBackend {
             revision: None,
             backend_path: manifest.waterui_path.clone(),
         })
-    }
-}
-
-impl Backend for AppleBackend {
-    async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
-        Self::init_backend(project, false)
-            .await
-            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))
     }
 }

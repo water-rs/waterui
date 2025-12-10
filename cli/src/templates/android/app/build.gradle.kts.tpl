@@ -15,12 +15,12 @@ plugins {
 // Skip Rust build when invoked by `water run`
 val skipRustBuild = System.getenv("WATERUI_SKIP_RUST_BUILD") == "1"
 
-// Android ABI to Rust target triple mapping
-val abiToTarget = mapOf(
-    "arm64-v8a" to "aarch64-linux-android",
-    "armeabi-v7a" to "armv7-linux-androideabi",
-    "x86_64" to "x86_64-linux-android",
-    "x86" to "i686-linux-android"
+// Android ABI to water CLI architecture mapping
+val abiToArch = mapOf(
+    "arm64-v8a" to "arm64",
+    "armeabi-v7a" to "armv7",
+    "x86_64" to "x86-64",
+    "x86" to "x86"
 )
 
 // Default ABIs to build (can be overridden by setting WATERUI_ANDROID_ABIS env var)
@@ -29,15 +29,13 @@ val targetAbis = (System.getenv("WATERUI_ANDROID_ABIS") ?: "arm64-v8a,x86_64")
     .map { it.trim() }
     .filter { it.isNotEmpty() }
 
-// Find the project root (parent of android directory)
-val projectRoot = rootProject.projectDir.parentFile
+// Find the project root (grandparent of android directory: .water/android -> .water -> project)
+val projectRoot = rootProject.projectDir.parentFile.parentFile
 
 // Determine build type from Gradle's build variant
 val isRelease = gradle.startParameter.taskNames.any {
     it.contains("Release", ignoreCase = true)
 }
-
-val profile = if (isRelease) "release" else "debug"
 
 // Create build tasks only when not invoked by `water run`
 val buildRustTasks = if (skipRustBuild) {
@@ -45,13 +43,13 @@ val buildRustTasks = if (skipRustBuild) {
     emptyList()
 } else {
     targetAbis.mapNotNull { abi ->
-        val target = abiToTarget[abi] ?: run {
+        val arch = abiToArch[abi] ?: run {
             logger.warn("Unknown ABI: $abi, skipping")
             return@mapNotNull null
         }
 
         tasks.register<Exec>("buildRust_$abi") {
-            description = "Build WaterUI Rust library for $abi ($target)"
+            description = "Build WaterUI Rust library for $abi"
             group = "build"
 
             workingDir = projectRoot
@@ -62,12 +60,20 @@ val buildRustTasks = if (skipRustBuild) {
                 listOf("water")
             }
 
+            // Output directory for this ABI's library
+            val outputDir = file("src/main/jniLibs/$abi")
+
             val args = mutableListOf<String>()
             args.addAll(waterCmd)
             args.add("build")
-            args.add(target)
-            args.add("--project")
+            args.add("--platform")
+            args.add("android")
+            args.add("--arch")
+            args.add(arch)
+            args.add("--path")
             args.add(projectRoot.absolutePath)
+            args.add("--output-dir")
+            args.add(outputDir.absolutePath)
 
             if (isRelease) {
                 args.add("--release")
@@ -75,30 +81,8 @@ val buildRustTasks = if (skipRustBuild) {
 
             commandLine = args
 
-            // Environment variables for hot reload (set by water run)
-            environment("WATERUI_HOT_RELOAD", System.getenv("WATERUI_HOT_RELOAD") ?: "false")
-            System.getenv("WATERUI_HOT_RELOAD_PORT")?.let {
-                environment("WATERUI_HOT_RELOAD_PORT", it)
-            }
-
             // Always run - Cargo handles incremental builds internally
             outputs.upToDateWhen { false }
-
-            // After build, copy library to jniLibs
-            // water build outputs libwaterui_app.so (standardized name convention)
-            doLast {
-                val sourceLib = projectRoot.resolve("target/$target/$profile/libwaterui_app.so")
-                val destDir = file("src/main/jniLibs/$abi")
-                val destLib = destDir.resolve("libwaterui_app.so")
-
-                if (sourceLib.exists()) {
-                    destDir.mkdirs()
-                    sourceLib.copyTo(destLib, overwrite = true)
-                    logger.lifecycle("Copied $sourceLib -> $destLib")
-                } else {
-                    throw GradleException("Built library not found at $sourceLib")
-                }
-            }
         }
     }
 }
@@ -125,7 +109,7 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders"
 // =============================================================================
 
 android {
-    namespace = "__BUNDLE_IDENTIFIER__"
+    namespace = "__ANDROID_NAMESPACE__"
     compileSdk = 34
 
     defaultConfig {

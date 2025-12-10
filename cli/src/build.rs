@@ -15,22 +15,39 @@ pub struct RustBuild {
 }
 
 /// Options for building Rust libraries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     release: bool,
+    output_dir: Option<std::path::PathBuf>,
 }
 
 impl BuildOptions {
     /// Create new build options
     #[must_use]
     pub const fn new(release: bool) -> Self {
-        Self { release }
+        Self {
+            release,
+            output_dir: None,
+        }
     }
 
     /// Whether to build in release mode
     #[must_use]
     pub const fn is_release(&self) -> bool {
         self.release
+    }
+
+    /// Get the output directory, if specified
+    #[must_use]
+    pub fn output_dir(&self) -> Option<&std::path::Path> {
+        self.output_dir.as_deref()
+    }
+
+    /// Set the output directory where built libraries should be copied
+    #[must_use]
+    pub fn with_output_dir(mut self, output_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.output_dir = Some(output_dir.into());
+        self
     }
 }
 
