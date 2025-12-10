@@ -31,6 +31,10 @@ mod styles {
     pub const NOTE: Style = Style::new()
         .bold()
         .fg_color(Some(anstyle::Color::Ansi(AnsiColor::Cyan)));
+    pub const DEBUG: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Magenta)));
+    pub const TRACE: Style =
+        Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightBlack)));
+    pub const TAG: Style = Style::new().bold();
 }
 
 /// Initialize the global shell.
@@ -212,6 +216,71 @@ impl Shell {
         }
     }
 
+    /// Print a device log with level-appropriate styling.
+    ///
+    /// The message should be in format "[TAG] message" for best display.
+    /// Platform is used as a prefix (e.g., "Android", "Apple").
+    pub fn device_log(
+        &self,
+        platform: &str,
+        level: tracing::Level,
+        message: impl Display,
+    ) -> io::Result<()> {
+        match &self.output {
+            ShellOut::Human => {
+                let mut stderr = anstream::stderr().lock();
+                let msg = message.to_string();
+
+                // Get level style and short name
+                let (level_style, level_char) = match level {
+                    tracing::Level::ERROR => (styles::ERROR, 'E'),
+                    tracing::Level::WARN => (styles::WARN, 'W'),
+                    tracing::Level::INFO => (styles::NOTE, 'I'),
+                    tracing::Level::DEBUG => (styles::DEBUG, 'D'),
+                    tracing::Level::TRACE => (styles::TRACE, 'V'),
+                };
+                let reset = Style::new().render_reset();
+
+                // Try to extract [TAG] from message for styled output
+                if let Some((tag, rest)) = parse_log_tag(&msg) {
+                    writeln!(
+                        stderr,
+                        "{level_style}{platform}/{level_char}{reset} {tag_style}[{tag}]{reset} {rest}",
+                        tag_style = styles::TAG,
+                    )?;
+                } else {
+                    writeln!(stderr, "{level_style}{platform}/{level_char}{reset} {msg}",)?;
+                }
+                stderr.flush()
+            }
+            ShellOut::Json => {
+                #[derive(Serialize)]
+                struct Log<'a> {
+                    #[serde(rename = "type")]
+                    log_type: &'static str,
+                    platform: &'a str,
+                    level: &'a str,
+                    message: &'a str,
+                }
+                let level_str = match level {
+                    tracing::Level::ERROR => "error",
+                    tracing::Level::WARN => "warn",
+                    tracing::Level::INFO => "info",
+                    tracing::Level::DEBUG => "debug",
+                    tracing::Level::TRACE => "trace",
+                };
+                let json = serde_json::to_string(&Log {
+                    log_type: "log",
+                    platform,
+                    level: level_str,
+                    message: &message.to_string(),
+                })?;
+                writeln!(io::stdout(), "{json}")?;
+                io::stdout().flush()
+            }
+        }
+    }
+
     /// Print a header/title.
     pub fn header(&self, message: impl Display) -> io::Result<()> {
         match &self.output {
@@ -250,11 +319,29 @@ impl Shell {
     }
 }
 
+/// Parse a log message to extract [TAG] prefix.
+/// Returns (tag, rest_of_message) if found.
+fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
+    let msg = msg.trim();
+    if !msg.starts_with('[') {
+        return None;
+    }
+    let end = msg.find(']')?;
+    let tag = &msg[1..end];
+    let rest = msg[end + 1..].trim_start();
+    Some((tag, rest))
+}
+
 // Convenience functions that use the global shell
 
 /// Print a status message.
 pub fn status(status: impl Display, message: impl Display) {
     let _ = get().status(status, message);
+}
+
+/// Print a device log with level-appropriate styling.
+pub fn device_log(platform: &str, level: tracing::Level, message: impl Display) {
+    let _ = get().device_log(platform, level, message);
 }
 
 /// Print an error message (use `error!` macro instead).

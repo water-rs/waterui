@@ -3,6 +3,52 @@
 //! This module defines lightweight gesture specifications that can be attached to widgets.
 //! Each gesture type captures the minimum configuration necessary for a backend to register
 //! and recognize the interaction, while remaining portable across platforms.
+//!
+//! # Hit-Testing Behavior
+//!
+//! WaterUI uses a **pass-through** hit-testing model where views without gesture handlers
+//! are transparent to touch events. This means:
+//!
+//! - **Non-interactive views** (e.g., [`Spacer`], plain [`Text`], layout containers) do not
+//!   intercept touches. Touches pass through to views behind them in the Z-order.
+//!
+//! - **Interactive views** (e.g., [`Button`], views with [`GestureObserver`] attached) capture
+//!   touches within their bounds and prevent them from reaching views below.
+//!
+//! - In a [`ZStack`] or [`overlay`], only the topmost *interactive* view at a touch location
+//!   receives the event. Non-interactive overlays (like a semi-transparent background or
+//!   loading indicator) allow touches to reach interactive content beneath them.
+//!
+//! ## Example: Video Player with Overlay Controls
+//!
+//! ```ignore
+//! // The controls_overlay uses a Spacer to push buttons to the bottom.
+//! // The Spacer is non-interactive, so tapping the video area behind it
+//! // still triggers the VideoPlayer's native controls.
+//! zstack((
+//!     VideoPlayer::new(url).show_controls(true),
+//!     vstack((
+//!         spacer(),  // Non-interactive: touches pass through to VideoPlayer
+//!         button("Play").action(|| { /* ... */ }),  // Interactive: captures touches
+//!     )),
+//! ))
+//! ```
+//!
+//! ## Backend Implementation Requirements
+//!
+//! Backend implementors must ensure:
+//!
+//! 1. Layout containers (VStack, HStack, ZStack) do not consume unhandled touch events.
+//! 2. Only views with registered gesture handlers or inherent interactivity (buttons, sliders)
+//!    should return `true` from hit-test queries.
+//! 3. When multiple views overlap, the hit-test should find the topmost *interactive* view,
+//!    not simply the topmost view in the Z-order.
+//!
+//! [`Spacer`]: crate::prelude::spacer
+//! [`Text`]: crate::prelude::text
+//! [`Button`]: crate::prelude::button
+//! [`ZStack`]: crate::prelude::zstack
+//! [`overlay`]: crate::prelude::overlay
 
 use waterui_core::{
     handler::{BoxHandler, HandlerFn, into_handler},
