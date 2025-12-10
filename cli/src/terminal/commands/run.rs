@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
 use futures::StreamExt;
 
-use crate::shell;
+use crate::shell::{self, display_output};
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
     android::{device::AndroidDevice, platform::AndroidPlatform},
@@ -82,20 +82,23 @@ pub async fn run(args: Args) -> Result<()> {
     success!("Found device: {}", device_name(&device));
 
     // Step 3: Run on device
-    let running = match device {
-        SelectedDevice::AppleSimulator(sim) => {
-            shell::status("▶", "Building and running...");
-            project.run(sim, args.hot_reload).await?
+    let running = display_output(async {
+        match device {
+            SelectedDevice::AppleSimulator(sim) => {
+                shell::status("▶", "Building and running...");
+                project.run(sim, args.hot_reload).await
+            }
+            SelectedDevice::AppleMacos(macos) => {
+                shell::status("▶", "Building and running...");
+                project.run(macos, args.hot_reload).await
+            }
+            SelectedDevice::Android(android) => {
+                shell::status("▶", "Building and running...");
+                project.run(android, args.hot_reload).await
+            }
         }
-        SelectedDevice::AppleMacos(macos) => {
-            shell::status("▶", "Building and running...");
-            project.run(macos, args.hot_reload).await?
-        }
-        SelectedDevice::Android(android) => {
-            shell::status("▶", "Building and running...");
-            project.run(android, args.hot_reload).await?
-        }
-    };
+    })
+    .await?;
 
     line!();
     note!("Press Ctrl+C to stop the application");

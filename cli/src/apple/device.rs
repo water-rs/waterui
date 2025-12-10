@@ -333,7 +333,7 @@ impl AppleSimulator {
             devices: HashMap<String, Vec<AppleSimulator>>,
         }
 
-        let content = run_command("xcrun", ["simctl", "list", "devices"]).await?;
+        let content = run_command("xcrun", ["simctl", "list", "devices", "--json"]).await?;
 
         let simulators = serde_json::from_str::<Root>(&content)?
             .devices
