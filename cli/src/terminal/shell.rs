@@ -218,11 +218,10 @@ impl Shell {
             ShellOut::Human => {
                 writeln!(
                     anstream::stderr().lock(),
-                    "{}{:>12}{} {}",
+                    "{}▶ {}{}",
                     styles::HEADER,
-                    "▶",
-                    styles::HEADER.render_reset(),
-                    message
+                    message,
+                    styles::HEADER.render_reset()
                 )?;
                 Ok(())
             }
