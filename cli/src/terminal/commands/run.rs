@@ -9,13 +9,18 @@ use futures::StreamExt;
 use crate::shell::{self, display_output};
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
-    android::{device::AndroidDevice, platform::AndroidPlatform},
+    android::{
+        device::{AndroidDevice, AndroidEmulator},
+        platform::AndroidPlatform,
+    },
     apple::{
         device::{AppleDevice, AppleSimulator, MacOS},
         platform::ApplePlatform,
     },
-    device::DeviceEvent,
-    platform::Platform,
+    build::BuildOptions,
+    debug::hot_reload::{DEFAULT_PORT, HotReloadServer},
+    device::{Artifact, Device, DeviceEvent, RunOptions, Running},
+    platform::{PackageOptions, Platform},
     project::Project,
     toolchain::Toolchain,
 };
@@ -79,24 +84,19 @@ pub async fn run(args: Args) -> Result<()> {
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Found device: {}", device_name(&device));
 
-    // Step 3: Run on device
+    // Check if device needs launching
+    let needs_launch = device.needs_launch();
+    if needs_launch {
+        note!("Will launch: {}", device_name(&device));
+    } else {
+        success!("Found device: {}", device_name(&device));
+    }
+
+    // Step 3: Build, package, launch device, and run
+    // Launch happens in background while building for efficiency
     let running = display_output(async {
-        match device {
-            SelectedDevice::AppleSimulator(sim) => {
-                shell::status("▶", "Building and running...");
-                project.run(sim, args.hot_reload).await
-            }
-            SelectedDevice::AppleMacos(macos) => {
-                shell::status("▶", "Building and running...");
-                project.run(macos, args.hot_reload).await
-            }
-            SelectedDevice::Android(android) => {
-                shell::status("▶", "Building and running...");
-                project.run(android, args.hot_reload).await
-            }
-        }
+        run_on_device(&project, device, needs_launch, args.hot_reload).await
     })
     .await?;
 
@@ -140,10 +140,148 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Build, launch device in background, and run.
+async fn run_on_device(
+    project: &Project,
+    device: SelectedDevice,
+    needs_launch: bool,
+    hot_reload: bool,
+) -> Result<Running> {
+    match device {
+        SelectedDevice::AppleSimulator(sim) => {
+            let platform = sim.platform();
+
+            // Always spawn task - it will launch if needed, otherwise just return device
+            let launch_task = smol::spawn(async move {
+                if needs_launch {
+                    sim.launch().await?;
+                }
+                Ok::<_, color_eyre::eyre::Report>(sim)
+            });
+
+            // Build and package while device launches in background
+            shell::status("▶", "Building...");
+            platform.build(project, BuildOptions::new(false)).await?;
+            shell::status("▶", "Packaging...");
+            let artifact = platform
+                .package(project, PackageOptions::new(false, true))
+                .await?;
+
+            // Wait for device to be ready
+            if needs_launch {
+                shell::status("▶", "Waiting for simulator...");
+            }
+            let sim = launch_task.await?;
+
+            shell::status("▶", "Running...");
+            run_with_options(sim, artifact, hot_reload).await
+        }
+        SelectedDevice::AppleMacos(macos) => {
+            let platform = macos.platform();
+
+            // macOS doesn't need launching
+            shell::status("▶", "Building...");
+            platform.build(project, BuildOptions::new(false)).await?;
+            shell::status("▶", "Packaging...");
+            let artifact = platform
+                .package(project, PackageOptions::new(false, true))
+                .await?;
+
+            shell::status("▶", "Running...");
+            run_with_options(macos, artifact, hot_reload).await
+        }
+        SelectedDevice::AndroidDevice(dev) => {
+            let platform = dev.platform();
+
+            // Already connected device doesn't need launching
+            shell::status("▶", "Building...");
+            platform.build(project, BuildOptions::new(false)).await?;
+            shell::status("▶", "Packaging...");
+            let artifact = platform
+                .package(project, PackageOptions::new(false, true))
+                .await?;
+
+            shell::status("▶", "Running...");
+            run_with_options(dev, artifact, hot_reload).await
+        }
+        SelectedDevice::AndroidEmulator(emu) => {
+            let platform = emu.platform();
+
+            // Always spawn task - it will launch if needed, otherwise just return device
+            let launch_task = smol::spawn(async move {
+                if needs_launch {
+                    emu.launch().await?;
+                }
+                Ok::<_, color_eyre::eyre::Report>(emu)
+            });
+
+            // Build and package while emulator launches in background
+            shell::status("▶", "Building...");
+            platform.build(project, BuildOptions::new(false)).await?;
+            shell::status("▶", "Packaging...");
+            let artifact = platform
+                .package(project, PackageOptions::new(false, true))
+                .await?;
+
+            // Wait for emulator to be ready
+            if needs_launch {
+                shell::status("▶", "Waiting for emulator...");
+            }
+            let emu = launch_task.await?;
+
+            shell::status("▶", "Running...");
+            run_with_options(emu, artifact, hot_reload).await
+        }
+    }
+}
+
+/// Run artifact on device with hot reload support.
+async fn run_with_options<D: Device>(
+    device: D,
+    artifact: Artifact,
+    hot_reload: bool,
+) -> Result<Running> {
+    let mut run_options = RunOptions::new();
+
+    let server = if hot_reload {
+        let server = HotReloadServer::launch(DEFAULT_PORT).await?;
+        run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
+        run_options.insert_env_var(
+            "WATERUI_HOT_RELOAD_PORT".to_string(),
+            server.port().to_string(),
+        );
+        Some(server)
+    } else {
+        None
+    };
+
+    let mut running = device.run(artifact, run_options).await?;
+
+    if let Some(server) = server {
+        running.retain(server);
+    }
+
+    Ok(running)
+}
+
+/// A device that can be selected for running.
 enum SelectedDevice {
     AppleSimulator(AppleSimulator),
     AppleMacos(MacOS),
-    Android(AndroidDevice),
+    AndroidDevice(AndroidDevice),
+    AndroidEmulator(AndroidEmulator),
+}
+
+impl SelectedDevice {
+    /// Check if the device needs to be launched before running.
+    fn needs_launch(&self) -> bool {
+        match self {
+            Self::AppleSimulator(sim) => sim.state != "Booted",
+            Self::AppleMacos(_) => false,
+            Self::AndroidDevice(_) => false,
+            Self::AndroidEmulator(_) => true,
+        }
+    }
 }
 
 async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
@@ -207,24 +345,35 @@ async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Resul
         }
         TargetPlatform::Android => {
             let p = AndroidPlatform::arm64();
-            let devices = p.scan().await?;
+            let devices = p.scan().await.unwrap_or_default();
 
             if let Some(id) = device_id {
                 // Find specific device
                 for dev in devices {
                     if dev.identifier() == id {
-                        return Ok(SelectedDevice::Android(dev));
+                        return Ok(SelectedDevice::AndroidDevice(dev));
                     }
                 }
                 bail!("Device not found: {id}");
             }
 
-            // Use first available
-            devices
-                .into_iter()
-                .next()
-                .map(SelectedDevice::Android)
-                .ok_or_else(|| color_eyre::eyre::eyre!("No Android devices connected"))
+            // If we have a connected device, use it
+            if let Some(dev) = devices.into_iter().next() {
+                return Ok(SelectedDevice::AndroidDevice(dev));
+            }
+
+            // No connected devices - try to find an emulator AVD
+            let avds = AndroidPlatform::list_avds().await?;
+            let avd_name = avds.into_iter().next().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "No Android devices connected and no emulators available. \
+                     Create an emulator in Android Studio or connect a device."
+                )
+            })?;
+
+            Ok(SelectedDevice::AndroidEmulator(AndroidEmulator::new(
+                avd_name,
+            )))
         }
     }
 }
@@ -233,7 +382,8 @@ fn device_name(device: &SelectedDevice) -> String {
     match device {
         SelectedDevice::AppleSimulator(sim) => sim.name.clone(),
         SelectedDevice::AppleMacos(_) => "Current Machine".to_string(),
-        SelectedDevice::Android(dev) => dev.identifier().to_string(),
+        SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
+        SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
     }
 }
 
