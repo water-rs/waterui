@@ -1,8 +1,9 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, process::ExitStatus};
 
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
 use smol::{
+    channel::Sender,
     future::block_on,
     io::{AsyncBufReadExt, BufReader},
     process::{Command, Stdio},
@@ -14,8 +15,104 @@ use tracing::info;
 use crate::{
     apple::platform::ApplePlatform,
     device::{Artifact, Device, DeviceEvent, FailToRun, Running},
-    utils::run_command,
+    utils::{command, run_command},
 };
+
+/// Start streaming logs from an Apple device process.
+///
+/// This works for both macOS apps and iOS simulators by using the `log stream` command.
+/// For simulators, use `--predicate` with the subsystem; for macOS, use `--process` with PID.
+fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>) {
+    let mut log_cmd = Command::new("log");
+    log_cmd
+        .arg("stream")
+        .args(&args)
+        .arg("--level")
+        .arg("debug")
+        .arg("--style")
+        .arg("compact")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    if let Ok(mut log_child) = log_cmd.spawn() {
+        if let Some(stdout) = log_child.stdout.take() {
+            spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Some(Ok(line)) = lines.next().await {
+                    // Parse log level from the line (compact format: timestamp level ...)
+                    let level = if line.contains(" Error ") || line.contains(" Fault ") {
+                        tracing::Level::ERROR
+                    } else if line.contains(" Warning ") {
+                        tracing::Level::WARN
+                    } else if line.contains(" Debug ") {
+                        tracing::Level::DEBUG
+                    } else {
+                        tracing::Level::INFO
+                    };
+
+                    if sender
+                        .try_send(DeviceEvent::Log {
+                            level,
+                            message: line,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+    }
+}
+
+/// Handle exit status and send appropriate event.
+///
+/// This is shared between macOS and iOS simulator to ensure consistent crash detection.
+fn handle_exit_status(exit_status: ExitStatus, sender: &Sender<DeviceEvent>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = exit_status.signal() {
+            // SIGINT(2), SIGKILL(9), and SIGTERM(15) are normal termination signals
+            match signal {
+                2 | 9 | 15 => {
+                    let _ = sender.try_send(DeviceEvent::Exited);
+                }
+                6 => {
+                    let _ = sender.try_send(DeviceEvent::Crashed(
+                        "App terminated by SIGABRT".to_string(),
+                    ));
+                }
+                10 => {
+                    let _ = sender
+                        .try_send(DeviceEvent::Crashed("App terminated by SIGBUS".to_string()));
+                }
+                11 => {
+                    let _ = sender.try_send(DeviceEvent::Crashed(
+                        "App terminated by SIGSEGV".to_string(),
+                    ));
+                }
+                _ => {
+                    let _ = sender.try_send(DeviceEvent::Crashed(format!(
+                        "App terminated by signal {signal}"
+                    )));
+                }
+            }
+            return;
+        }
+    }
+
+    if exit_status.success() {
+        let _ = sender.try_send(DeviceEvent::Exited);
+    } else {
+        let _ = sender.try_send(DeviceEvent::Crashed(format!(
+            "App exited with code {:?}",
+            exit_status.code()
+        )));
+    }
+}
 
 /// Represents a physical Apple device
 #[derive(Debug)]
@@ -74,21 +171,20 @@ impl Device for MacOS {
         info!("Launching app on MacOS: {}", artifact.path().display());
 
         // Build the `open` command
-        let mut command = Command::new("open");
-        command
-            .arg("-W") // Wait for app to exit
+        let mut cmd = Command::new("open");
+        cmd.arg("-W") // Wait for app to exit
             .arg("-n"); // Open a new instance
 
         // Add environment variables
         for (key, value) in options.env_vars() {
-            command.arg("--env").arg(format!("{key}={value}"));
+            cmd.arg("--env").arg(format!("{key}={value}"));
         }
 
-        command.arg(artifact_path);
-        command.kill_on_drop(true);
+        cmd.arg(artifact_path);
+        cmd.kill_on_drop(true);
 
         // Spawn the open command
-        let mut child = command
+        let mut child = cmd
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
@@ -120,106 +216,16 @@ impl Device for MacOS {
 
         // Start log streaming if we got a PID
         if let Some(pid) = app_pid {
-            let log_sender = sender.clone();
-
-            // Spawn log stream process
-            let mut log_cmd = Command::new("log");
-            log_cmd
-                .arg("stream")
-                .arg("--process")
-                .arg(pid.to_string())
-                .arg("--level")
-                .arg("debug")
-                .arg("--style")
-                .arg("compact")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-
-            if let Ok(mut log_child) = log_cmd.spawn() {
-                if let Some(stdout) = log_child.stdout.take() {
-                    spawn(async move {
-                        let mut lines = BufReader::new(stdout).lines();
-                        while let Some(Ok(line)) = lines.next().await {
-                            // Parse log level from the line (compact format: timestamp level ...)
-                            let level = if line.contains(" Error ") || line.contains(" Fault ") {
-                                tracing::Level::ERROR
-                            } else if line.contains(" Warning ") {
-                                tracing::Level::WARN
-                            } else if line.contains(" Debug ") {
-                                tracing::Level::DEBUG
-                            } else {
-                                tracing::Level::INFO
-                            };
-
-                            if log_sender
-                                .try_send(DeviceEvent::Log {
-                                    level,
-                                    message: line,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
-                }
-            }
+            start_log_stream(
+                sender.clone(),
+                vec!["--process".to_string(), pid.to_string()],
+            );
         }
 
         // Spawn a task to wait for the app to exit and detect crashes
         spawn(async move {
-            let status = child.status().await;
-
-            match status {
-                Ok(exit_status) => {
-                    // Check if the app crashed (killed by signal or non-zero exit)
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(signal) = exit_status.signal() {
-                            // SIGINT(2) and SIGTERM(15) are normal termination signals, not crashes
-                            // SIGKILL(9) is also intentional termination
-                            match signal {
-                                2 | 9 | 15 => {
-                                    // Normal termination via signal
-                                    let _ = sender.try_send(DeviceEvent::Exited);
-                                }
-                                6 => {
-                                    let _ = sender.try_send(DeviceEvent::Crashed(
-                                        "App terminated by SIGABRT".to_string(),
-                                    ));
-                                }
-                                10 => {
-                                    let _ = sender.try_send(DeviceEvent::Crashed(
-                                        "App terminated by SIGBUS".to_string(),
-                                    ));
-                                }
-                                11 => {
-                                    let _ = sender.try_send(DeviceEvent::Crashed(
-                                        "App terminated by SIGSEGV".to_string(),
-                                    ));
-                                }
-                                _ => {
-                                    let _ = sender.try_send(DeviceEvent::Crashed(format!(
-                                        "App terminated by signal {signal}"
-                                    )));
-                                }
-                            }
-                            return;
-                        }
-                    }
-
-                    if !exit_status.success() {
-                        let _ = sender.try_send(DeviceEvent::Crashed(format!(
-                            "App exited with code {:?}",
-                            exit_status.code()
-                        )));
-                    } else {
-                        let _ = sender.try_send(DeviceEvent::Exited);
-                    }
-                }
+            match child.status().await {
+                Ok(exit_status) => handle_exit_status(exit_status, &sender),
                 Err(e) => {
                     let _ = sender.try_send(DeviceEvent::Crashed(format!("Failed to wait: {e}")));
                 }
@@ -343,6 +349,30 @@ impl AppleSimulator {
 
         Ok(simulators)
     }
+
+    /// Get the PID of an app running in this simulator by bundle ID.
+    async fn get_app_pid(&self, bundle_id: &str) -> Option<u32> {
+        // Use simctl spawn to run pgrep inside the simulator
+        let output = Command::new("xcrun")
+            .args(["simctl", "spawn", &self.udid, "launchctl", "list"])
+            .output()
+            .await
+            .ok()?;
+
+        let stdout = String::from_utf8(output.stdout).ok()?;
+
+        // Look for a line containing the bundle ID and extract the PID
+        for line in stdout.lines() {
+            if line.contains(bundle_id) {
+                // Format: PID  Status  Label
+                let pid_str = line.split_whitespace().next()?;
+                if pid_str != "-" {
+                    return pid_str.parse().ok();
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Device for AppleSimulator {
@@ -385,25 +415,52 @@ impl Device for AppleSimulator {
 
         info!("Launching app on apple simulator {}", self.name);
 
-        run_command(
-            "xcrun",
-            ["simctl", "launch", &self.udid, artifact.bundle_id()],
-        )
-        .await
+        // Use --console to block until app exits and pass signals through
+        let mut child = command(Command::new("xcrun").args([
+            "simctl",
+            "launch",
+            "--console",
+            "--terminate-running-process",
+            &self.udid,
+            artifact.bundle_id(),
+        ]))
+        .spawn()
         .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+
+        // Give the app a moment to start, then get its PID for log streaming
+        smol::Timer::after(std::time::Duration::from_millis(500)).await;
+        let app_pid = self.get_app_pid(artifact.bundle_id()).await;
 
         // Create a Running instance - termination will use simctl terminate
         let udid = self.udid.clone();
         let bundle_id = artifact.bundle_id().to_string();
-        let (running, _sender) = Running::new(move || {
+        let (running, sender) = Running::new(move || {
             // Terminate the app when Running is dropped
-            // This runs synchronously in drop, so we use std::process::Command
-
             let fut = run_command("xcrun", ["simctl", "terminate", &udid, &bundle_id]);
             if let Err(err) = block_on(fut) {
                 tracing::error!("Failed to terminate app on simulator: {err}");
             }
         });
+
+        // Start log streaming if we got a PID
+        if let Some(pid) = app_pid {
+            start_log_stream(
+                sender.clone(),
+                vec!["--process".to_string(), pid.to_string()],
+            );
+        }
+
+        // Spawn a task to wait for the app to exit
+        spawn(async move {
+            match child.status().await {
+                Ok(exit_status) => handle_exit_status(exit_status, &sender),
+                Err(e) => {
+                    let _ =
+                        sender.try_send(DeviceEvent::Crashed(format!("Failed to get status: {e}")));
+                }
+            }
+        })
+        .detach();
 
         Ok(running)
     }
