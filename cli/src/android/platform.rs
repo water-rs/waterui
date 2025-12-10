@@ -7,7 +7,7 @@ use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 use crate::{
     android::{
         device::AndroidDevice,
-        toolchain::{AndroidNdk, AndroidToolchain},
+        toolchain::{AndroidNdk, AndroidSdk, AndroidToolchain},
     },
     build::{BuildOptions, RustBuild},
     device::Artifact,
@@ -128,8 +128,11 @@ impl Platform for AndroidPlatform {
     type Toolchain = AndroidToolchain;
 
     async fn scan(&self) -> eyre::Result<Vec<Self::Device>> {
+        let adb = AndroidSdk::adb_path()
+            .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
+
         // Use adb to list connected devices
-        let output = run_command("adb", ["devices"]).await?;
+        let output = run_command(adb.to_str().unwrap(), ["devices"]).await?;
 
         let mut devices = Vec::new();
 
@@ -140,7 +143,7 @@ impl Platform for AndroidPlatform {
 
                 // Query the device's primary ABI
                 let abi = run_command(
-                    "adb",
+                    adb.to_str().unwrap(),
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                 )
                 .await
