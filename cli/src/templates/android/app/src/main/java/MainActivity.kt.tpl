@@ -3,12 +3,12 @@ package __BUNDLE_IDENTIFIER__
 import android.os.Bundle
 import android.system.Os
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import dev.waterui.android.runtime.WaterUiRootView
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
 import java.lang.Runtime
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "WaterUI.MainActivity"
         private const val ENV_PREFIX = "waterui.env."
