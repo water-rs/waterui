@@ -92,21 +92,15 @@ async fn run_on_android(
         }
     }
 
-    // Uninstall previous version to avoid INSTALL_FAILED_INSUFFICIENT_STORAGE
-    // This is a no-op if the app isn't installed
-    let _ = run_command(
-        adb_str,
-        ["-s", device_id, "uninstall", artifact.bundle_id()],
-    )
-    .await;
-
-    // Install the APK on the device
+    // Install the APK on the device with -r flag to replace existing installation
+    // This handles both cases: fresh install and reinstall over existing app
     run_command(
         adb_str,
         [
             "-s",
             device_id,
             "install",
+            "-r",
             artifact.path().to_str().unwrap(),
         ],
     )
