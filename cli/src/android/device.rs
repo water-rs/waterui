@@ -38,6 +38,7 @@ impl AndroidDevice {
 
 impl Device for AndroidDevice {
     type Platform = AndroidPlatform;
+
     async fn launch(&self) -> eyre::Result<()> {
         let adb = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
@@ -53,209 +54,214 @@ impl Device for AndroidDevice {
         AndroidPlatform::from_abi(&self.abi)
     }
 
-    async fn run(
-        &self,
-        artifact: Artifact,
-        options: RunOptions,
-    ) -> Result<Running, crate::device::FailToRun> {
-        let adb = AndroidSdk::adb_path()
-            .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
-        let adb_str = adb.to_str().unwrap();
+    async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+        run_on_android(&self.identifier, artifact, options).await
+    }
+}
 
-        // Set environment variables as system properties
-        // Android doesn't support direct environment variable passing, so we use
-        // system properties with prefix "waterui.env." which the app reads at startup
-        for (key, value) in options.env_vars() {
-            let prop_key = format!("waterui.env.{key}");
-            // Note: setprop requires root or adb shell access, but adb shell grants this
-            let result = run_command(
-                adb_str,
-                ["-s", &self.identifier, "shell", "setprop", &prop_key, value],
-            )
-            .await;
-            if let Err(e) = result {
-                tracing::warn!("Failed to set system property {prop_key}: {e}");
-            }
-        }
+/// Shared implementation for running an app on any Android device.
+///
+/// This handles:
+/// - Setting environment variables as system properties
+/// - Uninstalling previous version (to avoid storage issues)
+/// - Installing the APK
+/// - Launching the app
+/// - Monitoring process state
+/// - Streaming logs
+async fn run_on_android(
+    device_id: &str,
+    artifact: Artifact,
+    options: RunOptions,
+) -> Result<Running, FailToRun> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
+    let adb_str = adb.to_str().unwrap();
 
-        // Install the APK on the device
-        run_command(
+    // Set environment variables as system properties
+    // Android doesn't support direct environment variable passing, so we use
+    // system properties with prefix "waterui.env." which the app reads at startup
+    for (key, value) in options.env_vars() {
+        let prop_key = format!("waterui.env.{key}");
+        let result = run_command(
             adb_str,
-            [
-                "-s",
-                &self.identifier,
-                "install",
-                artifact.path().to_str().unwrap(),
-            ],
+            ["-s", device_id, "shell", "setprop", &prop_key, value],
         )
-        .await
-        .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
+        .await;
+        if let Err(e) = result {
+            tracing::warn!("Failed to set system property {prop_key}: {e}");
+        }
+    }
 
-        run_command(
-            adb_str,
-            [
+    // Uninstall previous version to avoid INSTALL_FAILED_INSUFFICIENT_STORAGE
+    // This is a no-op if the app isn't installed
+    let _ = run_command(
+        adb_str,
+        ["-s", device_id, "uninstall", artifact.bundle_id()],
+    )
+    .await;
+
+    // Install the APK on the device
+    run_command(
+        adb_str,
+        [
+            "-s",
+            device_id,
+            "install",
+            artifact.path().to_str().unwrap(),
+        ],
+    )
+    .await
+    .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
+
+    // Launch the app
+    run_command(
+        adb_str,
+        [
+            "-s",
+            device_id,
+            "shell",
+            "am",
+            "start",
+            "-n",
+            &format!("{}/.MainActivity", artifact.bundle_id()),
+        ],
+    )
+    .await
+    .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+
+    // Wait for the process to start and get its PID
+    let pid = wait_for_app_pid(adb_str, device_id, artifact.bundle_id()).await?;
+
+    let adb_for_kill = adb.clone();
+    let identifier_for_kill = device_id.to_string();
+    let identifier_for_monitor = device_id.to_string();
+    let bundle_id_for_kill = artifact.bundle_id().to_string();
+    let bundle_id_for_monitor = artifact.bundle_id().to_string();
+    let log_level = options.log_level();
+
+    let (running, sender) = Running::new(move || {
+        // Use std::process::Command for synchronous execution in Drop context
+        let result = std::process::Command::new(&adb_for_kill)
+            .args([
                 "-s",
-                &self.identifier,
+                &identifier_for_kill,
                 "shell",
                 "am",
-                "start",
-                "-n",
-                &format!("{}/.MainActivity", artifact.bundle_id()),
-            ],
-        )
-        .await
-        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+                "force-stop",
+                &bundle_id_for_kill,
+            ])
+            .output();
 
-        let _identifier = self.identifier.clone();
-
-        let _bundle_id = artifact.bundle_id().to_string();
-
-        // Wait a moment for the process to start, then get its PID
-        // Retry a few times since the process might not be immediately visible
-        let mut pid = None;
-        for _ in 0..10 {
-            smol::Timer::after(std::time::Duration::from_millis(200)).await;
-            if let Ok(output) = run_command(
-                adb_str,
-                [
-                    "-s",
-                    &self.identifier,
-                    "shell",
-                    "pidof",
-                    artifact.bundle_id(),
-                ],
-            )
-            .await
-            {
-                if let Ok(p) = output.trim().parse::<u32>() {
-                    pid = Some(p);
-                    break;
-                }
+        match result {
+            Ok(output) => {
+                tracing::debug!(
+                    "Force-stop command executed: status={}, stdout={}, stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(e) => {
+                error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
             }
         }
+    });
 
-        let pid = match pid {
-            Some(p) => p,
-            None => {
-                // App likely crashed on startup - fetch logcat for crash info
-                let crash_log = run_command(
-                    adb_str,
-                    [
-                        "-s",
-                        &self.identifier,
-                        "logcat",
-                        "-d",    // dump and exit
-                        "-t",    // last N lines
-                        "50",    // get last 50 lines
-                        "--pid", // filter is not useful if process died
-                        "0",     // so we use a broader filter below
-                    ],
-                )
-                .await
-                .ok();
+    // Spawn a background task to monitor the process
+    let adb_for_monitor = adb.clone();
+    let sender_for_monitor = sender.clone();
+    smol::spawn(async move {
+        monitor_android_process(
+            adb_for_monitor,
+            &identifier_for_monitor,
+            &bundle_id_for_monitor,
+            pid,
+            sender_for_monitor,
+        )
+        .await;
+    })
+    .detach();
 
-                // Try to get crash-specific logs
-                let crash_info = run_command(
-                    adb_str,
-                    [
-                        "-s",
-                        &self.identifier,
-                        "logcat",
-                        "-d",
-                        "-t",
-                        "100",
-                        "-s",
-                        "AndroidRuntime:E",
-                        "DEBUG:*",
-                        "WaterUI:*",
-                    ],
-                )
-                .await
-                .unwrap_or_default();
-
-                let mut error_msg = format!(
-                    "App {} crashed on startup (process not found).\n\n",
-                    artifact.bundle_id()
-                );
-
-                if !crash_info.trim().is_empty() {
-                    error_msg.push_str("=== Crash Log ===\n");
-                    error_msg.push_str(&crash_info);
-                } else if let Some(log) = crash_log {
-                    error_msg.push_str("=== Recent Logcat ===\n");
-                    error_msg.push_str(&log);
-                }
-
-                return Err(FailToRun::Launch(eyre!("{}", error_msg)));
-            }
-        };
-
-        let adb_for_kill = adb.clone();
-        let identifier_for_kill = self.identifier.clone();
-        let identifier_for_monitor = self.identifier.clone();
-        let bundle_id_for_kill = artifact.bundle_id().to_string();
-        let bundle_id_for_monitor = artifact.bundle_id().to_string();
-        let log_level = options.log_level();
-
-        let (running, sender) = Running::new(move || {
-            // Use std::process::Command for synchronous execution in Drop context
-            // This avoids issues with block_on when the async executor is shutting down
-            // Use 'am force-stop' instead of 'kill' because shell doesn't have permission
-            // to kill app processes directly on Android
-
-            let result = std::process::Command::new(&adb_for_kill)
-                .args([
-                    "-s",
-                    &identifier_for_kill,
-                    "shell",
-                    "am",
-                    "force-stop",
-                    &bundle_id_for_kill,
-                ])
-                .output();
-
-            match result {
-                Ok(output) => {
-                    tracing::debug!(
-                        "Force-stop command executed: status={}, stdout={}, stderr={}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
-                }
-            }
-        });
-
-        // Spawn a background task to monitor the process
-        let adb_for_monitor = adb.clone();
-        let sender_for_monitor = sender.clone();
+    // Spawn a background task to stream logs if log_level is set
+    if let Some(level) = log_level {
+        let adb_for_logs = adb;
+        let identifier_for_logs = device_id.to_string();
         smol::spawn(async move {
-            monitor_android_process(
-                adb_for_monitor,
-                &identifier_for_monitor,
-                &bundle_id_for_monitor,
-                pid,
-                sender_for_monitor,
-            )
-            .await;
+            stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
         })
         .detach();
-
-        // Spawn a background task to stream logs if log_level is set
-        if let Some(level) = log_level {
-            let adb_for_logs = adb;
-            let identifier_for_logs = self.identifier.clone();
-            smol::spawn(async move {
-                stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
-            })
-            .detach();
-        }
-
-        Ok(running)
     }
+
+    Ok(running)
+}
+
+/// Wait for an app to start and return its PID.
+async fn wait_for_app_pid(
+    adb_str: &str,
+    device_id: &str,
+    bundle_id: &str,
+) -> Result<u32, FailToRun> {
+    for _ in 0..10 {
+        smol::Timer::after(std::time::Duration::from_millis(200)).await;
+        if let Ok(output) =
+            run_command(adb_str, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        {
+            if let Ok(pid) = output.trim().parse::<u32>() {
+                return Ok(pid);
+            }
+        }
+    }
+
+    // App likely crashed on startup - fetch logcat for crash info
+    let crash_info = run_command(
+        adb_str,
+        [
+            "-s",
+            device_id,
+            "logcat",
+            "-d",
+            "-t",
+            "100",
+            "-s",
+            "AndroidRuntime:E",
+            "DEBUG:*",
+            "WaterUI:*",
+        ],
+    )
+    .await
+    .unwrap_or_default();
+
+    let mut error_msg = format!("App {bundle_id} crashed on startup (process not found).\n\n");
+
+    if !crash_info.trim().is_empty() {
+        error_msg.push_str("=== Crash Log ===\n");
+        error_msg.push_str(&crash_info);
+    }
+
+    Err(FailToRun::Launch(eyre!("{}", error_msg)))
+}
+
+/// Find the running emulator's device identifier.
+async fn find_emulator_identifier() -> Result<String, FailToRun> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
+
+    let output = run_command(adb.to_str().unwrap(), ["devices"])
+        .await
+        .map_err(|e| FailToRun::Run(eyre!("Failed to list devices: {e}")))?;
+
+    output
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[0].starts_with("emulator-") && parts[1] == "device" {
+                Some(parts[0].to_string())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| FailToRun::Run(eyre!("Emulator not running")))
 }
 
 /// Monitor an Android process and send events when it crashes or exits.
@@ -558,192 +564,8 @@ impl Device for AndroidEmulator {
         AndroidPlatform::arm64()
     }
 
-    async fn run(
-        &self,
-        artifact: Artifact,
-        options: RunOptions,
-    ) -> Result<Running, crate::device::FailToRun> {
-        let adb = AndroidSdk::adb_path()
-            .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
-        let adb_str = adb.to_str().unwrap();
-
-        // Find the running emulator identifier
-        let output = run_command(adb_str, ["devices"])
-            .await
-            .map_err(|e| FailToRun::Run(eyre!("Failed to list devices: {e}")))?;
-
-        let identifier = output
-            .lines()
-            .skip(1)
-            .find_map(|line| {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 && parts[0].starts_with("emulator-") && parts[1] == "device" {
-                    Some(parts[0].to_string())
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| FailToRun::Run(eyre!("Emulator not running")))?;
-
-        // Set environment variables as system properties
-        for (key, value) in options.env_vars() {
-            let prop_key = format!("waterui.env.{key}");
-            let result = run_command(
-                adb_str,
-                ["-s", &identifier, "shell", "setprop", &prop_key, value],
-            )
-            .await;
-            if let Err(e) = result {
-                tracing::warn!("Failed to set system property {prop_key}: {e}");
-            }
-        }
-
-        // Install the APK on the emulator
-        run_command(
-            adb_str,
-            [
-                "-s",
-                &identifier,
-                "install",
-                artifact.path().to_str().unwrap(),
-            ],
-        )
-        .await
-        .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
-
-        run_command(
-            adb_str,
-            [
-                "-s",
-                &identifier,
-                "shell",
-                "am",
-                "start",
-                "-n",
-                &format!("{}/.MainActivity", artifact.bundle_id()),
-            ],
-        )
-        .await
-        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
-
-        // Wait a moment for the process to start, then get its PID
-        // Retry a few times since the process might not be immediately visible
-        let mut pid = None;
-        for _ in 0..10 {
-            smol::Timer::after(std::time::Duration::from_millis(200)).await;
-            if let Ok(output) = run_command(
-                adb_str,
-                ["-s", &identifier, "shell", "pidof", artifact.bundle_id()],
-            )
-            .await
-            {
-                if let Ok(p) = output.trim().parse::<u32>() {
-                    pid = Some(p);
-                    break;
-                }
-            }
-        }
-
-        let pid = match pid {
-            Some(p) => p,
-            None => {
-                // App likely crashed on startup - fetch logcat for crash info
-                let crash_info = run_command(
-                    adb_str,
-                    [
-                        "-s",
-                        &identifier,
-                        "logcat",
-                        "-d",
-                        "-t",
-                        "100",
-                        "-s",
-                        "AndroidRuntime:E",
-                        "DEBUG:*",
-                        "WaterUI:*",
-                    ],
-                )
-                .await
-                .unwrap_or_default();
-
-                let mut error_msg = format!(
-                    "App {} crashed on startup (process not found).\n\n",
-                    artifact.bundle_id()
-                );
-
-                if !crash_info.trim().is_empty() {
-                    error_msg.push_str("=== Crash Log ===\n");
-                    error_msg.push_str(&crash_info);
-                }
-
-                return Err(FailToRun::Launch(eyre!("{}", error_msg)));
-            }
-        };
-
-        let adb_for_kill = adb.clone();
-        let identifier_for_kill = identifier.clone();
-        let identifier_for_monitor = identifier.clone();
-        let bundle_id_for_kill = artifact.bundle_id().to_string();
-        let bundle_id_for_monitor = artifact.bundle_id().to_string();
-        let log_level = options.log_level();
-
-        let (running, sender) = Running::new(move || {
-            // Use std::process::Command for synchronous execution in Drop context
-            // This avoids issues with block_on when the async executor is shutting down
-            // Use 'am force-stop' instead of 'kill' because shell doesn't have permission
-            // to kill app processes directly on Android
-
-            let result = std::process::Command::new(&adb_for_kill)
-                .args([
-                    "-s",
-                    &identifier_for_kill,
-                    "shell",
-                    "am",
-                    "force-stop",
-                    &bundle_id_for_kill,
-                ])
-                .output();
-
-            match result {
-                Ok(output) => {
-                    tracing::debug!(
-                        "Force-stop command executed: status={}, stdout={}, stderr={}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
-                }
-            }
-        });
-
-        // Spawn a background task to monitor the process
-        let adb_for_monitor = adb.clone();
-        let sender_for_monitor = sender.clone();
-        smol::spawn(async move {
-            monitor_android_process(
-                adb_for_monitor,
-                &identifier_for_monitor,
-                &bundle_id_for_monitor,
-                pid,
-                sender_for_monitor,
-            )
-            .await;
-        })
-        .detach();
-
-        // Spawn a background task to stream logs if log_level is set
-        if let Some(level) = log_level {
-            let adb_for_logs = adb;
-            let identifier_for_logs = identifier;
-            smol::spawn(async move {
-                stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
-            })
-            .detach();
-        }
-
-        Ok(running)
+    async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+        let identifier = find_emulator_identifier().await?;
+        run_on_android(&identifier, artifact, options).await
     }
 }
