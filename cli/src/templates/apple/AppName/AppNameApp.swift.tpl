@@ -25,6 +25,13 @@ import WaterUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
 
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

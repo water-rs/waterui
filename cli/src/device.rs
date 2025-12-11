@@ -43,15 +43,19 @@ impl LogLevel {
         }
     }
 
-    /// Convert to iOS/macOS log level string.
+    /// Convert to iOS/macOS `log stream --level` argument.
+    ///
+    /// Apple's unified logging `log stream --level` accepts: default, info, debug
+    /// - `debug` includes all messages (debug, info, default, error, fault)
+    /// - `info` includes info and above
+    /// - `default` includes default (notice) and above
+    ///
+    /// Since we want to capture errors/warnings, we need at least `default` level.
     #[must_use]
     pub const fn to_apple_level(self) -> &'static str {
         match self {
-            Self::Error => "error",
-            Self::Warn => "fault",
-            Self::Info => "info",
-            Self::Debug => "debug",
-            Self::Verbose => "debug",
+            Self::Error | Self::Warn | Self::Info => "default",
+            Self::Debug | Self::Verbose => "debug",
         }
     }
 }
