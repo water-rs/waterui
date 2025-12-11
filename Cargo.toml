@@ -140,3 +140,11 @@ graphics-minimal = ["dep:waterui-graphics", "waterui-graphics/wgpu"]  # only Gpu
 
 [lints]
 workspace = true
+
+# Optimize release builds for size
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"    # Optimize for size
+strip = true       # Strip symbols
+panic = "abort"    # Smaller panic handling

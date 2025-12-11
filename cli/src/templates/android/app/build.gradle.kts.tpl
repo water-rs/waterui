@@ -121,6 +121,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Filter ABIs to include only the ones we're building for
+        // This is set by the CLI via WATERUI_ANDROID_ABIS environment variable
+        ndk {
+            abiFilters += targetAbis
+        }
     }
 
     buildTypes {
