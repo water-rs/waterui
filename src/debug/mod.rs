@@ -55,6 +55,14 @@ macro_rules! hot_reloadable_library {
         };
     };
 }
+/// Entry point macro for hot-reloadable views.
+#[macro_export]
+#[cfg(not(waterui_hot_reload_lib))]
+macro_rules! hot_reloadable_library {
+    ($f:expr) => {
+        // No-op in non-hot-reload builds
+    };
+}
 
 /// Initialize executor for hot-reloaded dylib.
 ///

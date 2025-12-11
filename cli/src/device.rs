@@ -205,14 +205,10 @@ impl Stream for Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        eprintln!("[DEBUG] Running::drop() called - executing {} cleanup handlers", self.on_drop.len());
         let _ = self.sender.try_send(DeviceEvent::Stopped);
-        for (i, f) in self.on_drop.drain(..).enumerate() {
-            eprintln!("[DEBUG] Executing cleanup handler {}", i);
+        for f in self.on_drop.drain(..) {
             f();
-            eprintln!("[DEBUG] Cleanup handler {} completed", i);
         }
-        eprintln!("[DEBUG] Running::drop() completed");
     }
 }
 
