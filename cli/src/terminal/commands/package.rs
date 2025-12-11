@@ -13,7 +13,7 @@ use waterui_cli::{
 };
 
 /// Target platform for packaging.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TargetPlatform {
     /// iOS (physical device).
     Ios,
@@ -23,6 +23,31 @@ pub enum TargetPlatform {
     Android,
     /// macOS.
     Macos,
+}
+
+/// Target architecture for Android builds.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AndroidArch {
+    /// ARM64 (arm64-v8a) - modern Android devices
+    Arm64,
+    /// x86_64 - emulators on Intel/AMD
+    X86_64,
+    /// ARMv7 (armeabi-v7a) - older 32-bit devices
+    Armv7,
+    /// x86 - older 32-bit emulators
+    X86,
+}
+
+impl AndroidArch {
+    /// Convert to Android ABI string.
+    const fn to_abi(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64-v8a",
+            Self::X86_64 => "x86_64",
+            Self::Armv7 => "armeabi-v7a",
+            Self::X86 => "x86",
+        }
+    }
 }
 
 /// Arguments for the package command.
@@ -43,6 +68,12 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Target architectures for Android (comma-separated).
+    /// Examples: --arch arm64, --arch arm64,x86_64
+    /// Required for Android platform.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    arch: Vec<AndroidArch>,
 }
 
 /// Run the package command.
@@ -52,6 +83,16 @@ pub async fn run(args: Args) -> Result<()> {
         .canonicalize()
         .unwrap_or_else(|_| args.path.clone());
     let project = Project::open(&project_path).await?;
+
+    // Validate --arch flag for Android
+    if args.platform == TargetPlatform::Android && args.arch.is_empty() {
+        bail!(
+            "Android platform requires --arch flag.\n\
+             Examples:\n  \
+             water package --platform android --arch arm64\n  \
+             water package --platform android --arch arm64,x86_64"
+        );
+    }
 
     let mode = if args.release { "release" } else { "debug" };
     let dist = if args.distribution {
@@ -77,13 +118,34 @@ pub async fn run(args: Args) -> Result<()> {
     success!("Toolchain ready");
 
     // Step 2: Build (package requires a built library)
-    let spinner = shell::spinner("Building Rust library...");
     let build_options = BuildOptions::new(args.release);
-    display_output(build_for_platform(&project, args.platform, build_options)).await?;
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
+
+    match args.platform {
+        TargetPlatform::Android => {
+            // Clean stale jniLibs before building
+            AndroidPlatform::clean_jni_libs(&project).await?;
+
+            // Build for each specified architecture
+            for arch in &args.arch {
+                let spinner =
+                    shell::spinner(&format!("Building Rust library ({})...", arch.to_abi()));
+                let platform = AndroidPlatform::from_abi(arch.to_abi());
+                display_output(project.build(platform, build_options.clone())).await?;
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                success!("Built for {}", arch.to_abi());
+            }
+        }
+        _ => {
+            let spinner = shell::spinner("Building Rust library...");
+            display_output(build_for_platform(&project, args.platform, build_options)).await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Built Rust library");
+        }
     }
-    success!("Built Rust library");
 
     // Step 3: Package
     let spinner = shell::spinner("Packaging application...");
