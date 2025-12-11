@@ -150,12 +150,28 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 3: Package
     let spinner = shell::spinner("Packaging application...");
     let package_options = PackageOptions::new(args.distribution, !args.release);
-    let artifact = display_output(package_for_platform(
-        &project,
-        args.platform,
-        package_options,
-    ))
-    .await?;
+
+    let artifact = match args.platform {
+        TargetPlatform::Android => {
+            // Use the specialized method that passes all target ABIs to Gradle
+            let abis: Vec<&str> = args.arch.iter().map(|a| a.to_abi()).collect();
+            display_output(AndroidPlatform::package_with_abis(
+                &project,
+                package_options,
+                &abis,
+            ))
+            .await?
+        }
+        _ => {
+            display_output(package_for_platform(
+                &project,
+                args.platform,
+                package_options,
+            ))
+            .await?
+        }
+    };
+
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
