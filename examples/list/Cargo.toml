@@ -1,0 +1,18 @@
+[package]
+name = "list-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "List example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "list"]
+categories = ["gui"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
