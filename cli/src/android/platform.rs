@@ -168,7 +168,31 @@ impl AndroidPlatform {
     }
 }
 
+/// All supported Android ABIs.
+pub const ALL_ABIS: &[&str] = &["arm64-v8a", "x86_64", "armeabi-v7a", "x86"];
+
 impl AndroidPlatform {
+    /// Returns all supported Android platforms (all architectures).
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        ALL_ABIS.iter().map(|abi| Self::from_abi(abi)).collect()
+    }
+
+    /// Clean all jniLibs directories to remove stale libraries from previous builds.
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be removed.
+    pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
+        let jni_libs_dir = project
+            .backend_path::<AndroidBackend>()
+            .join("app/src/main/jniLibs");
+
+        if jni_libs_dir.exists() {
+            fs::remove_dir_all(&jni_libs_dir).await?;
+        }
+        Ok(())
+    }
+
     /// List available Android Virtual Devices (emulators).
     ///
     /// # Errors
@@ -290,6 +314,29 @@ impl Platform for AndroidPlatform {
             // Set both variants as different crates check different env vars
             std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
             std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+
+            // Set CMake toolchain file for proper Android cross-compilation
+            // This is required for crates like aws-lc-sys that use CMake
+            let cmake_toolchain = ndk_path.join("build/cmake/android.toolchain.cmake");
+            if cmake_toolchain.exists() {
+                std::env::set_var("CMAKE_TOOLCHAIN_FILE", &cmake_toolchain);
+                // Also set target-specific variant
+                std::env::set_var(
+                    format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
+                    &cmake_toolchain,
+                );
+            }
+
+            // Set Android ABI for CMake
+            let android_abi = self.abi();
+            std::env::set_var("ANDROID_ABI", android_abi);
+            std::env::set_var("ANDROID_PLATFORM", "android-24");
+
+            // Use Ninja generator if available to avoid Xcode/Make conflicts on macOS
+            // The system Make on macOS can inject -arch and -isysroot flags that break Android builds
+            if which::which("ninja").is_ok() {
+                std::env::set_var("CMAKE_GENERATOR", "Ninja");
+            }
         }
 
         let lib_dir = build.build_lib(options.is_release()).await?;
