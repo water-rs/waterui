@@ -32,8 +32,12 @@ impl IntoFFI for GpuSurface {
     type FFI = WuiGpuSurface;
 
     fn into_ffi(self) -> Self::FFI {
-        // Box the renderer and convert to raw pointer
-        let renderer_ptr = Box::into_raw(self.renderer) as *mut c_void;
+        // Double-box the renderer to get a thin pointer for FFI.
+        // Box<dyn GpuRenderer> is a fat pointer (data + vtable), which can't be
+        // passed through C FFI. By boxing it again, we get Box<Box<dyn GpuRenderer>>
+        // where Box::into_raw returns a thin *mut Box<dyn GpuRenderer>.
+        let boxed_renderer: Box<Box<dyn GpuRenderer>> = Box::new(self.renderer);
+        let renderer_ptr = Box::into_raw(boxed_renderer) as *mut c_void;
         WuiGpuSurface {
             renderer: renderer_ptr,
         }
@@ -90,13 +94,17 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     height: u32,
 ) -> *mut WuiGpuSurfaceState {
     if surface.is_null() || layer.is_null() || width == 0 || height == 0 {
+        tracing::error!("[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
+            surface, layer, width, height);
         return core::ptr::null_mut();
     }
 
     let wui_surface = unsafe { &mut *surface };
 
-    // Take ownership of the renderer (it's a Box<dyn GpuRenderer> pointer)
+    // Take ownership of the renderer (it's a Box<Box<dyn GpuRenderer>> pointer)
+    // The double-boxing in into_ffi allows us to pass a thin pointer through FFI.
     if wui_surface.renderer.is_null() {
+        tracing::error!("[GpuSurface] init failed: renderer pointer is null");
         return core::ptr::null_mut();
     }
     let renderer: Box<dyn GpuRenderer> =
@@ -114,7 +122,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     // Create surface from native layer
     let wgpu_surface = match create_surface_from_layer(&instance, layer) {
         Some(s) => s,
-        None => return core::ptr::null_mut(),
+        None => {
+            tracing::error!("[GpuSurface] init failed: could not create wgpu surface from native layer");
+            return core::ptr::null_mut();
+        }
     };
 
     // Request adapter
@@ -125,10 +136,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             force_fallback_adapter: false,
         })) {
             Ok(a) => a,
-            Err(_) => return core::ptr::null_mut(),
+            Err(e) => {
+                tracing::error!("[GpuSurface] init failed: could not request GPU adapter: {e}");
+                return core::ptr::null_mut();
+            }
         };
 
-    // Request device and queue
+    // Request device and queue with custom error handler to avoid panic on validation errors
     let (device, queue) =
         match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("WaterUI GpuSurface Device"),
@@ -139,17 +153,23 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             trace: wgpu::Trace::default(),
         })) {
             Ok((d, q)) => (d, q),
-            Err(_) => return core::ptr::null_mut(),
+            Err(e) => {
+                tracing::error!("[GpuSurface] init failed: could not request GPU device: {e}");
+                return core::ptr::null_mut();
+            }
         };
 
+    // Set custom error handler to log validation errors via tracing
+    device.on_uncaptured_error(alloc::sync::Arc::new(|error: wgpu::Error| {
+        tracing::error!("[wgpu] Validation error: {error}");
+    }));
+
     // Get surface capabilities and configure
+    // Use Bgra8Unorm for compatibility (must match CAMetalLayer.pixelFormat)
     let surface_caps = wgpu_surface.get_capabilities(&adapter);
-    let surface_format = surface_caps
-        .formats
-        .iter()
-        .find(|f| f.is_srgb())
-        .copied()
-        .unwrap_or(surface_caps.formats[0]);
+    let _ = &surface_caps; // suppress unused warning
+    let surface_format = wgpu::TextureFormat::Bgra8Unorm;
+
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -236,19 +256,28 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     let output = match state.surface.get_current_texture() {
         Ok(o) => o,
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            tracing::warn!("[GpuSurface] surface lost/outdated, reconfiguring");
             // Reconfigure and try again
             state.surface.configure(&state.device, &state.config);
             match state.surface.get_current_texture() {
                 Ok(o) => o,
-                Err(_) => return false,
+                Err(e) => {
+                    tracing::error!("[GpuSurface] render failed: could not get texture after reconfigure: {e}");
+                    return false;
+                }
             }
         }
-        Err(_) => return false,
+        Err(e) => {
+            tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
+            return false;
+        }
     };
 
-    let view = output
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("GpuSurface Frame View"),
+        format: Some(state.config.format),
+        ..Default::default()
+    });
 
     // Create frame data
     let frame = GpuFrame {

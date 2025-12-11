@@ -4253,6 +4253,7 @@ name = "waterui-graphics"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "tracing",
  "vello",
  "waterui-color",
  "waterui-core",
