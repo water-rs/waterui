@@ -61,6 +61,38 @@ fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
         .join("bin/llvm-ar")
 }
 
+/// Create a wrapper CMake toolchain file that sets ANDROID_ABI before including
+/// the NDK's toolchain. This is required because cmake-rs doesn't pass ANDROID_ABI
+/// as a -D define, causing the NDK toolchain to default to armeabi-v7a.
+///
+/// Returns the path to the created wrapper toolchain file.
+fn create_android_toolchain_wrapper(ndk_path: &Path, abi: &str) -> eyre::Result<PathBuf> {
+    use std::io::Write;
+
+    // Create wrapper in a temp directory that persists for the build
+    let wrapper_dir = std::env::temp_dir().join("waterui-cmake-toolchains");
+    std::fs::create_dir_all(&wrapper_dir)?;
+
+    let wrapper_path = wrapper_dir.join(format!("android-{abi}.cmake"));
+    let ndk_toolchain = ndk_path.join("build/cmake/android.toolchain.cmake");
+
+    let content = format!(
+        r#"# Auto-generated wrapper toolchain for WaterUI Android builds
+# Sets ANDROID_ABI before including the NDK toolchain to fix cmake-rs cross-compilation
+set(ANDROID_ABI "{abi}")
+set(ANDROID_PLATFORM "android-24")
+include("{ndk_toolchain}")
+"#,
+        abi = abi,
+        ndk_toolchain = ndk_toolchain.display()
+    );
+
+    let mut file = std::fs::File::create(&wrapper_path)?;
+    file.write_all(content.as_bytes())?;
+
+    Ok(wrapper_path)
+}
+
 /// Get the NDK clang++ (C++ compiler) path for the given ABI.
 fn ndk_cxx_path(ndk_path: &Path, abi: &str) -> PathBuf {
     let target = match abi {
@@ -345,24 +377,25 @@ impl Platform for AndroidPlatform {
             std::env::set_var(format!("AR_{target_underscore}"), &ar);
 
             // For CMake-based builds (aws-lc-sys, etc.)
-            // Set both variants as different crates check different env vars
+            // Set all variants as different crates check different env vars
+            std::env::set_var("ANDROID_NDK", &ndk_path);
             std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
             std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
 
-            // Set CMake toolchain file for proper Android cross-compilation
-            // This is required for crates like aws-lc-sys that use CMake
-            let cmake_toolchain = ndk_path.join("build/cmake/android.toolchain.cmake");
-            if cmake_toolchain.exists() {
-                std::env::set_var("CMAKE_TOOLCHAIN_FILE", &cmake_toolchain);
-                // Also set target-specific variant
-                std::env::set_var(
-                    format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
-                    &cmake_toolchain,
-                );
-            }
-
-            // Set Android ABI for CMake
+            // Create a wrapper CMake toolchain file that sets ANDROID_ABI before
+            // including the NDK toolchain. This is required because cmake-rs doesn't
+            // pass ANDROID_ABI as a -D define, causing the NDK toolchain to default
+            // to armeabi-v7a (32-bit ARM) instead of the correct architecture.
             let android_abi = self.abi();
+            let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, android_abi)?;
+
+            std::env::set_var("CMAKE_TOOLCHAIN_FILE", &wrapper_toolchain);
+            std::env::set_var(
+                format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
+                &wrapper_toolchain,
+            );
+
+            // Also set these for other tools that might check them
             std::env::set_var("ANDROID_ABI", android_abi);
             std::env::set_var("ANDROID_PLATFORM", "android-24");
 
