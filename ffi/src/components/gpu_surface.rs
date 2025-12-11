@@ -165,10 +165,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     }));
 
     // Get surface capabilities and configure
-    // Use Bgra8Unorm for compatibility (must match CAMetalLayer.pixelFormat)
+    // Use Rgba16Float for HDR support (must match CAMetalLayer.pixelFormat)
     let surface_caps = wgpu_surface.get_capabilities(&adapter);
     let _ = &surface_caps; // suppress unused warning
-    let surface_format = wgpu::TextureFormat::Bgra8Unorm;
+    let surface_format = wgpu::TextureFormat::Rgba16Float;
 
 
     let config = wgpu::SurfaceConfiguration {
