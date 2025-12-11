@@ -1,8 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, process::ExitStatus};
+use std::{collections::HashMap, path::PathBuf, process::ExitStatus, time::Duration};
 
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
 use smol::{
+    Timer,
     channel::Sender,
     future::block_on,
     io::{AsyncBufReadExt, BufReader},
@@ -10,6 +11,7 @@ use smol::{
     spawn,
     stream::StreamExt,
 };
+use time::OffsetDateTime;
 use tracing::info;
 
 use crate::{
@@ -18,13 +20,13 @@ use crate::{
     utils::{command, run_command},
 };
 
-/// Start streaming logs from an Apple device process.
+/// Start streaming logs from a WaterUI app.
 ///
-/// This works for both macOS apps and iOS simulators by using the `log stream` command.
-/// For simulators, use `--predicate` with the subsystem; for macOS, use `--process` with PID.
+/// This uses `log stream` with a predicate to filter by the WaterUI subsystem ("dev.waterui").
+/// This captures all tracing output from the Rust code via tracing_oslog.
 ///
 /// If `log_level` is `None`, no log streaming is started.
-fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>, log_level: Option<LogLevel>) {
+fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
     let Some(level) = log_level else {
         return;
     };
@@ -32,7 +34,8 @@ fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>, log_level: O
     let mut log_cmd = Command::new("log");
     log_cmd
         .arg("stream")
-        .args(&args)
+        .arg("--predicate")
+        .arg("subsystem == \"dev.waterui\"")
         .arg("--level")
         .arg(level.to_apple_level())
         .arg("--style")
@@ -41,35 +44,47 @@ fn start_log_stream(sender: Sender<DeviceEvent>, args: Vec<String>, log_level: O
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    if let Ok(mut log_child) = log_cmd.spawn() {
-        if let Some(stdout) = log_child.stdout.take() {
-            spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Some(Ok(line)) = lines.next().await {
-                    // Parse log level from the line (compact format: timestamp level ...)
-                    let level = if line.contains(" Error ") || line.contains(" Fault ") {
-                        tracing::Level::ERROR
-                    } else if line.contains(" Warning ") {
-                        tracing::Level::WARN
-                    } else if line.contains(" Debug ") {
-                        tracing::Level::DEBUG
-                    } else {
-                        tracing::Level::INFO
-                    };
+    match log_cmd.spawn() {
+        Ok(mut log_child) => {
+            if let Some(stdout) = log_child.stdout.take() {
+                // Move log_child into the async task to keep it alive
+                spawn(async move {
+                    let mut lines = BufReader::new(stdout).lines();
+                    while let Some(Ok(line)) = lines.next().await {
+                        // Skip header lines from `log stream`
+                        if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+                            continue;
+                        }
 
-                    if sender
-                        .try_send(DeviceEvent::Log {
-                            level,
-                            message: line,
-                        })
-                        .is_err()
-                    {
-                        break;
+                        // Parse log level from compact format: "timestamp Ty Process..."
+                        // Ty is: E (error/fault), W (warning), I (info), D (debug)
+                        let level = if line.contains(" E ") {
+                            tracing::Level::ERROR
+                        } else if line.contains(" W ") {
+                            tracing::Level::WARN
+                        } else if line.contains(" D ") {
+                            tracing::Level::DEBUG
+                        } else {
+                            tracing::Level::INFO
+                        };
+
+                        if sender
+                            .try_send(DeviceEvent::Log {
+                                level,
+                                message: line,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                }
-            })
-            .detach();
+                    // Keep log_child alive until stream ends, then let it drop to kill the process
+                    drop(log_child);
+                })
+                .detach();
+            }
         }
+        Err(_) => {}
     }
 }
 
@@ -118,6 +133,108 @@ fn handle_exit_status(exit_status: ExitStatus, sender: &Sender<DeviceEvent>) {
             exit_status.code()
         )));
     }
+}
+
+/// Find a crash report for the given app name created since the specified time.
+///
+/// Searches `~/Library/Logs/DiagnosticReports/` for crash reports created after `since`.
+async fn find_crash_report_since(app_name: &str, since: OffsetDateTime) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
+
+    if !crash_dir.exists() {
+        return None;
+    }
+
+    // List crash reports for this app
+    let pattern = format!("{app_name}*.ips");
+    let output = Command::new("find")
+        .args([
+            crash_dir.to_str()?,
+            "-name",
+            &pattern,
+            "-type",
+            "f",
+            "-mmin",
+            "-2", // Modified within last 2 minutes (generous window)
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    let paths = String::from_utf8(output.stdout).ok()?;
+    let paths: Vec<&str> = paths.lines().collect();
+
+    // Find crash reports created after `since`
+    let mut most_recent: Option<(PathBuf, OffsetDateTime)> = None;
+
+    for path_str in paths {
+        let path = PathBuf::from(path_str);
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if let Ok(modified) = metadata.modified() {
+                let modified_time: OffsetDateTime = modified.into();
+                // Only consider reports created after we started the app
+                if modified_time > since {
+                    if most_recent
+                        .as_ref()
+                        .map_or(true, |(_, t)| modified_time > *t)
+                    {
+                        most_recent = Some((path, modified_time));
+                    }
+                }
+            }
+        }
+    }
+
+    let (crash_path, _) = most_recent?;
+
+    // Read and extract crash info
+    extract_crash_summary(&crash_path).await
+}
+
+/// Extract a summary from a crash report file (.ips format)
+async fn extract_crash_summary(path: &PathBuf) -> Option<String> {
+    let content = smol::fs::read_to_string(path).await.ok()?;
+
+    // .ips files have two JSON objects:
+    // 1. First line: metadata (app_name, timestamp, etc.)
+    // 2. Rest: detailed crash report with exception and termination info
+    let mut lines = content.lines();
+    let _header = lines.next()?;
+
+    // Join the rest to form the detailed crash JSON (need newlines for valid JSON)
+    let crash_json: String = lines.collect::<Vec<_>>().join("\n");
+
+    // Parse the crash report JSON
+    let crash: serde_json::Value = serde_json::from_str(&crash_json).ok()?;
+
+    let mut parts = Vec::new();
+
+    // Extract exception type and signal
+    if let Some(exception) = crash.get("exception") {
+        if let Some(exc_type) = exception.get("type").and_then(|v| v.as_str()) {
+            parts.push(format!("Exception: {exc_type}"));
+        }
+        if let Some(signal) = exception.get("signal").and_then(|v| v.as_str()) {
+            parts.push(format!("Signal: {signal}"));
+        }
+    }
+
+    // Extract termination reason
+    if let Some(termination) = crash.get("termination") {
+        if let Some(indicator) = termination.get("indicator").and_then(|v| v.as_str()) {
+            parts.push(format!("Reason: {indicator}"));
+        }
+    }
+
+    // Build summary
+    let summary = if parts.is_empty() {
+        "App crashed".to_string()
+    } else {
+        parts.join(", ")
+    };
+
+    Some(format!("{summary}\n\nCrash report: {}", path.display()))
 }
 
 /// Represents a physical Apple device
@@ -178,6 +295,7 @@ impl Device for MacOS {
 
         // Build the `open` command
         let mut cmd = Command::new("open");
+        command(&mut cmd);
         cmd.arg("-W") // Wait for app to exit
             .arg("-n"); // Open a new instance
 
@@ -187,7 +305,6 @@ impl Device for MacOS {
         }
 
         cmd.arg(artifact_path);
-        cmd.kill_on_drop(true);
 
         // Spawn the open command
         let mut child = cmd
@@ -210,31 +327,88 @@ impl Device for MacOS {
 
         // Create Running instance - kill the app process on drop
         let pid_for_termination = app_pid;
+        let app_name_for_termination = app_name.clone();
         let (running, sender) = Running::new(move || {
             // pkill the app by name to ensure it's terminated
             if pid_for_termination.is_some() {
                 let _ = std::process::Command::new("pkill")
                     .arg("-x")
-                    .arg(&app_name)
+                    .arg(&app_name_for_termination)
                     .status();
             }
         });
 
-        // Start log streaming if we got a PID and log level is set
-        if let Some(pid) = app_pid {
-            start_log_stream(
-                sender.clone(),
-                vec!["--process".to_string(), pid.to_string()],
-                options.log_level(),
-            );
-        }
+        // Start log streaming (uses WaterUI subsystem predicate)
+        start_log_stream(sender.clone(), options.log_level());
 
-        // Spawn a task to wait for the app to exit and detect crashes
+        // Spawn a task to wait for the app to exit and detect crashes.
+        // We monitor two things in parallel:
+        // 1. The `open -W` command completing (normal exit)
+        // 2. A crash report appearing (app crashed but may be stuck)
+        //
+        // `open -W` exits with code 0 regardless of how the app terminated,
+        // so we check for crash reports to detect crashes.
+        let app_name_for_crash = app_name.clone();
+        let app_name_for_kill = app_name;
         spawn(async move {
-            match child.status().await {
-                Ok(exit_status) => handle_exit_status(exit_status, &sender),
-                Err(e) => {
-                    let _ = sender.try_send(DeviceEvent::Crashed(format!("Failed to wait: {e}")));
+            // Record the start time to filter crash reports
+            let start_time = OffsetDateTime::now_utc();
+
+            // Race between: open command exiting vs crash report appearing
+            let crash_check_sender = sender.clone();
+            let crash_app_name = app_name_for_crash.clone();
+
+            // Task 1: Wait for `open` command to exit
+            let open_task = async {
+                let _ = child.status().await;
+                // Give crash reporter a moment to write
+                Timer::after(Duration::from_millis(500)).await;
+            };
+
+            // Task 2: Poll for crash reports (check every 500ms)
+            let crash_poll_task = async {
+                loop {
+                    Timer::after(Duration::from_millis(500)).await;
+                    if let Some(crash_msg) =
+                        find_crash_report_since(&crash_app_name, start_time).await
+                    {
+                        return Some(crash_msg);
+                    }
+                }
+            };
+
+            // Race the two tasks
+            let open_task = std::pin::pin!(open_task);
+            let crash_poll_task = std::pin::pin!(crash_poll_task);
+            let result = futures::future::select(open_task, crash_poll_task).await;
+
+            match result {
+                // open exited first - check for crash report
+                futures::future::Either::Left(((), crash_future)) => {
+                    // Check one more time for crash report
+                    if let Some(msg) =
+                        find_crash_report_since(&app_name_for_crash, start_time).await
+                    {
+                        let _ = sender.try_send(DeviceEvent::Crashed(msg));
+                    } else {
+                        let _ = sender.try_send(DeviceEvent::Exited);
+                    }
+                    drop(crash_future);
+                }
+                // Crash report appeared first - kill the app and report
+                futures::future::Either::Right((Some(crash_msg), _open_future)) => {
+                    // Kill the stuck app
+                    let _ = std::process::Command::new("pkill")
+                        .arg("-9") // Force kill
+                        .arg("-x")
+                        .arg(&app_name_for_kill)
+                        .status();
+
+                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(crash_msg));
+                }
+                futures::future::Either::Right((None, _)) => {
+                    // Should never happen (crash_poll_task loops forever)
+                    let _ = sender.try_send(DeviceEvent::Exited);
                 }
             }
         })
@@ -449,14 +623,8 @@ impl Device for AppleSimulator {
             }
         });
 
-        // Start log streaming if we got a PID and log level is set
-        if let Some(pid) = app_pid {
-            start_log_stream(
-                sender.clone(),
-                vec!["--process".to_string(), pid.to_string()],
-                options.log_level(),
-            );
-        }
+        // Start log streaming (uses WaterUI subsystem predicate)
+        start_log_stream(sender.clone(), options.log_level());
 
         // Spawn a task to wait for the app to exit
         spawn(async move {

@@ -21,6 +21,7 @@ waterui-color.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
 vello = { workspace = true, optional = true }
+tracing.workspace = true
 
 [lints]
 workspace = true
