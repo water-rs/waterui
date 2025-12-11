@@ -129,9 +129,13 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 3: Build, package, launch device, and run
     // Launch happens in background while building for efficiency
     let log_level = args.logs.map(LogLevel::from);
-    let running = display_output(async {
-        run_on_device(&project, device, needs_launch, args.hot_reload, log_level).await
-    })
+    let running = display_output(build_and_run(
+        &project,
+        device,
+        needs_launch,
+        args.hot_reload,
+        log_level,
+    ))
     .await?;
 
     line!();
@@ -176,8 +180,13 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Build, launch device in background, and run.
-async fn run_on_device(
+/// Build, package, and run on device.
+///
+/// Handles:
+/// - Launching device in background (if needed) while building
+/// - Building and packaging via the device's platform
+/// - Running with hot reload support
+async fn build_and_run(
     project: &Project,
     device: SelectedDevice,
     needs_launch: bool,
@@ -186,90 +195,57 @@ async fn run_on_device(
 ) -> Result<Running> {
     match device {
         SelectedDevice::AppleSimulator(sim) => {
-            let platform = sim.platform();
-
-            // Always spawn task - it will launch if needed, otherwise just return device
-            let launch_task = smol::spawn(async move {
-                if needs_launch {
-                    sim.launch().await?;
-                }
-                Ok::<_, color_eyre::eyre::Report>(sim)
-            });
-
-            // Build and package while device launches in background
-            shell::status("▶", "Building...");
-            platform.build(project, BuildOptions::new(false)).await?;
-            shell::status("▶", "Packaging...");
-            let artifact = platform
-                .package(project, PackageOptions::new(false, true))
-                .await?;
-
-            // Wait for device to be ready
-            if needs_launch {
-                shell::status("▶", "Waiting for simulator...");
-            }
-            let sim = launch_task.await?;
-
-            shell::status("▶", "Running...");
-            run_with_options(sim, artifact, hot_reload, log_level).await
+            build_and_run_device(project, sim, needs_launch, hot_reload, log_level).await
         }
         SelectedDevice::AppleMacos(macos) => {
-            let platform = macos.platform();
-
-            // macOS doesn't need launching
-            shell::status("▶", "Building...");
-            platform.build(project, BuildOptions::new(false)).await?;
-            shell::status("▶", "Packaging...");
-            let artifact = platform
-                .package(project, PackageOptions::new(false, true))
-                .await?;
-
-            shell::status("▶", "Running...");
-            run_with_options(macos, artifact, hot_reload, log_level).await
+            build_and_run_device(project, macos, needs_launch, hot_reload, log_level).await
         }
         SelectedDevice::AndroidDevice(dev) => {
-            let platform = dev.platform();
-
-            // Already connected device doesn't need launching
-            shell::status("▶", "Building...");
-            platform.build(project, BuildOptions::new(false)).await?;
-            shell::status("▶", "Packaging...");
-            let artifact = platform
-                .package(project, PackageOptions::new(false, true))
-                .await?;
-
-            shell::status("▶", "Running...");
-            run_with_options(dev, artifact, hot_reload, log_level).await
+            build_and_run_device(project, dev, needs_launch, hot_reload, log_level).await
         }
         SelectedDevice::AndroidEmulator(emu) => {
-            let platform = emu.platform();
-
-            // Always spawn task - it will launch if needed, otherwise just return device
-            let launch_task = smol::spawn(async move {
-                if needs_launch {
-                    emu.launch().await?;
-                }
-                Ok::<_, color_eyre::eyre::Report>(emu)
-            });
-
-            // Build and package while emulator launches in background
-            shell::status("▶", "Building...");
-            platform.build(project, BuildOptions::new(false)).await?;
-            shell::status("▶", "Packaging...");
-            let artifact = platform
-                .package(project, PackageOptions::new(false, true))
-                .await?;
-
-            // Wait for emulator to be ready
-            if needs_launch {
-                shell::status("▶", "Waiting for emulator...");
-            }
-            let emu = launch_task.await?;
-
-            shell::status("▶", "Running...");
-            run_with_options(emu, artifact, hot_reload, log_level).await
+            build_and_run_device(project, emu, needs_launch, hot_reload, log_level).await
         }
     }
+}
+
+/// Generic implementation for building and running on any device type.
+async fn build_and_run_device<D: Device + 'static>(
+    project: &Project,
+    device: D,
+    needs_launch: bool,
+    hot_reload: bool,
+    log_level: Option<LogLevel>,
+) -> Result<Running>
+where
+    D::Platform: Platform,
+{
+    let platform = device.platform();
+
+    // Launch device in background while building (if needed)
+    let launch_task = smol::spawn(async move {
+        if needs_launch {
+            device.launch().await?;
+        }
+        Ok::<_, color_eyre::eyre::Report>(device)
+    });
+
+    // Build and package while device launches in background
+    shell::status("▶", "Building...");
+    platform.build(project, BuildOptions::new(false)).await?;
+    shell::status("▶", "Packaging...");
+    let artifact = platform
+        .package(project, PackageOptions::new(false, true))
+        .await?;
+
+    // Wait for device to be ready
+    if needs_launch {
+        shell::status("▶", "Waiting for device...");
+    }
+    let device = launch_task.await?;
+
+    shell::status("▶", "Running...");
+    run_with_options(device, artifact, hot_reload, log_level).await
 }
 
 /// Run artifact on device with hot reload support.
