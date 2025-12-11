@@ -17,7 +17,7 @@ pub fn main() -> impl View {
         text("Flame Animation").size(24),
         text("GPU-rendered procedural fire").size(14),
         // Just one line to load and render a shader!
-        shader!("flame.wgsl"),
+        shader!("flame.wgsl").size(400.0, 500.0),
         text("Rendered at 120fps").size(12),
     ))
     .padding()
