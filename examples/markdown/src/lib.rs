@@ -5,10 +5,17 @@ pub fn init() -> Environment {
     Environment::new()
 }
 
-const MARKDOWN: &str = r#"# WaterUI Markdown Example    
+const MARKDOWN: &str = r#"# WaterUI Markdown Example
 This is an example of using **WaterUI** to render Markdown content in a cross-platform application.
 
 Supports **bold**, *italic*, and `code` text styles. blocks
+
+```rust
+
+fn main() {
+    println!("Hello, Markdown!");
+}
+```
 
 "#;
 
