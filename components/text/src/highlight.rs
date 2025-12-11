@@ -5,8 +5,11 @@ use core::{
 };
 
 use alloc::{string::ToString, vec::Vec};
-use inkjet::{theme::Theme, tree_sitter_highlight::HighlightEvent};
 use nami::impl_constant;
+use syntect::{
+    highlighting::{Theme, ThemeSet},
+    parsing::{SyntaxReference, SyntaxSet},
+};
 use waterui_color::Srgb;
 use waterui_core::Str;
 
@@ -39,9 +42,9 @@ pub async fn highlight_text(
 }
 
 macro_rules! languages {
-    ($($ident:ident),*) => {
+    ($($ident:ident => $ext:literal),* $(,)?) => {
         /// Supported programming languages for syntax highlighting.
-        #[derive(Debug, Clone,PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[non_exhaustive]
         pub enum Language {
             $(
@@ -50,96 +53,23 @@ macro_rules! languages {
             )*
         }
 
-        impl From<Language> for inkjet::Language {
-            fn from(lang: Language) -> Self {
-                match lang {
-                    Language::Plaintext => inkjet::Language::Plaintext,
-                    Language::Ada => inkjet::Language::Ada,
-                    Language::Asm => inkjet::Language::Asm,
-                    Language::Awk => inkjet::Language::Awk,
-                    Language::Bash => inkjet::Language::Bash,
-                    Language::Bibtex => inkjet::Language::Bibtex,
-                    Language::Bicep => inkjet::Language::Bicep,
-                    Language::Blueprint => inkjet::Language::Blueprint,
-                    Language::C => inkjet::Language::C,
-                    Language::Capnp => inkjet::Language::Capnp,
-                    Language::Clojure => inkjet::Language::Clojure,
-                    Language::CSharp => inkjet::Language::CSharp,
-                    Language::Cpp => inkjet::Language::Cpp,
-                    Language::Css => inkjet::Language::Css,
-                    Language::Cue => inkjet::Language::Cue,
-                    Language::D => inkjet::Language::D,
-                    Language::Dart => inkjet::Language::Dart,
-                    Language::Diff => inkjet::Language::Diff,
-                    Language::Dockerfile => inkjet::Language::Dockerfile,
-                    Language::Eex => inkjet::Language::Eex,
-                    Language::Elisp => inkjet::Language::Elisp,
-                    Language::Elixir => inkjet::Language::Elixir,
-                    Language::Elm => inkjet::Language::Elm,
-                    Language::Erlang => inkjet::Language::Erlang,
-                    Language::Forth => inkjet::Language::Forth,
-                    Language::Fortran => inkjet::Language::Fortran,
-                    Language::Fish => inkjet::Language::Fish,
-                    Language::Gdscript => inkjet::Language::Gdscript,
-                    Language::Gleam => inkjet::Language::Gleam,
-                    Language::Glsl => inkjet::Language::Glsl,
-                    Language::Go => inkjet::Language::Go,
-                    Language::Haskell => inkjet::Language::Haskell,
-                    Language::Hcl => inkjet::Language::Hcl,
-                    Language::Heex => inkjet::Language::Heex,
-                    Language::Html => inkjet::Language::Html,
-                    Language::Ini => inkjet::Language::Ini,
-                    Language::Java => inkjet::Language::Java,
-                    Language::Javascript => inkjet::Language::Javascript,
-                    Language::Json => inkjet::Language::Json,
-                    Language::Jsx => inkjet::Language::Jsx,
-                    Language::Julia => inkjet::Language::Julia,
-                    Language::Kotlin => inkjet::Language::Kotlin,
-                    Language::Latex => inkjet::Language::Latex,
-                    Language::Llvm => inkjet::Language::Llvm,
-                    Language::Lua => inkjet::Language::Lua,
-                    Language::Make => inkjet::Language::Make,
-                    Language::Matlab => inkjet::Language::Matlab,
-                    Language::Meson => inkjet::Language::Meson,
-                    Language::Nix => inkjet::Language::Nix,
-                    Language::ObjectiveC => inkjet::Language::ObjectiveC,
-                    Language::Ocaml => inkjet::Language::Ocaml,
-                    Language::OcamlInterface => inkjet::Language::OcamlInterface,
-                    Language::OpenScad => inkjet::Language::OpenScad,
-                    Language::Pascal => inkjet::Language::Pascal,
-                    Language::Php => inkjet::Language::Php,
-                    Language::ProtoBuf => inkjet::Language::ProtoBuf,
-                    Language::Python => inkjet::Language::Python,
-                    Language::R => inkjet::Language::R,
-                    Language::Racket => inkjet::Language::Racket,
-                    Language::Regex => inkjet::Language::Regex,
-                    Language::Ruby => inkjet::Language::Ruby,
-                    Language::Rust => inkjet::Language::Rust,
-                    Language::Scala => inkjet::Language::Scala,
-                    Language::Scheme => inkjet::Language::Scheme,
-                    Language::Scss => inkjet::Language::Scss,
-                    Language::Sql => inkjet::Language::Sql,
-                    Language::Svelte => inkjet::Language::Svelte,
-                    Language::Swift => inkjet::Language::Swift,
-                    Language::Toml => inkjet::Language::Toml,
-                    Language::Typescript => inkjet::Language::Typescript,
-                    Language::Tsx => inkjet::Language::Tsx,
-                    Language::Vimscript => inkjet::Language::Vimscript,
-                    Language::Wast => inkjet::Language::Wast,
-                    Language::Wat => inkjet::Language::Wat,
-                    Language::X86asm => inkjet::Language::X86asm,
-                    Language::Wgsl => inkjet::Language::Wgsl,
-                    Language::Yaml => inkjet::Language::Yaml,
-                    Language::Zig => inkjet::Language::Zig,
+        impl Language {
+            /// Returns the file extension associated with this language.
+            #[must_use]
+            pub const fn extension(&self) -> &'static str {
+                match self {
+                    $(Self::$ident => $ext,)*
                 }
             }
-        }
 
-        impl Language{
-            const fn from_inkjet(lang:inkjet::Language) -> Self {
-                match lang {
-                    $(inkjet::Language::$ident => Language::$ident,)*
-                    _ => Language::Plaintext,
+            /// Returns the token name for this language (lowercase).
+            #[must_use]
+            pub fn token(&self) -> &'static str {
+                match self {
+                    $(Self::$ident => const {
+                        const fn to_lower(s: &str) -> &str { s }
+                        to_lower(stringify!($ident))
+                    },)*
                 }
             }
         }
@@ -147,9 +77,29 @@ macro_rules! languages {
         impl core::fmt::Display for Language {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 match self {
-                    $(
-                        Self::$ident => write!(f, stringify!($ident)),
-                    )*
+                    $(Self::$ident => write!(f, stringify!($ident)),)*
+                }
+            }
+        }
+
+        impl FromStr for Language {
+            type Err = ParseLanguageError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let s_lower = s.to_lowercase();
+                $(
+                    if s_lower == stringify!($ident).to_lowercase() || s_lower == $ext {
+                        return Ok(Self::$ident);
+                    }
+                )*
+                // Additional aliases
+                match s_lower.as_str() {
+                    "c++" | "cxx" => Ok(Self::Cpp),
+                    "c#" => Ok(Self::CSharp),
+                    "obj-c" | "objc" => Ok(Self::ObjectiveC),
+                    "shell" => Ok(Self::Bash),
+                    "yml" => Ok(Self::Yaml),
+                    "text" => Ok(Self::Plaintext),
+                    _ => Err(ParseLanguageError),
                 }
             }
         }
@@ -157,84 +107,45 @@ macro_rules! languages {
 }
 
 languages!(
-    Plaintext,
-    Ada,
-    Asm,
-    Awk,
-    Bash,
-    Bibtex,
-    Bicep,
-    Blueprint,
-    C,
-    Capnp,
-    Clojure,
-    CSharp,
-    Cpp,
-    Css,
-    Cue,
-    D,
-    Dart,
-    Diff,
-    Dockerfile,
-    Eex,
-    Elisp,
-    Elixir,
-    Elm,
-    Erlang,
-    Forth,
-    Fortran,
-    Fish,
-    Gdscript,
-    Gleam,
-    Glsl,
-    Go,
-    Haskell,
-    Hcl,
-    Heex,
-    Html,
-    Ini,
-    Java,
-    Javascript,
-    Json,
-    Jsx,
-    Julia,
-    Kotlin,
-    Latex,
-    Llvm,
-    Lua,
-    Make,
-    Matlab,
-    Meson,
-    Nix,
-    ObjectiveC,
-    Ocaml,
-    OcamlInterface,
-    OpenScad,
-    Pascal,
-    Php,
-    ProtoBuf,
-    Python,
-    R,
-    Racket,
-    Regex,
-    Ruby,
-    Rust,
-    Scala,
-    Scheme,
-    Scss,
-    Sql,
-    Svelte,
-    Swift,
-    Toml,
-    Typescript,
-    Tsx,
-    Vimscript,
-    Wast,
-    Wat,
-    X86asm,
-    Wgsl,
-    Yaml,
-    Zig
+    Plaintext => "txt",
+    Bash => "sh",
+    C => "c",
+    Cpp => "cpp",
+    CSharp => "cs",
+    Css => "css",
+    Clojure => "clj",
+    D => "d",
+    Diff => "diff",
+    Erlang => "erl",
+    Go => "go",
+    Haskell => "hs",
+    Html => "html",
+    Java => "java",
+    Javascript => "js",
+    Json => "json",
+    Kotlin => "kt",
+    Latex => "tex",
+    Lisp => "lisp",
+    Lua => "lua",
+    Makefile => "makefile",
+    Markdown => "md",
+    ObjectiveC => "m",
+    OCaml => "ml",
+    Pascal => "pas",
+    Perl => "pl",
+    Php => "php",
+    Python => "py",
+    R => "r",
+    Ruby => "rb",
+    Rust => "rs",
+    Scala => "scala",
+    Sql => "sql",
+    Swift => "swift",
+    Toml => "toml",
+    Typescript => "ts",
+    Xml => "xml",
+    Yaml => "yaml",
+    Zig => "zig",
 );
 
 impl_constant!(Language);
@@ -242,24 +153,20 @@ impl_constant!(Language);
 /// Error returned when a language token cannot be parsed.
 #[derive(Debug)]
 pub struct ParseLanguageError;
+
 impl Display for ParseLanguageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Failed to parse language")
     }
 }
+
 impl Error for ParseLanguageError {}
 
-impl FromStr for Language {
-    type Err = ParseLanguageError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        inkjet::Language::from_token(s)
-            .ok_or(ParseLanguageError)
-            .map(Self::from_inkjet)
-    }
+/// Default syntax highlighter implementation using the syntect library.
+pub struct DefaultHighlighter {
+    syntax_set: SyntaxSet,
+    theme: Theme,
 }
-
-/// Default syntax highlighter implementation using the inkjet library.
-pub struct DefaultHighlighter(inkjet::Highlighter);
 
 impl Debug for DefaultHighlighter {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -274,54 +181,63 @@ impl Default for DefaultHighlighter {
 }
 
 impl DefaultHighlighter {
-    /// Creates a new highlighter backed by the default inkjet highlighter.
+    /// Creates a new highlighter backed by syntect.
     #[must_use]
     pub fn new() -> Self {
-        Self(inkjet::Highlighter::new())
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme_set = ThemeSet::load_defaults();
+        let theme = theme_set.themes["base16-ocean.dark"].clone();
+        Self { syntax_set, theme }
+    }
+
+    fn find_syntax(&self, language: Language) -> &SyntaxReference {
+        self.syntax_set
+            .find_syntax_by_extension(language.extension())
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
     }
 }
 
 impl Highlighter for DefaultHighlighter {
     fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>> {
-        let iter = self
-            .0
-            .highlight_raw(language.into(), &text)
-            .expect("Fail to highlight text");
+        use syntect::easy::HighlightLines;
 
-        let theme =
-            Theme::from_helix(inkjet::theme::vendored::ONEDARK).expect("Fail to load theme");
-
+        let syntax = self.find_syntax(language);
+        let mut h = HighlightLines::new(syntax, &self.theme);
         let mut chunks = Vec::new();
-        let mut current_color = Srgb::new_u8(theme.fg.r, theme.fg.g, theme.fg.b);
-        let mut color_stack = Vec::new();
 
-        for event in iter {
-            let event = event.expect("Fail to highlight text");
-            match event {
-                HighlightEvent::Source { start, end } => {
-                    let chunk_text = &text[start..end];
-                    chunks.push(HighlightChunk {
-                        text: chunk_text,
-                        color: current_color,
-                    });
-                }
-                HighlightEvent::HighlightStart(highlight) => {
-                    // Push current color to stack
-                    color_stack.push(current_color);
+        for line in text.lines() {
+            let Ok(ranges) = h.highlight_line(line, &self.syntax_set) else {
+                // Fallback: return the whole line with default color
+                chunks.push(HighlightChunk {
+                    text: line,
+                    color: Srgb::new_u8(200, 200, 200),
+                });
+                continue;
+            };
 
-                    // Get the highlight name and style from theme
-                    let name = inkjet::constants::HIGHLIGHT_NAMES[highlight.0];
-                    if let Some(style) = theme.get_style(name) {
-                        // Use the foreground color if available, otherwise use theme default
-                        let color = style.fg.unwrap_or(theme.fg);
-                        current_color = Srgb::new_u8(color.r, color.g, color.b);
-                    }
-                }
-                HighlightEvent::HighlightEnd => {
-                    // Restore previous color from stack
-                    if let Some(color) = color_stack.pop() {
-                        current_color = color;
-                    }
+            for (style, text_slice) in ranges {
+                let color =
+                    Srgb::new_u8(style.foreground.r, style.foreground.g, style.foreground.b);
+                chunks.push(HighlightChunk {
+                    text: text_slice,
+                    color,
+                });
+            }
+
+            // Add newline back (syntect strips it)
+            if text.contains('\n') {
+                chunks.push(HighlightChunk {
+                    text: "\n",
+                    color: Srgb::new_u8(200, 200, 200),
+                });
+            }
+        }
+
+        // Handle trailing content without newline
+        if !text.ends_with('\n') {
+            if let Some(last) = chunks.last_mut() {
+                if last.text == "\n" {
+                    chunks.pop();
                 }
             }
         }
