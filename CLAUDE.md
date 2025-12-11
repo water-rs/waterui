@@ -80,7 +80,7 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 The `water` CLI orchestrates builds across platforms:
 
 - `water create` - Scaffold new project (supports `--playground` for quick experiments)
-- `water run` - Build and deploy to device/simulator with hot reload. It is an interactive terminal, so LLMs should ask user to run it for you.
+- `water run` - Build and deploy to device/simulator with hot reload.
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
 - `water package` - Package built artifacts for distribution
 - `water clean` - Remove build artifacts
