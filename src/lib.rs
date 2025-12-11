@@ -75,6 +75,7 @@ pub mod style;
 pub use waterui_core::{
     AnyView, Str, animation,
     env::{self, Environment},
+    id::{self, Identifable},
     impl_extractor, raw_view, views,
 };
 
