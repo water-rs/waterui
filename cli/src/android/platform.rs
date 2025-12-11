@@ -81,38 +81,6 @@ fn ndk_cxx_path(ndk_path: &Path, abi: &str) -> PathBuf {
         .join(format!("{target}{api_level}-clang++"))
 }
 
-/// Get the path to libc++_shared.so in the NDK.
-///
-/// NDK r23+ moved libc++_shared.so to the sysroot. We check both locations.
-fn ndk_libcxx_path(ndk_path: &Path, abi: &str) -> PathBuf {
-    // Map ABI to target triple for the new sysroot path
-    let target_triple = match abi {
-        "arm64-v8a" => "aarch64-linux-android",
-        "x86_64" => "x86_64-linux-android",
-        "armeabi-v7a" => "arm-linux-androideabi",
-        "x86" => "i686-linux-android",
-        _ => abi,
-    };
-
-    // New path in NDK r23+ (sysroot)
-    let new_path = ndk_path
-        .join("toolchains/llvm/prebuilt")
-        .join(ndk_host_tag())
-        .join("sysroot/usr/lib")
-        .join(target_triple)
-        .join("libc++_shared.so");
-
-    if new_path.exists() {
-        return new_path;
-    }
-
-    // Old path in NDK r22 and earlier
-    ndk_path
-        .join("sources/cxx-stl/llvm-libc++/libs")
-        .join(abi)
-        .join("libc++_shared.so")
-}
-
 /// Represents an Android platform for a specific architecture.
 #[derive(Debug, Clone)]
 pub struct AndroidPlatform {
@@ -191,6 +159,72 @@ impl AndroidPlatform {
             fs::remove_dir_all(&jni_libs_dir).await?;
         }
         Ok(())
+    }
+
+    /// Package the Android app with specific ABIs.
+    ///
+    /// This is used when building for multiple architectures. The ABIs parameter
+    /// controls which native libraries are included in the final APK.
+    ///
+    /// # Errors
+    /// Returns an error if Gradle build fails.
+    pub async fn package_with_abis(
+        project: &Project,
+        options: PackageOptions,
+        abis: &[&str],
+    ) -> eyre::Result<Artifact> {
+        let backend_path = project.backend_path::<AndroidBackend>();
+        let gradlew = backend_path.join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
+
+        let (command_name, path) = if options.is_distribution() && !options.is_debug() {
+            (
+                "bundleRelease",
+                backend_path.join("app/build/outputs/bundle/release/app-release.aab"),
+            )
+        } else if !options.is_distribution() && !options.is_debug() {
+            (
+                "assembleRelease",
+                backend_path.join("app/build/outputs/apk/release/app-release.apk"),
+            )
+        } else if !options.is_distribution() && options.is_debug() {
+            (
+                "assembleDebug",
+                backend_path.join("app/build/outputs/apk/debug/app-debug.apk"),
+            )
+        } else if options.is_distribution() && options.is_debug() {
+            (
+                "bundleDebug",
+                backend_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
+            )
+        } else {
+            unreachable!()
+        };
+
+        // Join ABIs with comma for the environment variable
+        let abis_str = abis.join(",");
+
+        let output = smol::process::Command::new(gradlew.to_str().unwrap())
+            .args([
+                command_name,
+                "--project-dir",
+                backend_path.to_str().unwrap(),
+            ])
+            .env("WATERUI_SKIP_RUST_BUILD", "1")
+            .env("WATERUI_ANDROID_ABIS", &abis_str)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            bail!("Gradle build failed:\n{}\n{}", stdout.trim(), stderr.trim());
+        }
+
+        Ok(Artifact::new(project.bundle_identifier(), path))
     }
 
     /// List available Android Virtual Devices (emulators).
@@ -367,13 +401,6 @@ impl Platform for AndroidPlatform {
         let dest_lib = output_dir.join("libwaterui_app.so");
         copy_file(&source_lib, &dest_lib).await?;
 
-        // Also copy libc++_shared.so from NDK if it exists
-        let libcxx_path = ndk_libcxx_path(&ndk_path, self.abi());
-        if libcxx_path.exists() {
-            let dest_libcxx = output_dir.join("libc++_shared.so");
-            copy_file(&libcxx_path, &dest_libcxx).await?;
-        }
-
         Ok(lib_dir)
     }
 
@@ -425,6 +452,9 @@ impl Platform for AndroidPlatform {
 
         // Skip Rust build in Gradle - we already built the library via `water build`
         // The Gradle build.gradle.kts checks this env var and skips its buildRust tasks
+        //
+        // Also pass the target ABI to filter which native libraries are included
+        // This ensures only the architectures we built are packaged in the APK
         let output = smol::process::Command::new(gradlew.to_str().unwrap())
             .args([
                 command_name,
@@ -432,6 +462,7 @@ impl Platform for AndroidPlatform {
                 backend_path.to_str().unwrap(),
             ])
             .env("WATERUI_SKIP_RUST_BUILD", "1")
+            .env("WATERUI_ANDROID_ABIS", self.abi())
             .output()
             .await?;
 
