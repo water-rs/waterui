@@ -132,6 +132,8 @@ struct ShaderRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     start_time: std::time::Instant,
+    /// The format the pipeline was created for
+    pipeline_format: Option<wgpu::TextureFormat>,
 }
 
 impl ShaderRenderer {
@@ -142,6 +144,7 @@ impl ShaderRenderer {
             uniform_buffer: None,
             bind_group: None,
             start_time: std::time::Instant::now(),
+            pipeline_format: None,
         }
     }
 
@@ -196,6 +199,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 impl GpuRenderer for ShaderRenderer {
     fn setup(&mut self, ctx: &GpuContext) {
+        tracing::debug!("[ShaderSurface] setup() called with format: {:?}", ctx.surface_format);
         let full_shader = self.build_full_shader();
 
         let shader = ctx
@@ -205,10 +209,16 @@ impl GpuRenderer for ShaderRenderer {
                 source: wgpu::ShaderSource::Wgsl(full_shader.into()),
             });
 
-        // Uniform buffer: time (f32) + resolution (vec2<f32>) + padding (f32) = 16 bytes
+        // Uniform buffer layout (WGSL alignment rules):
+        // - time: f32 at offset 0 (4 bytes)
+        // - padding: 4 bytes (vec2 needs 8-byte alignment)
+        // - resolution: vec2<f32> at offset 8 (8 bytes)
+        // - _padding: f32 at offset 16 (4 bytes)
+        // - struct padding to 8-byte alignment: 4 bytes
+        // Total: 24 bytes
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ShaderSurface Uniforms"),
-            size: 16,
+            size: 24,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -219,11 +229,11 @@ impl GpuRenderer for ShaderRenderer {
                     label: Some("ShaderSurface Bind Group Layout"),
                     entries: &[wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: None,
+                            min_binding_size: core::num::NonZeroU64::new(24),
                         },
                         count: None,
                     }],
@@ -246,6 +256,7 @@ impl GpuRenderer for ShaderRenderer {
                 push_constant_ranges: &[],
             });
 
+        // Render directly to surface format (no intermediate texture needed for simple shaders)
         let pipeline = ctx
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -262,7 +273,7 @@ impl GpuRenderer for ShaderRenderer {
                     entry_point: Some("main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -280,29 +291,48 @@ impl GpuRenderer for ShaderRenderer {
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
+        self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-        let Some(uniform_buffer) = &self.uniform_buffer else {
-            return;
-        };
-        let Some(bind_group) = &self.bind_group else {
-            return;
-        };
 
-        // Update uniforms
+        // Check if pipeline format matches current frame format
+        if let Some(pipeline_fmt) = self.pipeline_format {
+            if pipeline_fmt != frame.format {
+                tracing::error!("[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}", pipeline_fmt, frame.format);
+                self.pipeline = None;
+                self.pipeline_format = None;
+            }
+        }
+
+        // If no pipeline, we need setup
+        if self.pipeline.is_none() {
+            tracing::warn!("[ShaderSurface] No pipeline - need setup");
+            return;
+        }
+
+        let Some(pipeline) = &self.pipeline else { return };
+        let Some(uniform_buffer) = &self.uniform_buffer else { return };
+        let Some(bind_group) = &self.bind_group else { return };
+
+        // Update uniforms with correct WGSL alignment:
+        // [time: f32, _pad: f32, resolution.x: f32, resolution.y: f32, _padding: f32, _pad: f32]
         let elapsed = self.start_time.elapsed().as_secs_f32();
         #[allow(clippy::cast_precision_loss)]
-        let uniforms = [elapsed, frame.width as f32, frame.height as f32, 0.0f32];
+        let uniforms: [f32; 6] = [
+            elapsed,              // time at offset 0
+            0.0,                  // padding at offset 4 (for vec2 alignment)
+            frame.width as f32,   // resolution.x at offset 8
+            frame.height as f32,  // resolution.y at offset 12
+            0.0,                  // _padding at offset 16
+            0.0,                  // struct padding at offset 20
+        ];
         frame
             .queue
             .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
 
-        // Render
+        // Render directly to target
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -334,3 +364,45 @@ impl GpuRenderer for ShaderRenderer {
         frame.queue.submit(std::iter::once(encoder.finish()));
     }
 }
+
+/// WGSL shader for blitting from intermediate texture to target format
+const BLIT_SHADER: &str = r"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tex_coord: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    // Full-screen triangle pair
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+    );
+    var tex_coords = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.tex_coord = tex_coords[vertex_index];
+    return output;
+}
+
+@group(0) @binding(0) var t_source: texture_2d<f32>;
+@group(0) @binding(1) var s_source: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(t_source, s_source, in.tex_coord);
+}
+";
