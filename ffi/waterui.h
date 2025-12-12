@@ -79,6 +79,15 @@ typedef enum WuiAxis {
   WuiAxis_All,
 } WuiAxis;
 
+typedef enum WuiButtonStyle {
+  WuiButtonStyle_Automatic,
+  WuiButtonStyle_Plain,
+  WuiButtonStyle_Link,
+  WuiButtonStyle_Borderless,
+  WuiButtonStyle_Bordered,
+  WuiButtonStyle_BorderedProminent,
+} WuiButtonStyle;
+
 typedef enum WuiFontWeight {
   WuiFontWeight_Thin,
   WuiFontWeight_UltraLight,
@@ -1129,12 +1138,8 @@ typedef struct WuiScrollView {
 typedef struct WuiButton {
   struct WuiAnyView *label;
   struct WuiAction *action;
+  enum WuiButtonStyle style;
 } WuiButton;
-
-typedef struct WuiLink {
-  struct WuiAnyView *label;
-  WuiComputed_Str *url;
-} WuiLink;
 
 typedef struct WuiTextStyle {
   struct WuiFont *font;
@@ -2204,19 +2209,6 @@ struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_button_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiLink waterui_force_as_link(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_link_id(void);
 
 /**
  * # Safety
