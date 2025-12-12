@@ -53,7 +53,7 @@ pub mod frame;
 
 pub mod container;
 
-pub use container::Container;
+pub use container::LazyContainer;
 
 pub mod grid;
 pub mod overlay;

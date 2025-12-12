@@ -11,7 +11,7 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Metadata, Native, Signal, Str, View, views::Views,
 };
 use waterui_layout::{
-    container::{Container as LayoutContainer, FixedContainer},
+    container::{LazyContainer, FixedContainer},
     scroll::ScrollView,
     spacer::Spacer,
 };
@@ -228,7 +228,7 @@ impl Renderer {
             Err(view) => view,
         };
 
-        let view = match view.downcast::<LayoutContainer>() {
+        let view = match view.downcast::<LazyContainer>() {
             Ok(container) => {
                 self.render_container(env, frame, indent, *container)?;
                 return Ok(());
@@ -317,7 +317,7 @@ impl Renderer {
         env: &Environment,
         frame: &mut RenderFrame,
         indent: usize,
-        container: LayoutContainer,
+        container: LazyContainer,
     ) -> Result<(), TuiError> {
         let (_layout, children) = container.into_inner();
         let len = children.len();

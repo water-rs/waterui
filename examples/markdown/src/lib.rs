@@ -8,7 +8,8 @@ pub fn init() -> Environment {
 const MARKDOWN: &str = include_str!("example.md");
 
 pub fn main() -> impl View {
-    scroll(RichText::from_markdown(MARKDOWN).padding())
+    //scroll(RichText::from_markdown(MARKDOWN).padding())
+    button("Check on GitHub").action(|| println!("clicked"))
 }
 
 waterui_ffi::export!();

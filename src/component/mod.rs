@@ -8,6 +8,7 @@ pub use waterui_controls::*;
 pub mod badge;
 pub mod focu;
 pub mod lazy;
+pub mod link;
 pub mod list;
 
 pub mod progress;
@@ -35,4 +36,4 @@ pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;
 #[doc(inline)]
-pub use waterui_text::link;
+pub use link::{Link, link};
