@@ -7,17 +7,23 @@ use waterui_color::Color;
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
 
+use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
+
 // ============================================================================
 // Fill and Stroke Styles
 // ============================================================================
 
-/// Fill style for shapes - can be a solid color or gradient (future).
+/// Fill style for shapes - can be a solid color or gradient.
 #[derive(Clone)]
 pub enum FillStyle {
     /// Solid color fill.
     Color(Color),
-    // TODO: Add Gradient variant in Phase 2
-    // Gradient(LinearGradient/RadialGradient/ConicGradient),
+    /// Linear gradient fill.
+    LinearGradient(LinearGradient),
+    /// Radial gradient fill.
+    RadialGradient(RadialGradient),
+    /// Conic (sweep) gradient fill.
+    ConicGradient(ConicGradient),
 }
 
 impl From<Color> for FillStyle {
@@ -26,18 +32,58 @@ impl From<Color> for FillStyle {
     }
 }
 
-/// Stroke style for shapes - can be a solid color or gradient (future).
+impl From<LinearGradient> for FillStyle {
+    fn from(gradient: LinearGradient) -> Self {
+        Self::LinearGradient(gradient)
+    }
+}
+
+impl From<RadialGradient> for FillStyle {
+    fn from(gradient: RadialGradient) -> Self {
+        Self::RadialGradient(gradient)
+    }
+}
+
+impl From<ConicGradient> for FillStyle {
+    fn from(gradient: ConicGradient) -> Self {
+        Self::ConicGradient(gradient)
+    }
+}
+
+/// Stroke style for shapes - can be a solid color or gradient.
 #[derive(Clone)]
 pub enum StrokeStyle {
     /// Solid color stroke.
     Color(Color),
-    // TODO: Add Gradient variant in Phase 2
-    // Gradient(LinearGradient/RadialGradient/ConicGradient),
+    /// Linear gradient stroke.
+    LinearGradient(LinearGradient),
+    /// Radial gradient stroke.
+    RadialGradient(RadialGradient),
+    /// Conic (sweep) gradient stroke.
+    ConicGradient(ConicGradient),
 }
 
 impl From<Color> for StrokeStyle {
     fn from(color: Color) -> Self {
         Self::Color(color)
+    }
+}
+
+impl From<LinearGradient> for StrokeStyle {
+    fn from(gradient: LinearGradient) -> Self {
+        Self::LinearGradient(gradient)
+    }
+}
+
+impl From<RadialGradient> for StrokeStyle {
+    fn from(gradient: RadialGradient) -> Self {
+        Self::RadialGradient(gradient)
+    }
+}
+
+impl From<ConicGradient> for StrokeStyle {
+    fn from(gradient: ConicGradient) -> Self {
+        Self::ConicGradient(gradient)
     }
 }
 

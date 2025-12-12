@@ -27,6 +27,10 @@ pub mod state;
 #[cfg(feature = "canvas")]
 pub mod path;
 
+/// Gradient builders for Canvas.
+#[cfg(feature = "canvas")]
+pub mod gradient;
+
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
@@ -42,6 +46,9 @@ pub use path::Path;
 
 #[cfg(feature = "canvas")]
 pub use state::{LineCap, LineJoin};
+
+#[cfg(feature = "canvas")]
+pub use gradient::{ConicGradient, LinearGradient, RadialGradient};
 
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 #[cfg(feature = "wgpu")]
