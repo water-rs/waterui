@@ -51,11 +51,9 @@ pub mod prelude {
 
     pub use theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
 
-    pub use text::{
-        TextConfig, font, highlight,
-        link::{Link, link},
-        locale, styled,
-    };
+    pub use text::{TextConfig, font, highlight, locale, styled};
+
+    pub use component::link::{Link, link};
 
     pub use widget::{Card, Divider, card, suspense};
 }
