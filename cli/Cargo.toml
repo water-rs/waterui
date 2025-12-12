@@ -33,6 +33,7 @@ time = { workspace = true, features = ["serde"] }
 toml = "0.9.8"
 tracing.workspace = true
 which = "8.0.0"
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 # Terminal UI dependencies
 clap = { version = "4", features = ["derive"] }
