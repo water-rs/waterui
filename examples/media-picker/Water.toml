@@ -1,0 +1,10 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Media Picker Example"
+bundle_identifier = "com.waterui.media_picker_example"
+
+[permissions.photo_library]
+enable = true
+description = "Required to access photos and videos from your library"

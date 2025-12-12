@@ -1,0 +1,18 @@
+[package]
+name = "media-picker-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Media picker example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "media"]
+categories = ["gui"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
