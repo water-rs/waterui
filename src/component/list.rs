@@ -85,9 +85,8 @@ where
             return AnyView::new(hook.apply(env, config));
         }
         // Native backend can catch ListConfig, otherwise falls back to Lazy::vstack
-        let fallback = crate::component::lazy::Lazy::vstack(
-            config.contents.clone().map(|item| item.content),
-        );
+        let fallback =
+            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
         AnyView::new(Native::new(config).with_fallback(fallback))
     }
 }

@@ -9,7 +9,7 @@ use crate::shell::{self, display_output};
 use crate::{error, header, success};
 use waterui_cli::{
     android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
-    project::Project, toolchain::Toolchain,
+    platform::Platform as _, project::Project, toolchain::Toolchain,
 };
 
 /// Target platform for building.
@@ -73,9 +73,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Build options with optional output directory
     let build_options = if let Some(ref output_dir) = args.output_dir {
-        BuildOptions::new(args.release).with_output_dir(output_dir)
+        BuildOptions::new(args.release, false).with_output_dir(output_dir)
     } else {
-        BuildOptions::new(args.release)
+        BuildOptions::new(args.release, false)
     };
     let mode = if args.release { "release" } else { "debug" };
 
@@ -100,7 +100,7 @@ pub async fn run(args: Args) -> Result<()> {
         match (args.platform, args.arch) {
             // iOS physical device - only arm64 supported
             (TargetPlatform::Ios, None | Some(TargetArch::Arm64)) => {
-                project.build(ApplePlatform::ios(), build_options).await
+                ApplePlatform::ios().build(&project, build_options).await
             }
             (TargetPlatform::Ios, Some(arch)) => {
                 bail!("iOS physical devices only support arm64, not {:?}", arch)
@@ -109,18 +109,18 @@ pub async fn run(args: Args) -> Result<()> {
             // iOS Simulator - arm64 (Apple Silicon) or x86_64 (Intel)
             (TargetPlatform::IosSimulator, None) => {
                 // Default to native architecture
-                project
-                    .build(ApplePlatform::ios_simulator(), build_options)
+                ApplePlatform::ios_simulator()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::IosSimulator, Some(TargetArch::Arm64)) => {
-                project
-                    .build(ApplePlatform::ios_simulator_arm64(), build_options)
+                ApplePlatform::ios_simulator_arm64()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::IosSimulator, Some(TargetArch::X86_64)) => {
-                project
-                    .build(ApplePlatform::ios_simulator_x86_64(), build_options)
+                ApplePlatform::ios_simulator_x86_64()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::IosSimulator, Some(arch)) => {
@@ -132,37 +132,39 @@ pub async fn run(args: Args) -> Result<()> {
 
             // Android - all architectures supported
             (TargetPlatform::Android, None | Some(TargetArch::Arm64)) => {
-                project.build(AndroidPlatform::arm64(), build_options).await
+                AndroidPlatform::arm64()
+                    .build(&project, build_options)
+                    .await
             }
             (TargetPlatform::Android, Some(TargetArch::X86_64)) => {
-                project
-                    .build(AndroidPlatform::x86_64(), build_options)
+                AndroidPlatform::x86_64()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::Android, Some(TargetArch::Armv7)) => {
-                project
-                    .build(AndroidPlatform::from_abi("armeabi-v7a"), build_options)
+                AndroidPlatform::from_abi("armeabi-v7a")
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::Android, Some(TargetArch::X86)) => {
-                project
-                    .build(AndroidPlatform::from_abi("x86"), build_options)
+                AndroidPlatform::from_abi("x86")
+                    .build(&project, build_options)
                     .await
             }
 
             // macOS - arm64 (Apple Silicon) or x86_64 (Intel)
             (TargetPlatform::Macos, None) => {
                 // Default to native architecture
-                project.build(ApplePlatform::macos(), build_options).await
+                ApplePlatform::macos().build(&project, build_options).await
             }
             (TargetPlatform::Macos, Some(TargetArch::Arm64)) => {
-                project
-                    .build(ApplePlatform::macos_arm64(), build_options)
+                ApplePlatform::macos_arm64()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::Macos, Some(TargetArch::X86_64)) => {
-                project
-                    .build(ApplePlatform::macos_x86_64(), build_options)
+                ApplePlatform::macos_x86_64()
+                    .build(&project, build_options)
                     .await
             }
             (TargetPlatform::Macos, Some(arch)) => {
