@@ -11,7 +11,6 @@ pub mod error;
 pub mod filter;
 pub mod gesture;
 /// Task management utilities and async support.
-pub mod task;
 pub mod view;
 /// Widget components for building complex UI elements.
 pub mod widget;
@@ -101,12 +100,17 @@ macro_rules! text {
     };
 }
 
-mod ext;
-pub use ext::SignalExt;
+mod reactive_ext;
+pub(crate) mod view_ext;
 pub use nami as reactive;
 #[doc(inline)]
 pub use reactive::{Binding, Computed, Signal, signal};
-pub use task::task;
+pub use reactive_ext::SignalExt;
+
+pub mod task {
+    pub use executor_core::{spawn, spawn_local};
+    pub use native_executor::sleep;
+}
 
 /// Graphics primitives including GPU rendering surface.
 #[cfg(feature = "graphics")]

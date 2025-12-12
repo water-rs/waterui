@@ -418,11 +418,9 @@ impl IntoFFI for MediaFilter {
 /// FFI representation of the MediaPicker component.
 #[repr(C)]
 pub struct WuiMediaPicker {
-    /// Pointer to Computed<Selected> for the current selection.
-    pub selection: *mut WuiComputed<Selected>,
     /// The filter type to apply.
     pub filter: WuiMediaFilterType,
-    /// Callback when selection changes.
+    /// Callback when selection changes. Native calls this when user picks media.
     pub on_selection: WuiFn<WuiSelected>,
 }
 
@@ -433,13 +431,14 @@ impl IntoFFI for MediaPickerConfig {
         let filter_value = self.filter.get();
         let filter_type = filter_value.into_ffi();
 
-        // Create a no-op callback for selection changes
-        let on_selection = WuiFn::from(|_selected: WuiSelected| {
-            // Selection changes are handled via the Computed<Selected> signal
+        // Create callback that updates the selection binding when native calls it
+        let selection_binding = self.selection;
+        let on_selection = WuiFn::from(move |selected: WuiSelected| {
+            let rust_selected = unsafe { selected.into_rust() };
+            selection_binding.set(rust_selected);
         });
 
         WuiMediaPicker {
-            selection: self.selection.into_ffi(),
             filter: filter_type,
             on_selection,
         }
@@ -453,8 +452,8 @@ ffi_view!(MediaPickerConfig, WuiMediaPicker, media_picker);
 // MediaLoader FFI - Environment Injection
 // =============================================================================
 
-use alloc::boxed::Box;
 use crate::WuiEnv;
+use alloc::boxed::Box;
 use waterui_media::Media;
 use waterui_media::media_picker::MediaLoader;
 
@@ -512,10 +511,7 @@ pub type MediaLoadFn = unsafe extern "C" fn(u32, MediaLoadCallback);
 /// - `env` is a valid pointer to a `WuiEnv`
 /// - `load_fn` is a valid function pointer to the native media loader implementation
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_install_media_loader(
-    env: *mut WuiEnv,
-    load_fn: MediaLoadFn,
-) {
+pub unsafe extern "C" fn waterui_env_install_media_loader(env: *mut WuiEnv, load_fn: MediaLoadFn) {
     if env.is_null() {
         return;
     }
@@ -576,7 +572,10 @@ unsafe fn media_load_result_to_media(result: MediaLoadResult) -> Media {
             Media::LivePhoto(LivePhotoSource::new(url, video_url))
         }
         _ => {
-            tracing::warn!("Unknown media type {}, treating as image", result.media_type);
+            tracing::warn!(
+                "Unknown media type {}, treating as image",
+                result.media_type
+            );
             Media::Image(url)
         }
     }

@@ -10,15 +10,16 @@ use std::fmt::Debug;
 
 use alloc::rc::Rc;
 
-use waterui_core::{Computed, Environment, configurable};
+use waterui_core::reactive::signal::IntoComputed;
+use waterui_core::{Binding, Computed, Environment, configurable, reactive::impl_constant};
 
 use crate::Media;
 
 /// Configuration for the `MediaPicker` component.
 #[derive(Debug)]
 pub struct MediaPickerConfig {
-    /// The items selected in the picker.
-    pub selection: Computed<Selected>,
+    /// The current selection binding (native writes to this when user picks).
+    pub selection: Binding<Selected>,
     /// A filter to apply to media selection.
     pub filter: Computed<MediaFilter>,
 }
@@ -56,6 +57,36 @@ configurable!(
     MediaPicker,
     MediaPickerConfig
 );
+
+impl MediaPicker {
+    /// Creates a new MediaPicker with a selection binding.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let selection = binding(Selected::new(0));
+    /// let picker = MediaPicker::new(&selection);
+    /// ```
+    pub fn new(selection: &Binding<Selected>) -> Self {
+        Self(MediaPickerConfig {
+            selection: selection.clone(),
+            filter: MediaFilter::Image.into_computed(),
+        })
+    }
+
+    /// Sets the media filter for this picker.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// MediaPicker::new(&selection).filter(MediaFilter::Video);
+    /// ```
+    #[must_use]
+    pub fn filter(mut self, filter: impl IntoComputed<MediaFilter>) -> Self {
+        self.0.filter = filter.into_computed();
+        self
+    }
+}
 
 /// Represents a selected media item by its unique identifier.
 ///
@@ -131,3 +162,5 @@ pub enum MediaFilter {
     /// Filter for any of the specified filters.
     Any(Vec<Self>),
 }
+
+impl_constant!(MediaFilter);
