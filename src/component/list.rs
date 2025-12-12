@@ -8,16 +8,15 @@
 use alloc::boxed::Box;
 use nami::collection::Collection;
 
-use crate::views::{AnyViews, ForEach, Views};
-use waterui_core::Native;
+use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, NativeView, View, id::Identifable};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, id::Identifable};
 
 /// Configuration for a list component.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
-    pub contents: AnyViews<ListItem>,
+    pub contents: SharedAnyViews<ListItem>,
 }
 
 impl NativeView for ListConfig {}
@@ -56,20 +55,20 @@ where
 
     fn config(self) -> Self::Config {
         ListConfig {
-            contents: AnyViews::new(self.0),
+            contents: SharedAnyViews::new(self.0),
         }
     }
 }
 
 impl ViewConfiguration for ListConfig {
-    type View = List<AnyViews<ListItem>>;
+    type View = List<SharedAnyViews<ListItem>>;
 
     fn render(self) -> Self::View {
         List::new(self.contents)
     }
 }
 
-impl From<ListConfig> for List<AnyViews<ListItem>> {
+impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
     fn from(value: ListConfig) -> Self {
         value.render()
     }
@@ -81,11 +80,15 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let config = ConfigurableView::config(self);
+        // User customization via Hook takes precedence
         if let Some(hook) = env.get::<Hook<ListConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native(config))
+            return AnyView::new(hook.apply(env, config));
         }
+        // Native backend can catch ListConfig, otherwise falls back to Lazy::vstack
+        let fallback = crate::component::lazy::Lazy::vstack(
+            config.contents.clone().map(|item| item.content),
+        );
+        AnyView::new(Native::new(config).with_fallback(fallback))
     }
 }
 

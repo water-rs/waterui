@@ -5,7 +5,7 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Container, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    LazyContainer, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     container::FixedContainer, stack::Alignment,
 };
 
@@ -259,7 +259,7 @@ where
     V: View,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Container::new(self.layout, self.contents)
+        LazyContainer::new(self.layout, self.contents)
     }
 }
 
