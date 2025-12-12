@@ -26,6 +26,7 @@
 
 use crate::conversions::{rect_to_kurbo, resolved_color_to_peniko};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
 use crate::path::Path;
 use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
 use waterui_core::layout::Rect;
@@ -463,6 +464,77 @@ impl DrawingContext<'_> {
     }
 
     // ========================================================================
+    // Gradient Creation Methods (Phase 2)
+    // ========================================================================
+
+    /// Creates a linear gradient from (x0, y0) to (x1, y1).
+    ///
+    /// Returns a `LinearGradient` builder. Add color stops with `add_color_stop()`,
+    /// then use with `set_fill_style()` or `set_stroke_style()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
+    /// gradient.add_color_stop(0.0, Color::red());
+    /// gradient.add_color_stop(1.0, Color::blue());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_linear_gradient(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> LinearGradient {
+        LinearGradient::new(x0, y0, x1, y1)
+    }
+
+    /// Creates a radial gradient between two circles.
+    ///
+    /// # Arguments
+    /// * `x0, y0` - Center of the start circle
+    /// * `r0` - Radius of the start circle
+    /// * `x1, y1` - Center of the end circle
+    /// * `r1` - Radius of the end circle
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
+    /// gradient.add_color_stop(0.0, Color::white());
+    /// gradient.add_color_stop(1.0, Color::black());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_radial_gradient(
+        &self,
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    ) -> RadialGradient {
+        RadialGradient::new(x0, y0, r0, x1, y1, r1)
+    }
+
+    /// Creates a conic (sweep) gradient around a center point.
+    ///
+    /// # Arguments
+    /// * `start_angle` - Starting angle in radians (0 = 3 o'clock)
+    /// * `x, y` - Center point of the gradient
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
+    /// gradient.add_color_stop(0.0, Color::red());
+    /// gradient.add_color_stop(0.5, Color::green());
+    /// gradient.add_color_stop(1.0, Color::blue());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
+        ConicGradient::new(start_angle, x, y)
+    }
+
+    // ========================================================================
     // Internal Helper Methods
     // ========================================================================
 
@@ -477,6 +549,9 @@ impl DrawingContext<'_> {
                 let peniko_color = resolved_color_to_peniko(resolved);
                 peniko_color.into()
             }
+            FillStyle::LinearGradient(gradient) => gradient.build(self.env),
+            FillStyle::RadialGradient(gradient) => gradient.build(self.env),
+            FillStyle::ConicGradient(gradient) => gradient.build(self.env),
         }
     }
 
@@ -491,6 +566,9 @@ impl DrawingContext<'_> {
                 let peniko_color = resolved_color_to_peniko(resolved);
                 peniko_color.into()
             }
+            StrokeStyle::LinearGradient(gradient) => gradient.build(self.env),
+            StrokeStyle::RadialGradient(gradient) => gradient.build(self.env),
+            StrokeStyle::ConicGradient(gradient) => gradient.build(self.env),
         }
     }
 }
