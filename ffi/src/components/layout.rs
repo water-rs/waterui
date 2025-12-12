@@ -326,6 +326,20 @@ pub unsafe extern "C" fn waterui_layout_place(
         children_slice.iter().map(|s| s as &dyn SubView).collect();
 
     let rects = layout.place(bounds, &subview_refs);
+
+    // Debug: log placement for multi-child layouts (likely tables)
+    if children_slice.len() > 2 {
+        tracing::info!(
+            "layout_place: bounds=({}, {}, {}, {}), children={}, rects={:?}",
+            bounds.x(),
+            bounds.y(),
+            bounds.width(),
+            bounds.height(),
+            children_slice.len(),
+            rects.iter().map(|r| (r.x(), r.y(), r.width(), r.height())).collect::<Vec<_>>()
+        );
+    }
+
     rects.into_ffi()
     // children array is dropped here, calling drop on each WuiSubView
 }

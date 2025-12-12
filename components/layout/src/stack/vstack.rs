@@ -101,9 +101,9 @@ impl Layout for VStackLayout {
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
-        let final_width = proposal
-            .width
-            .map_or(max_width, |proposed| max_width.min(proposed));
+        // VStack stretches horizontally (cross-axis), so use proposed width when available
+        // This ensures VStack fills available width for proper child centering
+        let final_width = proposal.width.unwrap_or(max_width);
 
         Size::new(final_width, final_height)
     }
