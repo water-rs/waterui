@@ -3,9 +3,68 @@
 use futures::AsyncWriteExt;
 use libloading::Library;
 use std::path::{Path, PathBuf};
-use waterui_core::View;
+use waterui_core::AnyView;
 
 use crate::ViewExt;
+
+/// Errors that can occur while loading a hot-reloaded library.
+#[derive(Debug)]
+pub enum LoadViewError {
+    /// Failed to open the dynamic library.
+    LoadLibrary {
+        /// Path to the dynamic library file.
+        path: PathBuf,
+        /// Underlying loader error message.
+        error: String,
+    },
+    /// A required symbol was missing from the dynamic library.
+    MissingSymbol {
+        /// Path to the dynamic library file.
+        path: PathBuf,
+        /// The symbol name that was expected.
+        symbol: &'static str,
+        /// Underlying loader error message.
+        error: String,
+    },
+    /// The library entry point returned a null pointer.
+    NullPointer {
+        /// Path to the dynamic library file.
+        path: PathBuf,
+        /// The symbol name that returned null.
+        symbol: &'static str,
+    },
+}
+
+impl core::fmt::Display for LoadViewError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::LoadLibrary { path, error } => {
+                write!(
+                    f,
+                    "Failed to load hot reload library at {}: {error}",
+                    path.display()
+                )
+            }
+            Self::MissingSymbol {
+                path,
+                symbol,
+                error,
+            } => write!(
+                f,
+                "Hot reload library at {} is missing symbol '{symbol}': {error}. \
+                 Make sure the library was built with RUSTFLAGS='--cfg waterui_hot_reload_lib'.",
+                path.display()
+            ),
+            Self::NullPointer { path, symbol } => write!(
+                f,
+                "Hot reload symbol '{symbol}' returned a null pointer from {}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LoadViewError {}
 
 /// Create a library file from binary data.
 ///
@@ -49,11 +108,14 @@ pub async fn create_library(data: &[u8]) -> PathBuf {
 ///
 /// Must be called on the main thread. The library must export the symbol correctly.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the library cannot be loaded or if required symbols are not found.
-pub unsafe fn load_view(path: &Path) -> impl View {
-    let lib = unsafe { Library::new(path) }.expect("Failed to load library");
+/// Returns an error if the library cannot be loaded or if required symbols are not found.
+pub unsafe fn load_view(path: &Path) -> Result<AnyView, LoadViewError> {
+    let lib = unsafe { Library::new(path) }.map_err(|e| LoadViewError::LoadLibrary {
+        path: path.to_path_buf(),
+        error: e.to_string(),
+    })?;
 
     // Initialize the executor for the new dylib
     if let Ok(init) = unsafe { lib.get::<unsafe extern "C" fn()>(b"waterui_hot_reload_init") } {
@@ -61,12 +123,24 @@ pub unsafe fn load_view(path: &Path) -> impl View {
     }
 
     // Load the main view function
-    let func: libloading::Symbol<unsafe extern "C" fn() -> *mut waterui_core::AnyView> =
-        unsafe { lib.get(b"waterui_hot_reload_main") }.expect("Symbol not found");
+    let func: libloading::Symbol<unsafe extern "C" fn() -> *mut AnyView> = unsafe {
+        lib.get(b"waterui_hot_reload_main")
+    }
+    .map_err(|e| LoadViewError::MissingSymbol {
+        path: path.to_path_buf(),
+        symbol: "waterui_hot_reload_main",
+        error: e.to_string(),
+    })?;
 
     let view_ptr = unsafe { func() };
+    if view_ptr.is_null() {
+        return Err(LoadViewError::NullPointer {
+            path: path.to_path_buf(),
+            symbol: "waterui_hot_reload_main",
+        });
+    }
     let view = unsafe { Box::from_raw(view_ptr) };
 
     // Retain the library so it stays loaded as long as the view exists
-    (*view).retain(lib)
+    Ok(AnyView::new((*view).retain(lib)))
 }

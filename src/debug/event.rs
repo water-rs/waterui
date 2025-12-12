@@ -17,7 +17,7 @@ pub enum CliEvent {
         /// Current reconnection attempt number.
         attempt: u32,
         /// Maximum number of reconnection attempts.
-        max_attempts: u32
+        max_attempts: u32,
     },
 
     /// A new library is available for hot reload.
@@ -37,7 +37,10 @@ pub enum ConnectionError {
     NoEndpoint,
 
     /// Connection timed out.
-    Timeout,
+    Timeout {
+        /// The URL that was attempted.
+        url: String,
+    },
 
     /// Failed to connect after max attempts.
     MaxReconnectAttempts(u32),
@@ -53,7 +56,7 @@ impl core::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoEndpoint => write!(f, "Hot reload endpoint not configured"),
-            Self::Timeout => write!(f, "Connection timed out"),
+            Self::Timeout { url } => write!(f, "Connection timed out: {url}"),
             Self::MaxReconnectAttempts(n) => {
                 write!(f, "Failed to connect after {n} attempts")
             }

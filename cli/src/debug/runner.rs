@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 
-use futures::{FutureExt, StreamExt};
-use smol::channel::{self, Receiver, Sender};
+use futures::FutureExt;
 use smol::Task;
+use smol::channel::{self, Receiver, Sender};
 use target_lexicon::Triple;
 
 use super::file_watcher::FileWatcher;
-use super::hot_reload::{BuildManager, HotReloadServer, DEFAULT_PORT};
+use super::hot_reload::{BuildManager, DEFAULT_PORT, HotReloadServer};
 use crate::build::RustBuild;
 use crate::project::Project;
 
@@ -59,9 +59,10 @@ impl HotReloadRunner {
             })
             .await;
 
-        let rust_build = RustBuild::new(project.root(), triple);
+        let rust_build = RustBuild::new(project.root(), triple, true);
         let file_rx = watcher.receiver().clone();
         let broadcast_tx = server.broadcast_sender();
+        let crate_name = project.crate_name().replace('-', "_");
 
         // Spawn the runner task
         let runner_task = smol::spawn(run_loop(
@@ -70,6 +71,7 @@ impl HotReloadRunner {
             broadcast_tx,
             event_tx,
             watcher,
+            crate_name,
         ));
 
         Ok(Self {
@@ -109,6 +111,7 @@ async fn run_loop(
     broadcast_tx: Sender<Vec<u8>>,
     event_tx: Sender<HotReloadEvent>,
     _watcher: FileWatcher, // Keep watcher alive
+    crate_name: String,
 ) {
     let mut build_manager = BuildManager::new();
 
@@ -127,18 +130,37 @@ async fn run_loop(
                     let _ = event_tx.send(HotReloadEvent::Rebuilding).await;
 
                     // Build synchronously in this task for simplicity
-                    match rust_build.build_hot_reload_lib().await {
+                    match rust_build.dev_build().await {
                         Ok(lib_dir) => {
-                            // Find the dylib in the output directory
-                            if let Some(dylib_path) = find_dylib(&lib_dir).await {
-                                let _ = event_tx.send(HotReloadEvent::Built {
-                                    path: dylib_path.clone(),
-                                }).await;
+                            let lib_name = format!(
+                                "{}{}{}",
+                                std::env::consts::DLL_PREFIX,
+                                crate_name,
+                                std::env::consts::DLL_SUFFIX
+                            );
+                            let dylib_path = lib_dir.join(&lib_name);
 
-                                // Read and broadcast the library
-                                if let Ok(data) = smol::fs::read(&dylib_path).await {
+                            if !dylib_path.exists() {
+                                let _ = event_tx.send(HotReloadEvent::BuildFailed {
+                                    error: format!("Library not found: {}", dylib_path.display()),
+                                }).await;
+                                continue;
+                            }
+
+                            let _ = event_tx.send(HotReloadEvent::Built {
+                                path: dylib_path.clone(),
+                            }).await;
+
+                            // Read and broadcast the library
+                            match smol::fs::read(&dylib_path).await {
+                                Ok(data) => {
                                     let _ = broadcast_tx.send(data).await;
                                     let _ = event_tx.send(HotReloadEvent::Broadcast).await;
+                                }
+                                Err(e) => {
+                                    let _ = event_tx.send(HotReloadEvent::BuildFailed {
+                                        error: format!("Failed to read library: {e}"),
+                                    }).await;
                                 }
                             }
                         }
@@ -152,29 +174,4 @@ async fn run_loop(
             }
         }
     }
-}
-
-/// Find the cdylib in the build output directory.
-async fn find_dylib(lib_dir: &PathBuf) -> Option<PathBuf> {
-    let mut entries = smol::fs::read_dir(lib_dir).await.ok()?;
-
-    while let Some(entry) = entries.next().await {
-        let entry = entry.ok()?;
-        let path = entry.path();
-
-        // Look for .dylib (macOS), .so (Linux/Android), .dll (Windows)
-        if let Some(ext) = path.extension() {
-            if ext == "dylib" || ext == "so" || ext == "dll" {
-                // Skip deps directory artifacts
-                if path
-                    .file_name()
-                    .is_some_and(|name| !name.to_string_lossy().contains("deps"))
-                {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
-    None
 }

@@ -9,7 +9,7 @@ use crate::shell::{self, display_output};
 use crate::{header, success};
 use waterui_cli::{
     android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
-    platform::PackageOptions, project::Project, toolchain::Toolchain,
+    platform::PackageOptions, platform::Platform, project::Project, toolchain::Toolchain,
 };
 
 /// Target platform for packaging.
@@ -118,7 +118,7 @@ pub async fn run(args: Args) -> Result<()> {
     success!("Toolchain ready");
 
     // Step 2: Build (package requires a built library)
-    let build_options = BuildOptions::new(args.release);
+    let build_options = BuildOptions::new(args.release, false);
 
     match args.platform {
         TargetPlatform::Android => {
@@ -130,7 +130,7 @@ pub async fn run(args: Args) -> Result<()> {
                 let spinner =
                     shell::spinner(&format!("Building Rust library ({})...", arch.to_abi()));
                 let platform = AndroidPlatform::from_abi(arch.to_abi());
-                display_output(project.build(platform, build_options.clone())).await?;
+                display_output(platform.build(&project, build_options.clone())).await?;
                 if let Some(pb) = spinner {
                     pb.finish_and_clear();
                 }
@@ -210,19 +210,19 @@ async fn build_for_platform(
     match platform {
         TargetPlatform::Ios => {
             let p = ApplePlatform::ios();
-            Ok(project.build(p, options).await?)
+            Ok(p.build(project, options).await?)
         }
         TargetPlatform::IosSimulator => {
             let p = ApplePlatform::ios_simulator();
-            Ok(project.build(p, options).await?)
+            Ok(p.build(project, options).await?)
         }
         TargetPlatform::Android => {
             let p = AndroidPlatform::arm64();
-            Ok(project.build(p, options).await?)
+            Ok(p.build(project, options).await?)
         }
         TargetPlatform::Macos => {
             let p = ApplePlatform::macos();
-            Ok(project.build(p, options).await?)
+            Ok(p.build(project, options).await?)
         }
     }
 }
