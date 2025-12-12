@@ -275,10 +275,12 @@ where
         self.renderer = Some(renderer);
 
         // Create blit pipeline for copying from Rgba8Unorm to target format
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Canvas Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Canvas Blit Shader"),
+                source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -380,8 +382,7 @@ where
                 dimension: wgpu::TextureDimension::D2,
                 // Vello requires Rgba8Unorm format
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -415,7 +416,13 @@ where
         };
 
         renderer
-            .render_to_texture(frame.device, frame.queue, &self.scene, intermediate_view, &params)
+            .render_to_texture(
+                frame.device,
+                frame.queue,
+                &self.scene,
+                intermediate_view,
+                &params,
+            )
             .expect("Failed to render Vello scene");
 
         // Blit from intermediate texture to target (may be HDR format)

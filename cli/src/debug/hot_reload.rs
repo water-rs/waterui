@@ -129,18 +129,23 @@ impl HotReloadServer {
 
         // Spawn the server task using smol's global executor
         let server_task = smol::spawn(async move {
-            // Create a new executor for the server
-            let executor = smol::Executor::new();
+            // Create a static executor for the server (leaked to satisfy 'static requirement)
+            let executor: &'static smol::Executor<'static> =
+                Box::leak(Box::new(smol::Executor::new()));
 
-            // Serve using the Hyper backend with smol's executor
-            Hyper
-                .serve(
+            // Run the executor in parallel with serving
+            // The executor must be driven to process connection handlers
+            let _ = futures::join!(
+                // Drive the executor (runs forever until dropped)
+                executor.run(std::future::pending::<()>()),
+                // Serve connections
+                Hyper.serve(
                     executor,
                     |err| tracing::warn!("Hot reload connection error: {err}"),
                     connections,
                     router,
-                )
-                .await;
+                ),
+            );
 
             drop(broadcast_task);
         });
@@ -199,6 +204,7 @@ impl HotReloadServer {
 /// Build the skyzen router with WebSocket endpoint.
 fn build_router(state: Arc<Mutex<ServerState>>) -> Router {
     Route::new("/".at(move |ws: WebSocketUpgrade| {
+        let ws = ws.max_message_size(None);
         let state = state.clone();
         async move { handle_websocket(ws, state) }
     }))
@@ -219,6 +225,8 @@ fn handle_websocket(upgrade: WebSocketUpgrade, state: Arc<Mutex<ServerState>>) -
             state.add_client(client_tx);
         }
 
+        tracing::debug!("Hot reload client registered, entering event loop");
+
         // Handle the WebSocket connection - interleave sending and receiving
         loop {
             futures::select! {
@@ -226,27 +234,43 @@ fn handle_websocket(upgrade: WebSocketUpgrade, state: Arc<Mutex<ServerState>>) -
                 data = client_rx.recv().fuse() => {
                     match data {
                         Ok(data) => {
-                            if socket.send_binary(data).await.is_err() {
+                            tracing::debug!("Sending {} bytes to client", data.len());
+                            if let Err(e) = socket.send_binary(data).await {
+                                tracing::warn!("Failed to send to client: {e}");
                                 break;
                             }
                         }
-                        Err(_) => break, // Channel closed
+                        Err(e) => {
+                            tracing::debug!("Client channel closed: {e}");
+                            break;
+                        }
                     }
                 }
                 // Check for messages from client
                 msg = socket.next().fuse() => {
                     match msg {
-                        Some(Ok(WebSocketMessage::Close) | Err(_)) | None => break,
+                        Some(Ok(WebSocketMessage::Close)) => {
+                            tracing::debug!("Client sent close frame");
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            tracing::debug!("WebSocket error: {e}");
+                            break;
+                        }
+                        None => {
+                            tracing::debug!("WebSocket stream ended");
+                            break;
+                        }
                         Some(Ok(WebSocketMessage::Ping(data))) => {
-                            // Respond with pong
+                            tracing::debug!("Received ping, sending pong");
                             if socket.send_pong(data).await.is_err() {
                                 break;
                             }
                         }
-                        Some(Ok(_)) => {
-                            // Ignore other messages from client for now
+                        Some(Ok(msg)) => {
+                            tracing::debug!("Received message: {msg:?}");
                         }
-                        }
+                    }
                 }
             }
         }
@@ -314,9 +338,7 @@ impl BuildManager {
 
     /// Start a build for the given rust build configuration.
     pub fn start_build(&mut self, rust_build: crate::build::RustBuild) {
-        self.current_build = Some(smol::spawn(async move {
-            rust_build.build_hot_reload_lib().await
-        }));
+        self.current_build = Some(smol::spawn(async move { rust_build.dev_build().await }));
     }
 
     /// Check if the current build has completed.

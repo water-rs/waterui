@@ -1,8 +1,8 @@
 //! Hotreload view component.
 
+use super::CliConnection;
 use super::connection::CliEvent;
 use super::event::ConnectionError;
-use super::CliConnection;
 use super::library;
 use crate::ViewExt;
 use crate::prelude::*;
@@ -117,6 +117,7 @@ impl<V: View> View for Hotreload<V> {
                 let connection = match CliConnection::connect(config).await {
                     Ok(conn) => conn,
                     Err(e) => {
+                        tracing::error!("Hot reload connection failed: {e}");
                         overlay_handler.set(StatusOverlay::error(&e, overlay_handler.clone()));
                         return;
                     }
@@ -135,7 +136,17 @@ impl<V: View> View for Hotreload<V> {
 
                             // Load the new view from the library
                             // SAFETY: The library was just written by us and should be valid
-                            let new_view = unsafe { library::load_view(&path) };
+                            let new_view = match unsafe { library::load_view(&path) } {
+                                Ok(view) => view,
+                                Err(e) => {
+                                    tracing::error!("Failed to load hot reload library: {e}");
+                                    overlay_handler.set(StatusOverlay::error_message(
+                                        alloc::format!("{e}"),
+                                        overlay_handler.clone(),
+                                    ));
+                                    continue;
+                                }
+                            };
 
                             // Replace the content with the new view
                             content_handler.set(new_view);
@@ -144,6 +155,7 @@ impl<V: View> View for Hotreload<V> {
                 }
 
                 // Connection closed
+                tracing::warn!("Hot reload connection lost");
                 overlay_handler.set(StatusOverlay::disconnected());
             })
             .detach();
@@ -180,8 +192,10 @@ impl StatusOverlay {
     }
 
     fn error(err: &ConnectionError, overlay_handler: DynamicHandler) -> impl View {
-        let msg = alloc::format!("{err}");
+        Self::error_message(alloc::format!("{err}"), overlay_handler)
+    }
 
+    fn error_message(msg: String, overlay_handler: DynamicHandler) -> impl View {
         vstack((
             text("Hot Reload Error"),
             text(msg),
