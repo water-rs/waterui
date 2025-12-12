@@ -24,6 +24,8 @@ pub use media::*;
 pub use text::{Text, text::text};
 //pub use waterui_canvas as canvas;
 #[doc(inline)]
+pub use link::{Link, link};
+#[doc(inline)]
 pub use waterui_form as form;
 #[doc(inline)]
 pub use waterui_layout::{
@@ -35,5 +37,3 @@ pub use waterui_layout::{
 pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;
-#[doc(inline)]
-pub use link::{Link, link};

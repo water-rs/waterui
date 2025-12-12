@@ -80,7 +80,7 @@ pub enum Event {
     /// An error occurred while loading or playing the video.
     Error {
         /// The error message describing what went wrong.
-        message: String
+        message: String,
     },
 }
 

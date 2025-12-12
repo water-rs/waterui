@@ -94,8 +94,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     height: u32,
 ) -> *mut WuiGpuSurfaceState {
     if surface.is_null() || layer.is_null() || width == 0 || height == 0 {
-        tracing::error!("[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
-            surface, layer, width, height);
+        tracing::error!(
+            "[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
+            surface,
+            layer,
+            width,
+            height
+        );
         return core::ptr::null_mut();
     }
 
@@ -123,7 +128,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     let wgpu_surface = match create_surface_from_layer(&instance, layer) {
         Some(s) => s,
         None => {
-            tracing::error!("[GpuSurface] init failed: could not create wgpu surface from native layer");
+            tracing::error!(
+                "[GpuSurface] init failed: could not create wgpu surface from native layer"
+            );
             return core::ptr::null_mut();
         }
     };
@@ -164,12 +171,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         tracing::error!("[wgpu] Validation error: {error}");
     }));
 
-    // Get surface capabilities and configure
-    // Use Rgba16Float for HDR support (must match CAMetalLayer.pixelFormat)
+    // Get surface capabilities and configure.
+    // Prefer HDR (Rgba16Float) when supported by the surface.
     let surface_caps = wgpu_surface.get_capabilities(&adapter);
-    let _ = &surface_caps; // suppress unused warning
-    let surface_format = wgpu::TextureFormat::Rgba16Float;
-
+    let surface_format = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -262,7 +267,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             match state.surface.get_current_texture() {
                 Ok(o) => o,
                 Err(e) => {
-                    tracing::error!("[GpuSurface] render failed: could not get texture after reconfigure: {e}");
+                    tracing::error!(
+                        "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
+                    );
                     return false;
                 }
             }

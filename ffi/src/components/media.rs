@@ -450,9 +450,134 @@ impl IntoFFI for MediaPickerConfig {
 ffi_view!(MediaPickerConfig, WuiMediaPicker, media_picker);
 
 // =============================================================================
-// Media Loading Callback
+// MediaLoader FFI - Environment Injection
 // =============================================================================
 
-// Re-export the media loading types from waterui-media for native use
-pub use waterui_media::media_picker::{MediaLoadCallback, MediaLoadResult};
+use alloc::boxed::Box;
+use crate::WuiEnv;
+use waterui_media::Media;
+use waterui_media::media_picker::MediaLoader;
 
+/// FFI representation of the result from loading media.
+///
+/// For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
+/// are populated. For regular images/videos, only `url_ptr` is used.
+#[repr(C)]
+pub struct MediaLoadResult {
+    /// Pointer to UTF-8 encoded URL string (image URL for Live Photos).
+    pub url_ptr: *const u8,
+    /// Length of the URL string in bytes.
+    pub url_len: usize,
+    /// Pointer to UTF-8 encoded video URL (only for Live Photos).
+    pub video_url_ptr: *const u8,
+    /// Length of the video URL string in bytes.
+    pub video_url_len: usize,
+    /// Media type: 0 = Image, 1 = Video, 2 = LivePhoto.
+    pub media_type: u8,
+}
+
+/// Media type constants matching native implementations.
+pub mod media_type {
+    /// Image media type.
+    pub const IMAGE: u8 = 0;
+    /// Video media type.
+    pub const VIDEO: u8 = 1;
+    /// Live Photo / Motion Photo media type.
+    pub const LIVE_PHOTO: u8 = 2;
+}
+
+/// A callback for receiving loaded media from native code.
+///
+/// This is a C-compatible closure that native code calls with the result.
+#[repr(C)]
+pub struct MediaLoadCallback {
+    /// Opaque pointer to the callback data.
+    pub data: *mut (),
+    /// Function to call with the result. This consumes the callback.
+    pub call: unsafe extern "C" fn(*mut (), MediaLoadResult),
+}
+
+/// Type alias for the native media load function.
+pub type MediaLoadFn = unsafe extern "C" fn(u32, MediaLoadCallback);
+
+/// Installs a MediaLoader into the environment from native function pointer.
+///
+/// Native backends call this during initialization to register their media loading
+/// implementation. When Rust code calls `Selected::load()`, it will invoke the
+/// native function through this installed loader.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `env` is a valid pointer to a `WuiEnv`
+/// - `load_fn` is a valid function pointer to the native media loader implementation
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_media_loader(
+    env: *mut WuiEnv,
+    load_fn: MediaLoadFn,
+) {
+    if env.is_null() {
+        return;
+    }
+    let env = unsafe { &mut *env };
+
+    let loader = MediaLoader::new(move |selected, callback| {
+        // Create a boxed callback that the native code will invoke
+        let callback_box: Box<Box<dyn FnOnce(Media)>> = Box::new(callback);
+        let callback_data = Box::into_raw(callback_box).cast::<()>();
+
+        unsafe extern "C" fn callback_trampoline(data: *mut (), result: MediaLoadResult) {
+            // Reconstruct the callback from the raw pointer
+            let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(Media)>>()) };
+
+            // Convert MediaLoadResult to Media
+            let media = unsafe { media_load_result_to_media(result) };
+
+            // Call the original Rust callback
+            callback(media);
+        }
+
+        let ffi_callback = MediaLoadCallback {
+            data: callback_data,
+            call: callback_trampoline,
+        };
+
+        // Call the native function pointer
+        unsafe {
+            load_fn(selected.id(), ffi_callback);
+        }
+    });
+
+    env.insert(loader);
+}
+
+/// Convert FFI MediaLoadResult to Rust Media enum.
+///
+/// # Safety
+///
+/// The caller must ensure the `url_ptr` and `video_url_ptr` (if non-null) point to
+/// valid UTF-8 strings of the specified lengths.
+unsafe fn media_load_result_to_media(result: MediaLoadResult) -> Media {
+    // Parse the main URL
+    let url_slice = unsafe { core::slice::from_raw_parts(result.url_ptr, result.url_len) };
+    let url_str = unsafe { core::str::from_utf8_unchecked(url_slice) };
+    let url: Url = url_str.parse().expect("Invalid URL from native");
+
+    match result.media_type {
+        media_type::IMAGE => Media::Image(url),
+        media_type::VIDEO => Media::Video(url),
+        media_type::LIVE_PHOTO => {
+            // Parse the video URL
+            let video_slice =
+                unsafe { core::slice::from_raw_parts(result.video_url_ptr, result.video_url_len) };
+            let video_str = unsafe { core::str::from_utf8_unchecked(video_slice) };
+            let video_url: Url = video_str.parse().expect("Invalid video URL from native");
+
+            Media::LivePhoto(LivePhotoSource::new(url, video_url))
+        }
+        _ => {
+            tracing::warn!("Unknown media type {}, treating as image", result.media_type);
+            Media::Image(url)
+        }
+    }
+}

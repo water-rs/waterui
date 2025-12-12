@@ -29,6 +29,21 @@ typedef struct WuiArray {
 
 
 /**
+ * Image media type.
+ */
+#define IMAGE 0
+
+/**
+ * Video media type.
+ */
+#define VIDEO 1
+
+/**
+ * Live Photo / Motion Photo media type.
+ */
+#define LIVE_PHOTO 2
+
+/**
  * FFI representation of StretchAxis enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
@@ -1519,6 +1534,56 @@ typedef struct WuiMediaPicker {
   struct WuiFn_WuiSelected on_selection;
 } WuiMediaPicker;
 
+/**
+ * FFI representation of the result from loading media.
+ *
+ * For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
+ * are populated. For regular images/videos, only `url_ptr` is used.
+ */
+typedef struct MediaLoadResult {
+  /**
+   * Pointer to UTF-8 encoded URL string (image URL for Live Photos).
+   */
+  const uint8_t *url_ptr;
+  /**
+   * Length of the URL string in bytes.
+   */
+  uintptr_t url_len;
+  /**
+   * Pointer to UTF-8 encoded video URL (only for Live Photos).
+   */
+  const uint8_t *video_url_ptr;
+  /**
+   * Length of the video URL string in bytes.
+   */
+  uintptr_t video_url_len;
+  /**
+   * Media type: 0 = Image, 1 = Video, 2 = LivePhoto.
+   */
+  uint8_t media_type;
+} MediaLoadResult;
+
+/**
+ * A callback for receiving loaded media from native code.
+ *
+ * This is a C-compatible closure that native code calls with the result.
+ */
+typedef struct MediaLoadCallback {
+  /**
+   * Opaque pointer to the callback data.
+   */
+  void *data;
+  /**
+   * Function to call with the result. This consumes the callback.
+   */
+  void (*call)(void*, struct MediaLoadResult);
+} MediaLoadCallback;
+
+/**
+ * Type alias for the native media load function.
+ */
+typedef void (*MediaLoadFn)(uint32_t, struct MediaLoadCallback);
+
 typedef struct WuiListItem {
   struct WuiAnyView *content;
 } WuiListItem;
@@ -1633,51 +1698,6 @@ typedef struct WuiLivePhotoSource {
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
-
-/**
- * Result of loading media from native platform.
- *
- * For Live Photos / Motion Photos, both `url_ptr` (image) and `video_url_ptr` (video)
- * are populated. For regular images/videos, only `url_ptr` is used.
- */
-typedef struct MediaLoadResult {
-  /**
-   * Pointer to UTF-8 encoded URL string (image URL for Live Photos).
-   */
-  const uint8_t *url_ptr;
-  /**
-   * Length of the URL string in bytes.
-   */
-  uintptr_t url_len;
-  /**
-   * Pointer to UTF-8 encoded video URL (only for Live Photos).
-   */
-  const uint8_t *video_url_ptr;
-  /**
-   * Length of the video URL string in bytes.
-   */
-  uintptr_t video_url_len;
-  /**
-   * Media type: 0 = Image, 1 = Video, 2 = `LivePhoto`.
-   */
-  uint8_t media_type;
-} MediaLoadResult;
-
-/**
- * A callback for receiving loaded media from native code.
- *
- * This is a C-compatible closure that native code calls with the result.
- */
-typedef struct MediaLoadCallback {
-  /**
-   * Opaque pointer to the callback data.
-   */
-  void *data;
-  /**
-   * Function to call with the result. This consumes the callback.
-   */
-  void (*call)(void*, struct MediaLoadResult);
-} MediaLoadCallback;
 
 
 
@@ -2645,6 +2665,21 @@ struct WuiMediaPicker waterui_force_as_media_picker(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_media_picker_id(void);
+
+/**
+ * Installs a MediaLoader into the environment from native function pointer.
+ *
+ * Native backends call this during initialization to register their media loading
+ * implementation. When Rust code calls `Selected::load()`, it will invoke the
+ * native function through this installed loader.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `env` is a valid pointer to a `WuiEnv`
+ * - `load_fn` is a valid function pointer to the native media loader implementation
+ */
+void waterui_env_install_media_loader(struct WuiEnv *env, MediaLoadFn load_fn);
 
 /**
  * # Safety

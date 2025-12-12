@@ -5,7 +5,7 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, env::with, id::Identifable, view::TupleViews, views::ForEach};
 
 use crate::{
-    LazyContainer, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    Layout, LazyContainer, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     container::FixedContainer,
     stack::{Axis, VerticalAlignment},
 };
@@ -411,7 +411,10 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // Inject the horizontal axis into the container
-        with(LazyContainer::new(self.layout, self.contents), Axis::Horizontal)
+        with(
+            LazyContainer::new(self.layout, self.contents),
+            Axis::Horizontal,
+        )
     }
 }
 
