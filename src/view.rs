@@ -9,7 +9,8 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-use nami::{Binding, signal::IntoComputed};
+use executor_core::spawn_local;
+use nami::{Binding, Signal, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -34,6 +35,7 @@ use crate::{
     background::{Background, ForegroundColor},
     gesture::{Gesture, GestureObserver, TapGesture},
     metadata::secure::Secure,
+    view_ext::OnChange,
 };
 use crate::{
     component::{Text, badge::Badge, focu::Focused},
@@ -79,6 +81,27 @@ pub trait ViewExt: View + Sized {
         equals: T,
     ) -> Metadata<Focused> {
         Metadata::new(self, Focused::new(value, equals))
+    }
+
+    /// Monitors a signal for changes and triggers a handler when the signal's value changes.
+    ///
+    /// Compare to manual watching, this method automatically manages the watcher lifecycle.
+    fn on_change<C, F>(self, source: &C, handler: F) -> OnChange<Self, C::Guard>
+    where
+        C: Signal,
+        C::Output: PartialEq + Clone,
+        F: Fn(C::Output) + 'static,
+    {
+        OnChange::<Self, C::Guard>::new(self, source, handler)
+    }
+
+    ///
+    fn task<Fut>(self, task: Fut) -> Metadata<Retain>
+    where
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        let local_task = spawn_local(task);
+        self.retain(local_task)
     }
 
     /// Converts this view to an `AnyView` type-erased container.

@@ -189,66 +189,82 @@ fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
     var p = vec2<f32>((input.uv.x - 0.5) * aspect, input.uv.y);
     p.x *= 1.15;
 
-    let y = clamp(p.y, 0.0, 1.0);
+    // Scale Y so the flame fades out *before* the top edge.
+    let y = max(p.y, 0.0) * 1.25;
+    let y01 = clamp(y, 0.0, 1.0);
     let wind = globals.wind;
 
     // Bend + sway (stronger towards the top), plus a gusty drift.
-    let sway = 0.10 * sin(t * 0.90 + y * 2.4) + 0.06 * sin(t * 1.70 + y * 4.8);
-    let gust = (fbm(vec2<f32>(y * 1.20, t * 0.25)) - 0.5) * 0.12;
-    let center = (sway + gust) * (0.25 + 0.75 * y) + wind * y * y;
+    let sway = 0.10 * sin(t * 0.90 + y01 * 2.4) + 0.06 * sin(t * 1.70 + y01 * 4.8);
+    let gust = (fbm(vec2<f32>(y01 * 1.20, t * 0.25)) - 0.5) * 0.12;
+    let center = (sway + gust) * (0.20 + 0.80 * y01) + wind * y01 * y01;
 
     // Flow field for turbulence (rising motion).
-    let rise = t * 2.0;
-    let q = vec2<f32>((p.x - center) * 2.2, y * 3.5 - rise);
+    let rise = t * 2.2;
+    let q = vec2<f32>((p.x - center) * 2.4, y * 3.8 - rise);
 
-    let n = fbm(q + vec2<f32>(0.0, t * 0.20));
-    let r = rfbm(q * 1.4 + vec2<f32>(2.3, -t * 0.6));
+    let n = fbm(q + vec2<f32>(0.0, t * 0.25));
+    let r = rfbm(q * 1.6 + vec2<f32>(2.3, -t * 0.7));
+    let tongue_n = rfbm(vec2<f32>((p.x - center) * 4.2, y * 7.5 - t * 4.5));
+    let tongues = smoothstep(0.35, 0.98, tongue_n);
 
     // Width profile: wide base -> thin tip.
-    let base_w = 0.19;
-    let tip_w = 0.008;
-    let w = mix(base_w, tip_w, pow(y, 1.65));
-    let wv = w * (0.70 + 0.55 * n);
+    let base_w = 0.18;
+    let tip_w = 0.006;
+    let w = mix(base_w, tip_w, pow(y01, 1.55));
+    let wv = w * (0.65 + 0.50 * n) * (0.80 + 0.55 * tongues);
 
     // Lateral turbulence (adds tongues and breaks symmetry).
-    let x_turb = (fbm(q * 2.0 + vec2<f32>(12.0, t)) - 0.5) * 0.08 * (0.2 + 0.8 * y);
+    let x_turb =
+        (fbm(q * 2.3 + vec2<f32>(12.0, t * 1.6)) - 0.5) * 0.12 * (0.15 + 0.85 * y01);
     let d = abs((p.x - center) + x_turb);
 
     // Main body mask with soft edge.
     var mask = 1.0 - smoothstep(wv * 0.85, wv, d);
 
-    // Streaky breakup (more towards the top).
-    let breakup = smoothstep(0.20, 0.90, r);
-    mask *= mix(0.55, 1.0, breakup);
+    // Add flame tongues (mostly in the upper half).
+    let tongue_halo = 1.0 - smoothstep(wv * 0.45, wv * 2.4, d);
+    mask = clamp(mask + tongues * tongue_halo * (0.10 + 0.55 * y01), 0.0, 1.0);
+
+    // Streaky breakup.
+    let breakup = smoothstep(0.15, 0.90, r);
+    mask *= mix(0.30, 1.0, breakup);
+
+    // Fade-in at the base (avoid hard clip on the bottom edge).
+    mask *= smoothstep(0.00, 0.03, y01);
 
     // Soft tip fade (prevents the “black bar” truncation).
-    let tip_fade = 1.0 - smoothstep(0.92, 1.18, y + (n - 0.5) * 0.10);
+    let tip_fade = 1.0 - smoothstep(0.95, 1.30, y + (n - 0.5) * 0.12);
     mask *= clamp(tip_fade, 0.0, 1.0);
 
     // Halo glow around the flame.
-    let halo = (1.0 - smoothstep(wv * 0.9, wv * 3.0, d)) * 0.35;
+    let halo = (1.0 - smoothstep(wv * 0.8, wv * 3.2, d)) * (0.22 + 0.35 * y01);
 
     // Core is hottest near the centerline.
-    let core = exp(-d * d / (wv * wv * 0.10 + 1e-4));
+    let core = exp(-d * d / (wv * wv * 0.08 + 1e-4));
 
     // Flicker
-    let flicker = 0.85 + 0.15 * sin(t * 12.0 + n * 6.28318);
-    let intensity = (mask * 0.85 + halo) * flicker;
+    let flicker = 0.82 + 0.18 * sin(t * 11.0 + (n + tongues) * 6.28318);
+    let intensity = (mask * 0.75 + halo) * flicker;
 
     // Temperature: hot core + hot base, cooler top/edges.
-    let heat = clamp(core * 0.80 + (1.0 - y) * 0.28 + mask * 0.20, 0.0, 1.0);
+    let heat = clamp(core * 0.85 + (1.0 - y01) * 0.30 + tongues * 0.10, 0.0, 1.0);
 
     // HDR emission (scaled so bloom can do the heavy lifting).
     let strength = globals.flame_strength;
-    var col = fire_palette(heat) * intensity * (0.75 + 4.5 * pow(heat, 1.25)) * strength;
+    let outer_col = vec3<f32>(1.60, 0.34, 0.03);
+    let inner_col = vec3<f32>(2.80, 1.90, 0.55);
+    let mixv = clamp(pow(heat, 1.35) * 0.90 + core * 0.20, 0.0, 1.0);
+    var col = mix(outer_col, inner_col, mixv) * intensity;
+    col *= (0.65 + 4.8 * pow(heat, 1.6)) * strength;
 
     // Slight soot/dimming near edges in the upper flame.
-    let soot = smoothstep(0.15, 0.85, y) * smoothstep(wv * 0.25, wv * 1.8, d);
-    col *= 1.0 - 0.35 * soot;
+    let soot = smoothstep(0.25, 0.95, y01) * smoothstep(wv * 0.35, wv * 2.2, d);
+    col *= 1.0 - 0.45 * soot;
 
     // Background (subtle warm base).
     var bg = vec3<f32>(0.0015, 0.0018, 0.0025);
-    bg += vec3<f32>(0.010, 0.004, 0.002) * exp(-y * 4.0);
+    bg += vec3<f32>(0.010, 0.004, 0.002) * exp(-y01 * 4.0);
 
     return vec4<f32>(bg + col, 1.0);
 }
@@ -306,11 +322,14 @@ fn fs_final(input: VertexOutput) -> @location(0) vec4<f32> {
     // subtle vignette before tonemap
     col *= 0.55 + 0.45 * vignette(input.uv, aspect);
 
-    // tonemap to displayable range
-    col = aces(col);
-
-    // Push into extended range on HDR surfaces.
-    col *= globals.edr_gain;
+    // Tonemap: SDR uses ACES; HDR uses a white-point rolloff that can exceed 1.0.
+    let edr = globals.edr_gain;
+    if (edr > 1.0) {
+        col = max(col, vec3<f32>(0.0));
+        col = col / (vec3<f32>(1.0) + col / edr);
+    } else {
+        col = aces(col);
+    }
 
     // film grain (tiny, post-tonemap) to avoid banding
     let px = floor(input.uv * res);
@@ -322,7 +341,8 @@ fn fs_final(input: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 struct FlameRenderer {
-    start_time: Instant,
+    last_tick: Instant,
+    sim_time: f32,
 
     globals_buffer: Option<wgpu::Buffer>,
     globals_bind_group: Option<wgpu::BindGroup>,
@@ -353,7 +373,8 @@ struct FlameRenderer {
 impl Default for FlameRenderer {
     fn default() -> Self {
         Self {
-            start_time: Instant::now(),
+            last_tick: Instant::now(),
+            sim_time: 0.0,
 
             globals_buffer: None,
             globals_bind_group: None,
@@ -600,7 +621,8 @@ impl FlameRenderer {
 
 impl GpuRenderer for FlameRenderer {
     fn setup(&mut self, ctx: &GpuContext) {
-        self.start_time = Instant::now();
+        self.last_tick = Instant::now();
+        self.sim_time = 0.0;
 
         let shader = ctx
             .device
@@ -944,23 +966,32 @@ impl GpuRenderer for FlameRenderer {
             return;
         };
 
+        // Keep animation stable even if a frame stalls.
+        let now = Instant::now();
+        let dt = now
+            .saturating_duration_since(self.last_tick)
+            .as_secs_f32()
+            .min(1.0 / 30.0);
+        self.last_tick = now;
+        self.sim_time += dt;
+
         // Update globals.
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let elapsed = self.sim_time;
         let is_hdr = frame.is_hdr();
         #[allow(clippy::cast_precision_loss)]
         let (w, h) = (frame.width as f32, frame.height as f32);
 
-        // HDR tuning: use EDR gain and stronger bloom on float surfaces.
-        let edr_gain = if is_hdr { 3.5 } else { 1.0 };
-        let bloom_intensity = if is_hdr { 2.8 } else { 1.1 };
-        let bloom_threshold = if is_hdr { 1.15 } else { 1.0 };
-        let bloom_radius = if is_hdr { 3.0 } else { 1.8 };
-        let flame_strength = if is_hdr { 1.60 } else { 1.0 };
-        let wind = 0.16;
+        // HDR tuning: bigger highlight range + tighter bloom (to keep detail).
+        let edr_gain = if is_hdr { 6.0 } else { 1.0 };
+        let bloom_intensity = if is_hdr { 2.2 } else { 1.0 };
+        let bloom_threshold = if is_hdr { 2.2 } else { 1.0 };
+        let bloom_radius = if is_hdr { 2.2 } else { 1.6 };
+        let flame_strength = if is_hdr { 2.20 } else { 1.0 };
+        let wind = 0.12;
 
         let globals: [f32; 12] = [
             elapsed,
-            1.10, // exposure
+            1.15, // exposure
             bloom_threshold,
             bloom_intensity,
             edr_gain,

@@ -14,7 +14,7 @@
 - [x] MVP of Android backend
 - [x] CLI — shipped via the [`cli`](cli/) crate; future plugin scaffolding continues under 0.3 milestones.
 - [x] Gesture support
-- [ ] Hot reload
+- [x] Hot reload
 - [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
 - [x] Styling (Theme system)
 - [ ] Document all completed features in our book (👷WIP)
@@ -23,13 +23,12 @@
 
 - [x] Media widget — core playback components live in [`components/media`](components/media/)
 - [ ] Resource manager
-- [ ] Canvas API (👷WIP)
+- [x] Canvas API
 - [ ] Persistence
 - [ ] Automation UI test
 - [ ] Some platform-specific APIs (notification, camera, etc.)
 - [ ] Faster hot reload
-- [ ] Accessibility (👷WIP)
-  - [ ] Accessibility polish: expand semantics in [`src/accessibility.rs`](src/accessibility.rs) for custom widgets (media, rich text, etc.).
+- [x] Accessibility
 
 ## 0.4.0 - Self-Rendering MVP
 
@@ -39,7 +38,7 @@
 
 - [x] RichText (👷WIP) — base renderer shipped in [`src/widget/rich_text.rs`](src/widget/rich_text.rs); editing support tracked below.
   - [ ] RichTextField — interactive editing surface, caret management, and selection APIs.
-  - [ ] Built-in markdown support (👷WIP) — extend parser coverage (tables, callouts) and surface helpers in [`components/text`](components/text/).
+  - [x] Built-in markdown support
 
 ## 0.6.0 - Self-Rendering Enhancements
 
