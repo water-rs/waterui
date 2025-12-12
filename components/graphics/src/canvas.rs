@@ -6,32 +6,35 @@
 //! # Example
 //!
 //! ```ignore
-//! use waterui::graphics::{Canvas, DrawingContext};
-//! use waterui::graphics::kurbo::{Circle, Rect};
-//! use waterui::graphics::peniko::Color;
+//! use waterui::graphics::Canvas;
+//! use waterui::prelude::*;
 //!
 //! Canvas::new(|ctx: &mut DrawingContext| {
-//!     // Fill a circle
-//!     ctx.fill(
-//!         Circle::new((100.0, 100.0), 50.0),
-//!         Color::RED,
-//!     );
+//!     // Fill a rectangle
+//!     let rect = Rect::from_size(Size::new(200.0, 150.0));
+//!     ctx.set_fill_style(Color::red());
+//!     ctx.fill_rect(rect);
 //!
-//!     // Stroke a rectangle
-//!     ctx.stroke(
-//!         Rect::new(10.0, 10.0, 200.0, 150.0),
-//!         Color::BLUE,
-//!         2.0,
-//!     );
+//!     // Draw with transforms
+//!     ctx.save();
+//!     ctx.translate(100.0, 100.0);
+//!     ctx.rotate(0.785); // 45 degrees
+//!     ctx.fill_rect(Rect::from_size(Size::new(50.0, 50.0)));
+//!     ctx.restore();
 //! })
 //! ```
 
+use crate::conversions::{rect_to_kurbo, resolved_color_to_peniko};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::path::Path;
+use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
+use waterui_core::layout::Rect;
 
-// Re-export vello types for user convenience
-pub use vello::kurbo;
-pub use vello::peniko;
-pub use vello::peniko::Color;
+// Internal imports for rendering (not exposed to users)
+use vello::{kurbo, peniko};
+
+// For signal operations
+use nami::Signal;
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -81,12 +84,20 @@ impl waterui_core::View for Canvas {
 ///
 /// This is passed to your drawing callback each frame. Use it to draw
 /// shapes, paths, text, and images.
+///
+/// The context maintains a state stack for transforms, styles, and other
+/// drawing properties. Use `save()` and `restore()` to push and pop state.
 pub struct DrawingContext<'a> {
     scene: &'a mut vello::Scene,
+    env: &'a waterui_core::Environment,
     /// Width of the canvas in pixels.
     pub width: f32,
     /// Height of the canvas in pixels.
     pub height: f32,
+    /// State stack for save/restore operations.
+    state_stack: Vec<DrawingState>,
+    /// Current drawing state.
+    current_state: DrawingState,
 }
 
 impl core::fmt::Debug for DrawingContext<'_> {
@@ -222,6 +233,265 @@ impl DrawingContext<'_> {
     #[must_use]
     pub const fn scene(&mut self) -> &mut vello::Scene {
         self.scene
+    }
+
+    // ========================================================================
+    // State Management (Phase 1)
+    // ========================================================================
+
+    /// Saves the current drawing state to the stack.
+    ///
+    /// This saves transforms, styles, line properties, and other state.
+    /// Call `restore()` to pop the saved state.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.save();
+    /// ctx.translate(100.0, 50.0);
+    /// ctx.rotate(0.785);
+    /// // ... draw with transform ...
+    /// ctx.restore(); // Back to original state
+    /// ```
+    pub fn save(&mut self) {
+        self.state_stack.push(self.current_state.clone());
+    }
+
+    /// Restores the most recently saved drawing state from the stack.
+    ///
+    /// If there's no saved state, this does nothing.
+    pub fn restore(&mut self) {
+        if let Some(state) = self.state_stack.pop() {
+            self.current_state = state;
+        }
+    }
+
+    // ========================================================================
+    // Transform Helpers (Phase 1)
+    // ========================================================================
+
+    /// Translates the current transform by (x, y).
+    ///
+    /// This affects all subsequent drawing operations until `restore()`.
+    pub fn translate(&mut self, x: f32, y: f32) {
+        let translation = kurbo::Affine::translate((f64::from(x), f64::from(y)));
+        self.current_state.transform = self.current_state.transform * translation;
+    }
+
+    /// Rotates the current transform by the given angle (in radians).
+    ///
+    /// Positive angles rotate clockwise.
+    pub fn rotate(&mut self, angle: f32) {
+        let rotation = kurbo::Affine::rotate(f64::from(angle));
+        self.current_state.transform = self.current_state.transform * rotation;
+    }
+
+    /// Scales the current transform by (x, y).
+    ///
+    /// Values less than 1.0 shrink, greater than 1.0 enlarge.
+    pub fn scale(&mut self, x: f32, y: f32) {
+        let scale = kurbo::Affine::scale_non_uniform(f64::from(x), f64::from(y));
+        self.current_state.transform = self.current_state.transform * scale;
+    }
+
+    /// Applies an arbitrary affine transform.
+    ///
+    /// The transform is specified as a 2x3 matrix: [a, b, c, d, e, f]
+    /// which represents the matrix [[a, c, e], [b, d, f], [0, 0, 1]].
+    pub fn transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+        let affine = kurbo::Affine::new([
+            f64::from(a),
+            f64::from(b),
+            f64::from(c),
+            f64::from(d),
+            f64::from(e),
+            f64::from(f),
+        ]);
+        self.current_state.transform = self.current_state.transform * affine;
+    }
+
+    /// Replaces the current transform with the specified matrix.
+    pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+        self.current_state.transform = kurbo::Affine::new([
+            f64::from(a),
+            f64::from(b),
+            f64::from(c),
+            f64::from(d),
+            f64::from(e),
+            f64::from(f),
+        ]);
+    }
+
+    /// Resets the transform to the identity matrix.
+    pub fn reset_transform(&mut self) {
+        self.current_state.transform = kurbo::Affine::IDENTITY;
+    }
+
+    // ========================================================================
+    // Path Drawing (Phase 1)
+    // ========================================================================
+
+    /// Creates a new empty path.
+    ///
+    /// Use the returned `Path` to build complex shapes, then draw it with
+    /// `fill_path()` or `stroke_path()`.
+    #[must_use]
+    pub fn begin_path(&self) -> Path {
+        Path::new()
+    }
+
+    /// Fills a path with the current fill style.
+    pub fn fill_path(&mut self, path: &Path) {
+        let brush = self.resolve_fill_style();
+        self.scene.fill(
+            peniko::Fill::NonZero,
+            self.current_state.transform,
+            &brush,
+            None,
+            path.inner(),
+        );
+    }
+
+    /// Strokes a path with the current stroke style and line properties.
+    pub fn stroke_path(&mut self, path: &Path) {
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            path.inner(),
+        );
+    }
+
+    // ========================================================================
+    // Rectangle Convenience Methods (Phase 3)
+    // ========================================================================
+
+    /// Fills a rectangle with the current fill style.
+    pub fn fill_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let brush = self.resolve_fill_style();
+        self.scene.fill(
+            peniko::Fill::NonZero,
+            self.current_state.transform,
+            &brush,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    /// Strokes a rectangle with the current stroke style.
+    pub fn stroke_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    /// Clears a rectangle to transparent black.
+    pub fn clear_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let transparent = peniko::Color::TRANSPARENT;
+        self.scene.fill(
+            peniko::Fill::NonZero,
+            self.current_state.transform,
+            transparent,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    // ========================================================================
+    // Style Setters (Phase 1 & 4)
+    // ========================================================================
+
+    /// Sets the fill style (color or gradient).
+    pub fn set_fill_style(&mut self, style: impl Into<FillStyle>) {
+        self.current_state.fill_style = style.into();
+    }
+
+    /// Sets the stroke style (color or gradient).
+    pub fn set_stroke_style(&mut self, style: impl Into<StrokeStyle>) {
+        self.current_state.stroke_style = style.into();
+    }
+
+    /// Sets the line width for stroking operations.
+    pub fn set_line_width(&mut self, width: f32) {
+        self.current_state.line_width = width;
+    }
+
+    /// Sets the line cap style (how stroke endpoints are drawn).
+    pub fn set_line_cap(&mut self, cap: LineCap) {
+        self.current_state.line_cap = cap;
+    }
+
+    /// Sets the line join style (how stroke corners are drawn).
+    pub fn set_line_join(&mut self, join: LineJoin) {
+        self.current_state.line_join = join;
+    }
+
+    /// Sets the miter limit for miter line joins.
+    pub fn set_miter_limit(&mut self, limit: f32) {
+        self.current_state.miter_limit = limit;
+    }
+
+    /// Sets the line dash pattern.
+    ///
+    /// Pass an empty vector to disable dashing.
+    pub fn set_line_dash(&mut self, segments: Vec<f32>) {
+        self.current_state.line_dash = segments;
+    }
+
+    /// Sets the line dash offset (where the dash pattern starts).
+    pub fn set_line_dash_offset(&mut self, offset: f32) {
+        self.current_state.line_dash_offset = offset;
+    }
+
+    /// Sets the global alpha (opacity) for all drawing operations.
+    ///
+    /// Values range from 0.0 (transparent) to 1.0 (opaque).
+    pub fn set_global_alpha(&mut self, alpha: f32) {
+        self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    // ========================================================================
+    // Internal Helper Methods
+    // ========================================================================
+
+    /// Resolves the current fill style to a peniko brush.
+    fn resolve_fill_style(&self) -> peniko::Brush {
+        match &self.current_state.fill_style {
+            FillStyle::Color(color) => {
+                // Resolve the color in the current environment
+                let computed = color.resolve(self.env);
+                // Get the current value from the computed signal
+                let resolved = computed.get();
+                let peniko_color = resolved_color_to_peniko(resolved);
+                peniko_color.into()
+            }
+        }
+    }
+
+    /// Resolves the current stroke style to a peniko brush.
+    fn resolve_stroke_style(&self) -> peniko::Brush {
+        match &self.current_state.stroke_style {
+            StrokeStyle::Color(color) => {
+                // Resolve the color in the current environment
+                let computed = color.resolve(self.env);
+                // Get the current value from the computed signal
+                let resolved = computed.get();
+                let peniko_color = resolved_color_to_peniko(resolved);
+                peniko_color.into()
+            }
+        }
     }
 }
 
@@ -402,8 +672,11 @@ where
         #[allow(clippy::cast_precision_loss)]
         let mut ctx = DrawingContext {
             scene: &mut self.scene,
+            env: &waterui_core::Environment::new(), // TODO: Thread actual environment in future phase
             width: frame.width as f32,
             height: frame.height as f32,
+            state_stack: Vec::new(),
+            current_state: DrawingState::default(),
         };
         (self.draw_fn)(&mut ctx);
 
