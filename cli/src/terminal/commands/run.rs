@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 
 use crate::shell::{self, display_output};
 use crate::{error, header, line, note, success, warn};
@@ -153,60 +153,31 @@ pub async fn run(args: Args) -> Result<()> {
         TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
     };
 
+    // Get hot reload event receiver if available
+    let hot_reload_rx = hot_reload_runner.as_ref().map(|r| r.events().clone());
+
     loop {
-        // Poll hot reload events if runner exists
-        if let Some(ref runner) = hot_reload_runner {
-            while let Ok(event) = runner.events().try_recv() {
-                match event {
-                    HotReloadEvent::ServerStarted { host, port } => {
-                        shell::status("◉", &format!("Hot reload server on {host}:{port}"));
-                    }
-                    HotReloadEvent::FileChanged => {
-                        shell::status("◌", "File changed, rebuilding...");
-                    }
-                    HotReloadEvent::Rebuilding => {
-                        shell::status("◐", "Building...");
-                    }
-                    HotReloadEvent::Built { path } => {
-                        shell::status("◑", &format!("Built: {}", path.display()));
-                    }
-                    HotReloadEvent::BuildFailed { error } => {
-                        error!("Build failed: {error}");
-                    }
-                    HotReloadEvent::Broadcast => {
-                        success!("Hot reload: updated");
-                    }
-                }
+        // Drain all pending hot reload events first (non-blocking)
+        if let Some(ref rx) = hot_reload_rx {
+            while let Ok(event) = rx.try_recv() {
+                handle_hot_reload_event(event);
             }
         }
 
-        // Poll device events
-        match running.next().await {
-            Some(DeviceEvent::Started) => {
-                shell::status("●", "Application started");
+        // Wait for next event with a short timeout so we can check hot reload events periodically
+        let timeout = smol::Timer::after(std::time::Duration::from_millis(100));
+        let device_event = running.next();
+
+        futures::select! {
+            _ = FutureExt::fuse(timeout) => {
+                // Timeout - loop back to check hot reload events
+                continue;
             }
-            Some(DeviceEvent::Stopped) => {
-                shell::status("○", "Application stopped");
-                break;
+            dev_event = FutureExt::fuse(device_event) => {
+                if handle_device_event(dev_event, platform_name) {
+                    break;
+                }
             }
-            Some(DeviceEvent::Stdout { message }) => {
-                line!("[stdout] {message}");
-            }
-            Some(DeviceEvent::Stderr { message }) => {
-                warn!("[stderr] {message}");
-            }
-            Some(DeviceEvent::Log { level, message }) => {
-                shell::device_log(platform_name, level, message);
-            }
-            Some(DeviceEvent::Exited) => {
-                note!("Application exited");
-                break;
-            }
-            Some(DeviceEvent::Crashed(msg)) => {
-                error!("Application crashed: {msg}");
-                break;
-            }
-            None => break,
         }
     }
 
@@ -268,7 +239,9 @@ where
 
     // Build and package while device launches in background
     shell::status("▶", "Building...");
-    platform.build(project, BuildOptions::new(false)).await?;
+    platform
+        .build(project, BuildOptions::new(false, hot_reload))
+        .await?;
     shell::status("▶", "Packaging...");
     let artifact = platform
         .package(project, PackageOptions::new(false, true))
@@ -449,5 +422,66 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Ios => "iOS Simulator",
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
+    }
+}
+
+/// Handle a hot reload event, displaying status to the user.
+fn handle_hot_reload_event(event: HotReloadEvent) {
+    match event {
+        HotReloadEvent::ServerStarted { host, port } => {
+            shell::status("◉", &format!("Hot reload server on {host}:{port}"));
+        }
+        HotReloadEvent::FileChanged => {
+            shell::status("◌", "File changed, rebuilding...");
+        }
+        HotReloadEvent::Rebuilding => {
+            shell::status("◐", "Building...");
+        }
+        HotReloadEvent::Built { path } => {
+            shell::status("◑", &format!("Built: {}", path.display()));
+        }
+        HotReloadEvent::BuildFailed { error } => {
+            error!("Build failed: {error}");
+        }
+        HotReloadEvent::Broadcast => {
+            success!("Hot reload: updated");
+        }
+    }
+}
+
+/// Handle a device event.
+///
+/// Returns `true` if the event loop should break.
+fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool {
+    match event {
+        Some(DeviceEvent::Started) => {
+            shell::status("●", "Application started");
+            false
+        }
+        Some(DeviceEvent::Stopped) => {
+            shell::status("○", "Application stopped");
+            true
+        }
+        Some(DeviceEvent::Stdout { message }) => {
+            line!("[stdout] {message}");
+            false
+        }
+        Some(DeviceEvent::Stderr { message }) => {
+            warn!("[stderr] {message}");
+            false
+        }
+        Some(DeviceEvent::Log { level, message }) => {
+            shell::device_log(platform_name, level, message);
+            false
+        }
+        Some(DeviceEvent::Exited) => {
+            note!("Application exited");
+            true
+        }
+        Some(DeviceEvent::Crashed(msg)) => {
+            error!("Application crashed: {msg}");
+            true
+        }
+        None => true,
     }
 }
