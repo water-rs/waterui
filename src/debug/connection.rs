@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use zenwave::websocket;
 
@@ -27,18 +28,36 @@ pub struct CliReceiver {
     socket: zenwave::websocket::WebSocket,
 }
 
+/// Connection timeout in seconds.
+const CONNECTION_TIMEOUT_SECS: u64 = 5;
+
 impl CliConnection {
     /// Connect to the CLI hot reload server.
     ///
+    /// Times out after 5 seconds if the connection cannot be established.
+    ///
     /// # Errors
-    /// Returns an error if the connection fails.
+    /// Returns an error if the connection fails or times out.
     pub async fn connect(config: HotReloadConfig) -> Result<Self, ConnectionError> {
         use alloc::string::ToString;
+        use core::time::Duration;
+
         let url = alloc::format!("ws://{}:{}", config.host(), config.port());
-        let socket = websocket::connect(&url)
-            .await
-            .map_err(|e| ConnectionError::WebSocket(e.to_string()))?;
-        Ok(Self { socket })
+
+        // Race the connection against a timeout
+        let timeout = native_executor::sleep(Duration::from_secs(CONNECTION_TIMEOUT_SECS));
+        let connect = websocket::connect(&url);
+
+        // Use select to race connection vs timeout
+        futures::select! {
+            result = Box::pin(connect).fuse() => {
+                let socket = result.map_err(|e| ConnectionError::WebSocket(e.to_string()))?;
+                Ok(Self { socket })
+            }
+            _ = Box::pin(timeout).fuse() => {
+                Err(ConnectionError::Timeout)
+            }
+        }
     }
 
     /// Convert into a receiver (consumes the connection).
