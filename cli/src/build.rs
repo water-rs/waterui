@@ -168,13 +168,65 @@ impl RustBuild {
 
     /// Build a hot-reloadable `.dylib` library.
     ///
+    /// Sets the `waterui_hot_reload_lib` cfg flag to enable hot reload entry points.
+    ///
     /// Return the path to the built library.
     ///
     /// # Errors
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_hot_reload_lib(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(false).await
+        let mut cmd = Command::new("cargo");
+        let mut cmd = command(&mut cmd)
+            .arg("build")
+            .arg("--lib")
+            .args(["--target", self.triple.to_string().as_str()])
+            .current_dir(&self.path)
+            // Enable hot reload lib feature via RUSTFLAGS
+            .env("RUSTFLAGS", "--cfg waterui_hot_reload_lib");
+
+        // Set BINDGEN_EXTRA_CLANG_ARGS for simulator builds
+        if self.triple.environment == Environment::Sim {
+            if let Some(clang_args) = self.bindgen_clang_args_for_simulator().await {
+                cmd = cmd.env("BINDGEN_EXTRA_CLANG_ARGS", clang_args);
+            }
+        }
+
+        let status = cmd
+            .status()
+            .await
+            .map_err(RustBuildError::FailToExecuteCargoBuild)?;
+
+        if !status.success() {
+            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Cargo build failed",
+            )));
+        }
+
+        // Get the target directory
+        let path = self.path.clone();
+        let metadata = unblock(move || {
+            cargo_metadata::MetadataCommand::new()
+                .current_dir(&path)
+                .no_deps()
+                .exec()
+                .map_err(|e| {
+                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e,
+                    ))
+                })
+        })
+        .await?;
+
+        let target_directory = metadata.target_directory.as_std_path();
+
+        let dir = target_directory
+            .join(self.triple.to_string())
+            .join("debug");
+
+        Ok(dir)
     }
 
     /// Generate BINDGEN_EXTRA_CLANG_ARGS for simulator builds.
