@@ -54,12 +54,8 @@ struct ContentView: View {
 | -------- | ------- | ------ |
 | iOS | SwiftUI | Ready |
 | macOS | AppKit | Ready |
-| Android | Compose | Ready |
-
-## More Features
-
-WaterUI Markdown also supports horizontal rules:
+| Android | View | Ready |
 
 ---
 
-And that's a quick overview of WaterUI's Markdown capabilities!
+Visit [WaterUI on GitHub](https://github.com/water-rs/waterui) for more information.
