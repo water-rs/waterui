@@ -177,7 +177,7 @@ impl View for Icon {
                     }
                 }
 
-                Native(config).anyview()
+                Native::new(config).anyview()
             });
         })
     }
