@@ -51,7 +51,7 @@ async fn build_rust_lib(
     triple: Triple,
     options: BuildOptions,
 ) -> eyre::Result<PathBuf> {
-    let build = RustBuild::new(project.root(), triple);
+    let build = RustBuild::new(project.root(), triple, options.is_hot_reload());
     let lib_dir = build.build_lib(options.is_release()).await?;
 
     // If output_dir is specified, copy the library there
