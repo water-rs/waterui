@@ -189,6 +189,11 @@ impl HotReloadServer {
         self.send_library(data);
         Ok(())
     }
+
+    /// Get a clone of the broadcast sender for sending library data.
+    pub(crate) fn broadcast_sender(&self) -> Sender<Vec<u8>> {
+        self.broadcast_tx.clone()
+    }
 }
 
 /// Build the skyzen router with WebSocket endpoint.
