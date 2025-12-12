@@ -444,14 +444,6 @@ typedef struct Computed_ResolvedFont Computed_ResolvedFont;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_Selected Computed_Selected;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
 typedef struct Computed_Str Computed_Str;
 
 /**
@@ -1492,8 +1484,6 @@ typedef struct WuiComputedVideo {
 
 typedef struct Computed_Video WuiComputed_Video;
 
-typedef struct Computed_Selected WuiComputed_Selected;
-
 /**
  * FFI representation of a selected media item.
  */
@@ -1521,15 +1511,11 @@ typedef struct WuiFn_WuiSelected {
  */
 typedef struct WuiMediaPicker {
   /**
-   * Pointer to Computed<Selected> for the current selection.
-   */
-  WuiComputed_Selected *selection;
-  /**
    * The filter type to apply.
    */
   enum WuiMediaFilterType filter;
   /**
-   * Callback when selection changes.
+   * Callback when selection changes. Native calls this when user picks media.
    */
   struct WuiFn_WuiSelected on_selection;
 } WuiMediaPicker;

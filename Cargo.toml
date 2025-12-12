@@ -5,8 +5,6 @@ members = [
     "components/*",
     "utils/*",
     "backends/hydrolysis",
-    # "plugins/i18n", We need more thoughtful design about i18n...
-    "window",
     "ffi",
     "derive",
     "cli",
