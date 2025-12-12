@@ -16,22 +16,6 @@ pub struct Project {
 }
 
 impl Project {
-    /// Build the `WaterUI` project.
-    ///
-    /// Equivalent to running `water build` in the project directory.
-    ///
-    /// Unlike `Platform::build`, this method returns the path to the built artifact, instead of the target directory.
-    ///
-    /// # Errors
-    /// - If the build process fails for any reason.
-    pub async fn build(
-        &self,
-        platform: impl Platform,
-        options: BuildOptions,
-    ) -> Result<PathBuf, eyre::Report> {
-        platform.build(self, options).await
-    }
-
     /// Run the `WaterUI` project on the specified device.
     ///
     /// This method handles building, packaging, and running the project.
@@ -45,7 +29,7 @@ impl Project {
 
         // Build rust library for the target platform
         platform
-            .build(self, BuildOptions::new(false))
+            .build(self, BuildOptions::new(false, hot_reload))
             .await
             .map_err(FailToRun::Build)?;
 

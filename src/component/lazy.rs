@@ -15,7 +15,11 @@
 
 use nami::collection::Collection;
 use waterui_core::{View, id::Identifable};
-use waterui_layout::{LazyContainer, scroll::scroll, stack::{HStackLayout, VStackLayout}};
+use waterui_layout::{
+    LazyContainer,
+    scroll::scroll,
+    stack::{HStackLayout, VStackLayout},
+};
 
 use crate::views::{ForEach, Views};
 
@@ -42,8 +46,17 @@ impl Lazy {
     }
 
     /// Creates a lazy vertical stack with custom spacing, wrapped in a scroll view.
-    pub fn vstack_spaced<V: View>(spacing: f32, contents: impl Views<View = V> + 'static) -> impl View {
-        scroll(LazyContainer::new(VStackLayout { spacing, ..Default::default() }, contents))
+    pub fn vstack_spaced<V: View>(
+        spacing: f32,
+        contents: impl Views<View = V> + 'static,
+    ) -> impl View {
+        scroll(LazyContainer::new(
+            VStackLayout {
+                spacing,
+                ..Default::default()
+            },
+            contents,
+        ))
     }
 
     /// Creates a lazy horizontal stack wrapped in a scroll view.
@@ -55,8 +68,17 @@ impl Lazy {
     }
 
     /// Creates a lazy horizontal stack with custom spacing, wrapped in a scroll view.
-    pub fn hstack_spaced<V: View>(spacing: f32, contents: impl Views<View = V> + 'static) -> impl View {
-        scroll(LazyContainer::new(HStackLayout { spacing, ..Default::default() }, contents))
+    pub fn hstack_spaced<V: View>(
+        spacing: f32,
+        contents: impl Views<View = V> + 'static,
+    ) -> impl View {
+        scroll(LazyContainer::new(
+            HStackLayout {
+                spacing,
+                ..Default::default()
+            },
+            contents,
+        ))
     }
 
     /// Creates a lazy vertical stack by iterating over a collection and generating views.

@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::{
     apple::platform::ApplePlatform,
+    debug,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, Running},
     utils::{command, run_command},
 };
@@ -215,108 +216,6 @@ async fn handle_app_exit(
     }
 }
 
-/// Find a crash report for the given app name created since the specified time.
-///
-/// Searches `~/Library/Logs/DiagnosticReports/` for crash reports created after `since`.
-async fn find_crash_report_since(app_name: &str, since: OffsetDateTime) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
-
-    if !crash_dir.exists() {
-        return None;
-    }
-
-    // List crash reports for this app
-    let pattern = format!("{app_name}*.ips");
-    let output = Command::new("find")
-        .args([
-            crash_dir.to_str()?,
-            "-name",
-            &pattern,
-            "-type",
-            "f",
-            "-mmin",
-            "-2", // Modified within last 2 minutes (generous window)
-        ])
-        .output()
-        .await
-        .ok()?;
-
-    let paths = String::from_utf8(output.stdout).ok()?;
-    let paths: Vec<&str> = paths.lines().collect();
-
-    // Find crash reports created after `since`
-    let mut most_recent: Option<(PathBuf, OffsetDateTime)> = None;
-
-    for path_str in paths {
-        let path = PathBuf::from(path_str);
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            if let Ok(modified) = metadata.modified() {
-                let modified_time: OffsetDateTime = modified.into();
-                // Only consider reports created after we started the app
-                if modified_time > since {
-                    if most_recent
-                        .as_ref()
-                        .map_or(true, |(_, t)| modified_time > *t)
-                    {
-                        most_recent = Some((path, modified_time));
-                    }
-                }
-            }
-        }
-    }
-
-    let (crash_path, _) = most_recent?;
-
-    // Read and extract crash info
-    extract_crash_summary(&crash_path).await
-}
-
-/// Extract a summary from a crash report file (.ips format)
-async fn extract_crash_summary(path: &PathBuf) -> Option<String> {
-    let content = smol::fs::read_to_string(path).await.ok()?;
-
-    // .ips files have two JSON objects:
-    // 1. First line: metadata (app_name, timestamp, etc.)
-    // 2. Rest: detailed crash report with exception and termination info
-    let mut lines = content.lines();
-    let _header = lines.next()?;
-
-    // Join the rest to form the detailed crash JSON (need newlines for valid JSON)
-    let crash_json: String = lines.collect::<Vec<_>>().join("\n");
-
-    // Parse the crash report JSON
-    let crash: serde_json::Value = serde_json::from_str(&crash_json).ok()?;
-
-    let mut parts = Vec::new();
-
-    // Extract exception type and signal
-    if let Some(exception) = crash.get("exception") {
-        if let Some(exc_type) = exception.get("type").and_then(|v| v.as_str()) {
-            parts.push(format!("Exception: {exc_type}"));
-        }
-        if let Some(signal) = exception.get("signal").and_then(|v| v.as_str()) {
-            parts.push(format!("Signal: {signal}"));
-        }
-    }
-
-    // Extract termination reason
-    if let Some(termination) = crash.get("termination") {
-        if let Some(indicator) = termination.get("indicator").and_then(|v| v.as_str()) {
-            parts.push(format!("Reason: {indicator}"));
-        }
-    }
-
-    // Build summary
-    let summary = if parts.is_empty() {
-        "App crashed".to_string()
-    } else {
-        parts.join(", ")
-    };
-
-    Some(format!("{summary}\n\nCrash report: {}", path.display()))
-}
-
 /// Represents a physical Apple device
 #[derive(Debug)]
 pub struct ApplePhysicalDevice {}
@@ -358,6 +257,8 @@ impl Device for MacOS {
         artifact: Artifact,
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
+        let bundle_id = artifact.bundle_id().to_string();
+
         // Artifact must end with `.app` for MacOS
         let artifact_path = artifact.path();
 
@@ -387,6 +288,7 @@ impl Device for MacOS {
         cmd.arg(artifact_path);
 
         // Spawn the open command
+        let start_time = OffsetDateTime::now_utc();
         let mut child = cmd
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
@@ -431,12 +333,15 @@ impl Device for MacOS {
         let app_name_for_crash = app_name.clone();
         let app_name_for_kill = app_name;
         spawn(async move {
-            // Record the start time to filter crash reports
-            let start_time = OffsetDateTime::now_utc();
+            let device_name = "macOS";
+            let device_identifier =
+                whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into());
 
             // Race between: open command exiting vs crash report appearing
             let crash_check_sender = sender.clone();
             let crash_app_name = app_name_for_crash.clone();
+            let bundle_id_for_crash = bundle_id.clone();
+            let pid_for_crash = app_pid;
 
             // Task 1: Wait for `open` command to exit
             let open_task = async {
@@ -449,10 +354,17 @@ impl Device for MacOS {
             let crash_poll_task = async {
                 loop {
                     Timer::after(Duration::from_millis(500)).await;
-                    if let Some(crash_msg) =
-                        find_crash_report_since(&crash_app_name, start_time).await
+                    if let Some(report) = debug::find_macos_ips_crash_report_since(
+                        device_name,
+                        &device_identifier,
+                        &bundle_id_for_crash,
+                        &crash_app_name,
+                        pid_for_crash,
+                        start_time,
+                    )
+                    .await
                     {
-                        return Some(crash_msg);
+                        return Some(report);
                     }
                 }
             };
@@ -466,10 +378,17 @@ impl Device for MacOS {
                 // open exited first - check for crash report or panic logs
                 futures::future::Either::Left(((), crash_future)) => {
                     // Check for crash report first (macOS .ips files)
-                    if let Some(msg) =
-                        find_crash_report_since(&app_name_for_crash, start_time).await
+                    if let Some(report) = debug::find_macos_ips_crash_report_since(
+                        device_name,
+                        &device_identifier,
+                        &bundle_id,
+                        &app_name_for_crash,
+                        app_pid,
+                        start_time,
+                    )
+                    .await
                     {
-                        let _ = sender.try_send(DeviceEvent::Crashed(msg));
+                        let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
                     } else if let Some(panic_msg) = fetch_recent_panic_logs(start_time).await {
                         // Check for Rust panic logs
                         let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
@@ -479,7 +398,7 @@ impl Device for MacOS {
                     drop(crash_future);
                 }
                 // Crash report appeared first - kill the app and report
-                futures::future::Either::Right((Some(crash_msg), _open_future)) => {
+                futures::future::Either::Right((Some(report), _open_future)) => {
                     // Kill the stuck app
                     let _ = std::process::Command::new("pkill")
                         .arg("-9") // Force kill
@@ -487,7 +406,7 @@ impl Device for MacOS {
                         .arg(&app_name_for_kill)
                         .status();
 
-                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(crash_msg));
+                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(report.to_string()));
                 }
                 futures::future::Either::Right((None, _)) => {
                     // Should never happen (crash_poll_task loops forever)
@@ -613,30 +532,6 @@ impl AppleSimulator {
 
         Ok(simulators)
     }
-
-    /// Get the PID of an app running in this simulator by bundle ID.
-    async fn get_app_pid(&self, bundle_id: &str) -> Option<u32> {
-        // Use simctl spawn to run pgrep inside the simulator
-        let output = Command::new("xcrun")
-            .args(["simctl", "spawn", &self.udid, "launchctl", "list"])
-            .output()
-            .await
-            .ok()?;
-
-        let stdout = String::from_utf8(output.stdout).ok()?;
-
-        // Look for a line containing the bundle ID and extract the PID
-        for line in stdout.lines() {
-            if line.contains(bundle_id) {
-                // Format: PID  Status  Label
-                let pid_str = line.split_whitespace().next()?;
-                if pid_str != "-" {
-                    return pid_str.parse().ok();
-                }
-            }
-        }
-        None
-    }
 }
 
 impl Device for AppleSimulator {
@@ -679,6 +574,9 @@ impl Device for AppleSimulator {
 
         info!("Launching app on apple simulator {}", self.name);
 
+        // Record start time for panic log lookup
+        let start_time = OffsetDateTime::now_utc();
+
         // Use --console to block until app exits and pass signals through
         let mut child = command(Command::new("xcrun").args([
             "simctl",
@@ -691,10 +589,6 @@ impl Device for AppleSimulator {
         .spawn()
         .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
-        // Give the app a moment to start, then get its PID for log streaming
-        smol::Timer::after(std::time::Duration::from_millis(500)).await;
-        let app_pid = self.get_app_pid(artifact.bundle_id()).await;
-
         // Create a Running instance - termination will use simctl terminate
         let udid = self.udid.clone();
         let bundle_id = artifact.bundle_id().to_string();
@@ -705,9 +599,6 @@ impl Device for AppleSimulator {
                 tracing::error!("Failed to terminate app on simulator: {err}");
             }
         });
-
-        // Record start time for panic log lookup
-        let start_time = OffsetDateTime::now_utc();
 
         // Start log streaming (uses WaterUI subsystem predicate)
         start_log_stream(sender.clone(), options.log_level());

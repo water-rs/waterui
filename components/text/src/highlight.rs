@@ -273,7 +273,10 @@ mod tests {
     fn test_swift_syntax_exists() {
         let syntax_set = extra_newlines();
         let swift_syntax = syntax_set.find_syntax_by_extension("swift");
-        assert!(swift_syntax.is_some(), "Swift syntax should exist in two-face");
+        assert!(
+            swift_syntax.is_some(),
+            "Swift syntax should exist in two-face"
+        );
     }
 
     #[test]

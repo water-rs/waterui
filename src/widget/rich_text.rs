@@ -149,7 +149,13 @@ impl View for RichTextElement {
             Self::Quote { content } => quote(content).anyview(),
             Self::Group { elements, inline } => {
                 if inline {
-                    elements.into_iter().collect::<HStack<_>>().anyview()
+                    // Inline content already contains explicit whitespace in the source text.
+                    // Use zero stack spacing to avoid double-spacing between adjacent spans.
+                    elements
+                        .into_iter()
+                        .collect::<HStack<_>>()
+                        .spacing(0.0)
+                        .anyview()
                 } else {
                     VStack::from_iter(elements).anyview()
                 }
@@ -846,7 +852,8 @@ fn main() {
 
     #[test]
     fn parses_link_text_correctly() {
-        let markdown = "Visit [WaterUI on GitHub](https://github.com/water-rs/waterui) for more information.";
+        let markdown =
+            "Visit [WaterUI on GitHub](https://github.com/water-rs/waterui) for more information.";
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
@@ -855,19 +862,28 @@ fn main() {
         // Should have one Group element (inline paragraph)
         assert_eq!(elements.len(), 1);
 
-        if let RichTextElement::Group { elements: inner, inline } = &elements[0] {
+        if let RichTextElement::Group {
+            elements: inner,
+            inline,
+        } = &elements[0]
+        {
             assert!(inline, "Should be inline group");
             println!("Inner elements: {:#?}", inner);
 
             // Find the Link element
-            let link = inner.iter().find(|el| matches!(el, RichTextElement::Link { .. }));
+            let link = inner
+                .iter()
+                .find(|el| matches!(el, RichTextElement::Link { .. }));
             assert!(link.is_some(), "Should have a Link element");
 
             if let Some(RichTextElement::Link { label, url }) = link {
                 let label_text = label.to_plain();
                 println!("Link label: '{}'", label_text);
                 println!("Link URL: '{}'", url);
-                assert_eq!(&*label_text, "WaterUI on GitHub", "Link text should be complete");
+                assert_eq!(
+                    &*label_text, "WaterUI on GitHub",
+                    "Link text should be complete"
+                );
             }
         } else {
             panic!("Expected Group element, got {:?}", elements[0]);

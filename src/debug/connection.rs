@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
-use zenwave::websocket;
+use zenwave::{websocket, ws::WebSocketConfig};
 
 use super::event::ConnectionError;
 use crate::debug::hot_reload::HotReloadConfig;
@@ -46,16 +46,22 @@ impl CliConnection {
 
         // Race the connection against a timeout
         let timeout = native_executor::sleep(Duration::from_secs(CONNECTION_TIMEOUT_SECS));
-        let connect = websocket::connect(&url);
+        let connect = websocket::connect_with_config(
+            &url,
+            WebSocketConfig::default()
+                .with_max_frame_size(None)
+                .with_max_message_size(None),
+        );
 
         // Use select to race connection vs timeout
         futures::select! {
             result = Box::pin(connect).fuse() => {
+
                 let socket = result.map_err(|e| ConnectionError::WebSocket(e.to_string()))?;
                 Ok(Self { socket })
             }
             _ = Box::pin(timeout).fuse() => {
-                Err(ConnectionError::Timeout)
+                Err(ConnectionError::Timeout { url })
             }
         }
     }

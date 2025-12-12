@@ -5,3 +5,4 @@ apple/DerivedData
 apple/build
 *.xcworkspace/xcuserdata
 web/pkg
+.build

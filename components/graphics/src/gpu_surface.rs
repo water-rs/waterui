@@ -9,6 +9,35 @@ use alloc::boxed::Box;
 
 use waterui_core::{layout::StretchAxis, raw_view};
 
+/// Picks the best surface format for a [`GpuSurface`].
+///
+/// WaterUI prefers HDR surfaces when available. If the platform/surface does not support an HDR
+/// format, it falls back to a standard sRGB swapchain format (or the first supported format).
+#[must_use]
+pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+    // HDR (linear, extended range) preferred when supported by the surface.
+    let hdr = wgpu::TextureFormat::Rgba16Float;
+    if caps.formats.contains(&hdr) {
+        return hdr;
+    }
+
+    // Otherwise, prefer sRGB for correct UI compositing on SDR displays.
+    if let Some(fmt) = caps
+        .formats
+        .iter()
+        .copied()
+        .find(wgpu::TextureFormat::is_srgb)
+    {
+        return fmt;
+    }
+
+    // Fallback: use the first reported format.
+    caps.formats
+        .first()
+        .copied()
+        .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
+}
+
 /// GPU resources provided to the renderer during setup.
 ///
 /// Contains references to the wgpu device, queue, and surface format
@@ -27,6 +56,17 @@ impl core::fmt::Debug for GpuContext<'_> {
         f.debug_struct("GpuContext")
             .field("surface_format", &self.surface_format)
             .finish_non_exhaustive()
+    }
+}
+
+impl GpuContext<'_> {
+    /// Returns `true` if the surface format is HDR-capable (floating-point).
+    #[must_use]
+    pub const fn is_hdr(&self) -> bool {
+        matches!(
+            self.surface_format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        )
     }
 }
 
@@ -58,6 +98,17 @@ impl core::fmt::Debug for GpuFrame<'_> {
             .field("width", &self.width)
             .field("height", &self.height)
             .finish_non_exhaustive()
+    }
+}
+
+impl GpuFrame<'_> {
+    /// Returns `true` if the frame format is HDR-capable (floating-point).
+    #[must_use]
+    pub const fn is_hdr(&self) -> bool {
+        matches!(
+            self.format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        )
     }
 }
 

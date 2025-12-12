@@ -1,195 +1,662 @@
-//! Cinematic HDR Flame - multi-pass renderer on top of GpuSurface.
-//!
-//! Passes:
-//! 1) Flame HDR render -> hdr_tex (Rgba16Float)
-//! 2) Bright extract + downsample -> bloom_tex (Rgba16Float, half res)
-//! 3) Gaussian blur H -> ping
-//! 4) Gaussian blur V -> bloom_tex
-//! 5) Composite (hdr + bloom) + ACES tonemap -> swapchain surface
+use std::time::Instant;
 
-use waterui::{
-    AnyView, Environment, View,
-    graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu},
-};
-
-pub struct FlameSurface {
-    inner: GpuSurface,
-}
-
-impl core::fmt::Debug for FlameSurface {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FlameSurface").finish_non_exhaustive()
-    }
-}
-
-impl FlameSurface {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            inner: GpuSurface::new(FlameRenderer::new()),
-        }
-    }
-}
-
-impl View for FlameSurface {
-    fn body(self, _env: &Environment) -> impl View {
-        self.inner
-    }
-}
+use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
+use waterui::prelude::*;
 
 pub fn init() -> Environment {
     Environment::new()
 }
 
 pub fn main() -> impl View {
-    FlameSurface::new()
+    vstack((
+        text("Cinematic HDR Flame (GpuSurface)").size(24),
+        text("HDR film buffer + bloom + ACES tonemap").size(14),
+        GpuSurface::new(FlameRenderer::default()).size(400.0, 500.0),
+        text("Rendered at 120fps").size(12),
+    ))
+    .padding()
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SceneUniforms {
-    time: f32,       // 0
-    _pad0: f32,      // 4  (align vec2)
-    res_x: f32,      // 8
-    res_y: f32,      // 12
-    frame_seed: f32, // 16 (grain jitter etc.)
-    _pad1: f32,      // 20
+const FILM_WGSL: &str = r#"
+// Cinematic flame (HDR) with simple film pipeline:
+// 1) Render procedural flame to HDR film buffer
+// 2) Threshold + downsample to bloom buffer
+// 3) Blur bloom (separable)
+// 4) Composite + ACES tonemap + vignette + grain
+
+struct Globals {
+    time: f32,
+    exposure: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+    edr_gain: f32,
+    bloom_radius: f32,
+    wind: f32,
+    flame_strength: f32,
+    resolution: vec2<f32>,
+    inv_resolution: vec2<f32>,
 }
-// 24 bytes total (matches ShaderSurface-style alignment)
 
-unsafe impl bytemuck::Pod for SceneUniforms {}
-unsafe impl bytemuck::Zeroable for SceneUniforms {}
+@group(0) @binding(0) var<uniform> globals: Globals;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct BloomParams {
-    // xy = source resolution, zw = inv source resolution
-    src_res_x: f32,
-    src_res_y: f32,
-    inv_src_x: f32,
-    inv_src_y: f32,
+// Shared texture/sampler set: film + bloom (bloom may be unused in some passes).
+@group(1) @binding(0) var t_film: texture_2d<f32>;
+@group(1) @binding(1) var t_bloom: texture_2d<f32>;
+@group(1) @binding(2) var s_linear: sampler;
 
-    // threshold/knee/intensity/pad
-    threshold: f32,
-    knee: f32,
-    intensity: f32,
-    _pad0: f32,
-
-    // blur direction (dx, dy) in texel units + pad
-    dir_x: f32,
-    dir_y: f32,
-    _pad1: f32,
-    _pad2: f32,
+struct BlurParams {
+    texel_size: vec2<f32>,
+    direction: vec2<f32>,
 }
-// 48 bytes
 
-unsafe impl bytemuck::Pod for BloomParams {}
-unsafe impl bytemuck::Zeroable for BloomParams {}
+@group(2) @binding(0) var<uniform> blur: BlurParams;
+@group(2) @binding(1) var t_source: texture_2d<f32>;
+@group(2) @binding(2) var s_source: sampler;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+
+    let pos = positions[vertex_index];
+    var output: VertexOutput;
+    output.position = vec4<f32>(pos, 0.0, 1.0);
+    output.uv = (pos + 1.0) * 0.5; // (0,0) bottom-left
+    return output;
+}
+
+fn rot(a: f32) -> mat2x2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return mat2x2<f32>(c, -s, s, c);
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+}
+
+fn noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn fbm(p0: vec2<f32>) -> f32 {
+    var p = p0;
+    var a = 0.55;
+    var s = 0.0;
+    for (var i: i32 = 0; i < 6; i = i + 1) {
+        s += a * noise(p);
+        p = (rot(0.35) * p) * 2.0 + vec2<f32>(17.0, 23.0);
+        a *= 0.5;
+    }
+    return s;
+}
+
+fn ridge(n: f32) -> f32 {
+    return 1.0 - abs(2.0 * n - 1.0);
+}
+
+fn rfbm(p0: vec2<f32>) -> f32 {
+    var p = p0;
+    var a = 0.60;
+    var s = 0.0;
+    for (var i: i32 = 0; i < 5; i = i + 1) {
+        s += a * ridge(noise(p));
+        p = (rot(0.62) * p) * 2.1 + vec2<f32>(9.2, 7.7);
+        a *= 0.5;
+    }
+    return s;
+}
+
+fn fire_palette(x: f32) -> vec3<f32> {
+    // x: 0..1 (cool -> hot). Return HDR-ish linear RGB.
+    let c0 = vec3<f32>(0.02, 0.005, 0.002);  // ember
+    let c1 = vec3<f32>(0.85, 0.10, 0.015);  // red
+    let c2 = vec3<f32>(1.75, 0.55, 0.08);   // orange
+    let c3 = vec3<f32>(2.60, 1.80, 0.55);   // yellow-hot (less white)
+
+    let t1 = smoothstep(0.00, 0.55, x);
+    let t2 = smoothstep(0.55, 0.85, x);
+    let t3 = smoothstep(0.85, 1.00, x);
+
+    let a = mix(c0, c1, t1);
+    let b = mix(c1, c2, t2);
+    let c = mix(c2, c3, t3);
+    return mix(mix(a, b, t2), c, t3);
+}
+
+fn aces(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn vignette(uv: vec2<f32>, aspect: f32) -> f32 {
+    let q = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
+    let r = length(q);
+    return smoothstep(0.95, 0.30, r);
+}
+
+// Render-target textures in wgpu/WebGPU use a top-left origin when sampled.
+// Our `uv` is bottom-left origin, so flip Y for all texture sampling to keep
+// multi-pass render->sample pipelines consistent (avoids vertical mirroring).
+fn tex_uv(uv: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(uv.x, 1.0 - uv.y);
+}
+
+fn sample_film(uv: vec2<f32>) -> vec3<f32> {
+    return textureSample(t_film, s_linear, tex_uv(uv)).rgb;
+}
+
+fn sample_bloom(uv: vec2<f32>) -> vec3<f32> {
+    return textureSample(t_bloom, s_linear, tex_uv(uv)).rgb;
+}
+
+fn sample_source(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_source, s_source, tex_uv(uv));
+}
+
+@fragment
+fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
+    let t = globals.time;
+    let res = max(globals.resolution, vec2<f32>(1.0));
+    let aspect = res.x / res.y;
+
+    // Aspect-correct flame space; base anchored at bottom.
+    // `uv` is bottom-left origin; keep p.y in 0..1 so the tip never hard-clips.
+    var p = vec2<f32>((input.uv.x - 0.5) * aspect, input.uv.y);
+    p.x *= 1.15;
+
+    let y = clamp(p.y, 0.0, 1.0);
+    let wind = globals.wind;
+
+    // Bend + sway (stronger towards the top), plus a gusty drift.
+    let sway = 0.10 * sin(t * 0.90 + y * 2.4) + 0.06 * sin(t * 1.70 + y * 4.8);
+    let gust = (fbm(vec2<f32>(y * 1.20, t * 0.25)) - 0.5) * 0.12;
+    let center = (sway + gust) * (0.25 + 0.75 * y) + wind * y * y;
+
+    // Flow field for turbulence (rising motion).
+    let rise = t * 2.0;
+    let q = vec2<f32>((p.x - center) * 2.2, y * 3.5 - rise);
+
+    let n = fbm(q + vec2<f32>(0.0, t * 0.20));
+    let r = rfbm(q * 1.4 + vec2<f32>(2.3, -t * 0.6));
+
+    // Width profile: wide base -> thin tip.
+    let base_w = 0.19;
+    let tip_w = 0.008;
+    let w = mix(base_w, tip_w, pow(y, 1.65));
+    let wv = w * (0.70 + 0.55 * n);
+
+    // Lateral turbulence (adds tongues and breaks symmetry).
+    let x_turb = (fbm(q * 2.0 + vec2<f32>(12.0, t)) - 0.5) * 0.08 * (0.2 + 0.8 * y);
+    let d = abs((p.x - center) + x_turb);
+
+    // Main body mask with soft edge.
+    var mask = 1.0 - smoothstep(wv * 0.85, wv, d);
+
+    // Streaky breakup (more towards the top).
+    let breakup = smoothstep(0.20, 0.90, r);
+    mask *= mix(0.55, 1.0, breakup);
+
+    // Soft tip fade (prevents the “black bar” truncation).
+    let tip_fade = 1.0 - smoothstep(0.92, 1.18, y + (n - 0.5) * 0.10);
+    mask *= clamp(tip_fade, 0.0, 1.0);
+
+    // Halo glow around the flame.
+    let halo = (1.0 - smoothstep(wv * 0.9, wv * 3.0, d)) * 0.35;
+
+    // Core is hottest near the centerline.
+    let core = exp(-d * d / (wv * wv * 0.10 + 1e-4));
+
+    // Flicker
+    let flicker = 0.85 + 0.15 * sin(t * 12.0 + n * 6.28318);
+    let intensity = (mask * 0.85 + halo) * flicker;
+
+    // Temperature: hot core + hot base, cooler top/edges.
+    let heat = clamp(core * 0.80 + (1.0 - y) * 0.28 + mask * 0.20, 0.0, 1.0);
+
+    // HDR emission (scaled so bloom can do the heavy lifting).
+    let strength = globals.flame_strength;
+    var col = fire_palette(heat) * intensity * (0.75 + 4.5 * pow(heat, 1.25)) * strength;
+
+    // Slight soot/dimming near edges in the upper flame.
+    let soot = smoothstep(0.15, 0.85, y) * smoothstep(wv * 0.25, wv * 1.8, d);
+    col *= 1.0 - 0.35 * soot;
+
+    // Background (subtle warm base).
+    var bg = vec3<f32>(0.0015, 0.0018, 0.0025);
+    bg += vec3<f32>(0.010, 0.004, 0.002) * exp(-y * 4.0);
+
+    return vec4<f32>(bg + col, 1.0);
+}
+
+@fragment
+fn fs_downsample(input: VertexOutput) -> @location(0) vec4<f32> {
+    // 2x2 box filter + soft threshold
+    let uv = input.uv;
+    let texel = globals.inv_resolution;
+
+    let c0 = sample_film(uv + vec2<f32>(-0.5 * texel.x, -0.5 * texel.y));
+    let c1 = sample_film(uv + vec2<f32>( 0.5 * texel.x, -0.5 * texel.y));
+    let c2 = sample_film(uv + vec2<f32>(-0.5 * texel.x,  0.5 * texel.y));
+    let c3 = sample_film(uv + vec2<f32>( 0.5 * texel.x,  0.5 * texel.y));
+
+    let col = (c0 + c1 + c2 + c3) * 0.25;
+    let lum = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
+
+    // Soft-knee bloom extraction (keeps bloom mostly on highlights).
+    let thr = globals.bloom_threshold;
+    let knee = thr * 0.55;
+    let soft = clamp((lum - thr + knee) / (2.0 * knee), 0.0, 1.0);
+    let contrib = max(lum - thr, 0.0) + soft * soft * knee;
+    let scale = contrib / max(lum, 1e-4);
+    return vec4<f32>(col * scale, 1.0);
+}
+
+@fragment
+fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = input.uv;
+    let off = blur.texel_size * blur.direction * globals.bloom_radius;
+
+    // 5-tap Gaussian-ish blur (separable)
+    var c = sample_source(uv) * 0.227027;
+    c += sample_source(uv + off * 1.384615) * 0.316216;
+    c += sample_source(uv - off * 1.384615) * 0.316216;
+    c += sample_source(uv + off * 3.230769) * 0.070270;
+    c += sample_source(uv - off * 3.230769) * 0.070270;
+
+    return c;
+}
+
+@fragment
+fn fs_final(input: VertexOutput) -> @location(0) vec4<f32> {
+    let t = globals.time;
+    let res = max(globals.resolution, vec2<f32>(1.0));
+    let aspect = res.x / res.y;
+
+    let film = sample_film(input.uv);
+    let bloom = sample_bloom(input.uv);
+
+    var col = film + bloom * globals.bloom_intensity;
+    col *= globals.exposure;
+
+    // subtle vignette before tonemap
+    col *= 0.55 + 0.45 * vignette(input.uv, aspect);
+
+    // tonemap to displayable range
+    col = aces(col);
+
+    // Push into extended range on HDR surfaces.
+    col *= globals.edr_gain;
+
+    // film grain (tiny, post-tonemap) to avoid banding
+    let px = floor(input.uv * res);
+    let g = hash21(px + vec2<f32>(t * 60.0, t * 13.0));
+    col += (g - 0.5) * (1.0 / 255.0) * 6.0;
+
+    return vec4<f32>(col, 1.0);
+}
+"#;
 
 struct FlameRenderer {
-    // pipelines
-    flame_pipeline: Option<wgpu::RenderPipeline>,
-    extract_pipeline: Option<wgpu::RenderPipeline>,
-    blur_pipeline: Option<wgpu::RenderPipeline>,
-    composite_pipeline: Option<wgpu::RenderPipeline>,
+    start_time: Instant,
 
-    // bind group layouts
-    scene_bgl: Option<wgpu::BindGroupLayout>,
-    tex_bgl: Option<wgpu::BindGroupLayout>,
-    bloom_bgl: Option<wgpu::BindGroupLayout>,
+    globals_buffer: Option<wgpu::Buffer>,
+    globals_bind_group: Option<wgpu::BindGroup>,
 
-    // buffers
-    scene_ubo: Option<wgpu::Buffer>,
-    bloom_ubo: Option<wgpu::Buffer>,
-    scene_bg: Option<wgpu::BindGroup>,
-    bloom_bg: Option<wgpu::BindGroup>,
-
-    // textures
-    hdr_tex: Option<wgpu::Texture>,
-    hdr_view: Option<wgpu::TextureView>,
-
-    bloom_tex: Option<wgpu::Texture>,
-    bloom_view: Option<wgpu::TextureView>,
-
-    ping_tex: Option<wgpu::Texture>,
-    ping_view: Option<wgpu::TextureView>,
-
+    sample_layout: Option<wgpu::BindGroupLayout>,
+    blur_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
 
-    // texture bind groups
-    hdr_sample_bg: Option<wgpu::BindGroup>,   // hdr as sampled
-    bloom_sample_bg: Option<wgpu::BindGroup>, // bloom as sampled
-    ping_sample_bg: Option<wgpu::BindGroup>,  // ping as sampled
+    flame_pipeline: Option<wgpu::RenderPipeline>,
+    downsample_pipeline: Option<wgpu::RenderPipeline>,
+    blur_pipeline: Option<wgpu::RenderPipeline>,
+    final_pipeline: Option<wgpu::RenderPipeline>,
+    final_format: Option<wgpu::TextureFormat>,
 
-    // size tracking
+    film_view: Option<wgpu::TextureView>,
+    bloom_down_view: Option<wgpu::TextureView>,
+    bloom_temp_view: Option<wgpu::TextureView>,
+    bloom_blur_view: Option<wgpu::TextureView>,
+
+    sample_bind_group: Option<wgpu::BindGroup>,
+    final_bind_group: Option<wgpu::BindGroup>,
+    blur_x_bind_group: Option<wgpu::BindGroup>,
+    blur_y_bind_group: Option<wgpu::BindGroup>,
+
     size: (u32, u32),
-    surface_format: Option<wgpu::TextureFormat>,
+}
 
-    start: std::time::Instant,
-    frame_index: u32,
+impl Default for FlameRenderer {
+    fn default() -> Self {
+        Self {
+            start_time: Instant::now(),
+
+            globals_buffer: None,
+            globals_bind_group: None,
+
+            sample_layout: None,
+            blur_layout: None,
+            sampler: None,
+
+            flame_pipeline: None,
+            downsample_pipeline: None,
+            blur_pipeline: None,
+            final_pipeline: None,
+            final_format: None,
+
+            film_view: None,
+            bloom_down_view: None,
+            bloom_temp_view: None,
+            bloom_blur_view: None,
+
+            sample_bind_group: None,
+            final_bind_group: None,
+            blur_x_bind_group: None,
+            blur_y_bind_group: None,
+
+            size: (0, 0),
+        }
+    }
 }
 
 impl FlameRenderer {
-    fn new() -> Self {
-        Self {
-            flame_pipeline: None,
-            extract_pipeline: None,
-            blur_pipeline: None,
-            composite_pipeline: None,
+    const FILM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+    const GLOBALS_SIZE: u64 = std::mem::size_of::<[f32; 12]>() as u64;
+    const BLUR_PARAMS_SIZE: u64 = std::mem::size_of::<[f32; 4]>() as u64;
 
-            scene_bgl: None,
-            tex_bgl: None,
-            bloom_bgl: None,
-
-            scene_ubo: None,
-            bloom_ubo: None,
-            scene_bg: None,
-            bloom_bg: None,
-
-            hdr_tex: None,
-            hdr_view: None,
-
-            bloom_tex: None,
-            bloom_view: None,
-
-            ping_tex: None,
-            ping_view: None,
-
-            sampler: None,
-
-            hdr_sample_bg: None,
-            bloom_sample_bg: None,
-            ping_sample_bg: None,
-
-            size: (0, 0),
-            surface_format: None,
-
-            start: std::time::Instant::now(),
-            frame_index: 0,
+    fn ensure_targets(&mut self, frame: &GpuFrame) {
+        if self.size == (frame.width, frame.height)
+            && self.film_view.is_some()
+            && self.bloom_down_view.is_some()
+            && self.bloom_temp_view.is_some()
+            && self.bloom_blur_view.is_some()
+            && self.sample_bind_group.is_some()
+            && self.final_bind_group.is_some()
+            && self.blur_x_bind_group.is_some()
+            && self.blur_y_bind_group.is_some()
+        {
+            return;
         }
-    }
 
-    fn ensure_layouts(&mut self, device: &wgpu::Device) {
-        if self.scene_bgl.is_none() {
-            let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Flame Scene BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
+        self.size = (frame.width, frame.height);
+
+        let bloom_w = (frame.width / 2).max(1);
+        let bloom_h = (frame.height / 2).max(1);
+
+        let film = frame.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Flame Film HDR"),
+            size: wgpu::Extent3d {
+                width: frame.width.max(1),
+                height: frame.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::FILM_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let film_view = film.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bloom_down = frame.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Flame Bloom Downsample"),
+            size: wgpu::Extent3d {
+                width: bloom_w,
+                height: bloom_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::FILM_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_down_view = bloom_down.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bloom_temp = frame.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Flame Bloom Blur Temp"),
+            size: wgpu::Extent3d {
+                width: bloom_w,
+                height: bloom_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::FILM_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_temp_view = bloom_temp.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bloom_blur = frame.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Flame Bloom Blurred"),
+            size: wgpu::Extent3d {
+                width: bloom_w,
+                height: bloom_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::FILM_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bloom_blur_view = bloom_blur.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let Some(sample_layout) = &self.sample_layout else {
+            return;
+        };
+        let Some(blur_layout) = &self.blur_layout else {
+            return;
+        };
+        let Some(sampler) = &self.sampler else {
+            return;
+        };
+
+        // Bind film + blurred bloom (bloom is ignored by the downsample pass).
+        let sample_bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Flame Sample Bind Group"),
+            layout: sample_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: core::num::NonZeroU64::new(core::mem::size_of::<
-                            SceneUniforms,
-                        >()
-                            as u64),
-                    },
-                    count: None,
-                }],
+                    resource: wgpu::BindingResource::TextureView(&film_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    // Dummy: bind the film here so intermediate passes never sample the same
+                    // texture they are writing to (wgpu exclusive COLOR_TARGET usage).
+                    resource: wgpu::BindingResource::TextureView(&film_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+
+        // Final composite needs the blurred bloom.
+        let final_bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Flame Final Bind Group"),
+            layout: sample_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&film_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_blur_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+
+        // Blur params (two bind groups with fixed directions).
+        let blur_x_buffer = frame.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Flame Blur Params X"),
+            size: Self::BLUR_PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let blur_y_buffer = frame.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Flame Blur Params Y"),
+            size: Self::BLUR_PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        #[allow(clippy::cast_precision_loss)]
+        let texel_size = (1.0 / bloom_w as f32, 1.0 / bloom_h as f32);
+        let blur_x: [f32; 4] = [texel_size.0, texel_size.1, 1.0, 0.0];
+        let blur_y: [f32; 4] = [texel_size.0, texel_size.1, 0.0, 1.0];
+        frame
+            .queue
+            .write_buffer(&blur_x_buffer, 0, bytemuck::bytes_of(&blur_x));
+        frame
+            .queue
+            .write_buffer(&blur_y_buffer, 0, bytemuck::bytes_of(&blur_y));
+
+        let blur_x_bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Flame Blur X Bind Group"),
+            layout: blur_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: blur_x_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_down_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        let blur_y_bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Flame Blur Y Bind Group"),
+            layout: blur_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: blur_y_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom_temp_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+
+        // Update stored views + bind groups.
+        self.film_view = Some(film_view);
+        self.bloom_down_view = Some(bloom_down_view);
+        self.bloom_temp_view = Some(bloom_temp_view);
+        self.bloom_blur_view = Some(bloom_blur_view);
+
+        self.sample_bind_group = Some(sample_bind_group);
+        self.final_bind_group = Some(final_bind_group);
+        self.blur_x_bind_group = Some(blur_x_bind_group);
+        self.blur_y_bind_group = Some(blur_y_bind_group);
+    }
+}
+
+impl GpuRenderer for FlameRenderer {
+    fn setup(&mut self, ctx: &GpuContext) {
+        self.start_time = Instant::now();
+
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Flame Film Shader"),
+                source: wgpu::ShaderSource::Wgsl(FILM_WGSL.into()),
             });
 
-            let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Flame Texture BGL"),
+        let globals_size = Self::GLOBALS_SIZE;
+        let globals_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Flame Globals"),
+            size: globals_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let globals_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Flame Globals Layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: core::num::NonZeroU64::new(globals_size),
+                        },
+                        count: None,
+                    }],
+                });
+
+        let globals_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Flame Globals Bind Group"),
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buffer.as_entire_binding(),
+            }],
+        });
+
+        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Flame Linear Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let sample_layout = ctx
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Flame Sample Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -204,420 +671,323 @@ impl FlameRenderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
             });
 
-            let bloom_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Flame Bloom Params BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: core::num::NonZeroU64::new(
-                            core::mem::size_of::<BloomParams>() as u64,
-                        ),
+        let blur_size = Self::BLUR_PARAMS_SIZE;
+        let blur_layout = ctx
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Flame Blur Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: core::num::NonZeroU64::new(blur_size),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
             });
 
-            self.scene_bgl = Some(scene_bgl);
-            self.tex_bgl = Some(tex_bgl);
-            self.bloom_bgl = Some(bloom_bgl);
-        }
-    }
+        let flame_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Flame Pipeline Layout"),
+                    bind_group_layouts: &[&globals_layout],
+                    push_constant_ranges: &[],
+                });
 
-    fn ensure_buffers(&mut self, device: &wgpu::Device) {
-        if self.scene_ubo.is_none() {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Flame Scene UBO"),
-                size: core::mem::size_of::<SceneUniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        let composite_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Flame Composite Layout"),
+                    bind_group_layouts: &[&globals_layout, &sample_layout],
+                    push_constant_ranges: &[],
+                });
+
+        // Blur shader uses @group(2), so we must provide layouts for groups 0..=2.
+        let blur_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Flame Blur Pipeline Layout"),
+                    bind_group_layouts: &[&globals_layout, &sample_layout, &blur_layout],
+                    push_constant_ranges: &[],
+                });
+
+        let flame_pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Flame Pass Pipeline"),
+                layout: Some(&flame_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_flame"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: Self::FILM_FORMAT,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             });
-            self.scene_ubo = Some(buf);
-        }
 
-        if self.bloom_ubo.is_none() {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Flame Bloom UBO"),
-                size: core::mem::size_of::<BloomParams>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        let downsample_pipeline =
+            ctx.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Flame Bloom Downsample Pipeline"),
+                    layout: Some(&composite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_downsample"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: Self::FILM_FORMAT,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
+        let blur_pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Flame Bloom Blur Pipeline"),
+                layout: Some(&blur_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_blur"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: Self::FILM_FORMAT,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             });
-            self.bloom_ubo = Some(buf);
-        }
 
-        if self.sampler.is_none() {
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("Flame Linear Sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Linear,
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                ..Default::default()
+        let final_pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Flame Final Pipeline"),
+                layout: Some(&composite_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_final"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             });
-            self.sampler = Some(sampler);
-        }
 
-        if self.scene_bg.is_none() {
-            let bgl = self.scene_bgl.as_ref().unwrap();
-            let ubo = self.scene_ubo.as_ref().unwrap();
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Flame Scene BG"),
-                layout: bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubo.as_entire_binding(),
-                }],
-            });
-            self.scene_bg = Some(bg);
-        }
+        self.globals_buffer = Some(globals_buffer);
+        self.globals_bind_group = Some(globals_bind_group);
 
-        if self.bloom_bg.is_none() {
-            let bgl = self.bloom_bgl.as_ref().unwrap();
-            let ubo = self.bloom_ubo.as_ref().unwrap();
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Flame Bloom BG"),
-                layout: bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ubo.as_entire_binding(),
-                }],
-            });
-            self.bloom_bg = Some(bg);
-        }
-    }
+        self.sample_layout = Some(sample_layout);
+        self.blur_layout = Some(blur_layout);
+        self.sampler = Some(sampler);
 
-    fn create_fullscreen_pipeline(
-        device: &wgpu::Device,
-        label: &str,
-        shader_src: &str,
-        entry_fs: &str,
-        target_format: wgpu::TextureFormat,
-        bgls: &[&wgpu::BindGroupLayout],
-    ) -> wgpu::RenderPipeline {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(label),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
-
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(&format!("{label} Layout")),
-            bind_group_layouts: bgls,
-            push_constant_ranges: &[],
-        });
-
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some(entry_fs),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        })
-    }
-
-    fn ensure_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        if self.size == (width, height) && self.hdr_tex.is_some() {
-            return;
-        }
-        self.size = (width, height);
-
-        let hdr_format = wgpu::TextureFormat::Rgba16Float;
-        let (bw, bh) = ((width.max(2) / 2).max(1), (height.max(2) / 2).max(1));
-
-        let hdr_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Flame HDR Texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: hdr_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let hdr_view = hdr_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let bloom_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Flame Bloom Texture"),
-            size: wgpu::Extent3d {
-                width: bw,
-                height: bh,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: hdr_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let bloom_view = bloom_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let ping_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Flame Bloom Ping Texture"),
-            size: wgpu::Extent3d {
-                width: bw,
-                height: bh,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: hdr_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let ping_view = ping_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        self.hdr_tex = Some(hdr_tex);
-        self.hdr_view = Some(hdr_view);
-
-        self.bloom_tex = Some(bloom_tex);
-        self.bloom_view = Some(bloom_view);
-
-        self.ping_tex = Some(ping_tex);
-        self.ping_view = Some(ping_view);
-
-        // rebuild sampled bind groups (depend on views)
-        self.hdr_sample_bg = None;
-        self.bloom_sample_bg = None;
-        self.ping_sample_bg = None;
-    }
-
-    fn ensure_texture_bind_groups(&mut self, device: &wgpu::Device) {
-        if self.hdr_sample_bg.is_some()
-            && self.bloom_sample_bg.is_some()
-            && self.ping_sample_bg.is_some()
-        {
-            return;
-        }
-        let tex_bgl = self.tex_bgl.as_ref().unwrap();
-        let sampler = self.sampler.as_ref().unwrap();
-
-        let hdr_view = self.hdr_view.as_ref().unwrap();
-        let bloom_view = self.bloom_view.as_ref().unwrap();
-        let ping_view = self.ping_view.as_ref().unwrap();
-
-        self.hdr_sample_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Flame HDR Sample BG"),
-            layout: tex_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(hdr_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        }));
-
-        self.bloom_sample_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Flame Bloom Sample BG"),
-            layout: tex_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(bloom_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        }));
-
-        self.ping_sample_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Flame Ping Sample BG"),
-            layout: tex_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(ping_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        }));
-    }
-
-    fn ensure_pipelines(&mut self, device: &wgpu::Device, surface_format: wgpu::TextureFormat) {
-        if self.flame_pipeline.is_some()
-            && self.extract_pipeline.is_some()
-            && self.blur_pipeline.is_some()
-            && self.composite_pipeline.is_some()
-            && self.surface_format == Some(surface_format)
-        {
-            return;
-        }
-
-        self.surface_format = Some(surface_format);
-
-        let scene_bgl = self.scene_bgl.as_ref().unwrap();
-        let tex_bgl = self.tex_bgl.as_ref().unwrap();
-        let bloom_bgl = self.bloom_bgl.as_ref().unwrap();
-
-        // Pass 1: flame -> HDR
-        self.flame_pipeline = Some(Self::create_fullscreen_pipeline(
-            device,
-            "Flame Pass (HDR)",
-            FLAME_PASS_WGSL,
-            "fs_flame",
-            wgpu::TextureFormat::Rgba16Float,
-            &[scene_bgl],
-        ));
-
-        // Pass 2: extract+downsample: HDR -> bloom half
-        self.extract_pipeline = Some(Self::create_fullscreen_pipeline(
-            device,
-            "Bloom Extract Pass",
-            EXTRACT_BLUR_COMPOSITE_WGSL,
-            "fs_extract",
-            wgpu::TextureFormat::Rgba16Float,
-            &[tex_bgl, bloom_bgl],
-        ));
-
-        // Pass 3/4: blur (same shader, direction in BloomParams)
-        self.blur_pipeline = Some(Self::create_fullscreen_pipeline(
-            device,
-            "Bloom Blur Pass",
-            EXTRACT_BLUR_COMPOSITE_WGSL,
-            "fs_blur",
-            wgpu::TextureFormat::Rgba16Float,
-            &[tex_bgl, bloom_bgl],
-        ));
-
-        // Pass 5: composite -> surface
-        self.composite_pipeline = Some(Self::create_fullscreen_pipeline(
-            device,
-            "Composite + Tonemap Pass",
-            EXTRACT_BLUR_COMPOSITE_WGSL,
-            "fs_composite",
-            surface_format,
-            &[tex_bgl, tex_bgl, bloom_bgl, scene_bgl],
-        ));
-    }
-}
-
-impl GpuRenderer for FlameRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
-        self.ensure_layouts(ctx.device);
-        self.ensure_buffers(ctx.device);
-        self.ensure_pipelines(ctx.device, ctx.surface_format);
-        self.start = std::time::Instant::now();
-        self.frame_index = 0;
-    }
-
-    fn resize(&mut self, _width: u32, _height: u32) {
-        // textures recreated lazily in render
-        self.size = (0, 0);
+        self.flame_pipeline = Some(flame_pipeline);
+        self.downsample_pipeline = Some(downsample_pipeline);
+        self.blur_pipeline = Some(blur_pipeline);
+        self.final_pipeline = Some(final_pipeline);
+        self.final_format = Some(ctx.surface_format);
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-        self.ensure_layouts(frame.device);
-        self.ensure_buffers(frame.device);
+        if self.final_format != Some(frame.format) {
+            // Surface format changed (unexpected) — force re-setup on next frame.
+            self.flame_pipeline = None;
+            self.downsample_pipeline = None;
+            self.blur_pipeline = None;
+            self.final_pipeline = None;
+            self.final_format = None;
+            return;
+        }
 
-        self.ensure_textures(frame.device, frame.width, frame.height);
-        self.ensure_texture_bind_groups(frame.device);
+        // Lazily create/recreate intermediate targets and bind groups.
+        self.ensure_targets(frame);
 
-        // if swapchain format changes, rebuild composite pipeline
-        self.ensure_pipelines(frame.device, frame.format);
-
-        let elapsed = self.start.elapsed().as_secs_f32();
-        self.frame_index = self.frame_index.wrapping_add(1);
-
-        // update scene uniforms
-        let scene = SceneUniforms {
-            time: elapsed,
-            _pad0: 0.0,
-            res_x: frame.width as f32,
-            res_y: frame.height as f32,
-            frame_seed: (self.frame_index as f32) * 0.1234,
-            _pad1: 0.0,
+        let Some(globals_buffer) = &self.globals_buffer else {
+            return;
         };
-        frame.queue.write_buffer(
-            self.scene_ubo.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&scene),
-        );
-
-        let (bw, bh) = (
-            (frame.width.max(2) / 2).max(1),
-            (frame.height.max(2) / 2).max(1),
-        );
-        let inv_bw = 1.0 / (bw as f32);
-        let inv_bh = 1.0 / (bh as f32);
-
-        // common bloom params (threshold/knee/intensity)
-        // threshold: brighter sparks/white core generate bloom; knee softens cutoff.
-        let mut bloom = BloomParams {
-            src_res_x: bw as f32,
-            src_res_y: bh as f32,
-            inv_src_x: inv_bw,
-            inv_src_y: inv_bh,
-            threshold: 1.25,
-            knee: 0.65,
-            intensity: 0.85,
-            _pad0: 0.0,
-            dir_x: 1.0,
-            dir_y: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+        let Some(globals_bind_group) = &self.globals_bind_group else {
+            return;
+        };
+        let Some(sample_bind_group) = &self.sample_bind_group else {
+            return;
+        };
+        let Some(final_bind_group) = &self.final_bind_group else {
+            return;
+        };
+        let Some(blur_x_bind_group) = &self.blur_x_bind_group else {
+            return;
+        };
+        let Some(blur_y_bind_group) = &self.blur_y_bind_group else {
+            return;
         };
 
-        let encoder_label = "Flame HDR Encoder";
+        let Some(flame_pipeline) = &self.flame_pipeline else {
+            return;
+        };
+        let Some(downsample_pipeline) = &self.downsample_pipeline else {
+            return;
+        };
+        let Some(blur_pipeline) = &self.blur_pipeline else {
+            return;
+        };
+        let Some(final_pipeline) = &self.final_pipeline else {
+            return;
+        };
+
+        let Some(film_view) = &self.film_view else {
+            return;
+        };
+        let Some(bloom_down_view) = &self.bloom_down_view else {
+            return;
+        };
+        let Some(bloom_temp_view) = &self.bloom_temp_view else {
+            return;
+        };
+        let Some(bloom_blur_view) = &self.bloom_blur_view else {
+            return;
+        };
+
+        // Update globals.
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let is_hdr = frame.is_hdr();
+        #[allow(clippy::cast_precision_loss)]
+        let (w, h) = (frame.width as f32, frame.height as f32);
+
+        // HDR tuning: use EDR gain and stronger bloom on float surfaces.
+        let edr_gain = if is_hdr { 3.5 } else { 1.0 };
+        let bloom_intensity = if is_hdr { 2.8 } else { 1.1 };
+        let bloom_threshold = if is_hdr { 1.15 } else { 1.0 };
+        let bloom_radius = if is_hdr { 3.0 } else { 1.8 };
+        let flame_strength = if is_hdr { 1.60 } else { 1.0 };
+        let wind = 0.16;
+
+        let globals: [f32; 12] = [
+            elapsed,
+            1.10, // exposure
+            bloom_threshold,
+            bloom_intensity,
+            edr_gain,
+            bloom_radius,
+            wind,
+            flame_strength,
+            w.max(1.0),
+            h.max(1.0),
+            1.0 / w.max(1.0),
+            1.0 / h.max(1.0),
+        ];
+        frame
+            .queue
+            .write_buffer(globals_buffer, 0, bytemuck::bytes_of(&globals));
+
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some(encoder_label),
+                label: Some("Flame Film Encoder"),
             });
 
-        // ---------- Pass 1: render flame into HDR texture ----------
+        // Pass 1: flame -> HDR film buffer.
         {
-            let hdr_view = self.hdr_view.as_ref().unwrap();
-            let pipeline = self.flame_pipeline.as_ref().unwrap();
-            let scene_bg = self.scene_bg.as_ref().unwrap();
-
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pass1 Flame HDR"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Flame Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: hdr_view,
+                    view: film_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -629,37 +999,17 @@ impl GpuRenderer for FlameRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, scene_bg, &[]);
-            rp.draw(0..6, 0..1);
+            pass.set_pipeline(flame_pipeline);
+            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
 
-        // ---------- Pass 2: bright extract + downsample -> bloom_tex ----------
+        // Pass 2: threshold + downsample -> bloom_down.
         {
-            let bloom_view = self.bloom_view.as_ref().unwrap();
-            let pipeline = self.extract_pipeline.as_ref().unwrap();
-            let hdr_bg = self.hdr_sample_bg.as_ref().unwrap();
-            let bloom_bg = self.bloom_bg.as_ref().unwrap();
-
-            // For extract pass, src texture is HDR full-res; we still use bloom params for threshold.
-            // We set src_res to FULL-res for correct sampling in shader.
-            bloom.src_res_x = frame.width as f32;
-            bloom.src_res_y = frame.height as f32;
-            bloom.inv_src_x = 1.0 / (frame.width as f32);
-            bloom.inv_src_y = 1.0 / (frame.height as f32);
-            bloom.dir_x = 0.0;
-            bloom.dir_y = 0.0;
-
-            frame.queue.write_buffer(
-                self.bloom_ubo.as_ref().unwrap(),
-                0,
-                bytemuck::bytes_of(&bloom),
-            );
-
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pass2 Extract+Downsample"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Bloom Downsample Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: bloom_view,
+                    view: bloom_down_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -671,35 +1021,18 @@ impl GpuRenderer for FlameRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, hdr_bg, &[]);
-            rp.set_bind_group(1, bloom_bg, &[]);
-            rp.draw(0..6, 0..1);
+            pass.set_pipeline(downsample_pipeline);
+            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.set_bind_group(1, sample_bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
 
-        // ---------- Pass 3: blur horizontal bloom_tex -> ping ----------
+        // Pass 3: blur X -> bloom_temp.
         {
-            let ping_view = self.ping_view.as_ref().unwrap();
-            let pipeline = self.blur_pipeline.as_ref().unwrap();
-            let bloom_sample = self.bloom_sample_bg.as_ref().unwrap();
-            let bloom_bg = self.bloom_bg.as_ref().unwrap();
-
-            bloom.src_res_x = bw as f32;
-            bloom.src_res_y = bh as f32;
-            bloom.inv_src_x = inv_bw;
-            bloom.inv_src_y = inv_bh;
-            bloom.dir_x = 1.0;
-            bloom.dir_y = 0.0;
-            frame.queue.write_buffer(
-                self.bloom_ubo.as_ref().unwrap(),
-                0,
-                bytemuck::bytes_of(&bloom),
-            );
-
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pass3 Blur H"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Bloom Blur X Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: ping_view,
+                    view: bloom_temp_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -711,31 +1044,19 @@ impl GpuRenderer for FlameRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, bloom_sample, &[]);
-            rp.set_bind_group(1, bloom_bg, &[]);
-            rp.draw(0..6, 0..1);
+            pass.set_pipeline(blur_pipeline);
+            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.set_bind_group(1, sample_bind_group, &[]);
+            pass.set_bind_group(2, blur_x_bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
 
-        // ---------- Pass 4: blur vertical ping -> bloom_tex ----------
+        // Pass 4: blur Y -> bloom_blur.
         {
-            let bloom_view = self.bloom_view.as_ref().unwrap();
-            let pipeline = self.blur_pipeline.as_ref().unwrap();
-            let ping_sample = self.ping_sample_bg.as_ref().unwrap();
-            let bloom_bg = self.bloom_bg.as_ref().unwrap();
-
-            bloom.dir_x = 0.0;
-            bloom.dir_y = 1.0;
-            frame.queue.write_buffer(
-                self.bloom_ubo.as_ref().unwrap(),
-                0,
-                bytemuck::bytes_of(&bloom),
-            );
-
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pass4 Blur V"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Bloom Blur Y Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: bloom_view,
+                    view: bloom_blur_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -747,35 +1068,17 @@ impl GpuRenderer for FlameRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, ping_sample, &[]);
-            rp.set_bind_group(1, bloom_bg, &[]);
-            rp.draw(0..6, 0..1);
+            pass.set_pipeline(blur_pipeline);
+            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.set_bind_group(1, sample_bind_group, &[]);
+            pass.set_bind_group(2, blur_y_bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
 
-        // ---------- Pass 5: composite hdr + bloom -> surface ----------
+        // Pass 5: composite + tonemap -> surface.
         {
-            let pipeline = self.composite_pipeline.as_ref().unwrap();
-            let hdr_bg = self.hdr_sample_bg.as_ref().unwrap();
-            let bloom_bg_sample = self.bloom_sample_bg.as_ref().unwrap();
-            let bloom_params_bg = self.bloom_bg.as_ref().unwrap();
-            let scene_bg = self.scene_bg.as_ref().unwrap();
-
-            // restore src_res for bloom texture in composite
-            bloom.src_res_x = bw as f32;
-            bloom.src_res_y = bh as f32;
-            bloom.inv_src_x = inv_bw;
-            bloom.inv_src_y = inv_bh;
-            bloom.dir_x = 0.0;
-            bloom.dir_y = 0.0;
-            frame.queue.write_buffer(
-                self.bloom_ubo.as_ref().unwrap(),
-                0,
-                bytemuck::bytes_of(&bloom),
-            );
-
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pass5 Composite+Tonemap"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Final Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
                     resolve_target: None,
@@ -789,13 +1092,10 @@ impl GpuRenderer for FlameRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(pipeline);
-            // group0 = hdr, group1 = bloom, group2 = bloom params, group3 = scene
-            rp.set_bind_group(0, hdr_bg, &[]);
-            rp.set_bind_group(1, bloom_bg_sample, &[]);
-            rp.set_bind_group(2, bloom_params_bg, &[]);
-            rp.set_bind_group(3, scene_bg, &[]);
-            rp.draw(0..6, 0..1);
+            pass.set_pipeline(final_pipeline);
+            pass.set_bind_group(0, globals_bind_group, &[]);
+            pass.set_bind_group(1, final_bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));
@@ -803,361 +1103,3 @@ impl GpuRenderer for FlameRenderer {
 }
 
 waterui_ffi::export!();
-
-// -------------------- WGSL --------------------
-
-const FULLSCREEN_VS: &str = r#"
-struct VSOut {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) i: u32) -> VSOut {
-  var pos = array<vec2<f32>, 6>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 1.0, -1.0),
-    vec2<f32>(-1.0,  1.0),
-    vec2<f32>(-1.0,  1.0),
-    vec2<f32>( 1.0, -1.0),
-    vec2<f32>( 1.0,  1.0)
-  );
-
-  var o: VSOut;
-  o.position = vec4<f32>(pos[i], 0.0, 1.0);
-  o.uv = (pos[i] + 1.0) * 0.5; // bottom-left (0,0)
-  return o;
-}
-"#;
-
-const FLAME_PASS_WGSL: &str = r#"
-    struct VSOut {
-      @builtin(position) position: vec4<f32>,
-      @location(0) uv: vec2<f32>,
-    };
-
-    @vertex
-    fn vs_main(@builtin(vertex_index) i: u32) -> VSOut {
-      var pos = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0)
-      );
-
-      var o: VSOut;
-      o.position = vec4<f32>(pos[i], 0.0, 1.0);
-      o.uv = (pos[i] + 1.0) * 0.5; // bottom-left (0,0)
-      return o;
-    }
-struct SceneUniforms {
-  time: f32,
-  _pad0: f32,
-  res_x: f32,
-  res_y: f32,
-  frame_seed: f32,
-  _pad1: f32,
-};
-
-@group(0) @binding(0) var<uniform> u: SceneUniforms;
-
-fn hash12(p: vec2<f32>) -> f32 {
-  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
-}
-
-fn noise2(p: vec2<f32>) -> f32 {
-  let i = floor(p);
-  let f = fract(p);
-  let u2 = f * f * (3.0 - 2.0 * f);
-  let a = hash12(i);
-  let b = hash12(i + vec2<f32>(1.0, 0.0));
-  let c = hash12(i + vec2<f32>(0.0, 1.0));
-  let d = hash12(i + vec2<f32>(1.0, 1.0));
-  return mix(mix(a, b, u2.x), mix(c, d, u2.x), u2.y);
-}
-
-fn fbm(p: vec2<f32>) -> f32 {
-  var v = 0.0;
-  var a = 0.5;
-  var x = p;
-  for (var i = 0; i < 6; i = i + 1) {
-    v += a * noise2(x);
-    x = mat2x2<f32>(1.7, 1.2, -1.2, 1.7) * x + 0.11;
-    a *= 0.5;
-  }
-  return v;
-}
-
-fn flow(p: vec2<f32>) -> vec2<f32> {
-  let e = 0.003;
-  let n1 = fbm(p + vec2<f32>( e, 0.0));
-  let n2 = fbm(p + vec2<f32>(-e, 0.0));
-  let n3 = fbm(p + vec2<f32>(0.0,  e));
-  let n4 = fbm(p + vec2<f32>(0.0, -e));
-  let gx = (n1 - n2) / (2.0 * e);
-  let gy = (n3 - n4) / (2.0 * e);
-  return normalize(vec2<f32>(gy, -gx) + 1e-5);
-}
-
-// blackbody-ish HDR ramp
-fn fire_color(t: f32) -> vec3<f32> {
-  let x = clamp(t, 0.0, 1.0);
-  let c0 = vec3<f32>(0.02, 0.02, 0.03);
-  let c1 = vec3<f32>(0.75, 0.08, 0.01);
-  let c2 = vec3<f32>(1.60, 0.35, 0.02);
-  let c3 = vec3<f32>(3.50, 1.30, 0.12);
-  let c4 = vec3<f32>(12.0, 9.0, 4.5); // HDR white core
-  let a = smoothstep(0.00, 0.30, x);
-  let b = smoothstep(0.18, 0.60, x);
-  let c = smoothstep(0.45, 0.90, x);
-  let d = smoothstep(0.70, 1.00, x);
-  var col = mix(c0, c1, a);
-  col = mix(col, c2, b);
-  col = mix(col, c3, c);
-  col = mix(col, c4, d);
-  return col;
-}
-
-@fragment
-fn fs_flame(i: VSOut) -> @location(0) vec4<f32> {
-  let t = u.time;
-
-  let res = vec2<f32>(max(u.res_x, 1.0), max(u.res_y, 1.0));
-  let aspect = res.x / res.y;
-
-  // camera space
-  var p = vec2<f32>((i.uv.x - 0.5) * aspect, i.uv.y - 0.02);
-
-  // anchor flame lower third
-  p.y = p.y * 1.25;
-
-  // heat haze refraction
-  let haze_n = fbm(p * 2.2 + vec2<f32>(0.0, -t * 0.9));
-  p.x += (haze_n - 0.5) * (0.012 + 0.030 * smoothstep(0.10, 1.0, p.y));
-
-  // curl-ish advection
-  let f = flow(p * 1.35 + vec2<f32>(0.0, -t * 0.30));
-  p += 0.12 * f * (0.35 + 0.65 * fbm(p * 1.9 + t * 0.12));
-  p.x += 0.03 * sin(t * 1.2 + p.y * 7.0);
-
-  // flame cone
-  let y = p.y;
-  let width = mix(0.58, 0.06, clamp(y, 0.0, 1.0));
-  let cone = smoothstep(width, width - 0.09, abs(p.x));
-
-  // multi-scale tongues
-  let n_lo = fbm(vec2<f32>(p.x * 3.0,  p.y * 2.3) + vec2<f32>(0.0, -t * 1.35));
-  let n_hi = fbm(vec2<f32>(p.x * 10.5, p.y * 5.4) + vec2<f32>(13.0, -t * 3.10));
-  let tear = fbm(vec2<f32>(p.x * 5.0,  p.y * 1.2) + vec2<f32>(t * 0.4, -t * 0.7));
-
-  let tongues = smoothstep(0.18, 1.0, n_lo * 0.85 + n_hi * 0.55);
-  let breakup = smoothstep(0.15, 0.95, tongues + (tear - 0.5) * 0.35);
-
-  let h = smoothstep(1.18, 0.05, y);
-  var body = cone * breakup * h;
-  body = pow(clamp(body, 0.0, 1.0), 1.6);
-
-  // hot core
-  let core_w = width * 0.33;
-  var core = 1.0 - smoothstep(0.0, 1.0, abs(p.x) / (core_w + 1e-4));
-  core *= smoothstep(0.95, 0.12, y);
-  core *= smoothstep(0.20, 0.95, body);
-  core = pow(clamp(core, 0.0, 1.0), 2.9);
-
-  // smoke (darker, broader, slower)
-  let smoke_n = fbm(vec2<f32>(p.x * 1.2, p.y * 1.0) + vec2<f32>(0.0, -t * 0.22));
-  let smoke = smoothstep(0.55, 0.95, smoke_n) * smoothstep(0.05, 1.05, y) * 0.20;
-
-  // embers
-  var sparks = vec3<f32>(0.0);
-  for (var k = 0; k < 7; k = k + 1) {
-    let fk = f32(k);
-    let q = vec2<f32>(p.x * 24.0 + fk * 7.3, p.y * 34.0 - t * (3.0 + fk * 0.35));
-    let cell = floor(q);
-    let rnd = hash12(cell + fk * 19.7);
-    let local = fract(q) - 0.5;
-    let d = length(local);
-    let s = smoothstep(0.11, 0.0, d) * smoothstep(0.05, 0.85, body);
-    let flick = 0.6 + 0.4 * sin(t * 11.0 + rnd * 6.283);
-    sparks += vec3<f32>(1.3, 0.9, 0.35) * s * flick * 0.35;
-  }
-
-  // emissive HDR
-  let heat = clamp(body * 1.10 + core * 1.10, 0.0, 1.0);
-  var col = fire_color(heat) * (0.10 + 2.6 * body + 3.2 * core);
-
-  // blue base (fuel-rich look)
-  let blue = smoothstep(0.65, 0.05, y) * smoothstep(0.20, 0.85, core);
-  col += vec3<f32>(0.10, 0.20, 0.60) * blue * 0.75;
-
-  // smoke darkening
-  col = mix(col, col * vec3<f32>(0.55, 0.58, 0.62), smoke);
-
-  col += sparks;
-
-  // subtle environment glow (still HDR)
-  let glow = exp(-length(vec2<f32>(p.x, y - 0.25)) * 2.5) * 0.25;
-  col += vec3<f32>(1.2, 0.45, 0.12) * glow;
-
-  return vec4<f32>(col, 1.0);
-}
-"#;
-
-const EXTRACT_BLUR_COMPOSITE_WGSL: &str = r#"
-    struct VSOut {
-      @builtin(position) position: vec4<f32>,
-      @location(0) uv: vec2<f32>,
-    };
-
-    @vertex
-    fn vs_main(@builtin(vertex_index) i: u32) -> VSOut {
-      var pos = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0)
-      );
-
-      var o: VSOut;
-      o.position = vec4<f32>(pos[i], 0.0, 1.0);
-      o.uv = (pos[i] + 1.0) * 0.5; // bottom-left (0,0)
-      return o;
-    }
-struct BloomParams {
-  src_res_x: f32,
-  src_res_y: f32,
-  inv_src_x: f32,
-  inv_src_y: f32,
-  threshold: f32,
-  knee: f32,
-  intensity: f32,
-  _pad0: f32,
-  dir_x: f32,
-  dir_y: f32,
-  _pad1: f32,
-  _pad2: f32,
-};
-
-struct SceneUniforms {
-  time: f32,
-  _pad0: f32,
-  res_x: f32,
-  res_y: f32,
-  frame_seed: f32,
-  _pad1: f32,
-};
-
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-
-@group(1) @binding(0) var<uniform> p: BloomParams;
-
-// Composite uses two textures; we’ll bind them as:
-// group0: hdr, group1: bloom, group2: params, group3: scene
-@group(3) @binding(0) var<uniform> scene: SceneUniforms;
-
-// soft knee threshold
-fn soft_threshold(c: vec3<f32>, threshold: f32, knee: f32) -> vec3<f32> {
-  let l = max(max(c.r, c.g), c.b);
-  let t = threshold;
-  let k = knee;
-  // smooth transition around threshold
-  let x = max(l - t, 0.0);
-  let y = x * x / (k * k + 1e-5);
-  let w = x / (x + k + 1e-5);
-  let m = mix(y, x, w);
-  return c * (m / (l + 1e-5));
-}
-
-@fragment
-fn fs_extract(i: VSOut) -> @location(0) vec4<f32> {
-  // Downsample from full-res HDR to half-res by sampling 4 taps.
-  let inv = vec2<f32>(p.inv_src_x, p.inv_src_y);
-
-  let c0 = textureSample(t_src, s_src, i.uv + inv * vec2<f32>(-0.5, -0.5)).rgb;
-  let c1 = textureSample(t_src, s_src, i.uv + inv * vec2<f32>( 0.5, -0.5)).rgb;
-  let c2 = textureSample(t_src, s_src, i.uv + inv * vec2<f32>(-0.5,  0.5)).rgb;
-  let c3 = textureSample(t_src, s_src, i.uv + inv * vec2<f32>( 0.5,  0.5)).rgb;
-
-  let avg = (c0 + c1 + c2 + c3) * 0.25;
-  let bright = soft_threshold(avg, p.threshold, p.knee);
-  return vec4<f32>(bright, 1.0);
-}
-
-// 9-tap separable gaussian (good film bloom feel, still fast)
-@fragment
-fn fs_blur(i: VSOut) -> @location(0) vec4<f32> {
-  let dir = vec2<f32>(p.dir_x, p.dir_y);
-  let inv = vec2<f32>(p.inv_src_x, p.inv_src_y);
-  let step_uv = dir * inv;
-
-  // weights roughly gaussian sigma~2
-  let w0 = 0.227027;
-  let w1 = 0.1945946;
-  let w2 = 0.1216216;
-  let w3 = 0.054054;
-  let w4 = 0.016216;
-
-  var col = textureSample(t_src, s_src, i.uv).rgb * w0;
-  col += textureSample(t_src, s_src, i.uv + step_uv * 1.0).rgb * w1;
-  col += textureSample(t_src, s_src, i.uv - step_uv * 1.0).rgb * w1;
-  col += textureSample(t_src, s_src, i.uv + step_uv * 2.0).rgb * w2;
-  col += textureSample(t_src, s_src, i.uv - step_uv * 2.0).rgb * w2;
-  col += textureSample(t_src, s_src, i.uv + step_uv * 3.0).rgb * w3;
-  col += textureSample(t_src, s_src, i.uv - step_uv * 3.0).rgb * w3;
-  col += textureSample(t_src, s_src, i.uv + step_uv * 4.0).rgb * w4;
-  col += textureSample(t_src, s_src, i.uv - step_uv * 4.0).rgb * w4;
-
-  return vec4<f32>(col, 1.0);
-}
-
-// ACES (Narkowicz)
-fn aces(x: vec3<f32>) -> vec3<f32> {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((x * (a * x + vec3<f32>(b))) / (x * (c * x + vec3<f32>(d)) + vec3<f32>(e)),
-               vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
-fn hash12(p: vec2<f32>) -> f32 {
-  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
-}
-
-@group(1) @binding(0) var t_bloom: texture_2d<f32>;
-@group(1) @binding(1) var s_bloom: sampler;
-
-@group(2) @binding(0) var<uniform> p2: BloomParams;
-
-@fragment
-fn fs_composite(i: VSOut) -> @location(0) vec4<f32> {
-  let hdr = textureSample(t_src, s_src, i.uv).rgb;
-  let bloom = textureSample(t_bloom, s_bloom, i.uv).rgb * p2.intensity;
-
-  // filmic add
-  var col = hdr + bloom;
-
-  // slight vignette
-  let aspect = max(scene.res_x, 1.0) / max(scene.res_y, 1.0);
-  let pp = vec2<f32>((i.uv.x - 0.5) * aspect, i.uv.y - 0.5);
-  let r = length(pp);
-  let vig = smoothstep(1.05, 0.25, r);
-  col *= 0.65 + 0.35 * vig;
-
-  // tonemap (output linear; do NOT gamma here—swapchain sRGB will handle if needed)
-  col = aces(col);
-
-  // subtle film grain after tonemap
-  let res = vec2<f32>(max(scene.res_x, 1.0), max(scene.res_y, 1.0));
-  let g = (hash12(i.uv * res + vec2<f32>(scene.time * 60.0, scene.frame_seed * 13.0)) - 0.5) * 0.02;
-  col += vec3<f32>(g);
-
-  return vec4<f32>(col, 1.0);
-}
-"#;
