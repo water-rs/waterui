@@ -1,7 +1,10 @@
 //! Text components and utilities for the `WaterUI` framework.
 //!
 //! This crate provides comprehensive text rendering and formatting capabilities,
-//! including fonts, attributed text, links, and internationalization support.
+//! including fonts, attributed text, and internationalization support.
+//!
+//! Note: The `Link` component has been moved to the main `waterui` crate
+//! where it can use `robius-open` for URL handling.
 
 #![allow(clippy::future_not_send)]
 #![no_std]
@@ -10,13 +13,10 @@
 pub mod font;
 /// Syntax highlighting support.
 pub mod highlight;
-/// Link components for interactive text.
-pub mod link;
-/// Styled text support for rich text formatting.
-pub mod styled;
-pub use link::{Link, link};
 /// Localization and formatting utilities.
 pub mod locale;
+/// Styled text support for rich text formatting.
+pub mod styled;
 /// Macros for convenient text creation.
 #[macro_use]
 pub mod macros;

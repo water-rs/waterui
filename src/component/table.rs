@@ -82,11 +82,13 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let config = ConfigurableView::config(self);
+        // User customization via Hook takes precedence
         if let Some(hook) = env.get::<Hook<TableConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native(config))
+            return AnyView::new(hook.apply(env, config));
         }
+        // Native backend can catch TableConfig, otherwise falls back to DefaultTableView
+        let fallback = DefaultTableView::new(config.columns.clone());
+        AnyView::new(Native::new(config).with_fallback(fallback))
     }
 }
 
@@ -159,4 +161,71 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
     TableColumn::new(label, rows)
 }
 
-// note: may table could be a widget, based on lazy
+// ============================================================================
+// Default Table View Implementation
+// ============================================================================
+
+use waterui_core::dynamic::watch;
+use waterui_layout::scroll::scroll;
+use waterui_layout::stack::{hstack, vstack};
+
+/// Default table view that renders columns as a grid using stacks.
+///
+/// This is used as a fallback when no native table implementation is available.
+/// It renders:
+/// - A header row with column labels (bold)
+/// - Data rows as horizontal stacks
+#[derive(Debug)]
+struct DefaultTableView {
+    columns: Computed<Vec<TableColumn>>,
+}
+
+impl DefaultTableView {
+    fn new(columns: Computed<Vec<TableColumn>>) -> Self {
+        Self { columns }
+    }
+}
+
+impl View for DefaultTableView {
+    fn body(self, _env: &Environment) -> impl View {
+        let columns = self.columns;
+
+        // Use watch to reactively rebuild when columns change
+        watch(columns.clone(), move |cols: Vec<TableColumn>| {
+            if cols.is_empty() {
+                return AnyView::new(());
+            }
+
+            // Find the maximum number of rows across all columns
+            let max_rows = cols.iter().map(|c| c.rows().len()).max().unwrap_or(0);
+
+            // Build header row
+            let header_views: Vec<AnyView> = cols
+                .iter()
+                .map(|col| AnyView::new(col.label().bold()))
+                .collect();
+
+            // Build data rows
+            let mut row_views: Vec<AnyView> = Vec::with_capacity(max_rows + 1);
+
+            // Add header
+            row_views.push(AnyView::new(hstack(header_views)));
+
+            // Add data rows
+            for row_idx in 0..max_rows {
+                let row_cells: Vec<AnyView> = cols
+                    .iter()
+                    .map(|col| {
+                        col.rows()
+                            .get_view(row_idx)
+                            .map(AnyView::new)
+                            .unwrap_or_else(|| AnyView::new(Text::new("")))
+                    })
+                    .collect();
+                row_views.push(AnyView::new(hstack(row_cells)));
+            }
+
+            AnyView::new(scroll(vstack(row_views)))
+        })
+    }
+}
