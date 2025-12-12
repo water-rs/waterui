@@ -121,3 +121,5 @@ pub use entry::entry;
 
 pub mod app;
 pub mod window;
+
+pub use tracing as log;

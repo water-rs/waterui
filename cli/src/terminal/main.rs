@@ -11,8 +11,6 @@ use futures::future::{self, Either};
 
 use commands::{build, clean, create, devices, doctor, package, run};
 
-use crate::shell::is_interactive;
-
 /// Flag to track if Ctrl+C was pressed.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
