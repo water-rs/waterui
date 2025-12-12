@@ -10,6 +10,7 @@ use syntect::{
     highlighting::{Theme, ThemeSet},
     parsing::{SyntaxReference, SyntaxSet},
 };
+use two_face::syntax::extra_newlines;
 use waterui_color::Srgb;
 use waterui_core::Str;
 
@@ -181,10 +182,11 @@ impl Default for DefaultHighlighter {
 }
 
 impl DefaultHighlighter {
-    /// Creates a new highlighter backed by syntect.
+    /// Creates a new highlighter backed by syntect with extended syntax support.
     #[must_use]
     pub fn new() -> Self {
-        let syntax_set = SyntaxSet::load_defaults_newlines();
+        // Use two-face's extended syntax set which includes Swift and many more languages
+        let syntax_set = extra_newlines();
         let theme_set = ThemeSet::load_defaults();
         let theme = theme_set.themes["base16-ocean.dark"].clone();
         Self { syntax_set, theme }
@@ -260,5 +262,26 @@ impl HighlightChunk<'_> {
     #[must_use]
     pub fn attributed(self) -> StyledStr {
         StyledStr::from(self.text.to_string()).foreground(self.color)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_swift_syntax_exists() {
+        let syntax_set = extra_newlines();
+        let swift_syntax = syntax_set.find_syntax_by_extension("swift");
+        assert!(swift_syntax.is_some(), "Swift syntax should exist in two-face");
+    }
+
+    #[test]
+    fn test_swift_highlighting() {
+        let mut highlighter = DefaultHighlighter::new();
+        let code = "import SwiftUI\nstruct ContentView: View { }";
+        let chunks = highlighter.highlight(Language::Swift, code);
+        // Should have multiple chunks with different colors (not all plain text)
+        assert!(chunks.len() > 1, "Swift code should be tokenized");
     }
 }
