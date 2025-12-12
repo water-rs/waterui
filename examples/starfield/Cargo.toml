@@ -1,0 +1,18 @@
+[package]
+name = "star-field-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Star field example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "star field"]
+categories = ["gui"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui = { workspace = true, features = ["graphics"] }
+waterui-ffi = { workspace = true }

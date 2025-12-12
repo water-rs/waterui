@@ -53,7 +53,7 @@ impl NativeView for FixedContainer {
 
 impl View for FixedContainer {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Native(self)
+        Native::new(self)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -63,14 +63,18 @@ impl View for FixedContainer {
 
 /// A view wrapper that executes an arbitrary [`Layout`] implementation
 /// with reconstructable views, which can support lazy layouting.
+///
+/// Unlike [`FixedContainer`], this container stores views as an [`AnyViews`]
+/// collection, allowing backends to reconstruct views on-demand for efficient
+/// rendering of large lists.
 #[derive(Debug)]
-pub struct Container {
+pub struct LazyContainer {
     layout: Box<dyn Layout>,
     contents: AnyViews<AnyView>,
 }
 
-impl Container {
-    /// Wraps the supplied layout object and views into a container view.
+impl LazyContainer {
+    /// Wraps the supplied layout object and views into a lazy container view.
     pub fn new<V: View>(
         layout: impl Layout + 'static,
         contents: impl Views<View = V> + 'static,
@@ -87,15 +91,15 @@ impl Container {
     }
 }
 
-impl NativeView for Container {
+impl NativeView for LazyContainer {
     fn stretch_axis(&self) -> StretchAxis {
         self.layout.stretch_axis()
     }
 }
 
-impl View for Container {
+impl View for LazyContainer {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Native(self)
+        Native::new(self)
     }
 
     fn stretch_axis(&self) -> StretchAxis {

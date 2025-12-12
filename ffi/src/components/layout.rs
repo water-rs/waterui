@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
     Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
-    container::{Container as LayoutContainer, FixedContainer},
+    container::{LazyContainer, FixedContainer},
     scroll::Axis,
 };
 
@@ -42,9 +42,9 @@ pub struct WuiContainer {
     contents: *mut WuiAnyViews,
 }
 
-ffi_view!(LayoutContainer, WuiContainer, layout_container);
+ffi_view!(LazyContainer, WuiContainer, layout_container);
 
-impl IntoFFI for LayoutContainer {
+impl IntoFFI for LazyContainer {
     type FFI = WuiContainer;
     fn into_ffi(self) -> Self::FFI {
         let (layout, contents) = self.into_inner();

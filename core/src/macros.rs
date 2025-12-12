@@ -40,7 +40,7 @@ macro_rules! raw_view {
 
         impl $crate::View for $ty {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
-                $crate::Native(self)
+                $crate::Native::new(self)
             }
 
             fn stretch_axis(&self) -> $crate::layout::StretchAxis {
@@ -55,7 +55,7 @@ macro_rules! raw_view {
 
         impl $crate::View for $ty {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
-                $crate::Native(self)
+                $crate::Native::new(self)
             }
 
             fn stretch_axis(&self) -> $crate::layout::StretchAxis {
@@ -120,7 +120,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native(config))
+                    $crate::AnyView::new($crate::Native::new(config))
                 }
             }
 
@@ -164,7 +164,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native(config))
+                    $crate::AnyView::new($crate::Native::new(config))
                 }
             }
 

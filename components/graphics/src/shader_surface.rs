@@ -199,7 +199,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 impl GpuRenderer for ShaderRenderer {
     fn setup(&mut self, ctx: &GpuContext) {
-        tracing::debug!("[ShaderSurface] setup() called with format: {:?}", ctx.surface_format);
+        tracing::debug!(
+            "[ShaderSurface] setup() called with format: {:?}",
+            ctx.surface_format
+        );
         let full_shader = self.build_full_shader();
 
         let shader = ctx
@@ -296,11 +299,14 @@ impl GpuRenderer for ShaderRenderer {
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-
         // Check if pipeline format matches current frame format
         if let Some(pipeline_fmt) = self.pipeline_format {
             if pipeline_fmt != frame.format {
-                tracing::error!("[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}", pipeline_fmt, frame.format);
+                tracing::error!(
+                    "[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}",
+                    pipeline_fmt,
+                    frame.format
+                );
                 self.pipeline = None;
                 self.pipeline_format = None;
             }
@@ -312,21 +318,27 @@ impl GpuRenderer for ShaderRenderer {
             return;
         }
 
-        let Some(pipeline) = &self.pipeline else { return };
-        let Some(uniform_buffer) = &self.uniform_buffer else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         // Update uniforms with correct WGSL alignment:
         // [time: f32, _pad: f32, resolution.x: f32, resolution.y: f32, _padding: f32, _pad: f32]
         let elapsed = self.start_time.elapsed().as_secs_f32();
         #[allow(clippy::cast_precision_loss)]
         let uniforms: [f32; 6] = [
-            elapsed,              // time at offset 0
-            0.0,                  // padding at offset 4 (for vec2 alignment)
-            frame.width as f32,   // resolution.x at offset 8
-            frame.height as f32,  // resolution.y at offset 12
-            0.0,                  // _padding at offset 16
-            0.0,                  // struct padding at offset 20
+            elapsed,             // time at offset 0
+            0.0,                 // padding at offset 4 (for vec2 alignment)
+            frame.width as f32,  // resolution.x at offset 8
+            frame.height as f32, // resolution.y at offset 12
+            0.0,                 // _padding at offset 16
+            0.0,                 // struct padding at offset 20
         ];
         frame
             .queue
