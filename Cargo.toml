@@ -4,7 +4,6 @@ members = [
     "core",
     "components/*",
     "utils/*",
-    "backends/tui",
     "backends/hydrolysis",
     # "plugins/i18n", We need more thoughtful design about i18n...
     "window",
@@ -75,7 +74,6 @@ waterui-layout = { version = "0.1.0", path = "components/layout" }
 waterui-navigation = { version = "0.1.0", path = "components/navigation" }
 waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
 waterui-web = { version = "0.1.0", path = "backends/web" }
-waterui-tui = { version = "0.1.0", path = "backends/tui" }
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis" }
 waterui = { version = "0.1.0", path = "." }
 native-executor = { version = "0.7.0" }

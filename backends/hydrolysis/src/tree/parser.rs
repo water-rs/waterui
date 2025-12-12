@@ -55,7 +55,7 @@ impl<'env> TreeBuilder<'env> {
         // Text nodes (Native<TextConfig>).
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(native) => {
-                let node = TextNode::new(native.0, self.env);
+                let node = TextNode::new(native.into_inner(), self.env);
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
@@ -101,7 +101,7 @@ impl<'env> TreeBuilder<'env> {
 
         let view = match view.downcast::<Native<SliderConfig>>() {
             Ok(native) => {
-                let node = crate::components::controls::SliderNode::new(native.0);
+                let node = crate::components::controls::SliderNode::new(native.into_inner());
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
@@ -109,7 +109,7 @@ impl<'env> TreeBuilder<'env> {
 
         let view = match view.downcast::<Native<StepperConfig>>() {
             Ok(native) => {
-                let node = crate::components::controls::StepperNode::new(native.0);
+                let node = crate::components::controls::StepperNode::new(native.into_inner());
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
@@ -117,7 +117,7 @@ impl<'env> TreeBuilder<'env> {
 
         let view = match view.downcast::<Native<ToggleConfig>>() {
             Ok(native) => {
-                let node = crate::components::controls::ToggleNode::new(native.0);
+                let node = crate::components::controls::ToggleNode::new(native.into_inner());
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
@@ -125,7 +125,7 @@ impl<'env> TreeBuilder<'env> {
 
         let view = match view.downcast::<Native<TextFieldConfig>>() {
             Ok(native) => {
-                let node = crate::components::controls::TextFieldNode::new(native.0);
+                let node = crate::components::controls::TextFieldNode::new(native.into_inner());
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
@@ -133,7 +133,7 @@ impl<'env> TreeBuilder<'env> {
 
         let view = match view.downcast::<Native<ProgressConfig>>() {
             Ok(native) => {
-                let node = crate::components::progress::ProgressNode::new(native.0);
+                let node = crate::components::progress::ProgressNode::new(native.into_inner());
                 return Some(self.insert_node(parent, Box::new(node)));
             }
             Err(view) => view,
