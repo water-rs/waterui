@@ -42,6 +42,9 @@ use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
 use waterui::{AnyView, Str, View};
 use waterui_core::Metadata;
+
+pub mod app;
+pub mod window;
 use waterui_core::metadata::MetadataKey;
 
 use crate::array::WuiArray;
