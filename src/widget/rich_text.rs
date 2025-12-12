@@ -2,18 +2,26 @@ use std::{mem, str::FromStr};
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_color::Blue;
+use waterui_controls::button;
 use waterui_core::{Environment, View};
-use waterui_layout::stack::{HStack, VStack, hstack};
+use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_str::Str;
 use waterui_text::{
+    Text,
     highlight::Language,
-    link,
     styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
     text,
 };
 
-use crate::{ViewExt, widget};
+use crate::{ViewExt, component::table::{col, table}, widget};
+
+/// Opens a URL in the system's default browser/handler.
+fn open_url(url: &str) {
+    if let Err(e) = robius_open::Uri::new(url).open() {
+        tracing::error!("Failed to open URL '{}': {:?}", url, e);
+    }
+}
 
 /// Rich text widget for displaying formatted content.
 #[derive(Debug, Default, Clone)]
@@ -119,20 +127,32 @@ impl View for RichTextElement {
     fn body(self, _env: &Environment) -> impl View {
         match self {
             Self::Text(s) => text(s).anyview(),
-            Self::Link { label, url } => link(label, url).anyview(),
+            Self::Link { label, url } => {
+                // Style link text as blue and use a button for the tap action
+                let url_string = url.to_string();
+                button(text(label).foreground(Blue))
+                    .action(move || {
+                        open_url(&url_string);
+                    })
+                    .anyview()
+            }
             Self::Image { src, alt: _ } => {
                 Url::parse(&*src).map_or_else(|| ().anyview(), |url| media_photo(url).anyview())
             }
             Self::Table { headers, rows } => {
-                let mut table_rows = Vec::new();
-                if !headers.is_empty() {
-                    table_rows.push(headers.into_iter().collect::<HStack<_>>());
-                }
-                for row in rows {
-                    table_rows.push(row.into_iter().collect::<HStack<_>>());
-                }
-
-                table_rows.into_iter().collect::<VStack<_>>().anyview()
+                // Convert row-based data to column-based for native Table
+                let num_cols = headers.len();
+                let columns = (0..num_cols)
+                    .map(|col_idx| {
+                        let header = element_to_text(&headers[col_idx]);
+                        let row_texts: Vec<Text> = rows
+                            .iter()
+                            .filter_map(|row| row.get(col_idx).map(element_to_text))
+                            .collect();
+                        col(header, row_texts)
+                    })
+                    .collect::<Vec<_>>();
+                table(columns).anyview()
             }
             Self::List { items, ordered } => render_list(items.as_slice(), ordered).anyview(),
             Self::Code { code, language } => widget::code(language, code).anyview(),
@@ -150,7 +170,8 @@ impl View for RichTextElement {
 
 impl View for RichText {
     fn body(self, _env: &Environment) -> impl View {
-        VStack::from_iter(self.elements)
+        // Use Leading alignment so code blocks and other elements align properly
+        VStack::from_iter(self.elements).alignment(HorizontalAlignment::Leading)
     }
 }
 
@@ -167,11 +188,42 @@ fn render_list(items: &[RichTextElement], ordered: bool) -> impl View {
             hstack((text(marker), item.clone()))
         })
         .collect::<VStack<_>>()
+        .alignment(HorizontalAlignment::Leading)
 }
 
 fn quote(content: Vec<RichTextElement>) -> impl View {
-    let quote_marker = Blue.width(4.0).height(f32::INFINITY);
-    hstack((quote_marker, VStack::from_iter(content)))
+    // Quote marker: fixed width, stretch to fill height (use max_height to trigger stretch)
+    let quote_marker = Blue.width(4.0).max_height(f32::MAX);
+    hstack((
+        quote_marker,
+        VStack::from_iter(content).alignment(HorizontalAlignment::Leading),
+    ))
+}
+
+/// Converts a `RichTextElement` to plain `Text` for use in native Table columns.
+fn element_to_text(element: &RichTextElement) -> Text {
+    match element {
+        RichTextElement::Text(styled) => Text::from(styled.clone()),
+        RichTextElement::Link { label, .. } => Text::from(label.clone()),
+        RichTextElement::Group { elements, .. } => {
+            // Concatenate all text from group elements
+            let combined: String = elements.iter().map(|e| element_to_plain_text(e)).collect();
+            Text::from(combined)
+        }
+        _ => Text::from(""),
+    }
+}
+
+/// Extracts plain text string from a `RichTextElement`.
+fn element_to_plain_text(element: &RichTextElement) -> String {
+    match element {
+        RichTextElement::Text(styled) => styled.to_plain().to_string(),
+        RichTextElement::Link { label, .. } => label.to_plain().to_string(),
+        RichTextElement::Group { elements, .. } => {
+            elements.iter().map(element_to_plain_text).collect()
+        }
+        _ => String::new(),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -229,11 +281,14 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     });
                 }
                 Tag::TableHead => {
+                    // TableHead contains cells directly (no TableRow wrapper)
+                    // Push a TableRow container to collect header cells
                     if let Some(idx) = current_table_index(&stack)
                         && let Container::Table { in_head, .. } = &mut stack[idx]
                     {
                         *in_head = true;
                     }
+                    stack.push(Container::TableRow { cells: Vec::new() });
                 }
                 Tag::TableRow => stack.push(Container::TableRow { cells: Vec::new() }),
                 Tag::TableCell => {
@@ -332,9 +387,12 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::TableHead => {
-                    if let Some(idx) = current_table_index(&stack)
-                        && let Container::Table { in_head, .. } = &mut stack[idx]
+                    // Pop the header row we pushed in Tag::TableHead
+                    if let Some(Container::TableRow { cells }) = stack.pop()
+                        && let Some(idx) = current_table_index(&stack)
+                        && let Container::Table { headers, in_head, .. } = &mut stack[idx]
                     {
+                        *headers = cells;
                         *in_head = false;
                     }
                 }
@@ -722,5 +780,67 @@ mod tests {
         assert!(matches!(elements[1], RichTextElement::Group { .. }));
         assert!(matches!(elements[2], RichTextElement::List { .. }));
         assert!(matches!(elements[3], RichTextElement::Table { .. }));
+    }
+
+    #[test]
+    fn parses_code_block() {
+        let markdown = r#"# WaterUI Markdown Example
+This is an example of using **WaterUI** to render Markdown content in a cross-platform application.
+
+Supports **bold**, *italic*, and `code` text styles. blocks
+
+```rust
+
+fn main() {
+    println!("Hello, Markdown!");
+}
+```
+
+"#;
+
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+
+        println!("Total elements: {}", elements.len());
+        for (i, el) in elements.iter().enumerate() {
+            println!("Element {}: {:?}", i, std::mem::discriminant(el));
+            match el {
+                RichTextElement::Code { language, code } => {
+                    println!("  Code: lang={:?}, code={:?}", language, code);
+                }
+                RichTextElement::Text(s) => {
+                    println!("  Text: {:?}", s.to_plain());
+                }
+                _ => {}
+            }
+        }
+
+        // Should have a Code element
+        let has_code = elements.iter().any(|el| matches!(el, RichTextElement::Code { .. }));
+        assert!(has_code, "Expected a Code element in the parsed markdown");
+    }
+
+    #[test]
+    fn parses_table() {
+        let markdown = r#"
+| Platform | Backend | Status |
+| -------- | ------- | ------ |
+| iOS | SwiftUI | Ready |
+| macOS | AppKit | Ready |
+"#;
+
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+
+        let has_table = elements.iter().any(|el| matches!(el, RichTextElement::Table { .. }));
+        assert!(has_table, "Expected a Table element in the parsed markdown");
+
+        // Verify table structure
+        for el in elements {
+            if let RichTextElement::Table { headers, rows } = el {
+                assert_eq!(headers.len(), 3, "Expected 3 headers");
+                assert_eq!(rows.len(), 2, "Expected 2 rows");
+            }
+        }
     }
 }
