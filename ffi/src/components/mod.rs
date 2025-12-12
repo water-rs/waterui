@@ -5,7 +5,7 @@ pub mod layout;
 impl<T: IntoFFI + waterui_core::NativeView> IntoFFI for waterui_core::Native<T> {
     type FFI = T::FFI;
     fn into_ffi(self) -> Self::FFI {
-        IntoFFI::into_ffi(self.0)
+        IntoFFI::into_ffi(self.into_inner())
     }
 }
 
@@ -13,8 +13,6 @@ pub mod button;
 
 ffi_view!(waterui::Str, WuiStr, plain);
 pub mod lazy;
-
-pub mod link;
 
 pub mod text;
 
