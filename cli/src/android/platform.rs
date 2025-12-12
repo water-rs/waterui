@@ -361,7 +361,7 @@ impl Platform for AndroidPlatform {
         let target_upper = self.triple().to_string().replace('-', "_").to_uppercase();
 
         // Build with RustBuild
-        let build = RustBuild::new(project.root(), self.triple());
+        let build = RustBuild::new(project.root(), self.triple(), options.is_hot_reload());
 
         // Set environment variables for cargo, cc-rs, and cmake before building
         // SAFETY: CLI is single-threaded at this point
