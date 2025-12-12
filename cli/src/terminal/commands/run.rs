@@ -18,7 +18,7 @@ use waterui_cli::{
         platform::ApplePlatform,
     },
     build::BuildOptions,
-    debug::hot_reload::{DEFAULT_PORT, HotReloadServer},
+    debug::{HotReloadEvent, HotReloadRunner},
     device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
     platform::{PackageOptions, Platform},
     project::Project,
@@ -47,9 +47,9 @@ pub struct Args {
     #[arg(short, long)]
     device: Option<String>,
 
-    /// Enable hot reload.
+    /// Disable hot reload (hot reload is enabled by default).
     #[arg(long)]
-    hot_reload: bool,
+    no_hot_reload: bool,
 
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
@@ -129,51 +129,84 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 3: Build, package, launch device, and run
     // Launch happens in background while building for efficiency
     let log_level = args.logs.map(LogLevel::from);
-    let running = display_output(build_and_run(
+    let hot_reload = !args.no_hot_reload;
+    let (running, hot_reload_runner) = display_output(build_and_run(
         &project,
         device,
         needs_launch,
-        args.hot_reload,
+        hot_reload,
         log_level,
     ))
     .await?;
 
     line!();
+    if hot_reload_runner.is_some() {
+        note!("Hot reload enabled - editing source files will update the app");
+    }
     note!("Press Ctrl+C to stop the application");
     line!();
 
-    // Stream device events
+    // Stream device events and hot reload events
     let mut running = std::pin::pin!(running);
-    while let Some(event) = running.next().await {
-        match event {
-            DeviceEvent::Started => {
+    let platform_name = match args.platform {
+        TargetPlatform::Android => "Android",
+        TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
+    };
+
+    loop {
+        // Poll hot reload events if runner exists
+        if let Some(ref runner) = hot_reload_runner {
+            while let Ok(event) = runner.events().try_recv() {
+                match event {
+                    HotReloadEvent::ServerStarted { host, port } => {
+                        shell::status("◉", &format!("Hot reload server on {host}:{port}"));
+                    }
+                    HotReloadEvent::FileChanged => {
+                        shell::status("◌", "File changed, rebuilding...");
+                    }
+                    HotReloadEvent::Rebuilding => {
+                        shell::status("◐", "Building...");
+                    }
+                    HotReloadEvent::Built { path } => {
+                        shell::status("◑", &format!("Built: {}", path.display()));
+                    }
+                    HotReloadEvent::BuildFailed { error } => {
+                        error!("Build failed: {error}");
+                    }
+                    HotReloadEvent::Broadcast => {
+                        success!("Hot reload: updated");
+                    }
+                }
+            }
+        }
+
+        // Poll device events
+        match running.next().await {
+            Some(DeviceEvent::Started) => {
                 shell::status("●", "Application started");
             }
-            DeviceEvent::Stopped => {
+            Some(DeviceEvent::Stopped) => {
                 shell::status("○", "Application stopped");
                 break;
             }
-            DeviceEvent::Stdout { message } => {
+            Some(DeviceEvent::Stdout { message }) => {
                 line!("[stdout] {message}");
             }
-            DeviceEvent::Stderr { message } => {
+            Some(DeviceEvent::Stderr { message }) => {
                 warn!("[stderr] {message}");
             }
-            DeviceEvent::Log { level, message } => {
-                let platform_name = match args.platform {
-                    TargetPlatform::Android => "Android",
-                    TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
-                };
+            Some(DeviceEvent::Log { level, message }) => {
                 shell::device_log(platform_name, level, message);
             }
-            DeviceEvent::Exited => {
+            Some(DeviceEvent::Exited) => {
                 note!("Application exited");
                 break;
             }
-            DeviceEvent::Crashed(msg) => {
+            Some(DeviceEvent::Crashed(msg)) => {
                 error!("Application crashed: {msg}");
                 break;
             }
+            None => break,
         }
     }
 
@@ -186,13 +219,15 @@ pub async fn run(args: Args) -> Result<()> {
 /// - Launching device in background (if needed) while building
 /// - Building and packaging via the device's platform
 /// - Running with hot reload support
+///
+/// Returns the running app stream and optionally a hot reload runner.
 async fn build_and_run(
     project: &Project,
     device: SelectedDevice,
     needs_launch: bool,
     hot_reload: bool,
     log_level: Option<LogLevel>,
-) -> Result<Running> {
+) -> Result<(Running, Option<HotReloadRunner>)> {
     match device {
         SelectedDevice::AppleSimulator(sim) => {
             build_and_run_device(project, sim, needs_launch, hot_reload, log_level).await
@@ -216,11 +251,12 @@ async fn build_and_run_device<D: Device + 'static>(
     needs_launch: bool,
     hot_reload: bool,
     log_level: Option<LogLevel>,
-) -> Result<Running>
+) -> Result<(Running, Option<HotReloadRunner>)>
 where
     D::Platform: Platform,
 {
     let platform = device.platform();
+    let triple = platform.triple();
 
     // Launch device in background while building (if needed)
     let launch_task = smol::spawn(async move {
@@ -244,15 +280,25 @@ where
     }
     let device = launch_task.await?;
 
+    // Create hot reload runner if enabled
+    let runner = if hot_reload {
+        shell::status("▶", "Starting hot reload...");
+        Some(HotReloadRunner::new(project, triple).await?)
+    } else {
+        None
+    };
+
     shell::status("▶", "Running...");
-    run_with_options(device, artifact, hot_reload, log_level).await
+    let running = run_with_options(device, artifact, runner.as_ref(), log_level).await?;
+
+    Ok((running, runner))
 }
 
 /// Run artifact on device with hot reload support.
 async fn run_with_options<D: Device>(
     device: D,
     artifact: Artifact,
-    hot_reload: bool,
+    runner: Option<&HotReloadRunner>,
     log_level: Option<LogLevel>,
 ) -> Result<Running> {
     let mut run_options = RunOptions::new();
@@ -261,23 +307,16 @@ async fn run_with_options<D: Device>(
         run_options.set_log_level(level);
     }
 
-    let server = if hot_reload {
-        let server = HotReloadServer::launch(DEFAULT_PORT).await?;
-        run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
+    // Set hot reload env vars if runner is provided
+    if let Some(runner) = runner {
+        run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), runner.host());
         run_options.insert_env_var(
             "WATERUI_HOT_RELOAD_PORT".to_string(),
-            server.port().to_string(),
+            runner.port().to_string(),
         );
-        Some(server)
-    } else {
-        None
-    };
-
-    let mut running = device.run(artifact, run_options).await?;
-
-    if let Some(server) = server {
-        running.retain(server);
     }
+
+    let running = device.run(artifact, run_options).await?;
 
     Ok(running)
 }
