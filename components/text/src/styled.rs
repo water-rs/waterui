@@ -37,8 +37,8 @@ impl Style {
 
     /// Sets the font.
     #[must_use]
-    pub fn font(mut self, font: Font) -> Self {
-        self.font = font;
+    pub fn font(mut self, font: impl Into<Font>) -> Self {
+        self.font = font.into();
         self
     }
 
@@ -501,7 +501,7 @@ impl MarkdownInlineBuilder {
 pub fn heading_style(level: HeadingLevel) -> Style {
     use crate::font::{Body, Caption, Footnote, Headline, Subheadline, Title};
 
-    let font = match level {
+    let font: Font = match level {
         HeadingLevel::H1 => Headline.into(),
         HeadingLevel::H2 => Title.into(),
         HeadingLevel::H3 => Subheadline.into(),
