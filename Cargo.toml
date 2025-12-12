@@ -90,6 +90,8 @@ zenwave = { version = "0.2.0", default-features = false, features = ["hyper-back
 skyzen = { version = "0.1.0", default-features = false }
 
 tracing-panic = "0.1.2"
+arboard = "3.6"
+robius-open = { version = "0.1", default-features = false }
 
 [dependencies]
 nami.workspace = true
@@ -120,6 +122,8 @@ uuid = { version = "1.18.1", features = ["v4"] }
 serde_json = "1.0"
 waterui-graphics = { workspace = true, optional = true }
 async-fs = "2.2.0"
+arboard.workspace = true
+robius-open.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }

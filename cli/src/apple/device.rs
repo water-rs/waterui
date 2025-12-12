@@ -57,8 +57,9 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
                         }
 
                         // Parse log level from compact format: "timestamp Ty Process..."
-                        // Ty is: E (error/fault), W (warning), I (info), D (debug)
-                        let level = if line.contains(" E ") {
+                        // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
+                        // Fault is Apple's highest severity - used by panic handler
+                        let level = if line.contains(" F ") || line.contains(" E ") {
                             tracing::Level::ERROR
                         } else if line.contains(" W ") {
                             tracing::Level::WARN
@@ -88,10 +89,89 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
     }
 }
 
-/// Handle exit status and send appropriate event.
+/// Fetch recent panic logs from the unified logging system.
 ///
-/// This is shared between macOS and iOS simulator to ensure consistent crash detection.
-fn handle_exit_status(exit_status: ExitStatus, sender: &Sender<DeviceEvent>) {
+/// This uses `log show` to retrieve logs from the last few seconds that contain panic info.
+/// Returns the panic message if found, along with location and payload.
+async fn fetch_recent_panic_logs(since: OffsetDateTime) -> Option<String> {
+    // Format time for log show: "YYYY-MM-DD HH:MM:SS"
+    let time_format =
+        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
+    let start_time = since.format(&time_format).ok()?;
+
+    let output = Command::new("log")
+        .args([
+            "show",
+            "--predicate",
+            "subsystem == \"dev.waterui\" AND eventMessage CONTAINS \"panic\"",
+            "--style",
+            "compact",
+            "--start",
+            &start_time,
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+
+    // Parse the log output to extract panic information
+    for line in stdout.lines() {
+        // Skip header lines
+        if line.starts_with("Filtering") || line.starts_with("Timestamp") || line.is_empty() {
+            continue;
+        }
+
+        // Extract panic.payload and panic.location from structured log fields
+        // Format: ... panic.location="path:line:col" ... panic.payload="message"
+        let mut location = None;
+        let mut payload = None;
+
+        if let Some(loc_start) = line.find("panic.location=\"") {
+            let start = loc_start + 16;
+            if let Some(end) = line[start..].find('"') {
+                location = Some(&line[start..start + end]);
+            }
+        }
+
+        if let Some(pay_start) = line.find("panic.payload=\"") {
+            let start = pay_start + 15;
+            if let Some(end) = line[start..].find('"') {
+                payload = Some(&line[start..start + end]);
+            }
+        }
+
+        if payload.is_some() || location.is_some() {
+            let mut msg = String::from("Panic occurred");
+            if let Some(p) = payload {
+                msg = format!("{msg}: {p}");
+            }
+            if let Some(l) = location {
+                msg = format!("{msg}\n  at {l}");
+            }
+            return Some(msg);
+        }
+    }
+
+    None
+}
+
+/// Handle app exit: check for panics, then check exit status.
+///
+/// This is the main exit handler shared between macOS and iOS simulator.
+/// It first checks for Rust panic logs, then falls back to signal/exit code analysis.
+async fn handle_app_exit(
+    exit_status: ExitStatus,
+    start_time: OffsetDateTime,
+    sender: &Sender<DeviceEvent>,
+) {
+    // First, check for Rust panic logs (structured tracing output)
+    if let Some(panic_msg) = fetch_recent_panic_logs(start_time).await {
+        let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
+        return;
+    }
+
+    // Fall back to signal/exit code analysis
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -383,13 +463,16 @@ impl Device for MacOS {
             let result = futures::future::select(open_task, crash_poll_task).await;
 
             match result {
-                // open exited first - check for crash report
+                // open exited first - check for crash report or panic logs
                 futures::future::Either::Left(((), crash_future)) => {
-                    // Check one more time for crash report
+                    // Check for crash report first (macOS .ips files)
                     if let Some(msg) =
                         find_crash_report_since(&app_name_for_crash, start_time).await
                     {
                         let _ = sender.try_send(DeviceEvent::Crashed(msg));
+                    } else if let Some(panic_msg) = fetch_recent_panic_logs(start_time).await {
+                        // Check for Rust panic logs
+                        let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
                     } else {
                         let _ = sender.try_send(DeviceEvent::Exited);
                     }
@@ -623,13 +706,16 @@ impl Device for AppleSimulator {
             }
         });
 
+        // Record start time for panic log lookup
+        let start_time = OffsetDateTime::now_utc();
+
         // Start log streaming (uses WaterUI subsystem predicate)
         start_log_stream(sender.clone(), options.log_level());
 
-        // Spawn a task to wait for the app to exit
+        // Spawn a task to wait for the app to exit and check for panics
         spawn(async move {
             match child.status().await {
-                Ok(exit_status) => handle_exit_status(exit_status, &sender),
+                Ok(exit_status) => handle_app_exit(exit_status, start_time, &sender).await,
                 Err(e) => {
                     let _ =
                         sender.try_send(DeviceEvent::Crashed(format!("Failed to get status: {e}")));
