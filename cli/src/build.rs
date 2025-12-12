@@ -12,23 +12,31 @@ use crate::utils::{command, run_command};
 pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
+    hot_reload: bool,
 }
 
 /// Options for building Rust libraries.
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     release: bool,
+    hot_reload: bool,
     output_dir: Option<std::path::PathBuf>,
 }
 
 impl BuildOptions {
     /// Create new build options
     #[must_use]
-    pub const fn new(release: bool) -> Self {
+    pub const fn new(release: bool, hot_reload: bool) -> Self {
         Self {
             release,
             output_dir: None,
+            hot_reload,
         }
+    }
+
+    /// Whether to enable hot-reload support
+    pub const fn is_hot_reload(&self) -> bool {
+        self.hot_reload
     }
 
     /// Whether to build in release mode
@@ -65,14 +73,15 @@ pub enum RustBuildError {
 
 impl RustBuild {
     /// Create a new rust build for the given path and target triple.
-    pub fn new(path: impl AsRef<Path>, triple: Triple) -> Self {
+    pub fn new(path: impl AsRef<Path>, triple: Triple, hot_reload: bool) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
             triple,
+            hot_reload,
         }
     }
 
-    /// Build a `.a` or `.so` library for linking.
+    /// Build rust library in development mode.
     ///
     /// Will produce debug symbols and less optimizations for faster builds.
     ///
@@ -82,12 +91,23 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn dev_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(false).await
+        self.build_lib(false).await
+    }
+
+    /// Build rust library in release mode.
+    ///
+    /// Return the directory path containing the built library.
+    ///
+    /// # Errors
+    /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
+    /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
+    pub async fn release_build(&self) -> Result<PathBuf, RustBuildError> {
+        self.build_lib(true).await
     }
 
     /// Build a library with the specified crate type.
     ///
-    /// Return the path to the built library.
+    /// Return the directory path containing the built library.
     ///
     /// # Errors
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
@@ -98,14 +118,22 @@ impl RustBuild {
 
     /// Return target directory path
     async fn build_inner(&self, release: bool) -> Result<PathBuf, RustBuildError> {
-        // Build the library - Cargo.toml defines crate-type = ["staticlib", "cdylib", "rlib"]
-
         let mut cmd = Command::new("cargo");
         let mut cmd = command(&mut cmd)
             .arg("build")
             .arg("--lib")
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
+
+        if self.hot_reload {
+            // Preserve existing RUSTFLAGS and append our cfg flag
+            let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+            if !rustflags.is_empty() {
+                rustflags.push(' ');
+            }
+            rustflags.push_str("--cfg waterui_hot_reload_lib");
+            cmd.env("RUSTFLAGS", rustflags);
+        }
 
         // Set BINDGEN_EXTRA_CLANG_ARGS for iOS/tvOS/watchOS/visionOS simulator builds
         // This fixes bindgen issues with the *-apple-*-sim target triples
@@ -133,9 +161,11 @@ impl RustBuild {
 
         // use `cargo metadata` to get the target directory
 
-        let metadata = unblock(|| {
+        let build_path = self.path.clone();
+        let metadata = unblock(move || {
             cargo_metadata::MetadataCommand::new()
                 .no_deps()
+                .current_dir(build_path)
                 .exec()
                 .map_err(|e| {
                     RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
@@ -151,80 +181,6 @@ impl RustBuild {
         let dir = target_directory
             .join(self.triple.to_string())
             .join(if release { "release" } else { "debug" });
-
-        Ok(dir)
-    }
-
-    /// Build a `.a` or `.so` library for linking.
-    ///
-    /// Return the path to the built library.
-    ///
-    /// # Errors
-    /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
-    /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
-    pub async fn release_build(&self) -> Result<PathBuf, RustBuildError> {
-        self.build_inner(true).await
-    }
-
-    /// Build a hot-reloadable `.dylib` library.
-    ///
-    /// Sets the `waterui_hot_reload_lib` cfg flag to enable hot reload entry points.
-    ///
-    /// Return the path to the built library.
-    ///
-    /// # Errors
-    /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
-    /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
-    pub async fn build_hot_reload_lib(&self) -> Result<PathBuf, RustBuildError> {
-        let mut cmd = Command::new("cargo");
-        let mut cmd = command(&mut cmd)
-            .arg("build")
-            .arg("--lib")
-            .args(["--target", self.triple.to_string().as_str()])
-            .current_dir(&self.path)
-            // Enable hot reload lib feature via RUSTFLAGS
-            .env("RUSTFLAGS", "--cfg waterui_hot_reload_lib");
-
-        // Set BINDGEN_EXTRA_CLANG_ARGS for simulator builds
-        if self.triple.environment == Environment::Sim {
-            if let Some(clang_args) = self.bindgen_clang_args_for_simulator().await {
-                cmd = cmd.env("BINDGEN_EXTRA_CLANG_ARGS", clang_args);
-            }
-        }
-
-        let status = cmd
-            .status()
-            .await
-            .map_err(RustBuildError::FailToExecuteCargoBuild)?;
-
-        if !status.success() {
-            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Cargo build failed",
-            )));
-        }
-
-        // Get the target directory
-        let path = self.path.clone();
-        let metadata = unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .current_dir(&path)
-                .no_deps()
-                .exec()
-                .map_err(|e| {
-                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    ))
-                })
-        })
-        .await?;
-
-        let target_directory = metadata.target_directory.as_std_path();
-
-        let dir = target_directory
-            .join(self.triple.to_string())
-            .join("debug");
 
         Ok(dir)
     }

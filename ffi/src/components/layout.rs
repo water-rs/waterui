@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use waterui_layout::{
     Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
-    container::{LazyContainer, FixedContainer},
+    container::{FixedContainer, LazyContainer},
     scroll::Axis,
 };
 
@@ -336,7 +336,10 @@ pub unsafe extern "C" fn waterui_layout_place(
             bounds.width(),
             bounds.height(),
             children_slice.len(),
-            rects.iter().map(|r| (r.x(), r.y(), r.width(), r.height())).collect::<Vec<_>>()
+            rects
+                .iter()
+                .map(|r| (r.x(), r.y(), r.width(), r.height()))
+                .collect::<Vec<_>>()
         );
     }
 
