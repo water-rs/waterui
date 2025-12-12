@@ -1,17 +1,37 @@
 use core::error::Error;
-
+use executor_core::spawn_local;
+use nami::Binding;
+use native_executor::sleep;
+use std::time::Duration;
+use waterui_color::Color;
 use waterui_core::View;
 use waterui_layout::{
-    scroll, spacer,
-    stack::{hstack, vstack},
+    spacer,
+    stack::{HorizontalAlignment, VStack, hstack},
 };
 use waterui_str::Str;
 use waterui_text::{
-    highlight::{DefaultHighlighter, Language, highlight_text},
+    font::Body,
+    highlight::{DefaultHighlighter, Highlighter, Language},
+    styled::{Style, StyledStr},
     text,
 };
 
-use crate::widget::suspense::suspense;
+use crate::{SignalExt, ViewExt};
+
+/// Copies text to the system clipboard.
+fn copy_to_clipboard(text: &str) {
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => {
+            if let Err(e) = clipboard.set_text(text) {
+                tracing::error!("Failed to copy to clipboard: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to access clipboard: {}", e);
+        }
+    }
+}
 
 /// View that renders syntax-highlighted code snippets.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,14 +56,45 @@ impl Code {
 
 impl View for Code {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        scroll(vstack((
-            hstack((text!("{}", self.language).bold(), spacer(), text("Copy"))),
-            suspense(highlight_text(
-                self.language,
-                self.content,
-                DefaultHighlighter::new(),
-            )),
-        )))
+        let lang_name = self.language.to_string();
+        let content_for_copy = self.content.to_string();
+        let mut highlighter = DefaultHighlighter::new();
+        let chunks = highlighter.highlight(self.language, &self.content);
+
+        let highlighted = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
+            s.push(
+                chunk.text.to_string(),
+                Style::default().foreground(chunk.color).font(Body),
+            );
+            s
+        });
+
+        let copied = Binding::container(false);
+
+        // Code block with dark background, left-aligned content
+        VStack::new(
+            HorizontalAlignment::Leading,
+            8.0,
+            (
+                hstack((
+                    text(lang_name).bold(),
+                    spacer(),
+                    text(copied.select("Copied", "Copy").animated()).on_tap(move || {
+                        copy_to_clipboard(&content_for_copy);
+                        let copied = copied.clone();
+                        spawn_local(async move {
+                            copied.set(true);
+                            sleep(Duration::from_secs(1)).await;
+                            copied.set(false);
+                        })
+                        .detach();
+                    }),
+                )),
+                text(highlighted),
+            ),
+        )
+        .padding()
+        .background(Color::srgb_f32(0.15, 0.15, 0.18))
     }
 }
 

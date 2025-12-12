@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+<important>
+    YOU CANNOT USE println, use tracing::debug!() instead for debug output.
+</important>
+
 ## Build Commands
 
 ```bash
@@ -160,6 +164,7 @@ The hot reload system uses a WebSocket-based architecture:
 - Run workspace tests: `cargo test`
 - Run specific crate tests: `cargo test -p <crate-name>`
 - No explicit CLI unit tests found; likely relies on integration testing
+- Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
 
 ### Error Handling
 
