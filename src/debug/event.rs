@@ -36,6 +36,9 @@ pub enum ConnectionError {
     /// No endpoint configured.
     NoEndpoint,
 
+    /// Connection timed out.
+    Timeout,
+
     /// Failed to connect after max attempts.
     MaxReconnectAttempts(u32),
 
@@ -50,6 +53,7 @@ impl core::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoEndpoint => write!(f, "Hot reload endpoint not configured"),
+            Self::Timeout => write!(f, "Connection timed out"),
             Self::MaxReconnectAttempts(n) => {
                 write!(f, "Failed to connect after {n} attempts")
             }
