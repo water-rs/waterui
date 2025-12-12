@@ -1,7 +1,9 @@
 //! Module defining the `Window` struct for UI windows.
 
+use std::{fmt::Debug, rc::Rc};
+
 use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, Environment, View};
 use waterui_layout::{Point, Rect, Size};
 use waterui_str::Str;
 
@@ -40,6 +42,28 @@ pub enum WindowState {
     Fullscreen,
 }
 
+/// Manages the display of windows.
+#[derive(Clone)]
+pub struct WindowManager(Rc<dyn Fn(Window)>);
+
+impl Debug for WindowManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowManager").finish()
+    }
+}
+
+impl WindowManager {
+    /// Create a new `WindowManager` with the specified show function.
+    pub fn new<F: 'static + Fn(Window)>(show: F) -> Self {
+        Self(Rc::new(show))
+    }
+
+    /// Show a window using the window manager.
+    pub fn show(&self, window: Window) {
+        (self.0)(window);
+    }
+}
+
 impl_constant!(WindowState);
 
 impl Window {
@@ -67,8 +91,17 @@ impl Window {
     }
 
     /// Show the window on screen.
-    pub fn show(self) {
-        todo!()
+    pub fn show(self, env: &Environment) {
+        env.get::<WindowManager>()
+            .expect("WindowManager not found in environment")
+            .show(self);
+    }
+}
+
+impl View for Window {
+    fn body(self, env: &Environment) -> impl View {
+        self.show(env);
+        // Return an empty view as the window is managed separately
     }
 }
 
