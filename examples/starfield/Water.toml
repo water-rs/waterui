@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Star field Example"
+bundle_identifier = "com.waterui.example.star"

@@ -13,12 +13,44 @@
 //! let button = button("Click me").action(|| {
 //!     println!("Button clicked!");
 //! });
+//!
+//! // Button with link style
+//! let link_button = button("Visit website")
+//!     .style(ButtonStyle::Link)
+//!     .action(|| { /* open URL */ });
 //! ```
 //!
 //! Tip: `action` receives a `HandlerFn`, it can extract value from environment and pass it to the action.
 //! To learn more about `HandlerFn`, see the [`HandlerFn`] documentation.
 
 use core::fmt::Debug;
+
+/// Visual style options for buttons.
+///
+/// Different button styles provide different visual emphasis and behavior.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ButtonStyle {
+    /// The default button style, determined by the platform and context.
+    /// On macOS/iOS, this typically renders as a rounded rectangle with background.
+    #[default]
+    Automatic,
+    /// A plain text button without any background or border.
+    /// Suitable for low-emphasis actions.
+    Plain,
+    /// A button styled as a hyperlink, typically with underlined blue text.
+    /// Used for URL navigation and text-based links.
+    Link,
+    /// A button without a visible border, but may show hover/press effects.
+    /// Similar to Plain but with more interactive feedback.
+    Borderless,
+    /// A prominent button style for primary actions.
+    /// Typically rendered with a filled background color.
+    Bordered,
+    /// A prominent button with visible border.
+    /// Similar to Bordered but with more prominent styling.
+    BorderedProminent,
+}
 
 use alloc::boxed::Box;
 use waterui_core::handler::{
@@ -53,6 +85,8 @@ pub struct ButtonConfig {
     pub label: AnyView,
     /// The action to execute when the button is clicked
     pub action: BoxHandler<()>,
+    /// The visual style of the button
+    pub style: ButtonStyle,
 }
 
 impl_debug!(ButtonConfig);
@@ -69,7 +103,7 @@ where
         if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
             hook.apply(env, config)
         } else {
-            AnyView::new(Native(config))
+            AnyView::new(Native::new(config))
         }
     }
 
@@ -85,6 +119,7 @@ impl ViewConfiguration for ButtonConfig {
         Button {
             label: self.label,
             action: self.action,
+            style: self.style,
         }
     }
 }
@@ -100,6 +135,7 @@ where
         ButtonConfig {
             label: AnyView::new(self.label),
             action: Box::new(self.action),
+            style: self.style,
         }
     }
 }
@@ -109,6 +145,7 @@ where
 pub struct Button<Label, Action> {
     label: Label,
     action: Action,
+    style: ButtonStyle,
 }
 
 impl<Label> Button<Label, ()> {
@@ -118,11 +155,30 @@ impl<Label> Button<Label, ()> {
     ///
     /// * `label` - The text or view to display on the button
     pub const fn new(label: Label) -> Self {
-        Self { label, action: () }
+        Self {
+            label,
+            action: (),
+            style: ButtonStyle::Automatic,
+        }
     }
 }
 
 impl<Label, Action> Button<Label, Action> {
+    /// Sets the visual style of the button.
+    ///
+    /// # Arguments
+    ///
+    /// * `style` - The button style to apply
+    ///
+    /// # Returns
+    ///
+    /// The modified button with the style set
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
     /// Sets the action to be performed when the button is clicked.
     ///
     /// # Arguments
@@ -141,6 +197,7 @@ impl<Label, Action> Button<Label, Action> {
         Button {
             label: self.label,
             action: into_handler(action),
+            style: self.style,
         }
     }
     /// Sets the action to be performed when the button is clicked, with access to a state.
@@ -167,6 +224,7 @@ impl<Label, Action> Button<Label, Action> {
         Button {
             label: self.label,
             action: into_handler_with_state(action, state.clone()),
+            style: self.style,
         }
     }
 }

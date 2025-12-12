@@ -2,7 +2,6 @@ use std::{mem, str::FromStr};
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_color::Blue;
-use waterui_controls::button;
 use waterui_core::{Environment, View};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
 use waterui_media::{Url, photo::photo as media_photo};
@@ -14,14 +13,11 @@ use waterui_text::{
     text,
 };
 
-use crate::{ViewExt, component::table::{col, table}, widget};
-
-/// Opens a URL in the system's default browser/handler.
-fn open_url(url: &str) {
-    if let Err(e) = robius_open::Uri::new(url).open() {
-        tracing::error!("Failed to open URL '{}': {:?}", url, e);
-    }
-}
+use crate::{
+    ViewExt,
+    component::table::{col, table},
+    widget::{self, Divider},
+};
 
 /// Rich text widget for displaying formatted content.
 #[derive(Debug, Default, Clone)]
@@ -73,6 +69,8 @@ pub fn rich_text(elements: impl Into<Vec<RichTextElement>>) -> RichText {
 pub enum RichTextElement {
     /// Plain text with styling.
     Text(StyledStr),
+    /// A horizontal divider.
+    Divider,
     /// A hyperlink.
     Link {
         /// The link label.
@@ -127,15 +125,7 @@ impl View for RichTextElement {
     fn body(self, _env: &Environment) -> impl View {
         match self {
             Self::Text(s) => text(s).anyview(),
-            Self::Link { label, url } => {
-                // Style link text as blue and use a button for the tap action
-                let url_string = url.to_string();
-                button(text(label).foreground(Blue))
-                    .action(move || {
-                        open_url(&url_string);
-                    })
-                    .anyview()
-            }
+            Self::Link { label, url } => crate::component::link::link(text(label), url).anyview(),
             Self::Image { src, alt: _ } => {
                 Url::parse(&*src).map_or_else(|| ().anyview(), |url| media_photo(url).anyview())
             }
@@ -164,6 +154,7 @@ impl View for RichTextElement {
                     VStack::from_iter(elements).anyview()
                 }
             }
+            Self::Divider => Divider.anyview(),
         }
     }
 }
@@ -329,6 +320,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         alt: MarkdownInlineBuilder::new(),
                     });
                 }
+
                 _ => {}
             },
             Event::End(tag) => match tag {
@@ -390,7 +382,9 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     // Pop the header row we pushed in Tag::TableHead
                     if let Some(Container::TableRow { cells }) = stack.pop()
                         && let Some(idx) = current_table_index(&stack)
-                        && let Container::Table { headers, in_head, .. } = &mut stack[idx]
+                        && let Container::Table {
+                            headers, in_head, ..
+                        } = &mut stack[idx]
                     {
                         *headers = cells;
                         *in_head = false;
@@ -446,6 +440,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                 }
                 _ => {}
             },
+
             Event::Text(text) => match stack.last_mut() {
                 Some(Container::CodeBlock { code, .. }) => code.push_str(text.as_ref()),
                 _ => {
@@ -488,13 +483,14 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     sink.hard_break();
                 }
             }
-            Event::Rule => {
-                push_to_parent(&mut stack, RichTextElement::Text(StyledStr::plain("——")));
-            }
+
             Event::TaskListMarker(checked) => {
                 if let Some(mut sink) = current_inline_sink(&mut stack) {
                     sink.push_text(if checked { "[x] " } else { "[ ] " });
                 }
+            }
+            Event::Rule => {
+                push_to_parent(&mut stack, RichTextElement::Divider);
             }
         }
     }
@@ -816,7 +812,9 @@ fn main() {
         }
 
         // Should have a Code element
-        let has_code = elements.iter().any(|el| matches!(el, RichTextElement::Code { .. }));
+        let has_code = elements
+            .iter()
+            .any(|el| matches!(el, RichTextElement::Code { .. }));
         assert!(has_code, "Expected a Code element in the parsed markdown");
     }
 
@@ -832,7 +830,9 @@ fn main() {
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
-        let has_table = elements.iter().any(|el| matches!(el, RichTextElement::Table { .. }));
+        let has_table = elements
+            .iter()
+            .any(|el| matches!(el, RichTextElement::Table { .. }));
         assert!(has_table, "Expected a Table element in the parsed markdown");
 
         // Verify table structure
@@ -841,6 +841,36 @@ fn main() {
                 assert_eq!(headers.len(), 3, "Expected 3 headers");
                 assert_eq!(rows.len(), 2, "Expected 2 rows");
             }
+        }
+    }
+
+    #[test]
+    fn parses_link_text_correctly() {
+        let markdown = "Visit [WaterUI on GitHub](https://github.com/water-rs/waterui) for more information.";
+        let rich = RichText::from_markdown(markdown);
+        let elements = rich.elements();
+
+        println!("Elements: {:#?}", elements);
+
+        // Should have one Group element (inline paragraph)
+        assert_eq!(elements.len(), 1);
+
+        if let RichTextElement::Group { elements: inner, inline } = &elements[0] {
+            assert!(inline, "Should be inline group");
+            println!("Inner elements: {:#?}", inner);
+
+            // Find the Link element
+            let link = inner.iter().find(|el| matches!(el, RichTextElement::Link { .. }));
+            assert!(link.is_some(), "Should have a Link element");
+
+            if let Some(RichTextElement::Link { label, url }) = link {
+                let label_text = label.to_plain();
+                println!("Link label: '{}'", label_text);
+                println!("Link URL: '{}'", url);
+                assert_eq!(&*label_text, "WaterUI on GitHub", "Link text should be complete");
+            }
+        } else {
+            panic!("Expected Group element, got {:?}", elements[0]);
         }
     }
 }
