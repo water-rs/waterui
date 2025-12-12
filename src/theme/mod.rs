@@ -278,8 +278,7 @@ impl ColorSettings {
 ///     .body(my_body_font)
 ///     .title(my_title_font);
 /// ```
-#[derive(Default)]
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct FontSettings {
     body: Option<Computed<ResolvedFont>>,
     title: Option<Computed<ResolvedFont>>,
@@ -518,20 +517,19 @@ impl<T> ColorSlotValue<T> {
 /// Returns a transparent fallback if no signal is installed. Native backends
 /// should always install proper defaults.
 fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> {
-    env.get::<ColorSlotValue<T>>()
-        .map_or_else(
-            || {
-                // Fallback: transparent (native should provide real defaults)
-                Computed::constant(ResolvedColor {
-                    red: 0.0,
-                    green: 0.0,
-                    blue: 0.0,
-                    headroom: 0.0,
-                    opacity: 0.0,
-                })
-            },
-            |v| v.signal.clone(),
-        )
+    env.get::<ColorSlotValue<T>>().map_or_else(
+        || {
+            // Fallback: transparent (native should provide real defaults)
+            Computed::constant(ResolvedColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                headroom: 0.0,
+                opacity: 0.0,
+            })
+        },
+        |v| v.signal.clone(),
+    )
 }
 
 // ============================================================================
