@@ -6,7 +6,7 @@
 //! from the environment.
 
 use core::any::type_name;
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use crate::Environment;
 use alloc::format;
