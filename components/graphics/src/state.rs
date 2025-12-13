@@ -8,6 +8,7 @@ use waterui_color::Color;
 use vello::{kurbo, peniko};
 
 use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
+use crate::text::FontSpec;
 
 // ============================================================================
 // Fill and Stroke Styles
@@ -205,7 +206,7 @@ pub struct DrawingState {
     // Text styling (Phase 5)
     pub(crate) text_align: TextAlign,
     pub(crate) text_baseline: TextBaseline,
-    // TODO: Add font style in Phase 5
+    pub(crate) font: FontSpec,
 
     // Shadow (Phase 7)
     pub(crate) shadow_blur: f32,
@@ -233,6 +234,7 @@ impl Default for DrawingState {
             blend_mode: peniko::BlendMode::default(),
             text_align: TextAlign::default(),
             text_baseline: TextBaseline::default(),
+            font: FontSpec::default(),
             shadow_blur: 0.0,
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0), // Transparent black
             shadow_offset_x: 0.0,
