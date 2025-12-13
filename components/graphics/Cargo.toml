@@ -13,7 +13,7 @@ categories = ["gui"]
 [features]
 default = ["canvas"]
 wgpu = ["dep:wgpu", "dep:bytemuck"]
-canvas = ["wgpu", "dep:vello", "dep:parley"]
+canvas = ["wgpu", "dep:vello"]
 
 [dependencies]
 waterui-core.workspace = true
