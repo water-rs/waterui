@@ -25,7 +25,7 @@ Or via the main `waterui` crate:
 
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.2"
 ```
 
 ## Quick Start
@@ -274,6 +274,7 @@ ShaderSurface::new(r#"
 ### Custom Render Pipeline
 
 See `/Users/lexoliu/Coding/waterui/examples/flame/src/lib.rs` for a complete example implementing:
+
 - Multi-pass HDR rendering
 - Procedural flame shader with fractal noise
 - Bloom post-processing with separable Gaussian blur
