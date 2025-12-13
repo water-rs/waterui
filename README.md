@@ -93,15 +93,8 @@ waterui = "0.1.1" # Replace with the latest version
 - **`waterui`**: The main crate.
 - **`waterui-core`**: The heart of the framework (View trait, Environment, Reactivity).
 - **`components/`**: Component libraries (`layout`, `controls`, `form`, `media`, etc.).
-- **`backends/`**: Platform renderers (`apple`, `android`, `hydrolysis`, `tui`).
+- **`backends/`**: Platform renderers (`apple`, `android`, `hydrolysis`(WIP)).
 - **`cli/`**: The `water` command-line interface.
-
-## 🛣️ Roadmap
-
-- **Component Library Expansion**: Tables, trees, charts.
-- **Renderer Maturation**: `Hydrolysis` performance and platform support.
-- **Animation API**: Declarative animation system.
-- **Accessibility**: Enhanced accessibility features.
 
 ## 🤝 Contributing
 

@@ -20,8 +20,8 @@ The CI will verify that the header is up-to-date.
 
 Every WaterUI application is just a normal Rust crate (it has its own `Cargo.toml` and `src/lib.rs`). That crate:
 
-1. Depends on `waterui` to define the application logic (`init()` returns an `Environment`, `main()` returns a `View`, etc.).
-2. Depends on `waterui-ffi` for the `waterui_ffi::export!()` macro, which expands to the `#[no_mangle] extern "C"` entry points `waterui_init` and `waterui_main`.
+1. Depends on `waterui` to define the application logic (`app(env: Environment) -> App` entry point).
+2. Depends on `waterui-ffi` for the `waterui_ffi::export!()` macro, which expands to the `#[no_mangle] extern "C"` entry points `waterui_init` and `waterui_app`.
 3. Re-exports those entry points so any native shell (Android, Apple, web) can call straight into the Rust code.
 
 The CLI now exposes `water build <platform>` to produce these native artifacts.
@@ -29,7 +29,7 @@ When you run `water run android`/`water package android`, it invokes
 `water build android` before Gradle so Cargo builds **the project crate** (not
 the helper crate) for every requested Android ABI. The built `.so` is copied
 into `android/app/src/main/jniLibs/` and loaded by the Android runtime, which
-expects the exported `waterui_init`/`waterui_main` symbols documented above.
+expects the exported `waterui_init`/`waterui_app` symbols documented above.
 Apple backends follow the same pattern: Xcode runs the tiny wrapper script that
 executes `water build apple`, links the resulting static library, and calls the
 exported functions via `waterui.h`.
@@ -54,10 +54,10 @@ Native backends (Android, Apple, etc.) must follow a specific initialization seq
 │    - Reads system/Material Design colors and passes them to Rust    │
 │    - Optional but recommended for proper theming                    │
 ├─────────────────────────────────────────────────────────────────────┤
-│ 3. waterui_main()                                                   │
-│    - Creates the root view tree (AnyView)                           │
-│    - May create reactive Bindings that depend on the executor       │
-│    - MUST be called AFTER waterui_init()                            │
+│ 3. waterui_app(env)                                                 │
+│    - Creates the application from user's app(env) function          │
+│    - Returns WuiApp with windows and environment                    │
+│    - MUST be called AFTER waterui_init() and theme installation     │
 ├─────────────────────────────────────────────────────────────────────┤
 │ 4. Render Loop (for each view)                                      │
 │    a. waterui_view_id(view) → Get the type name                     │
@@ -101,7 +101,7 @@ Each raw view type has a corresponding ID function:
 
 ### Common Pitfalls
 
-1. **Calling `waterui_main()` before `waterui_init()`**: This causes reactive signals to be created without a properly initialized executor, leading to silent failures where components don't render or update correctly.
+1. **Calling `waterui_app()` before `waterui_init()`**: This causes reactive signals to be created without a properly initialized executor, leading to silent failures where components don't render or update correctly.
 
 2. **Not installing theme before rendering**: While optional, failing to call `waterui_env_install_theme()` means the Rust side will use fallback colors/fonts, which may not match the native platform's appearance.
 
