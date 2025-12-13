@@ -59,25 +59,22 @@ futures = "0.3"
 nami = { version = "0.9.0" }
 nami-core = { version = "0.3.0" }
 tracing = "0.1.41"
-waterui-core = { version = "0.1.0", path = "core" }
+waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.0", path = "utils/str" }
-waterui-url = { version = "0.1.0", path = "utils/url" }
-waterui-color = { version = "0.1.0", path = "utils/color" }
-waterui-text = { version = "0.1.0", path = "components/text" }
-waterui-media = { version = "0.1.0", path = "components/media" }
-waterui-form = { version = "0.1.0", path = "components/form" }
-waterui-controls = { version = "0.1.0", path = "components/controls"}
-waterui-form-derive = { version = "0.1.0", path = "components/form/derive" }
-waterui-graphics = { version = "0.1.0", path = "components/graphics" }
-waterui-ffi = { version = "0.1.0", path = "ffi" }
-waterui-layout = { version = "0.1.0", path = "components/layout" }
-waterui-navigation = { version = "0.1.0", path = "components/navigation" }
-waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
-waterui-web = { version = "0.1.0", path = "backends/web" }
+waterui-url = { version = "0.2.0", path = "utils/url" }
+waterui-color = { version = "0.2.0", path = "utils/color" }
+waterui-text = { version = "0.2.0", path = "components/text" }
+waterui-media = { version = "0.2.0", path = "components/media" }
+waterui-form = { version = "0.2.0", path = "components/form" }
+waterui-controls = { version = "0.2.0", path = "components/controls"}
+waterui-form-derive = { version = "0.2.0", path = "components/form/derive" }
+waterui-graphics = { version = "0.2.0", path = "components/graphics" }
+waterui-ffi = { version = "0.2.0", path = "ffi" }
+waterui-layout = { version = "0.2.0", path = "components/layout" }
+waterui-navigation = { version = "0.2.0", path = "components/navigation" }
 waterui = { version = "0.2.0", path = "." }
 native-executor = { version = "0.7.0", features = ["polyfill"] }
-waterui-derive = { version = "0.1.0", path = "derive" }
-waterkit-location = { version = "0.1.0", path = "kit/location" }
+waterui-macros = { version = "0.2.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
 time = "0.3"
@@ -106,7 +103,7 @@ futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 pulldown-cmark = "0.13"
-waterui-derive.workspace = true
+waterui-macros.workspace = true
 libloading = "0.9"
 uuid = { version = "1.18.1", features = ["v4"] }
 waterui-graphics = { workspace = true, optional = true }
