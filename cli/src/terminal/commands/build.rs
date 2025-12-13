@@ -62,7 +62,7 @@ pub struct Args {
     #[arg(long)]
     output_dir: Option<PathBuf>,
 }
-
+#[allow(clippy::too_many_lines)]
 /// Run the build command.
 pub async fn run(args: Args) -> Result<()> {
     let project_path = args

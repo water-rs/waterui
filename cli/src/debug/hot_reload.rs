@@ -73,7 +73,7 @@ impl ServerState {
         self.clients.push(sender);
     }
 
-    fn broadcast(&mut self, message: BroadcastMessage) {
+    fn broadcast(&mut self, message: &BroadcastMessage) {
         // Remove disconnected clients and send to remaining ones
         self.clients
             .retain(|sender| sender.try_send(message.clone()).is_ok());
@@ -123,7 +123,7 @@ impl HotReloadServer {
         let broadcast_task = smol::spawn(async move {
             while let Ok(message) = broadcast_rx.recv().await {
                 let mut state = state_for_broadcast.lock().await;
-                state.broadcast(message);
+                state.broadcast(&message);
             }
         });
 
@@ -144,7 +144,7 @@ impl HotReloadServer {
 
             // Run the executor in parallel with serving
             // The executor must be driven to process connection handlers
-            let _ = futures::join!(
+            futures::future::join(
                 // Drive the executor (runs forever until dropped)
                 executor.run(std::future::pending::<()>()),
                 // Serve connections
@@ -154,7 +154,8 @@ impl HotReloadServer {
                     connections,
                     router,
                 ),
-            );
+            )
+            .await;
 
             drop(broadcast_task);
         });

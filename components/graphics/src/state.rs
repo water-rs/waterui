@@ -270,7 +270,7 @@ impl DrawingState {
         Self::default()
     }
 
-    /// Builds a kurbo::Stroke from the current line styling state.
+    /// Builds a [`kurbo::Stroke`] from the current line styling state.
     #[must_use]
     pub(crate) fn build_stroke(&self) -> kurbo::Stroke {
         let mut stroke = kurbo::Stroke::new(f64::from(self.line_width))

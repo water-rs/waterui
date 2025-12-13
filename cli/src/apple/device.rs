@@ -256,6 +256,7 @@ impl Device for MacOS {
         ApplePlatform::macos()
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &self,
         artifact: Artifact,
@@ -381,7 +382,7 @@ impl Device for MacOS {
 
             match result {
                 // open exited first - check for crash report or panic logs
-                futures::future::Either::Left(((), crash_future)) => {
+                futures::future::Either::Left(_) => {
                     // Check for crash report first (macOS .ips files)
                     if let Some(report) = poll_for_crash_report(
                         device_name,

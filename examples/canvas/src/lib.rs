@@ -24,7 +24,7 @@ fn main() -> impl View {
             let bond_length = 90.0;
 
             // Water bond angle ~104.5°
-            let angle = 104.5_f64.to_radians() / 2.0;
+            let angle = 104.5_f32.to_radians() / 2.0;
 
             let hx1 = center.x - bond_length * angle.sin();
             let hy1 = center.y + bond_length * angle.cos();

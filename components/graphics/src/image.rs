@@ -114,11 +114,11 @@ impl CanvasImage {
     /// Returns the size of the image.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
-    pub fn size(&self) -> Size {
+    pub const fn size(&self) -> Size {
         Size::new(self.width as f32, self.height as f32)
     }
 
-    /// Returns a reference to the internal peniko ImageData.
+    /// Returns a reference to the internal peniko `ImageData`.
     ///
     /// This is used internally by the canvas renderer.
     #[must_use]
@@ -132,7 +132,7 @@ impl core::fmt::Debug for CanvasImage {
         f.debug_struct("CanvasImage")
             .field("width", &self.width)
             .field("height", &self.height)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -140,7 +140,12 @@ impl core::fmt::Debug for CanvasImage {
 #[derive(Debug)]
 pub enum ImageError {
     /// The pixel data length doesn't match the expected size.
-    InvalidPixelData { expected: usize, got: usize },
+    InvalidPixelData {
+        /// The expected length of the pixel data in bytes.
+        expected: usize,
+        /// The actual length of the pixel data in bytes.
+        got: usize,
+    },
     /// Failed to decode image from bytes.
     DecodeError(image::ImageError),
 }

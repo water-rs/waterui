@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![allow(clippy::multiple_crate_versions)]
 #![allow(clippy::future_not_send)]
-
+#![allow(clippy::doc_markdown)]
 extern crate alloc;
 #[macro_use]
 mod macros;
@@ -18,8 +18,7 @@ pub mod widget;
 #[doc(inline)]
 pub use view::View;
 pub mod accessibility;
-#[doc(inline)]
-pub use waterui_derive::*;
+
 pub mod theme;
 pub mod prelude {
     //! A collection of commonly used traits and types for easy importing.
@@ -59,10 +58,14 @@ pub mod prelude {
     pub use widget::{Card, Divider, card, suspense};
 }
 pub use color::Color;
+pub use form::FormBuilder;
 #[doc(inline)]
 pub use view::ViewExt;
 pub use waterui_color as color;
 pub use waterui_form as form;
+
+#[doc(inline)]
+pub use waterui_derive::*;
 pub use waterui_layout as layout;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
