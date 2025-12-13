@@ -11,10 +11,11 @@ pub mod gpu_surface;
 #[cfg(feature = "wgpu")]
 pub mod shader_surface;
 
-/// Canvas for 2D vector graphics using Vello (beginner-friendly API).
-#[cfg(feature = "canvas")]
-pub mod canvas;
-pub use canvas::{Canvas, DrawingContext};
+// Canvas for 2D vector graphics using Vello (beginner-friendly API).
+// #[cfg(feature = "canvas")]
+//pub mod canvas;
+//pub use canvas::{Canvas, DrawingContext};
+// Canvas is not available on main branch yet
 
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]

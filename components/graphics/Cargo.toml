@@ -11,16 +11,14 @@ keywords = ["graphics", "2d", "ui", "waterui"]
 categories = ["gui"]
 
 [features]
-default = ["canvas"]
+default = []
 wgpu = ["dep:wgpu", "dep:bytemuck"]
-canvas = ["wgpu", "dep:vello"]
 
 [dependencies]
 waterui-core.workspace = true
 waterui-color.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
-vello = { workspace = true, optional = true }
 tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
