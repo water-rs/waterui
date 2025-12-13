@@ -5,7 +5,7 @@ members = [
     "components/*",
     "utils/*",
     "ffi",
-    "derive",
+    "macros",
     "cli"
 ]
 exclude = [
