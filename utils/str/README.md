@@ -220,8 +220,6 @@ The crate includes extensive memory safety tests designed for Miri (Rust's undef
 - Large string handling
 - Concurrent-like access patterns (single-threaded stress tests)
 
-All code is `#![forbid(unsafe_code)]` except for the necessary pointer operations in the core implementation.
-
 ## Performance Characteristics
 
 - **Static strings**: Zero allocation, zero cost to clone
