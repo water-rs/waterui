@@ -5,7 +5,7 @@ use waterui_core::{AnyView, Environment, View};
 use waterui_layout::stack::zstack;
 use waterui_str::Str;
 
-use crate::overlay::FullScreenOverlayManager;
+use crate::fullscreen::FullScreenOverlayManager;
 use crate::window::Window;
 
 /// Represents a `WaterUI` application.
@@ -21,7 +21,7 @@ impl App {
     /// Create a new application with the given main content view and environment.
     ///
     /// This injects a `FullScreenOverlayManager` into the environment and wraps
-    /// the content with a ZStack overlay layer.
+    /// the content with a [`ZStack`] overlay layer.
     pub fn new(content: impl View, env: Environment) -> Self {
         // Create overlay manager and view
         let (manager, overlay_view) = FullScreenOverlayManager::new();

@@ -138,6 +138,7 @@ impl HotReloadLibrary {
     }
 
     /// Check if this library exports a symbol.
+    #[must_use]
     pub fn has_symbol(&self, symbol: &str) -> bool {
         unsafe { self.lib.get::<*const ()>(symbol.as_bytes()) }.is_ok()
     }
@@ -147,7 +148,7 @@ impl core::fmt::Debug for HotReloadLibrary {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HotReloadLibrary")
             .field("path", &self.path)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

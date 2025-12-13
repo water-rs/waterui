@@ -257,7 +257,7 @@ impl Shell {
                 #[derive(Serialize)]
                 struct Log<'a> {
                     #[serde(rename = "type")]
-                    log_type: &'static str,
+                    ty: &'static str,
                     platform: &'a str,
                     level: &'a str,
                     message: &'a str,
@@ -270,7 +270,7 @@ impl Shell {
                     tracing::Level::TRACE => "trace",
                 };
                 let json = serde_json::to_string(&Log {
-                    log_type: "log",
+                    ty: "log",
                     platform,
                     level: level_str,
                     message: &message.to_string(),
