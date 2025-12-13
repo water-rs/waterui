@@ -9,7 +9,7 @@ use waterui_core::layout::Point;
 // Internal imports for rendering
 use vello::peniko;
 
-use crate::conversions::{point_to_kurbo, resolved_color_to_peniko};
+use super::conversions::{point_to_kurbo, resolved_color_to_peniko};
 
 /// A color stop in a gradient.
 ///
