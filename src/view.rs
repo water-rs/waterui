@@ -55,9 +55,6 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Associates  a value with this view in the environment.
-    ///
-    /// # Arguments
-    /// * `value` - The value to associate with this view
     fn with<T: 'static>(self, value: T) -> With<Self, T> {
         With::new(self, value)
     }
