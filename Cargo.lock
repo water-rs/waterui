@@ -27,6 +27,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "android_clipboard"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71a4be482ddedcc39415184d76761f152f16d3a39bc012d3e4ff0e51803f9a4f"
+dependencies = [
+ "jni",
+ "ndk-context",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "android_log-sys"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,7 +124,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -591,11 +602,12 @@ dependencies = [
 
 [[package]]
 name = "cargo-platform"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122ec45a44b270afd1402f351b782c676b173e3c3fb28d86ff7ebfb4d86a4ee4"
+checksum = "87a0c0e6148f11f01f32650a2ea02d532b2ad4e81d8bd41e6e565b5adc5e6082"
 dependencies = [
  "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -732,9 +744,9 @@ dependencies = [
 
 [[package]]
 name = "cmake"
-version = "0.1.54"
+version = "0.1.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+checksum = "d49d74c227b6cc9f3c51a2c7c667a05b6453f7f0f952a5f8e4493bb9e731d68e"
 dependencies = [
  "cc",
 ]
@@ -4163,7 +4175,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.6.0"
-source = "git+https://github.com/linebender/vello?branch=main#0c242cb5aeaa6fb69150dcd41073d4ebfc0df22b"
+source = "git+https://github.com/linebender/vello?branch=main#4ea47b47c3e04a68b20422c9a12b2b98c735f547"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -4181,7 +4193,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.6.0"
-source = "git+https://github.com/linebender/vello?branch=main#0c242cb5aeaa6fb69150dcd41073d4ebfc0df22b"
+source = "git+https://github.com/linebender/vello?branch=main#4ea47b47c3e04a68b20422c9a12b2b98c735f547"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -4193,7 +4205,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.6.0"
-source = "git+https://github.com/linebender/vello?branch=main#0c242cb5aeaa6fb69150dcd41073d4ebfc0df22b"
+source = "git+https://github.com/linebender/vello?branch=main#4ea47b47c3e04a68b20422c9a12b2b98c735f547"
 dependencies = [
  "bytemuck",
  "log",
@@ -4331,6 +4343,7 @@ dependencies = [
 name = "waterui"
 version = "0.1.1"
 dependencies = [
+ "android_clipboard",
  "arboard",
  "async-channel 1.9.0",
  "async-fs",
@@ -4515,7 +4528,9 @@ dependencies = [
  "image",
  "mime",
  "waterui-color",
+ "waterui-controls",
  "waterui-core",
+ "waterui-text",
  "waterui-url",
 ]
 
