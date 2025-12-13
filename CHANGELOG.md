@@ -12,16 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Enhance window management and hot reload functionality
-- *(media-picker)* add media picker example with photo, video, and live photo selection
+- _(media-picker)_ add media picker example with photo, video, and live photo selection
 - Add mac screenshot image and improve markdown example
-- *(cli)* enable hot reload by default for water run
+- _(cli)_ enable hot reload by default for water run
 - Add star field example for WaterUI framework
 - Enhance panic logging and error handling in Apple backends
 - enhance logging levels for Apple platforms and improve app structure
-- *(examples)* add gesture and list examples with corresponding templates and assets
-- *(android)* streamline APK installation process and add CMake toolchain wrapper for ABI support
-- *(android)* implement multi-ABI packaging support and optimize build configurations
-- *(android)* add support for multiple architectures and clean jniLibs
+- _(examples)_ add gesture and list examples with corresponding templates and assets
+- _(android)_ streamline APK installation process and add CMake toolchain wrapper for ABI support
+- _(android)_ implement multi-ABI packaging support and optimize build configurations
+- _(android)_ add support for multiple architectures and clean jniLibs
 - Rewrite CLI
 - Update dependencies and enhance backend configurations
 - Implement hot reload server and connection handling
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance platform support and add new build options for Android and Apple
 - enhance Android and Apple device support with new functionalities
 - enhance Android and Apple platform support, add Homebrew toolchain manager
-- *(android)* refactor backend and platform modules
+- _(android)_ refactor backend and platform modules
 - Add Canvas demo for 2D vector graphics rendering
 - Implement URL parsing and error handling
 - Enhance async support and device scanning in backend implementations
@@ -71,49 +71,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance Dockerfile and documentation for improved build and configuration
 - enhance Android platform support with target triples and improve artifact stripping
 - integrate hyper and tungstenite for hot reload server functionality
-- *(run)* implement hot reload support and ensure cdylib generation
-- *(android)* enhance NDK toolchain checks and environment configuration
-- *(ci)* add new workflows for CLI and Docker builds, enhance CI checks, and implement changelog generation
-- *(hot_reload)* add FmtContext import for enhanced logging capabilities
-- *(logging)* add log filter support for hot reload and CLI
-- *(logging)* enhance tracing and panic forwarding for improved log management
-- *(hot_reload)* add runtime guardrails for main thread execution and update dependencies
-- *(hot_reload)* implement hot reload support for FFI and backend configurations
+- _(run)_ implement hot reload support and ensure cdylib generation
+- _(android)_ enhance NDK toolchain checks and environment configuration
+- _(ci)_ add new workflows for CLI and Docker builds, enhance CI checks, and implement changelog generation
+- _(hot_reload)_ add FmtContext import for enhanced logging capabilities
+- _(logging)_ add log filter support for hot reload and CLI
+- _(logging)_ enhance tracing and panic forwarding for improved log management
+- _(hot_reload)_ add runtime guardrails for main thread execution and update dependencies
+- _(hot_reload)_ implement hot reload support for FFI and backend configurations
 - update dependencies to use git sources and improve error handling in CLI
-- *(android)* enhance Java environment detection for macOS by including Android Studio's bundled JBR
-- *(theme)* add background and surface color functions to FFI and include tests for readability
-- *(theme)* add macro definitions for theme color and font functions
+- _(android)_ enhance Java environment detection for macOS by including Android Studio's bundled JBR
+- _(theme)_ add background and surface color functions to FFI and include tests for readability
+- _(theme)_ add macro definitions for theme color and font functions
 - add debugging workflow checklist and enhance non-interactive terminal handling
 - add initial form component file
 - Add watcher functionality for AnyViews and related types
-- *(theme)* add theme module with color and font functions for FFI
-- *(apple)* enhance simulator boot logic and add state checking
-- *(device)* add platform filtering for device listing
+- _(theme)_ add theme module with color and font functions for FFI
+- _(apple)_ enhance simulator boot logic and add state checking
+- _(device)_ add platform filtering for device listing
 - document hot reload support for Android, Apple, Web, and TUI backends
 - add TUI platform support and enhance hot reload functionality
-- *(hot-reload)* enhance hot reload configuration and update related commands
-- *(tutorial)* add comprehensive guide for building a native WaterUI backend
+- _(hot-reload)_ enhance hot reload configuration and update related commands
+- _(tutorial)_ add comprehensive guide for building a native WaterUI backend
 - Introduce build command for native artifacts
-- *(android)* enhance panic hook with additional string utilities
+- _(android)_ enhance panic hook with additional string utilities
 - add miette integration for enhanced error handling and logging
-- *(cli)* enhance Android backend integration with improved logging and automation
+- _(cli)_ enhance Android backend integration with improved logging and automation
 - enhance Android backend integration and logging capabilities
-- *(cli)* add backend list command
-- *(cli)* support backend upgrade with ffi checks
-- *(cli)* add backend management command
-- *(cli)* use local android backend in dev
+- _(cli)_ add backend list command
+- _(cli)_ support backend upgrade with ffi checks
+- _(cli)_ add backend management command
+- _(cli)_ use local android backend in dev
 - Add new dependencies for enhanced functionality and refactor hot reload implementation
 - Update Android project structure and dependencies for improved backend integration
 - Implement hot reload functionality with configurable environment
-- *(event)* introduce event handling system with OnEvent and lifecycle associations
-- *(view)* introduce NativeView trait for native implementations and update related components
-- *(cli)* enhance JSON output support across commands
+- _(event)_ introduce event handling system with OnEvent and lifecycle associations
+- _(view)_ introduce NativeView trait for native implementations and update related components
+- _(cli)_ enhance JSON output support across commands
 - update build process to emit stable version tags for waterui and swift backend; enhance dependency resolution with branch support
 - add validation utilities for form components; implement Validatable and Validator traits
 - optimize conditional rendering in When component for static conditions
 - add waterui-controls module with button, slider, stepper, toggle, and text field components; update dependencies in related Cargo.toml files
 - enhance NavigationReceiver with push and pop methods; update raw_view macro to include panic info
-- *(widget)* make tree widget private for 0.1.1 release
+- _(widget)_ make tree widget private for 0.1.1 release
 - enhance CI workflows and update C header documentation
 - add apple backend submodule configuration to .gitmodules
 - rename swift backend to apple backend and update related configurations
@@ -125,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add compiler options to suppress Kotlin version compatibility check for Compose
 - Update Compose BOM version to 2024.09.00 for dependency centralization
 - Add Jetpack Compose support and update MainActivity for Compose integration
-- Enhance Android project setup by adding sanitized crate name and copying libc++_shared.so
+- Enhance Android project setup by adding sanitized crate name and copying libc++\_shared.so
 - Add Android target configurations and enhance toolchain setup for Rust builds
 - Enhance Android and watchOS support with new SDK checks and build scripts
 - Enhance GPU surface handling and shader rendering in graphics module
@@ -134,8 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate from anyhow to color_eyre for error handling and add build script for version management
 - Enhance WaterUI with new table and list components
 - Implement WuiAnyViewCollection and WuiAnyViews for efficient view management
-- *(graphics)* add renderer view support and CPU rendering capabilities
-- *(android)* Enhance project creation and packaging
+- _(graphics)_ add renderer view support and CPU rendering capabilities
+- _(android)_ Enhance project creation and packaging
 - Add documentation build step to release workflow
 - Add GitHub Actions workflow for automated release process
 - Add OKLCH color space support and enhance color module documentation
@@ -181,8 +181,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initialize demo project with WaterUI integration
 - Add template member to workspace and enhance FFI with new environment handling
 - Enhance form components with new derive macros and examples
-- *(ffi)* enhance FFI bindings with new types and conversions for media and form components
-- *(cli)* add WaterUI CLI for project management
+- _(ffi)_ enhance FFI bindings with new types and conversions for media and form components
+- _(cli)_ add WaterUI CLI for project management
 - Integrate canvas component with GTK4 backend
 - Implement web backend for WaterUI framework
 - Implement custom layout engine integration with GTK4
@@ -201,45 +201,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update zenwave version to 0.3.0 and adjust dependencies
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
-- *(core)* use core::ops instead of std::ops for no_std compatibility
-- *(hot_reload)* correct view assignment in hot reload implementation
+- _(core)_ use core::ops instead of std::ops for no_std compatibility
+- _(hot_reload)_ correct view assignment in hot reload implementation
 - Update FFI function signature
 - Update android backend submodule with metadata crash fix
 - update llvm-strip command to preserve dynamic symbol table
 - improve interrupt handling in wait_for_interrupt function
 - remove hot reload import for non-WASM targets
-- *(dependencies)* update executor-core dependency to use version instead of git reference
+- _(dependencies)_ update executor-core dependency to use version instead of git reference
 - clean up imports and improve command output messages in Android and Apple device modules
-- *(android)* add INTERNET permission to AndroidManifest for network access
-- *(tracing)* improve tracing forwarder initialization for Android and non-Android targets
-- *(tracing)* update AndroidLayer name to "WaterUI" for clarity in tracing logs
-- *(dependencies)* replace log with tracing for improved logging consistency
-- *(hot_reload)* optimize message forwarding logic in hot reload daemon
-- *(hot_reload)* add missing configuration for hot reload module
-- *(hot_reload)* ensure proper configuration for hot reload endpoint and directory
-- *(dependencies)* update zenwave dependency to use the latest commit
-- *(ffi)* import necessary traits for hot reload directory configuration
-- *(hot_reload)* import necessary traits for hot reload endpoint configuration
-- *(ffi)* ensure thread safety in waterui_init and waterui_main functions
-- *(hot_reload)* change spawn to spawn_local for thread safety in hot reload
-- *(progress)* correct infinite progress indicator value to use f32::INFINITY
+- _(android)_ add INTERNET permission to AndroidManifest for network access
+- _(tracing)_ improve tracing forwarder initialization for Android and non-Android targets
+- _(tracing)_ update AndroidLayer name to "WaterUI" for clarity in tracing logs
+- _(dependencies)_ replace log with tracing for improved logging consistency
+- _(hot_reload)_ optimize message forwarding logic in hot reload daemon
+- _(hot_reload)_ add missing configuration for hot reload module
+- _(hot_reload)_ ensure proper configuration for hot reload endpoint and directory
+- _(dependencies)_ update zenwave dependency to use the latest commit
+- _(ffi)_ import necessary traits for hot reload directory configuration
+- _(hot_reload)_ import necessary traits for hot reload endpoint configuration
+- _(ffi)_ ensure thread safety in waterui_init and waterui_main functions
+- _(hot_reload)_ change spawn to spawn_local for thread safety in hot reload
+- _(progress)_ correct infinite progress indicator value to use f32::INFINITY
 - Fix git submodule
 - update run functions to handle no_watch parameter for improved behavior
 - rename metadata functions for consistency and clarity
 - correct function naming for consistency in waterui.h
 - correct function naming for FFI compatibility in macros
 - refactor DynamicHandler to manage connection state and improve view updates
-- *(ci)* remove branch restrictions from push and pull_request events
+- _(ci)_ remove branch restrictions from push and pull_request events
 - Refactor reactive system for nami API updates
-- *(deps)* update nami to 0.7.1 and add nami-core dependency; adjust serde features
-- *(ci)* remove --all-features from release workflow
-- *(docs)* fix type mismatch in derive_project doc test
-- *(docs)* resolve doc test compilation errors in waterui-derive
-- *(docs)* fix doc tests in waterui-derive by adding dev-dependency
-- *(docs)* resolve doc test compilation errors in waterui-derive
-- *(docs)* resolve doc test compilation errors in waterui-core
-- *(docs)* resolve doc test compilation errors
-- *(core)* resolve clippy warning in dynamic component
+- _(deps)_ update nami to 0.7.1 and add nami-core dependency; adjust serde features
+- _(ci)_ remove --all-features from release workflow
+- _(docs)_ fix type mismatch in derive_project doc test
+- _(docs)_ resolve doc test compilation errors in waterui-derive
+- _(docs)_ fix doc tests in waterui-derive by adding dev-dependency
+- _(docs)_ resolve doc test compilation errors in waterui-derive
+- _(docs)_ resolve doc test compilation errors in waterui-core
+- _(docs)_ resolve doc test compilation errors
+- _(core)_ resolve clippy warning in dynamic component
 - update android submodule reference to latest commit
 - make release.yml work by confirming a runner
 - Update RendererViewComponent to use rawPtr for memory management consistency
@@ -277,10 +277,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - improve code readability and consistency across multiple files
 - Merge feature/full-featured-canvas into dev
 - Refactor layout tests to use approximate equality for floating-point comparisons
-- *(media-picker)* enhance media selection handling and error management
+- _(media-picker)_ enhance media selection handling and error management
 - Add waterui-color, waterui-str, and waterui-url crates with comprehensive documentation
 - streamline media picker and loading state management
-- *(hot_reload)* improve function formatting and readability
+- _(hot_reload)_ improve function formatting and readability
 - Refactor Native Component and Improve Error Handling
 - Merge branch 'feature/hot-reload-default' into dev
 - Add log level management for device log streaming across platforms
@@ -336,7 +336,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhance WaterUI CLI documentation and add screenshot capture feature
 - Update android backend submodule
 - Update android backend submodule
-- Fix CLI to copy libc++_shared.so to jniLibs for Android builds
+- Fix CLI to copy libc++\_shared.so to jniLibs for Android builds
 - update Android backend submodule to latest commit
 - update submodule branches and clean up unused files
 - remove unused hyper and tungstenite dependencies, integrate skyzen for hot reload functionality
@@ -348,7 +348,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update FFI header regeneration instructions and enhance README content
 - Align Android tooling and agent workflow
 - Refactor Apple backend integration and remove deprecated files
-- *(build)* streamline argument handling in build script
+- _(build)_ streamline argument handling in build script
 - simplify panic logging and improve message formatting
 - Enhance UI output handling and add terminal utilities for improved user experience
 - Improve command construction and error handling in project build and run functions
@@ -360,13 +360,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactor code structure for improved readability and maintainability
 - Refactor FFI bindings and hot reload functionality
 - remove NativeView trait and related implementations; simplify type ID handling in FFI
-- *(cli)* enhance cargo build process with sccache configuration and retry logic
+- _(cli)_ enhance cargo build process with sccache configuration and retry logic
 - simplify volume binding and toggle handling in video and accordion components
 - update nami and nami-core dependencies to latest versions
 - rename NavigationReceiver to NavigationController for consistency; update related trait and implementation
 - update ViewBuilder trait and its implementations for improved usability; simplify view construction across components
 - reorganize imports in form and navigation components for clarity
-- *(release)* bump version of waterui to 0.1.1
+- _(release)_ bump version of waterui to 0.1.1
 - Finalize cleanup: make backends/apple normal directory
 - remove broken apple backend submodule and update android submodule reference
 - Convert backends/apple from broken submodule to normal folder
@@ -391,18 +391,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Streamline documentation deployment workflow with improved caching and error handling
 - Improve documentation build workflow with clearer steps and structure
 - Enhance documentation build workflow with improved logging and variable handling
-- Move book to a seperate repository `water-rs/book`
+- Move book to a separate repository `water-rs/book`
 - Improve CI configuration for Rust checks and Swift backend build
 - Turn back to swift-tools-version: 6.2.0 for ios26 sdk
 - remove unused development team parameter and clean up code
-- *(ci)* reorganize CI jobs and remove redundant steps
+- _(ci)_ reorganize CI jobs and remove redundant steps
 - Update defaultValue and deinit annotations in Gesture.swift; fix string formatting in project.pbxproj.tpl
 - replace all .unwrap() to .expect()
 - Update roadmap with detailed descriptions for completed features and tasks
 - Refactor color module: Split into separate files for P3, OKLCH, and parsing
 - Introduce `waterkit-location`, a cross-platform abstraction for accessing location services within the WaterUI ecosystem.
 - Use `Views` trait in table, list and lazy view
-- Rename `waterdata` to `datax` and immigrate to a seperated repository
+- Rename `waterdata` to `datax` and immigrate to a separated repository
 - Refactor CLI Doctor Command and Improve Error Handling
 - Update Rust toolchain to nightly version in CI configuration
 - Add workspace configuration and refactor layout imports for consistency
@@ -477,7 +477,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Last version support C-API. May it is too early to consider this. Currently let's just focus on the interaction between renderer. And performance consideration could be delayed until we meet the bottleneck.
 - Polish document
 - Refine project and Migrate to Rust 2024
-- (Incomplete commit) Last version of mannual FFI implement
+- (Incomplete commit) Last version of manual FFI implement
 - New reactive API & Locale support
 - New Extractor API & Task API
 - Enhancement & Performance optimization (what a large commit...)
@@ -519,11 +519,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - move FFI utils to `waterui-ffi`, distributing FFI bindings to components.
 - Remote image FFI & more soundness implement
 - Add padding modifier
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Add `task` method for `ViewExt`
 - Error handling for View
 - Split view-related traits and views from `waterui` crate
-- Fix bugs & Clearer app lanuch
+- Fix bugs & Clearer app launch
 - Improved ffi binding & Strong-typed component
 - no-std support
 - Radio component & custom style for field and toggle
@@ -569,7 +569,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - rename `into_boxed` to `boxed`
 - remove vdom & frame improvement
 - improve ffi and macro
-- muti-window minimum support
+- multi-window minimum support
 - window&ffi support
 - diff implement
 - trying to implement diff

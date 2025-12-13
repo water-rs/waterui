@@ -1,4 +1,4 @@
-# waterui-derive
+# waterui-macros
 
 Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, string formatting, and hot reload functionality.
 
@@ -38,13 +38,13 @@ Automatically implements the `FormBuilder` trait for structs, generating form UI
 
 **Type-to-Component Mapping:**
 
-| Rust Type | UI Component | Description |
-|-----------|--------------|-------------|
-| `String`, `Str` | `TextField` | Text input with optional placeholder |
-| `bool` | `Toggle` | Boolean switch/checkbox |
-| `i8`..`isize`, `u8`..`usize` | `Stepper` | Numeric stepper with increment/decrement |
-| `f32`, `f64` | `Slider` | Slider (0.0-1.0 range) |
-| `Color` | `ColorPicker` | Color selection widget |
+| Rust Type                    | UI Component  | Description                              |
+| ---------------------------- | ------------- | ---------------------------------------- |
+| `String`, `Str`              | `TextField`   | Text input with optional placeholder     |
+| `bool`                       | `Toggle`      | Boolean switch/checkbox                  |
+| `i8`..`isize`, `u8`..`usize` | `Stepper`     | Numeric stepper with increment/decrement |
+| `f32`, `f64`                 | `Slider`      | Slider (0.0-1.0 range)                   |
+| `Color`                      | `ColorPicker` | Color selection widget                   |
 
 **Example from `/Users/lexoliu/Coding/waterui/examples/form/src/lib.rs`:**
 
@@ -121,6 +121,7 @@ struct AppSettings {
 Implements the `Project` trait, enabling decomposition of struct bindings into separate bindings for each field. This is essential for reactive form handling where each field needs independent mutation.
 
 **Supports:**
+
 - Named structs
 - Tuple structs
 - Unit structs
@@ -154,6 +155,7 @@ assert_eq!(person.age, 25);
 **Generated code:**
 
 For a struct `MyForm`, the macro generates:
+
 1. A `MyFormProjected` struct with each field wrapped in `Binding<T>`
 2. A `Project` implementation that creates mapped bindings for each field
 3. Proper lifetime bounds (`'static`) on generic parameters
@@ -165,6 +167,7 @@ For a struct `MyForm`, the macro generates:
 Function-like procedural macro for creating formatted string signals with automatic variable capture. Powers the `text!` macro in WaterUI.
 
 **Features:**
+
 - Automatic variable capture from format string placeholders
 - Positional and named argument support
 - Reactive updates when dependencies change
@@ -204,6 +207,7 @@ macro_rules! text {
 ```
 
 **Implementation details:**
+
 - Uses `zip` combinator to merge multiple reactive signals
 - Delegates to `__format!` macro for actual formatting
 - Returns `Computed<Str>` for reactive values, `Constant<Str>` for static strings
@@ -248,6 +252,7 @@ fn main() -> impl View {
 4. Uses `module_path!()` + function name as unique identifier (e.g., `"my_crate::sidebar"`)
 
 **Requirements:**
+
 - Function must return `impl View`
 - Enable hot reload with `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` environment variables (set by `water run`)
 - Build hot reload library with `RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo build`
@@ -290,16 +295,19 @@ The macros perform extensive compile-time validation:
 ### Code Generation Strategy
 
 **Form Builder:**
+
 - Generates type-safe view types using the builder pattern
 - Uses `Quote::quote!` for generating trait implementations
 - Automatically handles `Project` trait bounds for field access
 
 **Project:**
+
 - Creates a parallel struct with `Projected` suffix
 - Uses `Binding::mapping` for bidirectional field synchronization
 - Adds `'static` bounds to generic parameters
 
 **String Formatting:**
+
 - Analyzes format strings with custom parser
 - Generates optimized code paths for 0-4 variables
 - Uses nested `zip` calls for multiple signal combination
@@ -310,10 +318,10 @@ To test changes to the macros:
 
 ```bash
 # Run tests (uses waterui as dev-dependency)
-cargo test -p waterui-derive
+cargo test -p waterui-macros
 
 # Check macro expansion
-cargo expand --package waterui-derive
+cargo expand --package waterui-macros
 
 # Test in a real project
 cargo install --path cli

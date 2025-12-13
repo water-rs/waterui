@@ -15,20 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Revamp README and enhance Android hot reload functionality
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration
-- *(cli)* enhance Android backend integration with improved logging and automation
-- *(android)* Enhance project creation and packaging
+- _(cli)_ enhance Android backend integration with improved logging and automation
+- _(android)_ Enhance project creation and packaging
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Implement Android backend components and runtime
 - enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
 - update dependencies with versioning and improve documentation clarity
 - add counter example to README and enhance tutorial book with tests
-- *(cli)* add WaterUI CLI for project management
+- _(cli)_ add WaterUI CLI for project management
 
 ### Fixed
 
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 
 ### Other
 
@@ -58,6 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update README files for clarity and consistency across components
 - Add more lints and fix all warnings
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support
