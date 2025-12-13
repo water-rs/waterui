@@ -105,7 +105,7 @@ impl TemplateContext {
         PathBuf::from(path_str.replace("AppName", &self.app_name))
     }
 
-    /// Compute the relative path from the backend project to a WaterUI backend.
+    /// Compute the relative path from the backend project to a `WaterUI` backend.
     ///
     /// This accounts for the project being in a subdirectory (e.g., `.water/android`).
     fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
@@ -130,12 +130,12 @@ impl TemplateContext {
         Some(backend_path)
     }
 
-    /// Compute the relative path from the Xcode project to the WaterUI Swift backend.
+    /// Compute the relative path from the Xcode project to the `WaterUI` Swift backend.
     fn compute_apple_backend_path(&self) -> Option<String> {
         self.compute_relative_backend_path("apple")
     }
 
-    /// Compute the relative path from the Android project to the WaterUI Android backend.
+    /// Compute the relative path from the Android project to the `WaterUI` Android backend.
     fn compute_android_backend_path(&self) -> Option<String> {
         self.compute_relative_backend_path("android")
     }
@@ -183,7 +183,7 @@ impl TemplateContext {
             .join("\n")
     }
 
-    /// Generate the XCode package reference entry line for the project file.
+    /// Generate the `XCode` package reference entry line for the project file.
     fn swift_package_reference_entry(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
@@ -202,7 +202,7 @@ impl TemplateContext {
         }
     }
 
-    /// Generate the XCode package reference section for the project file.
+    /// Generate the `XCode` package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
@@ -376,6 +376,10 @@ pub mod root {
     static ROOT_TEMPLATES: &[&str] = &["lib.rs.tpl", ".gitignore.tpl"];
 
     /// Write root templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         // Generate Cargo.toml programmatically using toml_edit
         generate_cargo_toml(base_dir, ctx).await?;

@@ -4,7 +4,7 @@ use std::env;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, bail};
-use smol::{fs, unblock};
+use smol::fs;
 use target_lexicon::{
     Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
@@ -29,7 +29,7 @@ use crate::{
 /// Trait for Apple-specific platform functionality.
 ///
 /// This trait provides Apple-specific methods that are shared across all Apple platforms.
-/// Each platform type (MacOS, Ios, IosSimulator, etc.) implements this trait.
+/// Each platform type (`MacOS`, Ios, `IosSimulator`, etc.) implements this trait.
 pub trait ApplePlatformExt: Platform {
     /// Get the SDK name for xcodebuild (e.g., "macosx", "iphoneos", "iphonesimulator").
     fn sdk_name(&self) -> &'static str;
@@ -137,16 +137,7 @@ async fn package_apple<P: ApplePlatformExt>(
 
     let derived_data = project_path.join(".water/DerivedData");
 
-    // Get the actual target directory using cargo metadata
-    let project_root = project.root().to_path_buf();
-    let metadata = unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(&project_root)
-            .no_deps()
-            .exec()
-    })
-    .await?;
-    let target_dir = metadata.target_directory.as_std_path();
+    let target_dir = project.target_dir();
 
     // Copy the built Rust library to where Xcode expects it
     let profile = if options.is_debug() {
@@ -525,7 +516,7 @@ impl ApplePlatform {
         }
     }
 
-    /// Create an Apple platform for iOS Simulator on x86_64 (Intel).
+    /// Create an Apple platform for iOS Simulator on `x86_64` (Intel).
     #[must_use]
     pub const fn ios_simulator_x86_64() -> Self {
         Self {
@@ -543,7 +534,7 @@ impl ApplePlatform {
         }
     }
 
-    /// Create an Apple platform for macOS on x86_64 (Intel).
+    /// Create an Apple platform for macOS on `x86_64` (Intel).
     #[must_use]
     pub const fn macos_x86_64() -> Self {
         Self {
