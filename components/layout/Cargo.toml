@@ -14,16 +14,7 @@ categories = ["gui"]
 [dependencies]
 waterui-core.workspace = true
 nami.workspace = true
-bitflags = "2.6"
 
-[dependencies.serde]
-version = "1.0"
-default-features = false
-features = ["derive"]
-optional = true
-
-[features]
-serde = ["dep:serde"]
 
 [lints]
 workspace = true
