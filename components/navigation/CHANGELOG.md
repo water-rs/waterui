@@ -18,25 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduce StretchAxis for layout management
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration
-- *(cli)* enhance Android backend integration with improved logging and automation
-- *(event)* introduce event handling system with OnEvent and lifecycle associations
+- _(cli)_ enhance Android backend integration with improved logging and automation
+- _(event)_ introduce event handling system with OnEvent and lifecycle associations
 - add waterui-controls module with button, slider, stepper, toggle, and text field components; update dependencies in related Cargo.toml files
 - enhance NavigationReceiver with push and pop methods; update raw_view macro to include panic info
-- *(android)* Enhance project creation and packaging
+- _(android)_ Enhance project creation and packaging
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Implement Android backend components and runtime
 - enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
 - update dependencies with versioning and improve documentation clarity
 - add counter example to README and enhance tutorial book with tests
 - Enhance form components with new derive macros and examples
-- *(cli)* add WaterUI CLI for project management
+- _(cli)_ add WaterUI CLI for project management
 
 ### Fixed
 
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
 - Refactor reactive system for nami API updates
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 
 ### Other
 
@@ -79,6 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use uniffi for FFI binding
 - Polish document
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support

@@ -401,7 +401,7 @@ None. The crate works out-of-the-box with no feature flags.
 
 ### Derive Macros
 
-The `FormBuilder` derive macro is provided by `waterui-derive`, which is automatically included when using `waterui::prelude::*`.
+The `FormBuilder` derive macro is provided by `waterui-macros`, which is automatically included when using `waterui::prelude::*`.
 
 ## Notes
 

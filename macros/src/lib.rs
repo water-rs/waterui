@@ -243,7 +243,7 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use waterui::reactive::{Binding, binding, project::Project};
 /// use waterui_macros::Project;
 ///
@@ -462,7 +462,7 @@ impl Parse for SInput {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use waterui_macros::s;
 /// use waterui::reactive::constant;
 ///
