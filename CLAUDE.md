@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install CLI from source (required for `water run` to work)
-# You must reinstall cli to path after modifiying it if you wanna debug it.
+# You must reinstall cli to path after modifying it if you wanna debug it.
 cargo install --path cli
 
 # Build CLI for development (faster iteration, but not in PATH)
@@ -48,7 +48,7 @@ water create --playground --name my-playground
 
 ## Architecture Overview
 
-WaterUI is a cross-platform reactive UI framework that renders to native platform widgets (SwiftUI on Apple, Jetpack Compose on Android) rather than drawing its own pixels.
+WaterUI is a cross-platform reactive UI framework that renders to native platform widgets (UIKit/AppKit on Apple, Jetpack Compose on Android) rather than drawing its own pixels.
 
 ### Core Data Flow
 
@@ -74,7 +74,7 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 
 ### Backends (`backends/`)
 
-- **`apple/`** - Git submodule, SwiftUI backend (Swift Package)
+- **`apple/`** - Git submodule, Apple backend (Swift Package)
 - **`android/`** - Git submodule, Android Views + JNI (Gradle project)
 - **`hydrolysis/`** - Self-drawn renderer (Vello/tiny-skia) - experimental
 - **`tui/`** - Terminal UI backend - WIP

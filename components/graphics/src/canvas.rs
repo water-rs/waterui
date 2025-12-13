@@ -24,14 +24,15 @@
 //! })
 //! ```
 
-use crate::conversions::{rect_to_kurbo, resolved_color_to_peniko};
+use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
 use crate::image::CanvasImage;
 use crate::path::Path;
-use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
+use crate::state::{DrawingState, FillRule, FillStyle, LineCap, LineJoin, StrokeStyle};
 use crate::text::{FontSpec, TextMetrics};
-use waterui_core::layout::{Point, Rect};
+use alloc::boxed::Box;
+use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
@@ -44,7 +45,7 @@ use nami::Signal;
 /// Canvas provides a simple callback-based API where you receive a
 /// [`DrawingContext`] to draw shapes, paths, and text.
 pub struct Canvas {
-    inner: GpuSurface,
+    draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
 }
 
 impl core::fmt::Debug for Canvas {
@@ -63,7 +64,8 @@ impl Canvas {
     ///
     /// ```ignore
     /// Canvas::new(|ctx| {
-    ///     ctx.fill(Circle::new((50.0, 50.0), 25.0), Color::RED);
+    ///     ctx.set_fill_style(Color::srgb(242, 140, 168));
+    ///     ctx.fill_circle(Point::new(50.0, 50.0), 25.0);
     /// })
     /// ```
     #[must_use]
@@ -72,14 +74,14 @@ impl Canvas {
         F: FnMut(&mut DrawingContext) + Send + 'static,
     {
         Self {
-            inner: GpuSurface::new(CanvasRenderer::new(draw)),
+            draw_fn: Box::new(draw),
         }
     }
 }
 
 impl waterui_core::View for Canvas {
-    fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
-        self.inner
+    fn body(self, env: &waterui_core::Environment) -> impl waterui_core::View {
+        GpuSurface::new(CanvasRenderer::new(self.draw_fn, env.clone()))
     }
 }
 
@@ -113,129 +115,63 @@ impl core::fmt::Debug for DrawingContext<'_> {
 }
 
 impl DrawingContext<'_> {
-    /// Returns the size of the canvas as a `kurbo::Size`.
+    /// Returns the size of the canvas.
     #[must_use]
-    pub fn size(&self) -> kurbo::Size {
-        kurbo::Size::new(f64::from(self.width), f64::from(self.height))
+    pub fn size(&self) -> Size {
+        Size::new(self.width, self.height)
     }
 
     /// Returns the center point of the canvas.
     #[must_use]
-    pub fn center(&self) -> kurbo::Point {
-        kurbo::Point::new(f64::from(self.width) / 2.0, f64::from(self.height) / 2.0)
+    pub fn center(&self) -> Point {
+        Point::new(self.width / 2.0, self.height / 2.0)
     }
 
-    /// Fills a shape with a color.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// ctx.fill(Circle::new((100.0, 100.0), 50.0), Color::RED);
-    /// ```
-    pub fn fill(&mut self, shape: impl kurbo::Shape, color: peniko::Color) {
-        self.scene.fill(
-            self.current_state.fill_rule,
-            kurbo::Affine::IDENTITY,
-            color,
-            None,
-            &shape,
-        );
-    }
-
-    /// Fills a shape with a brush (gradient, pattern, etc).
-    pub fn fill_brush(&mut self, shape: impl kurbo::Shape, brush: &peniko::Brush) {
-        self.scene.fill(
-            self.current_state.fill_rule,
-            kurbo::Affine::IDENTITY,
-            brush,
-            None,
-            &shape,
-        );
-    }
-
-    /// Fills a shape with a color and custom transform.
-    pub fn fill_with_transform(
-        &mut self,
-        shape: impl kurbo::Shape,
-        color: peniko::Color,
-        transform: kurbo::Affine,
-    ) {
-        self.scene
-            .fill(self.current_state.fill_rule, transform, color, None, &shape);
-    }
-
-    /// Strokes a shape with a color and line width.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// ctx.stroke(Rect::new(10.0, 10.0, 100.0, 80.0), Color::BLUE, 2.0);
-    /// ```
-    pub fn stroke(&mut self, shape: impl kurbo::Shape, color: peniko::Color, width: f64) {
-        let stroke = kurbo::Stroke::new(width);
-        self.scene
-            .stroke(&stroke, kurbo::Affine::IDENTITY, color, None, &shape);
-    }
-
-    /// Strokes a shape with a brush and line width.
-    pub fn stroke_brush(&mut self, shape: impl kurbo::Shape, brush: &peniko::Brush, width: f64) {
-        let stroke = kurbo::Stroke::new(width);
-        self.scene
-            .stroke(&stroke, kurbo::Affine::IDENTITY, brush, None, &shape);
-    }
-
-    /// Strokes a shape with custom stroke style.
-    pub fn stroke_with_style(
-        &mut self,
-        shape: impl kurbo::Shape,
-        color: peniko::Color,
-        stroke: &kurbo::Stroke,
-    ) {
-        self.scene
-            .stroke(stroke, kurbo::Affine::IDENTITY, color, None, &shape);
-    }
-
-    /// Strokes a shape with custom stroke style and transform.
-    pub fn stroke_with_transform(
-        &mut self,
-        shape: impl kurbo::Shape,
-        color: peniko::Color,
-        stroke: &kurbo::Stroke,
-        transform: kurbo::Affine,
-    ) {
-        self.scene.stroke(stroke, transform, color, None, &shape);
-    }
-
-    /// Pushes a clip layer. All subsequent drawing will be clipped to the shape.
+    /// Pushes a clip layer, clipping subsequent drawing to the given rectangle.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_clip(&mut self, clip: impl kurbo::Shape) {
-        self.scene.push_clip_layer(kurbo::Affine::IDENTITY, &clip);
+    pub fn push_clip_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        self.scene
+            .push_clip_layer(self.current_state.transform, &kurbo_rect);
     }
 
-    /// Pushes a layer with alpha (opacity).
+    /// Pushes a clip layer, clipping subsequent drawing to the given path.
     ///
     /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
-    pub fn push_alpha(&mut self, alpha: f32, bounds: impl kurbo::Shape) {
+    pub fn push_clip_path(&mut self, path: &Path) {
+        self.scene
+            .push_clip_layer(self.current_state.transform, path.inner());
+    }
+
+    /// Pushes a layer with alpha (opacity), clipping content to the given rectangle.
+    ///
+    /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
+    pub fn push_alpha_rect(&mut self, alpha: f32, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
         self.scene.push_layer(
-            peniko::BlendMode::default(),
-            alpha,
-            kurbo::Affine::IDENTITY,
-            &bounds,
+            self.current_state.blend_mode,
+            alpha.clamp(0.0, 1.0),
+            self.current_state.transform,
+            &kurbo_rect,
+        );
+    }
+
+    /// Pushes a layer with alpha (opacity), clipping content to the given path.
+    ///
+    /// Call [`pop_layer`](Self::pop_layer) when done drawing in this layer.
+    pub fn push_alpha_path(&mut self, alpha: f32, path: &Path) {
+        self.scene.push_layer(
+            self.current_state.blend_mode,
+            alpha.clamp(0.0, 1.0),
+            self.current_state.transform,
+            path.inner(),
         );
     }
 
     /// Pops the current layer.
     pub fn pop_layer(&mut self) {
         self.scene.pop_layer();
-    }
-
-    /// Access the underlying Vello scene for advanced operations.
-    ///
-    /// Use this when you need features not exposed by the simplified API.
-    #[must_use]
-    pub const fn scene(&mut self) -> &mut vello::Scene {
-        self.scene
     }
 
     // ========================================================================
@@ -413,6 +349,51 @@ impl DrawingContext<'_> {
     }
 
     // ========================================================================
+    // Shape Convenience Methods
+    // ========================================================================
+
+    /// Fills a circle with the current fill style.
+    pub fn fill_circle(&mut self, center: Point, radius: f32) {
+        let brush = self.resolve_fill_style();
+        let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
+        self.scene.fill(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &brush,
+            None,
+            &circle,
+        );
+    }
+
+    /// Strokes a circle with the current stroke style.
+    pub fn stroke_circle(&mut self, center: Point, radius: f32) {
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &circle,
+        );
+    }
+
+    /// Strokes a line segment with the current stroke style.
+    pub fn stroke_line(&mut self, start: Point, end: Point) {
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        let line = kurbo::Line::new(point_to_kurbo(start), point_to_kurbo(end));
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &line,
+        );
+    }
+
+    // ========================================================================
     // Style Setters (Phase 1 & 4)
     // ========================================================================
 
@@ -465,13 +446,6 @@ impl DrawingContext<'_> {
         self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
     }
 
-    /// Sets the blend mode for compositing operations.
-    ///
-    /// This controls how new shapes are blended with existing content.
-    pub fn set_blend_mode(&mut self, mode: peniko::BlendMode) {
-        self.current_state.blend_mode = mode;
-    }
-
     /// Sets the shadow blur radius.
     ///
     /// A blur value of 0 means sharp shadows, higher values create softer shadows.
@@ -501,8 +475,8 @@ impl DrawingContext<'_> {
     ///
     /// NonZero (default): A point is inside the path if a ray from the point crosses a non-zero net number of path segments.
     /// EvenOdd: A point is inside the path if a ray from the point crosses an odd number of path segments.
-    pub fn set_fill_rule(&mut self, rule: peniko::Fill) {
-        self.current_state.fill_rule = rule;
+    pub fn set_fill_rule(&mut self, rule: FillRule) {
+        self.current_state.fill_rule = rule.to_peniko();
     }
 
     // ========================================================================
@@ -615,10 +589,9 @@ impl DrawingContext<'_> {
         let scale_y = f64::from(dest.size().height) / f64::from(image.height());
 
         // Create transform: translate to dest position, then scale
-        let image_transform = kurbo::Affine::translate((
-            f64::from(dest.origin().x),
-            f64::from(dest.origin().y),
-        )) * kurbo::Affine::scale_non_uniform(scale_x, scale_y);
+        let image_transform =
+            kurbo::Affine::translate((f64::from(dest.origin().x), f64::from(dest.origin().y)))
+                * kurbo::Affine::scale_non_uniform(scale_x, scale_y);
 
         // Compose with current transform
         let final_transform = self.current_state.transform * image_transform;
@@ -653,10 +626,8 @@ impl DrawingContext<'_> {
         // Calculate transform for the sub-rectangle
 
         // First, translate to negate the source offset
-        let src_offset = kurbo::Affine::translate((
-            -f64::from(src.origin().x),
-            -f64::from(src.origin().y),
-        ));
+        let src_offset =
+            kurbo::Affine::translate((-f64::from(src.origin().x), -f64::from(src.origin().y)));
 
         // Then scale from source size to destination size
         let scale_x = f64::from(dest.size().width) / f64::from(src.size().width);
@@ -664,10 +635,8 @@ impl DrawingContext<'_> {
         let scale = kurbo::Affine::scale_non_uniform(scale_x, scale_y);
 
         // Finally, translate to destination position
-        let dest_offset = kurbo::Affine::translate((
-            f64::from(dest.origin().x),
-            f64::from(dest.origin().y),
-        ));
+        let dest_offset =
+            kurbo::Affine::translate((f64::from(dest.origin().x), f64::from(dest.origin().y)));
 
         // Compose transforms: src_offset -> scale -> dest_offset
         let image_transform = src_offset * scale * dest_offset;
@@ -812,8 +781,9 @@ impl DrawingContext<'_> {
 }
 
 /// Internal renderer that bridges Canvas to `GpuSurface`.
-struct CanvasRenderer<F> {
-    draw_fn: F,
+struct CanvasRenderer {
+    draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
+    env: waterui_core::Environment,
     scene: vello::Scene,
     renderer: Option<vello::Renderer>,
     /// Intermediate texture for Vello (`Rgba8Unorm` format required by Vello)
@@ -827,10 +797,11 @@ struct CanvasRenderer<F> {
     intermediate_size: (u32, u32),
 }
 
-impl<F> CanvasRenderer<F> {
-    fn new(draw_fn: F) -> Self {
+impl CanvasRenderer {
+    fn new(draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>, env: waterui_core::Environment) -> Self {
         Self {
             draw_fn,
+            env,
             scene: vello::Scene::new(),
             renderer: None,
             intermediate_texture: None,
@@ -843,10 +814,7 @@ impl<F> CanvasRenderer<F> {
     }
 }
 
-impl<F> GpuRenderer for CanvasRenderer<F>
-where
-    F: FnMut(&mut DrawingContext) + Send + 'static,
-{
+impl GpuRenderer for CanvasRenderer {
     fn setup(&mut self, ctx: &GpuContext) {
         let renderer = vello::Renderer::new(
             ctx.device,
@@ -988,7 +956,7 @@ where
         #[allow(clippy::cast_precision_loss)]
         let mut ctx = DrawingContext {
             scene: &mut self.scene,
-            env: &waterui_core::Environment::new(), // TODO: Thread actual environment in future phase
+            env: &self.env,
             width: frame.width as f32,
             height: frame.height as f32,
             state_stack: Vec::new(),

@@ -17,12 +17,12 @@ pub use oklch::Oklch;
 mod p3;
 pub use p3::P3;
 mod srgb;
-pub use srgb::Srgb;
-
 use core::{
     fmt::{self, Debug, Display},
     ops::{Deref, DerefMut},
 };
+use pastey::paste;
+pub use srgb::Srgb;
 
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
@@ -478,48 +478,58 @@ impl Resolvable for Mix {
 }
 
 macro_rules! color_const {
-    ($name:ident, $color:expr,$doc:expr) => {
-        #[derive(Debug, Clone, Copy)]
-        #[doc=$doc]
-        pub struct $name;
+    ($name:ident,$doc:expr) => {
+        paste! {
+            #[derive(Debug, Clone, Copy)]
+            #[doc=$doc]
+            pub struct $name;
 
-        impl Resolvable for $name {
-            type Resolved = ResolvedColor;
-            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-                env.query::<Self, ResolvedColor>()
-                    .copied()
-                    .unwrap_or_else(|| $color.resolve())
+            impl Resolvable for $name {
+                type Resolved = ResolvedColor;
+                fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                    let default_color = Srgb::[<$name:snake:upper>] ;
+                    env.query::<Self, ResolvedColor>()
+                        .copied()
+                        .unwrap_or_else(|| default_color.resolve())
+                }
             }
-        }
 
-        impl waterui_core::View for $name {
-            fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
-                Color::new(self)
+            impl Color{
+                #[doc=$doc]
+                pub fn [<$name:snake>]()->Self{
+                    Self::new($name)
+                }
+            }
+
+            impl waterui_core::View for $name {
+                fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
+                    Color::new(self)
+                }
             }
         }
     };
 }
 
-color_const!(Red, Srgb::RED, "Red color.");
-color_const!(Pink, Srgb::PINK, "Pink color.");
-color_const!(Purple, Srgb::PURPLE, "Purple color.");
-color_const!(DeepPurple, Srgb::DEEP_PURPLE, "Deep purple color.");
-color_const!(Indigo, Srgb::INDIGO, "Indigo color.");
-color_const!(Blue, Srgb::BLUE, "Blue color.");
-color_const!(LightBlue, Srgb::LIGHT_BLUE, "Light blue color.");
-color_const!(Cyan, Srgb::CYAN, "Cyan color.");
-color_const!(Teal, Srgb::TEAL, "Teal color.");
-color_const!(Green, Srgb::GREEN, "Green color.");
-color_const!(LightGreen, Srgb::LIGHT_GREEN, "Light green color.");
-color_const!(Lime, Srgb::LIME, "Lime color.");
-color_const!(Yellow, Srgb::YELLOW, "Yellow color.");
-color_const!(Amber, Srgb::AMBER, "Amber color.");
-color_const!(Orange, Srgb::ORANGE, "Orange color.");
-color_const!(DeepOrange, Srgb::DEEP_ORANGE, "Deep orange color.");
-color_const!(Brown, Srgb::BROWN, "Brown color.");
+color_const!(Red, "Red color.");
+color_const!(Pink, "Pink color.");
+color_const!(Purple, "Purple color.");
+color_const!(DeepPurple, "Deep purple color.");
+color_const!(Indigo, "Indigo color.");
+color_const!(Blue, "Blue color.");
+color_const!(LightBlue, "Light blue color.");
+color_const!(Cyan, "Cyan color.");
+color_const!(Teal, "Teal color.");
+color_const!(Green, "Green color.");
+color_const!(LightGreen, "Light green color.");
+color_const!(Lime, "Lime color.");
+color_const!(Yellow, "Yellow color.");
+color_const!(Amber, "Amber color.");
+color_const!(Orange, "Orange color.");
+color_const!(DeepOrange, "Deep orange color.");
+color_const!(Brown, "Brown color.");
 
-color_const!(Grey, Srgb::GREY, "Grey color.");
-color_const!(BlueGrey, Srgb::BLUE_GREY, "Blue grey color.");
+color_const!(Grey, "Grey color.");
+color_const!(BlueGrey, "Blue grey color.");
 raw_view!(Color, StretchAxis::Both);
 
 // https://www.w3.org/TR/css-color-4/#color-conversion-code

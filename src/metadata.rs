@@ -35,7 +35,7 @@ pub mod secure {
     ///
     /// By default, `WaterUI` enables high dynamic range color for all views.
     ///
-    /// However, in some cases, you may want to apply standard dynamic range color for cetain views,
+    /// However, in some cases, you may want to apply standard dynamic range color for certain views,
     /// for instance, user avatar.
     #[derive(Debug)]
     pub struct StandardDynamicRange;

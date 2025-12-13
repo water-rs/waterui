@@ -139,7 +139,7 @@ impl Artifact {
 pub trait Device: Send {
     /// Associated platform type for the device.
     type Platform: Platform;
-    /// Lanuch the device emulator or simulator.
+    /// Launch the device emulator or simulator.
     ///
     /// If the device is a physical device, this should do nothing.
     fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send;
