@@ -235,6 +235,43 @@ impl ResolvedColor {
     }
 }
 
+impl From<Srgb> for ResolvedColor {
+    fn from(value: Srgb) -> Self {
+        value.resolve()
+    }
+}
+
+impl From<P3> for ResolvedColor {
+    fn from(value: P3) -> Self {
+        let linear_p3 = [
+            srgb_to_linear(value.red),
+            srgb_to_linear(value.green),
+            srgb_to_linear(value.blue),
+        ];
+        let linear_srgb = p3_to_linear_srgb(linear_p3);
+        Self {
+            red: linear_srgb[0],
+            green: linear_srgb[1],
+            blue: linear_srgb[2],
+            headroom: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl From<Oklch> for ResolvedColor {
+    fn from(value: Oklch) -> Self {
+        let [red, green, blue] = oklch_to_linear_srgb(value.lightness, value.chroma, value.hue);
+        Self {
+            red,
+            green,
+            blue,
+            headroom: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd, Hash, Eq, Ord)]
 #[non_exhaustive]
 /// Represents the supported color spaces for color representation.

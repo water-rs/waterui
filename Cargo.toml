@@ -4,7 +4,6 @@ members = [
     "core",
     "components/*",
     "utils/*",
-    "backends/hydrolysis",
     "ffi",
     "derive",
     "cli",
@@ -72,7 +71,6 @@ waterui-layout = { version = "0.1.0", path = "components/layout" }
 waterui-navigation = { version = "0.1.0", path = "components/navigation" }
 waterui-gtk4 = { version = "0.1.0", path = "backends/gtk4" }
 waterui-web = { version = "0.1.0", path = "backends/web" }
-hydrolysis = { version = "0.1.0", path = "backends/hydrolysis" }
 waterui = { version = "0.1.0", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-derive = { version = "0.1.0", path = "derive" }

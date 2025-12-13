@@ -1,4 +1,5 @@
 use waterui::app::App;
+use waterui::color::Srgb;
 use waterui::graphics::Canvas;
 use waterui::prelude::*;
 
@@ -13,7 +14,7 @@ fn main() -> impl View {
             // ----------------------------
             // Background
             // ----------------------------
-            ctx.set_fill_style(Color::srgb_f32(0.08, 0.1, 0.14));
+            ctx.set_fill_style(Srgb::new(0.08, 0.1, 0.14));
             ctx.fill_rect(Rect::new(Point::zero(), size));
 
             // ----------------------------
@@ -39,7 +40,9 @@ fn main() -> impl View {
             // ----------------------------
             // Bonds
             // ----------------------------
-            ctx.set_stroke_style(Color::srgb_f32(0.9, 0.9, 0.9).with_opacity(0.8));
+            let bond_color =
+                waterui::color::ResolvedColor::from(Srgb::new(0.9, 0.9, 0.9)).with_opacity(0.8);
+            ctx.set_stroke_style(bond_color);
             ctx.set_line_width(4.0);
             ctx.stroke_line(oxygen, hydrogen1);
             ctx.stroke_line(oxygen, hydrogen2);
@@ -48,11 +51,11 @@ fn main() -> impl View {
             // Atoms
             // ----------------------------
             // Oxygen (O)
-            ctx.set_fill_style(Color::srgb_f32(0.85, 0.2, 0.25));
+            ctx.set_fill_style(Srgb::new(0.85, 0.2, 0.25));
             ctx.fill_circle(oxygen, oxygen_radius);
 
             // Hydrogens (H)
-            ctx.set_fill_style(Color::srgb_f32(0.95, 0.95, 0.95));
+            ctx.set_fill_style(Srgb::new(0.95, 0.95, 0.95));
             ctx.fill_circle(hydrogen1, hydrogen_radius);
             ctx.fill_circle(hydrogen2, hydrogen_radius);
         }),

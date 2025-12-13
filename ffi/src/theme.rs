@@ -346,6 +346,11 @@ fn take_computed<T>(ptr: *mut WuiComputed<T>) -> Option<waterui::Computed<T>> {
 /// - `waterui_theme_install_color_scheme()`
 /// - `waterui_theme_install_color()`
 /// - `waterui_theme_install_font()`
+///
+/// # Safety
+/// - `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+/// - Each `WuiComputed<...>` pointer may be null; non-null pointers must be valid and were
+///   allocated by WaterUI FFI constructors and are transferred to Rust (consumed).
 #[deprecated(note = "Use slot-based APIs: waterui_theme_install_color, waterui_theme_install_font")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_install_theme(
@@ -419,6 +424,10 @@ pub unsafe extern "C" fn waterui_env_install_theme(
 
 macro_rules! theme_color_fn {
     ($fn_name:ident, $token:path) => {
+        /// Returns the theme color signal for a specific token.
+        ///
+        /// # Safety
+        /// `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fn_name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedColor> {
             if env.is_null() {
@@ -433,6 +442,10 @@ macro_rules! theme_color_fn {
 
 macro_rules! theme_font_fn {
     ($fn_name:ident, $token:path) => {
+        /// Returns the theme font signal for a specific token.
+        ///
+        /// # Safety
+        /// `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fn_name(env: *const WuiEnv) -> *mut WuiComputed<ResolvedFont> {
             if env.is_null() {

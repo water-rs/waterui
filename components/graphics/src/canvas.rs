@@ -7,12 +7,13 @@
 //!
 //! ```ignore
 //! use waterui::graphics::Canvas;
+//! use waterui::color::Srgb;
 //! use waterui::prelude::*;
 //!
 //! Canvas::new(|ctx: &mut DrawingContext| {
 //!     // Fill a rectangle
 //!     let rect = Rect::from_size(Size::new(200.0, 150.0));
-//!     ctx.set_fill_style(Color::red());
+//!     ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
 //!     ctx.fill_rect(rect);
 //!
 //!     // Draw with transforms
@@ -36,9 +37,6 @@ use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
-
-// For signal operations
-use nami::Signal;
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -64,7 +62,7 @@ impl Canvas {
     ///
     /// ```ignore
     /// Canvas::new(|ctx| {
-    ///     ctx.set_fill_style(Color::srgb(242, 140, 168));
+    ///     ctx.set_fill_style(waterui_color::Srgb::new_u8(242, 140, 168));
     ///     ctx.fill_circle(Point::new(50.0, 50.0), 25.0);
     /// })
     /// ```
@@ -80,8 +78,8 @@ impl Canvas {
 }
 
 impl waterui_core::View for Canvas {
-    fn body(self, env: &waterui_core::Environment) -> impl waterui_core::View {
-        GpuSurface::new(CanvasRenderer::new(self.draw_fn, env.clone()))
+    fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
+        GpuSurface::new(CanvasRenderer::new(self.draw_fn))
     }
 }
 
@@ -94,7 +92,6 @@ impl waterui_core::View for Canvas {
 /// drawing properties. Use `save()` and `restore()` to push and pop state.
 pub struct DrawingContext<'a> {
     scene: &'a mut vello::Scene,
-    env: &'a waterui_core::Environment,
     /// Width of the canvas in pixels.
     pub width: f32,
     /// Height of the canvas in pixels.
@@ -446,7 +443,7 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the shadow color.
-    pub fn set_shadow_color(&mut self, color: impl Into<waterui_color::Color>) {
+    pub fn set_shadow_color(&mut self, color: impl Into<waterui_color::ResolvedColor>) {
         self.current_state.shadow_color = color.into();
     }
 
@@ -484,8 +481,8 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
-    /// gradient.add_color_stop(0.0, Color::red());
-    /// gradient.add_color_stop(1.0, Color::blue());
+    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 0.0, 0.0));
+    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
@@ -511,8 +508,8 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
-    /// gradient.add_color_stop(0.0, Color::white());
-    /// gradient.add_color_stop(1.0, Color::black());
+    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 1.0, 1.0));
+    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 0.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
@@ -538,9 +535,9 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
-    /// gradient.add_color_stop(0.0, Color::red());
-    /// gradient.add_color_stop(0.5, Color::green());
-    /// gradient.add_color_stop(1.0, Color::blue());
+    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 0.0, 0.0));
+    /// gradient.add_color_stop(0.5, waterui_color::Srgb::new(0.0, 1.0, 0.0));
+    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
@@ -748,16 +745,12 @@ impl DrawingContext<'_> {
     fn resolve_fill_style(&self) -> peniko::Brush {
         match &self.current_state.fill_style {
             FillStyle::Color(color) => {
-                // Resolve the color in the current environment
-                let computed = color.resolve(self.env);
-                // Get the current value from the computed signal
-                let resolved = computed.get();
-                let peniko_color = resolved_color_to_peniko(resolved);
+                let peniko_color = resolved_color_to_peniko(*color);
                 peniko_color.into()
             }
-            FillStyle::LinearGradient(gradient) => gradient.build(self.env),
-            FillStyle::RadialGradient(gradient) => gradient.build(self.env),
-            FillStyle::ConicGradient(gradient) => gradient.build(self.env),
+            FillStyle::LinearGradient(gradient) => gradient.build(),
+            FillStyle::RadialGradient(gradient) => gradient.build(),
+            FillStyle::ConicGradient(gradient) => gradient.build(),
         }
     }
 
@@ -765,16 +758,12 @@ impl DrawingContext<'_> {
     fn resolve_stroke_style(&self) -> peniko::Brush {
         match &self.current_state.stroke_style {
             StrokeStyle::Color(color) => {
-                // Resolve the color in the current environment
-                let computed = color.resolve(self.env);
-                // Get the current value from the computed signal
-                let resolved = computed.get();
-                let peniko_color = resolved_color_to_peniko(resolved);
+                let peniko_color = resolved_color_to_peniko(*color);
                 peniko_color.into()
             }
-            StrokeStyle::LinearGradient(gradient) => gradient.build(self.env),
-            StrokeStyle::RadialGradient(gradient) => gradient.build(self.env),
-            StrokeStyle::ConicGradient(gradient) => gradient.build(self.env),
+            StrokeStyle::LinearGradient(gradient) => gradient.build(),
+            StrokeStyle::RadialGradient(gradient) => gradient.build(),
+            StrokeStyle::ConicGradient(gradient) => gradient.build(),
         }
     }
 }
@@ -782,7 +771,6 @@ impl DrawingContext<'_> {
 /// Internal renderer that bridges Canvas to `GpuSurface`.
 struct CanvasRenderer {
     draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
-    env: waterui_core::Environment,
     scene: vello::Scene,
     renderer: Option<vello::Renderer>,
     /// Intermediate texture for Vello (`Rgba8Unorm` format required by Vello)
@@ -797,13 +785,9 @@ struct CanvasRenderer {
 }
 
 impl CanvasRenderer {
-    fn new(
-        draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
-        env: waterui_core::Environment,
-    ) -> Self {
+    fn new(draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>) -> Self {
         Self {
             draw_fn,
-            env,
             scene: vello::Scene::new(),
             renderer: None,
             intermediate_texture: None,
@@ -958,11 +942,10 @@ impl GpuRenderer for CanvasRenderer {
         #[allow(clippy::cast_precision_loss)]
         let mut ctx = DrawingContext {
             scene: &mut self.scene,
-            env: &self.env,
             width: frame.width as f32,
             height: frame.height as f32,
             state_stack: Vec::new(),
-            current_state: DrawingState::default(),
+            current_state: DrawingState::new(),
         };
         (self.draw_fn)(&mut ctx);
 
