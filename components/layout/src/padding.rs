@@ -184,8 +184,8 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Size = child size + padding on all sides
-        assert_eq!(size.width, 70.0); // 50 + 10 + 10
-        assert_eq!(size.height, 50.0); // 30 + 10 + 10
+        assert!((size.width - 70.0).abs() < f32::EPSILON); // 50 + 10 + 10
+        assert!((size.height - 50.0).abs() < f32::EPSILON); // 30 + 10 + 10
     }
 
     #[test]
@@ -203,11 +203,11 @@ mod tests {
         let rects = layout.place(bounds, &children);
 
         // Child origin is offset by leading and top
-        assert_eq!(rects[0].x(), 15.0);
-        assert_eq!(rects[0].y(), 10.0);
+        assert!((rects[0].x() - 15.0).abs() < f32::EPSILON);
+        assert!((rects[0].y() - 10.0).abs() < f32::EPSILON);
 
         // Child size is bounds minus padding
-        assert_eq!(rects[0].width(), 60.0); // 100 - 15 - 25
-        assert_eq!(rects[0].height(), 70.0); // 100 - 10 - 20
+        assert!((rects[0].width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
+        assert!((rects[0].height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
     }
 }

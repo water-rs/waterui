@@ -14,7 +14,7 @@ use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
 // Test Infrastructure
 // ============================================================================
 
-/// A mock SubView that returns a fixed size regardless of proposal.
+/// A mock [`SubView`] that returns a fixed size regardless of proposal.
 /// This simulates a "rigid" view like an icon or fixed-size image.
 struct FixedSizeView {
     size: Size,
@@ -32,7 +32,7 @@ impl SubView for FixedSizeView {
     }
 }
 
-/// A mock SubView that respects width proposals (like Text).
+/// A mock [`SubView`] that respects width proposals (like Text).
 /// When given a width constraint, it wraps and increases height.
 /// When given None, it returns intrinsic single-line size.
 struct FlexibleTextView {
@@ -88,9 +88,9 @@ impl SubView for SpacerView {
     }
 }
 
-/// A mock axis-expanding view (like TextField, Slider).
+/// A mock axis-expanding view (like [`TextField`], Slider).
 /// Expands to fill width, has fixed height.
-/// Uses StretchAxis::Horizontal - stretches WIDTH only, not HEIGHT.
+/// Uses [`StretchAxis::Horizontal`] - stretches WIDTH only, not HEIGHT.
 struct HorizontalExpandingView {
     height: f32,
 }
@@ -110,7 +110,7 @@ impl SubView for HorizontalExpandingView {
 
 /// A mock vertical-expanding view.
 /// Expands to fill height, has fixed width.
-/// Uses StretchAxis::Vertical - stretches HEIGHT only, not WIDTH.
+/// Uses [`StretchAxis::Vertical`] - stretches HEIGHT only, not WIDTH.
 struct VerticalExpandingView {
     width: f32,
 }
@@ -185,11 +185,7 @@ fn assert_no_overlap(rects: &[Rect], axis: &str) {
                 _ => false,
             };
 
-            assert!(
-                !overlap,
-                "Children {} and {} overlap on {} axis",
-                i, j, axis
-            );
+            assert!(!overlap, "Children {i} and {j} overlap on {axis} axis");
         }
     }
 }
