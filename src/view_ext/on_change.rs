@@ -7,7 +7,7 @@ use waterui_core::{Metadata, Retain, View};
 #[derive(Debug)]
 pub struct OnChange<V, G> {
     content: V,
-    _guard: G,
+    guard: G,
 }
 
 impl<V, G> OnChange<V, G> {
@@ -26,25 +26,64 @@ impl<V, G> OnChange<V, G> {
         C::Output: PartialEq + Clone,
         F: Fn(C::Output) + 'static,
     {
-        let cache: RefCell<Option<C::Output>> = RefCell::new(None);
+        let cache: RefCell<Option<C::Output>> = RefCell::new(Some(source.get()));
         let guard = source.watch(move |context| {
             let value = context.into_value();
-            if let Some(cache) = &mut *cache.borrow_mut()
-                && *cache != value
-            {
-                *cache = value.clone();
-                handler(value);
+            let mut cache_ref = cache.borrow_mut();
+            match cache_ref.as_ref() {
+                Some(cached) if *cached != value => {
+                    handler(value.clone());
+                }
+                Some(_) => {
+                    // Value unchanged, do nothing
+                }
+                None => {
+                    handler(value.clone());
+                }
             }
+            *cache_ref = Some(value);
         });
-        OnChange {
-            content,
-            _guard: guard,
-        }
+        OnChange { content, guard }
     }
 }
 
 impl<V: View, G: WatcherGuard> View for OnChange<V, G> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Metadata::new(self.content, Retain::new(self._guard))
+        Metadata::new(self.content, Retain::new(self.guard))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nami::binding;
+    use nami::watcher::BoxWatcherGuard;
+
+    use super::OnChange;
+
+    #[test]
+    fn fires_on_first_update() {
+        let source = binding(0);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let _view: OnChange<(), BoxWatcherGuard> = OnChange::<(), BoxWatcherGuard>::new(
+            (),
+            &source,
+            {
+                let seen = Rc::clone(&seen);
+                move |value| seen.borrow_mut().push(value)
+            },
+        );
+
+        source.set(1);
+        assert_eq!(&*seen.borrow(), &[1]);
+
+        source.set(1);
+        assert_eq!(&*seen.borrow(), &[1]);
+
+        source.set(2);
+        assert_eq!(&*seen.borrow(), &[1, 2]);
     }
 }
