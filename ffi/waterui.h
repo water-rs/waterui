@@ -1495,30 +1495,25 @@ typedef struct WuiSelected {
 } WuiSelected;
 
 /**
- * A C-compatible function wrapper that can be called multiple times.
+ * A callback for receiving selected media ID when user picks media.
  *
- * This structure wraps a Rust `Fn` closure to allow it to be passed across
- * the FFI boundary while maintaining proper memory management.
+ * This is a C-compatible closure that native code calls when picker completes.
  */
-typedef struct WuiFn_WuiSelected {
+typedef struct MediaPickerPresentCallback {
+  /**
+   * Opaque pointer to the callback data.
+   */
   void *data;
-  void (*call)(const void*, struct WuiSelected);
-  void (*drop)(void*);
-} WuiFn_WuiSelected;
+  /**
+   * Function to call with the selected media. This consumes the callback.
+   */
+  void (*call)(void*, struct WuiSelected);
+} MediaPickerPresentCallback;
 
 /**
- * FFI representation of the MediaPicker component.
+ * Type alias for the native media picker present function.
  */
-typedef struct WuiMediaPicker {
-  /**
-   * The filter type to apply.
-   */
-  enum WuiMediaFilterType filter;
-  /**
-   * Callback when selection changes. Native calls this when user picks media.
-   */
-  struct WuiFn_WuiSelected on_selection;
-} WuiMediaPicker;
+typedef void (*MediaPickerPresentFn)(enum WuiMediaFilterType, struct MediaPickerPresentCallback);
 
 /**
  * FFI representation of the result from loading media.
@@ -2640,32 +2635,21 @@ struct WuiWatcher_Video *waterui_new_watcher_video(void *data,
                                                    void (*drop)(void*));
 
 /**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiMediaPicker waterui_force_as_media_picker(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_media_picker_id(void);
-
-/**
- * Installs a MediaLoader into the environment from native function pointer.
+ * Installs a MediaPickerManager into the environment from native function pointers.
  *
- * Native backends call this during initialization to register their media loading
- * implementation. When Rust code calls `Selected::load()`, it will invoke the
- * native function through this installed loader.
+ * Native backends call this during initialization to register their media picker
+ * implementation. This unified manager handles both presenting the picker and loading media.
  *
  * # Safety
  *
  * The caller must ensure that:
  * - `env` is a valid pointer to a `WuiEnv`
+ * - `present_fn` is a valid function pointer to the native media picker presentation
  * - `load_fn` is a valid function pointer to the native media loader implementation
  */
-void waterui_env_install_media_loader(struct WuiEnv *env, MediaLoadFn load_fn);
+void waterui_env_install_media_picker_manager(struct WuiEnv *env,
+                                              MediaPickerPresentFn present_fn,
+                                              MediaLoadFn load_fn);
 
 /**
  * # Safety
