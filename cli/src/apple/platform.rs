@@ -71,9 +71,8 @@ async fn build_rust_lib(
 
 /// Clean Xcode build artifacts for an Apple platform.
 async fn clean_apple(project: &Project) -> eyre::Result<()> {
-    let backend = match project.apple_backend() {
-        Some(backend) => backend,
-        None => return Ok(()), // Nothing to clean if no backend configured
+    let Some(backend) = project.apple_backend() else {
+        return Ok(()); // Nothing to clean if no backend configured
     };
 
     let project_path = project.backend_path::<AppleBackend>();
@@ -165,7 +164,7 @@ async fn package_apple<P: ApplePlatformExt>(
     let arch_name = match platform.arch() {
         Architecture::Aarch64(_) => "arm64",
         Architecture::X86_64 => "x86_64",
-        _ => "arm64", // Default to arm64 for unknown architectures
+        _ => unimplemented!(),
     };
     let archs_arg = format!("ARCHS={arch_name}");
 
@@ -226,10 +225,6 @@ impl MacOS {
     pub const fn new() -> Self {
         Self
     }
-
-    fn arch(&self) -> Architecture {
-        DefaultToHost::default().0.architecture
-    }
 }
 
 impl Platform for MacOS {
@@ -278,7 +273,7 @@ impl ApplePlatformExt for MacOS {
     }
 
     fn arch(&self) -> Architecture {
-        self.arch()
+        DefaultToHost::default().0.architecture
     }
 }
 
@@ -362,10 +357,6 @@ impl IosSimulator {
     pub const fn new() -> Self {
         Self
     }
-
-    fn arch(&self) -> Architecture {
-        DefaultToHost::default().0.architecture
-    }
 }
 
 impl Platform for IosSimulator {
@@ -432,7 +423,7 @@ impl ApplePlatformExt for IosSimulator {
     }
 
     fn arch(&self) -> Architecture {
-        self.arch()
+        DefaultToHost::default().0.architecture
     }
 }
 

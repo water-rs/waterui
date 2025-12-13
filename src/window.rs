@@ -114,7 +114,7 @@ impl Window {
 
     /// Set whether the window is resizable.
     #[must_use]
-    pub fn resizable(mut self, resizable: bool) -> Self {
+    pub const fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
         self
     }
@@ -128,7 +128,7 @@ impl Window {
 
     /// Set the visual style of the window.
     #[must_use]
-    pub fn style(mut self, style: WindowStyle) -> Self {
+    pub const fn style(mut self, style: WindowStyle) -> Self {
         self.style = style;
         self
     }
@@ -150,6 +150,10 @@ impl Window {
     }
 
     /// Show the window on screen.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `WindowManager` is not found in the environment.
     pub fn show(self, env: &Environment) {
         env.get::<WindowManager>()
             .expect("WindowManager not found in environment")

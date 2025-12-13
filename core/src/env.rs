@@ -161,7 +161,6 @@ impl Environment {
     /// Adds a value to the environment and returns the modified environment.
     ///
     /// This is a fluent interface for chaining multiple additions.
-
     pub fn with<T: 'static>(&mut self, value: T) -> &mut Self {
         self.insert(value);
         self

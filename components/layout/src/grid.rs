@@ -365,11 +365,11 @@ mod tests {
 
         // Column width: (100 - 10) / 2 = 45
         // Child 1 at (0, 0)
-        assert_eq!(rects[0].x(), 0.0);
-        assert_eq!(rects[0].y(), 0.0);
+        assert!((rects[0].x() - 0.0).abs() < f32::EPSILON);
+        assert!((rects[0].y() - 0.0).abs() < f32::EPSILON);
 
         // Child 2 at (45 + 10, 0) = (55, 0)
-        assert_eq!(rects[1].x(), 55.0);
-        assert_eq!(rects[1].y(), 0.0);
+        assert!((rects[1].x() - 55.0).abs() < f32::EPSILON);
+        assert!((rects[1].y() - 0.0).abs() < f32::EPSILON);
     }
 }

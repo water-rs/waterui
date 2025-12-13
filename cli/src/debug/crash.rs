@@ -113,32 +113,15 @@ pub async fn find_macos_ips_crash_report_since(
         return None;
     }
 
-    let candidates = list_recent_ips_reports(&crash_dir, process_name).await?;
+    let process_pattern = format!("{process_name}*.ips");
+    let candidates = list_recent_ips_reports(&crash_dir, &process_pattern).await?;
+    let mut best = pick_best_ips_report(candidates, app_identifier, pid, since).await;
 
-    let mut best: Option<(PathBuf, IpsReport)> = None;
-    for path in candidates {
-        let Some(report) = parse_ips_report(&path).await else {
-            continue;
-        };
-
-        if report.time <= since {
-            continue;
-        }
-
-        match (report.bundle_id.as_deref(), pid, report.pid) {
-            (Some(found_bundle_id), _, _) if found_bundle_id != app_identifier => continue,
-            (None, Some(expected_pid), Some(found_pid)) if expected_pid != found_pid => continue,
-            (None, Some(_), None) => continue,
-            (None, None, _) => continue,
-            _ => {}
-        }
-
-        if best
-            .as_ref()
-            .is_none_or(|(_, current)| report.time > current.time)
-        {
-            best = Some((path, report));
-        }
+    if best.is_none() {
+        // Fallback: if the crash filename doesn't include the process name (common on iOS simulator),
+        // scan recent `.ips` reports and filter by bundle ID / PID.
+        let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await?;
+        best = pick_best_ips_report(candidates, app_identifier, pid, since).await;
     }
 
     let (path, report) = best?;
@@ -152,17 +135,50 @@ pub async fn find_macos_ips_crash_report_since(
     ))
 }
 
-async fn list_recent_ips_reports(crash_dir: &Path, process_name: &str) -> Option<Vec<PathBuf>> {
-    let pattern = format!("{process_name}*.ips");
+async fn pick_best_ips_report(
+    candidates: Vec<PathBuf>,
+    app_identifier: &str,
+    pid: Option<u32>,
+    since: OffsetDateTime,
+) -> Option<(PathBuf, IpsReport)> {
+    let mut best: Option<(PathBuf, IpsReport)> = None;
+    for path in candidates {
+        let Some(report) = parse_ips_report(&path).await else {
+            continue;
+        };
+
+        if report.time <= since {
+            continue;
+        }
+
+        match (report.bundle_id.as_deref(), pid, report.pid) {
+            (Some(found_bundle_id), _, _) if found_bundle_id != app_identifier => continue,
+            (None, Some(expected_pid), Some(found_pid)) if expected_pid != found_pid => continue,
+            (None, Some(_), None) | (None, None, _) => continue,
+            _ => {}
+        }
+
+        if best
+            .as_ref()
+            .is_none_or(|(_, current)| report.time > current.time)
+        {
+            best = Some((path, report));
+        }
+    }
+
+    best
+}
+
+async fn list_recent_ips_reports(crash_dir: &Path, pattern: &str) -> Option<Vec<PathBuf>> {
     let output = Command::new("find")
         .args([
             crash_dir.to_str()?,
             "-name",
-            &pattern,
+            pattern,
             "-type",
             "f",
             "-mmin",
-            "-2",
+            "-10",
         ])
         .output()
         .await

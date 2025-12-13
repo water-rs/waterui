@@ -6,13 +6,13 @@ A memory-efficient, reference-counted string type optimized for both static and 
 
 `waterui-str` provides `Str`, a hybrid string type that automatically chooses between static string references and reference-counted owned strings. This design eliminates unnecessary allocations for static strings while enabling efficient cloning for owned strings through reference counting.
 
-The crate is designed for `no_std` environments (with `alloc`), making it suitable for embedded systems and WebAssembly targets. It integrates seamlessly with WaterUI's reactive system through the `nami-core` integration.
+The crate is designed for `no_std` environments (with `alloc`), making it suitable for embedded systems and WebAssembly targets. It integrates seamlessly with `WaterUI`'s reactive system through the `nami-core` integration.
 
 Key features:
 - **Zero-cost static strings**: Static string literals stored as pointers without allocation
 - **Reference-counted owned strings**: Efficient cloning through internal reference counting
 - **Transparent API**: Derefs to `&str`, works with all standard string operations
-- **Reactive integration**: Compatible with WaterUI's `nami` reactive primitives via `impl_constant!`
+- **Reactive integration**: Compatible with `WaterUI`'s `nami` reactive primitives via `impl_constant!`
 - **Optional serde support**: Serialize and deserialize with the `serde` feature
 
 ## Installation
@@ -247,4 +247,4 @@ All code is `#![forbid(unsafe_code)]` except for the necessary pointer operation
 
 ## License
 
-Licensed under the same terms as the WaterUI project.
+Licensed under the same terms as the `WaterUI` project.

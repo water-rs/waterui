@@ -35,7 +35,7 @@ impl BuildOptions {
     }
 
     /// Whether to enable hot-reload support
-    #[must_use] 
+    #[must_use]
     pub const fn is_hot_reload(&self) -> bool {
         self.hot_reload
     }
@@ -154,9 +154,9 @@ impl RustBuild {
             .map_err(RustBuildError::FailToExecuteCargoBuild)?;
 
         if !status.success() {
-            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::other(
-                "Cargo build failed",
-            )));
+            return Err(RustBuildError::FailToBuildRustLibrary(
+                std::io::Error::other("Cargo build failed"),
+            ));
         }
 
         // use `cargo metadata` to get the target directory
@@ -212,11 +212,10 @@ impl RustBuild {
 
         // Use a reasonable minimum deployment target
         let min_version = match target_os {
-            "ios" => "17.0",
-            "tvos" => "17.0",
+            "ios" | "tvos" => "17.0",
             "watchos" => "10.0",
             "xros" => "1.0",
-            _ => "17.0",
+            _ => unimplemented!(),
         };
 
         Some(format!(

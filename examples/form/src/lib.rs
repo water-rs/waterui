@@ -6,7 +6,6 @@
 //! - Reactive data binding with live preview
 //! - Manual form control composition
 
-use waterui::Str;
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
@@ -91,7 +90,7 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
             vstack((
                 text("App Settings").size(20.0),
                 "Another form with different field types",
-                form(&settings),
+                form(settings),
                 Divider,
                 text("Current Settings:").bold(),
                 hstack((
