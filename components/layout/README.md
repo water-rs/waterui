@@ -21,7 +21,7 @@ Or use the main `waterui` crate which re-exports all layout components:
 
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.2"
 ```
 
 ## Quick Start
@@ -190,10 +190,12 @@ pub fn constrained_content() -> impl View {
 ### Stack Containers
 
 - **`stack::hstack(content)`** - Arranges children horizontally left-to-right
+
   - `.spacing(f32)` - Sets spacing between children
   - `.alignment(VerticalAlignment)` - Sets vertical alignment (Top, Center, Bottom)
 
 - **`stack::vstack(content)`** - Arranges children vertically top-to-bottom
+
   - `.spacing(f32)` - Sets spacing between children
   - `.alignment(HorizontalAlignment)` - Sets horizontal alignment (Leading, Center, Trailing)
 
@@ -205,11 +207,13 @@ pub fn constrained_content() -> impl View {
 - **`spacer()`** - Flexible space that expands to push views apart
 - **`spacer_min(f32)`** - Spacer with minimum length
 - **`ScrollView`** - Scrollable container for overflow content
+
   - `scroll(content)` - Vertical scrolling
   - `scroll_horizontal(content)` - Horizontal scrolling
   - `scroll_both(content)` - Bidirectional scrolling
 
 - **`Frame`** - Constrains child size with min/max/ideal dimensions
+
   - `.width(f32)`, `.height(f32)` - Sets ideal dimensions
   - `.min_width(f32)`, `.max_width(f32)` - Sets size constraints
   - `.alignment(Alignment)` - Aligns child within frame
@@ -246,7 +250,6 @@ Enable features in your `Cargo.toml`:
 [dependencies]
 waterui-layout = { version = "0.1.0", features = ["serde"] }
 ```
-
 
 ## Architecture Notes
 
