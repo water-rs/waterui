@@ -1,314 +1,240 @@
-# WaterUI Media Components
+# waterui-media
 
-Media handling and display components for the WaterUI framework.
-
-## Platform Support
-
-| Component    | Apple (iOS/macOS) | Android |
-|--------------|-------------------|---------|
-| Photo        | ✅                | ✅      |
-| Video (raw)  | ✅                | ✅      |
-| VideoPlayer  | ✅                | ✅      |
-| LivePhoto    | Rust-only         | Rust-only |
-| MediaPicker  | ✅                | ✅      |
-
-Notes:
-
-- **LivePhoto**: Native renderers removed; use Rust-side composition with Photo + Video + Gesture instead
-- **Photo**: Uses `UIImageView`/`NSImageView` on Apple, `ImageView` on Android
-- **Video (raw)**: Uses `AVPlayer` on Apple, `SurfaceView` + `MediaPlayer` on Android (no controls)
-- **VideoPlayer**: Uses `AVPlayerViewController` on Apple, `VideoView` on Android (with native controls)
-- **MediaPicker**: Uses `PHPickerViewController` on iOS, `NSOpenPanel` on macOS, intent-based picker on Android
+Media components for WaterUI providing reactive photo, video, and Live Photo display with native platform rendering.
 
 ## Overview
 
-`waterui-media` provides components for displaying and handling various media types including images, videos, and Live Photos. The library offers a unified interface for working with different media formats and provides reactive, configurable components that integrate seamlessly with the WaterUI framework.
+`waterui-media` delivers a comprehensive media handling system for the WaterUI framework. It bridges Rust's type safety with platform-native media rendering (AVFoundation on Apple platforms, ExoPlayer on Android) while maintaining WaterUI's reactive programming model. The crate supports static images, video playback with controls, Apple Live Photos, and platform-native media picking.
 
-## Components
+Key features include reactive volume control with mute state preservation, configurable aspect ratios, event-driven loading states, and seamless integration with WaterUI's environment system. Media components automatically render to native widgets: AVPlayerViewController on iOS, AVPlayerLayer for raw video views, and ExoPlayer with PlayerView on Android.
 
-### Photo
+## Installation
 
-Display static images from URLs:
+Add to your `Cargo.toml`:
 
-```rust
-use waterui_media::Photo;
-
-// Basic image from URL
-let photo = Photo::new("https://example.com/image.jpg");
-
-// Local file
-let photo = Photo::new("file:///path/to/image.png");
+```toml
+[dependencies]
+waterui-media = "0.1.0"
 ```
 
-### Video
-
-Display and control video playback with reactive volume control:
+## Quick Start
 
 ```rust
-use waterui_media::{Video, VideoPlayer};
-use nami::binding;
+use waterui_media::{Photo, VideoPlayer, Url};
+use waterui_core::prelude::*;
 
-// Create a video from URL
-let video = Video::new("https://example.com/video.mp4");
+fn main() -> impl View {
+    VStack::new((
+        // Display a remote photo
+        Photo::new(Url::new("https://example.com/image.jpg")),
 
-// When used as a View, `Video` renders via `VideoPlayer`
-
-// Or create a player directly with custom configuration
-let mut volume = binding(0.7); // 70% volume
-let muted = binding(false);
-
-let player = VideoPlayer::new(video)
-    .muted(&muted);
-
-// Volume is controlled through the binding system
-volume.set(0.3); // Change to 30% volume
-muted.set(true); // Mute the video
-```
-
-### Live Photo
-
-Display Apple Live Photos with image and video components:
-
-```rust
-use waterui_media::{LivePhoto, LivePhotoSource};
-
-// Create a LivePhotoSource with image and video URLs
-let source = LivePhotoSource::new(
-    "photo.jpg".into(),
-    "photo.mov".into()
-);
-
-// Create the LivePhoto component
-let live_photo = LivePhoto::new(source);
-
-// Can also use reactive data
-use nami::s;
-let reactive_source = s!(
-    LivePhotoSource::new("dynamic_photo.jpg".into(), "dynamic_video.mov".into())
-);
-let reactive_live_photo = LivePhoto::new(reactive_source);
-```
-
-### Media
-
-Unified media type that automatically chooses the appropriate component:
-
-```rust
-use waterui_media::{Media, LivePhotoSource};
-
-// Different media types
-let image = Media::Image("https://example.com/photo.jpg".into());
-let video = Media::Video("https://example.com/video.mp4".into());
-let live_photo = Media::LivePhoto(LivePhotoSource::new(
-    "photo.jpg".into(),
-    "video.mov".into()
-));
-
-// The Media enum automatically renders the appropriate component
-// when used as a View - no need to match manually
-```
-
-## Media Picker
-
-Platform-native media selection interface:
-
-```rust
-use waterui_media::media_picker::{MediaPicker, MediaFilter, Selected};
-use nami::{binding, s};
-
-let selection = binding(Selected::new(0));
-let filter = s!(MediaFilter::Image);
-
-let picker = MediaPicker::new()
-    .selection(selection.clone())
-    .filter(filter);
-
-// Load the selected media asynchronously
-let selected = selection.get();
-let media = selected.load().await;
-```
-
-### Media Filters
-
-Control what types of media can be selected:
-
-```rust
-use waterui_media::picker::MediaFilter;
-
-// Individual types
-let images_only = MediaFilter::Image;
-let videos_only = MediaFilter::Video;
-let live_photos_only = MediaFilter::LivePhoto;
-
-// Combinations
-let images_and_videos = MediaFilter::All(vec![
-    MediaFilter::Image,
-    MediaFilter::Video
-]);
-
-let everything_except_live_photos = MediaFilter::Not(vec![
-    MediaFilter::LivePhoto
-]);
-
-let any_media = MediaFilter::Any(vec![
-    MediaFilter::Image,
-    MediaFilter::Video,
-    MediaFilter::LivePhoto
-]);
-```
-
-## Reactive Programming
-
-All components integrate with WaterUI's reactive system:
-
-```rust
-use nami::{binding, s};
-use waterui_media::{Photo, Video, VideoPlayer};
-
-// Reactive image URL
-let image_url = binding("initial.jpg".into());
-let photo = Photo::new(image_url.clone());
-
-// Change the image dynamically
-image_url.set("new_image.jpg".into());
-
-// Computed values
-let video_url = s!(format!("video_{}.mp4", get_current_id()));
-let video = Video::new(video_url);
-
-// Reactive volume control
-let volume = binding(0.5);
-let is_muted = binding(false);
-let player = VideoPlayer::new(video).muted(&is_muted);
-```
-
-## Volume Control
-
-The video player uses a unique volume system:
-
-```rust
-use waterui_core::binding;
-use waterui_media::VideoPlayer;
-
-let volume = binding(0.7); // 70% volume
-let muted = binding(false);
-
-let player = VideoPlayer::new(video)
-    .muted(&muted);
-
-// When muted = true, the volume internally becomes negative (-0.7)
-// This preserves the original volume level for when unmuted
-// When muted = false, volume returns to positive (0.7)
-```
-
-The volume system works as follows:
-
-- Positive values (> 0): Audible volume
-- Negative values (< 0): Muted state, but preserves the volume level
-- When unmuting, the absolute value is restored
-
-## Async Media Loading
-
-Media picker provides async loading capabilities:
-
-```rust
-use waterui_media::media_picker::Selected;
-
-async fn load_selected_media(selected: Selected) -> Media {
-    // This will asynchronously load the selected media
-    selected.load().await
+        // Video player with native controls
+        VideoPlayer::new(Url::new("https://example.com/video.mp4"))
+            .show_controls(true),
+    ))
 }
 ```
 
-## Dependencies
+## Core Concepts
 
-- `waterui-core`: Core framework functionality providing the View trait, reactive system, and configuration macros
+### URL Handling
 
-## Architecture
+The crate uses `waterui_url::Url` for type-safe resource addressing. URLs support web resources, local file paths, data URLs, and blob URLs:
 
-The media components are built using WaterUI's configuration pattern:
+```rust
+use waterui_media::Url;
 
-- **Configurable Components**: Each component (Photo, VideoPlayer, LivePhoto) uses the `configurable!` macro
-- **Reactive Data**: All properties can be reactive using `Computed<T>` and `Binding<T>`
-- **View Integration**: Components implement the `View` trait for seamless integration
+// Compile-time web URLs
+const REMOTE: Url = Url::new("https://cdn.example.com/video.mp4");
+
+// Runtime parsing
+let local: Url = "/path/to/video.mp4".parse().unwrap();
+let data_url = Url::from_data("image/png", image_bytes);
+```
+
+### Video Components: Raw vs Player
+
+`waterui-media` provides two distinct video components:
+
+- `Video`: Raw video view using AVPlayerLayer/SurfaceView without controls - ideal for custom UIs
+- `VideoPlayer`: Full-featured player with native platform controls (play/pause, seek, fullscreen)
+
+### Volume Control System
+
+Video components use a special volume encoding that preserves the original level when muting:
+
+- Positive values (`> 0`): Audible volume level (0.0-1.0)
+- Negative values (`< 0`): Muted state storing the original volume as the absolute value
+- When unmuting, the absolute value is restored
+
+This approach eliminates the need for separate mute flags while maintaining volume memory.
+
+### Reactive State Integration
+
+All media components integrate with WaterUI's reactive system via `Binding` and `Computed` signals. Changes to bindings automatically propagate to native platform components through the FFI layer.
 
 ## Examples
 
-### Basic Photo Gallery
+### Photo with Loading Events
 
 ```rust
-use waterui_media::{Photo, Media};
-use waterui_layout::stack::vstack;
-use waterui_text::text;
-use nami::binding;
-use waterui_core::{View, Environment};
+use waterui_media::{Photo, photo::Event, Url};
 
-struct PhotoGallery {
-    photos: Vec<String>,
-    current_index: nami::Binding<usize>,
-}
+let photo = Photo::new(Url::new("https://example.com/large-image.jpg"))
+    .on_event(|event| {
+        match event {
+            Event::Loaded => tracing::debug!("Image loaded successfully"),
+            Event::Error(msg) => tracing::debug!("Failed to load: {}", msg),
+        }
+    });
+```
 
-impl View for PhotoGallery {
-    fn body(self, _env: &Environment) -> impl View {
-        vstack((
-            // Main photo display
-            Photo::new(&self.photos[self.current_index.get()]),
+### Reactive Video Volume Control
 
-            // Photo counter - using text! macro for reactivity
-            text!("{} of {}",
-                self.current_index.get() + 1,
-                self.photos.len()
-            ),
-        ))
-    }
+```rust
+use waterui_core::{binding, prelude::*};
+use waterui_media::{VideoPlayer, Url};
+use waterui_controls::Toggle;
+
+fn volume_demo() -> impl View {
+    let muted = binding(false);
+
+    VStack::new((
+        VideoPlayer::new(Url::new("https://example.com/video.mp4"))
+            .muted(&muted),
+
+        HStack::new((
+            Text::new("Mute"),
+            Toggle::new(&muted),
+        )),
+    ))
 }
 ```
 
-### Video with Custom Controls
+### Raw Video View with Custom Controls
 
 ```rust
-use waterui_media::{Video, VideoPlayer};
-use waterui_layout::stack::vstack;
-use nami::binding;
-use waterui::{View, Environment};
-use waterui::component::button;
+use waterui_media::{Video, AspectRatio, Url};
+use waterui_core::binding;
 
-fn video_with_controls(video_url: &str) -> impl View {
-    let muted = binding(false);
-    let player = VideoPlayer::new(Video::new(video_url))
-        .muted(&muted);
-    
-    vstack((
-        player,
-        button("Toggle Mute").action({
-            let muted = muted.clone();
-            move |_| muted.set(!muted.get())
+let video = Video::new(Url::new("https://example.com/loop.mp4"))
+    .aspect_ratio(AspectRatio::Fill)
+    .loops(true)
+    .on_event(|event| {
+        // Handle buffering, playback errors, etc.
+    });
+```
+
+### Live Photo Display
+
+```rust
+use waterui_media::{LivePhoto, live::LivePhotoSource, Url};
+
+let source = LivePhotoSource::new(
+    Url::new("https://example.com/live-photo.jpg"),
+    Url::new("https://example.com/live-photo.mov"),
+);
+
+let live_photo = LivePhoto::new(source);
+```
+
+### Media Picker
+
+```rust
+use waterui_core::{binding, prelude::*};
+use waterui_media::{MediaPicker, media_picker::{Selected, MediaFilter}, Media};
+
+fn picker_demo() -> impl View {
+    let selection = binding::<Option<Selected>>(None);
+
+    VStack::new((
+        MediaPicker::new(&selection)
+            .filter(MediaFilter::Video)
+            .label(Text::new("Choose Video")),
+
+        // Display selected media
+        selection.get().map(|sel| {
+            // Load media asynchronously and display
+            VStack::new(Text::new("Media selected"))
         }),
     ))
 }
 ```
 
-### Media Type Switching
+### Unified Media Type
 
 ```rust
-use waterui_media::{Media, LivePhotoSource};
-use nami::{binding, s};
+use waterui_media::{Media, Url};
+use waterui_core::prelude::*;
 
-fn dynamic_media_view() -> impl View {
-    let media_type = binding("image");
-    
-    let media = s!(
-        match media_type.get().as_str() {
-            "image" => Media::Image("photo.jpg".into()),
-            "video" => Media::Video("video.mp4".into()),
-            "live" => Media::LivePhoto(LivePhotoSource::new(
-                "live.jpg".into(),
-                "live.mov".into()
-            )),
-            _ => Media::Image("default.jpg".into()),
-        }
-    );
-    
-    media
+fn display_media(media: Media) -> impl View {
+    // Media enum automatically chooses the right component
+    match media {
+        Media::Image(_) => AnyView::new(Text::new("Displaying Photo")),
+        Media::Video(_) => AnyView::new(Text::new("Displaying VideoPlayer")),
+        Media::LivePhoto(_) => AnyView::new(Text::new("Displaying LivePhoto")),
+    }
 }
+
+let image = Media::Image(Url::new("https://example.com/photo.jpg"));
+let video = Media::Video(Url::new("https://example.com/clip.mp4"));
 ```
+
+## API Overview
+
+### Components
+
+- `Photo` - Display static images with event callbacks for load/error states
+- `Video` - Raw video view without controls (AVPlayerLayer/SurfaceView)
+- `VideoPlayer` - Full-featured video player with native controls
+- `LivePhoto` - Apple Live Photo display combining image and video
+- `MediaPicker` - Platform-native media selection UI
+
+### Types
+
+- `Url` - Type-safe URL representation (web, local, data, blob)
+- `Media` - Unified enum for Image, Video, or LivePhoto
+- `LivePhotoSource` - Pairing of image and video URLs for Live Photos
+- `AspectRatio` - Video scaling modes: Fit, Fill, Stretch
+- `Volume` - f32 type with special encoding for mute state
+- `Event` - Photo and video event types (loaded, error, buffering, etc.)
+- `MediaFilter` - Filters for media picker (Image, Video, LivePhoto, combinators)
+- `Selected` - Selected media item with async loading capability
+
+### Image Processing (image module)
+
+The `Image` type provides async image manipulation:
+
+- `Image::new(mime, data)` - Decode image from raw data on background thread
+- `resize()`, `resize_to_fit()`, `resize_to_fill()`, `resize_exact()` - Resize operations
+- `rotate()`, `rotate_90()`, `rotate_180()`, `rotate_270()` - Rotation
+- `flip_horizontal()`, `flip_vertical()` - Flipping
+- `crop()`, `blur()`, `brighten()`, `adjust_contrast()` - Filters
+- `grayscale()`, `invert()`, `huerotate()` - Color adjustments
+- `encode_png()`, `encode_jpeg()` - Export to bytes
+- `url()` - Generate base64 data URL
+
+All processing operations run on background threads via `blocking::unblock` to prevent UI blocking.
+
+## Features
+
+- `default` - Enables `std` feature
+- `std` - Standard library support (enables file path handling)
+
+## Platform Implementation
+
+### iOS/macOS/tvOS
+
+- `Photo`: Uses `AsyncImage` with URLSession for loading
+- `Video`: Uses `AVPlayerLayer` directly for custom UIs
+- `VideoPlayer`: Uses `AVPlayerViewController` (iOS/tvOS) or `AVPlayerView` (macOS)
+- `LivePhoto`: Uses `PHLivePhotoView`
+- `MediaPicker`: Uses `PHPickerViewController` with `PHImageManager` for loading
+
+### Android
+
+- `Photo`: Uses Coil image loading library
+- `Video`: Uses ExoPlayer with SurfaceView
+- `VideoPlayer`: Uses ExoPlayer with PlayerView (full controls)
+- `LivePhoto`: Maps to Motion Photos via MediaStore
+- `MediaPicker`: Uses `ActivityResultContracts.PickVisualMedia` with ContentResolver
