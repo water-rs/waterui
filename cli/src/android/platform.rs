@@ -238,6 +238,10 @@ impl AndroidPlatform {
     ///
     /// # Errors
     /// Returns an error if Gradle build fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unsupported ABI is provided.
     pub async fn package_with_abis(
         project: &Project,
         options: PackageOptions,
@@ -460,14 +464,15 @@ impl Platform for AndroidPlatform {
         }
 
         // Determine output directory: use specified output_dir or default to jniLibs
-        let output_dir = if let Some(dir) = options.output_dir() {
-            dir.to_path_buf()
-        } else {
-            project
-                .backend_path::<AndroidBackend>()
-                .join("app/src/main/jniLibs")
-                .join(self.abi())
-        };
+        let output_dir = options.output_dir().map_or_else(
+            || {
+                project
+                    .backend_path::<AndroidBackend>()
+                    .join("app/src/main/jniLibs")
+                    .join(self.abi())
+            },
+            std::path::Path::to_path_buf,
+        );
         fs::create_dir_all(&output_dir).await?;
 
         // Copy with standardized name

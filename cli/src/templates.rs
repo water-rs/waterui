@@ -188,18 +188,18 @@ impl TemplateContext {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
 
-        match self.compute_apple_backend_path() {
-            Some(backend_path) => {
-                format!(
-                    "{INDENT}{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */,"
-                )
-            }
-            None => {
+        self.compute_apple_backend_path().map_or_else(
+            || {
                 format!(
                     "{INDENT}{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */,"
                 )
-            }
-        }
+            },
+            |backend_path| {
+                format!(
+                    "{INDENT}{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */,"
+                )
+            },
+        )
     }
 
     /// Generate the `XCode` package reference section for the project file.
@@ -208,18 +208,8 @@ impl TemplateContext {
         const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
         const MIN_VERSION: &str = "1.0.0";
 
-        match self.compute_apple_backend_path() {
-            Some(backend_path) => {
-                format!(
-                    "/* Begin XCLocalSwiftPackageReference section */\n\
-                    \t\t{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */ = {{\n\
-                    \t\t\tisa = XCLocalSwiftPackageReference;\n\
-                    \t\t\trelativePath = \"{backend_path}\";\n\
-                    \t\t}};\n\
-                    /* End XCLocalSwiftPackageReference section */"
-                )
-            }
-            None => {
+        self.compute_apple_backend_path().map_or_else(
+            || {
                 format!(
                     "/* Begin XCRemoteSwiftPackageReference section */\n\
                     \t\t{PACKAGE_ID} /* XCRemoteSwiftPackageReference \"apple-backend\" */ = {{\n\
@@ -232,8 +222,18 @@ impl TemplateContext {
                     \t\t}};\n\
                     /* End XCRemoteSwiftPackageReference section */"
                 )
-            }
-        }
+            },
+            |backend_path| {
+                format!(
+                    "/* Begin XCLocalSwiftPackageReference section */\n\
+                    \t\t{PACKAGE_ID} /* XCLocalSwiftPackageReference \"{backend_path}\" */ = {{\n\
+                    \t\t\tisa = XCLocalSwiftPackageReference;\n\
+                    \t\t\trelativePath = \"{backend_path}\";\n\
+                    \t\t}};\n\
+                    /* End XCLocalSwiftPackageReference section */"
+                )
+            },
+        )
     }
 }
 

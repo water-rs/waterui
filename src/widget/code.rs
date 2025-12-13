@@ -70,7 +70,7 @@ impl View for Code {
         let chunks = highlighter.highlight(self.language, &self.content);
 
         let code_font = Font::from(Body).size(14.0);
-        let highlighted = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
+        let styled = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
             s.push(
                 chunk.text.to_string(),
                 Style::default()
@@ -105,7 +105,7 @@ impl View for Code {
                             .detach();
                         }),
                 )),
-                text(highlighted),
+                text(styled),
             ),
         )
         .padding()
