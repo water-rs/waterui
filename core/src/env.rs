@@ -131,9 +131,8 @@ impl Environment {
     /// Installs a plugin into the environment.
     ///
     /// Plugins can register values or modifiers that will be available to all views.
-    #[must_use]
-    pub fn install(mut self, plugin: impl Plugin) -> Self {
-        plugin.install(&mut self);
+    pub fn install(&mut self, plugin: impl Plugin) -> &mut Self {
+        plugin.install(self);
         self
     }
 
@@ -162,8 +161,8 @@ impl Environment {
     /// Adds a value to the environment and returns the modified environment.
     ///
     /// This is a fluent interface for chaining multiple additions.
-    #[must_use]
-    pub fn with<T: 'static>(mut self, value: T) -> Self {
+
+    pub fn with<T: 'static>(&mut self, value: T) -> &mut Self {
         self.insert(value);
         self
     }
