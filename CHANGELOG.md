@@ -523,7 +523,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `task` method for `ViewExt`
 - Error handling for View
 - Split view-related traits and views from `waterui` crate
-- Fix bugs & Clearer app lanuch
+- Fix bugs & Clearer app launch
 - Improved ffi binding & Strong-typed component
 - no-std support
 - Radio component & custom style for field and toggle
@@ -569,7 +569,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - rename `into_boxed` to `boxed`
 - remove vdom & frame improvement
 - improve ffi and macro
-- muti-window minimum support
+- multi-window minimum support
 - window&ffi support
 - diff implement
 - trying to implement diff
