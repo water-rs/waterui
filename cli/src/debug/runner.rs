@@ -113,13 +113,13 @@ impl HotReloadRunner {
     }
 
     /// Get the event receiver for hot reload events.
-    #[must_use] 
+    #[must_use]
     pub const fn events(&self) -> &Receiver<HotReloadEvent> {
         &self.event_rx
     }
 
     /// Consume the runner and return the underlying server to keep it alive.
-    #[must_use] 
+    #[must_use]
     pub fn into_server(self) -> HotReloadServer {
         self.server
     }
