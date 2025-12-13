@@ -20,12 +20,15 @@ enum DisplayState {
     Empty,
     Loading,
     Loaded(Media),
+    Error(String),
 }
 
 fn main() -> impl View {
     // Single state binding for cleaner reactivity
     let display_state: Binding<DisplayState> = binding(DisplayState::Empty);
-    let selection: Binding<Option<Selected>> = Binding::default();
+    let image_selection: Binding<Option<Selected>> = Binding::default();
+    let video_selection: Binding<Option<Selected>> = Binding::default();
+    let live_photo_selection: Binding<Option<Selected>> = Binding::default();
 
     // Main layout
     vstack((
@@ -36,9 +39,24 @@ fn main() -> impl View {
             .padding_with(16.0),
         // Picker buttons row
         hstack((
-            picker_button(MediaFilter::Image, &selection, &display_state),
-            picker_button(MediaFilter::Video, &selection, &display_state),
-            picker_button(MediaFilter::LivePhoto, &selection, &display_state),
+            picker_button(
+                "Pick Image",
+                MediaFilter::Image,
+                &image_selection,
+                &display_state,
+            ),
+            picker_button(
+                "Pick Video",
+                MediaFilter::Video,
+                &video_selection,
+                &display_state,
+            ),
+            picker_button(
+                "Pick Live Photo",
+                MediaFilter::LivePhoto,
+                &live_photo_selection,
+                &display_state,
+            ),
         ))
         .spacing(12.0)
         .padding_with(16.0),
@@ -56,33 +74,46 @@ pub fn app(env: Environment) -> App {
 
 /// Creates a picker button that opens the media picker with the given filter
 fn picker_button(
+    label: &'static str,
     filter: MediaFilter,
     selection: &Binding<Option<Selected>>,
     display_state: &Binding<DisplayState>,
 ) -> impl View {
     let state = display_state.clone();
     let sel = selection.clone();
+    let expected_filter = filter.clone();
 
     // Create media picker and watch for selection changes
-    MediaPicker::new(&sel).filter(filter).on_change(&sel, {
-        let state = state.clone();
-        move |new_selection| {
-            if let Some(selected) = new_selection {
-                // Show loading state immediately
-                state.set(DisplayState::Loading);
+    MediaPicker::new(&sel)
+        .filter(filter.clone())
+        .label(text(label))
+        .on_change(&sel, {
+            let state = state.clone();
+            let expected_filter = expected_filter.clone();
+            move |new_selection| {
+                if let Some(selected) = new_selection {
+                    // Show loading state immediately
+                    state.set(DisplayState::Loading);
 
-                let state = state.clone();
+                    let state = state.clone();
+                    let expected_filter = expected_filter.clone();
 
-                // Load the selected media asynchronously
-                spawn_local(async move {
-                    let media = selected.load().await;
-                    log::debug!("Loaded media: {:?}", media);
-                    state.set(DisplayState::Loaded(media));
-                })
-                .detach();
+                    // Load the selected media asynchronously
+                    spawn_local(async move {
+                        let media = selected.load().await;
+                        log::debug!("Loaded media: {:?}", media);
+                        match validate_media_result(&media, &expected_filter) {
+                            Ok(()) => state.set(DisplayState::Loaded(media)),
+                            Err(message) => {
+                                log::error!("{message}");
+                                state.set(DisplayState::Error(message));
+                            }
+                        }
+                    })
+                    .detach();
+                }
             }
-        }
-    })
+        })
 }
 
 /// Displays the loaded media or a placeholder - single Dynamic::watch
@@ -107,6 +138,19 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
         .anyview(),
 
         DisplayState::Loaded(media) => media_view(media),
+
+        DisplayState::Error(message) => vstack((
+            text("Error")
+                .size(18.0)
+                .bold()
+                .foreground(theme_color::Accent),
+            text(message)
+                .size(14.0)
+                .foreground(theme_color::MutedForeground),
+        ))
+        .spacing(8.0)
+        .padding_with(16.0)
+        .anyview(),
     })
 }
 
@@ -128,21 +172,12 @@ fn media_view(media: Media) -> AnyView {
         }
         Media::Video(url) => {
             log::debug!("Displaying video from: {}", url);
-            vstack((
-                VideoPlayer::new(url)
-                    .show_controls(true)
-                    .aspect_ratio(AspectRatio::Fit),
-                text("Video")
-                    .size(14.0)
-                    .foreground(theme_color::MutedForeground)
-                    .padding_with(8.0),
-            ))
-            .anyview()
+            video_view(url)
         }
         Media::LivePhoto(source) => {
             log::debug!("Displaying live photo");
             vstack((
-                LivePhoto::new(source),
+                live_photo_view(source),
                 text("Live Photo")
                     .size(14.0)
                     .foreground(theme_color::MutedForeground)
@@ -151,6 +186,118 @@ fn media_view(media: Media) -> AnyView {
             .anyview()
         }
     }
+}
+
+fn video_view(url: Url) -> AnyView {
+    vstack((
+        VideoPlayer::new(url)
+            .show_controls(true)
+            .aspect_ratio(AspectRatio::Fit),
+        text("Video")
+            .size(14.0)
+            .foreground(theme_color::MutedForeground)
+            .padding_with(8.0),
+    ))
+    .anyview()
+}
+
+fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {
+    let is_playing = binding(false);
+    let image_url = source.image.clone();
+    let video_url = source.video.clone();
+
+    Dynamic::watch(is_playing.clone(), move |playing| {
+        if playing {
+            Video::new(video_url.clone())
+                .loops(false)
+                .on_event({
+                    let is_playing = is_playing.clone();
+                    move |event| match event {
+                        video::Event::Ended | video::Event::Error { .. } => {
+                            is_playing.set(false);
+                        }
+                        _ => {}
+                    }
+                })
+                .anyview()
+        } else {
+            Photo::new(image_url.clone())
+                .on_tap({
+                    let is_playing = is_playing.clone();
+                    move || is_playing.set(true)
+                })
+                .overlay(
+                    button(text("Play"))
+                        .action({
+                            let is_playing = is_playing.clone();
+                            move || is_playing.set(true)
+                        })
+                        .padding_with(10.0)
+                        .background(Color::from(theme_color::Surface)),
+                )
+                .anyview()
+        }
+    })
+    .anyview()
+}
+
+fn validate_media_result(media: &Media, expected_filter: &MediaFilter) -> Result<(), String> {
+    // Sanity check: if native says "image" but returns a video file URL, that's a bug.
+    if let Media::Image(url) = media {
+        if looks_like_video_url(url) {
+            return Err(format!(
+                "BUG: native returned a video URL but labeled it as an image: {url}"
+            ));
+        }
+    }
+
+    // Fast-fail for mismatched filter/type contracts.
+    let matches_filter = match expected_filter {
+        MediaFilter::Image => matches!(media, Media::Image(_)),
+        MediaFilter::Video => matches!(media, Media::Video(_)),
+        MediaFilter::LivePhoto => matches!(media, Media::LivePhoto(_)),
+        MediaFilter::All(filters) | MediaFilter::Any(filters) => filters.iter().any(|f| {
+            matches!(
+                (f, media),
+                (MediaFilter::Image, Media::Image(_))
+                    | (MediaFilter::Video, Media::Video(_))
+                    | (MediaFilter::LivePhoto, Media::LivePhoto(_))
+            )
+        }),
+        MediaFilter::Not(filters) => !filters.iter().any(|f| {
+            matches!(
+                (f, media),
+                (MediaFilter::Image, Media::Image(_))
+                    | (MediaFilter::Video, Media::Video(_))
+                    | (MediaFilter::LivePhoto, Media::LivePhoto(_))
+            )
+        }),
+    };
+
+    if matches_filter {
+        Ok(())
+    } else {
+        Err(format!(
+            "BUG: native returned {media:?} for requested filter {expected_filter:?}"
+        ))
+    }
+}
+
+fn looks_like_video_url(url: &Url) -> bool {
+    let raw = url.as_str();
+    let without_query = raw.split(['?', '#']).next().unwrap_or(raw);
+    let filename = without_query.rsplit('/').next().unwrap_or(without_query);
+    let Some((_, extension)) = filename.rsplit_once('.') else {
+        return false;
+    };
+    extension.eq_ignore_ascii_case("mp4")
+        || extension.eq_ignore_ascii_case("mov")
+        || extension.eq_ignore_ascii_case("m4v")
+        || extension.eq_ignore_ascii_case("mkv")
+        || extension.eq_ignore_ascii_case("webm")
+        || extension.eq_ignore_ascii_case("avi")
+        || extension.eq_ignore_ascii_case("mpg")
+        || extension.eq_ignore_ascii_case("mpeg")
 }
 
 waterui_ffi::export!();
