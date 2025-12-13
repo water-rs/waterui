@@ -7,7 +7,7 @@ use std::process::Stdio;
 use crate::{
     android::{platform::AndroidPlatform, toolchain::AndroidSdk},
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
-    utils::run_command,
+    utils::{parse_whitespace_separated_u32s, run_command, run_command_output},
 };
 
 /// Represents an Android device (physical or emulator).
@@ -70,6 +70,7 @@ impl Device for AndroidDevice {
 /// - Launching the app
 /// - Monitoring process state
 /// - Streaming logs
+#[allow(clippy::too_many_lines)]
 async fn run_on_android(
     device_id: &str,
     artifact: Artifact,
@@ -266,7 +267,7 @@ async fn wait_for_app_pid(
         if let Ok(output) =
             run_command(adb_str, ["-s", device_id, "shell", "pidof", bundle_id]).await
         {
-            if let Ok(pid) = output.trim().parse::<u32>() {
+            if let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next() {
                 return Ok(pid);
             }
         }
@@ -347,51 +348,68 @@ async fn monitor_android_process(
         let still_running = result
             .as_ref()
             .ok()
-            .and_then(|output| output.trim().parse::<u32>().ok())
-            .is_some_and(|current_pid| current_pid == pid);
+            .map(|output| parse_whitespace_separated_u32s(output))
+            .is_some_and(|pids| pids.contains(&pid));
 
         if !still_running {
-            let pid_str = pid.to_string();
+            // Give crash reporting a brief moment to flush logs.
+            smol::Timer::after(std::time::Duration::from_millis(500)).await;
 
             // Try to fetch logs for this PID (best signal for distinguishing crash vs normal exit).
-            let pid_log = run_command(
-                adb_str,
-                [
-                    "-s", device_id, "logcat", "-d", "-t", "200", "--pid", &pid_str, "*:V",
-                ],
-            )
-            .await
-            .unwrap_or_default();
+            let pid_arg = format!("--pid={pid}");
+            let pid_log_args = vec![
+                "-s".to_string(),
+                device_id.to_string(),
+                "logcat".to_string(),
+                "-v".to_string(),
+                "threadtime".to_string(),
+                "-d".to_string(),
+                "-t".to_string(),
+                "200".to_string(),
+                pid_arg,
+                "*:V".to_string(),
+            ];
+            let pid_log = run_command_output(adb_str, pid_log_args.iter().map(String::as_str))
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
 
             // Fallback for older logcat versions that don't support --pid.
             let fallback_log = if pid_log.trim().is_empty() {
-                run_command(
-                    adb_str,
-                    [
-                        "-s",
-                        device_id,
-                        "logcat",
-                        "-d",
-                        "-t",
-                        "200",
-                        "-s",
-                        "AndroidRuntime:E",
-                        "DEBUG:*",
-                    ],
-                )
-                .await
-                .unwrap_or_default()
+                let fallback_args = vec![
+                    "-s".to_string(),
+                    device_id.to_string(),
+                    "logcat".to_string(),
+                    "-v".to_string(),
+                    "threadtime".to_string(),
+                    "-d".to_string(),
+                    "-t".to_string(),
+                    "200".to_string(),
+                    "-s".to_string(),
+                    "AndroidRuntime:E".to_string(),
+                    "DEBUG:*".to_string(),
+                    "libc:F".to_string(),
+                ];
+                run_command_output(adb_str, fallback_args.iter().map(String::as_str))
+                    .await
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
 
-            let log_for_detection = if pid_log.trim().is_empty() {
-                fallback_log.as_str()
-            } else {
+            let pid_filtered = !pid_log.trim().is_empty();
+            let log_for_detection = if pid_filtered {
                 pid_log.as_str()
+            } else {
+                fallback_log.as_str()
             };
 
-            if android_log_looks_like_crash(log_for_detection, bundle_id) {
+            if android_log_looks_like_crash(log_for_detection, bundle_id, pid, pid_filtered) {
                 let crash_log = if pid_log.trim().is_empty() {
                     fallback_log
                 } else {
@@ -413,8 +431,27 @@ async fn monitor_android_process(
     }
 }
 
-fn android_log_looks_like_crash(log: &str, bundle_id: &str) -> bool {
+fn log_mentions_pid(log: &str, pid: u32) -> bool {
+    let pid_str = pid.to_string();
+    let pid_lower = format!("pid: {pid}");
+    let pid_upper = format!("PID: {pid}");
+
+    log.lines().any(|line| {
+        line.split_whitespace().any(|part| part == pid_str)
+            || line.contains(&pid_lower)
+            || line.contains(&pid_upper)
+    })
+}
+
+fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32, pid_filtered: bool) -> bool {
     if log.trim().is_empty() {
+        return false;
+    }
+
+    // When we don't have a PID-filtered dump (older logcat), ensure we don't accidentally pick up
+    // crashes from unrelated processes.
+    let relevant = pid_filtered || log.contains(bundle_id) || log_mentions_pid(log, pid);
+    if !relevant {
         return false;
     }
 
@@ -458,6 +495,7 @@ async fn stream_android_logs(
     level: LogLevel,
     sender: smol::channel::Sender<DeviceEvent>,
 ) {
+    use futures::StreamExt;
     use futures::io::{AsyncBufReadExt, BufReader};
     use smol::process::Command;
 
@@ -465,8 +503,10 @@ async fn stream_android_logs(
 
     // Build logcat command with PID filter and minimum priority
     // Format: `adb -s <device> logcat --pid=<pid> *:<priority>`
+    let pid_arg = format!("--pid={pid}");
     let mut cmd = Command::new(&adb);
-    cmd.args(["-s", device_id, "logcat", "--pid", &pid.to_string()])
+    cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
+        .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -479,9 +519,8 @@ async fn stream_android_logs(
         }
     };
 
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => return,
+    let Some(stdout) = child.stdout.take() else {
+        return;
     };
 
     let reader = BufReader::new(stdout);
@@ -489,12 +528,8 @@ async fn stream_android_logs(
 
     // Parse logcat output and send as DeviceEvent::Log
     // Logcat format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
-    use futures::StreamExt;
     while let Some(result) = lines.next().await {
-        let line = match result {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+        let Ok(line) = result else { break };
 
         let (parsed_level, message) = parse_logcat_line(&line);
 
@@ -563,7 +598,6 @@ fn try_parse_logcat(line: &str) -> Option<LogcatParsed> {
     let level = match parts[level_idx] {
         "E" | "F" => tracing::Level::ERROR,
         "W" => tracing::Level::WARN,
-        "I" => tracing::Level::INFO,
         "D" => tracing::Level::DEBUG,
         "V" => tracing::Level::TRACE,
         _ => tracing::Level::INFO,
@@ -581,22 +615,24 @@ fn try_parse_logcat(line: &str) -> Option<LogcatParsed> {
     let after_level = line.get(level_pos + 1..)?.trim_start();
 
     // Split by ": " to get tag and message
-    if let Some(colon_pos) = after_level.find(": ") {
-        let tag = after_level[..colon_pos].trim();
-        let message = after_level[colon_pos + 2..].to_string();
-        Some(LogcatParsed {
-            level,
-            tag: tag.to_string(),
-            message,
-        })
-    } else {
-        // No colon found, use everything as message
-        Some(LogcatParsed {
-            level,
-            tag: "unknown".to_string(),
-            message: after_level.to_string(),
-        })
-    }
+    after_level.find(": ").map_or_else(
+        || {
+            Some(LogcatParsed {
+                level,
+                tag: "unknown".to_string(),
+                message: after_level.to_string(),
+            })
+        },
+        |colon_pos| {
+            let tag = after_level[..colon_pos].trim();
+            let message = after_level[colon_pos + 2..].to_string();
+            Some(LogcatParsed {
+                level,
+                tag: tag.to_string(),
+                message,
+            })
+        },
+    )
 }
 
 /// Android emulator (AVD) that needs to be launched.
@@ -679,5 +715,50 @@ impl Device for AndroidEmulator {
     async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
         let identifier = find_emulator_identifier().await?;
         run_on_android(&identifier, artifact, options).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{android_log_looks_like_crash, log_mentions_pid};
+
+    #[test]
+    fn detects_pid_mentions_in_threadtime_lines() {
+        let log = "12-10 23:04:40.190 28184 28184 F libc    : Fatal signal 11 (SIGSEGV)\n";
+        assert!(log_mentions_pid(log, 28184));
+        assert!(!log_mentions_pid(log, 12345));
+    }
+
+    #[test]
+    fn avoids_false_positive_from_unrelated_fatal_signal_in_global_dump() {
+        let unrelated = "12-10 23:04:40.190 999 999 F libc    : Fatal signal 11 (SIGSEGV)\n";
+        assert!(!android_log_looks_like_crash(
+            unrelated,
+            "com.example.app",
+            28184,
+            false
+        ));
+    }
+
+    #[test]
+    fn detects_native_crash_when_pid_is_mentioned() {
+        let log = "I DEBUG : Fatal signal 11 (SIGSEGV), code 1, fault addr 0x0 in tid 1 (main) pid: 28184\n";
+        assert!(android_log_looks_like_crash(
+            log,
+            "com.example.app",
+            28184,
+            false
+        ));
+    }
+
+    #[test]
+    fn detects_java_crash_for_app() {
+        let log = "E AndroidRuntime: FATAL EXCEPTION: main\nE AndroidRuntime: Process: com.example.app, PID: 28184\n";
+        assert!(android_log_looks_like_crash(
+            log,
+            "com.example.app",
+            28184,
+            false
+        ));
     }
 }
