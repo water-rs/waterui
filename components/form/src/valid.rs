@@ -53,6 +53,10 @@ pub trait Validator<T>: Clone + 'static {
     /// # Arguments
     ///
     /// * `value` - The value to validate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of type `Self::Err` if validation fails.
     fn validate(&self, value: T) -> Result<(), Self::Err>;
 
     /// Combines this validator with another using logical AND.

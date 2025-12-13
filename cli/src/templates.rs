@@ -111,6 +111,13 @@ impl TemplateContext {
     fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
         let waterui_path = self.waterui_path.as_ref()?;
 
+        // If `waterui_path` is absolute, use it directly. This avoids producing invalid
+        // paths like `../../../..//Users/...` in generated config files.
+        if waterui_path.is_absolute() {
+            let absolute_backend_path = waterui_path.join("backends").join(backend_subdir);
+            return Some(normalize_path_for_config(&absolute_backend_path));
+        }
+
         // Count how many levels deep the project is from the project root
         // Default is 1 level (e.g., "android"), playground uses 2 levels (e.g., ".water/android")
         let project_depth = self
@@ -118,16 +125,18 @@ impl TemplateContext {
             .as_ref()
             .map_or(1, |p| p.components().count());
 
-        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/<backend>
-        let mut backend_path = String::new();
+        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/<backend>.
+        // Use `PathBuf` joins to avoid accidental `//` sequences and to keep behavior consistent
+        // across platforms.
+        let mut backend_path = PathBuf::new();
         for _ in 0..project_depth {
-            backend_path.push_str("../");
+            backend_path.push("..");
         }
-        backend_path.push_str(&normalize_path_for_config(waterui_path));
-        backend_path.push_str("/backends/");
-        backend_path.push_str(backend_subdir);
+        backend_path.push(waterui_path);
+        backend_path.push("backends");
+        backend_path.push(backend_subdir);
 
-        Some(backend_path)
+        Some(normalize_path_for_config(&backend_path))
     }
 
     /// Compute the relative path from the Xcode project to the `WaterUI` Swift backend.
@@ -234,6 +243,63 @@ impl TemplateContext {
                 )
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TemplateContext;
+    use std::path::PathBuf;
+
+    fn ctx(waterui_path: Option<PathBuf>, backend_project_path: Option<PathBuf>) -> TemplateContext {
+        TemplateContext {
+            app_display_name: String::new(),
+            app_name: String::new(),
+            crate_name: String::new(),
+            bundle_identifier: "com.example.test".to_string(),
+            author: String::new(),
+            android_backend_path: None,
+            use_remote_dev_backend: waterui_path.is_none(),
+            waterui_path,
+            backend_project_path,
+            android_permissions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn relative_waterui_path_produces_clean_relative_backend_path() {
+        let ctx = ctx(
+            Some(PathBuf::from("../..")),
+            Some(PathBuf::from(".water/apple")),
+        );
+
+        let path = ctx
+            .compute_relative_backend_path("apple")
+            .expect("expected relative backend path");
+
+        assert_eq!(path, "../../../../backends/apple");
+        assert!(!path.contains("//"));
+    }
+
+    #[test]
+    fn absolute_waterui_path_is_used_directly() {
+        let abs = if cfg!(windows) {
+            PathBuf::from(r"C:\waterui")
+        } else {
+            PathBuf::from("/waterui")
+        };
+
+        let ctx = ctx(Some(abs), Some(PathBuf::from("apple")));
+        let path = ctx
+            .compute_relative_backend_path("apple")
+            .expect("expected backend path");
+
+        let expected = if cfg!(windows) {
+            "C:/waterui/backends/apple"
+        } else {
+            "/waterui/backends/apple"
+        };
+        assert_eq!(path, expected);
     }
 }
 
