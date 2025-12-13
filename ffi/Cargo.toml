@@ -1,12 +1,12 @@
 [package]
 name = "waterui-ffi"
+version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-version = "0.1.0"
 description = "FFI bindings for the WaterUI cross-platform UI framework"
 keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
 categories = ["gui", "api-bindings"]
