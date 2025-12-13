@@ -3,4 +3,4 @@ waterui_path = "../.."
 [package]
 type = "playground"
 name = "Form Example"
-bundle_identifier = "com.waterui.form-example"
+bundle_identifier = "com.waterui.form_example"

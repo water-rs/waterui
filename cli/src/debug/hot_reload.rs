@@ -24,7 +24,7 @@ pub const DEFAULT_PORT: u16 = 2006;
 pub const PORT_RETRY_COUNT: u16 = 50;
 
 /// Debounce duration for file changes before triggering a rebuild.
-pub const DEBOUNCE_DURATION: Duration = Duration::from_millis(150);
+pub const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
 
 /// Hot reload server that broadcasts dylib updates to connected apps.
 #[derive(Debug)]
@@ -343,15 +343,13 @@ impl BuildManager {
 
     /// Check if the current build has completed.
     ///
-    /// Returns `Some(path)` if the build completed successfully,
-    /// `None` if the build is still running or failed.
-    pub fn poll_build(&mut self) -> Option<PathBuf> {
+    /// Returns the build result if it completed.
+    pub async fn poll_build(&mut self) -> Option<Result<PathBuf, crate::build::RustBuildError>> {
         if let Some(task) = &self.current_build {
-            // Check if task is done without blocking
+            // Check if task is done without blocking.
             if task.is_finished() {
                 if let Some(task) = self.current_build.take() {
-                    // Use blocking to get the result since we know it's done
-                    return smol::block_on(task).ok();
+                    return Some(task.await);
                 }
             }
         }
