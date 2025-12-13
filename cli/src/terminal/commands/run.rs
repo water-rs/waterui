@@ -306,8 +306,7 @@ impl SelectedDevice {
     fn needs_launch(&self) -> bool {
         match self {
             Self::AppleSimulator(sim) => sim.state != "Booted",
-            Self::AppleMacos(_) => false,
-            Self::AndroidDevice(_) => false,
+            Self::AppleMacos(_) | Self::AndroidDevice(_) => false,
             Self::AndroidEmulator(_) => true,
         }
     }
