@@ -33,7 +33,7 @@ pub mod library;
 pub use connection::CliConnection;
 pub use event::{CliEvent, ConnectionError};
 #[cfg(not(target_arch = "wasm32"))]
-pub use hot_reload::Hotreload;
+pub use hot_reload::{HotReloadView, Hotreload};
 
 /// Entry point macro for hot-reloadable views.
 #[macro_export]
@@ -43,9 +43,12 @@ macro_rules! hot_reloadable_library {
         const _: () = {
             pub type Ipv4Addr = [u16; 4];
             #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn waterui_hot_reload_main() -> *mut () {
-                let view = $f();
-                Box::into_raw(Box::new($crate::AnyView::new(view))).cast::<()>()
+            pub unsafe extern "C" fn waterui_hot_reload_app() -> *mut () {
+                // Hot reload uses a default environment for view construction.
+                // The proper theme environment is available at render time via body(self, env).
+                let env = $crate::Environment::default();
+                let app = $f(env);
+                Box::into_raw(Box::new(app)).cast::<()>()
             }
 
             #[unsafe(no_mangle)]
@@ -63,6 +66,7 @@ macro_rules! hot_reloadable_library {
         // No-op in non-hot-reload builds
     };
 }
+
 
 /// Initialize executor for hot-reloaded dylib.
 ///
