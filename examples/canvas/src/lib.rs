@@ -1,13 +1,10 @@
+use waterui::app::App;
 use waterui::graphics::Canvas;
 use waterui::graphics::kurbo::{Circle, Line, Point, Rect};
 use waterui::graphics::peniko::Color;
 use waterui::prelude::*;
 
-pub fn init() -> Environment {
-    Environment::new()
-}
-
-pub fn main() -> impl View {
+fn main() -> impl View {
     vstack((
         text("H₂O Molecule").size(24),
         text("Simple 2D molecular visualization").size(14),
@@ -81,6 +78,10 @@ pub fn main() -> impl View {
         text("Bond angle ≈ 104.5°").size(12),
     ))
     .padding()
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();
