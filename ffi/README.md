@@ -231,9 +231,9 @@ Computed values can also be created from native code using `waterui_new_computed
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │ Native Backend (Swift/Kotlin)                      │
-│ - Apple: SwiftUI views (Text, Button, HStack...)  │
-│ - Android: Jetpack Compose (@Composable)          │
-│ - Maps Rust views to platform widgets             │
+│ - Apple: UIView/NSView                             │
+│ - Android: Android View                            │
+│ - Maps Rust views to platform widgets               │
 └─────────────────────────────────────────────────────┘
 ```
 
