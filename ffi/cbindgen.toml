@@ -31,7 +31,7 @@ typedef struct WuiArray {
 trailer = """
 WuiEnv* waterui_init(void);
 
-WuiAnyView* waterui_main(void);
+struct WuiApp waterui_app(WuiEnv *env);
 
 #ifdef __cplusplus
 }
@@ -39,7 +39,7 @@ WuiAnyView* waterui_main(void);
 """
 
 [export]
-include = ["MediaLoadCallback", "MediaLoadResult"]
+include = ["MediaLoadCallback", "MediaLoadResult", "WuiApp", "WuiWindow", "WuiWindowStyle", "WuiWindowState"]
 
 [export.rename]
 
