@@ -6,32 +6,38 @@
 //! # Example
 //!
 //! ```ignore
-//! use waterui::graphics::{Canvas, DrawingContext};
-//! use waterui::graphics::kurbo::{Circle, Rect};
-//! use waterui::graphics::peniko::Color;
+//! use waterui::graphics::Canvas;
+//! use waterui::prelude::*;
 //!
 //! Canvas::new(|ctx: &mut DrawingContext| {
-//!     // Fill a circle
-//!     ctx.fill(
-//!         Circle::new((100.0, 100.0), 50.0),
-//!         Color::RED,
-//!     );
+//!     // Fill a rectangle
+//!     let rect = Rect::from_size(Size::new(200.0, 150.0));
+//!     ctx.set_fill_style(Color::red());
+//!     ctx.fill_rect(rect);
 //!
-//!     // Stroke a rectangle
-//!     ctx.stroke(
-//!         Rect::new(10.0, 10.0, 200.0, 150.0),
-//!         Color::BLUE,
-//!         2.0,
-//!     );
+//!     // Draw with transforms
+//!     ctx.save();
+//!     ctx.translate(100.0, 100.0);
+//!     ctx.rotate(0.785); // 45 degrees
+//!     ctx.fill_rect(Rect::from_size(Size::new(50.0, 50.0)));
+//!     ctx.restore();
 //! })
 //! ```
 
+use crate::conversions::{rect_to_kurbo, resolved_color_to_peniko};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
+use crate::image::CanvasImage;
+use crate::path::Path;
+use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
+use crate::text::{FontSpec, TextMetrics};
+use waterui_core::layout::{Point, Rect};
 
-// Re-export vello types for user convenience
-pub use vello::kurbo;
-pub use vello::peniko;
-pub use vello::peniko::Color;
+// Internal imports for rendering (not exposed to users)
+use vello::{kurbo, peniko};
+
+// For signal operations
+use nami::Signal;
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -81,12 +87,20 @@ impl waterui_core::View for Canvas {
 ///
 /// This is passed to your drawing callback each frame. Use it to draw
 /// shapes, paths, text, and images.
+///
+/// The context maintains a state stack for transforms, styles, and other
+/// drawing properties. Use `save()` and `restore()` to push and pop state.
 pub struct DrawingContext<'a> {
     scene: &'a mut vello::Scene,
+    env: &'a waterui_core::Environment,
     /// Width of the canvas in pixels.
     pub width: f32,
     /// Height of the canvas in pixels.
     pub height: f32,
+    /// State stack for save/restore operations.
+    state_stack: Vec<DrawingState>,
+    /// Current drawing state.
+    current_state: DrawingState,
 }
 
 impl core::fmt::Debug for DrawingContext<'_> {
@@ -120,7 +134,7 @@ impl DrawingContext<'_> {
     /// ```
     pub fn fill(&mut self, shape: impl kurbo::Shape, color: peniko::Color) {
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             kurbo::Affine::IDENTITY,
             color,
             None,
@@ -131,7 +145,7 @@ impl DrawingContext<'_> {
     /// Fills a shape with a brush (gradient, pattern, etc).
     pub fn fill_brush(&mut self, shape: impl kurbo::Shape, brush: &peniko::Brush) {
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             kurbo::Affine::IDENTITY,
             brush,
             None,
@@ -147,7 +161,7 @@ impl DrawingContext<'_> {
         transform: kurbo::Affine,
     ) {
         self.scene
-            .fill(peniko::Fill::NonZero, transform, color, None, &shape);
+            .fill(self.current_state.fill_rule, transform, color, None, &shape);
     }
 
     /// Strokes a shape with a color and line width.
@@ -222,6 +236,578 @@ impl DrawingContext<'_> {
     #[must_use]
     pub const fn scene(&mut self) -> &mut vello::Scene {
         self.scene
+    }
+
+    // ========================================================================
+    // State Management (Phase 1)
+    // ========================================================================
+
+    /// Saves the current drawing state to the stack.
+    ///
+    /// This saves transforms, styles, line properties, and other state.
+    /// Call `restore()` to pop the saved state.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.save();
+    /// ctx.translate(100.0, 50.0);
+    /// ctx.rotate(0.785);
+    /// // ... draw with transform ...
+    /// ctx.restore(); // Back to original state
+    /// ```
+    pub fn save(&mut self) {
+        self.state_stack.push(self.current_state.clone());
+    }
+
+    /// Restores the most recently saved drawing state from the stack.
+    ///
+    /// If there's no saved state, this does nothing.
+    pub fn restore(&mut self) {
+        if let Some(state) = self.state_stack.pop() {
+            self.current_state = state;
+        }
+    }
+
+    // ========================================================================
+    // Transform Helpers (Phase 1)
+    // ========================================================================
+
+    /// Translates the current transform by (x, y).
+    ///
+    /// This affects all subsequent drawing operations until `restore()`.
+    pub fn translate(&mut self, x: f32, y: f32) {
+        let translation = kurbo::Affine::translate((f64::from(x), f64::from(y)));
+        self.current_state.transform = self.current_state.transform * translation;
+    }
+
+    /// Rotates the current transform by the given angle (in radians).
+    ///
+    /// Positive angles rotate clockwise.
+    pub fn rotate(&mut self, angle: f32) {
+        let rotation = kurbo::Affine::rotate(f64::from(angle));
+        self.current_state.transform = self.current_state.transform * rotation;
+    }
+
+    /// Scales the current transform by (x, y).
+    ///
+    /// Values less than 1.0 shrink, greater than 1.0 enlarge.
+    pub fn scale(&mut self, x: f32, y: f32) {
+        let scale = kurbo::Affine::scale_non_uniform(f64::from(x), f64::from(y));
+        self.current_state.transform = self.current_state.transform * scale;
+    }
+
+    /// Applies an arbitrary affine transform.
+    ///
+    /// The transform is specified as a 2x3 matrix: [a, b, c, d, e, f]
+    /// which represents the matrix [[a, c, e], [b, d, f], [0, 0, 1]].
+    pub fn transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+        let affine = kurbo::Affine::new([
+            f64::from(a),
+            f64::from(b),
+            f64::from(c),
+            f64::from(d),
+            f64::from(e),
+            f64::from(f),
+        ]);
+        self.current_state.transform = self.current_state.transform * affine;
+    }
+
+    /// Replaces the current transform with the specified matrix.
+    pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+        self.current_state.transform = kurbo::Affine::new([
+            f64::from(a),
+            f64::from(b),
+            f64::from(c),
+            f64::from(d),
+            f64::from(e),
+            f64::from(f),
+        ]);
+    }
+
+    /// Resets the transform to the identity matrix.
+    pub fn reset_transform(&mut self) {
+        self.current_state.transform = kurbo::Affine::IDENTITY;
+    }
+
+    // ========================================================================
+    // Path Drawing (Phase 1)
+    // ========================================================================
+
+    /// Creates a new empty path.
+    ///
+    /// Use the returned `Path` to build complex shapes, then draw it with
+    /// `fill_path()` or `stroke_path()`.
+    #[must_use]
+    pub fn begin_path(&self) -> Path {
+        Path::new()
+    }
+
+    /// Fills a path with the current fill style.
+    pub fn fill_path(&mut self, path: &Path) {
+        let brush = self.resolve_fill_style();
+        self.scene.fill(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &brush,
+            None,
+            path.inner(),
+        );
+    }
+
+    /// Strokes a path with the current stroke style and line properties.
+    pub fn stroke_path(&mut self, path: &Path) {
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            path.inner(),
+        );
+    }
+
+    // ========================================================================
+    // Rectangle Convenience Methods (Phase 3)
+    // ========================================================================
+
+    /// Fills a rectangle with the current fill style.
+    pub fn fill_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let brush = self.resolve_fill_style();
+        self.scene.fill(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            &brush,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    /// Strokes a rectangle with the current stroke style.
+    pub fn stroke_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let brush = self.resolve_stroke_style();
+        let stroke = self.current_state.build_stroke();
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    /// Clears a rectangle to transparent black.
+    pub fn clear_rect(&mut self, rect: Rect) {
+        let kurbo_rect = rect_to_kurbo(rect);
+        let transparent = peniko::Color::TRANSPARENT;
+        self.scene.fill(
+            self.current_state.fill_rule,
+            self.current_state.transform,
+            transparent,
+            None,
+            &kurbo_rect,
+        );
+    }
+
+    // ========================================================================
+    // Style Setters (Phase 1 & 4)
+    // ========================================================================
+
+    /// Sets the fill style (color or gradient).
+    pub fn set_fill_style(&mut self, style: impl Into<FillStyle>) {
+        self.current_state.fill_style = style.into();
+    }
+
+    /// Sets the stroke style (color or gradient).
+    pub fn set_stroke_style(&mut self, style: impl Into<StrokeStyle>) {
+        self.current_state.stroke_style = style.into();
+    }
+
+    /// Sets the line width for stroking operations.
+    pub fn set_line_width(&mut self, width: f32) {
+        self.current_state.line_width = width;
+    }
+
+    /// Sets the line cap style (how stroke endpoints are drawn).
+    pub fn set_line_cap(&mut self, cap: LineCap) {
+        self.current_state.line_cap = cap;
+    }
+
+    /// Sets the line join style (how stroke corners are drawn).
+    pub fn set_line_join(&mut self, join: LineJoin) {
+        self.current_state.line_join = join;
+    }
+
+    /// Sets the miter limit for miter line joins.
+    pub fn set_miter_limit(&mut self, limit: f32) {
+        self.current_state.miter_limit = limit;
+    }
+
+    /// Sets the line dash pattern.
+    ///
+    /// Pass an empty vector to disable dashing.
+    pub fn set_line_dash(&mut self, segments: Vec<f32>) {
+        self.current_state.line_dash = segments;
+    }
+
+    /// Sets the line dash offset (where the dash pattern starts).
+    pub fn set_line_dash_offset(&mut self, offset: f32) {
+        self.current_state.line_dash_offset = offset;
+    }
+
+    /// Sets the global alpha (opacity) for all drawing operations.
+    ///
+    /// Values range from 0.0 (transparent) to 1.0 (opaque).
+    pub fn set_global_alpha(&mut self, alpha: f32) {
+        self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    /// Sets the blend mode for compositing operations.
+    ///
+    /// This controls how new shapes are blended with existing content.
+    pub fn set_blend_mode(&mut self, mode: peniko::BlendMode) {
+        self.current_state.blend_mode = mode;
+    }
+
+    /// Sets the shadow blur radius.
+    ///
+    /// A blur value of 0 means sharp shadows, higher values create softer shadows.
+    pub fn set_shadow_blur(&mut self, blur: f32) {
+        self.current_state.shadow_blur = blur.max(0.0);
+    }
+
+    /// Sets the shadow color.
+    pub fn set_shadow_color(&mut self, color: impl Into<waterui_color::Color>) {
+        self.current_state.shadow_color = color.into();
+    }
+
+    /// Sets the shadow offset in the x and y directions.
+    ///
+    /// # Arguments
+    /// * `x` - Horizontal offset (positive = right)
+    /// * `y` - Vertical offset (positive = down)
+    pub fn set_shadow_offset(&mut self, x: f32, y: f32) {
+        self.current_state.shadow_offset_x = x;
+        self.current_state.shadow_offset_y = y;
+    }
+
+    /// Sets the fill rule for determining the interior of shapes.
+    ///
+    /// # Arguments
+    /// * `rule` - The fill rule to use (`NonZero` or `EvenOdd`)
+    ///
+    /// NonZero (default): A point is inside the path if a ray from the point crosses a non-zero net number of path segments.
+    /// EvenOdd: A point is inside the path if a ray from the point crosses an odd number of path segments.
+    pub fn set_fill_rule(&mut self, rule: peniko::Fill) {
+        self.current_state.fill_rule = rule;
+    }
+
+    // ========================================================================
+    // Gradient Creation Methods (Phase 2)
+    // ========================================================================
+
+    /// Creates a linear gradient from (x0, y0) to (x1, y1).
+    ///
+    /// Returns a `LinearGradient` builder. Add color stops with `add_color_stop()`,
+    /// then use with `set_fill_style()` or `set_stroke_style()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
+    /// gradient.add_color_stop(0.0, Color::red());
+    /// gradient.add_color_stop(1.0, Color::blue());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_linear_gradient(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> LinearGradient {
+        LinearGradient::new(x0, y0, x1, y1)
+    }
+
+    /// Creates a radial gradient between two circles.
+    ///
+    /// # Arguments
+    /// * `x0, y0` - Center of the start circle
+    /// * `r0` - Radius of the start circle
+    /// * `x1, y1` - Center of the end circle
+    /// * `r1` - Radius of the end circle
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
+    /// gradient.add_color_stop(0.0, Color::white());
+    /// gradient.add_color_stop(1.0, Color::black());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_radial_gradient(
+        &self,
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    ) -> RadialGradient {
+        RadialGradient::new(x0, y0, r0, x1, y1, r1)
+    }
+
+    /// Creates a conic (sweep) gradient around a center point.
+    ///
+    /// # Arguments
+    /// * `start_angle` - Starting angle in radians (0 = 3 o'clock)
+    /// * `x, y` - Center point of the gradient
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
+    /// gradient.add_color_stop(0.0, Color::red());
+    /// gradient.add_color_stop(0.5, Color::green());
+    /// gradient.add_color_stop(1.0, Color::blue());
+    /// ctx.set_fill_style(gradient);
+    /// ```
+    #[must_use]
+    pub fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
+        ConicGradient::new(start_angle, x, y)
+    }
+
+    // ========================================================================
+    // Image Drawing Methods (Phase 6)
+    // ========================================================================
+
+    /// Draws an image at the specified position.
+    ///
+    /// The image is drawn at its natural size (1:1 pixel mapping).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let image = CanvasImage::from_bytes(png_data)?;
+    /// ctx.draw_image(&image, Point::new(10.0, 10.0));
+    /// ```
+    pub fn draw_image(&mut self, image: &CanvasImage, pos: Point) {
+        let size = image.size();
+        let dest_rect = Rect::new(pos, size);
+        self.draw_image_scaled(image, dest_rect);
+    }
+
+    /// Draws an image scaled to fit the destination rectangle.
+    ///
+    /// # Arguments
+    /// * `image` - The image to draw
+    /// * `dest` - Destination rectangle (position and size)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let image = CanvasImage::from_bytes(png_data)?;
+    /// let dest = Rect::new(Point::ZERO, Size::new(200.0, 150.0));
+    /// ctx.draw_image_scaled(&image, dest);
+    /// ```
+    pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: Rect) {
+        // Calculate transform to scale image to destination rectangle
+        let scale_x = f64::from(dest.size().width) / f64::from(image.width());
+        let scale_y = f64::from(dest.size().height) / f64::from(image.height());
+
+        // Create transform: translate to dest position, then scale
+        let image_transform = kurbo::Affine::translate((
+            f64::from(dest.origin().x),
+            f64::from(dest.origin().y),
+        )) * kurbo::Affine::scale_non_uniform(scale_x, scale_y);
+
+        // Compose with current transform
+        let final_transform = self.current_state.transform * image_transform;
+
+        // Wrap ImageData in ImageBrush
+        let image_brush = peniko::ImageBrush::new(image.inner().clone());
+
+        // Draw image using vello
+        self.scene.draw_image(&image_brush, final_transform);
+    }
+
+    /// Draws a sub-rectangle of an image, scaled to fit the destination.
+    ///
+    /// This allows drawing only part of an image (sprite sheet support).
+    ///
+    /// # Arguments
+    /// * `image` - The source image
+    /// * `src` - Source rectangle (which part of the image to draw)
+    /// * `dest` - Destination rectangle (where and how large to draw)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let sprite_sheet = CanvasImage::from_bytes(png_data)?;
+    /// // Draw top-left 32x32 sprite at position (100, 100) scaled to 64x64
+    /// let src = Rect::new(Point::ZERO, Size::new(32.0, 32.0));
+    /// let dest = Rect::new(Point::new(100.0, 100.0), Size::new(64.0, 64.0));
+    /// ctx.draw_image_sub(&sprite_sheet, src, dest);
+    /// ```
+    pub fn draw_image_sub(&mut self, image: &CanvasImage, src: Rect, dest: Rect) {
+        // Use push_clip_layer with clip to render only the source rectangle
+        // Calculate transform for the sub-rectangle
+
+        // First, translate to negate the source offset
+        let src_offset = kurbo::Affine::translate((
+            -f64::from(src.origin().x),
+            -f64::from(src.origin().y),
+        ));
+
+        // Then scale from source size to destination size
+        let scale_x = f64::from(dest.size().width) / f64::from(src.size().width);
+        let scale_y = f64::from(dest.size().height) / f64::from(src.size().height);
+        let scale = kurbo::Affine::scale_non_uniform(scale_x, scale_y);
+
+        // Finally, translate to destination position
+        let dest_offset = kurbo::Affine::translate((
+            f64::from(dest.origin().x),
+            f64::from(dest.origin().y),
+        ));
+
+        // Compose transforms: src_offset -> scale -> dest_offset
+        let image_transform = src_offset * scale * dest_offset;
+
+        // Compose with current transform
+        let final_transform = self.current_state.transform * image_transform;
+
+        // Create clip rectangle at destination
+        let clip_rect = rect_to_kurbo(dest);
+
+        // Push a clipped layer, draw the image, then pop
+        self.scene
+            .push_clip_layer(self.current_state.transform, &clip_rect);
+
+        // Wrap ImageData in ImageBrush
+        let image_brush = peniko::ImageBrush::new(image.inner().clone());
+
+        self.scene.draw_image(&image_brush, final_transform);
+
+        self.scene.pop_layer();
+    }
+
+    // ========================================================================
+    // Text Rendering Methods (Phase 5)
+    // ========================================================================
+
+    /// Sets the font for text rendering.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.set_font(FontSpec::new("Arial", 24.0).with_weight(FontWeight::Bold));
+    /// ```
+    pub fn set_font(&mut self, font: FontSpec) {
+        self.current_state.font = font;
+    }
+
+    /// Measures the given text with the current font.
+    ///
+    /// Returns approximate text metrics. For more accurate measurements,
+    /// use a dedicated text layout library.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let metrics = ctx.measure_text("Hello World");
+    /// println!("Text width: {}", metrics.width);
+    /// ```
+    #[must_use]
+    pub fn measure_text(&self, text: &str) -> TextMetrics {
+        // Simple approximation based on font size
+        // In a real implementation, this would use Parley to layout the text
+        let char_count = text.chars().count() as f32;
+        let font_size = self.current_state.font.size;
+
+        // Approximate width (assuming average character width is ~0.6 * font_size)
+        let width = char_count * font_size * 0.6;
+        let height = font_size;
+
+        TextMetrics::new(width, height)
+    }
+
+    /// Fills text at the specified position.
+    ///
+    /// Note: This is a simplified implementation. Full text rendering with
+    /// complex layouts, bidirectional text, and font fallbacks requires
+    /// integration with Parley's text layout engine.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.fill_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn fill_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement full text rendering with Parley
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. Iterate through glyphs in the layout
+        // 3. Use Scene::draw_glyphs() to render each glyph run
+        // 4. Apply current fill style to glyphs
+
+        tracing::warn!("fill_text is not yet fully implemented - requires Parley integration");
+    }
+
+    /// Strokes text at the specified position.
+    ///
+    /// Note: This is a simplified implementation. Stroke text requires
+    /// converting glyphs to paths using skrifa.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.stroke_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn stroke_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement stroke text
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. For each glyph, use skrifa to convert it to a path
+        // 3. Stroke each path with current stroke style
+
+        tracing::warn!("stroke_text is not yet fully implemented - requires skrifa integration");
+    }
+
+    // ========================================================================
+    // Internal Helper Methods
+    // ========================================================================
+
+    /// Resolves the current fill style to a peniko brush.
+    fn resolve_fill_style(&self) -> peniko::Brush {
+        match &self.current_state.fill_style {
+            FillStyle::Color(color) => {
+                // Resolve the color in the current environment
+                let computed = color.resolve(self.env);
+                // Get the current value from the computed signal
+                let resolved = computed.get();
+                let peniko_color = resolved_color_to_peniko(resolved);
+                peniko_color.into()
+            }
+            FillStyle::LinearGradient(gradient) => gradient.build(self.env),
+            FillStyle::RadialGradient(gradient) => gradient.build(self.env),
+            FillStyle::ConicGradient(gradient) => gradient.build(self.env),
+        }
+    }
+
+    /// Resolves the current stroke style to a peniko brush.
+    fn resolve_stroke_style(&self) -> peniko::Brush {
+        match &self.current_state.stroke_style {
+            StrokeStyle::Color(color) => {
+                // Resolve the color in the current environment
+                let computed = color.resolve(self.env);
+                // Get the current value from the computed signal
+                let resolved = computed.get();
+                let peniko_color = resolved_color_to_peniko(resolved);
+                peniko_color.into()
+            }
+            StrokeStyle::LinearGradient(gradient) => gradient.build(self.env),
+            StrokeStyle::RadialGradient(gradient) => gradient.build(self.env),
+            StrokeStyle::ConicGradient(gradient) => gradient.build(self.env),
+        }
     }
 }
 
@@ -402,8 +988,11 @@ where
         #[allow(clippy::cast_precision_loss)]
         let mut ctx = DrawingContext {
             scene: &mut self.scene,
+            env: &waterui_core::Environment::new(), // TODO: Thread actual environment in future phase
             width: frame.width as f32,
             height: frame.height as f32,
+            state_stack: Vec::new(),
+            current_state: DrawingState::default(),
         };
         (self.draw_fn)(&mut ctx);
 
