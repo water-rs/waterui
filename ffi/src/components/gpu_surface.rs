@@ -261,11 +261,15 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     let output = match state.surface.get_current_texture() {
         Ok(o) => o,
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            tracing::warn!("[GpuSurface] surface lost/outdated, reconfiguring");
+            tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
             // Reconfigure and try again
             state.surface.configure(&state.device, &state.config);
             match state.surface.get_current_texture() {
                 Ok(o) => o,
+                Err(wgpu::SurfaceError::Timeout) => {
+                    // Surface isn't ready yet (common during window move/resize); skip this frame.
+                    return true;
+                }
                 Err(e) => {
                     tracing::error!(
                         "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
@@ -273,6 +277,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                     return false;
                 }
             }
+        }
+        Err(wgpu::SurfaceError::Timeout) => {
+            // Surface isn't ready yet (common during window move/resize); skip this frame.
+            return true;
         }
         Err(e) => {
             tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
