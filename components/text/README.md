@@ -23,7 +23,7 @@ Or use the main WaterUI crate which re-exports text components:
 
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.2"
 ```
 
 ## Quick Start
@@ -50,11 +50,12 @@ The `Text` struct is the primary component for displaying read-only text. It aut
 
 ### StyledStr
 
-`StyledStr` represents rich text with multiple styling attributes. It stores text as chunks, each with independent font, color, and decoration properties. This enables inline formatting like **bold** and *italic* within a single text component.
+`StyledStr` represents rich text with multiple styling attributes. It stores text as chunks, each with independent font, color, and decoration properties. This enables inline formatting like **bold** and _italic_ within a single text component.
 
 ### Font System
 
 Fonts are resolved through the `Environment`, allowing dynamic theming. The crate provides semantic font styles:
+
 - `Body` (16pt, Normal)
 - `Title` (24pt, SemiBold)
 - `Headline` (32pt, Bold)
