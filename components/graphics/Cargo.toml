@@ -23,6 +23,7 @@ wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
 vello = { workspace = true, optional = true }
 tracing.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [lints]
 workspace = true
