@@ -15,6 +15,30 @@ pub mod shader_surface;
 #[cfg(feature = "canvas")]
 pub mod canvas;
 
+/// Path builder for Canvas (internal conversions module).
+#[cfg(feature = "canvas")]
+mod conversions;
+
+/// Drawing state management for Canvas.
+#[cfg(feature = "canvas")]
+pub mod state;
+
+/// Path construction API for Canvas.
+#[cfg(feature = "canvas")]
+pub mod path;
+
+/// Gradient builders for Canvas.
+#[cfg(feature = "canvas")]
+pub mod gradient;
+
+/// Image loading and handling for Canvas.
+#[cfg(feature = "canvas")]
+pub mod image;
+
+/// Text rendering support for Canvas.
+#[cfg(feature = "canvas")]
+pub mod text;
+
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
@@ -25,6 +49,21 @@ pub use shader_surface::ShaderSurface;
 #[cfg(feature = "canvas")]
 pub use canvas::{Canvas, DrawingContext};
 
+#[cfg(feature = "canvas")]
+pub use path::Path;
+
+#[cfg(feature = "canvas")]
+pub use state::{LineCap, LineJoin};
+
+#[cfg(feature = "canvas")]
+pub use gradient::{ConicGradient, LinearGradient, RadialGradient};
+
+#[cfg(feature = "canvas")]
+pub use image::{CanvasImage, ImageError};
+
+#[cfg(feature = "canvas")]
+pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
+
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 #[cfg(feature = "wgpu")]
 pub use wgpu;
@@ -32,11 +71,3 @@ pub use wgpu;
 /// Re-export bytemuck for safe byte conversions in GPU programming.
 #[cfg(feature = "wgpu")]
 pub use bytemuck;
-
-/// Re-export kurbo for 2D geometry (curves, shapes, transforms).
-#[cfg(feature = "canvas")]
-pub use vello::kurbo;
-
-/// Re-export peniko for styling (colors, brushes, gradients).
-#[cfg(feature = "canvas")]
-pub use vello::peniko;
