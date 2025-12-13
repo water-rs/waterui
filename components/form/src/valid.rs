@@ -70,9 +70,9 @@ pub trait Validator<T>: Clone + 'static {
     ///         if self.0.contains(&value) {
     ///             Ok(())
     ///        } else {
-    ///
     ///           Err(Reason::OutOfRange(self.0.clone()))
     ///       }
+    ///     }
     /// }
     fn validate(&self, value: T) -> Result<(), Self::Err>;
 

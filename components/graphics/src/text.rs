@@ -25,12 +25,12 @@ impl TextContext {
     }
 
     /// Returns a reference to the font context.
-    pub(crate) fn font_context(&mut self) -> &mut FontContext {
+    pub(crate) const fn font_context(&mut self) -> &mut FontContext {
         &mut self.font_cx
     }
 
     /// Returns a reference to the layout context.
-    pub(crate) fn layout_context(&mut self) -> &mut LayoutContext<peniko::Brush> {
+    pub(crate) const fn layout_context(&mut self) -> &mut LayoutContext<peniko::Brush> {
         &mut self.layout_cx
     }
 }
@@ -135,14 +135,14 @@ impl FontSpec {
 
     /// Sets the font weight.
     #[must_use]
-    pub fn with_weight(mut self, weight: FontWeight) -> Self {
+    pub const fn with_weight(mut self, weight: FontWeight) -> Self {
         self.weight = weight;
         self
     }
 
     /// Sets the font style.
     #[must_use]
-    pub fn with_style(mut self, style: FontStyle) -> Self {
+    pub const fn with_style(mut self, style: FontStyle) -> Self {
         self.style = style;
         self
     }

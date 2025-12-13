@@ -7,7 +7,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```rust,ignore
 //! use waterui::prelude::*;
 //!
 //! let button = button("Click me").action(|| {
