@@ -14,30 +14,7 @@ pub mod shader_surface;
 /// Canvas for 2D vector graphics using Vello (beginner-friendly API).
 #[cfg(feature = "canvas")]
 pub mod canvas;
-
-/// Path builder for Canvas (internal conversions module).
-#[cfg(feature = "canvas")]
-mod conversions;
-
-/// Drawing state management for Canvas.
-#[cfg(feature = "canvas")]
-pub mod state;
-
-/// Path construction API for Canvas.
-#[cfg(feature = "canvas")]
-pub mod path;
-
-/// Gradient builders for Canvas.
-#[cfg(feature = "canvas")]
-pub mod gradient;
-
-/// Image loading and handling for Canvas.
-#[cfg(feature = "canvas")]
-pub mod image;
-
-/// Text rendering support for Canvas.
-#[cfg(feature = "canvas")]
-pub mod text;
+pub use canvas::{Canvas, DrawingContext};
 
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]
@@ -45,27 +22,6 @@ pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 #[cfg(feature = "wgpu")]
 pub use shader_surface::ShaderSurface;
-
-#[cfg(feature = "canvas")]
-pub use canvas::{Canvas, DrawingContext};
-
-#[cfg(feature = "canvas")]
-pub use path::Path;
-
-#[cfg(feature = "canvas")]
-pub use state::{LineCap, LineJoin};
-
-#[cfg(feature = "canvas")]
-pub use state::FillRule;
-
-#[cfg(feature = "canvas")]
-pub use gradient::{ConicGradient, LinearGradient, RadialGradient};
-
-#[cfg(feature = "canvas")]
-pub use image::{CanvasImage, ImageError};
-
-#[cfg(feature = "canvas")]
-pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
 
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 #[cfg(feature = "wgpu")]
