@@ -11,7 +11,8 @@ fn main() {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok()).map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
 
     println!("cargo:rustc-env=WATERUI_CLI_COMMIT={output}");
 

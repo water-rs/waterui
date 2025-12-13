@@ -1,7 +1,7 @@
 use core::ptr::null_mut;
 
-use waterui::window::{Window, WindowState, WindowStyle};
 use waterui::Str;
+use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_layout::Rect;
 
 use crate::{
