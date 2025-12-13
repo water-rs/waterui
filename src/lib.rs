@@ -64,9 +64,9 @@ pub use view::ViewExt;
 pub use waterui_color as color;
 pub use waterui_form as form;
 
-#[doc(inline)]
-pub use waterui_derive::*;
 pub use waterui_layout as layout;
+#[doc(inline)]
+pub use waterui_macros::*;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;
