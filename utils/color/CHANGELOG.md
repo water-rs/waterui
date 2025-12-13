@@ -17,8 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduce StretchAxis for layout management
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration
-- *(cli)* enhance Android backend integration with improved logging and automation
-- *(android)* Enhance project creation and packaging
+- _(cli)_ enhance Android backend integration with improved logging and automation
+- _(android)_ Enhance project creation and packaging
 - Add OKLCH color space support and enhance color module documentation
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Enhance typography and UI components with new font styles and improved view handling
@@ -30,14 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
 - update dependencies with versioning and improve documentation clarity
 - add counter example to README and enhance tutorial book with tests
-- *(cli)* add WaterUI CLI for project management
+- _(cli)_ add WaterUI CLI for project management
 - Implement custom layout engine integration with GTK4
 
 ### Fixed
 
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 
 ### Other
 
@@ -75,6 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add more lints and fix all warnings
 - Remove unfinished FFI modules from main branch
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support

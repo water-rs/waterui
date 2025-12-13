@@ -12,16 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Enhance window management and hot reload functionality
-- *(media-picker)* add media picker example with photo, video, and live photo selection
+- _(media-picker)_ add media picker example with photo, video, and live photo selection
 - Add mac screenshot image and improve markdown example
-- *(cli)* enable hot reload by default for water run
+- _(cli)_ enable hot reload by default for water run
 - Enhance panic logging and error handling in Apple backends
 - enhance logging levels for Apple platforms and improve app structure
-- *(examples)* add gesture and list examples with corresponding templates and assets
-- *(android)* streamline APK installation process and add CMake toolchain wrapper for ABI support
-- *(android)* switch from ComponentActivity to AppCompatActivity and disable Compose
-- *(android)* implement multi-ABI packaging support and optimize build configurations
-- *(android)* add support for multiple architectures and clean jniLibs
+- _(examples)_ add gesture and list examples with corresponding templates and assets
+- _(android)_ streamline APK installation process and add CMake toolchain wrapper for ABI support
+- _(android)_ switch from ComponentActivity to AppCompatActivity and disable Compose
+- _(android)_ implement multi-ABI packaging support and optimize build configurations
+- _(android)_ add support for multiple architectures and clean jniLibs
 - Rewrite CLI
 - Add project creation with git initialization and new playground example
 - Update dependencies and enhance backend configurations
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance platform support and add new build options for Android and Apple
 - enhance Android and Apple device support with new functionalities
 - enhance Android and Apple platform support, add Homebrew toolchain manager
-- *(android)* refactor backend and platform modules
+- _(android)_ refactor backend and platform modules
 - Enhance async support and device scanning in backend implementations
 - Refactor toolchain error handling and enhance hot reload configuration
 - Implement report generation for various command results
@@ -55,42 +55,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance Dockerfile and documentation for improved build and configuration
 - enhance Android platform support with target triples and improve artifact stripping
 - integrate hyper and tungstenite for hot reload server functionality
-- *(run)* implement hot reload support and ensure cdylib generation
-- *(android)* enhance NDK toolchain checks and environment configuration
-- *(logging)* add log filter support for hot reload and CLI
-- *(logging)* enhance tracing and panic forwarding for improved log management
-- *(hot_reload)* implement hot reload support for FFI and backend configurations
+- _(run)_ implement hot reload support and ensure cdylib generation
+- _(android)_ enhance NDK toolchain checks and environment configuration
+- _(logging)_ add log filter support for hot reload and CLI
+- _(logging)_ enhance tracing and panic forwarding for improved log management
+- _(hot_reload)_ implement hot reload support for FFI and backend configurations
 - update dependencies to use git sources and improve error handling in CLI
-- *(android)* enhance Java environment detection for macOS by including Android Studio's bundled JBR
+- _(android)_ enhance Java environment detection for macOS by including Android Studio's bundled JBR
 - add debugging workflow checklist and enhance non-interactive terminal handling
 - Add watcher functionality for AnyViews and related types
-- *(apple)* enhance simulator boot logic and add state checking
-- *(device)* add platform filtering for device listing
+- _(apple)_ enhance simulator boot logic and add state checking
+- _(device)_ add platform filtering for device listing
 - document hot reload support for Android, Apple, Web, and TUI backends
 - add TUI platform support and enhance hot reload functionality
-- *(hot-reload)* enhance hot reload configuration and update related commands
+- _(hot-reload)_ enhance hot reload configuration and update related commands
 - Introduce build command for native artifacts
-- *(cli)* enhance Android backend integration with improved logging and automation
+- _(cli)_ enhance Android backend integration with improved logging and automation
 - enhance Android backend integration and logging capabilities
-- *(cli)* add backend list command
-- *(cli)* support backend upgrade with ffi checks
-- *(cli)* add backend management command
-- *(cli)* use local android backend in dev
+- _(cli)_ add backend list command
+- _(cli)_ support backend upgrade with ffi checks
+- _(cli)_ add backend management command
+- _(cli)_ use local android backend in dev
 - Update Android project structure and dependencies for improved backend integration
 - Implement hot reload functionality with configurable environment
-- *(cli)* enhance JSON output support across commands
+- _(cli)_ enhance JSON output support across commands
 - update build process to emit stable version tags for waterui and swift backend; enhance dependency resolution with branch support
 - rename swift backend to apple backend and update related configurations
 - update release workflow to remove swift and android backend support; add dynamic repo URL for Swift backend
 - Add compiler options to suppress Kotlin version compatibility check for Compose (now app can be compiled but still not launched)
 - Update Compose compiler extension version to 1.5.14 in build.gradle.kts and template
 - Add Jetpack Compose support and update MainActivity for Compose integration
-- Enhance Android project setup by adding sanitized crate name and copying libc++_shared.so
+- Enhance Android project setup by adding sanitized crate name and copying libc++\_shared.so
 - Add Android target configurations and enhance toolchain setup for Rust builds
 - Enhance Android and watchOS support with new SDK checks and build scripts
 - Add Android tool management and build functionality; refactor device handling
 - Migrate from anyhow to color_eyre for error handling and add build script for version management
-- *(android)* Enhance project creation and packaging
+- _(android)_ Enhance project creation and packaging
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Add web backend support with asset creation and configuration
 - Implement gesture handling in WaterUI with WuiGestureView and GestureSequenceContainer
@@ -109,7 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
 - update dependencies with versioning and improve documentation clarity
 - add counter example to README and enhance tutorial book with tests
-- *(cli)* add WaterUI CLI for project management
+- _(cli)_ add WaterUI CLI for project management
 
 ### Fixed
 
@@ -122,10 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - improve interrupt handling in wait_for_interrupt function
 - remove hot reload import for non-WASM targets
 - clean up imports and improve command output messages in Android and Apple device modules
-- *(android)* add INTERNET permission to AndroidManifest for network access
-- *(dependencies)* replace log with tracing for improved logging consistency
+- _(android)_ add INTERNET permission to AndroidManifest for network access
+- _(dependencies)_ replace log with tracing for improved logging consistency
 - update run functions to handle no_watch parameter for improved behavior
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 - Update RendererViewComponent to use rawPtr for memory management consistency
 
 ### Other
@@ -172,7 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove terminal backend mention from README.md
 - Update documentation and add CMake checks for Apple builds
 - Enhance WaterUI CLI documentation and add screenshot capture feature
-- Fix CLI to copy libc++_shared.so to jniLibs for Android builds
+- Fix CLI to copy libc++\_shared.so to jniLibs for Android builds
 - remove unused hyper and tungstenite dependencies, integrate skyzen for hot reload functionality
 - simplify hot reload library path handling and extract filename logic
 - Make Suspense/hot reload use thread-safe executor
@@ -180,14 +180,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update FFI header regeneration instructions and enhance README content
 - Align Android tooling and agent workflow
 - Refactor Apple backend integration and remove deprecated files
-- *(build)* streamline argument handling in build script
+- _(build)_ streamline argument handling in build script
 - Enhance UI output handling and add terminal utilities for improved user experience
 - Improve command construction and error handling in project build and run functions
 - Refactor CLI structure and remove unused modules
 - Start to refractor WaterUI CLI...
 - Rename no_watch argument to no_hot_reload for clarity and update related function signatures
 - Refactor FFI bindings and hot reload functionality
-- *(cli)* enhance cargo build process with sccache configuration and retry logic
+- _(cli)_ enhance cargo build process with sccache configuration and retry logic
 - Merge pull request #23 from water-rs/codex/refactor-waterui-cli-for-enhanced-functionality
 - Refactor toolchain checks and interactive doctor
 - Merge branch 'main' into codex/refactor-cli-to-use-third-party-crates
@@ -220,6 +220,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update README files for clarity and consistency across components
 - Add more lints and fix all warnings
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support
