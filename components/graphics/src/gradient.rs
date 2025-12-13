@@ -14,7 +14,7 @@ use crate::conversions::{point_to_kurbo, resolved_color_to_peniko};
 /// A color stop in a gradient.
 ///
 /// This represents a color at a specific position along the gradient.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ColorStop {
     /// Position along the gradient (0.0 to 1.0).
     pub offset: f32,
@@ -46,7 +46,7 @@ impl ColorStop {
 /// gradient.add_color_stop(1.0, Color::blue());
 /// ctx.set_fill_style(gradient);
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LinearGradient {
     start: Point,
     end: Point,
@@ -95,8 +95,9 @@ impl LinearGradient {
             .collect();
 
         // Create linear gradient
-        let gradient = peniko::Gradient::new_linear(point_to_kurbo(self.start), point_to_kurbo(self.end))
-            .with_stops(&*peniko_stops);
+        let gradient =
+            peniko::Gradient::new_linear(point_to_kurbo(self.start), point_to_kurbo(self.end))
+                .with_stops(&*peniko_stops);
 
         peniko::Brush::Gradient(gradient)
     }
@@ -114,7 +115,7 @@ impl LinearGradient {
 /// gradient.add_color_stop(1.0, Color::black());
 /// ctx.set_fill_style(gradient);
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RadialGradient {
     center0: Point,
     radius0: f32,
@@ -187,7 +188,7 @@ impl RadialGradient {
 /// gradient.add_color_stop(1.0, Color::blue());
 /// ctx.set_fill_style(gradient);
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ConicGradient {
     center: Point,
     start_angle: f32,
@@ -234,8 +235,9 @@ impl ConicGradient {
             .collect();
 
         // Create sweep gradient
-        let gradient = peniko::Gradient::new_sweep(point_to_kurbo(self.center), self.start_angle, 0.0)
-            .with_stops(&*peniko_stops);
+        let gradient =
+            peniko::Gradient::new_sweep(point_to_kurbo(self.center), self.start_angle, 0.0)
+                .with_stops(&*peniko_stops);
 
         peniko::Brush::Gradient(gradient)
     }

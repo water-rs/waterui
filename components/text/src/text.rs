@@ -149,7 +149,7 @@ impl Text {
     /// Sets the font size.
     #[must_use]
     pub fn size(mut self, size: impl IntoSignal<f64>) -> Self {
-        // A litle sad we have to do this conversion here
+        // A little sad we have to do this conversion here
         #[allow(clippy::cast_possible_truncation)]
         let size = size.into_signal().map(|s| s as f32);
         self.0.content = self

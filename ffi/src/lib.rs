@@ -85,9 +85,7 @@ macro_rules! export {
             /// - This function must be called on main thread
             #[unsafe(no_mangle)]
             #[allow(unexpected_cfgs)]
-            pub unsafe extern "C" fn waterui_app(
-                env: *mut $crate::WuiEnv,
-            ) -> $crate::app::WuiApp {
+            pub unsafe extern "C" fn waterui_app(env: *mut $crate::WuiEnv) -> $crate::app::WuiApp {
                 // Take ownership of the environment
                 let env: waterui::Environment = unsafe { $crate::IntoRust::into_rust(env) };
 
@@ -580,7 +578,7 @@ ffi_metadata!(Shadow, WuiMetadataShadow, shadow);
 // Used to track focus state for views
 
 use crate::reactive::WuiBinding;
-use waterui::component::focu::Focused;
+use waterui::component::focus::Focused;
 
 /// FFI-safe representation of focused state.
 #[repr(C)]

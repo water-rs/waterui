@@ -38,7 +38,7 @@ macro_rules! ffi_safe {
 #[macro_export]
 macro_rules! ffi_view {
     ($view:ty,$ffi:ty,$ident:tt) => {
-        paste::paste! {
+        pastey::paste! {
         /// # Safety
         /// This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
         /// The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -72,7 +72,7 @@ macro_rules! ffi_view {
 #[macro_export]
 macro_rules! ffi_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
-        paste::paste! {
+        pastey::paste! {
             /// Returns the type ID as a 128-bit value for O(1) comparison.
             /// Uses TypeId in normal builds, type_name hash in hot reload builds.
             #[unsafe(no_mangle)]
@@ -134,7 +134,7 @@ macro_rules! opaque {
             }
         }
 
-        paste::paste! {
+        pastey::paste! {
             /// # Safety
             /// The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
             #[unsafe(no_mangle)]
@@ -147,7 +147,7 @@ macro_rules! opaque {
     };
 
     ($name:ident,$ty:ty) => {
-        paste::paste! {
+        pastey::paste! {
             $crate::opaque!($name,$ty,[<$ty:snake>]);
         }
     };

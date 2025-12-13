@@ -1,6 +1,6 @@
 # waterui-ffi
 
-FFI bindings layer that bridges Rust view trees to native platform backends (SwiftUI/Jetpack Compose).
+FFI bindings layer that bridges Rust view trees to native platform backends.
 
 ## Overview
 
