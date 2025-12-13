@@ -60,7 +60,7 @@ nami = { version = "0.9.0" }
 nami-core = { version = "0.3.0" }
 tracing = "0.1.41"
 waterui-core = { version = "0.2.0", path = "core" }
-waterui-str = { version = "0.2.0", path = "utils/str" }
+waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.0", path = "utils/url" }
 waterui-color = { version = "0.2.0", path = "utils/color" }
 waterui-text = { version = "0.2.0", path = "components/text" }
