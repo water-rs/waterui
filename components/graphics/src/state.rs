@@ -2,7 +2,7 @@
 //!
 //! This module provides the state stack for HTML5 Canvas-style save/restore operations.
 
-use waterui_color::Color;
+use waterui_color::ResolvedColor;
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
@@ -37,7 +37,7 @@ impl FillRule {
 #[derive(Debug, Clone)]
 pub enum FillStyle {
     /// Solid color fill.
-    Color(Color),
+    Color(ResolvedColor),
     /// Linear gradient fill.
     LinearGradient(LinearGradient),
     /// Radial gradient fill.
@@ -46,9 +46,12 @@ pub enum FillStyle {
     ConicGradient(ConicGradient),
 }
 
-impl From<Color> for FillStyle {
-    fn from(color: Color) -> Self {
-        Self::Color(color)
+impl<T> From<T> for FillStyle
+where
+    T: Into<ResolvedColor>,
+{
+    fn from(color: T) -> Self {
+        Self::Color(color.into())
     }
 }
 
@@ -74,7 +77,7 @@ impl From<ConicGradient> for FillStyle {
 #[derive(Debug, Clone)]
 pub enum StrokeStyle {
     /// Solid color stroke.
-    Color(Color),
+    Color(ResolvedColor),
     /// Linear gradient stroke.
     LinearGradient(LinearGradient),
     /// Radial gradient stroke.
@@ -83,9 +86,12 @@ pub enum StrokeStyle {
     ConicGradient(ConicGradient),
 }
 
-impl From<Color> for StrokeStyle {
-    fn from(color: Color) -> Self {
-        Self::Color(color)
+impl<T> From<T> for StrokeStyle
+where
+    T: Into<ResolvedColor>,
+{
+    fn from(color: T) -> Self {
+        Self::Color(color.into())
     }
 }
 
@@ -159,40 +165,6 @@ impl LineJoin {
 // Text Styling (Phase 5)
 // ============================================================================
 
-/// Text alignment (future - Phase 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum TextAlign {
-    /// Align to start edge (default).
-    #[default]
-    Start,
-    /// Align to end edge.
-    End,
-    /// Align to left edge.
-    Left,
-    /// Align to right edge.
-    Right,
-    /// Center alignment.
-    Center,
-}
-
-/// Text baseline (future - Phase 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum TextBaseline {
-    /// Top of em square.
-    Top,
-    /// Hanging baseline.
-    Hanging,
-    /// Middle of em square.
-    Middle,
-    /// Alphabetic baseline (default).
-    #[default]
-    Alphabetic,
-    /// Ideographic baseline.
-    Ideographic,
-    /// Bottom of em square.
-    Bottom,
-}
-
 // ============================================================================
 // Drawing State
 // ============================================================================
@@ -223,13 +195,11 @@ pub(crate) struct DrawingState {
     pub(crate) blend_mode: peniko::BlendMode,
 
     // Text styling (Phase 5)
-    pub(crate) text_align: TextAlign,
-    pub(crate) text_baseline: TextBaseline,
     pub(crate) font: FontSpec,
 
     // Shadow (Phase 7)
     pub(crate) shadow_blur: f32,
-    pub(crate) shadow_color: Color,
+    pub(crate) shadow_color: ResolvedColor,
     pub(crate) shadow_offset_x: f32,
     pub(crate) shadow_offset_y: f32,
 
@@ -241,8 +211,8 @@ impl Default for DrawingState {
     fn default() -> Self {
         Self {
             transform: kurbo::Affine::IDENTITY,
-            fill_style: FillStyle::Color(Color::srgb(0, 0, 0)), // Black
-            stroke_style: StrokeStyle::Color(Color::srgb(0, 0, 0)), // Black
+            fill_style: FillStyle::Color(ResolvedColor::from_srgb(waterui_color::Srgb::BLACK)),
+            stroke_style: StrokeStyle::Color(ResolvedColor::from_srgb(waterui_color::Srgb::BLACK)),
             line_width: 1.0,
             line_cap: LineCap::default(),
             line_join: LineJoin::default(),
@@ -251,11 +221,9 @@ impl Default for DrawingState {
             line_dash_offset: 0.0,
             global_alpha: 1.0,
             blend_mode: peniko::BlendMode::default(),
-            text_align: TextAlign::default(),
-            text_baseline: TextBaseline::default(),
             font: FontSpec::default(),
             shadow_blur: 0.0,
-            shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0), // Transparent black
+            shadow_color: ResolvedColor::from_srgb(waterui_color::Srgb::BLACK).with_opacity(0.0),
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             fill_rule: peniko::Fill::NonZero, // Default fill rule
