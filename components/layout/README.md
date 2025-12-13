@@ -1,226 +1,278 @@
-# WaterUI Layout
+# waterui-layout
 
-`waterui-layout` is the composable layout engine that powers every WaterUI view tree.  
-It translates the declarative `View` hierarchy into concrete sizes and positions, and it
-ships the most commonly used layout primitives (stacks, grids, spacers, overlays, etc.)
-out of the box. This document is a complete guide to the crate: how the protocol works,
-how the supplied components behave, and how to extend the system with your own layouts.
+Layout building blocks for arranging views in WaterUI applications.
 
----
+## Overview
+
+`waterui-layout` provides the fundamental layout primitives used to compose user interfaces in WaterUI. Unlike traditional UI frameworks that manually calculate positions, this crate implements a declarative, constraint-based layout system inspired by SwiftUI's layout protocol. All components render to native platform widgets (SwiftUI on Apple, Jetpack Compose on Android) rather than drawing custom pixels.
+
+The crate bridges the declarative `View` trait with the imperative, backend-driven layout pass through the `Layout` trait, enabling flexible composition of stacks, spacers, frames, and scrollable containers. All layout values use logical pixels (points/dp) matching design tool specifications exactly, with native backends handling density-aware conversion to physical pixels.
+
+## Installation
+
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+waterui-layout = "0.1.0"
+```
+
+Or use the main `waterui` crate which re-exports all layout components:
+
+```toml
+[dependencies]
+waterui = "0.1.0"
+```
 
 ## Quick Start
 
-```rust,ignore
-use waterui_core::ViewExt;
-use waterui_layout::{overlay, stack, spacer};
-use waterui_text::text;
+Here's a simple toolbar layout demonstrating horizontal stacking and spacers:
 
-pub fn notification() -> impl waterui_core::View {
+```rust
+use waterui_layout::{stack, spacer};
+use waterui_text::text;
+use waterui_core::View;
+
+pub fn toolbar() -> impl View {
+    stack::hstack((
+        text("WaterUI"),
+        spacer(),
+        text("v0.1"),
+    ))
+    .spacing(8.0)
+}
+```
+
+This creates a horizontal layout with "WaterUI" on the left, "v0.1" on the right, and flexible space between them.
+
+## Core Concepts
+
+### Layout Trait
+
+The `Layout` trait defines how containers arrange their children through a two-phase protocol:
+
+1. **Sizing Phase**: `size_that_fits(proposal, children)` determines the container's size given a parent proposal
+2. **Placement Phase**: `place(bounds, children)` positions children within the final bounds
+
+Layouts can query children multiple times with different proposals to negotiate optimal sizing.
+
+### Stretch Behavior
+
+Views communicate their flexibility through `StretchAxis`:
+
+- `None` - Content-sized, uses intrinsic dimensions
+- `Horizontal` - Expands width only (e.g., TextField)
+- `Vertical` - Expands height only
+- `Both` - Greedy, fills all space (e.g., Spacer, Color)
+- `MainAxis` - Stretches along parent's main axis (used by Spacer)
+- `CrossAxis` - Stretches along parent's cross axis (used by Divider)
+
+Stack containers distribute remaining space among stretching children proportionally.
+
+### Logical Pixels
+
+All layout values use **logical pixels** (points/dp) - the same unit as Figma, Sketch, and Adobe XD:
+
+- `spacing(8.0)` = 8pt in design tools
+- `width(100.0)` = 100pt/dp, same physical size across all devices
+- iOS/macOS: Uses points natively
+- Android: Converts dp → pixels via `displayMetrics.density`
+
+This ensures pixel-perfect design implementation across platforms.
+
+## Examples
+
+### Building a Form Layout
+
+```rust
+use waterui_layout::{stack, padding::EdgeInsets};
+use waterui_text::text;
+use waterui_controls::TextField;
+use waterui_reactive::binding;
+use waterui_core::View;
+
+pub fn login_form() -> impl View {
+    let username = binding("");
+    let password = binding("");
+
+    stack::vstack((
+        text("Login").size(24.0).bold(),
+        TextField::new(&username)
+            .label(text("Username"))
+            .prompt("Enter username"),
+        TextField::new(&password)
+            .label(text("Password"))
+            .prompt("Enter password")
+            .secure(true),
+    ))
+    .alignment(stack::HorizontalAlignment::Leading)
+    .spacing(16.0)
+    .padding_with(EdgeInsets::all(20.0))
+}
+```
+
+### Creating a Toolbar with Spacers
+
+```rust
+use waterui_layout::{stack, spacer};
+use waterui_controls::button;
+use waterui_text::text;
+use waterui_core::View;
+
+pub fn app_toolbar() -> impl View {
+    stack::hstack((
+        button("Menu", || { /* action */ }),
+        spacer(),
+        text("My App").bold(),
+        spacer(),
+        button("Settings", || { /* action */ }),
+    ))
+    .spacing(12.0)
+}
+```
+
+### Overlaying Content
+
+```rust
+use waterui_layout::{stack, overlay, stack::Alignment};
+use waterui_graphics::Color;
+use waterui_text::text;
+use waterui_core::View;
+
+pub fn badge_overlay() -> impl View {
     overlay(
-        stack::hstack((
-            text("Inbox"),
-            spacer(),
-            text("12").padding(),
-        )),
-        text("•").padding(), // red badge layered on top
+        Color::blue().frame(100.0, 100.0),
+        text("5").foreground(Color::white()),
+    )
+    .alignment(Alignment::TopTrailing)
+}
+```
+
+### Scrollable Content
+
+```rust
+use waterui_layout::{scroll, stack};
+use waterui_text::text;
+use waterui_core::View;
+
+pub fn scrollable_list() -> impl View {
+    scroll(
+        stack::vstack((
+            text("Item 1"),
+            text("Item 2"),
+            text("Item 3"),
+            // ... many more items
+        ))
+        .spacing(10.0)
     )
 }
 ```
 
-Every layout view returns something that implements `waterui_core::View`. The renderer
-asks the layout objects to size and position children during the render pass using the
-protocol described below.
+### Responsive Layout with Frames
 
----
+```rust
+use waterui_layout::frame::Frame;
+use waterui_layout::stack::Alignment;
+use waterui_text::text;
+use waterui_core::View;
 
-## Architectural Overview
-
-### The Two-Pass Layout Protocol
-
-All layout containers implement the `Layout` trait defined in `core.rs`. The trait
-encodes a deterministic three-step algorithm (proposal, sizing, placement) that runs
-top-to-bottom, then bottom-to-top, then top-to-bottom again:
-
-1. **`propose`** *(top → bottom)*  
-   Parents send a `ProposalSize` to each child describing how much space is available.
-   The child returns a new proposal for its own children.
-
-2. **`size`** *(bottom → top)*  
-   After children respond, the layout calculates its intrinsic `Size` using the reported
-   `ChildMetadata` (stretch flags, measured width/height, etc.) and bubbles the value up.
-
-3. **`place`** *(top → bottom)*  
-   With the final bounds known, parents call `place` on each layout to receive an array
-   of `Rect`s describing where every child should be rendered.
-
-```rust,ignore
-pub trait Layout: Debug {
-    fn propose(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Vec<ProposalSize>;
-    fn size(&mut self, parent: ProposalSize, children: &[ChildMetadata]) -> Size;
-    fn place(
-        &mut self,
-        bound: Rect,
-        proposal: ProposalSize,
-        children: &[ChildMetadata],
-    ) -> Vec<Rect>;
+pub fn constrained_content() -> impl View {
+    Frame::new(text("Limited Width"))
+        .min_width(100.0)
+        .max_width(300.0)
+        .height(50.0)
+        .alignment(Alignment::Center)
 }
 ```
 
-### Core Data Structures
+## API Overview
 
-- `ProposalSize`: soft constraints (`Option<f32>`) for width/height (`None` = unconstrained).
-- `Size`: a concrete width and height in pixels.
-- `Point` / `Rect`: absolute positions relative to the parent layout.
-- `ChildMetadata`: measurement info returned by renderers (proposal echo, `stretch`, priority).
+### Stack Containers
 
-### Wrapping Layouts in Views
+- **`stack::hstack(content)`** - Arranges children horizontally left-to-right
+  - `.spacing(f32)` - Sets spacing between children
+  - `.alignment(VerticalAlignment)` - Sets vertical alignment (Top, Center, Bottom)
 
-Layouts are imperative objects; they become declarative views through two wrappers:
+- **`stack::vstack(content)`** - Arranges children vertically top-to-bottom
+  - `.spacing(f32)` - Sets spacing between children
+  - `.alignment(HorizontalAlignment)` - Sets horizontal alignment (Leading, Center, Trailing)
 
-- `FixedContainer`: takes a layout and a tuple of child views. Suitable for static trees.
-- `Container`: similar, but stores children in a reconstructable `AnyViews`, enabling lazy
-  structures (`ForEach`, diffing lists, etc.).
+- **`stack::zstack(content)`** - Overlays children in the same space
+  - `.alignment(Alignment)` - Sets 2D alignment for overlaid content
 
-You rarely construct these directly. High-level helpers (`stack::vstack`, `overlay`, `scroll`,
-etc.) call into them for you.
+### Layout Primitives
 
----
+- **`spacer()`** - Flexible space that expands to push views apart
+- **`spacer_min(f32)`** - Spacer with minimum length
+- **`ScrollView`** - Scrollable container for overflow content
+  - `scroll(content)` - Vertical scrolling
+  - `scroll_horizontal(content)` - Horizontal scrolling
+  - `scroll_both(content)` - Bidirectional scrolling
 
-## Built-In Layout Components
+- **`Frame`** - Constrains child size with min/max/ideal dimensions
+  - `.width(f32)`, `.height(f32)` - Sets ideal dimensions
+  - `.min_width(f32)`, `.max_width(f32)` - Sets size constraints
+  - `.alignment(Alignment)` - Aligns child within frame
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `stack::vstack` | `stack/vstack.rs` | Vertical flow with alignment and stretch aware spacing. |
-| `stack::hstack` | `stack/hstack.rs` | Horizontal flow with alignment and stretch semantics. |
-| `stack::zstack` | `stack/zstack.rs` | Overlays multiple layers; expands to the largest child. |
-| `overlay` | `overlay.rs` | Two-layer overlay that locks size to the base child. |
-| `Spacer` / `spacer()` | `spacer.rs` | Flexible spacing element used inside stacks. |
-| `padding::Padding` | `padding.rs` | Insets a child by configurable edge insets. |
-| `frame::Frame` | `frame.rs` | Prototype for size-clamping single-child containers. |
-| `grid` | `grid.rs` | Two-dimensional arrangements with automatic column sizing. |
-| `scroll` | `scroll.rs` | Signals backends to wrap content in a scrollable surface. |
+- **`Padding`** - Insets child with edge spacing
+  - `EdgeInsets::all(f32)` - Equal padding on all edges
+  - `EdgeInsets::symmetric(vertical, horizontal)` - Symmetric padding
+  - `EdgeInsets::new(top, bottom, leading, trailing)` - Custom edges
 
-### Stacks
+### Advanced Layouts
 
-Stacks are the workhorses of WaterUI layouts.
+- **`overlay(base, layer)`** - Layers content on top of base without affecting layout size
+- **`OverlayLayout`** - Layout engine where base child dictates container size
+- **`LazyContainer`** - Efficient container for dynamic collections with `ForEach`
+- **`IgnoreSafeArea`** - Metadata to extend content into safe area regions
+  - `EdgeSet` - Bitflags for specifying which edges ignore safe area
 
-- **`HStack`**: lays out children left-to-right, honours `VerticalAlignment`, distributes
-  remaining width across `stretch` children (e.g. `Spacer`).
-- **`VStack`**: lays out children top-to-bottom, honours `HorizontalAlignment`, distributes
-  remaining height across stretch children.
-- **`ZStack`**: overlays an arbitrary number of children. Every child receives the same
-  proposal, and the final size is the maximum width/height reported by the children. Use
-  when each layer should influence the container size.
+### Alignment Types
 
-### Overlay vs. ZStack
+- **`Alignment`** - 2D alignment (TopLeading, Top, TopTrailing, Leading, Center, Trailing, BottomLeading, Bottom, BottomTrailing)
+- **`HorizontalAlignment`** - Leading, Center, Trailing
+- **`VerticalAlignment`** - Top, Center, Bottom
+- **`Axis`** - Horizontal, Vertical (for stack direction)
 
-`overlay(base, layer)` is a convenience view for the most common overlay scenario:
-decorating a single base view with a badge, border highlight, or similar adornment. The
-`OverlayLayout` always reports the base child's measured size and simply positions the
-layer according to the chosen `Alignment`. This prevents the overlay from inflating
-nearby layouts (unlike `ZStack`, where a larger layer would expand the stack).
+## Features
 
-```rust,ignore
-use waterui_layout::{overlay, stack};
-use waterui_text::text;
+This crate supports optional features:
 
-let avatar = overlay(
-    stack::zstack((text("👤"),)),        // base
-    text("●").alignment(Alignment::BottomTrailing),
-);
+- **`serde`** - Enables serialization/deserialization of layout types via serde
+
+Enable features in your `Cargo.toml`:
+
+```toml
+[dependencies]
+waterui-layout = { version = "0.1.0", features = ["serde"] }
 ```
 
-### Spacer
 
-`Spacer` (and the helper `spacer()`) is a zero-sized view that declares `stretch = true`.
-Stacks detect this flag and share the remaining space among all stretchable children.
-`spacer_min` allows you to enforce a minimum length.
+## Architecture Notes
 
-### Padding
+### Backend Integration
 
-`Padding` wraps a view and applies symmetric or per-edge insets. The incoming proposal is
-shrunken before passing to the child; the reported size is inflated afterwards so parent
-layouts continue to see the padded dimensions.
+Layouts communicate with native backends through the `Layout` trait's protocol:
 
-### Grid
+1. Backend calls `size_that_fits(proposal, children)` to measure
+2. Backend calls `place(bounds, children)` to get child rectangles
+3. Backend renders native widgets at the calculated positions
 
-`grid(columns, rows)` arranges content in a table-like structure. It requires a finite
-width proposal to compute column widths. Row heights are determined by the tallest child
-in the row. `grid` pairs with the `row` helper to keep call sites readable.
+The FFI layer in `waterui-ffi` handles the Rust ↔ Native boundary.
 
-### ScrollView
+### Performance Characteristics
 
-`ScrollView` is a signalling view; it does not perform layout itself. Backends detect it
-and mount the appropriate platform scroll container. Use `scroll`, `scroll_horizontal`, or
-`scroll_both` constructors depending on the desired axis.
+- All layout calculations happen in Rust, then native backends cache results
+- The `SubView` trait enables measurement caching at the platform level
+- Lazy containers (`LazyContainer`) defer child instantiation for large collections
+- Layout is pure (no side effects), enabling aggressive optimization by backends
 
----
+### Layout Compression
 
-## Alignment and Stretch Semantics
+When children exceed available space:
 
-- **`Alignment`** represents combined horizontal and vertical preferences (`TopTrailing`,
-  `Center`, etc.) used by overlay-type containers.
-- **`HorizontalAlignment` / `VerticalAlignment`** drive how stacks place children inside
-  their cross axis.
-- **Stretching**: backends mark views as `stretch` when they are happy to consume extra
-  space. `Spacer` does so explicitly; other views (like text) typically do not. Stack
-  layouts read the flag and distribute leftover space proportionally.
+- **HStack**: Compresses largest non-stretching children first, preserving small labels
+- **VStack**: Children maintain intrinsic heights, may overflow bounds (scrollable)
+- Minimum size enforcement prevents unreadable content (20pt minimum for compressed children)
 
----
-
-## Building Custom Layouts
-
-1. Implement `Layout` using the three methods; store any state you need for subsequent
-   passes on `self`.
-2. Wrap the layout in `FixedContainer::new(layout, tuple_of_children)` or `Container::new`
-   to expose it as a `View`.
-3. Prefer returning `impl View` constructors so callers stay in the declarative DSL.
-
-Guidelines:
-
-- Use `ProposalSize::new` helpers to pass down constraints; never mutate the provided
-  `ChildMetadata`.
-- Keep floating-point math saturating at `0.0` to avoid negative sizes.
-- Respect parent hints: clamp your chosen width/height to the parent's `Some(value)`.
-- Provide documentation describing measurement semantics (does the layout grow to the
-  largest child? does it force all children to match the base?).
-
-The earlier `SquareLayout` example shows the pattern end-to-end.
-
----
-
-## Module Index
-
-- `core`: definitions of `Layout`, `Size`, `Point`, `Rect`, `ProposalSize`, `ChildMetadata`.
-- `container`: `Container` and `FixedContainer` view wrappers that host layout objects.
-- `stack`: `HStack`, `VStack`, `ZStack`, alignment enums.
-- `overlay`: `OverlayLayout`, `Overlay` view, and the `overlay` constructor.
-- `spacer`: `Spacer` view and helpers.
-- `padding`: `Padding` view plus edge inset utilities.
-- `grid`: grid layout primitives (`grid`, `row`, internal measurement helpers).
-- `frame`: planned single-child clamp layout (currently a documented placeholder).
-- `scroll`: signalling helpers for scrollable regions.
-
----
-
-## Integration Tips
-
-- **Prefer composition**: combine `padding`, `overlay`, and stacks instead of building new
-  layouts whenever possible.
-- **Observe stretch flags**: when authoring complex containers, consider exposing knobs
-  (e.g. toggles) that allow callers to mark children as stretchable.
-- **Interop with renderers**: custom layouts should avoid allocations in hot paths. Reuse
-  scratch buffers on the layout struct when possible.
-- **Testing**: unit tests can instantiate layouts directly and exercise `propose/size/place`
-  with synthetic `ChildMetadata` to validate geometry logic.
-
----
-
-## Future Work
-
-- Promote `Frame` from a placeholder to a fully supported view with width/height clamps.
-- Layer additional overlay utilities (tooltips, popovers, sheets) on top of `OverlayLayout`.
-- Investigate constraint-solving helpers for advanced responsive layouts.
-- Improve ergonomics around debug visualisation of layout bounds during development.
-
-Contributions are welcome—see `ROADMAP.md` for larger project goals and open areas.
+This behavior matches native platform conventions for graceful degradation.
