@@ -86,8 +86,8 @@ zenwave = { version = "0.2.0", path = "../zenwave", default-features = false, fe
 skyzen = { version = "0.1.0", default-features = false }
 
 tracing-panic = "0.1.2"
-arboard = "3.6"
 robius-open = { version = "0.1", default-features = false }
+
 
 [dependencies]
 nami.workspace = true
@@ -118,17 +118,25 @@ uuid = { version = "1.18.1", features = ["v4"] }
 serde_json = "1.0"
 waterui-graphics = { workspace = true, optional = true }
 async-fs = "2.2.0"
-arboard.workspace = true
 robius-open.workspace = true
+
+
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
+android_clipboard = "0.1.0"
 
 [target.'cfg(not(any(target_vendor = "apple", target_os = "android")))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
+
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = "3.6.1"
+
+
 
 [features]
 default = []
