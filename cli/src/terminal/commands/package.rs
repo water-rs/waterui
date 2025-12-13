@@ -126,8 +126,7 @@ pub async fn run(args: Args) -> Result<()> {
 
         // Build for each specified architecture
         for arch in &args.arch {
-            let spinner =
-                shell::spinner(format!("Building Rust library ({})...", arch.to_abi()));
+            let spinner = shell::spinner(format!("Building Rust library ({})...", arch.to_abi()));
             let platform = AndroidPlatform::from_abi(arch.to_abi());
             display_output(platform.build(&project, build_options.clone())).await?;
             if let Some(pb) = spinner {

@@ -68,14 +68,11 @@ mod tests {
         let source = binding(0);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let _view: OnChange<(), BoxWatcherGuard> = OnChange::<(), BoxWatcherGuard>::new(
-            (),
-            &source,
-            {
+        let _view: OnChange<(), BoxWatcherGuard> =
+            OnChange::<(), BoxWatcherGuard>::new((), &source, {
                 let seen = Rc::clone(&seen);
                 move |value| seen.borrow_mut().push(value)
-            },
-        );
+            });
 
         source.set(1);
         assert_eq!(&*seen.borrow(), &[1]);

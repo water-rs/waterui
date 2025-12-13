@@ -67,7 +67,6 @@ macro_rules! hot_reloadable_library {
     };
 }
 
-
 /// Initialize executor for hot-reloaded dylib.
 ///
 /// # Safety
