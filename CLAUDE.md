@@ -48,7 +48,7 @@ water create --playground --name my-playground
 
 ## Architecture Overview
 
-WaterUI is a cross-platform reactive UI framework that renders to native platform widgets (UIKit/AppKit on Apple, Jetpack Compose on Android) rather than drawing its own pixels.
+WaterUI is a cross-platform reactive UI framework that renders to native platform widgets (UIKit/AppKit on Apple, Android View on Android) rather than drawing its own pixels.
 
 ### Core Data Flow
 
