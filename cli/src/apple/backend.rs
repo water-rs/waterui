@@ -111,10 +111,9 @@ impl Backend for AppleBackend {
                 .split('-')
                 .map(|s| {
                     let mut chars = s.chars();
-                    match chars.next() {
-                        None => String::new(),
-                        Some(first) => first.to_uppercase().chain(chars).collect(),
-                    }
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_uppercase().chain(chars).collect()
+                    })
                 })
                 .collect::<String>();
             (crate_name.clone(), app_name, crate_name)

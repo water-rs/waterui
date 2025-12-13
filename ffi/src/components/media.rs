@@ -361,7 +361,7 @@ crate::ffi_computed!(Video, WuiComputedVideo, video);
 // =============================================================================
 
 use waterui_media::media_picker::{
-    CustomMediaPickerManager, MediaFilter, MediaPickerManager, Selected,
+    CustomMediaPickerManager, MediaFilter, MediaPickerManager, SelectedId,
 };
 
 /// FFI representation of a simple media filter type.
@@ -377,28 +377,6 @@ pub enum WuiMediaFilterType {
     Image = 2,
     /// Filter for all media types.
     All = 3,
-}
-
-/// FFI representation of a selected media item.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct WuiSelected {
-    /// The unique identifier of the selected media item.
-    pub id: u32,
-}
-
-impl IntoFFI for Selected {
-    type FFI = WuiSelected;
-    fn into_ffi(self) -> Self::FFI {
-        WuiSelected { id: self.id() }
-    }
-}
-
-impl IntoRust for WuiSelected {
-    type Rust = Selected;
-    unsafe fn into_rust(self) -> Self::Rust {
-        Selected::new(self.id)
-    }
 }
 
 impl IntoFFI for MediaFilter {
@@ -435,7 +413,7 @@ pub struct MediaPickerPresentCallback {
     /// Opaque pointer to the callback data.
     pub data: *mut (),
     /// Function to call with the selected media. This consumes the callback.
-    pub call: unsafe extern "C" fn(*mut (), WuiSelected),
+    pub call: unsafe extern "C" fn(*mut (), SelectedId),
 }
 
 /// Type alias for the native media picker present function.
@@ -491,12 +469,12 @@ struct FFIMediaPickerManager {
 }
 
 impl CustomMediaPickerManager for FFIMediaPickerManager {
-    fn present(&self, filter: MediaFilter, callback: impl FnOnce(Selected) + 'static) {
-        let callback_box: Box<Box<dyn FnOnce(Selected)>> = Box::new(Box::new(callback));
+    fn present(&self, filter: MediaFilter, callback: impl FnOnce(SelectedId) + 'static) {
+        let callback_box: Box<Box<dyn FnOnce(SelectedId)>> = Box::new(Box::new(callback));
         let callback_data = Box::into_raw(callback_box).cast::<()>();
 
-        unsafe extern "C" fn present_trampoline(data: *mut (), selected: WuiSelected) {
-            let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(Selected)>>()) };
+        unsafe extern "C" fn present_trampoline(data: *mut (), selected: SelectedId) {
+            let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(SelectedId)>>()) };
             let rust_selected = unsafe { selected.into_rust() };
             callback(rust_selected);
         }
@@ -512,7 +490,7 @@ impl CustomMediaPickerManager for FFIMediaPickerManager {
         }
     }
 
-    fn load(&self, selected: Selected, callback: impl FnOnce(Media) + 'static) {
+    fn load(&self, selected: SelectedId, callback: impl FnOnce(Media) + 'static) {
         let callback_box: Box<Box<dyn FnOnce(Media)>> = Box::new(Box::new(callback));
         let callback_data = Box::into_raw(callback_box).cast::<()>();
 
@@ -528,7 +506,7 @@ impl CustomMediaPickerManager for FFIMediaPickerManager {
         };
 
         unsafe {
-            (self.load_fn)(selected.id(), ffi_callback);
+            (self.load_fn)(selected, ffi_callback);
         }
     }
 }
