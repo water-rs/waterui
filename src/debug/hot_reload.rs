@@ -79,7 +79,11 @@ pub fn get_env_ptr() -> *mut () {
 ///
 /// This is called by `HotReloadView` when it's created to register its handler
 /// with the global registry.
-fn register_handler(id: &str, handler: DynamicHandler, overlay_manager: Option<FullScreenOverlayManager>) {
+fn register_handler(
+    id: &str,
+    handler: DynamicHandler,
+    overlay_manager: Option<FullScreenOverlayManager>,
+) {
     HOT_RELOAD_STATE.with(|state| {
         let mut state = state.borrow_mut();
 
@@ -115,8 +119,7 @@ fn start_connection_if_needed(config: HotReloadConfig) {
     }
 
     // Get overlay manager for status display
-    let overlay_manager =
-        HOT_RELOAD_STATE.with(|state| state.borrow().overlay_manager.clone());
+    let overlay_manager = HOT_RELOAD_STATE.with(|state| state.borrow().overlay_manager.clone());
 
     // Spawn the connection task
     spawn_local(async move {
@@ -126,7 +129,10 @@ fn start_connection_if_needed(config: HotReloadConfig) {
 }
 
 /// Main hot reload loop that handles connection and library updates.
-async fn run_hot_reload_loop(config: HotReloadConfig, overlay_manager: Option<FullScreenOverlayManager>) {
+async fn run_hot_reload_loop(
+    config: HotReloadConfig,
+    overlay_manager: Option<FullScreenOverlayManager>,
+) {
     // Show connecting overlay
     if let Some(ref mgr) = overlay_manager {
         mgr.show(StatusOverlay::connecting());
@@ -237,6 +243,9 @@ pub struct Hotreload<V> {
     config: HotReloadConfig,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct InHotReload;
+
 /// Configuration for connecting to the hot reload server.
 #[derive(Debug, Clone)]
 pub struct HotReloadConfig {
@@ -326,8 +335,8 @@ impl<V: View> View for Hotreload<V> {
         let (content_handler, content_dynamic) = Dynamic::new();
         content_handler.set(self.initial);
 
-        // If no hot reload configured (port 0), just show the content
-        if self.config.port == 0 {
+        // If no hot reload configured (port 0) or already in a hot reloadable view, just show the content
+        if self.config.port == 0 || env.get::<InHotReload>().is_some() {
             return content_dynamic;
         }
 
@@ -388,6 +397,8 @@ impl<V: View> View for Hotreload<V> {
                                 continue;
                             }
                         };
+
+                        new_view.with(InHotReload);
 
                         // Replace the content with the new view
                         content_handler.set(new_view);
