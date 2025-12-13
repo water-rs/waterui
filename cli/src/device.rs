@@ -68,8 +68,8 @@ pub struct RunOptions {
     /// Android do not support environment variables yet.
     /// iOS/macOS support environment variables via `xcrun simctl launch --env`.
     ///
-    /// As a workaround, we would set system property `waterui.env.<KEY>` to `<VALUE>` on Android,
-    /// and read them to set environment variables in the application.
+    /// As a workaround, on Android we pass values as Activity intent extras using the
+    /// `waterui.env.<KEY>` namespace, and the app reads them on startup and calls `Os.setenv()`.
     env_vars: HashMap<String, String>,
 
     /// If set, stream device logs at or above this level.
@@ -94,7 +94,7 @@ impl RunOptions {
     }
 
     /// Set the minimum log level to stream.
-    pub fn set_log_level(&mut self, level: LogLevel) {
+    pub const fn set_log_level(&mut self, level: LogLevel) {
         self.log_level = Some(level);
     }
 
@@ -186,6 +186,7 @@ impl Running {
         )
     }
 
+    /// Retain a value for the lifetime of the `Running` instance.
     pub fn retain<T: Send + 'static>(&mut self, value: T) {
         self.on_drop.push(Box::new(move || {
             drop(value);

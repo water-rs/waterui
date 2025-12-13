@@ -1,4 +1,4 @@
-//! A WaterUI application representation.
+//! A `WaterUI` application representation.
 
 use nami::signal::IntoComputed;
 use waterui_core::{AnyView, Environment, View};
@@ -6,7 +6,7 @@ use waterui_str::Str;
 
 use crate::window::Window;
 
-/// Represents a WaterUI application.
+/// Represents a `WaterUI` application.
 #[derive(Debug)]
 pub struct App {
     /// The main application window.

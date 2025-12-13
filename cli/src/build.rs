@@ -8,7 +8,7 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use crate::utils::{command, run_command};
 
 /// Represents a Rust build for a specific target triple.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
@@ -35,6 +35,7 @@ impl BuildOptions {
     }
 
     /// Whether to enable hot-reload support
+    #[must_use] 
     pub const fn is_hot_reload(&self) -> bool {
         self.hot_reload
     }
@@ -153,8 +154,7 @@ impl RustBuild {
             .map_err(RustBuildError::FailToExecuteCargoBuild)?;
 
         if !status.success() {
-            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::other(
                 "Cargo build failed",
             )));
         }
@@ -185,7 +185,7 @@ impl RustBuild {
         Ok(dir)
     }
 
-    /// Generate BINDGEN_EXTRA_CLANG_ARGS for simulator builds.
+    /// Generate `BINDGEN_EXTRA_CLANG_ARGS` for simulator builds.
     ///
     /// Bindgen has issues with the `*-apple-*-sim` target triples, so we need to
     /// provide explicit clang arguments with a proper target and SDK path.

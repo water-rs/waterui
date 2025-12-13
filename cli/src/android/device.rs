@@ -2,6 +2,8 @@ use color_eyre::eyre::{self, eyre};
 use smol::process::Command;
 use tracing::error;
 
+use std::process::Stdio;
+
 use crate::{
     android::{platform::AndroidPlatform, toolchain::AndroidSdk},
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
@@ -62,7 +64,7 @@ impl Device for AndroidDevice {
 /// Shared implementation for running an app on any Android device.
 ///
 /// This handles:
-/// - Setting environment variables as system properties
+/// - Passing environment variables as intent extras
 /// - Uninstalling previous version (to avoid storage issues)
 /// - Installing the APK
 /// - Launching the app
@@ -77,18 +79,53 @@ async fn run_on_android(
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
     let adb_str = adb.to_str().unwrap();
 
-    // Set environment variables as system properties
-    // Android doesn't support direct environment variable passing, so we use
-    // system properties with prefix "waterui.env." which the app reads at startup
-    for (key, value) in options.env_vars() {
-        let prop_key = format!("waterui.env.{key}");
-        let result = run_command(
-            adb_str,
-            ["-s", device_id, "shell", "setprop", &prop_key, value],
+    let env_vars: Vec<(String, String)> = options
+        .env_vars()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+    // If hot reload is using localhost, set up adb reverse so the device can connect back
+    // to the host's hot reload server (listening on 127.0.0.1:<port>).
+    let reverse_port = env_vars
+        .iter()
+        .find(|(k, _)| k == "WATERUI_HOT_RELOAD_PORT")
+        .and_then(|(_, v)| v.parse::<u16>().ok())
+        .zip(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == "WATERUI_HOT_RELOAD_HOST")
+                .map(|(_, v)| v.as_str()),
         )
-        .await;
-        if let Err(e) = result {
-            tracing::warn!("Failed to set system property {prop_key}: {e}");
+        .and_then(|(port, host)| {
+            if host == "127.0.0.1" || host == "localhost" {
+                Some(port)
+            } else {
+                None
+            }
+        });
+
+    if let Some(port) = reverse_port {
+        let spec = format!("tcp:{port}");
+        let output = Command::new(adb_str)
+            .args(["-s", device_id, "reverse", &spec, &spec])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                tracing::warn!(
+                    "Failed to set up adb reverse for hot reload ({}): stdout='{}' stderr='{}'",
+                    spec,
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to set up adb reverse for hot reload ({spec}): {e}");
+            }
         }
     }
 
@@ -107,21 +144,42 @@ async fn run_on_android(
     .await
     .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
 
-    // Launch the app
-    run_command(
-        adb_str,
-        [
-            "-s",
-            device_id,
-            "shell",
-            "am",
-            "start",
-            "-n",
-            &format!("{}/.MainActivity", artifact.bundle_id()),
-        ],
-    )
-    .await
-    .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+    // Launch the app (pass env vars as intent extras).
+    //
+    // We use the "waterui.env.<KEY>" namespace to avoid collisions.
+    // MainActivity reads these extras and calls Os.setenv() before loading native libraries.
+    let mut start_args = vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "shell".to_string(),
+        "am".to_string(),
+        "start".to_string(),
+        "-S".to_string(), // force-stop target app before starting (ensures env takes effect)
+        "-n".to_string(),
+        format!("{}/.MainActivity", artifact.bundle_id()),
+    ];
+
+    for (key, value) in &env_vars {
+        start_args.push("--es".to_string());
+        start_args.push(format!("waterui.env.{key}"));
+        start_args.push(value.clone());
+    }
+
+    let output = Command::new(adb_str)
+        .args(&start_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+
+    if !output.status.success() {
+        return Err(FailToRun::Launch(eyre!(
+            "Failed to launch app:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )));
+    }
 
     // Wait for the process to start and get its PID
     let pid = wait_for_app_pid(adb_str, device_id, artifact.bundle_id()).await?;
@@ -132,6 +190,7 @@ async fn run_on_android(
     let bundle_id_for_kill = artifact.bundle_id().to_string();
     let bundle_id_for_monitor = artifact.bundle_id().to_string();
     let log_level = options.log_level();
+    let reverse_port_for_drop = reverse_port;
 
     let (running, sender) = Running::new(move || {
         // Use std::process::Command for synchronous execution in Drop context
@@ -158,6 +217,13 @@ async fn run_on_android(
             Err(e) => {
                 error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
             }
+        }
+
+        if let Some(port) = reverse_port_for_drop {
+            let spec = format!("tcp:{port}");
+            let _ = std::process::Command::new(&adb_for_kill)
+                .args(["-s", &identifier_for_kill, "reverse", "--remove", &spec])
+                .output();
         }
     });
 
@@ -285,51 +351,103 @@ async fn monitor_android_process(
             .is_some_and(|current_pid| current_pid == pid);
 
         if !still_running {
-            // Process is no longer running - fetch crash logs
-            let crash_info = run_command(
+            let pid_str = pid.to_string();
+
+            // Try to fetch logs for this PID (best signal for distinguishing crash vs normal exit).
+            let pid_log = run_command(
                 adb_str,
                 [
-                    "-s",
-                    device_id,
-                    "logcat",
-                    "-d",
-                    "-t",
-                    "100",
-                    "-s",
-                    "AndroidRuntime:E",
-                    "DEBUG:*",
-                    "WaterUI:*",
+                    "-s", device_id, "logcat", "-d", "-t", "200", "--pid", &pid_str, "*:V",
                 ],
             )
             .await
             .unwrap_or_default();
 
-            let error_msg = if !crash_info.trim().is_empty() {
-                format!(
-                    "Process {} exited.\n\n=== Crash Log ===\n{}",
-                    bundle_id, crash_info
+            // Fallback for older logcat versions that don't support --pid.
+            let fallback_log = if pid_log.trim().is_empty() {
+                run_command(
+                    adb_str,
+                    [
+                        "-s",
+                        device_id,
+                        "logcat",
+                        "-d",
+                        "-t",
+                        "200",
+                        "-s",
+                        "AndroidRuntime:E",
+                        "DEBUG:*",
+                    ],
                 )
+                .await
+                .unwrap_or_default()
             } else {
-                // Try to get more general logs
-                let general_log =
-                    run_command(adb_str, ["-s", device_id, "logcat", "-d", "-t", "50"])
-                        .await
-                        .unwrap_or_default();
-
-                if !general_log.trim().is_empty() {
-                    format!(
-                        "Process {} exited.\n\n=== Recent Log ===\n{}",
-                        bundle_id, general_log
-                    )
-                } else {
-                    format!("Process {} exited unexpectedly.", bundle_id)
-                }
+                String::new()
             };
 
-            let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
+            let log_for_detection = if pid_log.trim().is_empty() {
+                fallback_log.as_str()
+            } else {
+                pid_log.as_str()
+            };
+
+            if android_log_looks_like_crash(log_for_detection, bundle_id) {
+                let crash_log = if pid_log.trim().is_empty() {
+                    fallback_log
+                } else {
+                    pid_log
+                };
+
+                let error_msg = if crash_log.trim().is_empty() {
+                    format!("Process {bundle_id} crashed.")
+                } else {
+                    format!("Process {bundle_id} crashed.\n\n=== Crash Log ===\n{crash_log}")
+                };
+
+                let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
+            } else {
+                let _ = sender.send(DeviceEvent::Exited).await;
+            }
             break;
         }
     }
+}
+
+fn android_log_looks_like_crash(log: &str, bundle_id: &str) -> bool {
+    if log.trim().is_empty() {
+        return false;
+    }
+
+    // Common Java crash markers (AndroidRuntime).
+    if log.contains("FATAL EXCEPTION") {
+        return true;
+    }
+
+    // Common native crash markers (tombstone / debuggerd / libc).
+    if log.contains("Fatal signal") {
+        return true;
+    }
+    if log.contains("SIGSEGV")
+        || log.contains("SIGABRT")
+        || log.contains("SIGBUS")
+        || log.contains("SIGILL")
+        || log.contains("SIGFPE")
+    {
+        return true;
+    }
+    if log.contains("Abort message:") || log.contains("backtrace:") {
+        return true;
+    }
+
+    // If we only have a global log fallback (no --pid), make sure it actually mentions this app
+    // and includes an error marker to avoid false positives from unrelated processes.
+    if !log.contains(bundle_id) {
+        return false;
+    }
+
+    // Heuristic: treat AndroidRuntime errors for this process as crash.
+    log.contains("AndroidRuntime")
+        && (log.contains("E AndroidRuntime") || log.contains("Exception"))
 }
 
 /// Stream logs from an Android process using logcat.
@@ -494,7 +612,7 @@ pub struct AndroidEmulator {
 impl AndroidEmulator {
     /// Create a new Android emulator with the given AVD name.
     #[must_use]
-    pub fn new(avd_name: String) -> Self {
+    pub const fn new(avd_name: String) -> Self {
         Self { avd_name }
     }
 

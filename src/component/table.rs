@@ -165,23 +165,26 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
 // Default Table View Implementation
 // ============================================================================
 
+use crate::ViewExt;
+use waterui_color::Grey;
 use waterui_core::dynamic::watch;
 use waterui_layout::scroll::scroll;
-use waterui_layout::stack::{hstack, vstack};
+use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
 
 /// Default table view that renders columns as a grid using stacks.
 ///
 /// This is used as a fallback when no native table implementation is available.
 /// It renders:
 /// - A header row with column labels (bold)
-/// - Data rows as horizontal stacks
+/// - A divider between header and data
+/// - Data rows with proper left alignment
 #[derive(Debug)]
 struct DefaultTableView {
     columns: Computed<Vec<TableColumn>>,
 }
 
 impl DefaultTableView {
-    fn new(columns: Computed<Vec<TableColumn>>) -> Self {
+    const fn new(columns: Computed<Vec<TableColumn>>) -> Self {
         Self { columns }
     }
 }
@@ -191,7 +194,7 @@ impl View for DefaultTableView {
         let columns = self.columns;
 
         // Use watch to reactively rebuild when columns change
-        watch(columns.clone(), move |cols: Vec<TableColumn>| {
+        watch(columns, move |cols: Vec<TableColumn>| {
             if cols.is_empty() {
                 return AnyView::new(());
             }
@@ -199,33 +202,49 @@ impl View for DefaultTableView {
             // Find the maximum number of rows across all columns
             let max_rows = cols.iter().map(|c| c.rows().len()).max().unwrap_or(0);
 
-            // Build header row
+            // Build header row - each cell gets equal flex weight for consistent width
             let header_views: Vec<AnyView> = cols
                 .iter()
-                .map(|col| AnyView::new(col.label().bold()))
+                .map(|col| AnyView::new(col.label().bold().max_width(f32::MAX)))
                 .collect();
 
             // Build data rows
-            let mut row_views: Vec<AnyView> = Vec::with_capacity(max_rows + 1);
+            let mut row_views: Vec<AnyView> = Vec::with_capacity(max_rows + 2);
 
-            // Add header
+            // Add header row
             row_views.push(AnyView::new(hstack(header_views)));
+
+            // Add divider between header and data
+            row_views.push(AnyView::new(Grey.height(1.0).max_width(f32::MAX)));
 
             // Add data rows
             for row_idx in 0..max_rows {
                 let row_cells: Vec<AnyView> = cols
                     .iter()
                     .map(|col| {
-                        col.rows()
-                            .get_view(row_idx)
-                            .map(AnyView::new)
-                            .unwrap_or_else(|| AnyView::new(Text::new("")))
+                        col.rows().get_view(row_idx).map_or_else(
+                            || AnyView::new(Text::new("").max_width(f32::MAX)),
+                            |text| AnyView::new(text.max_width(f32::MAX)),
+                        )
                     })
                     .collect();
+
+                // Add row divider between data rows
+                if row_idx > 0 {
+                    row_views.push(AnyView::new(Grey.height(1.0).max_width(f32::MAX)));
+                }
                 row_views.push(AnyView::new(hstack(row_cells)));
             }
 
-            AnyView::new(scroll(vstack(row_views)))
+            // Use leading alignment so all content is left-aligned
+            AnyView::new(
+                scroll(
+                    vstack(row_views)
+                        .alignment(HorizontalAlignment::Leading)
+                        .spacing(4.0),
+                )
+                .padding(),
+            )
         })
     }
 }

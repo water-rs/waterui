@@ -1,7 +1,7 @@
 [workspace]
 pr_draft = false
 pr_labels = ["release"]
-git_release_name = "{{ crate_name }}-v{{ version }}"
+git_release_name = "{{ package }}-v{{ version }}"
 publish = true
 git_tag_enable = true
 changelog_update = true

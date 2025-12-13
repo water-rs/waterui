@@ -71,7 +71,7 @@ impl Project {
         let mut running = device.run(artifact, run_options).await?;
 
         if let Some(server) = server {
-            running.retain(server)
+            running.retain(server);
         }
 
         Ok(running)
@@ -83,6 +83,12 @@ impl Project {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Get the target directory for Rust build artifacts.
+    #[must_use]
+    pub fn target_dir(&self) -> &Path {
+        &self.target_dir
     }
 
     /// Get the backends configured for the project.
@@ -209,6 +215,7 @@ pub enum FailToOpenProject {
     #[error("Failed to read Cargo.toml: {0}")]
     CargoManifest(cargo_toml::Error),
 
+    /// Failed to get Cargo metadata.
     #[error("Failed to get Cargo metadata: {0}")]
     TargetDirError(#[from] cargo_metadata::Error),
 

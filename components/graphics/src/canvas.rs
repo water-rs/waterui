@@ -230,7 +230,7 @@ struct CanvasRenderer<F> {
     draw_fn: F,
     scene: vello::Scene,
     renderer: Option<vello::Renderer>,
-    /// Intermediate texture for Vello (Rgba8Unorm format required by Vello)
+    /// Intermediate texture for Vello (`Rgba8Unorm` format required by Vello)
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
     /// Blit pipeline for copying intermediate texture to target (handles HDR surfaces)
@@ -483,7 +483,7 @@ where
     }
 }
 
-/// WGSL shader for blitting from Rgba8Unorm to target format
+/// WGSL shader for blitting from `Rgba8Unorm` to target format
 const BLIT_SHADER: &str = r"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,

@@ -107,6 +107,7 @@ pub use nami as reactive;
 pub use reactive::{Binding, Computed, Signal, signal};
 pub use reactive_ext::SignalExt;
 
+/// Task management utilities and async support.
 pub mod task {
     pub use executor_core::{spawn, spawn_local};
     pub use native_executor::sleep;
