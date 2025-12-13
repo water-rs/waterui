@@ -122,6 +122,9 @@ pub extern "C" fn waterui_computed_color_scheme_constant(
 }
 
 /// Installs a color scheme signal into the environment.
+///
+/// # Safety
+/// The signal pointer must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_install_color_scheme(
     env: *mut WuiEnv,
@@ -136,6 +139,9 @@ pub unsafe extern "C" fn waterui_theme_install_color_scheme(
 }
 
 /// Returns the current color scheme signal from the environment.
+///
+/// # Safety
+/// The returned pointer must be dropped by the caller when no longer needed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_color_scheme(
     env: *const WuiEnv,
@@ -179,6 +185,9 @@ pub enum WuiColorSlot {
 /// Installs a color signal for a specific slot.
 ///
 /// Takes ownership of the signal pointer.
+///
+/// # Safety
+/// The signal pointer must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_install_color(
     env: *mut WuiEnv,
@@ -212,6 +221,9 @@ pub unsafe extern "C" fn waterui_theme_install_color(
 /// Returns the color signal for a specific slot.
 ///
 /// Returns a new reference to the signal. Caller must drop it when done.
+///
+/// # Safety
+/// The env pointer must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_color(
     env: *const WuiEnv,
@@ -263,6 +275,9 @@ pub enum WuiFontSlot {
 /// Installs a font signal for a specific slot.
 ///
 /// Takes ownership of the signal pointer.
+///
+/// # Safety
+/// The env pointer must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_install_font(
     env: *mut WuiEnv,
@@ -288,6 +303,9 @@ pub unsafe extern "C" fn waterui_theme_install_font(
 /// Returns the font signal for a specific slot.
 ///
 /// Returns a new reference to the signal. Caller must drop it when done.
+///
+/// # Safety
+/// The env pointer must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_theme_font(
     env: *const WuiEnv,
@@ -446,65 +464,6 @@ theme_font_fn!(waterui_theme_font_subheadline, Subheadline);
 theme_font_fn!(waterui_theme_font_caption, Caption);
 theme_font_fn!(waterui_theme_font_footnote, Footnote);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::WuiEnv;
-
-    #[test]
-    fn background_color_computed_is_readable() {
-        let env = WuiEnv(waterui::Environment::new());
-        let ptr = unsafe { waterui_theme_color_background(&env) };
-        assert!(!ptr.is_null());
-        let value = unsafe { crate::color::waterui_read_computed_resolved_color(ptr) };
-        assert!(value.opacity >= 0.0);
-        unsafe {
-            crate::color::waterui_drop_computed_resolved_color(ptr);
-        }
-    }
-
-    #[test]
-    fn color_scheme_roundtrip() {
-        let ptr = waterui_computed_color_scheme_constant(WuiColorScheme::Dark);
-        assert!(!ptr.is_null());
-        let value = unsafe { waterui_read_computed_color_scheme(ptr) };
-        assert_eq!(value, WuiColorScheme::Dark);
-        unsafe {
-            waterui_drop_computed_color_scheme(ptr);
-        }
-    }
-
-    #[test]
-    fn slot_based_color_install_and_query() {
-        let mut env = WuiEnv(waterui::Environment::new());
-
-        // Create and install a foreground color
-        let fg_signal = waterui::Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 0.0,
-            blue: 0.0,
-            headroom: 0.0,
-            opacity: 1.0,
-        });
-        let fg_ptr = fg_signal.into_ffi();
-
-        unsafe {
-            waterui_theme_install_color(&mut env, WuiColorSlot::Foreground, fg_ptr);
-        }
-
-        // Query it back
-        let queried = unsafe { waterui_theme_color(&env, WuiColorSlot::Foreground) };
-        assert!(!queried.is_null());
-
-        let value = unsafe { crate::color::waterui_read_computed_resolved_color(queried) };
-        assert!((value.red - 1.0).abs() < 0.001);
-
-        unsafe {
-            crate::color::waterui_drop_computed_resolved_color(queried);
-        }
-    }
-}
-
 // ============================================================================
 // Watcher call functions for native-controlled reactive signals
 // ============================================================================
@@ -592,5 +551,64 @@ pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
 ) {
     unsafe {
         drop(Box::from_raw(watcher));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WuiEnv;
+
+    #[test]
+    fn background_color_computed_is_readable() {
+        let env = WuiEnv(waterui::Environment::new());
+        let ptr = unsafe { waterui_theme_color_background(&env) };
+        assert!(!ptr.is_null());
+        let value = unsafe { crate::color::waterui_read_computed_resolved_color(ptr) };
+        assert!(value.opacity >= 0.0);
+        unsafe {
+            crate::color::waterui_drop_computed_resolved_color(ptr);
+        }
+    }
+
+    #[test]
+    fn color_scheme_roundtrip() {
+        let ptr = waterui_computed_color_scheme_constant(WuiColorScheme::Dark);
+        assert!(!ptr.is_null());
+        let value = unsafe { waterui_read_computed_color_scheme(ptr) };
+        assert_eq!(value, WuiColorScheme::Dark);
+        unsafe {
+            waterui_drop_computed_color_scheme(ptr);
+        }
+    }
+
+    #[test]
+    fn slot_based_color_install_and_query() {
+        let mut env = WuiEnv(waterui::Environment::new());
+
+        // Create and install a foreground color
+        let fg_signal = waterui::Computed::constant(ResolvedColor {
+            red: 1.0,
+            green: 0.0,
+            blue: 0.0,
+            headroom: 0.0,
+            opacity: 1.0,
+        });
+        let fg_ptr = fg_signal.into_ffi();
+
+        unsafe {
+            waterui_theme_install_color(&mut env, WuiColorSlot::Foreground, fg_ptr);
+        }
+
+        // Query it back
+        let queried = unsafe { waterui_theme_color(&env, WuiColorSlot::Foreground) };
+        assert!(!queried.is_null());
+
+        let value = unsafe { crate::color::waterui_read_computed_resolved_color(queried) };
+        assert!((value.red - 1.0).abs() < 0.001);
+
+        unsafe {
+            crate::color::waterui_drop_computed_resolved_color(queried);
+        }
     }
 }

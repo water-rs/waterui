@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, process::ExitStatus, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use color_eyre::eyre::{self, eyre};
 use serde::Deserialize;
@@ -18,7 +22,7 @@ use crate::{
     apple::platform::ApplePlatform,
     debug,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, Running},
-    utils::{command, run_command},
+    utils::{command, run_command, run_command_output},
 };
 
 /// Start streaming logs from a `WaterUI` app.
@@ -91,22 +95,17 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
 ///
 /// This uses `log show` to retrieve logs from the last few seconds that contain panic info.
 /// Returns the panic message if found, along with location and payload.
-async fn fetch_recent_panic_logs(since: OffsetDateTime) -> Option<String> {
-    // Format time for log show: "YYYY-MM-DD HH:MM:SS"
-    let time_format =
-        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
-    let start_time = since.format(&time_format).ok()?;
+async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Option<String> {
+    let last = started_at.elapsed() + Duration::from_secs(2);
+    let last_arg = format!("{}s", last.as_secs().max(5));
+
+    let predicate = pid.map_or_else(|| "subsystem == \"dev.waterui\" AND eventMessage CONTAINS \"panic\"".to_string(), |pid| format!(
+            "processID == {pid} AND subsystem == \"dev.waterui\" AND eventMessage CONTAINS \"panic\""
+        ));
 
     let output = Command::new("log")
-        .args([
-            "show",
-            "--predicate",
-            "subsystem == \"dev.waterui\" AND eventMessage CONTAINS \"panic\"",
-            "--style",
-            "compact",
-            "--start",
-            &start_time,
-        ])
+        .args(["show", "--predicate", &predicate, "--style", "compact"])
+        .args(["--last", &last_arg])
         .output()
         .await
         .ok()?;
@@ -154,62 +153,70 @@ async fn fetch_recent_panic_logs(since: OffsetDateTime) -> Option<String> {
     None
 }
 
-/// Handle app exit: check for panics, then check exit status.
-///
-/// This is the main exit handler shared between macOS and iOS simulator.
-/// It first checks for Rust panic logs, then falls back to signal/exit code analysis.
-async fn handle_app_exit(
-    exit_status: ExitStatus,
-    start_time: OffsetDateTime,
-    sender: &Sender<DeviceEvent>,
-) {
-    // First, check for Rust panic logs (structured tracing output)
-    if let Some(panic_msg) = fetch_recent_panic_logs(start_time).await {
-        let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
-        return;
-    }
+async fn poll_for_crash_report(
+    device_name: &str,
+    device_identifier: &str,
+    bundle_id: &str,
+    process_name: &str,
+    pid: Option<u32>,
+    since: OffsetDateTime,
+    timeout: Duration,
+) -> Option<debug::CrashReport> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(report) = debug::find_macos_ips_crash_report_since(
+            device_name,
+            device_identifier,
+            bundle_id,
+            process_name,
+            pid,
+            since,
+        )
+        .await
+        {
+            return Some(report);
+        }
 
-    // Fall back to signal/exit code analysis
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if let Some(signal) = exit_status.signal() {
-            // SIGINT(2), SIGKILL(9), and SIGTERM(15) are normal termination signals
-            match signal {
-                2 | 9 | 15 => {
-                    let _ = sender.try_send(DeviceEvent::Exited);
-                }
-                6 => {
-                    let _ = sender.try_send(DeviceEvent::Crashed(
-                        "App terminated by SIGABRT".to_string(),
-                    ));
-                }
-                10 => {
-                    let _ = sender
-                        .try_send(DeviceEvent::Crashed("App terminated by SIGBUS".to_string()));
-                }
-                11 => {
-                    let _ = sender.try_send(DeviceEvent::Crashed(
-                        "App terminated by SIGSEGV".to_string(),
-                    ));
-                }
-                _ => {
-                    let _ = sender.try_send(DeviceEvent::Crashed(format!(
-                        "App terminated by signal {signal}"
-                    )));
-                }
+        if Instant::now() >= deadline {
+            return None;
+        }
+
+        Timer::after(Duration::from_millis(250)).await;
+    }
+}
+
+fn parse_simctl_launch_pid(stdout: &str) -> Option<u32> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some((_, pid_part)) = line.rsplit_once(':') {
+            if let Ok(pid) = pid_part.trim().parse::<u32>() {
+                return Some(pid);
             }
-            return;
+        }
+
+        if let Ok(pid) = line.parse::<u32>() {
+            return Some(pid);
         }
     }
+    None
+}
 
-    if exit_status.success() {
-        let _ = sender.try_send(DeviceEvent::Exited);
-    } else {
-        let _ = sender.try_send(DeviceEvent::Crashed(format!(
-            "App exited with code {:?}",
-            exit_status.code()
-        )));
+async fn is_pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
+async fn wait_for_pid_exit(pid: u32) {
+    while is_pid_alive(pid).await {
+        Timer::after(Duration::from_millis(200)).await;
     }
 }
 
@@ -286,6 +293,7 @@ impl Device for MacOS {
 
         // Spawn the open command
         let start_time = OffsetDateTime::now_utc();
+        let start_instant = Instant::now();
         let mut child = cmd
             .spawn()
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
@@ -375,24 +383,26 @@ impl Device for MacOS {
                 // open exited first - check for crash report or panic logs
                 futures::future::Either::Left(((), crash_future)) => {
                     // Check for crash report first (macOS .ips files)
-                    if let Some(report) = debug::find_macos_ips_crash_report_since(
+                    if let Some(report) = poll_for_crash_report(
                         device_name,
                         &device_identifier,
                         &bundle_id,
                         &app_name_for_crash,
                         app_pid,
                         start_time,
+                        Duration::from_secs(5),
                     )
                     .await
                     {
                         let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
-                    } else if let Some(panic_msg) = fetch_recent_panic_logs(start_time).await {
+                    } else if let Some(panic_msg) =
+                        fetch_recent_panic_logs(start_instant, app_pid).await
+                    {
                         // Check for Rust panic logs
                         let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
                     } else {
                         let _ = sender.try_send(DeviceEvent::Exited);
                     }
-                    drop(crash_future);
                 }
                 // Crash report appeared first - kill the app and report
                 futures::future::Either::Right((Some(report), _open_future)) => {
@@ -571,47 +581,126 @@ impl Device for AppleSimulator {
 
         info!("Launching app on apple simulator {}", self.name);
 
-        // Record start time for panic log lookup
         let start_time = OffsetDateTime::now_utc();
+        let start_instant = Instant::now();
 
-        // Use --console to block until app exits and pass signals through
-        let mut child = command(Command::new("xcrun").args([
-            "simctl",
-            "launch",
-            "--console",
-            "--terminate-running-process",
-            &self.udid,
-            artifact.bundle_id(),
-        ]))
-        .spawn()
-        .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+        let bundle_id = artifact.bundle_id().to_string();
+        let process_name = artifact
+            .path()
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or(bundle_id.as_str())
+            .to_string();
+
+        let log_level = options.log_level();
+        let env_vars: Vec<(String, String)> = options
+            .env_vars()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let mut launch_args = vec![
+            "simctl".to_string(),
+            "launch".to_string(),
+            "--terminate-running-process".to_string(),
+        ];
+        for (key, value) in &env_vars {
+            launch_args.push("--env".to_string());
+            launch_args.push(format!("{key}={value}"));
+        }
+        launch_args.push(self.udid.clone());
+        launch_args.push(bundle_id.clone());
+
+        let launch_output = run_command_output("xcrun", launch_args.iter().map(String::as_str))
+            .await
+            .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
+
+        if !launch_output.status.success() {
+            return Err(FailToRun::Launch(eyre!(
+                "Failed to launch app:\n{}\n{}",
+                String::from_utf8_lossy(&launch_output.stdout).trim(),
+                String::from_utf8_lossy(&launch_output.stderr).trim(),
+            )));
+        }
+
+        let pid = parse_simctl_launch_pid(&String::from_utf8_lossy(&launch_output.stdout))
+            .ok_or_else(|| {
+                FailToRun::Launch(eyre!(
+                    "Failed to parse PID from simctl launch output: {}",
+                    String::from_utf8_lossy(&launch_output.stdout).trim()
+                ))
+            })?;
 
         // Create a Running instance - termination will use simctl terminate
         let udid = self.udid.clone();
-        let bundle_id = artifact.bundle_id().to_string();
+        let bundle_id_for_termination = bundle_id.clone();
         let (running, sender) = Running::new(move || {
             // Terminate the app when Running is dropped
-            let fut = run_command("xcrun", ["simctl", "terminate", &udid, &bundle_id]);
+            let fut = run_command(
+                "xcrun",
+                ["simctl", "terminate", &udid, &bundle_id_for_termination],
+            );
             if let Err(err) = block_on(fut) {
                 tracing::error!("Failed to terminate app on simulator: {err}");
             }
         });
 
         // Start log streaming (uses WaterUI subsystem predicate)
-        start_log_stream(sender.clone(), options.log_level());
+        start_log_stream(sender.clone(), log_level);
 
-        // Spawn a task to wait for the app to exit and check for panics
+        // Monitor the actual app process and classify crash vs normal exit.
+        let device_name = self.name.clone();
+        let device_identifier = self.udid.clone();
+        let sender_for_exit = sender;
         spawn(async move {
-            match child.status().await {
-                Ok(exit_status) => handle_app_exit(exit_status, start_time, &sender).await,
-                Err(e) => {
-                    let _ =
-                        sender.try_send(DeviceEvent::Crashed(format!("Failed to get status: {e}")));
-                }
+            wait_for_pid_exit(pid).await;
+
+            if let Some(report) = poll_for_crash_report(
+                &device_name,
+                &device_identifier,
+                &bundle_id,
+                &process_name,
+                Some(pid),
+                start_time,
+                Duration::from_secs(8),
+            )
+            .await
+            {
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(report.to_string()));
+                return;
             }
+
+            if let Some(panic_msg) = fetch_recent_panic_logs(start_instant, Some(pid)).await {
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(panic_msg));
+                return;
+            }
+
+            let _ = sender_for_exit.try_send(DeviceEvent::Exited);
         })
         .detach();
 
         Ok(running)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_simctl_launch_pid;
+
+    #[test]
+    fn parses_simctl_launch_pid_from_bundle_prefix() {
+        let stdout = "com.example.app: 12345\n";
+        assert_eq!(parse_simctl_launch_pid(stdout), Some(12345));
+    }
+
+    #[test]
+    fn parses_simctl_launch_pid_from_plain_pid() {
+        let stdout = "12345\n";
+        assert_eq!(parse_simctl_launch_pid(stdout), Some(12345));
+    }
+
+    #[test]
+    fn returns_none_when_no_pid_present() {
+        let stdout = "com.example.app: not-a-pid\n";
+        assert_eq!(parse_simctl_launch_pid(stdout), None);
     }
 }

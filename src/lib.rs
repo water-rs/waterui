@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::future_not_send)]
 
 extern crate alloc;
 #[macro_use]
@@ -38,6 +39,7 @@ pub mod prelude {
     //! ```
     pub use super::*;
     pub use color::*;
+    pub use fullscreen::*;
 
     pub use component::*;
     pub use dynamic::{DynamicHandler, watch};
@@ -125,7 +127,7 @@ mod entry;
 pub use entry::entry;
 
 pub mod app;
-pub mod overlay;
+pub mod fullscreen;
 pub mod window;
 
 pub use tracing as log;

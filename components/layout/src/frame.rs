@@ -255,8 +255,8 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // Frame uses ideal dimensions
-        assert_eq!(size.width, 100.0);
-        assert_eq!(size.height, 50.0);
+        assert!((size.width - 100.0).abs() < f32::EPSILON);
+        assert!((size.height - 50.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         let rects = layout.place(bounds, &children);
 
         // Child should be at bottom-trailing corner
-        assert_eq!(rects[0].x(), 70.0); // 100 - 30
-        assert_eq!(rects[0].y(), 80.0); // 100 - 20
+        assert!((rects[0].x() - 70.0).abs() < f32::EPSILON); // 100 - 30
+        assert!((rects[0].y() - 80.0).abs() < f32::EPSILON); // 100 - 20
     }
 }

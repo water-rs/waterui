@@ -192,7 +192,7 @@ impl DefaultHighlighter {
         Self { syntax_set, theme }
     }
 
-    fn find_syntax(&self, language: Language) -> &SyntaxReference {
+    fn find_syntax(&self, language: &Language) -> &SyntaxReference {
         self.syntax_set
             .find_syntax_by_extension(language.extension())
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
@@ -203,7 +203,7 @@ impl Highlighter for DefaultHighlighter {
     fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>> {
         use syntect::easy::HighlightLines;
 
-        let syntax = self.find_syntax(language);
+        let syntax = self.find_syntax(&language);
         let mut h = HighlightLines::new(syntax, &self.theme);
         let mut chunks = Vec::new();
 
@@ -238,9 +238,10 @@ impl Highlighter for DefaultHighlighter {
         // Handle trailing content without newline
         if !text.ends_with('\n')
             && let Some(last) = chunks.last_mut()
-                && last.text == "\n" {
-                    chunks.pop();
-                }
+            && last.text == "\n"
+        {
+            chunks.pop();
+        }
 
         chunks
     }

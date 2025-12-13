@@ -305,8 +305,8 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
         // ZStack takes the max width and max height
-        assert_eq!(size.width, 80.0);
-        assert_eq!(size.height, 60.0);
+        assert!((size.width - 80.0).abs() < f32::EPSILON);
+        assert!((size.height - 60.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -328,11 +328,11 @@ mod tests {
         let rects = layout.place(bounds, &children);
 
         // Child 1: centered in 100x100
-        assert_eq!(rects[0].x(), 30.0); // (100 - 40) / 2
-        assert_eq!(rects[0].y(), 40.0); // (100 - 20) / 2
+        assert!((rects[0].x() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+        assert!((rects[0].y() - 40.0).abs() < f32::EPSILON); // (100 - 20) / 2
 
         // Child 2: centered in 100x100
-        assert_eq!(rects[1].x(), 20.0); // (100 - 60) / 2
-        assert_eq!(rects[1].y(), 30.0); // (100 - 40) / 2
+        assert!((rects[1].x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
+        assert!((rects[1].y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
     }
 }

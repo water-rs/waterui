@@ -13,12 +13,10 @@ categories = ["gui", "text-processing"]
 [dependencies]
 waterui-core.workspace = true
 waterui-color.workspace = true
-waterui-layout.workspace = true
 nami.workspace = true
 time.workspace = true
 syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"] }
 two-face = "0.4"
-async-oneshot = "0.5"
 pulldown-cmark = "0.13"
 
 [lints]
