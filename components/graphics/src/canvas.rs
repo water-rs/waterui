@@ -117,7 +117,7 @@ impl core::fmt::Debug for DrawingContext<'_> {
 impl DrawingContext<'_> {
     /// Returns the size of the canvas.
     #[must_use]
-    pub fn size(&self) -> Size {
+    pub const fn size(&self) -> Size {
         Size::new(self.width, self.height)
     }
 
@@ -214,7 +214,7 @@ impl DrawingContext<'_> {
     /// This affects all subsequent drawing operations until `restore()`.
     pub fn translate(&mut self, x: f32, y: f32) {
         let translation = kurbo::Affine::translate((f64::from(x), f64::from(y)));
-        self.current_state.transform = self.current_state.transform * translation;
+        self.current_state.transform *= translation;
     }
 
     /// Rotates the current transform by the given angle (in radians).
@@ -222,7 +222,7 @@ impl DrawingContext<'_> {
     /// Positive angles rotate clockwise.
     pub fn rotate(&mut self, angle: f32) {
         let rotation = kurbo::Affine::rotate(f64::from(angle));
-        self.current_state.transform = self.current_state.transform * rotation;
+        self.current_state.transform *= rotation;
     }
 
     /// Scales the current transform by (x, y).
@@ -230,13 +230,14 @@ impl DrawingContext<'_> {
     /// Values less than 1.0 shrink, greater than 1.0 enlarge.
     pub fn scale(&mut self, x: f32, y: f32) {
         let scale = kurbo::Affine::scale_non_uniform(f64::from(x), f64::from(y));
-        self.current_state.transform = self.current_state.transform * scale;
+        self.current_state.transform *= scale;
     }
 
     /// Applies an arbitrary affine transform.
     ///
     /// The transform is specified as a 2x3 matrix: [a, b, c, d, e, f]
     /// which represents the matrix [[a, c, e], [b, d, f], [0, 0, 1]].
+    #[allow(clippy::many_single_char_names)]
     pub fn transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
         let affine = kurbo::Affine::new([
             f64::from(a),
@@ -246,10 +247,11 @@ impl DrawingContext<'_> {
             f64::from(e),
             f64::from(f),
         ]);
-        self.current_state.transform = self.current_state.transform * affine;
+        self.current_state.transform *= affine;
     }
 
     /// Replaces the current transform with the specified matrix.
+    #[allow(clippy::many_single_char_names)]
     pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
         self.current_state.transform = kurbo::Affine::new([
             f64::from(a),
@@ -262,7 +264,7 @@ impl DrawingContext<'_> {
     }
 
     /// Resets the transform to the identity matrix.
-    pub fn reset_transform(&mut self) {
+    pub const fn reset_transform(&mut self) {
         self.current_state.transform = kurbo::Affine::IDENTITY;
     }
 
@@ -370,13 +372,8 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
-        self.scene.stroke(
-            &stroke,
-            self.current_state.transform,
-            &brush,
-            None,
-            &circle,
-        );
+        self.scene
+            .stroke(&stroke, self.current_state.transform, &brush, None, &circle);
     }
 
     /// Strokes a line segment with the current stroke style.
@@ -384,13 +381,8 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let line = kurbo::Line::new(point_to_kurbo(start), point_to_kurbo(end));
-        self.scene.stroke(
-            &stroke,
-            self.current_state.transform,
-            &brush,
-            None,
-            &line,
-        );
+        self.scene
+            .stroke(&stroke, self.current_state.transform, &brush, None, &line);
     }
 
     // ========================================================================
@@ -408,22 +400,22 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the line width for stroking operations.
-    pub fn set_line_width(&mut self, width: f32) {
+    pub const fn set_line_width(&mut self, width: f32) {
         self.current_state.line_width = width;
     }
 
     /// Sets the line cap style (how stroke endpoints are drawn).
-    pub fn set_line_cap(&mut self, cap: LineCap) {
+    pub const fn set_line_cap(&mut self, cap: LineCap) {
         self.current_state.line_cap = cap;
     }
 
     /// Sets the line join style (how stroke corners are drawn).
-    pub fn set_line_join(&mut self, join: LineJoin) {
+    pub const fn set_line_join(&mut self, join: LineJoin) {
         self.current_state.line_join = join;
     }
 
     /// Sets the miter limit for miter line joins.
-    pub fn set_miter_limit(&mut self, limit: f32) {
+    pub const fn set_miter_limit(&mut self, limit: f32) {
         self.current_state.miter_limit = limit;
     }
 
@@ -435,21 +427,21 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the line dash offset (where the dash pattern starts).
-    pub fn set_line_dash_offset(&mut self, offset: f32) {
+    pub const fn set_line_dash_offset(&mut self, offset: f32) {
         self.current_state.line_dash_offset = offset;
     }
 
     /// Sets the global alpha (opacity) for all drawing operations.
     ///
     /// Values range from 0.0 (transparent) to 1.0 (opaque).
-    pub fn set_global_alpha(&mut self, alpha: f32) {
+    pub const fn set_global_alpha(&mut self, alpha: f32) {
         self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
     }
 
     /// Sets the shadow blur radius.
     ///
     /// A blur value of 0 means sharp shadows, higher values create softer shadows.
-    pub fn set_shadow_blur(&mut self, blur: f32) {
+    pub const fn set_shadow_blur(&mut self, blur: f32) {
         self.current_state.shadow_blur = blur.max(0.0);
     }
 
@@ -463,7 +455,7 @@ impl DrawingContext<'_> {
     /// # Arguments
     /// * `x` - Horizontal offset (positive = right)
     /// * `y` - Vertical offset (positive = down)
-    pub fn set_shadow_offset(&mut self, x: f32, y: f32) {
+    pub const fn set_shadow_offset(&mut self, x: f32, y: f32) {
         self.current_state.shadow_offset_x = x;
         self.current_state.shadow_offset_y = y;
     }
@@ -473,9 +465,9 @@ impl DrawingContext<'_> {
     /// # Arguments
     /// * `rule` - The fill rule to use (`NonZero` or `EvenOdd`)
     ///
-    /// NonZero (default): A point is inside the path if a ray from the point crosses a non-zero net number of path segments.
-    /// EvenOdd: A point is inside the path if a ray from the point crosses an odd number of path segments.
-    pub fn set_fill_rule(&mut self, rule: FillRule) {
+    /// `NonZero` (default): A point is inside the path if a ray from the point crosses a non-zero net number of path segments.
+    /// `EvenOdd`: A point is inside the path if a ray from the point crosses an odd number of path segments.
+    pub const fn set_fill_rule(&mut self, rule: FillRule) {
         self.current_state.fill_rule = rule.to_peniko();
     }
 
@@ -497,7 +489,13 @@ impl DrawingContext<'_> {
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
-    pub fn create_linear_gradient(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> LinearGradient {
+    pub const fn create_linear_gradient(
+        &self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    ) -> LinearGradient {
         LinearGradient::new(x0, y0, x1, y1)
     }
 
@@ -518,7 +516,7 @@ impl DrawingContext<'_> {
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
-    pub fn create_radial_gradient(
+    pub const fn create_radial_gradient(
         &self,
         x0: f32,
         y0: f32,
@@ -546,7 +544,7 @@ impl DrawingContext<'_> {
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
-    pub fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
+    pub const fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
         ConicGradient::new(start_angle, x, y)
     }
 
@@ -686,6 +684,7 @@ impl DrawingContext<'_> {
     /// println!("Text width: {}", metrics.width);
     /// ```
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn measure_text(&self, text: &str) -> TextMetrics {
         // Simple approximation based on font size
         // In a real implementation, this would use Parley to layout the text
@@ -798,7 +797,10 @@ struct CanvasRenderer {
 }
 
 impl CanvasRenderer {
-    fn new(draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>, env: waterui_core::Environment) -> Self {
+    fn new(
+        draw_fn: Box<dyn FnMut(&mut DrawingContext) + Send>,
+        env: waterui_core::Environment,
+    ) -> Self {
         Self {
             draw_fn,
             env,
@@ -916,7 +918,7 @@ impl GpuRenderer for CanvasRenderer {
         self.intermediate_size = (0, 0);
         let _ = (width, height);
     }
-
+    #[allow(clippy::too_many_lines)]
     fn render(&mut self, frame: &GpuFrame) {
         let Some(renderer) = &mut self.renderer else {
             return;
