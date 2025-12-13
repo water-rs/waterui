@@ -1,7 +1,7 @@
 //! Apple platform implementations for macOS, iOS, iOS Simulator, etc.
 
-use std::env;
 use std::path::PathBuf;
+use std::{env, fmt::Write};
 
 use color_eyre::eyre::{self, bail};
 use smol::fs;
@@ -69,6 +69,59 @@ async fn build_rust_lib(
     Ok(lib_dir)
 }
 
+async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
+    let Some(waterui_path) = project.manifest().waterui_path.as_deref() else {
+        return Ok(());
+    };
+
+    let waterui_root = {
+        let candidate = PathBuf::from(waterui_path);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            project.root().join(candidate)
+        }
+    };
+
+    let package_manifest = waterui_root.join("backends/apple/Package.swift");
+    if package_manifest.exists() {
+        return Ok(());
+    }
+
+    let gitmodules_path = waterui_root.join(".gitmodules");
+    let submodule_hint = if gitmodules_path.exists() {
+        fs::read_to_string(&gitmodules_path)
+            .await
+            .ok()
+            .filter(|c| c.contains("backends/apple"))
+            .map(|_| {
+                format!(
+                    "It looks like `backends/apple` is a git submodule; run `git submodule update --init --recursive` in `{}`.",
+                    waterui_root.display()
+                )
+            })
+    } else {
+        None
+    };
+
+    let mut message = format!(
+        "Local Apple backend Swift package manifest not found at `{}`.\n\
+         This is typically caused by an incomplete local WaterUI checkout (e.g. missing submodules) or an incorrect `waterui_path` in `Water.toml`.\n",
+        package_manifest.display()
+    );
+
+    if let Some(hint) = submodule_hint {
+        writeln!(&mut message, "{hint}\n").unwrap();
+    } else {
+        writeln!(
+            &mut message,
+            "If you're using a local WaterUI checkout, ensure `backends/apple/` exists and contains `Package.swift`."
+        ).unwrap();
+    }
+
+    bail!("{message}");
+}
+
 /// Clean Xcode build artifacts for an Apple platform.
 async fn clean_apple(project: &Project) -> eyre::Result<()> {
     let Some(backend) = project.apple_backend() else {
@@ -121,6 +174,8 @@ async fn package_apple<P: ApplePlatformExt>(
             xcodeproj.display()
         );
     }
+
+    validate_local_apple_backend(project).await?;
 
     // Tell Xcode not to call `water build` again (we already built)
     // SAFETY: CLI runs on main thread before spawning build processes
