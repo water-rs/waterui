@@ -4,7 +4,7 @@ Interactive UI controls for WaterUI applications with reactive data binding.
 
 ## Overview
 
-`waterui-controls` provides a complete set of form controls and interactive components for WaterUI applications. Each control integrates seamlessly with WaterUI's reactive system through `Binding<T>` and `Computed<T>`, enabling automatic UI updates when data changes. Controls render to native platform widgets (UIKit/UIKit/AppKit on Apple, Android Views/Jetpack Compose on Android), providing a truly native look and feel.
+`waterui-controls` provides a complete set of form controls and interactive components for WaterUI applications. Each control integrates seamlessly with WaterUI's reactive system through `Binding<T>` and `Computed<T>`, enabling automatic UI updates when data changes. Controls render to native platform widgets (UIKit/UIKit/AppKit on Apple, Android Views/Android View on Android), providing a truly native look and feel.
 
 This crate is part of the WaterUI workspace and is re-exported through the main `waterui` crate's prelude, so most users will access these components via `use waterui::prelude::*` rather than depending on this crate directly.
 
