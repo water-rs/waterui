@@ -6,7 +6,7 @@ The foundational crate providing essential building blocks for the WaterUI cross
 
 `waterui-core` establishes the architectural foundation for WaterUI applications, enabling declarative, reactive user interfaces that render to native platform widgets. This crate provides the core abstractions used throughout the framework: the `View` trait for composable UI components, the `Environment` for type-safe context propagation, reactive primitives powered by the `nami` library, and type erasure utilities for dynamic composition.
 
-Unlike traditional immediate-mode or retained-mode frameworks, WaterUI uses a reactive composition model where views automatically update when reactive state changes, and the entire view tree is transformed into native platform widgets (SwiftUI on Apple platforms, Jetpack Compose on Android) rather than custom rendering.
+Unlike traditional immediate-mode or retained-mode frameworks, WaterUI uses a reactive composition model where views automatically update when reactive state changes, and the entire view tree is transformed into native platform widgets (UIKit/AppKit on Apple platforms, Jetpack Compose on Android) rather than custom rendering.
 
 This crate is `no_std` compatible (with allocation) and works consistently across desktop, mobile, web, and embedded environments.
 

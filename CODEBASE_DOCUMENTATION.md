@@ -166,7 +166,7 @@ The `waterui-layout` crate covers containers, stacks, scrolling, and sizing. Com
 Backend crates receive FFI structs and render native widgets:
 
 - **`backends/android`**: Android shell integrating with Gradle; documentation and status live in `PLAN.md` and `IMPLEMENTATION_STATUS.md`.
-- **`backends/apple`**: Placeholder for Apple platforms (structure reserved for SwiftUI integration).
+- **`backends/apple`**: Placeholder for Apple platforms (structure reserved for UIKit/Appl integration).
 - **`backends/tui`**: Terminal UI backend scaffolding (`Cargo.toml`, roadmap `PLAN.md`).
 - **`backends/web`**: WebAssembly backend using `wasm-bindgen`, `web-sys`, and `js-sys` for DOM interaction.
 

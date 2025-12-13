@@ -74,7 +74,7 @@ pub mod style;
 pub use waterui_core::{
     AnyView, Str, animation,
     env::{self, Environment},
-    id::{self, Identifable},
+    id::{self, Identifiable},
     impl_extractor, raw_view, views,
 };
 
@@ -89,7 +89,7 @@ pub use waterui_core::{
 /// use waterui::prelude::*;
 /// use waterui::reactive::binding;
 ///
-/// let name = binding("World");
+/// let name = Binding::container("World");
 /// let greeting = text!("Hello, {}!", name);
 /// ```
 #[macro_export]
