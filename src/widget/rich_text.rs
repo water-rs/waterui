@@ -25,6 +25,7 @@ pub struct RichText {
     elements: Vec<RichTextElement>,
 }
 
+/// Includes a Markdown file as a [`RichText`] widget at compile time.
 #[macro_export]
 macro_rules! include_markdown {
     ($path:expr) => {
@@ -815,7 +816,7 @@ fn main() {
             println!("Element {}: {:?}", i, std::mem::discriminant(el));
             match el {
                 RichTextElement::Code { language, code } => {
-                    println!("  Code: lang={:?}, code={:?}", language, code);
+                    println!("  Code: lang={language:?}, code={code:?}");
                 }
                 RichTextElement::Text(s) => {
                     println!("  Text: {:?}", s.to_plain());
@@ -833,12 +834,12 @@ fn main() {
 
     #[test]
     fn parses_table() {
-        let markdown = r#"
+        let markdown = r"
 | Platform | Backend | Status |
 | -------- | ------- | ------ |
 | iOS | SwiftUI | Ready |
 | macOS | AppKit | Ready |
-"#;
+";
 
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
@@ -864,7 +865,7 @@ fn main() {
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
-        println!("Elements: {:#?}", elements);
+        println!("Elements: {elements:#?}");
 
         // Should have one Group element (inline paragraph)
         assert_eq!(elements.len(), 1);
@@ -875,7 +876,7 @@ fn main() {
         } = &elements[0]
         {
             assert!(inline, "Should be inline group");
-            println!("Inner elements: {:#?}", inner);
+            println!("Inner elements: {inner:#?}");
 
             // Find the Link element
             let link = inner
@@ -885,8 +886,8 @@ fn main() {
 
             if let Some(RichTextElement::Link { label, url }) = link {
                 let label_text = label.to_plain();
-                println!("Link label: '{}'", label_text);
-                println!("Link URL: '{}'", url);
+                println!("Link label: '{label_text}'");
+                println!("Link URL: '{url}'");
                 assert_eq!(
                     &*label_text, "WaterUI on GitHub",
                     "Link text should be complete"

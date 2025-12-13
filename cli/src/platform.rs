@@ -73,7 +73,7 @@ impl PackageOptions {
 ///
 /// Note: `Platform` would never check toolchain since it is the responsibility of the `Toolchain`.
 /// We assume the toolchain is already set up correctly when calling methods of this trait.
-pub trait Platform: Send {
+pub trait Platform: Send + Sync {
     /// The associated toolchain type for this platform.
     type Toolchain: Toolchain;
     /// The associated device type for this platform.

@@ -21,12 +21,10 @@ waterui-text.workspace = true
 waterui-color.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
-serde = { workspace = true, features = ["derive"], optional = true }
 regex = "1.12.2"
 
 [features]
 default = []
-serde = ["dep:serde", "waterui-core/serde"]
 
 [dev-dependencies]
 serde_json = "1.0"

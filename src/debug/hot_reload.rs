@@ -1,6 +1,6 @@
 //! Hotreload view component.
 //!
-//! This module provides hot reload functionality for WaterUI applications.
+//! This module provides hot reload functionality for `WaterUI` applications.
 //! It uses the `FullScreenOverlayManager` for showing status overlays.
 //!
 //! # Per-Function Hot Reload
@@ -27,7 +27,7 @@ use super::connection::CliEvent;
 use super::event::ConnectionError;
 use super::library::{self, HotReloadLibrary};
 use crate::ViewExt;
-use crate::overlay::FullScreenOverlayManager;
+use crate::fullscreen::FullScreenOverlayManager;
 use crate::prelude::*;
 use executor_core::spawn_local;
 use std::cell::Cell;
@@ -35,7 +35,7 @@ use std::cell::Cell;
 thread_local! {
     /// Thread-local state for hot reload system.
     /// Since hot reload runs on the main UI thread, we use thread_local storage.
-    static HOT_RELOAD_STATE: RefCell<HotReloadState> = RefCell::new(HotReloadState::new());
+    static HOT_RELOAD_STATE: RefCell<HotReloadState> = const { RefCell::new(HotReloadState::new()) };
 
     /// Stores the environment pointer from native for hot reload access.
     /// This is set by `waterui_app` and used by `load_view` during hot reload.
@@ -71,6 +71,7 @@ pub fn set_env_ptr(ptr: *mut ()) {
 }
 
 /// Get the stored environment pointer.
+#[must_use]
 pub fn get_env_ptr() -> *mut () {
     ENV_PTR.get()
 }
@@ -95,10 +96,10 @@ fn register_handler(
             .push(handler);
 
         // Store overlay manager if not already set
-        if state.overlay_manager.is_none() {
-            if let Some(mgr) = overlay_manager {
-                state.overlay_manager = Some(mgr);
-            }
+        if state.overlay_manager.is_none()
+            && let Some(mgr) = overlay_manager
+        {
+            state.overlay_manager = Some(mgr);
         }
     });
 }
@@ -188,7 +189,7 @@ async fn run_hot_reload_loop(
                 HOT_RELOAD_STATE.with(|state| {
                     let state = state.borrow();
 
-                    for (id, handler_list) in state.handlers.iter() {
+                    for (id, handler_list) in &state.handlers {
                         // Extract function name from ID (e.g., "my_crate::sidebar" -> "sidebar")
                         let fn_name = id.rsplit("::").next().unwrap_or(id);
                         let symbol = format!("waterui_hot_reload_{fn_name}\0");
@@ -210,12 +211,12 @@ async fn run_hot_reload_loop(
 
                     // Also try to load the legacy main symbol for backward compatibility
                     let main_symbol = "waterui_hot_reload_main\0";
-                    if lib.has_symbol(main_symbol) {
-                        if let Some(main_handlers) = state.handlers.get("main") {
-                            for handler in main_handlers {
-                                if let Ok(view) = unsafe { lib.load_symbol(main_symbol) } {
-                                    handler.set(view);
-                                }
+                    if lib.has_symbol(main_symbol)
+                        && let Some(main_handlers) = state.handlers.get("main")
+                    {
+                        for handler in main_handlers {
+                            if let Ok(view) = unsafe { lib.load_symbol(main_symbol) } {
+                                handler.set(view);
                             }
                         }
                     }
@@ -292,8 +293,7 @@ impl HotReloadConfig {
 
 impl<V: View> Hotreload<V> {
     /// Create a new hot-reloadable view with explicit config.
-    #[allow(unused_variables)]
-    pub fn new(initial: V, config: HotReloadConfig, env: &Environment) -> Self {
+    pub const fn new(initial: V, config: HotReloadConfig) -> Self {
         Self { initial, config }
     }
 
@@ -502,7 +502,7 @@ impl StatusOverlay {
 /// }
 /// ```
 pub struct HotReloadView<F> {
-    /// Unique identifier for this hot-reloadable function (e.g., "my_crate::sidebar").
+    /// Unique identifier for this hot-reloadable function.
     id: &'static str,
     /// Builder function that creates the initial view.
     builder: F,
@@ -562,6 +562,6 @@ impl<F> core::fmt::Debug for HotReloadView<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HotReloadView")
             .field("id", &self.id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }

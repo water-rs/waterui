@@ -9,7 +9,7 @@ use smol::channel::{self, Receiver};
 
 /// Watches source files for changes and emits events.
 pub struct FileWatcher {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
     rx: Receiver<()>,
 }
 
@@ -50,16 +50,13 @@ impl FileWatcher {
             let _ = sync_tx.send(res);
         })?;
 
-        let mut file_watcher = Self {
-            _watcher: watcher,
-            rx,
-        };
+        let mut file_watcher = Self { watcher, rx };
 
         // Watch src directory
         let src_path = project_path.join("src");
         if src_path.exists() {
             file_watcher
-                ._watcher
+                .watcher
                 .watch(&src_path, RecursiveMode::Recursive)?;
         }
 
@@ -69,7 +66,7 @@ impl FileWatcher {
     /// Returns a receiver for file change events.
     ///
     /// Each receive indicates that source files have changed and a rebuild may be needed.
-    #[must_use] 
+    #[must_use]
     pub const fn receiver(&self) -> &Receiver<()> {
         &self.rx
     }
@@ -95,10 +92,10 @@ fn is_relevant_change(event: &Event, started_at: SystemTime) -> bool {
     event
         .paths
         .iter()
-        .any(|path| is_relevant_path(path, kind, started_at))
+        .any(|path| is_relevant_path(path, *kind, started_at))
 }
 
-fn is_relevant_path(path: &Path, kind: &notify::EventKind, started_at: SystemTime) -> bool {
+fn is_relevant_path(path: &Path, kind: notify::EventKind, started_at: SystemTime) -> bool {
     use notify::{EventKind, event::ModifyKind};
 
     if !path
@@ -122,8 +119,7 @@ fn is_relevant_path(path: &Path, kind: &notify::EventKind, started_at: SystemTim
     // Some backends can emit initial "create/modify" events for pre-existing files when a watch
     // is first installed. Filter those out by requiring the file to have been modified after we
     // started watching.
-    match std::fs::metadata(path).and_then(|m| m.modified()) {
-        Ok(modified) => modified > started_at,
-        Err(_) => true,
-    }
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map_or(true, |modified| modified > started_at)
 }

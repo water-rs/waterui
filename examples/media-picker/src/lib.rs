@@ -243,12 +243,12 @@ fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {
 
 fn validate_media_result(media: &Media, expected_filter: &MediaFilter) -> Result<(), String> {
     // Sanity check: if native says "image" but returns a video file URL, that's a bug.
-    if let Media::Image(url) = media {
-        if looks_like_video_url(url) {
-            return Err(format!(
-                "BUG: native returned a video URL but labeled it as an image: {url}"
-            ));
-        }
+    if let Media::Image(url) = media
+        && looks_like_video_url(url)
+    {
+        return Err(format!(
+            "BUG: native returned a video URL but labeled it as an image: {url}"
+        ));
     }
 
     // Fast-fail for mismatched filter/type contracts.

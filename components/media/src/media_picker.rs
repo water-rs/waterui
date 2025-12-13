@@ -192,6 +192,7 @@ impl Selected {
     ///
     /// This is typically used to create an initial/empty selection state.
     /// The manager will be populated when the user picks media via `MediaPicker`.
+    #[allow(dead_code)]
     const fn new(id: u32, manager: MediaPickerManager) -> Self {
         Self { id, manager }
     }
@@ -209,6 +210,10 @@ impl Selected {
     /// # Returns
     ///
     /// Returns the loaded [`Media`] item (Image, Video, or `LivePhoto`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the media loading operation fails or if the receiver channel is closed.
     ///
     /// # Example
     ///
