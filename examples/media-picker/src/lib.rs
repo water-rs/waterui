@@ -14,11 +14,18 @@ use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
 
+/// Combined state for the media display area
+#[derive(Debug, Clone, PartialEq)]
+enum DisplayState {
+    Empty,
+    Loading,
+    Loaded(Media),
+}
+
 fn main() -> impl View {
-    // Currently selected media (None = no selection yet)
-    let loaded_media: Binding<Option<Media>> = binding(None);
-    let is_loading = binding(false);
-    let selection = binding(Selected::new(0));
+    // Single state binding for cleaner reactivity
+    let display_state: Binding<DisplayState> = binding(DisplayState::Empty);
+    let selection: Binding<Option<Selected>> = Binding::default();
 
     // Main layout
     vstack((
@@ -29,21 +36,16 @@ fn main() -> impl View {
             .padding_with(16.0),
         // Picker buttons row
         hstack((
-            picker_button(MediaFilter::Image, &selection, &loaded_media, &is_loading),
-            picker_button(MediaFilter::Video, &selection, &loaded_media, &is_loading),
-            picker_button(
-                MediaFilter::LivePhoto,
-                &selection,
-                &loaded_media,
-                &is_loading,
-            ),
+            picker_button(MediaFilter::Image, &selection, &display_state),
+            picker_button(MediaFilter::Video, &selection, &display_state),
+            picker_button(MediaFilter::LivePhoto, &selection, &display_state),
         ))
         .spacing(12.0)
         .padding_with(16.0),
         // Divider
         Divider,
-        // Media display area
-        media_display_area(loaded_media.clone(), is_loading.clone()),
+        // Media display area - single Dynamic::watch, no nesting
+        media_display_area(display_state.clone()),
         spacer(),
     ))
 }
@@ -55,105 +57,99 @@ pub fn app(env: Environment) -> App {
 /// Creates a picker button that opens the media picker with the given filter
 fn picker_button(
     filter: MediaFilter,
-    selection: &Binding<Selected>,
-    loaded_media: &Binding<Option<Media>>,
-    is_loading: &Binding<bool>,
+    selection: &Binding<Option<Selected>>,
+    display_state: &Binding<DisplayState>,
 ) -> impl View {
-    let loaded = loaded_media.clone();
-    let loading = is_loading.clone();
+    let state = display_state.clone();
     let sel = selection.clone();
 
     // Create media picker and watch for selection changes
-    MediaPicker::new(selection)
-        .filter(filter)
-        .on_change(&sel, move |_new_selection| {
-            // Clear previous media and show loading
-            loaded.set(None);
-            loading.set(true);
+    MediaPicker::new(&sel).filter(filter).on_change(&sel, {
+        let state = state.clone();
+        move |new_selection| {
+            if let Some(selected) = new_selection {
+                // Show loading state immediately
+                state.set(DisplayState::Loading);
 
-            let _loaded = loaded.clone();
-            let loading = loading.clone();
+                let state = state.clone();
 
-            // Load the selected media asynchronously
-            // Note: In a real app, you'd get the environment from context
-            // and call new_selection.load(&env).await
-            spawn_local(async move {
-                // Simulated loading - in real usage:
-                // let media = new_selection.load(&env).await;
-                // _loaded.set(Some(media));
-                loading.set(false);
-            })
-            .detach();
-        })
+                // Load the selected media asynchronously
+                spawn_local(async move {
+                    let media = selected.load().await;
+                    log::debug!("Loaded media: {:?}", media);
+                    state.set(DisplayState::Loaded(media));
+                })
+                .detach();
+            }
+        }
+    })
 }
 
-/// Displays the loaded media or a placeholder
-fn media_display_area(
-    loaded_media: Binding<Option<Media>>,
-    is_loading: Binding<bool>,
-) -> impl View {
-    let media = loaded_media;
-    let loading_state = is_loading;
+/// Displays the loaded media or a placeholder - single Dynamic::watch
+fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
+    Dynamic::watch(display_state, move |state| match state {
+        DisplayState::Empty => vstack((
+            text("No media selected")
+                .size(18.0)
+                .foreground(theme_color::MutedForeground),
+            text("Tap a button above to select media")
+                .size(14.0)
+                .foreground(theme_color::MutedForeground),
+        ))
+        .spacing(8.0)
+        .anyview(),
 
-    Dynamic::watch(media.clone(), move |current_media| {
-        Dynamic::watch(loading_state.clone(), move |is_loading| {
-            if is_loading {
-                // Show loading indicator
-                vstack((
-                    loading(),
-                    text("Loading media...").foreground(theme_color::MutedForeground),
-                ))
-                .spacing(12.0)
-                .anyview()
-            } else if let Some(media) = current_media.clone() {
-                // Show the loaded media
-                media_view(media)
-            } else {
-                // Show placeholder
-                vstack((
-                    text("No media selected")
-                        .size(18.0)
-                        .foreground(theme_color::MutedForeground),
-                    text("Tap a button above to select media")
-                        .size(14.0)
-                        .foreground(theme_color::MutedForeground),
-                ))
-                .spacing(8.0)
-                .anyview()
-            }
-        })
+        DisplayState::Loading => vstack((
+            loading(),
+            text("Loading media...").foreground(theme_color::MutedForeground),
+        ))
+        .spacing(12.0)
+        .anyview(),
+
+        DisplayState::Loaded(media) => media_view(media),
     })
 }
 
 /// Creates a view for the loaded media based on its type
 fn media_view(media: Media) -> AnyView {
     match media {
-        Media::Image(url) => vstack((
-            Photo::new(url),
-            text("Image")
-                .size(14.0)
-                .foreground(theme_color::MutedForeground)
-                .padding_with(8.0),
-        ))
-        .anyview(),
-        Media::Video(url) => vstack((
-            VideoPlayer::new(url)
-                .show_controls(true)
-                .aspect_ratio(AspectRatio::Fit),
-            text("Video")
-                .size(14.0)
-                .foreground(theme_color::MutedForeground)
-                .padding_with(8.0),
-        ))
-        .anyview(),
-        Media::LivePhoto(source) => vstack((
-            LivePhoto::new(source),
-            text("Live Photo")
-                .size(14.0)
-                .foreground(theme_color::MutedForeground)
-                .padding_with(8.0),
-        ))
-        .anyview(),
+        Media::Image(url) => {
+            log::debug!("Displaying image from: {}", url);
+            vstack((
+                Photo::new(url.clone()).on_event(move |event| {
+                    log::debug!("Photo event: {:?}", event);
+                }),
+                text("Image")
+                    .size(14.0)
+                    .foreground(theme_color::MutedForeground)
+                    .padding_with(8.0),
+            ))
+            .anyview()
+        }
+        Media::Video(url) => {
+            log::debug!("Displaying video from: {}", url);
+            vstack((
+                VideoPlayer::new(url)
+                    .show_controls(true)
+                    .aspect_ratio(AspectRatio::Fit),
+                text("Video")
+                    .size(14.0)
+                    .foreground(theme_color::MutedForeground)
+                    .padding_with(8.0),
+            ))
+            .anyview()
+        }
+        Media::LivePhoto(source) => {
+            log::debug!("Displaying live photo");
+            vstack((
+                LivePhoto::new(source),
+                text("Live Photo")
+                    .size(14.0)
+                    .foreground(theme_color::MutedForeground)
+                    .padding_with(8.0),
+            ))
+            .anyview()
+        }
     }
 }
 
