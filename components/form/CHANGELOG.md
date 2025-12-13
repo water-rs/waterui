@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduce StretchAxis for layout management
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration
-- *(cli)* enhance Android backend integration with improved logging and automation
+- _(cli)_ enhance Android backend integration with improved logging and automation
 - add validation utilities for form components; implement Validatable and Validator traits
 - add waterui-controls module with button, slider, stepper, toggle, and text field components; update dependencies in related Cargo.toml files
-- *(android)* Enhance project creation and packaging
+- _(android)_ Enhance project creation and packaging
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Implement Android backend components and runtime
 - enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add counter example to README and enhance tutorial book with tests
 - implement ComputedFont class and enhance Text component; update ScrollView initialization and demo structure
 - Enhance form components with new derive macros and examples
-- *(cli)* add WaterUI CLI for project management
+- _(cli)_ add WaterUI CLI for project management
 - Implement custom layout engine integration with GTK4
 - Add GTK4 backend for WaterUI framework
 
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
 - Refactor reactive system for nami API updates
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 - Update code block syntax in documentation for clarity
 - correct import path for FormBuilder in derive_test example
 
@@ -97,6 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add Uniffi scaffolding and FFI support for form components
 - Polish document
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support
