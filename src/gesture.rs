@@ -6,7 +6,7 @@
 //!
 //! # Hit-Testing Behavior
 //!
-//! WaterUI uses a **pass-through** hit-testing model where views without gesture handlers
+//! `WaterUI` uses a **pass-through** hit-testing model where views without gesture handlers
 //! are transparent to touch events. This means:
 //!
 //! - **Non-interactive views** (e.g., [`Spacer`], plain [`Text`], layout containers) do not
@@ -38,7 +38,7 @@
 //!
 //! Backend implementors must ensure:
 //!
-//! 1. Layout containers (VStack, HStack, ZStack) do not consume unhandled touch events.
+//! 1. Layout containers (`VStack`, `HStack`, `ZStack`) do not consume unhandled touch events.
 //! 2. Only views with registered gesture handlers or inherent interactivity (buttons, sliders)
 //!    should return `true` from hit-test queries.
 //! 3. When multiple views overlap, the hit-test should find the topmost *interactive* view,

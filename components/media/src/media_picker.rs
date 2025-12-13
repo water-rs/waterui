@@ -11,55 +11,72 @@ use std::fmt::Debug;
 use alloc::rc::Rc;
 
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Binding, Computed, Environment, configurable, reactive::impl_constant};
+use waterui_core::{
+    AnyView, Binding, Computed, Environment, Signal, View, reactive::impl_constant,
+};
 
 use crate::Media;
 
-/// Configuration for the `MediaPicker` component.
-#[derive(Debug)]
-pub struct MediaPickerConfig {
-    /// The current selection binding (native writes to this when user picks).
-    pub selection: Binding<Selected>,
-    /// A filter to apply to media selection.
-    pub filter: Computed<MediaFilter>,
-}
-type MediaPickerCallback = Box<dyn FnOnce(Media)>;
-
-/// A media loader function type.
+/// Manager for presenting media picker and loading selected media.
+/// Installed by native backends via FFI.
 ///
-/// Should be registered to environment to handle loading media based on selection.
+/// This trait should be implemented by platform-specific backends to provide
+/// native media picker functionality.
+pub trait CustomMediaPickerManager: 'static {
+    /// Present the native media picker modal with the given filter.
+    /// Returns the selected media ID via callback when user picks media.
+    fn present(&self, filter: MediaFilter, callback: impl FnOnce(Selected) + 'static);
+
+    /// Load media content for the given selection ID.
+    /// Returns the loaded Media via callback.
+    fn load(&self, selected: Selected, callback: impl FnOnce(Media) + 'static);
+}
+
+/// Type-erased `MediaPickerManager` stored in Environment.
 #[derive(Clone)]
-pub struct MediaLoader(Rc<dyn Fn(Selected, MediaPickerCallback)>);
+pub struct MediaPickerManager(Rc<dyn MediaPickerManagerImpl>);
 
-impl Debug for MediaLoader {
+trait MediaPickerManagerImpl: 'static {
+    fn present(&self, filter: MediaFilter, callback: Box<dyn FnOnce(Selected)>);
+    fn load(&self, selected: Selected, callback: Box<dyn FnOnce(Media)>);
+}
+
+impl<T: CustomMediaPickerManager> MediaPickerManagerImpl for T {
+    fn present(&self, filter: MediaFilter, callback: Box<dyn FnOnce(Selected)>) {
+        CustomMediaPickerManager::present(self, filter, callback);
+    }
+
+    fn load(&self, selected: Selected, callback: Box<dyn FnOnce(Media)>) {
+        CustomMediaPickerManager::load(self, selected, callback);
+    }
+}
+
+impl MediaPickerManager {
+    /// Creates a new `MediaPickerManager` from any type implementing `CustomMediaPickerManager`.
+    pub fn new<T: CustomMediaPickerManager>(manager: T) -> Self {
+        Self(Rc::new(manager))
+    }
+}
+
+impl Debug for MediaPickerManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MediaLoader").finish()
+        f.debug_struct("MediaPickerManager").finish()
     }
 }
 
-impl MediaLoader {
-    /// Creates a new MediaLoader with the given function.
-    pub fn new<F>(f: F) -> Self
-    where
-        F: 'static + Fn(Selected, MediaPickerCallback),
-    {
-        Self(Rc::new(f))
-    }
-
-    /// Calls the media loader function.
-    pub fn load(&self, selection: Selected, callback: MediaPickerCallback) {
-        (self.0)(selection, callback);
-    }
+/// A media picker view that lets users select photos, videos, or live media.
+///
+/// `MediaPicker` renders as a button that, when clicked, presents the native
+/// platform media picker. The selected media ID is written to the provided binding.
+#[derive(Debug)]
+pub struct MediaPicker {
+    selection: Binding<Selected>,
+    filter: Computed<MediaFilter>,
+    label: AnyView,
 }
-
-configurable!(
-    #[doc = "A media picker view that lets users select photos, videos, or live media."]
-    MediaPicker,
-    MediaPickerConfig
-);
 
 impl MediaPicker {
-    /// Creates a new MediaPicker with a selection binding.
+    /// Creates a new `MediaPicker` with a selection binding.
     ///
     /// # Example
     ///
@@ -67,11 +84,13 @@ impl MediaPicker {
     /// let selection = binding(Selected::new(0));
     /// let picker = MediaPicker::new(&selection);
     /// ```
+    #[must_use] 
     pub fn new(selection: &Binding<Selected>) -> Self {
-        Self(MediaPickerConfig {
+        Self {
             selection: selection.clone(),
             filter: MediaFilter::Image.into_computed(),
-        })
+            label: AnyView::new(waterui_text::text("Select Media")),
+        }
     }
 
     /// Sets the media filter for this picker.
@@ -83,8 +102,46 @@ impl MediaPicker {
     /// ```
     #[must_use]
     pub fn filter(mut self, filter: impl IntoComputed<MediaFilter>) -> Self {
-        self.0.filter = filter.into_computed();
+        self.filter = filter.into_computed();
         self
+    }
+
+    /// Sets a custom label for the picker button.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// MediaPicker::new(&selection).label(text("Choose Photo"));
+    /// ```
+    #[must_use]
+    pub fn label(mut self, label: impl View) -> Self {
+        self.label = AnyView::new(label);
+        self
+    }
+}
+
+impl View for MediaPicker {
+    fn body(self, env: &Environment) -> impl View {
+        use waterui_controls::button;
+
+        let selection = self.selection.clone();
+        let filter = self.filter.clone();
+
+        // Get manager from environment during view construction
+        let manager = env
+            .get::<MediaPickerManager>()
+            .expect("MediaPickerManager not installed in environment")
+            .clone();
+
+        button(self.label).action(move || {
+            let sel = selection.clone();
+            manager.0.present(
+                filter.get(),
+                Box::new(move |selected| {
+                    sel.set(selected);
+                }),
+            );
+        })
     }
 }
 
@@ -126,17 +183,17 @@ impl Selected {
     ///
     /// ```rust,ignore
     /// let selection = binding(Selected::new(0));
-    /// let picker = MediaPicker::new().selection(selection.clone());
+    /// let picker = MediaPicker::new(&selection);
     ///
     /// // After user selects media...
-    /// let media = selection.get().load().await;
+    /// let media = selection.get().load(&env).await;
     /// ```
     pub async fn load(self, env: &Environment) -> Media {
-        let loader = env
-            .get::<MediaLoader>()
-            .expect("MediaLoader not found in environment");
+        let manager = env
+            .get::<MediaPickerManager>()
+            .expect("MediaPickerManager not found in environment");
         let (mut sender, receiver) = async_oneshot::oneshot();
-        loader.load(
+        manager.0.load(
             self,
             Box::new(move |media| {
                 let _ = sender.send(media);

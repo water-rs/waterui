@@ -30,9 +30,9 @@ pub enum TargetPlatform {
 pub enum AndroidArch {
     /// ARM64 (arm64-v8a) - modern Android devices
     Arm64,
-    /// x86_64 - emulators on Intel/AMD
+    /// `x86_64` - emulators on Intel/AMD
     X86_64,
-    /// ARMv7 (armeabi-v7a) - older 32-bit devices
+    /// `ARMv7` (armeabi-v7a) - older 32-bit devices
     Armv7,
     /// x86 - older 32-bit emulators
     X86,
@@ -70,7 +70,7 @@ pub struct Args {
     path: PathBuf,
 
     /// Target architectures for Android (comma-separated).
-    /// Examples: --arch arm64, --arch arm64,x86_64
+    /// Examples: --arch arm64, --arch `arm64,x86_64`
     /// Required for Android platform.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
@@ -120,31 +120,28 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 2: Build (package requires a built library)
     let build_options = BuildOptions::new(args.release, false);
 
-    match args.platform {
-        TargetPlatform::Android => {
-            // Clean stale jniLibs before building
-            AndroidPlatform::clean_jni_libs(&project).await?;
+    if args.platform == TargetPlatform::Android {
+        // Clean stale jniLibs before building
+        AndroidPlatform::clean_jni_libs(&project).await?;
 
-            // Build for each specified architecture
-            for arch in &args.arch {
-                let spinner =
-                    shell::spinner(&format!("Building Rust library ({})...", arch.to_abi()));
-                let platform = AndroidPlatform::from_abi(arch.to_abi());
-                display_output(platform.build(&project, build_options.clone())).await?;
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                success!("Built for {}", arch.to_abi());
-            }
-        }
-        _ => {
-            let spinner = shell::spinner("Building Rust library...");
-            display_output(build_for_platform(&project, args.platform, build_options)).await?;
+        // Build for each specified architecture
+        for arch in &args.arch {
+            let spinner =
+                shell::spinner(format!("Building Rust library ({})...", arch.to_abi()));
+            let platform = AndroidPlatform::from_abi(arch.to_abi());
+            display_output(platform.build(&project, build_options.clone())).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Built Rust library");
+            success!("Built for {}", arch.to_abi());
         }
+    } else {
+        let spinner = shell::spinner("Building Rust library...");
+        display_output(build_for_platform(&project, args.platform, build_options)).await?;
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        success!("Built Rust library");
     }
 
     // Step 3: Package
