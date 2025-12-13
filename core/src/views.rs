@@ -18,7 +18,7 @@ use core::{
 use nami::collection::Collection;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 
-use crate::id::{Identifable, SelfId};
+use crate::id::{Identifiable, SelfId};
 
 /// A trait for collections that can provide unique identifiers for their elements.
 ///
@@ -305,7 +305,7 @@ where
 pub struct ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: Fn(C::Item) -> V,
     V: View,
 {
@@ -316,7 +316,7 @@ where
 impl<C, F, V> ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: Fn(C::Item) -> V,
     V: View,
 {
@@ -357,11 +357,11 @@ where
 impl<C, F, V> Collection for ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    type Item = <C::Item as Identifable>::Id;
+    type Item = <C::Item as Identifiable>::Id;
     type Guard = C::Guard;
     fn get(&self, index: usize) -> Option<Self::Item> {
         self.data.get(index).map(|item| item.id())
@@ -380,7 +380,7 @@ where
             let ctx = ctx.map(|value| {
                 value
                     .iter()
-                    .map(super::id::Identifable::id)
+                    .map(super::id::Identifiable::id)
                     .collect::<Vec<_>>()
             });
 
@@ -392,11 +392,11 @@ where
 impl<C, F, V> Views for ForEach<C, F, V>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    type Id = <C::Item as Identifable>::Id;
+    type Id = <C::Item as Identifiable>::Id;
     type View = V;
     type Guard = C::Guard;
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -417,7 +417,7 @@ where
             let ctx = ctx.map(|value| {
                 value
                     .iter()
-                    .map(super::id::Identifable::id)
+                    .map(super::id::Identifiable::id)
                     .collect::<Vec<_>>()
             });
 
