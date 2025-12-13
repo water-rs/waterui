@@ -241,6 +241,7 @@ macro_rules! ffi_computed {
                 $ty: $crate::IntoFFI + 'static,
             {
                 use alloc::boxed::Box;
+                #[allow(clippy::useless_transmute)]
                 let call: unsafe extern "C" fn(
                     *mut (),
                     <$ty as $crate::IntoFFI>::FFI,

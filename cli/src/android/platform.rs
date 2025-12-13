@@ -17,6 +17,44 @@ use crate::{
     utils::{copy_file, run_command},
 };
 
+fn validate_android_package_name(package: &str) -> eyre::Result<()> {
+    if package.is_empty() {
+        bail!("Android package name is empty (set `[package].bundle_identifier` in `Water.toml`).");
+    }
+
+    if package.contains('-') {
+        bail!(
+            "Invalid Android package name: '{package}' (hyphens are not allowed). \
+Set `[package].bundle_identifier` in `Water.toml` to a valid Java package name (e.g. replace '-' with '_')."
+        );
+    }
+
+    for segment in package.split('.') {
+        if segment.is_empty() {
+            bail!("Invalid Android package name: '{package}' (empty segment).");
+        }
+
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            bail!("Invalid Android package name: '{package}' (empty segment).");
+        };
+
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            bail!(
+                "Invalid Android package name: '{package}' (segment '{segment}' must start with a letter or underscore)."
+            );
+        }
+
+        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            bail!(
+                "Invalid Android package name: '{package}' (segment '{segment}' contains invalid characters)."
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Get the NDK host tag based on the current machine's OS and architecture.
 fn ndk_host_tag() -> &'static str {
     use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -61,8 +99,8 @@ fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
         .join("bin/llvm-ar")
 }
 
-/// Create a wrapper CMake toolchain file that sets ANDROID_ABI before including
-/// the NDK's toolchain. This is required because cmake-rs doesn't pass ANDROID_ABI
+/// Create a wrapper `CMake` toolchain file that sets `ANDROID_ABI` before including
+/// the NDK's toolchain. This is required because cmake-rs doesn't pass `ANDROID_ABI`
 /// as a -D define, causing the NDK toolchain to default to armeabi-v7a.
 ///
 /// Returns the path to the created wrapper toolchain file.
@@ -205,6 +243,8 @@ impl AndroidPlatform {
         options: PackageOptions,
         abis: &[&str],
     ) -> eyre::Result<Artifact> {
+        validate_android_package_name(project.bundle_identifier())?;
+
         let backend_path = project.backend_path::<AndroidBackend>();
         let gradlew = backend_path.join(if cfg!(windows) {
             "gradlew.bat"

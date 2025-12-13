@@ -60,7 +60,7 @@ impl CliConnection {
                 let socket = result.map_err(|e| ConnectionError::WebSocket(e.to_string()))?;
                 Ok(Self { socket })
             }
-            _ = Box::pin(timeout).fuse() => {
+            () = Box::pin(timeout).fuse() => {
                 Err(ConnectionError::Timeout { url })
             }
         }
