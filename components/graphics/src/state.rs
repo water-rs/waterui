@@ -212,6 +212,9 @@ pub struct DrawingState {
     pub(crate) shadow_color: Color,
     pub(crate) shadow_offset_x: f32,
     pub(crate) shadow_offset_y: f32,
+
+    // Fill rule (Phase 7)
+    pub(crate) fill_rule: peniko::Fill,
 }
 
 impl Default for DrawingState {
@@ -234,6 +237,7 @@ impl Default for DrawingState {
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0), // Transparent black
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
+            fill_rule: peniko::Fill::NonZero, // Default fill rule
         }
     }
 }
