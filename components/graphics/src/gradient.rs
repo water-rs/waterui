@@ -1,9 +1,9 @@
 //! Gradient builders for Canvas.
 //!
 //! This module provides HTML5 Canvas-style gradient builders that use
-//! WaterUI's native Color type.
+//! WaterUI's native `ResolvedColor` type.
 
-use waterui_color::Color;
+use waterui_color::ResolvedColor;
 use waterui_core::layout::Point;
 
 // Internal imports for rendering
@@ -19,13 +19,13 @@ pub struct ColorStop {
     /// Position along the gradient (0.0 to 1.0).
     pub offset: f32,
     /// Color at this position.
-    pub color: Color,
+    pub color: ResolvedColor,
 }
 
 impl ColorStop {
     /// Creates a new color stop.
     #[must_use]
-    pub fn new(offset: f32, color: impl Into<Color>) -> Self {
+    pub fn new(offset: f32, color: impl Into<ResolvedColor>) -> Self {
         Self {
             offset,
             color: color.into(),
@@ -42,8 +42,8 @@ impl ColorStop {
 ///
 /// ```ignore
 /// let gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
-/// gradient.add_color_stop(0.0, Color::red());
-/// gradient.add_color_stop(1.0, Color::blue());
+/// gradient.add_color_stop(0.0, Srgb::new(1.0, 0.0, 0.0));
+/// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 1.0));
 /// ctx.set_fill_style(gradient);
 /// ```
 #[derive(Debug, Clone)]
@@ -69,24 +69,19 @@ impl LinearGradient {
     /// # Arguments
     /// * `offset` - Position (0.0 to 1.0) along the gradient
     /// * `color` - Color at this position
-    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<Color>) {
+    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<ResolvedColor>) {
         self.stops.push(ColorStop::new(offset, color));
     }
 
     /// Builds the gradient into a peniko Brush for rendering.
-    ///
-    /// This is internal and requires the environment to resolve colors.
     #[must_use]
-    pub(crate) fn build(&self, env: &waterui_core::Environment) -> peniko::Brush {
-        use nami::Signal;
-
+    pub(crate) fn build(&self) -> peniko::Brush {
         // Convert color stops to peniko format
         let peniko_stops: Vec<peniko::ColorStop> = self
             .stops
             .iter()
             .map(|stop| {
-                let resolved = stop.color.resolve(env).get();
-                let peniko_color = resolved_color_to_peniko(resolved);
+                let peniko_color = resolved_color_to_peniko(stop.color);
                 peniko::ColorStop {
                     offset: stop.offset,
                     color: peniko_color.into(),
@@ -111,8 +106,8 @@ impl LinearGradient {
 ///
 /// ```ignore
 /// let gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
-/// gradient.add_color_stop(0.0, Color::white());
-/// gradient.add_color_stop(1.0, Color::black());
+/// gradient.add_color_stop(0.0, Srgb::new(1.0, 1.0, 1.0));
+/// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 0.0));
 /// ctx.set_fill_style(gradient);
 /// ```
 #[derive(Debug, Clone)]
@@ -144,22 +139,19 @@ impl RadialGradient {
     }
 
     /// Adds a color stop to the gradient.
-    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<Color>) {
+    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<ResolvedColor>) {
         self.stops.push(ColorStop::new(offset, color));
     }
 
     /// Builds the gradient into a peniko Brush for rendering.
     #[must_use]
-    pub(crate) fn build(&self, env: &waterui_core::Environment) -> peniko::Brush {
-        use nami::Signal;
-
+    pub(crate) fn build(&self) -> peniko::Brush {
         // Convert color stops
         let peniko_stops: Vec<peniko::ColorStop> = self
             .stops
             .iter()
             .map(|stop| {
-                let resolved = stop.color.resolve(env).get();
-                let peniko_color = resolved_color_to_peniko(resolved);
+                let peniko_color = resolved_color_to_peniko(stop.color);
                 peniko::ColorStop {
                     offset: stop.offset,
                     color: peniko_color.into(),
@@ -168,8 +160,13 @@ impl RadialGradient {
             .collect();
 
         // Create radial gradient
-        let gradient = peniko::Gradient::new_radial(point_to_kurbo(self.center0), self.radius0)
-            .with_stops(&*peniko_stops);
+        let gradient = peniko::Gradient::new_two_point_radial(
+            point_to_kurbo(self.center0),
+            self.radius0,
+            point_to_kurbo(self.center1),
+            self.radius1,
+        )
+        .with_stops(&*peniko_stops);
 
         peniko::Brush::Gradient(gradient)
     }
@@ -183,9 +180,9 @@ impl RadialGradient {
 ///
 /// ```ignore
 /// let gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
-/// gradient.add_color_stop(0.0, Color::red());
-/// gradient.add_color_stop(0.5, Color::green());
-/// gradient.add_color_stop(1.0, Color::blue());
+/// gradient.add_color_stop(0.0, Srgb::new(1.0, 0.0, 0.0));
+/// gradient.add_color_stop(0.5, Srgb::new(0.0, 1.0, 0.0));
+/// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 1.0));
 /// ctx.set_fill_style(gradient);
 /// ```
 #[derive(Debug, Clone)]
@@ -211,22 +208,19 @@ impl ConicGradient {
     }
 
     /// Adds a color stop to the gradient.
-    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<Color>) {
+    pub fn add_color_stop(&mut self, offset: f32, color: impl Into<ResolvedColor>) {
         self.stops.push(ColorStop::new(offset, color));
     }
 
     /// Builds the gradient into a peniko Brush for rendering.
     #[must_use]
-    pub(crate) fn build(&self, env: &waterui_core::Environment) -> peniko::Brush {
-        use nami::Signal;
-
+    pub(crate) fn build(&self) -> peniko::Brush {
         // Convert color stops
         let peniko_stops: Vec<peniko::ColorStop> = self
             .stops
             .iter()
             .map(|stop| {
-                let resolved = stop.color.resolve(env).get();
-                let peniko_color = resolved_color_to_peniko(resolved);
+                let peniko_color = resolved_color_to_peniko(stop.color);
                 peniko::ColorStop {
                     offset: stop.offset,
                     color: peniko_color.into(),
