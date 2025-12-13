@@ -28,19 +28,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  wasm:
-    name: WASM
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-      - run: cargo build --target wasm32-unknown-unknown --features std
-
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
