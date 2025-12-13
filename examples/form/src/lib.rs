@@ -7,13 +7,11 @@
 //! - Manual form control composition
 
 use waterui::Str;
+use waterui::app::App;
 use waterui::prelude::*;
+use waterui::reactive::binding;
 use waterui::text::font::FontWeight;
 use waterui::text::font::ResolvedFont;
-
-pub fn init() -> Environment {
-    Environment::new()
-}
 
 // User registration form using the derive macro
 // The #[form] attribute automatically generates form fields for each struct field
@@ -46,16 +44,15 @@ struct AppSettings {
     notifications_enabled: bool,
 }
 
-pub fn main() -> impl View {
+fn main(settings: &Binding<AppSettings>) -> impl View {
     // Create reactive bindings for both forms
     let registration = RegistrationForm::binding();
-    let settings = AppSettings::binding();
-
     // Manual form controls for demonstration
-    let custom_name = Binding::container(Str::from(""));
-    let custom_enabled = Binding::bool(false);
-    let custom_count = Binding::int(5);
-    let custom_slider = Binding::container(0.5);
+    let custom_name = binding("");
+    let custom_enabled = binding(false);
+    let custom_count = binding(5);
+    let custom_slider = binding(0.5);
+
     scroll(
         vstack((
             // Header
@@ -139,7 +136,13 @@ pub fn main() -> impl View {
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
-    .install(
+}
+
+pub fn app(mut env: Environment) -> App {
+    let settings = AppSettings::binding();
+
+    // Install theme before creating App
+    let theme =
         Theme::new()
             .color_scheme(
                 settings
@@ -151,8 +154,11 @@ pub fn main() -> impl View {
                 settings.project().font_scale.map(|scale| {
                     ResolvedFont::new(16.0 + (1.0 + scale * 10.0), FontWeight::Normal)
                 }),
-            )),
-    )
+            ));
+
+    env.install(theme);
+
+    App::new(main(&settings), env)
 }
 
 waterui_ffi::export!();

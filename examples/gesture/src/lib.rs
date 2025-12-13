@@ -7,13 +7,10 @@
 //! - Gesture chaining with `.then()`
 //! - Using `on_tap` convenience method
 
+use waterui::app::App;
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::prelude::*;
 use waterui::reactive::Binding;
-
-pub fn init() -> Environment {
-    Environment::new()
-}
 
 /// Section displaying tap gesture demos
 fn tap_section(tap_count: Binding<i32>) -> impl View {
@@ -134,7 +131,8 @@ fn on_tap_section(tap_count: Binding<i32>) -> impl View {
     .padding()
 }
 
-pub fn main() -> impl View {
+#[hot_reload]
+fn main() -> impl View {
     let tap_count = Binding::int(0);
     let double_tap_count = Binding::int(0);
     let long_press_count = Binding::int(0);
@@ -163,6 +161,10 @@ pub fn main() -> impl View {
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();

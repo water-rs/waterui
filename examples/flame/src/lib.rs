@@ -1,13 +1,10 @@
 use std::time::Instant;
 
+use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
 use waterui::prelude::*;
 
-pub fn init() -> Environment {
-    Environment::new()
-}
-
-pub fn main() -> impl View {
+fn main() -> impl View {
     vstack((
         text("Cinematic HDR Flame (GpuSurface)").size(24),
         text("HDR film buffer + bloom + ACES tonemap").size(14),
@@ -15,6 +12,10 @@ pub fn main() -> impl View {
         text("Rendered at 120fps").size(12),
     ))
     .padding()
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 const FILM_WGSL: &str = r#"

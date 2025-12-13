@@ -1,14 +1,14 @@
 //! Markdown example for WaterUI.
-use waterui::{prelude::*, widget::RichText};
+use waterui::app::App;
+use waterui::prelude::*;
 
-pub fn init() -> Environment {
-    Environment::new()
+#[hot_reload]
+fn main() -> impl View {
+    scroll(include_markdown!("example.md").padding())
 }
 
-const MARKDOWN: &str = include_str!("example.md");
-
-pub fn main() -> impl View {
-    scroll(RichText::from_markdown(MARKDOWN).padding())
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();
