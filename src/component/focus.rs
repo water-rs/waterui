@@ -44,9 +44,9 @@
 //! let focus_binding = binding(None::<Field>);
 //!
 //! // Create focused states for each field
-//! let username_focused = focu::Focused::new(&focus_binding, Field::Username);
-//! let password_focused = focu::Focused::new(&focus_binding, Field::Password);
-//! let submit_focused = focu::Focused::new(&focus_binding, Field::Submit);
+//! let username_focused = focus::Focused::new(&focus_binding, Field::Username);
+//! let password_focused = focus::Focused::new(&focus_binding, Field::Password);
+//! let submit_focused = focus::Focused::new(&focus_binding, Field::Submit);
 //!
 //! // Use focused states with UI elements
 //! let view = vstack((

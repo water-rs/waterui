@@ -14,7 +14,7 @@
 //! ```
 
 use nami::collection::Collection;
-use waterui_core::{View, id::Identifable};
+use waterui_core::{View, id::Identifiable};
 use waterui_layout::{
     LazyContainer,
     scroll::scroll,
@@ -92,7 +92,7 @@ impl Lazy {
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
     where
         C: Collection,
-        C::Item: Identifable,
+        C::Item: Identifiable,
         F: 'static + Fn(C::Item) -> V,
         V: View,
     {
