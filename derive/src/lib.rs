@@ -227,7 +227,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        #[derive(Default, Clone, Debug, ::waterui::form::FormBuilder, ::waterui::Project)]
+        #[derive(Default, Clone, Debug, ::waterui::FormBuilder, ::waterui::Project)]
         #input
     };
 
@@ -816,6 +816,15 @@ pub fn hot_reload(_args: TokenStream, input: TokenStream) -> TokenStream {
     // Generate the export symbol name
     let export_fn_name =
         syn::Ident::new(&format!("waterui_hot_reload_{fn_name_str}"), fn_name.span());
+
+    if std::env::var("WATERUI_ENABLE_HOT_RELOAD").unwrap_or_default() != "1" {
+        // If hot reload is not enabled, return the original function unchanged
+        let expanded = quote! {
+            #(#fn_attrs)*
+            #fn_vis #fn_sig #fn_block
+        };
+        return TokenStream::from(expanded);
+    }
 
     let expanded = quote! {
         #(#fn_attrs)*

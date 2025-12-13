@@ -13,7 +13,7 @@ use crate::conversions::{point_to_kurbo, rect_to_kurbo};
 /// Path builder for constructing complex shapes.
 ///
 /// This provides an HTML5 Canvas-style API for building paths with
-/// move_to, line_to, bezier curves, arcs, etc.
+/// `move_to`, `line_to`, bezier curves, arcs, etc.
 ///
 /// # Example
 ///
@@ -105,25 +105,16 @@ impl Path {
         // Create arc using kurbo's Arc
         let arc = kurbo::Arc::new(center_kurbo, (radius_f64, radius_f64), start, sweep, 0.0);
 
-        // If this is the first element, move to arc start
-        if self.inner.is_empty() {
-            // Convert arc to bezier path segments
-            let bez_path = arc.to_path(0.1);
-            for el in bez_path.elements() {
-                self.inner.push(*el);
-            }
-        } else {
-            // Append arc segments to existing path
-            let bez_path = arc.to_path(0.1);
-            for el in bez_path.elements() {
-                self.inner.push(*el);
-            }
+        // Convert arc to bezier path segments and append to path
+        let bez_path = arc.to_path(0.1);
+        for el in bez_path.elements() {
+            self.inner.push(*el);
         }
     }
 
     /// Draws an arc between two points with a given radius.
     ///
-    /// This is equivalent to HTML5 Canvas arcTo().
+    /// This is equivalent to HTML5 Canvas `arcTo()`.
     ///
     /// # Arguments
     /// * `point1` - First control point
@@ -228,18 +219,10 @@ impl Path {
 
         let arc = kurbo::Arc::new(center_kurbo, radii_tuple, start, sweep, f64::from(rotation));
 
-        if self.inner.is_empty() {
-            // Convert arc to path and add first moveto
-            let arc_path = arc.to_path(0.1);
-            for el in arc_path.elements() {
-                self.inner.push(*el);
-            }
-        } else {
-            // Append arc to existing path
-            let arc_path = arc.to_path(0.1);
-            for el in arc_path.elements() {
-                self.inner.push(*el);
-            }
+        // Convert arc to path and append
+        let arc_path = arc.to_path(0.1);
+        for el in arc_path.elements() {
+            self.inner.push(*el);
         }
     }
 
@@ -266,7 +249,7 @@ impl Path {
         self.inner.close_path();
     }
 
-    /// Returns a reference to the inner kurbo::BezPath.
+    /// Returns a reference to the inner `kurbo::BezPath`.
     ///
     /// This is used internally by the canvas renderer.
     #[must_use]
