@@ -3,7 +3,6 @@ use crate::closure::WuiFn;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, IntoRust};
 use alloc::string::String;
-use nami::Signal;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
 use waterui_media::{
@@ -358,10 +357,12 @@ impl IntoRust for WuiComputedVideo {
 crate::ffi_computed!(Video, WuiComputedVideo, video);
 
 // =============================================================================
-// MediaPicker
+// MediaPickerManager - Unified Manager for Present and Load
 // =============================================================================
 
-use waterui_media::media_picker::{MediaFilter, MediaPickerConfig, Selected};
+use waterui_media::media_picker::{
+    CustomMediaPickerManager, MediaFilter, MediaPickerManager, Selected,
+};
 
 /// FFI representation of a simple media filter type.
 /// Complex nested filters (All, Not, Any) are not supported via FFI.
@@ -415,47 +416,31 @@ impl IntoFFI for MediaFilter {
     }
 }
 
-/// FFI representation of the MediaPicker component.
-#[repr(C)]
-pub struct WuiMediaPicker {
-    /// The filter type to apply.
-    pub filter: WuiMediaFilterType,
-    /// Callback when selection changes. Native calls this when user picks media.
-    pub on_selection: WuiFn<WuiSelected>,
-}
-
-impl IntoFFI for MediaPickerConfig {
-    type FFI = WuiMediaPicker;
-    fn into_ffi(self) -> Self::FFI {
-        // Get filter value from computed
-        let filter_value = self.filter.get();
-        let filter_type = filter_value.into_ffi();
-
-        // Create callback that updates the selection binding when native calls it
-        let selection_binding = self.selection;
-        let on_selection = WuiFn::from(move |selected: WuiSelected| {
-            let rust_selected = unsafe { selected.into_rust() };
-            selection_binding.set(rust_selected);
-        });
-
-        WuiMediaPicker {
-            filter: filter_type,
-            on_selection,
-        }
-    }
-}
-
-// Register MediaPicker FFI view
-ffi_view!(MediaPickerConfig, WuiMediaPicker, media_picker);
+// MediaPicker is now a Button wrapper in Rust, no longer a native view
+// (No FFI struct or ffi_view! registration needed)
 
 // =============================================================================
-// MediaLoader FFI - Environment Injection
+// MediaPickerManager FFI - Environment Service Installation
 // =============================================================================
 
 use crate::WuiEnv;
 use alloc::boxed::Box;
 use waterui_media::Media;
-use waterui_media::media_picker::MediaLoader;
+
+/// A callback for receiving selected media ID when user picks media.
+///
+/// This is a C-compatible closure that native code calls when picker completes.
+#[repr(C)]
+pub struct MediaPickerPresentCallback {
+    /// Opaque pointer to the callback data.
+    pub data: *mut (),
+    /// Function to call with the selected media. This consumes the callback.
+    pub call: unsafe extern "C" fn(*mut (), WuiSelected),
+}
+
+/// Type alias for the native media picker present function.
+pub type MediaPickerPresentFn =
+    unsafe extern "C" fn(WuiMediaFilterType, MediaPickerPresentCallback);
 
 /// FFI representation of the result from loading media.
 ///
@@ -499,52 +484,83 @@ pub struct MediaLoadCallback {
 /// Type alias for the native media load function.
 pub type MediaLoadFn = unsafe extern "C" fn(u32, MediaLoadCallback);
 
-/// Installs a MediaLoader into the environment from native function pointer.
-///
-/// Native backends call this during initialization to register their media loading
-/// implementation. When Rust code calls `Selected::load()`, it will invoke the
-/// native function through this installed loader.
-///
-/// # Safety
-///
-/// The caller must ensure that:
-/// - `env` is a valid pointer to a `WuiEnv`
-/// - `load_fn` is a valid function pointer to the native media loader implementation
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_env_install_media_loader(env: *mut WuiEnv, load_fn: MediaLoadFn) {
-    if env.is_null() {
-        return;
-    }
-    let env = unsafe { &mut *env };
+/// FFI-compatible MediaPickerManager implementation.
+struct FFIMediaPickerManager {
+    present_fn: MediaPickerPresentFn,
+    load_fn: MediaLoadFn,
+}
 
-    let loader = MediaLoader::new(move |selected, callback| {
-        // Create a boxed callback that the native code will invoke
-        let callback_box: Box<Box<dyn FnOnce(Media)>> = Box::new(callback);
+impl CustomMediaPickerManager for FFIMediaPickerManager {
+    fn present(&self, filter: MediaFilter, callback: impl FnOnce(Selected) + 'static) {
+        let callback_box: Box<Box<dyn FnOnce(Selected)>> = Box::new(Box::new(callback));
         let callback_data = Box::into_raw(callback_box).cast::<()>();
 
-        unsafe extern "C" fn callback_trampoline(data: *mut (), result: MediaLoadResult) {
-            // Reconstruct the callback from the raw pointer
+        unsafe extern "C" fn present_trampoline(data: *mut (), selected: WuiSelected) {
+            let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(Selected)>>()) };
+            let rust_selected = unsafe { selected.into_rust() };
+            callback(rust_selected);
+        }
+
+        let ffi_callback = MediaPickerPresentCallback {
+            data: callback_data,
+            call: present_trampoline,
+        };
+
+        let filter_type = filter.into_ffi();
+        unsafe {
+            (self.present_fn)(filter_type, ffi_callback);
+        }
+    }
+
+    fn load(&self, selected: Selected, callback: impl FnOnce(Media) + 'static) {
+        let callback_box: Box<Box<dyn FnOnce(Media)>> = Box::new(Box::new(callback));
+        let callback_data = Box::into_raw(callback_box).cast::<()>();
+
+        unsafe extern "C" fn load_trampoline(data: *mut (), result: MediaLoadResult) {
             let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(Media)>>()) };
-
-            // Convert MediaLoadResult to Media
             let media = unsafe { media_load_result_to_media(result) };
-
-            // Call the original Rust callback
             callback(media);
         }
 
         let ffi_callback = MediaLoadCallback {
             data: callback_data,
-            call: callback_trampoline,
+            call: load_trampoline,
         };
 
-        // Call the native function pointer
         unsafe {
-            load_fn(selected.id(), ffi_callback);
+            (self.load_fn)(selected.id(), ffi_callback);
         }
+    }
+}
+
+/// Installs a MediaPickerManager into the environment from native function pointers.
+///
+/// Native backends call this during initialization to register their media picker
+/// implementation. This unified manager handles both presenting the picker and loading media.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `env` is a valid pointer to a `WuiEnv`
+/// - `present_fn` is a valid function pointer to the native media picker presentation
+/// - `load_fn` is a valid function pointer to the native media loader implementation
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_media_picker_manager(
+    env: *mut WuiEnv,
+    present_fn: MediaPickerPresentFn,
+    load_fn: MediaLoadFn,
+) {
+    if env.is_null() {
+        return;
+    }
+    let env = unsafe { &mut *env };
+
+    let manager = MediaPickerManager::new(FFIMediaPickerManager {
+        present_fn,
+        load_fn,
     });
 
-    env.insert(loader);
+    env.insert(manager);
 }
 
 /// Convert FFI MediaLoadResult to Rust Media enum.

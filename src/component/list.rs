@@ -10,7 +10,9 @@ use nami::collection::Collection;
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Native, NativeView, View, id::Identifable};
+use waterui_core::{
+    AnyView, Environment, Native, NativeView, View, id::Identifable, layout::StretchAxis,
+};
 
 /// Configuration for a list component.
 #[derive(Debug, Clone)]
@@ -19,7 +21,11 @@ pub struct ListConfig {
     pub contents: SharedAnyViews<ListItem>,
 }
 
-impl NativeView for ListConfig {}
+impl NativeView for ListConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
 
 /// A component that displays items in a list format.
 #[derive(Debug)]

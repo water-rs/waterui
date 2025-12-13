@@ -16,15 +16,26 @@ use crate::project::Project;
 #[derive(Debug, Clone)]
 pub enum HotReloadEvent {
     /// Server started and listening.
-    ServerStarted { host: String, port: u16 },
+    ServerStarted {
+        /// Host address the server is bound to.
+        host: String,
+        /// Port the server is listening on.
+        port: u16,
+    },
     /// File change detected, waiting for debounce.
     FileChanged,
     /// Starting a rebuild.
     Rebuilding,
     /// Build completed successfully, broadcasting to clients.
-    Built { path: PathBuf },
+    Built {
+        /// Path to the built dylib.
+        path: PathBuf,
+    },
     /// Build failed with an error message.
-    BuildFailed { error: String },
+    BuildFailed {
+        /// Error message.
+        error: String,
+    },
     /// Library broadcast to connected clients.
     Broadcast,
 }
@@ -34,6 +45,14 @@ pub struct HotReloadRunner {
     server: HotReloadServer,
     event_rx: Receiver<HotReloadEvent>,
     _runner_task: Task<()>,
+}
+
+impl std::fmt::Debug for HotReloadRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HotReloadRunner")
+            .field("server", &self.server)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HotReloadRunner {
@@ -89,16 +108,18 @@ impl HotReloadRunner {
 
     /// Get the port the hot reload server is listening on.
     #[must_use]
-    pub fn port(&self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.server.port()
     }
 
     /// Get the event receiver for hot reload events.
-    pub fn events(&self) -> &Receiver<HotReloadEvent> {
+    #[must_use] 
+    pub const fn events(&self) -> &Receiver<HotReloadEvent> {
         &self.event_rx
     }
 
     /// Consume the runner and return the underlying server to keep it alive.
+    #[must_use] 
     pub fn into_server(self) -> HotReloadServer {
         self.server
     }
@@ -114,23 +135,25 @@ async fn run_loop(
     crate_name: String,
 ) {
     let mut build_manager = BuildManager::new();
+    let mut reported_change = false;
 
     loop {
         futures::select! {
             // File change detected
             _ = file_rx.recv().fuse() => {
-                let _ = event_tx.send(HotReloadEvent::FileChanged).await;
+                while file_rx.try_recv().is_ok() {}
+
+                if !reported_change {
+                    let _ = event_tx.send(HotReloadEvent::FileChanged).await;
+                    reported_change = true;
+                }
                 build_manager.request_rebuild();
             }
 
             // Check debounce timer
             _ = FutureExt::fuse(smol::Timer::after(std::time::Duration::from_millis(50))) => {
-                // Check if debounce completed and we should start building
-                if build_manager.should_start_build() {
-                    let _ = event_tx.send(HotReloadEvent::Rebuilding).await;
-
-                    // Build synchronously in this task for simplicity
-                    match rust_build.dev_build().await {
+                if let Some(result) = build_manager.poll_build().await {
+                    match result {
                         Ok(lib_dir) => {
                             let lib_name = format!(
                                 "{}{}{}",
@@ -144,6 +167,7 @@ async fn run_loop(
                                 let _ = event_tx.send(HotReloadEvent::BuildFailed {
                                     error: format!("Library not found: {}", dylib_path.display()),
                                 }).await;
+                                reported_change = false;
                                 continue;
                             }
 
@@ -156,11 +180,13 @@ async fn run_loop(
                                 Ok(data) => {
                                     let _ = broadcast_tx.send(data).await;
                                     let _ = event_tx.send(HotReloadEvent::Broadcast).await;
+                                    reported_change = false;
                                 }
                                 Err(e) => {
                                     let _ = event_tx.send(HotReloadEvent::BuildFailed {
                                         error: format!("Failed to read library: {e}"),
                                     }).await;
+                                    reported_change = false;
                                 }
                             }
                         }
@@ -168,8 +194,15 @@ async fn run_loop(
                             let _ = event_tx.send(HotReloadEvent::BuildFailed {
                                 error: e.to_string(),
                             }).await;
+                            reported_change = false;
                         }
                     }
+                }
+
+                // Check if debounce completed and we should start building
+                if build_manager.should_start_build() {
+                    let _ = event_tx.send(HotReloadEvent::Rebuilding).await;
+                    build_manager.start_build(rust_build.clone());
                 }
             }
         }

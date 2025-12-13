@@ -65,7 +65,7 @@ macro_rules! languages {
 
             /// Returns the token name for this language (lowercase).
             #[must_use]
-            pub fn token(&self) -> &'static str {
+            pub const fn token(&self) -> &'static str {
                 match self {
                     $(Self::$ident => const {
                         const fn to_lower(s: &str) -> &str { s }
@@ -236,13 +236,11 @@ impl Highlighter for DefaultHighlighter {
         }
 
         // Handle trailing content without newline
-        if !text.ends_with('\n') {
-            if let Some(last) = chunks.last_mut() {
-                if last.text == "\n" {
+        if !text.ends_with('\n')
+            && let Some(last) = chunks.last_mut()
+                && last.text == "\n" {
                     chunks.pop();
                 }
-            }
-        }
 
         chunks
     }

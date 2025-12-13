@@ -11,7 +11,7 @@ use waterui_core::{layout::StretchAxis, raw_view};
 
 /// Picks the best surface format for a [`GpuSurface`].
 ///
-/// WaterUI prefers HDR surfaces when available. If the platform/surface does not support an HDR
+/// `WaterUI` prefers HDR surfaces when available. If the platform/surface does not support an HDR
 /// format, it falls back to a standard sRGB swapchain format (or the first supported format).
 #[must_use]
 pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {

@@ -204,7 +204,7 @@ fn element_to_text(element: &RichTextElement) -> Text {
         RichTextElement::Link { label, .. } => Text::from(label.clone()),
         RichTextElement::Group { elements, .. } => {
             // Concatenate all text from group elements
-            let combined: String = elements.iter().map(|e| element_to_plain_text(e)).collect();
+            let combined: String = elements.iter().map(element_to_plain_text).collect();
             Text::from(combined)
         }
         _ => Text::from(""),

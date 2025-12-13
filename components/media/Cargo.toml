@@ -15,6 +15,8 @@ categories = ["gui", "multimedia"]
 waterui-core.workspace = true
 waterui-url.workspace = true
 waterui-color.workspace = true
+waterui-controls.workspace = true
+waterui-text.workspace = true
 mime = "0.3.17"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 blocking = "1.6.2"

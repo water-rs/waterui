@@ -3,4 +3,4 @@ waterui_path = "../.."
 [package]
 type = "playground"
 name = "Canvas Demo"
-bundle_identifier = "com.waterui.canvas-demo"
+bundle_identifier = "com.waterui.canvas_demo"

@@ -13,6 +13,12 @@ pub struct FileWatcher {
     rx: Receiver<()>,
 }
 
+impl std::fmt::Debug for FileWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileWatcher").finish_non_exhaustive()
+    }
+}
+
 impl FileWatcher {
     /// Create a new file watcher for the given project directory.
     ///
@@ -27,7 +33,7 @@ impl FileWatcher {
         let (sync_tx, sync_rx) = mpsc::channel::<notify::Result<Event>>();
 
         // Spawn a task to bridge sync channel to async channel
-        let tx_clone = tx.clone();
+        let tx_clone = tx;
         let started_at = SystemTime::now();
         std::thread::spawn(move || {
             while let Ok(event) = sync_rx.recv() {
@@ -63,21 +69,26 @@ impl FileWatcher {
     /// Returns a receiver for file change events.
     ///
     /// Each receive indicates that source files have changed and a rebuild may be needed.
-    pub fn receiver(&self) -> &Receiver<()> {
+    #[must_use] 
+    pub const fn receiver(&self) -> &Receiver<()> {
         &self.rx
     }
 }
 
 /// Check if the event is a relevant change (Rust source file modification).
 fn is_relevant_change(event: &Event, started_at: SystemTime) -> bool {
-    use notify::EventKind;
+    use notify::{EventKind, event::ModifyKind};
 
-    // Only care about modifications and creates
+    // Only care about changes that can affect a build. On macOS it's common to receive follow-up
+    // metadata-only modifications for a save; ignore those to avoid redundant rebuilds.
     let kind = &event.kind;
-    if !matches!(
-        kind,
-        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-    ) {
+    let is_relevant_kind = match kind {
+        EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(modify_kind) => !matches!(modify_kind, ModifyKind::Metadata(_)),
+        _ => false,
+    };
+
+    if !is_relevant_kind {
         return false;
     }
 
@@ -88,6 +99,8 @@ fn is_relevant_change(event: &Event, started_at: SystemTime) -> bool {
 }
 
 fn is_relevant_path(path: &Path, kind: &notify::EventKind, started_at: SystemTime) -> bool {
+    use notify::{EventKind, event::ModifyKind};
+
     if !path
         .extension()
         .is_some_and(|ext| ext == "rs" || ext == "toml")
@@ -96,7 +109,13 @@ fn is_relevant_path(path: &Path, kind: &notify::EventKind, started_at: SystemTim
     }
 
     // Deletions are always relevant.
-    if matches!(kind, notify::EventKind::Remove(_)) {
+    if matches!(kind, EventKind::Remove(_)) {
+        return true;
+    }
+
+    // Renames don't necessarily update the mtime; treat them as relevant if they touch a watched
+    // file path.
+    if matches!(kind, EventKind::Modify(ModifyKind::Name(_))) {
         return true;
     }
 

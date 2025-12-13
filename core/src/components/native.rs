@@ -25,7 +25,7 @@ impl<T: NativeView> Native<T> {
     /// # Arguments
     ///
     /// * `native` - The platform-specific native UI component to wrap.
-    pub fn new(native: T) -> Self {
+    pub const fn new(native: T) -> Self {
         Self {
             native,
             fallback: None,
@@ -53,11 +53,8 @@ impl<T: 'static + NativeView> View for Native<T> {
     #[allow(unused)]
     #[allow(clippy::needless_return)]
     fn body(self, _env: &Environment) -> impl View {
-        if let Some(fallback) = self.fallback {
-            fallback
-        } else {
-            panic!("Native view ({})", type_name::<T>())
-        }
+        self.fallback
+            .unwrap_or_else(|| panic!("Native view ({})", type_name::<T>()))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

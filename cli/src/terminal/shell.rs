@@ -320,7 +320,7 @@ impl Shell {
 }
 
 /// Parse a log message to extract [TAG] prefix.
-/// Returns (tag, rest_of_message) if found.
+/// Returns (tag, `rest_of_message`) if found.
 fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     let msg = msg.trim();
     if !msg.starts_with('[') {
