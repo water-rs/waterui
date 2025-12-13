@@ -105,7 +105,11 @@ Note: `/terminal/*` (waterui-cli binary) only provide a friendly interface for C
 Native backends call into Rust via:
 
 1. `waterui_init()` - Initialize runtime, returns Environment pointer
-2. `waterui_env_install_theme()` - Inject native theme colors/fonts
+2. Theme installation (recommended):
+   - `waterui_theme_install_color_scheme()` (light/dark)
+   - `waterui_theme_install_color()` (slot-based colors)
+   - `waterui_theme_install_font()` (slot-based fonts)
+   - Legacy: `waterui_env_install_theme()` is deprecated
 3. `waterui_main()` - Get root view tree
 4. Render loop: `waterui_view_id()` to identify view type, then either extract data (`waterui_force_as_*`) for raw views or recurse via `waterui_view_body()` for composite views
 
