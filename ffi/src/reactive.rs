@@ -27,6 +27,10 @@ where
     T: IntoFFI,
     T::FFI: IntoRust<Rust = T>,
 {
+    /// Creates a new FFI-computed signal using native callbacks.
+    ///
+    /// # Safety
+    /// The caller must ensure that the provided function pointers are valid and adhere to the expected signatures
     pub unsafe fn new(
         data: *mut (),
         get: unsafe extern "C" fn(*const ()) -> T::FFI,
@@ -272,6 +276,7 @@ macro_rules! ffi_computed_ctor {
             /// # Safety
             /// All function pointers must be valid and follow the expected calling conventions.
             #[unsafe(no_mangle)]
+            #[allow(clippy::useless_transmute)]
             pub unsafe extern "C" fn [< waterui_new_computed_ $ident >](
                 data: *mut (),
                 get: unsafe extern "C" fn(*const ()) -> $ffi,
