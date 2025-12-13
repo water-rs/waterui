@@ -11,7 +11,6 @@
 //! ```
 use crate::image::Image;
 use waterui_core::configurable;
-use waterui_core::layout::StretchAxis;
 
 use crate::Url;
 
@@ -38,8 +37,7 @@ pub enum Event {
 configurable!(
     #[doc = "A static photo component that displays remote imagery with placeholders."]
     Photo,
-    PhotoConfig,
-    StretchAxis::Both
+    PhotoConfig
 );
 
 impl Photo {
