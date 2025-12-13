@@ -6,6 +6,7 @@
 //! from the environment.
 
 use core::any::type_name;
+use std::ops::{Deref, DerefMut};
 
 use crate::Environment;
 use alloc::format;
@@ -32,6 +33,20 @@ impl Extractor for Environment {
     /// Extracts the Environment itself by creating a clone.
     fn extract(env: &Environment) -> Result<Self, Error> {
         Ok(env.clone())
+    }
+}
+
+impl<T> Deref for Use<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Use<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
