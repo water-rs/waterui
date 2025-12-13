@@ -24,19 +24,48 @@
 //!     ctx.restore();
 //! })
 //! ```
+//!
+//! /// Drawing state management for Canvas.
+pub mod state;
 
-use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
-use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
-use crate::image::CanvasImage;
-use crate::path::Path;
-use crate::state::{DrawingState, FillRule, FillStyle, LineCap, LineJoin, StrokeStyle};
-use crate::text::{FontSpec, TextMetrics};
+/// Path construction API for Canvas.
+pub mod path;
+
+/// Conversion utilities between WaterUI and Vello types.
+mod conversions;
+
+/// Gradient builders for Canvas.
+pub mod gradient;
+
+/// Image loading and handling for Canvas.
+pub mod image;
+
+/// Text rendering support for Canvas.
+pub mod text;
+
+pub use path::Path;
+
+pub use state::{LineCap, LineJoin};
+
+pub use state::FillRule;
+
+pub use gradient::{ConicGradient, LinearGradient, RadialGradient};
+
+pub use image::{CanvasImage, ImageError};
+
+#[cfg(feature = "canvas")]
+pub use text::{FontSpec, FontStyle, FontWeight, TextMetrics};
+
 use alloc::boxed::Box;
+
 use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
+
+use crate::canvas::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
+use crate::canvas::state::{DrawingState, FillStyle, StrokeStyle};
+use crate::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 /// A canvas for 2D vector graphics rendering.
 ///
