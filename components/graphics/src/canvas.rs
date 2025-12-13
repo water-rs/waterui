@@ -133,7 +133,7 @@ impl DrawingContext<'_> {
     /// ```
     pub fn fill(&mut self, shape: impl kurbo::Shape, color: peniko::Color) {
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             kurbo::Affine::IDENTITY,
             color,
             None,
@@ -144,7 +144,7 @@ impl DrawingContext<'_> {
     /// Fills a shape with a brush (gradient, pattern, etc).
     pub fn fill_brush(&mut self, shape: impl kurbo::Shape, brush: &peniko::Brush) {
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             kurbo::Affine::IDENTITY,
             brush,
             None,
@@ -160,7 +160,7 @@ impl DrawingContext<'_> {
         transform: kurbo::Affine,
     ) {
         self.scene
-            .fill(peniko::Fill::NonZero, transform, color, None, &shape);
+            .fill(self.current_state.fill_rule, transform, color, None, &shape);
     }
 
     /// Strokes a shape with a color and line width.
@@ -346,7 +346,7 @@ impl DrawingContext<'_> {
     pub fn fill_path(&mut self, path: &Path) {
         let brush = self.resolve_fill_style();
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
             None,
@@ -376,7 +376,7 @@ impl DrawingContext<'_> {
         let kurbo_rect = rect_to_kurbo(rect);
         let brush = self.resolve_fill_style();
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
             None,
@@ -403,7 +403,7 @@ impl DrawingContext<'_> {
         let kurbo_rect = rect_to_kurbo(rect);
         let transparent = peniko::Color::TRANSPARENT;
         self.scene.fill(
-            peniko::Fill::NonZero,
+            self.current_state.fill_rule,
             self.current_state.transform,
             transparent,
             None,
@@ -462,6 +462,46 @@ impl DrawingContext<'_> {
     /// Values range from 0.0 (transparent) to 1.0 (opaque).
     pub fn set_global_alpha(&mut self, alpha: f32) {
         self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    /// Sets the blend mode for compositing operations.
+    ///
+    /// This controls how new shapes are blended with existing content.
+    pub fn set_blend_mode(&mut self, mode: peniko::BlendMode) {
+        self.current_state.blend_mode = mode;
+    }
+
+    /// Sets the shadow blur radius.
+    ///
+    /// A blur value of 0 means sharp shadows, higher values create softer shadows.
+    pub fn set_shadow_blur(&mut self, blur: f32) {
+        self.current_state.shadow_blur = blur.max(0.0);
+    }
+
+    /// Sets the shadow color.
+    pub fn set_shadow_color(&mut self, color: impl Into<waterui_color::Color>) {
+        self.current_state.shadow_color = color.into();
+    }
+
+    /// Sets the shadow offset in the x and y directions.
+    ///
+    /// # Arguments
+    /// * `x` - Horizontal offset (positive = right)
+    /// * `y` - Vertical offset (positive = down)
+    pub fn set_shadow_offset(&mut self, x: f32, y: f32) {
+        self.current_state.shadow_offset_x = x;
+        self.current_state.shadow_offset_y = y;
+    }
+
+    /// Sets the fill rule for determining the interior of shapes.
+    ///
+    /// # Arguments
+    /// * `rule` - The fill rule to use (`NonZero` or `EvenOdd`)
+    ///
+    /// NonZero (default): A point is inside the path if a ray from the point crosses a non-zero net number of path segments.
+    /// EvenOdd: A point is inside the path if a ray from the point crosses an odd number of path segments.
+    pub fn set_fill_rule(&mut self, rule: peniko::Fill) {
+        self.current_state.fill_rule = rule;
     }
 
     // ========================================================================
