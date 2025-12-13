@@ -129,7 +129,7 @@ Implements the `Project` trait, enabling decomposition of struct bindings into s
 
 ```rust
 use waterui::reactive::{Binding, binding, project::Project};
-use waterui_derive::Project;
+use waterui_macros::Project;
 
 #[derive(Project, Clone)]
 struct Person {
