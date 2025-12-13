@@ -5,13 +5,10 @@
 //! - List::for_each for dynamic collections
 //! - ListItem configuration
 
+use waterui::app::App;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::*;
 use waterui::{AnyView, Identifable};
-
-pub fn init() -> Environment {
-    Environment::new()
-}
 
 #[derive(Clone)]
 struct Contact {
@@ -27,7 +24,7 @@ impl Identifable for Contact {
     }
 }
 
-pub fn main() -> impl View {
+fn main() -> impl View {
     let contacts = vec![
         Contact {
             id: 1,
@@ -83,6 +80,10 @@ pub fn main() -> impl View {
         ),
         on_delete: None,
     })
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();

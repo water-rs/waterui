@@ -13,6 +13,7 @@ pub use suspense::{Suspense, suspense};
 /// Syntax highlighted code widget.
 pub mod code;
 /// Rich text widget support.
+#[macro_use]
 pub mod rich_text;
 pub use code::{Code, code};
 pub use rich_text::{RichText, RichTextElement, rich_text};

@@ -1,8 +1,5 @@
 use waterui::prelude::*;
-
-pub fn init() -> Environment {
-    Environment::new()
-}
+use waterui::app::App;
 
 // Demo form data structure
 #[form]
@@ -14,13 +11,13 @@ struct UserProfile {
     theme_brightness: f64,
 }
 
-pub fn main() -> impl View {
+fn main() -> impl View {
     // Reactive state
     let profile = UserProfile::binding();
     let counter = Binding::int(0);
     let progress_value = Binding::container(0.3);
 
-    let view = scroll(
+    scroll(
         vstack((
             // App header
             vstack((
@@ -64,9 +61,11 @@ pub fn main() -> impl View {
             "Built with WaterUI - Cross-platform Reactive UI Framework",
         ))
         .padding(),
-    );
+    )
+}
 
-    view
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();
