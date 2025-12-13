@@ -62,6 +62,7 @@ pub fn main() -> impl View {
     let buffering_overlay = when(is_buffering, || {
         zstack((
             spacer().background(Color::from(Srgb::BLACK).with_opacity(0.5)),
+            "Hi!!!!!!",
             vstack((
                 loading(),
                 text("Buffering...").foreground(Color::from(Srgb::WHITE)),
@@ -76,7 +77,6 @@ pub fn main() -> impl View {
     // Bottom controls overlay
     let controls_overlay = vstack((
         spacer(),
-        "Lexo",
         // Bottom panel
         vstack((
             // Current video title
