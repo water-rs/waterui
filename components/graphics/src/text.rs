@@ -3,38 +3,6 @@
 //! This module provides text layout and rendering capabilities using Parley
 //! for text layout and Vello for glyph rendering.
 
-// Internal imports for text rendering
-use parley::{FontContext, LayoutContext};
-use vello::peniko;
-
-/// Text rendering context that manages font and layout.
-///
-/// This is used internally by the Canvas to render text.
-pub(crate) struct TextContext {
-    font_cx: FontContext,
-    layout_cx: LayoutContext<peniko::Brush>,
-}
-
-impl TextContext {
-    /// Creates a new text context.
-    pub(crate) fn new() -> Self {
-        Self {
-            font_cx: FontContext::default(),
-            layout_cx: LayoutContext::new(),
-        }
-    }
-
-    /// Returns a reference to the font context.
-    pub(crate) const fn font_context(&mut self) -> &mut FontContext {
-        &mut self.font_cx
-    }
-
-    /// Returns a reference to the layout context.
-    pub(crate) const fn layout_context(&mut self) -> &mut LayoutContext<peniko::Brush> {
-        &mut self.layout_cx
-    }
-}
-
 /// Text metrics information.
 ///
 /// Provides measurements for rendered text.

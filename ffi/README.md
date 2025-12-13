@@ -379,10 +379,11 @@ Native backends (Android, Apple, etc.) must follow a specific initialization seq
 │    - Returns an Environment pointer                                 │
 │    - MUST be called first before any other waterui_* functions      │
 ├─────────────────────────────────────────────────────────────────────┤
-│ 2. waterui_env_install_theme(env, colors..., fonts...)              │
-│    - Injects native theme colors and fonts as reactive signals      │
-│    - Reads system/Material Design colors and passes them to Rust    │
-│    - Optional but recommended for proper theming                    │
+│ 2. Theme installation (recommended)                                 │
+│    - Install appearance: waterui_theme_install_color_scheme()       │
+│    - Install colors:     waterui_theme_install_color()              │
+│    - Install fonts:      waterui_theme_install_font()               │
+│    - Legacy: waterui_env_install_theme() is deprecated              │
 ├─────────────────────────────────────────────────────────────────────┤
 │ 3. waterui_app(env)                                                 │
 │    - Creates the application from user's app(env) function          │
