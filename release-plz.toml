@@ -56,8 +56,8 @@ name = "waterui-url"
 git_tag_name = "url-v{{ version }}"
 
 [[package]]
-name = "waterui-derive"
-git_tag_name = "derive-v{{ version }}"
+name = "waterui-macros"
+git_tag_name = "macros-v{{ version }}"
 
 [[package]]
 name = "waterui-ffi"
