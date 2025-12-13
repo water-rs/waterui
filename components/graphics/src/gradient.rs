@@ -56,7 +56,7 @@ pub struct LinearGradient {
 impl LinearGradient {
     /// Creates a new linear gradient from (x0, y0) to (x1, y1).
     #[must_use]
-    pub fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+    pub const fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
         Self {
             start: Point::new(x0, y0),
             end: Point::new(x1, y1),
@@ -133,7 +133,7 @@ impl RadialGradient {
     /// * `x1, y1` - Center of the end circle
     /// * `r1` - Radius of the end circle
     #[must_use]
-    pub fn new(x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32) -> Self {
+    pub const fn new(x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32) -> Self {
         Self {
             center0: Point::new(x0, y0),
             radius0: r0,
@@ -202,7 +202,7 @@ impl ConicGradient {
     /// * `start_angle` - Starting angle in radians
     /// * `x, y` - Center point
     #[must_use]
-    pub fn new(start_angle: f32, x: f32, y: f32) -> Self {
+    pub const fn new(start_angle: f32, x: f32, y: f32) -> Self {
         Self {
             center: Point::new(x, y),
             start_angle,
