@@ -301,15 +301,16 @@ impl GpuRenderer for ShaderRenderer {
     fn render(&mut self, frame: &GpuFrame) {
         // Check if pipeline format matches current frame format
         if let Some(pipeline_fmt) = self.pipeline_format
-            && pipeline_fmt != frame.format {
-                tracing::error!(
-                    "[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}",
-                    pipeline_fmt,
-                    frame.format
-                );
-                self.pipeline = None;
-                self.pipeline_format = None;
-            }
+            && pipeline_fmt != frame.format
+        {
+            tracing::error!(
+                "[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}",
+                pipeline_fmt,
+                frame.format
+            );
+            self.pipeline = None;
+            self.pipeline_format = None;
+        }
 
         // If no pipeline, we need setup
         if self.pipeline.is_none() {
