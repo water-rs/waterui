@@ -194,21 +194,6 @@ assert_eq!(string2, "owned");
 - `TryFrom<OsString>` - OS string conversion
 - `ToSocketAddrs` - Network address resolution
 
-## Features
-
-### `serde` (optional)
-Enables serialization and deserialization support:
-
-```rust
-use waterui_str::Str;
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    content: Str,
-}
-```
-
 ## Design Rationale
 
 ### Why Not `Cow<'static, str>`?
