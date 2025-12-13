@@ -1,4 +1,4 @@
-//! Full-screen overlay system for WaterUI.
+//! Full-screen overlay system for `WaterUI`.
 //!
 //! This module provides a centralized overlay manager that can display
 //! full-screen overlays such as hot reload status, modal dialogs, loading
@@ -23,7 +23,7 @@ impl Plugin for FullScreenOverlayManager {}
 impl FullScreenOverlayManager {
     /// Creates a new overlay manager and returns the overlay view.
     ///
-    /// The returned view should be placed in a ZStack above the main content.
+    /// The returned view should be placed in a [`ZStack`] above the main content.
     ///
     /// # Returns
     ///

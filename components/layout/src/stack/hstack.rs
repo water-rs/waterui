@@ -94,6 +94,7 @@ impl ChildMeasurement {
 }
 
 #[allow(clippy::cast_precision_loss)]
+#[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
@@ -533,8 +534,8 @@ mod tests {
 
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-        assert_eq!(size.width, 120.0); // 50 + 10 + 60
-        assert_eq!(size.height, 40.0); // max height
+        assert!((size.width - 120.0).abs() < f32::EPSILON); // 50 + 10 + 60
+        assert!((size.height - 40.0).abs() < f32::EPSILON); // max height
     }
 
     #[test]
@@ -562,7 +563,7 @@ mod tests {
         // With specified width, spacer should expand
         let size = layout.size_that_fits(ProposalSize::new(Some(200.0), None), &children);
 
-        assert_eq!(size.width, 200.0);
+        assert!((size.width - 200.0).abs() < f32::EPSILON);
 
         // Place should distribute remaining space to spacer
         let bounds = Rect::new(Point::zero(), Size::new(200.0, 40.0));
@@ -583,10 +584,10 @@ mod tests {
 
         let rects = layout.place(bounds, &children);
 
-        assert_eq!(rects[0].width(), 30.0);
-        assert_eq!(rects[1].width(), 140.0); // 200 - 30 - 30
-        assert_eq!(rects[2].width(), 30.0);
-        assert_eq!(rects[2].x(), 170.0); // 30 + 140
+        assert!((rects[0].width() - 30.0).abs() < f32::EPSILON);
+        assert!((rects[1].width() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
+        assert!((rects[2].width() - 30.0).abs() < f32::EPSILON);
+        assert!((rects[2].x() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
     #[test]
@@ -618,10 +619,10 @@ mod tests {
 
         // Width: all children contribute (vertical_stretch doesn't stretch horizontally)
         // = 50 + 10 + 40 + 10 + 80 = 190
-        assert_eq!(size.width, 190.0);
+        assert!((size.width - 190.0).abs() < f32::EPSILON);
         // Height: max of non-vertically-stretching children = max(20, 44) = 44
         // Note: vertical_stretch stretches vertically so its height doesn't contribute
-        assert_eq!(size.height, 44.0);
+        assert!((size.height - 44.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -648,8 +649,8 @@ mod tests {
 
         let size = layout.size_that_fits(ProposalSize::new(Some(40.0), None), &children);
 
-        assert_eq!(size.width, 40.0);
-        assert_eq!(size.height, 40.0);
+        assert!((size.width - 40.0).abs() < f32::EPSILON);
+        assert!((size.height - 40.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -677,8 +678,8 @@ mod tests {
 
         let rects = layout.place(bounds, &children);
 
-        assert_eq!(rects[0].width(), 4.0);
-        assert_eq!(rects[1].width(), 36.0);
-        assert_eq!(rects[1].height(), 40.0);
+        assert!((rects[0].width() - 4.0).abs() < f32::EPSILON);
+        assert!((rects[1].width() - 36.0).abs() < f32::EPSILON);
+        assert!((rects[1].height() - 40.0).abs() < f32::EPSILON);
     }
 }
