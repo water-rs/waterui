@@ -138,7 +138,7 @@ impl GpuFrame<'_> {
 ///     }
 /// }
 /// ```
-pub trait GpuRenderer: Send + 'static {
+pub trait GpuRenderer: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other

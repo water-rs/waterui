@@ -17,5 +17,5 @@ pub mod code;
 pub mod rich_text;
 pub use code::{Code, code};
 pub use rich_text::{RichText, RichTextElement, rich_text};
-pub mod divder;
-pub use divder::Divider;
+pub mod divider;
+pub use divider::Divider;

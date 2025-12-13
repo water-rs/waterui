@@ -184,7 +184,7 @@ impl<T> OpaqueType for WuiBinding<T> {}
 #[macro_export]
 macro_rules! ffi_computed {
     ($ty:ty,$ffi:ty, $ident:tt) => {
-        paste::paste!{
+        pastey::paste!{
             /// Reads the current value from a computed
             /// # Safety
             /// The computed pointer must be valid and point to a properly initialized computed object.
@@ -258,7 +258,7 @@ macro_rules! ffi_computed {
     };
 
     ($ty:ty,$ffi:ty) => {
-        paste::paste! {
+        pastey::paste! {
             $crate::ffi_computed!($ty, $ffi, [<$ty:snake>]);
         }
     }
@@ -271,7 +271,7 @@ macro_rules! ffi_computed {
 #[macro_export]
 macro_rules! ffi_computed_ctor {
     ($ty:ty,$ffi:ty, $ident:tt) => {
-        paste::paste!{
+        pastey::paste!{
             /// Creates a computed signal from native callbacks.
             /// # Safety
             /// All function pointers must be valid and follow the expected calling conventions.
@@ -296,7 +296,7 @@ macro_rules! ffi_computed_ctor {
     };
 
     ($ty:ty,$ffi:ty) => {
-        paste::paste! {
+        pastey::paste! {
             $crate::ffi_computed_ctor!($ty, $ffi, [<$ty:snake>]);
         }
     }
@@ -305,7 +305,7 @@ macro_rules! ffi_computed_ctor {
 #[macro_export]
 macro_rules! ffi_binding {
     ($ty:ty,$ffi:ty, $ident:tt) => {
-        paste::paste!{
+        pastey::paste!{
             /// Reads the current value from a binding
             /// # Safety
             /// The binding pointer must be valid and point to a properly initialized binding object.
@@ -365,7 +365,7 @@ macro_rules! ffi_binding {
     };
 
     ($ty:ty,$ffi:ty) =>{
-        paste::paste!{
+        pastey::paste!{
             $crate::ffi_binding!($ty,$ffi,[<$ty:snake>]);
         }
     }
@@ -382,7 +382,7 @@ macro_rules! ffi_reactive {
     };
 
     ($ty:ty,$ffi:ty) => {
-        paste::paste! {
+        pastey::paste! {
             $crate::ffi_reactive!($ty, $ffi, [<$ty:snake>]);
         }
     };

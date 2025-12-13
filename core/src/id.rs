@@ -7,7 +7,7 @@
 //! - Converting between different ID types
 //!
 //! The primary types in this module include:
-//! - `Identifable`: A trait for types that can be uniquely identified
+//! - `Identifiable`: A trait for types that can be uniquely identified
 //! - `TaggedView`: A view wrapper that includes an identifying tag
 //! - `Mapping`: A bidirectional mapping between values and numeric IDs
 //! - `UseId` and `SelfId`: Wrappers that implement different ID strategies
@@ -45,7 +45,7 @@ impl TryFrom<i32> for Id {
 ///
 /// Implementors of this trait can provide a specific ID type and a way to retrieve
 /// the ID from an instance.
-pub trait Identifable {
+pub trait Identifiable {
     /// The type of ID to use, which must implement Hash and Ord traits.
     type Id: Hash + Ord + Clone;
 
@@ -85,7 +85,7 @@ impl<T, F> Deref for UseId<T, F> {
     }
 }
 
-impl<T, F, Id> Identifable for UseId<T, F>
+impl<T, F, Id> Identifiable for UseId<T, F>
 where
     F: Fn(&T) -> Id,
     Id: Ord + Hash + Clone,
@@ -115,7 +115,7 @@ impl<T> SelfId<T> {
     }
 }
 
-impl<T: Hash + Ord + Clone> Identifable for SelfId<T> {
+impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
     type Id = T;
 
     /// Returns a clone of the wrapped value as the identifier.
@@ -133,7 +133,7 @@ impl<T> Deref for SelfId<T> {
 }
 
 /// Extension trait that provides convenient methods for making types identifiable.
-pub trait IdentifableExt: Sized {
+pub trait IdentifiableExt: Sized {
     /// Wraps the value in a [`UseId`] with the provided identification function.
     fn use_id<F, Id>(self, f: F) -> UseId<Self, F>
     where
@@ -149,7 +149,7 @@ pub trait IdentifableExt: Sized {
     }
 }
 
-impl<T> IdentifableExt for T {}
+impl<T> IdentifiableExt for T {}
 
 /// A view that includes an identifying tag of type T.
 ///

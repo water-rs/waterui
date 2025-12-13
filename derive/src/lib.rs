@@ -227,7 +227,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        #[derive(Default, Clone, Debug, ::waterui::FormBuilder, ::waterui::Project)]
+        #[derive(Default, Clone, Debug, ::waterui::form::FormBuilder, ::waterui::Project)]
         #input
     };
 
@@ -814,10 +814,8 @@ pub fn hot_reload(_args: TokenStream, input: TokenStream) -> TokenStream {
     let fn_name_str = fn_name.to_string();
 
     // Generate the export symbol name
-    let export_fn_name = syn::Ident::new(
-        &format!("waterui_hot_reload_{fn_name_str}"),
-        fn_name.span(),
-    );
+    let export_fn_name =
+        syn::Ident::new(&format!("waterui_hot_reload_{fn_name_str}"), fn_name.span());
 
     let expanded = quote! {
         #(#fn_attrs)*
