@@ -92,7 +92,12 @@ pub trait ViewExt: View + Sized {
         OnChange::<Self, C::Guard>::new(self, source, handler)
     }
 
+    /// Spawns an asynchronous task tied to the lifecycle of this view.
     ///
+    /// The task will be cancelled when the view is dropped.
+    ///
+    /// # Arguments
+    /// * `task` - The asynchronous task to run
     fn task<Fut>(self, task: Fut) -> Metadata<Retain>
     where
         Fut: std::future::Future<Output = ()> + 'static,

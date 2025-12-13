@@ -3,6 +3,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    process::Output,
     process::Stdio,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -45,17 +46,16 @@ pub(crate) fn command(command: &mut Command) -> &mut Command {
         })
 }
 
-/// Run a command with the specified name and arguments.
+/// Run a command and capture its output regardless of exit status.
 ///
-/// Always captures output. When `STD_OUTPUT` is enabled, also prints to terminal.
+/// When `STD_OUTPUT` is enabled, also prints to terminal.
 ///
-/// Return the standard output as a `String` if successful.
 /// # Errors
-/// - If the command fails to execute or returns a non-zero exit status.
-pub(crate) async fn run_command(
+/// - If the command fails to execute.
+pub(crate) async fn run_command_output(
     name: &str,
     args: impl IntoIterator<Item = &str>,
-) -> eyre::Result<String> {
+) -> eyre::Result<Output> {
     let result = Command::new(name)
         .args(args)
         .kill_on_drop(true)
@@ -71,6 +71,22 @@ pub(crate) async fn run_command(
         let _ = std::io::stderr().write_all(&result.stderr);
     }
 
+    Ok(result)
+}
+
+/// Run a command with the specified name and arguments.
+///
+/// Always captures output. When `STD_OUTPUT` is enabled, also prints to terminal.
+///
+/// Return the standard output as a `String` if successful.
+/// # Errors
+/// - If the command fails to execute or returns a non-zero exit status.
+pub(crate) async fn run_command(
+    name: &str,
+    args: impl IntoIterator<Item = &str>,
+) -> eyre::Result<String> {
+    let result = run_command_output(name, args).await?;
+
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
     } else {
@@ -80,6 +96,14 @@ pub(crate) async fn run_command(
             result.status
         ))
     }
+}
+
+/// Parse whitespace-separated u32 values (e.g., process IDs).
+pub(crate) fn parse_whitespace_separated_u32s(input: &str) -> Vec<u32> {
+    input
+        .split_whitespace()
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
 }
 
 /// Async file copy using reflink when available, falling back to regular copy.
@@ -92,4 +116,21 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
     let from = from.as_ref().to_path_buf();
     let to = to.as_ref().to_path_buf();
     unblock(move || reflink::reflink_or_copy(from, to).map(|_| ())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_whitespace_separated_u32s;
+
+    #[test]
+    fn parses_pidof_output_with_multiple_pids() {
+        let parsed = parse_whitespace_separated_u32s("123 456\n");
+        assert_eq!(parsed, vec![123, 456]);
+    }
+
+    #[test]
+    fn ignores_non_numeric_tokens() {
+        let parsed = parse_whitespace_separated_u32s("foo 42 bar\n");
+        assert_eq!(parsed, vec![42]);
+    }
 }
