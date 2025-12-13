@@ -27,9 +27,10 @@
 use crate::conversions::{rect_to_kurbo, resolved_color_to_peniko};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
+use crate::image::CanvasImage;
 use crate::path::Path;
 use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
-use waterui_core::layout::Rect;
+use waterui_core::layout::{Point, Rect};
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
@@ -532,6 +533,120 @@ impl DrawingContext<'_> {
     #[must_use]
     pub fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
         ConicGradient::new(start_angle, x, y)
+    }
+
+    // ========================================================================
+    // Image Drawing Methods (Phase 6)
+    // ========================================================================
+
+    /// Draws an image at the specified position.
+    ///
+    /// The image is drawn at its natural size (1:1 pixel mapping).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let image = CanvasImage::from_bytes(png_data)?;
+    /// ctx.draw_image(&image, Point::new(10.0, 10.0));
+    /// ```
+    pub fn draw_image(&mut self, image: &CanvasImage, pos: Point) {
+        let size = image.size();
+        let dest_rect = Rect::new(pos, size);
+        self.draw_image_scaled(image, dest_rect);
+    }
+
+    /// Draws an image scaled to fit the destination rectangle.
+    ///
+    /// # Arguments
+    /// * `image` - The image to draw
+    /// * `dest` - Destination rectangle (position and size)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let image = CanvasImage::from_bytes(png_data)?;
+    /// let dest = Rect::new(Point::ZERO, Size::new(200.0, 150.0));
+    /// ctx.draw_image_scaled(&image, dest);
+    /// ```
+    pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: Rect) {
+        // Calculate transform to scale image to destination rectangle
+        let scale_x = f64::from(dest.size().width) / f64::from(image.width());
+        let scale_y = f64::from(dest.size().height) / f64::from(image.height());
+
+        // Create transform: translate to dest position, then scale
+        let image_transform = kurbo::Affine::translate((
+            f64::from(dest.origin().x),
+            f64::from(dest.origin().y),
+        )) * kurbo::Affine::scale_non_uniform(scale_x, scale_y);
+
+        // Compose with current transform
+        let final_transform = self.current_state.transform * image_transform;
+
+        // Wrap ImageData in ImageBrush
+        let image_brush = peniko::ImageBrush::new(image.inner().clone());
+
+        // Draw image using vello
+        self.scene.draw_image(&image_brush, final_transform);
+    }
+
+    /// Draws a sub-rectangle of an image, scaled to fit the destination.
+    ///
+    /// This allows drawing only part of an image (sprite sheet support).
+    ///
+    /// # Arguments
+    /// * `image` - The source image
+    /// * `src` - Source rectangle (which part of the image to draw)
+    /// * `dest` - Destination rectangle (where and how large to draw)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let sprite_sheet = CanvasImage::from_bytes(png_data)?;
+    /// // Draw top-left 32x32 sprite at position (100, 100) scaled to 64x64
+    /// let src = Rect::new(Point::ZERO, Size::new(32.0, 32.0));
+    /// let dest = Rect::new(Point::new(100.0, 100.0), Size::new(64.0, 64.0));
+    /// ctx.draw_image_sub(&sprite_sheet, src, dest);
+    /// ```
+    pub fn draw_image_sub(&mut self, image: &CanvasImage, src: Rect, dest: Rect) {
+        // Use push_clip_layer with clip to render only the source rectangle
+        // Calculate transform for the sub-rectangle
+
+        // First, translate to negate the source offset
+        let src_offset = kurbo::Affine::translate((
+            -f64::from(src.origin().x),
+            -f64::from(src.origin().y),
+        ));
+
+        // Then scale from source size to destination size
+        let scale_x = f64::from(dest.size().width) / f64::from(src.size().width);
+        let scale_y = f64::from(dest.size().height) / f64::from(src.size().height);
+        let scale = kurbo::Affine::scale_non_uniform(scale_x, scale_y);
+
+        // Finally, translate to destination position
+        let dest_offset = kurbo::Affine::translate((
+            f64::from(dest.origin().x),
+            f64::from(dest.origin().y),
+        ));
+
+        // Compose transforms: src_offset -> scale -> dest_offset
+        let image_transform = src_offset * scale * dest_offset;
+
+        // Compose with current transform
+        let final_transform = self.current_state.transform * image_transform;
+
+        // Create clip rectangle at destination
+        let clip_rect = rect_to_kurbo(dest);
+
+        // Push a clipped layer, draw the image, then pop
+        self.scene
+            .push_clip_layer(self.current_state.transform, &clip_rect);
+
+        // Wrap ImageData in ImageBrush
+        let image_brush = peniko::ImageBrush::new(image.inner().clone());
+
+        self.scene.draw_image(&image_brush, final_transform);
+
+        self.scene.pop_layer();
     }
 
     // ========================================================================
