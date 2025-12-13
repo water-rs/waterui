@@ -30,6 +30,7 @@ use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
 use crate::image::CanvasImage;
 use crate::path::Path;
 use crate::state::{DrawingState, FillStyle, LineCap, LineJoin, StrokeStyle};
+use crate::text::{FontSpec, TextMetrics};
 use waterui_core::layout::{Point, Rect};
 
 // Internal imports for rendering (not exposed to users)
@@ -687,6 +688,88 @@ impl DrawingContext<'_> {
         self.scene.draw_image(&image_brush, final_transform);
 
         self.scene.pop_layer();
+    }
+
+    // ========================================================================
+    // Text Rendering Methods (Phase 5)
+    // ========================================================================
+
+    /// Sets the font for text rendering.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.set_font(FontSpec::new("Arial", 24.0).with_weight(FontWeight::Bold));
+    /// ```
+    pub fn set_font(&mut self, font: FontSpec) {
+        self.current_state.font = font;
+    }
+
+    /// Measures the given text with the current font.
+    ///
+    /// Returns approximate text metrics. For more accurate measurements,
+    /// use a dedicated text layout library.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let metrics = ctx.measure_text("Hello World");
+    /// println!("Text width: {}", metrics.width);
+    /// ```
+    #[must_use]
+    pub fn measure_text(&self, text: &str) -> TextMetrics {
+        // Simple approximation based on font size
+        // In a real implementation, this would use Parley to layout the text
+        let char_count = text.chars().count() as f32;
+        let font_size = self.current_state.font.size;
+
+        // Approximate width (assuming average character width is ~0.6 * font_size)
+        let width = char_count * font_size * 0.6;
+        let height = font_size;
+
+        TextMetrics::new(width, height)
+    }
+
+    /// Fills text at the specified position.
+    ///
+    /// Note: This is a simplified implementation. Full text rendering with
+    /// complex layouts, bidirectional text, and font fallbacks requires
+    /// integration with Parley's text layout engine.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.fill_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn fill_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement full text rendering with Parley
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. Iterate through glyphs in the layout
+        // 3. Use Scene::draw_glyphs() to render each glyph run
+        // 4. Apply current fill style to glyphs
+
+        tracing::warn!("fill_text is not yet fully implemented - requires Parley integration");
+    }
+
+    /// Strokes text at the specified position.
+    ///
+    /// Note: This is a simplified implementation. Stroke text requires
+    /// converting glyphs to paths using skrifa.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.stroke_text("Hello World", Point::new(100.0, 100.0));
+    /// ```
+    pub fn stroke_text(&mut self, _text: &str, _pos: Point) {
+        // TODO: Implement stroke text
+        // This requires:
+        // 1. Create a Parley layout with the text and current font
+        // 2. For each glyph, use skrifa to convert it to a path
+        // 3. Stroke each path with current stroke style
+
+        tracing::warn!("stroke_text is not yet fully implemented - requires skrifa integration");
     }
 
     // ========================================================================
