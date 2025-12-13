@@ -5,14 +5,11 @@
 //!
 //! The flame effect uses fractal Brownian motion (fBm) noise for realistic fire.
 
+use waterui::app::App;
 use waterui::graphics::shader;
 use waterui::prelude::*;
 
-pub fn init() -> Environment {
-    Environment::new()
-}
-
-pub fn main() -> impl View {
+fn main() -> impl View {
     vstack((
         text("Flame Animation").size(24),
         text("GPU-rendered procedural fire").size(14),
@@ -21,6 +18,10 @@ pub fn main() -> impl View {
         text("Rendered at 120fps").size(12),
     ))
     .padding()
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 waterui_ffi::export!();

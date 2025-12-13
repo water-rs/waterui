@@ -52,34 +52,49 @@ use crate::array::WuiArray;
 macro_rules! export {
     () => {
         const _: () = {
-            /// Initializes a new WaterUI environment
+            /// Initializes the WaterUI runtime and creates a default environment.
+            ///
+            /// Native should:
+            /// 1. Call this once at startup
+            /// 2. Install theme settings into the returned environment
+            /// 3. Pass the environment to `waterui_app()`
             ///
             /// # Safety
-            ///
-            /// This function must be called on main thread.
+            /// This function must be called on main thread, once only.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
                 unsafe {
                     $crate::__init();
                 }
-                let env: waterui::Environment = init();
+                let env = waterui::Environment::new();
                 $crate::IntoFFI::into_ffi(env)
             }
 
-            ::waterui::hot_reloadable_library!(main);
+            ::waterui::hot_reloadable_library!(app);
 
-            /// Creates the main view for the WaterUI application
+            /// Creates the application from the user's `app(env)` function.
+            ///
+            /// Takes ownership of the environment (with theme already installed) from native,
+            /// calls the user's `app(env: Environment) -> App` function, and returns the App.
+            ///
+            /// The environment is returned inside the App struct for native to use during rendering.
             ///
             /// # Safety
-            /// This function must be called on main thread.
+            /// - `env` must be a valid pointer from `waterui_init()` or native env creation
+            /// - This function takes ownership of the environment
+            /// - This function must be called on main thread
             #[unsafe(no_mangle)]
             #[allow(unexpected_cfgs)]
-            pub unsafe extern "C" fn waterui_main() -> *mut $crate::WuiAnyView {
-                let view = main();
+            pub unsafe extern "C" fn waterui_app(
+                env: *mut $crate::WuiEnv,
+            ) -> $crate::app::WuiApp {
+                // Take ownership of the environment
+                let env: waterui::Environment = unsafe { $crate::IntoRust::into_rust(env) };
 
-                #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
-                let view = waterui::debug::hot_reload::Hotreload::try_from_env(view);
-                $crate::IntoFFI::into_ffi(AnyView::new(view))
+                // Call user's app(env: Environment) -> App
+                let app: waterui::app::App = app(env);
+
+                $crate::IntoFFI::into_ffi(app)
             }
         };
     };

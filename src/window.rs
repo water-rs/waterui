@@ -18,6 +18,10 @@ pub struct Window {
     ///
     /// Notice that it may not be supported on all platforms.
     pub closable: bool,
+    /// Whether the window is resizable.
+    ///
+    /// Notice that it may not be supported on all platforms.
+    pub resizable: bool,
     /// The frame of the window.
     ///
     /// Notice that it may not be supported on all platforms.
@@ -26,6 +30,14 @@ pub struct Window {
     pub content: AnyView,
     /// The current state of the window.
     pub state: Binding<WindowState>,
+    /// Optional toolbar content for the window.
+    ///
+    /// Notice that it may not be supported on all platforms.
+    pub toolbar: Option<AnyView>,
+    /// The visual style of the window.
+    ///
+    /// Notice that it may not be supported on all platforms.
+    pub style: WindowStyle,
 }
 
 /// The state of a window.
@@ -40,6 +52,20 @@ pub enum WindowState {
     Minimized,
     /// The window is maximized to fullscreen.
     Fullscreen,
+}
+
+/// The visual style of a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowStyle {
+    /// Standard window with title bar and controls.
+    #[default]
+    Titled,
+    /// Borderless window without title bar.
+    Borderless,
+    /// Window where content extends into the title bar area.
+    ///
+    /// On macOS, this corresponds to `NSWindow.StyleMask.fullSizeContentView`.
+    FullSizeContentView,
 }
 
 /// Manages the display of windows.
@@ -65,6 +91,7 @@ impl WindowManager {
 }
 
 impl_constant!(WindowState);
+impl_constant!(WindowStyle);
 
 impl Window {
     /// Create a new window instance with the specified title and content.
@@ -76,14 +103,45 @@ impl Window {
         Self {
             title: title.into_computed(),
             closable: true,
+            resizable: true,
             frame: Binding::container(default_frame),
             content: AnyView::new(content),
             state: Binding::default(),
+            toolbar: None,
+            style: WindowStyle::default(),
         }
     }
 
+    /// Set whether the window is resizable.
+    #[must_use]
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
+    /// Set the toolbar content for the window.
+    #[must_use]
+    pub fn toolbar(mut self, toolbar: impl View) -> Self {
+        self.toolbar = Some(AnyView::new(toolbar));
+        self
+    }
+
+    /// Set the visual style of the window.
+    #[must_use]
+    pub fn style(mut self, style: WindowStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Set the title of the window.
+    #[must_use]
+    pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
+        self.title = title.into_computed();
+        self
+    }
+
     /// Get a handle to control the window after showing it.
-    #[must_use] 
+    #[must_use]
     pub fn handle(&self) -> WindowHandle {
         WindowHandle {
             frame: self.frame.clone(),
