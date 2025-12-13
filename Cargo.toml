@@ -9,7 +9,9 @@ members = [
     "cli"
 ]
 exclude = [
-  "examples/*"
+  "examples/*",
+  "hydrolysis",
+  "derive"
 ]
 
 resolver = "2"
@@ -67,13 +69,12 @@ waterui-text = { version = "0.2.0", path = "components/text" }
 waterui-media = { version = "0.2.0", path = "components/media" }
 waterui-form = { version = "0.2.0", path = "components/form" }
 waterui-controls = { version = "0.2.0", path = "components/controls"}
-waterui-form-derive = { version = "0.2.0", path = "components/form/derive" }
 waterui-graphics = { version = "0.2.0", path = "components/graphics" }
 waterui-ffi = { version = "0.2.0", path = "ffi" }
 waterui-layout = { version = "0.2.0", path = "components/layout" }
 waterui-navigation = { version = "0.2.0", path = "components/navigation" }
 waterui = { version = "0.2.0", path = "." }
-native-executor = { version = "0.7.0", features = ["polyfill"] }
+native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"

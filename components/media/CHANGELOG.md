@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Enhance window management and hot reload functionality
-- *(media-picker)* add media picker example with photo, video, and live photo selection
+- _(media-picker)_ add media picker example with photo, video, and live photo selection
 - Add mac screenshot image and improve markdown example
-- *(android)* add support for multiple architectures and clean jniLibs
+- _(android)_ add support for multiple architectures and clean jniLibs
 - Update dependencies and enhance backend configurations
 - Update media components with enhanced MediaPicker support and new features
 - Refactor Photo component and enhance hot reload functionality
@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduce StretchAxis for layout management
 - Enhance local development mode for WaterUI
 - enhance Dockerfile and documentation for improved build and configuration
-- *(cli)* enhance Android backend integration with improved logging and automation
-- *(android)* Enhance project creation and packaging
+- _(cli)_ enhance Android backend integration with improved logging and automation
+- _(android)_ Enhance project creation and packaging
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Implement Android backend components and runtime
 - Add image handling capabilities with new Image struct and integrate into Photo component
@@ -33,15 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update dependencies with versioning and improve documentation clarity
 - add counter example to README and enhance tutorial book with tests
 - Enhance form components with new derive macros and examples
-- *(ffi)* enhance FFI bindings with new types and conversions for media and form components
-- *(cli)* add WaterUI CLI for project management
+- _(ffi)_ enhance FFI bindings with new types and conversions for media and form components
+- _(cli)_ add WaterUI CLI for project management
 
 ### Fixed
 
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
 - Refactor reactive system for nami API updates
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 - Update code block syntax in documentation for clarity
 - Make FFI around waterui-media compiled
 
@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump waterui version to 0.2 in documentation across multiple components
 - Bump versions for multiple components to 0.2.0 and introduce waterui-macros crate
 - Refactor layout tests to use approximate equality for floating-point comparisons
-- *(media-picker)* enhance media selection handling and error management
+- _(media-picker)_ enhance media selection handling and error management
 - Add waterui-color, waterui-str, and waterui-url crates with comprehensive documentation
 - streamline media picker and loading state management
 - Refactor Native Component and Improve Error Handling
@@ -96,6 +96,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add Uniffi scaffolding and FFI support for form components
 - Use uniffi for FFI binding
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support

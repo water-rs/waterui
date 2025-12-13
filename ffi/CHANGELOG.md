@@ -12,13 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Enhance window management and hot reload functionality
-- *(media-picker)* add media picker example with photo, video, and live photo selection
+- _(media-picker)_ add media picker example with photo, video, and live photo selection
 - Add mac screenshot image and improve markdown example
 - Add star field example for WaterUI framework
 - Enhance panic logging and error handling in Apple backends
-- *(flame)* enhance flame shader for HDR rendering and adjust GPU surface format
+- _(flame)_ enhance flame shader for HDR rendering and adjust GPU surface format
 - enhance logging levels for Apple platforms and improve app structure
-- *(android)* streamline APK installation process and add CMake toolchain wrapper for ABI support
+- _(android)_ streamline APK installation process and add CMake toolchain wrapper for ABI support
 - Rewrite CLI
 - Implement hot reload server and connection handling
 - Update media components with enhanced MediaPicker support and new features
@@ -41,20 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add initial test_example.rs for dynamic binding demonstration
 - introduce waterui.h header and enhance theme system with color and font slots
 - enhance Dockerfile and documentation for improved build and configuration
-- *(ci)* add new workflows for CLI and Docker builds, enhance CI checks, and implement changelog generation
-- *(logging)* enhance tracing and panic forwarding for improved log management
-- *(hot_reload)* implement hot reload support for FFI and backend configurations
+- _(ci)_ add new workflows for CLI and Docker builds, enhance CI checks, and implement changelog generation
+- _(logging)_ enhance tracing and panic forwarding for improved log management
+- _(hot_reload)_ implement hot reload support for FFI and backend configurations
 - update dependencies to use git sources and improve error handling in CLI
-- *(theme)* add background and surface color functions to FFI and include tests for readability
-- *(theme)* add macro definitions for theme color and font functions
+- _(theme)_ add background and surface color functions to FFI and include tests for readability
+- _(theme)_ add macro definitions for theme color and font functions
 - Add watcher functionality for AnyViews and related types
-- *(theme)* add theme module with color and font functions for FFI
+- _(theme)_ add theme module with color and font functions for FFI
 - document hot reload support for Android, Apple, Web, and TUI backends
 - add TUI platform support and enhance hot reload functionality
 - Introduce build command for native artifacts
-- *(android)* enhance panic hook with additional string utilities
+- _(android)_ enhance panic hook with additional string utilities
 - add miette integration for enhanced error handling and logging
-- *(cli)* enhance Android backend integration with improved logging and automation
+- _(cli)_ enhance Android backend integration with improved logging and automation
 - enhance Android backend integration and logging capabilities
 - Add new dependencies for enhanced functionality and refactor hot reload implementation
 - Implement hot reload functionality with configurable environment
@@ -64,8 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhance Android and watchOS support with new SDK checks and build scripts
 - Enhance WaterUI with new table and list components
 - Implement WuiAnyViewCollection and WuiAnyViews for efficient view management
-- *(graphics)* add renderer view support and CPU rendering capabilities
-- *(android)* Enhance project creation and packaging
+- _(graphics)_ add renderer view support and CPU rendering capabilities
+- _(android)_ Enhance project creation and packaging
 - Add OKLCH color space support and enhance color module documentation
 - Add Markdown support for rich text rendering and enhance entry point documentation
 - Implement gesture handling in WaterUI with WuiGestureView and GestureSequenceContainer
@@ -85,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initialize demo project with WaterUI integration
 - Add template member to workspace and enhance FFI with new environment handling
 - Enhance form components with new derive macros and examples
-- *(ffi)* enhance FFI bindings with new types and conversions for media and form components
-- *(cli)* add WaterUI CLI for project management
+- _(ffi)_ enhance FFI bindings with new types and conversions for media and form components
+- _(cli)_ add WaterUI CLI for project management
 
 ### Fixed
 
@@ -94,13 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - update documentation to reflect Android View terminology for consistency
 - correct spelling errors and improve comments across the codebase
 - Update FFI function signature
-- *(ffi)* import necessary traits for hot reload directory configuration
-- *(hot_reload)* import necessary traits for hot reload endpoint configuration
-- *(ffi)* ensure thread safety in waterui_init and waterui_main functions
+- _(ffi)_ import necessary traits for hot reload directory configuration
+- _(hot_reload)_ import necessary traits for hot reload endpoint configuration
+- _(ffi)_ ensure thread safety in waterui_init and waterui_main functions
 - rename metadata functions for consistency and clarity
 - correct function naming for FFI compatibility in macros
 - Refactor reactive system for nami API updates
-- *(docs)* resolve doc test compilation errors
+- _(docs)_ resolve doc test compilation errors
 - Run formatter
 - Make FFI around waterui-media compiled
 
@@ -185,6 +185,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use uniffi for FFI binding
 - Last version support C-API. May it is too early to consider this. Currently let's just focus on the interaction between renderer. And performance consideration could be delayed until we meet the bottleneck.
 - Refine project and Migrate to Rust 2024
-- Redeisgn modifier and add some convenient initializer for components
+- Redesign modifier and add some convenient initializer for components
 - Refactor our project
 - Reorganize crates, merge main crate and core crate. Better async view support
