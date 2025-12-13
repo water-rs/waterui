@@ -6,16 +6,13 @@
 //! - Immersive full-screen layout
 //! - Reactive state management
 
+use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::widget::condition::when;
 
-pub fn init() -> Environment {
-    Environment::new()
-}
-
-pub fn main() -> impl View {
+fn main() -> impl View {
     // Sample video URLs (Big Buck Bunny - open source test videos)
     let sample_videos: [(&str, &str); 3] = [
         (
@@ -102,6 +99,10 @@ pub fn main() -> impl View {
 
     // Stack everything
     zstack((video_layer, controls_overlay)).ignore_safe_area(EdgeSet::ALL)
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 /// Pill-style selection button

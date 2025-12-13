@@ -5,7 +5,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Meta, parse_macro_input};
+use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
 ///
@@ -757,4 +757,87 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
     }
 
     (has_positional, has_named, positional_count, named_vars)
+}
+
+/// Attribute macro for enabling hot reload on view functions.
+///
+/// This macro transforms a function returning `impl View` to support hot reloading.
+/// When the library is rebuilt during development, the view will automatically update
+/// without restarting the application.
+///
+/// # Example
+///
+/// ```ignore
+/// use waterui::prelude::*;
+///
+/// #[hot_reload]
+/// fn sidebar() -> impl View {
+///     vstack((
+///         text("Sidebar"),
+///         text("Content"),
+///     ))
+/// }
+///
+/// fn main() -> impl View {
+///     hstack((
+///         sidebar(),  // This view will hot reload
+///         content_panel(),
+///     ))
+/// }
+/// ```
+///
+/// # How It Works
+///
+/// The macro:
+/// 1. Wraps the function body in a `HotReloadView` that registers with the hot reload system
+/// 2. Generates a C-exported symbol (when built with `--cfg waterui_hot_reload_lib`) that
+///    the CLI can load to get the updated view
+///
+/// The generated symbol name follows the pattern: `waterui_hot_reload_<function_name>`
+///
+/// # Requirements
+///
+/// - The function must return `impl View`
+/// - Hot reload must be enabled via environment variables (set by `water run`)
+/// - For development, build with `RUSTFLAGS="--cfg waterui_hot_reload_lib"`
+#[proc_macro_attribute]
+pub fn hot_reload(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_attrs = &input_fn.attrs;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+
+    // Create the function ID: module_path::function_name
+    let fn_name_str = fn_name.to_string();
+
+    // Generate the export symbol name
+    let export_fn_name = syn::Ident::new(
+        &format!("waterui_hot_reload_{fn_name_str}"),
+        fn_name.span(),
+    );
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis #fn_sig {
+            ::waterui::debug::HotReloadView::new(
+                concat!(module_path!(), "::", #fn_name_str),
+                || #fn_block
+            )
+        }
+
+        // Generate C export symbol for hot reload library
+        // Symbol name: waterui_hot_reload_<fn_name>
+        #[cfg(waterui_hot_reload_lib)]
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #export_fn_name() -> *mut () {
+            let view = #fn_block;
+            Box::into_raw(Box::new(::waterui::AnyView::new(view))).cast()
+        }
+    };
+
+    TokenStream::from(expanded)
 }

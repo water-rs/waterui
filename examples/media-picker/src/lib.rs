@@ -6,6 +6,7 @@
 //! - Displaying loaded media (Photo, Video, LivePhoto)
 //! - Filter options for different media types
 
+use waterui::app::App;
 use waterui::component::Dynamic;
 use waterui::media::Media;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
@@ -13,11 +14,7 @@ use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
 
-pub fn init() -> Environment {
-    Environment::new()
-}
-
-pub fn main() -> impl View {
+fn main() -> impl View {
     // Currently selected media (None = no selection yet)
     let loaded_media: Binding<Option<Media>> = binding(None);
     let is_loading = binding(false);
@@ -49,6 +46,10 @@ pub fn main() -> impl View {
         media_display_area(loaded_media.clone(), is_loading.clone()),
         spacer(),
     ))
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 /// Creates a picker button that opens the media picker with the given filter

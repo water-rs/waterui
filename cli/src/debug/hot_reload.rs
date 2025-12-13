@@ -26,12 +26,21 @@ pub const PORT_RETRY_COUNT: u16 = 50;
 /// Debounce duration for file changes before triggering a rebuild.
 pub const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
 
+/// Message types that can be broadcast to connected clients.
+#[derive(Debug, Clone)]
+pub enum BroadcastMessage {
+    /// Text message (e.g., "building" status).
+    Text(String),
+    /// Binary message (e.g., compiled library).
+    Binary(Vec<u8>),
+}
+
 /// Hot reload server that broadcasts dylib updates to connected apps.
 #[derive(Debug)]
 pub struct HotReloadServer {
     port: u16,
     addr: SocketAddr,
-    broadcast_tx: Sender<Vec<u8>>,
+    broadcast_tx: Sender<BroadcastMessage>,
     _server_task: Task<()>,
 }
 
@@ -50,7 +59,7 @@ pub enum FailToLaunch {
 /// Shared state for managing connected WebSocket clients.
 struct ServerState {
     /// Senders to all connected clients.
-    clients: Vec<Sender<Vec<u8>>>,
+    clients: Vec<Sender<BroadcastMessage>>,
 }
 
 impl ServerState {
@@ -60,14 +69,14 @@ impl ServerState {
         }
     }
 
-    fn add_client(&mut self, sender: Sender<Vec<u8>>) {
+    fn add_client(&mut self, sender: Sender<BroadcastMessage>) {
         self.clients.push(sender);
     }
 
-    fn broadcast(&mut self, data: &[u8]) {
+    fn broadcast(&mut self, message: BroadcastMessage) {
         // Remove disconnected clients and send to remaining ones
         self.clients
-            .retain(|sender| sender.try_send(data.to_vec()).is_ok());
+            .retain(|sender| sender.try_send(message.clone()).is_ok());
     }
 }
 
@@ -103,8 +112,8 @@ impl HotReloadServer {
             .local_addr()
             .map_err(|e| FailToLaunch::BindError(port, e))?;
 
-        // Channel for broadcasting dylib updates to the server task
-        let (broadcast_tx, broadcast_rx) = channel::unbounded::<Vec<u8>>();
+        // Channel for broadcasting messages to the server task
+        let (broadcast_tx, broadcast_rx) = channel::unbounded::<BroadcastMessage>();
 
         // Shared state for managing clients
         let state = Arc::new(Mutex::new(ServerState::new()));
@@ -112,9 +121,9 @@ impl HotReloadServer {
         // Spawn background task to handle broadcasts
         let state_for_broadcast = state.clone();
         let broadcast_task = smol::spawn(async move {
-            while let Ok(data) = broadcast_rx.recv().await {
+            while let Ok(message) = broadcast_rx.recv().await {
                 let mut state = state_for_broadcast.lock().await;
-                state.broadcast(&data);
+                state.broadcast(message);
             }
         });
 
@@ -176,11 +185,20 @@ impl HotReloadServer {
         self.addr.ip().to_string()
     }
 
+    /// Notify all connected clients that a build is starting.
+    ///
+    /// This provides instant feedback to the user before compilation completes.
+    pub fn send_building(&self) {
+        let _ = self
+            .broadcast_tx
+            .try_send(BroadcastMessage::Text("building".to_string()));
+    }
+
     /// Broadcast a library binary to all connected clients.
     ///
     /// Returns immediately; the broadcast happens asynchronously.
     pub fn send_library(&self, data: Vec<u8>) {
-        let _ = self.broadcast_tx.try_send(data);
+        let _ = self.broadcast_tx.try_send(BroadcastMessage::Binary(data));
     }
 
     /// Broadcast a library file to all connected clients.
@@ -196,7 +214,7 @@ impl HotReloadServer {
     }
 
     /// Get a clone of the broadcast sender for sending library data.
-    pub(crate) fn broadcast_sender(&self) -> Sender<Vec<u8>> {
+    pub(crate) fn broadcast_sender(&self) -> Sender<BroadcastMessage> {
         self.broadcast_tx.clone()
     }
 }
@@ -217,7 +235,7 @@ fn handle_websocket(upgrade: WebSocketUpgrade, state: Arc<Mutex<ServerState>>) -
         tracing::info!("Hot reload client connected");
 
         // Create a channel for this client to receive broadcasts
-        let (client_tx, client_rx) = channel::unbounded::<Vec<u8>>();
+        let (client_tx, client_rx) = channel::unbounded::<BroadcastMessage>();
 
         // Register this client
         {
@@ -231,12 +249,19 @@ fn handle_websocket(upgrade: WebSocketUpgrade, state: Arc<Mutex<ServerState>>) -
         loop {
             futures::select! {
                 // Check for data to send to client
-                data = client_rx.recv().fuse() => {
-                    match data {
-                        Ok(data) => {
+                message = client_rx.recv().fuse() => {
+                    match message {
+                        Ok(BroadcastMessage::Text(text)) => {
+                            tracing::debug!("Sending text message to client: {text}");
+                            if let Err(e) = socket.send_text(text).await {
+                                tracing::warn!("Failed to send text to client: {e}");
+                                break;
+                            }
+                        }
+                        Ok(BroadcastMessage::Binary(data)) => {
                             tracing::debug!("Sending {} bytes to client", data.len());
                             if let Err(e) = socket.send_binary(data).await {
-                                tracing::warn!("Failed to send to client: {e}");
+                                tracing::warn!("Failed to send binary to client: {e}");
                                 break;
                             }
                         }
