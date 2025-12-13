@@ -377,12 +377,4 @@ content_view.title("Screen Title")
 
 This crate has no optional features. All navigation components are included by default.
 
-## Architecture Notes
-
-Navigation rendering is backend-specific:
-
-- **Apple**: Maps to SwiftUI's `NavigationStack` and `NavigationBar`
-- **Android**: Maps to Jetpack Compose's `NavHost` and `TopAppBar`
-- **Hydrolysis**: Self-drawn navigation (experimental)
-
 The Rust side provides the declarative API and state management while native backends handle the actual rendering and platform-specific navigation gestures (swipe to go back, etc.).
