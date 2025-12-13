@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/waterui/badge.svg)](https://docs.rs/waterui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern, cross-platform UI framework for Rust that renders to native platform widgets (UIKit/AppKit on Apple, Jetpack Compose on Android) rather than drawing its own pixels. Build reactive, declarative UIs with Rust's type safety and performance.
+A modern, cross-platform UI framework for Rust that renders to native platform widgets (UIKit/AppKit on Apple, Android View on Android) rather than drawing its own pixels. Build reactive, declarative UIs with Rust's type safety and performance.
 
 ## Overview
 
