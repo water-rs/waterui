@@ -56,6 +56,9 @@ pub use path::Path;
 pub use state::{LineCap, LineJoin};
 
 #[cfg(feature = "canvas")]
+pub use state::FillRule;
+
+#[cfg(feature = "canvas")]
 pub use gradient::{ConicGradient, LinearGradient, RadialGradient};
 
 #[cfg(feature = "canvas")]

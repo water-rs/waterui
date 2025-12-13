@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifable, view::TupleViews, views::ForEach};
+use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
     Layout, LazyContainer, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -194,7 +194,7 @@ impl<C> ZStack<C> {
 impl<C, F, V> ZStack<ForEach<C, F, V>>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
@@ -254,7 +254,7 @@ where
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {

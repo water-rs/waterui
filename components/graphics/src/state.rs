@@ -14,8 +14,27 @@ use crate::text::FontSpec;
 // Fill and Stroke Styles
 // ============================================================================
 
+/// Fill rule used to determine the interior of self-intersecting paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FillRule {
+    /// Non-zero winding rule (default).
+    #[default]
+    NonZero,
+    /// Even-odd rule.
+    EvenOdd,
+}
+
+impl FillRule {
+    pub(crate) const fn to_peniko(self) -> peniko::Fill {
+        match self {
+            Self::NonZero => peniko::Fill::NonZero,
+            Self::EvenOdd => peniko::Fill::EvenOdd,
+        }
+    }
+}
+
 /// Fill style for shapes - can be a solid color or gradient.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum FillStyle {
     /// Solid color fill.
     Color(Color),
@@ -52,7 +71,7 @@ impl From<ConicGradient> for FillStyle {
 }
 
 /// Stroke style for shapes - can be a solid color or gradient.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum StrokeStyle {
     /// Solid color stroke.
     Color(Color),
@@ -104,12 +123,12 @@ pub enum LineCap {
     Square,
 }
 
-impl From<LineCap> for kurbo::Cap {
-    fn from(cap: LineCap) -> Self {
-        match cap {
-            LineCap::Butt => Self::Butt,
-            LineCap::Round => Self::Round,
-            LineCap::Square => Self::Square,
+impl LineCap {
+    pub(crate) const fn to_kurbo(self) -> kurbo::Cap {
+        match self {
+            Self::Butt => kurbo::Cap::Butt,
+            Self::Round => kurbo::Cap::Round,
+            Self::Square => kurbo::Cap::Square,
         }
     }
 }
@@ -126,12 +145,12 @@ pub enum LineJoin {
     Bevel,
 }
 
-impl From<LineJoin> for kurbo::Join {
-    fn from(join: LineJoin) -> Self {
-        match join {
-            LineJoin::Miter => Self::Miter,
-            LineJoin::Round => Self::Round,
-            LineJoin::Bevel => Self::Bevel,
+impl LineJoin {
+    pub(crate) const fn to_kurbo(self) -> kurbo::Join {
+        match self {
+            Self::Miter => kurbo::Join::Miter,
+            Self::Round => kurbo::Join::Round,
+            Self::Bevel => kurbo::Join::Bevel,
         }
     }
 }
@@ -182,8 +201,8 @@ pub enum TextBaseline {
 ///
 /// This represents the HTML5 Canvas drawing state, including transforms,
 /// styles, and text settings.
-#[derive(Clone)]
-pub struct DrawingState {
+#[derive(Debug, Clone)]
+pub(crate) struct DrawingState {
     // Transform
     pub(crate) transform: kurbo::Affine,
 
@@ -247,7 +266,7 @@ impl Default for DrawingState {
 impl DrawingState {
     /// Creates a new drawing state with default values.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -255,8 +274,8 @@ impl DrawingState {
     #[must_use]
     pub(crate) fn build_stroke(&self) -> kurbo::Stroke {
         let mut stroke = kurbo::Stroke::new(f64::from(self.line_width))
-            .with_caps(self.line_cap.into())
-            .with_join(self.line_join.into())
+            .with_caps(self.line_cap.to_kurbo())
+            .with_join(self.line_join.to_kurbo())
             .with_miter_limit(f64::from(self.miter_limit));
 
         if !self.line_dash.is_empty() {

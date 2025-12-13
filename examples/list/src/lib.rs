@@ -8,7 +8,7 @@
 use waterui::app::App;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::*;
-use waterui::{AnyView, Identifable};
+use waterui::{AnyView, Identifiable};
 
 #[derive(Clone)]
 struct Contact {
@@ -17,7 +17,7 @@ struct Contact {
     role: &'static str,
 }
 
-impl Identifable for Contact {
+impl Identifiable for Contact {
     type Id = u64;
     fn id(&self) -> Self::Id {
         self.id
