@@ -21,7 +21,7 @@ Or use the main `waterui` crate which re-exports these components:
 
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.2"
 ```
 
 ## Quick Start

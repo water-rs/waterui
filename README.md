@@ -24,8 +24,8 @@ Add WaterUI to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui = "0.1.1"
-waterui-ffi = "0.1.0"  # Required for FFI export
+waterui = "0.2"
+waterui-ffi = "0.2"  # Required for FFI export
 ```
 
 Enable the graphics feature for GPU rendering capabilities:
@@ -341,7 +341,6 @@ waterui_ffi::export!();
 
 The `waterui_ffi::export!()` macro generates C-compatible functions that native backends (Swift/Kotlin) call to render your UI.
 
-
 ### Core Architecture
 
 - [`waterui-core`](core/) - Foundation types: `View` trait, `Environment`, `AnyView`, reactivity primitives
@@ -403,6 +402,7 @@ water devices
 Contributions are welcome! Please submit pull requests to the `dev` branch. The `main` branch is reserved for releases.
 
 Before contributing, check:
+
 - Open issues for feature requests and bugs
 - [ROADMAP.md](ROADMAP.md) for planned work
 - [CLAUDE.md](CLAUDE.md) for development guidelines
