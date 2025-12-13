@@ -23,7 +23,7 @@ Or use through the main WaterUI crate:
 
 ```toml
 [dependencies]
-waterui = "0.1.0"
+waterui = "0.2"
 ```
 
 ## Quick Start
@@ -57,6 +57,7 @@ let blended = Color::srgb(0, 0, 255).mix(Color::srgb(255, 0, 0), 0.5);
 **Display P3** - Wide color gamut space supporting more vivid colors than sRGB, commonly available on modern displays.
 
 **OKLCH** - Perceptually-uniform color space recommended for UI work. Allows independent adjustment of:
+
 - **Lightness** (0.0-1.0): Perceived brightness
 - **Chroma**: Color intensity/saturation
 - **Hue** (0-360 degrees): Color angle
@@ -64,6 +65,7 @@ let blended = Color::srgb(0, 0, 255).mix(Color::srgb(255, 0, 0), 0.5);
 ### Resolved Colors
 
 All color types resolve to `ResolvedColor`, which stores colors in linear sRGB space with extended range support. This internal representation enables:
+
 - Accurate color blending and interpolation
 - HDR headroom for high dynamic range displays
 - Opacity/alpha channel management
