@@ -91,13 +91,17 @@ impl CliReceiver {
                         binary: data.to_vec(),
                     });
                 }
+                Ok(Some(WebSocketMessage::Text(text))) => {
+                    // Parse text messages for control commands
+                    if text == "building" {
+                        return Some(CliEvent::Building);
+                    }
+                    // Ignore other text messages
+                }
                 Ok(Some(
-                    WebSocketMessage::Text(_)
-                    | WebSocketMessage::Ping(_)
-                    | WebSocketMessage::Pong(_)
-                    | WebSocketMessage::Close,
+                    WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_) | WebSocketMessage::Close,
                 )) => {
-                    // Ignore text and control messages
+                    // Ignore control messages
                 }
                 Ok(None) | Err(_) => {
                     // Connection closed
@@ -111,6 +115,10 @@ impl CliReceiver {
 /// Events received from the CLI.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CliEvent {
+    /// CLI is building a new library (sent before compilation starts).
+    /// Used to show immediate feedback to the user.
+    Building,
+
     /// A new hot reload library binary is ready.
     HotReload {
         /// The raw binary data of the dynamic library.

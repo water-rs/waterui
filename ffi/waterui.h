@@ -279,6 +279,46 @@ typedef enum WuiFontSlot {
 } WuiFontSlot;
 
 /**
+ * FFI-compatible representation of [`WindowStyle`].
+ */
+typedef enum WuiWindowStyle {
+  /**
+   * Standard window with title bar and controls.
+   */
+  WuiWindowStyle_Titled = 0,
+  /**
+   * Borderless window without title bar.
+   */
+  WuiWindowStyle_Borderless = 1,
+  /**
+   * Window where content extends into the title bar area.
+   */
+  WuiWindowStyle_FullSizeContentView = 2,
+} WuiWindowStyle;
+
+/**
+ * FFI-compatible representation of [`WindowState`].
+ */
+typedef enum WuiWindowState {
+  /**
+   * The window is in its normal state.
+   */
+  WuiWindowState_Normal = 0,
+  /**
+   * The window is closed.
+   */
+  WuiWindowState_Closed = 1,
+  /**
+   * The window is minimized.
+   */
+  WuiWindowState_Minimized = 2,
+  /**
+   * The window is maximized to fullscreen.
+   */
+  WuiWindowState_Fullscreen = 3,
+} WuiWindowState;
+
+/**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
  *
  * Bindings provide a reactive way to work with values. When a binding's value
@@ -316,6 +356,14 @@ typedef struct Binding_Id Binding_Id;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_Rect Binding_Rect;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Secure Binding_Secure;
 
 /**
@@ -333,6 +381,14 @@ typedef struct Binding_Str Binding_Str;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Volume Binding_Volume;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_WindowState Binding_WindowState;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -1679,6 +1735,88 @@ typedef struct WuiLivePhotoSource {
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
+
+typedef struct Binding_Rect WuiBinding_Rect;
+
+typedef struct Binding_WindowState WuiBinding_WindowState;
+
+/**
+ * FFI-compatible representation of a window.
+ */
+typedef struct WuiWindow {
+  /**
+   * The title of the window.
+   */
+  WuiComputed_Str *title;
+  /**
+   * Whether the window is closable.
+   */
+  bool closable;
+  /**
+   * Whether the window is resizable.
+   */
+  bool resizable;
+  /**
+   * The frame of the window.
+   */
+  WuiBinding_Rect *frame;
+  /**
+   * The content of the window.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The current state of the window.
+   */
+  WuiBinding_WindowState *state;
+  /**
+   * Optional toolbar content (null if none).
+   */
+  struct WuiAnyView *toolbar;
+  /**
+   * The visual style of the window.
+   */
+  enum WuiWindowStyle style;
+} WuiWindow;
+
+typedef struct WuiArraySlice_WuiWindow {
+  struct WuiWindow *head;
+  uintptr_t len;
+} WuiArraySlice_WuiWindow;
+
+typedef struct WuiArrayVTable_WuiWindow {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiWindow (*slice)(const void*);
+} WuiArrayVTable_WuiWindow;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent mutiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiWindow {
+  NonNull data;
+  struct WuiArrayVTable_WuiWindow vtable;
+} WuiArray_WuiWindow;
+
+/**
+ * FFI-compatible representation of an application.
+ *
+ * This struct is returned by value from `waterui_app()`.
+ * Native code can read fields directly.
+ */
+typedef struct WuiApp {
+  /**
+   * Array of windows. The first window is the main window.
+   */
+  struct WuiArray_WuiWindow windows;
+  /**
+   * The application environment containing injected services.
+   * Returned to native for use during rendering.
+   */
+  struct WuiEnv *env;
+} WuiApp;
 
 
 
@@ -3791,7 +3929,7 @@ struct WuiWatcher_AnyViews_AnyView *waterui_new_watcher_views(void *data,
 
 WuiEnv* waterui_init(void);
 
-WuiAnyView* waterui_main(void);
+struct WuiApp waterui_app(WuiEnv *env);
 
 #ifdef __cplusplus
 }

@@ -25,6 +25,13 @@ pub struct RichText {
     elements: Vec<RichTextElement>,
 }
 
+#[macro_export]
+macro_rules! include_markdown {
+    ($path:expr) => {
+        $crate::widget::rich_text::RichText::from_markdown(::core::include_str!($path))
+    };
+}
+
 impl RichText {
     /// Creates a new [`RichText`] widget from the provided elements.
     #[must_use]
