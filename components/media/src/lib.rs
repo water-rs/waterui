@@ -115,7 +115,7 @@ use crate::live::LivePhotoSource;
 /// assert!(matches!(video, Media::Video(_)));
 /// assert!(matches!(live_photo, Media::LivePhoto(_)));
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Media {
     /// An image from a URL that will be displayed using the [`Photo`] component.
     Image(Url),

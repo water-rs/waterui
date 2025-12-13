@@ -3912,17 +3912,6 @@ dependencies = [
 
 [[package]]
 name = "tracing-android"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9470b9b0e8b9b3b2e81cbfae3490cae527e7bfbc98edffff9cac4b6c26b2717c"
-dependencies = [
- "android_log-sys",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tracing-android"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12612be8f868a09c0ceae7113ff26afe79d81a24473a393cb9120ece162e86c0"
@@ -4345,23 +4334,16 @@ version = "0.1.1"
 dependencies = [
  "android_clipboard",
  "arboard",
- "async-channel 1.9.0",
  "async-fs",
  "executor-core 0.7.1",
  "futures",
  "libloading",
  "nami",
  "native-executor",
- "pin-project-lite",
  "pulldown-cmark",
  "robius-open",
  "serde",
- "serde_json",
- "thiserror 2.0.17",
  "tracing",
- "tracing-android 0.1.6",
- "tracing-panic",
- "tracing-subscriber",
  "uuid",
  "waterui-color",
  "waterui-controls",
@@ -4394,7 +4376,6 @@ dependencies = [
  "include_dir",
  "indicatif",
  "notify",
- "pin-project-lite",
  "reflink",
  "serde",
  "serde_json",
@@ -4422,7 +4403,6 @@ name = "waterui-controls"
 version = "0.1.0"
 dependencies = [
  "nami",
- "time",
  "waterui",
  "waterui-core",
  "waterui-layout",
@@ -4443,7 +4423,6 @@ dependencies = [
 name = "waterui-derive"
 version = "0.1.0"
 dependencies = [
- "proc-macro2",
  "quote",
  "syn",
  "waterui",
@@ -4461,7 +4440,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "tracing",
- "tracing-android 0.2.0",
+ "tracing-android",
  "tracing-oslog",
  "tracing-panic",
  "tracing-subscriber",
@@ -4484,7 +4463,6 @@ dependencies = [
  "bcrypt",
  "nami",
  "regex",
- "serde",
  "serde_json",
  "time",
  "waterui",
@@ -4512,9 +4490,7 @@ dependencies = [
 name = "waterui-layout"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.10.0",
  "nami",
- "serde",
  "waterui-core",
 ]
 
@@ -4557,7 +4533,6 @@ dependencies = [
 name = "waterui-text"
 version = "0.1.0"
 dependencies = [
- "async-oneshot",
  "nami",
  "pulldown-cmark",
  "syntect",
@@ -4565,7 +4540,6 @@ dependencies = [
  "two-face",
  "waterui-color",
  "waterui-core",
- "waterui-layout",
 ]
 
 [[package]]

@@ -359,8 +359,8 @@ mod tests {
 
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-        assert_eq!(size.width, 100.0); // max width
-        assert_eq!(size.height, 80.0); // 30 + 10 + 40
+        assert!((size.width - 100.0).abs() < f32::EPSILON); // max width
+        assert!((size.height - 80.0).abs() < f32::EPSILON); // 30 + 10 + 40
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
         // With specified height, spacer should expand
         let size = layout.size_that_fits(ProposalSize::new(None, Some(200.0)), &children);
 
-        assert_eq!(size.height, 200.0);
+        assert!((size.height - 200.0).abs() < f32::EPSILON);
 
         // Place should distribute remaining space to spacer
         let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
@@ -410,10 +410,10 @@ mod tests {
 
         let rects = layout.place(bounds, &children);
 
-        assert_eq!(rects[0].height(), 30.0);
-        assert_eq!(rects[1].height(), 140.0); // 200 - 30 - 30
-        assert_eq!(rects[2].height(), 30.0);
-        assert_eq!(rects[2].y(), 170.0); // 30 + 140
+        assert!((rects[0].height() - 30.0).abs() < f32::EPSILON);
+        assert!((rects[1].height() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
+        assert!((rects[2].height() - 30.0).abs() < f32::EPSILON);
+        assert!((rects[2].y() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
     #[test]
@@ -443,9 +443,9 @@ mod tests {
 
         // Width: max of non-horizontal-stretching children = max(50, 80) = 80
         // Note: text_field stretches horizontally so its width doesn't contribute
-        assert_eq!(size.width, 80.0);
+        assert!((size.width - 80.0).abs() < f32::EPSILON);
         // Height: all children contribute (text_field doesn't stretch vertically)
         // = 20 + 10 + 40 + 10 + 44 = 124
-        assert_eq!(size.height, 124.0);
+        assert!((size.height - 124.0).abs() < f32::EPSILON);
     }
 }
