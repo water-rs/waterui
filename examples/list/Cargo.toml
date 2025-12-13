@@ -9,6 +9,7 @@ repository.workspace = true
 readme = "../../README.md"
 keywords = ["ui", "framework", "example", "list"]
 categories = ["gui"]
+publish = false
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

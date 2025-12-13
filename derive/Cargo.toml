@@ -17,5 +17,8 @@ proc-macro = true
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
+[dev-dependencies]
+waterui = { path = ".." }
+
 [lints]
 workspace = true

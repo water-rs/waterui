@@ -21,5 +21,8 @@ waterui-text.workspace = true
 [features]
 default = []
 
+[dev-dependencies]
+waterui.workspace = true
+
 [lints]
 workspace = true

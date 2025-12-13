@@ -6,9 +6,12 @@ members = [
     "utils/*",
     "ffi",
     "derive",
-    "cli",
-    "examples/*"]
-exclude = ["cli-old"]
+    "cli"
+]
+exclude = [
+  "examples/*"
+]
+
 resolver = "2"
 
 [package]
