@@ -1,0 +1,583 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.0](https://github.com/water-rs/waterui/releases/tag/v0.2.0) - 2025-12-13
+
+### Added
+
+- Enhance window management and hot reload functionality
+- *(media-picker)* add media picker example with photo, video, and live photo selection
+- Add mac screenshot image and improve markdown example
+- *(cli)* enable hot reload by default for water run
+- Add star field example for WaterUI framework
+- Enhance panic logging and error handling in Apple backends
+- enhance logging levels for Apple platforms and improve app structure
+- *(examples)* add gesture and list examples with corresponding templates and assets
+- *(android)* streamline APK installation process and add CMake toolchain wrapper for ABI support
+- *(android)* implement multi-ABI packaging support and optimize build configurations
+- *(android)* add support for multiple architectures and clean jniLibs
+- Rewrite CLI
+- Update dependencies and enhance backend configurations
+- Implement hot reload server and connection handling
+- Refactor rendering logic
+- Update media components with enhanced MediaPicker support and new features
+- Enhance Apple platform support with new platform kinds and SDKs
+- Refactor Photo component and enhance hot reload functionality
+- Add gesture example showcasing various gesture recognition capabilities
+- Add initial Android and Apple project templates
+- enhance Android and Apple platform support with new configurations and utility functions
+- update platform implementations for Android and Apple, improve function signatures and add architecture handling
+- enhance platform support and add new build options for Android and Apple
+- enhance Android and Apple device support with new functionalities
+- enhance Android and Apple platform support, add Homebrew toolchain manager
+- *(android)* refactor backend and platform modules
+- Add Canvas demo for 2D vector graphics rendering
+- Implement URL parsing and error handling
+- Enhance async support and device scanning in backend implementations
+- Introduce Canvas module for 2D vector graphics rendering
+- Refactor toolchain error handling and enhance hot reload configuration
+- Add examples for Flame and Video Player using WaterUI
+- Add ShaderSurface for simplified GPU rendering
+- Implement report generation for various command results
+- Introduce async runtime and enhance file watcher functionality
+- Introduce GpuSurface for high-performance GPU rendering
+- Enhance navigation components with tab positioning and FFI support
+- Revamp README and enhance Android hot reload functionality
+- Enhance video component functionality and interrupt handling
+- Enhance Android packaging and hot reload functionality
+- Enhance FFI support for metadata and improve Rust bindings
+- Introduce permission management for playground projects
+- Add CLAUDE.md for project guidance and build instructions
+- Implement interruptible command execution and secure metadata handling
+- Enhance panic reporting and logging in hot reload system
+- Add RichTextEditor component and enhance TextField with line limit functionality
+- Introduce StretchAxis for layout management
+- Introduce comprehensive logging and panic reporting plan
+- Enhance debugging and layout system in Apple backend
+- Add layout issue report for axis-expanding views on Apple backend
+- Implement safe area handling in layout system
+- Enhance local development mode for WaterUI
+- Add initial test_example.rs for dynamic binding demonstration
+- Rename Android library to libwaterui_app.so
+- add Gemini CLI assistant documentation and subagent manager script
+- introduce waterui.h header and enhance theme system with color and font slots
+- add Git commit hash to build output and update dependencies
+- enhance Dockerfile and documentation for improved build and configuration
+- enhance Android platform support with target triples and improve artifact stripping
+- integrate hyper and tungstenite for hot reload server functionality
+- *(run)* implement hot reload support and ensure cdylib generation
+- *(android)* enhance NDK toolchain checks and environment configuration
+- *(ci)* add new workflows for CLI and Docker builds, enhance CI checks, and implement changelog generation
+- *(hot_reload)* add FmtContext import for enhanced logging capabilities
+- *(logging)* add log filter support for hot reload and CLI
+- *(logging)* enhance tracing and panic forwarding for improved log management
+- *(hot_reload)* add runtime guardrails for main thread execution and update dependencies
+- *(hot_reload)* implement hot reload support for FFI and backend configurations
+- update dependencies to use git sources and improve error handling in CLI
+- *(android)* enhance Java environment detection for macOS by including Android Studio's bundled JBR
+- *(theme)* add background and surface color functions to FFI and include tests for readability
+- *(theme)* add macro definitions for theme color and font functions
+- add debugging workflow checklist and enhance non-interactive terminal handling
+- add initial form component file
+- Add watcher functionality for AnyViews and related types
+- *(theme)* add theme module with color and font functions for FFI
+- *(apple)* enhance simulator boot logic and add state checking
+- *(device)* add platform filtering for device listing
+- document hot reload support for Android, Apple, Web, and TUI backends
+- add TUI platform support and enhance hot reload functionality
+- *(hot-reload)* enhance hot reload configuration and update related commands
+- *(tutorial)* add comprehensive guide for building a native WaterUI backend
+- Introduce build command for native artifacts
+- *(android)* enhance panic hook with additional string utilities
+- add miette integration for enhanced error handling and logging
+- *(cli)* enhance Android backend integration with improved logging and automation
+- enhance Android backend integration and logging capabilities
+- *(cli)* add backend list command
+- *(cli)* support backend upgrade with ffi checks
+- *(cli)* add backend management command
+- *(cli)* use local android backend in dev
+- Add new dependencies for enhanced functionality and refactor hot reload implementation
+- Update Android project structure and dependencies for improved backend integration
+- Implement hot reload functionality with configurable environment
+- *(event)* introduce event handling system with OnEvent and lifecycle associations
+- *(view)* introduce NativeView trait for native implementations and update related components
+- *(cli)* enhance JSON output support across commands
+- update build process to emit stable version tags for waterui and swift backend; enhance dependency resolution with branch support
+- add validation utilities for form components; implement Validatable and Validator traits
+- optimize conditional rendering in When component for static conditions
+- add waterui-controls module with button, slider, stepper, toggle, and text field components; update dependencies in related Cargo.toml files
+- enhance NavigationReceiver with push and pop methods; update raw_view macro to include panic info
+- *(widget)* make tree widget private for 0.1.1 release
+- enhance CI workflows and update C header documentation
+- add apple backend submodule configuration to .gitmodules
+- rename swift backend to apple backend and update related configurations
+- update release workflow to remove swift and android backend support; add dynamic repo URL for Swift backend
+- add pre-commit configuration for Rust formatting with rustfmt
+- Implement JNI bindings for Android platform in FFI layer
+- Add compiler options to suppress Kotlin version compatibility check for Compose (now app can be compiled but still not launched)
+- Update Compose compiler extension version to 1.5.14 in build.gradle.kts and template
+- Add compiler options to suppress Kotlin version compatibility check for Compose
+- Update Compose BOM version to 2024.09.00 for dependency centralization
+- Add Jetpack Compose support and update MainActivity for Compose integration
+- Enhance Android project setup by adding sanitized crate name and copying libc++_shared.so
+- Add Android target configurations and enhance toolchain setup for Rust builds
+- Enhance Android and watchOS support with new SDK checks and build scripts
+- Enhance GPU surface handling and shader rendering in graphics module
+- Add GitHub Actions workflow for deploying WaterUI Docs to Cloudflare Pages
+- Add Android tool management and build functionality; refactor device handling
+- Migrate from anyhow to color_eyre for error handling and add build script for version management
+- Enhance WaterUI with new table and list components
+- Implement WuiAnyViewCollection and WuiAnyViews for efficient view management
+- *(graphics)* add renderer view support and CPU rendering capabilities
+- *(android)* Enhance project creation and packaging
+- Add documentation build step to release workflow
+- Add GitHub Actions workflow for automated release process
+- Add OKLCH color space support and enhance color module documentation
+- Update minimum Rust version requirement to 1.87 across documentation
+- Enhance documentation and error handling in TUI backend
+- Add TUI backend for WaterUI with terminal rendering capabilities
+- Add Markdown support for rich text rendering and enhance entry point documentation
+- Add web backend support with asset creation and configuration
+- Implement gesture handling in WaterUI with WuiGestureView and GestureSequenceContainer
+- Implement gesture handling with FFI support and define gesture event payloads
+- Add sccache and mold configuration for improved build performance
+- Enhance typography and UI components with new font styles and improved view handling
+- Add WebAssembly backend for WaterUI with initial DOM integration and rendering capabilities
+- Implement WuiList and WuiTable components with FFI support and enhance tree and accordion structures
+- Add Xcode project management functions and improve macOS support in run module
+- Enhance overlay functionality with new Overlay and OverlayLayout components
+- Implement cleanup command to remove build artifacts and platform caches
+- Add fix option to WaterUI Doctor for automatic issue resolution
+- Implement WaterUI Doctor for environment checks and add new dependencies
+- Add Android backend implementation status documentation and enhance layout handling
+- Introduce WuiFixedContainer for fixed layout management
+- Add support for multiple backends (Swift and Android) in project configuration and creation
+- Implement Android backend components and runtime
+- Enhance graphics context with Debug implementation and add alignment methods for layout components
+- Add image handling capabilities with new Image struct and integrate into Photo component
+- Add waterui-color workspace and integrate color resolution
+- add project creation functionality with templates for Android and SwiftUI and remove gtk4 backend
+- add i18n plugin for internationalization support, enhance documentation, and update dependencies
+- rename waterui-canvas to waterui-graphics and update color module with new linear conversion tests
+- enhance layout components with new Grid and Frame implementations, add alignment features, and improve Size struct
+- immigrate to new layout engine for swift backend
+- add nightly feature support for conditional compilation and improve raw view handling
+- New layout engine
+- implement ErrorView and ErrorViewBuilder for enhanced error handling; add overlay method to ViewExt
+- add CLI package with initial command structure and dependencies
+- enhance deployment workflow and add rustdoc integration; update README and introduce roadmap
+- update dependencies with versioning and improve documentation clarity
+- add counter example to README and enhance tutorial book with tests
+- add GitHub Actions workflow for deploying tutorial book to GitHub Pages
+- implement ComputedFont class and enhance Text component; update ScrollView initialization and demo structure
+- add Divider, Scroll, and Spacer components; implement WuiProgress in FFI
+- Hello,world! Welcome to WaterUI world!!! Now demo works!
+- Initialize demo project with WaterUI integration
+- Add template member to workspace and enhance FFI with new environment handling
+- Enhance form components with new derive macros and examples
+- *(ffi)* enhance FFI bindings with new types and conversions for media and form components
+- *(cli)* add WaterUI CLI for project management
+- Integrate canvas component with GTK4 backend
+- Implement web backend for WaterUI framework
+- Implement custom layout engine integration with GTK4
+- Add GTK4 backend for WaterUI framework
+
+### Fixed
+
+- add id-token permission in CI workflow
+- add permissions for contents and checks in CI workflow
+- enable OIDC for Codecov action to enhance security
+- add step to generate Cargo.lock in security audit job
+- format function parameters for better readability in tests
+- update dependencies and improve path handling in template context
+- remove unused 'parley' dependency from canvas feature in Cargo.toml
+- improve code formatting and readability across multiple files
+- update zenwave version to 0.3.0 and adjust dependencies
+- update documentation to reflect Android View terminology for consistency
+- correct spelling errors and improve comments across the codebase
+- *(core)* use core::ops instead of std::ops for no_std compatibility
+- *(hot_reload)* correct view assignment in hot reload implementation
+- Update FFI function signature
+- Update android backend submodule with metadata crash fix
+- update llvm-strip command to preserve dynamic symbol table
+- improve interrupt handling in wait_for_interrupt function
+- remove hot reload import for non-WASM targets
+- *(dependencies)* update executor-core dependency to use version instead of git reference
+- clean up imports and improve command output messages in Android and Apple device modules
+- *(android)* add INTERNET permission to AndroidManifest for network access
+- *(tracing)* improve tracing forwarder initialization for Android and non-Android targets
+- *(tracing)* update AndroidLayer name to "WaterUI" for clarity in tracing logs
+- *(dependencies)* replace log with tracing for improved logging consistency
+- *(hot_reload)* optimize message forwarding logic in hot reload daemon
+- *(hot_reload)* add missing configuration for hot reload module
+- *(hot_reload)* ensure proper configuration for hot reload endpoint and directory
+- *(dependencies)* update zenwave dependency to use the latest commit
+- *(ffi)* import necessary traits for hot reload directory configuration
+- *(hot_reload)* import necessary traits for hot reload endpoint configuration
+- *(ffi)* ensure thread safety in waterui_init and waterui_main functions
+- *(hot_reload)* change spawn to spawn_local for thread safety in hot reload
+- *(progress)* correct infinite progress indicator value to use f32::INFINITY
+- Fix git submodule
+- update run functions to handle no_watch parameter for improved behavior
+- rename metadata functions for consistency and clarity
+- correct function naming for consistency in waterui.h
+- correct function naming for FFI compatibility in macros
+- refactor DynamicHandler to manage connection state and improve view updates
+- *(ci)* remove branch restrictions from push and pull_request events
+- Refactor reactive system for nami API updates
+- *(deps)* update nami to 0.7.1 and add nami-core dependency; adjust serde features
+- *(ci)* remove --all-features from release workflow
+- *(docs)* fix type mismatch in derive_project doc test
+- *(docs)* resolve doc test compilation errors in waterui-derive
+- *(docs)* fix doc tests in waterui-derive by adding dev-dependency
+- *(docs)* resolve doc test compilation errors in waterui-derive
+- *(docs)* resolve doc test compilation errors in waterui-core
+- *(docs)* resolve doc test compilation errors
+- *(core)* resolve clippy warning in dynamic component
+- update android submodule reference to latest commit
+- make release.yml work by confirming a runner
+- Update RendererViewComponent to use rawPtr for memory management consistency
+- Update RendererViewComponent to use fillMaxSize instead of matchParentSize for better layout handling
+- Correct redirect target paths in index.html generation for Cloudflare Pages deployment
+- Correct CI workflow to use the correct Rust package for documentation build
+- Update CI workflow to use macOS and nightly Rust toolchain for faster documentation builds
+- Update CI configuration to use macos-26-arm64 for Swift backend build
+- downgrade swift-tools-version to 6.1.0 for compatibility
+- Update code block syntax in documentation for clarity
+- correct import path for FormBuilder in derive_test example
+- Make FFI around waterui-media compiled
+- correct readme field in Cargo.toml to specify file path
+- Replace signal() method calls with get() throughout tutorial book
+- fix typo & add convenience method
+- fix many broken things & macro for convenient `IntoReactive` implementation
+
+### Other
+
+- Replace 'waterui-derive' with 'waterui-macros' in package configuration
+- Bump waterui-macros version to 0.2.0
+- Replace 'derive' with 'macros' in workspace members list
+- Bump waterui version to 0.2 in documentation across multiple components
+- bump version of waterui-url to 0.2.0
+- Bump versions for multiple components to 0.2.0 and introduce waterui-macros crate
+- Bump waterui to 0.2.0
+- bump version to 0.2.0 and update native-executor features
+- Refactor code structure for improved readability and maintainability
+- update Cargo.toml files to improve workspace structure and add dev-dependencies
+- Remove canvas example and update dependencies in other examples
+- Disable canvas on main branch, since crates.io release do not allow git reference
+- Delete Cargo.lock
+- remove WASM job from CI workflow and unused parley dependency
+- Switch color APIs to use ResolvedColor
+- improve code readability and consistency across multiple files
+- Merge feature/full-featured-canvas into dev
+- Refactor layout tests to use approximate equality for floating-point comparisons
+- *(media-picker)* enhance media selection handling and error management
+- Add waterui-color, waterui-str, and waterui-url crates with comprehensive documentation
+- streamline media picker and loading state management
+- *(hot_reload)* improve function formatting and readability
+- Refactor Native Component and Improve Error Handling
+- Merge branch 'feature/hot-reload-default' into dev
+- Add log level management for device log streaming across platforms
+- Enhance Android and Apple backends with permission management and Gradle build improvements
+- Add AndroidEmulator device and defer launch to CLI
+- Switch zenwave/skyzen to crates.io versions
+- Implement CLI commands for WaterUI: build, clean, create, devices, doctor, package, and run
+- Remove old CLI terminal implementation
+- Enhance documentation and improve code clarity across multiple modules
+- Refactor backend trait and implement new build system
+- WTF...Let's rewrite it!
+- clean up and enhance project structure and backend definitions
+- Refactor CLI toolchain and installation modules
+- Add Markdown example for WaterUI
+- Refactor and clean up code across multiple components
+- Refactor layout components and improve documentation
+- Simplify WebSocket close handling and clean up code formatting
+- Update workspace configuration and dependencies for examples
+- Update Cargo.lock and FFI components for hot reload configuration
+- Update README and FFI components for consistency and clarity
+- Improve URL parsing and validation logic
+- Clean up hot reload session logging and initialization
+- Simplify hot reload configuration for Android and Apple devices
+- Update FFI header generation and enhance tab positioning documentation
+- Update hot reload configuration and enhance dependencies
+- Update Android backend submodule and enhance FFI function signature
+- Remove deprecated files and streamline project structure
+- Streamline playground project handling and enhance build process
+- Update Apple backend submodule and refine video player example
+- Update Apple backend submodule and add video player example
+- Clean up project structure and enhance CLI functionality
+- Update backend submodules and enhance CLI device commands
+- Refactor CLI commands for device management and enhance roadmap documentation
+- Update Apple backend submodule to latest commit
+- Remove AGENT.md and enhance FFI bindings for events and gestures
+- Update Android backend submodule and adjust padding in template
+- Update Android backend submodule and modify build process
+- Standardize library naming for Android and Apple backends
+- Add illustrations for various components including Button, Slider, Stepper, TextField, Toggle, Grid, Stack, and Text
+- button illustration
+- Update android backend submodule and enhance clean command functionality
+- Update components to utilize StretchAxis for layout management
+- Remove obsolete layout and issue report files
+- Update android backend submodule to latest commit
+- Update submodule references for android and apple backends
+- Remove terminal backend mention from README.md
+- Update submodule references and enhance FFI bindings
+- Update documentation and add CMake checks for Apple builds
+- Update submodule references for android and apple backends
+- Enhance GEMINI_ASSISTANT documentation with debugging and research best practices
+- Update android backend submodule with JNI watch function fix
+- Fix ffi_computed watch function to accept WuiComputed<T> instead of Computed<T>
+- Enhance WaterUI CLI documentation and add screenshot capture feature
+- Update android backend submodule
+- Update android backend submodule
+- Fix CLI to copy libc++_shared.so to jniLibs for Android builds
+- update Android backend submodule to latest commit
+- update submodule branches and clean up unused files
+- remove unused hyper and tungstenite dependencies, integrate skyzen for hot reload functionality
+- simplify hot reload library path handling and extract filename logic
+- Enable hot reload module conditionally based on waterui_enable_hot_reload flag for non-WASM targets.
+- Make Suspense/hot reload use thread-safe executor
+- prefer Android Studio JBR when Java missing
+- Update android backend submodule
+- update FFI header regeneration instructions and enhance README content
+- Align Android tooling and agent workflow
+- Refactor Apple backend integration and remove deprecated files
+- *(build)* streamline argument handling in build script
+- simplify panic logging and improve message formatting
+- Enhance UI output handling and add terminal utilities for improved user experience
+- Improve command construction and error handling in project build and run functions
+- Refactor CLI structure and remove unused modules
+- Start to refractor WaterUI CLI...
+- Rename no_watch argument to no_hot_reload for clarity and update related function signatures
+- Track dev branch for android submodule
+- remove Android-specific module and clean up Cargo.toml
+- Refactor code structure for improved readability and maintainability
+- Refactor FFI bindings and hot reload functionality
+- remove NativeView trait and related implementations; simplify type ID handling in FFI
+- *(cli)* enhance cargo build process with sccache configuration and retry logic
+- simplify volume binding and toggle handling in video and accordion components
+- update nami and nami-core dependencies to latest versions
+- rename NavigationReceiver to NavigationController for consistency; update related trait and implementation
+- update ViewBuilder trait and its implementations for improved usability; simplify view construction across components
+- reorganize imports in form and navigation components for clarity
+- *(release)* bump version of waterui to 0.1.1
+- Finalize cleanup: make backends/apple normal directory
+- remove broken apple backend submodule and update android submodule reference
+- Convert backends/apple from broken submodule to normal folder
+- add android backend as a submodule
+- move backends/android to submodule
+- Remove unused pluginManagement block from build.gradle.kts
+- Remove version specifications for Android library and Kotlin plugin in build.gradle.kts
+- Merge pull request #23 from water-rs/codex/refactor-waterui-cli-for-enhanced-functionality
+- Refactor toolchain checks and interactive doctor
+- Merge LLM's memory files into a single codebase doc file
+- Merge branch 'main' into codex/refactor-cli-to-use-third-party-crates
+- Improve CLI web dev server stability
+- Remove Water.toml configuration file
+- Merge branch 'main' into codex/add-json-output-support-for-cli
+- Add JSON output mode to CLI
+- Update Swift tools version to 6.2.0 and improve code formatting in RendererView
+- Update Package.swift for waterui and adjust Swift version in backend package
+- Update component imports to use waterui_core and streamline module structure
+- Remove example files for FormBuilder and #[form] macro
+- Simplify build steps and improve error handling in documentation deployment workflow
+- Improve documentation build workflow with clearer step names and enhanced error messages
+- Streamline documentation deployment workflow with improved caching and error handling
+- Improve documentation build workflow with clearer steps and structure
+- Enhance documentation build workflow with improved logging and variable handling
+- Move book to a seperate repository `water-rs/book`
+- Improve CI configuration for Rust checks and Swift backend build
+- Turn back to swift-tools-version: 6.2.0 for ios26 sdk
+- remove unused development team parameter and clean up code
+- *(ci)* reorganize CI jobs and remove redundant steps
+- Update defaultValue and deinit annotations in Gesture.swift; fix string formatting in project.pbxproj.tpl
+- replace all .unwrap() to .expect()
+- Update roadmap with detailed descriptions for completed features and tasks
+- Refactor color module: Split into separate files for P3, OKLCH, and parsing
+- Introduce `waterkit-location`, a cross-platform abstraction for accessing location services within the WaterUI ecosystem.
+- Use `Views` trait in table, list and lazy view
+- Rename `waterdata` to `datax` and immigrate to a seperated repository
+- Refactor CLI Doctor Command and Improve Error Handling
+- Update Rust toolchain to nightly version in CI configuration
+- Add workspace configuration and refactor layout imports for consistency
+- Removed unusable backends
+- Refactor layout components to use FixedContainer
+- Remove ugly trick in demo
+- Fix swift backend
+- Quick trick...
+- Add demo module and update roadmap with new tasks
+- Refactor WaterUI: Update StyledStr Handling and Remove Unused Components
+- Add gesture module and extend ViewExt with gesture observation functionality
+- Add accessibility module and enhance view components with accessibility features
+- Refactor layout documentation and examples for clarity and completeness
+- Refactor and enhance documentation for WaterUI components
+- Do not be too strict for doc building
+- Build rustdoc for main crate only
+- Update Rust toolchain to nightly version in deployment workflow
+- Use f32 for any layout relate variable (which is more efficiency)
+- Update tutorial book for WaterUI with new dependencies and improved examples
+- Refactor and enhance components and utilities
+- Refactor graphics components and integrate color handling
+- Add Android backends for WaterUI
+- Refactor and enhance the WaterUI framework
+- Refactor layout components and improve documentation
+- Break change in FFI: new vtable-based array API
+- Fix roadmap
+- update README with enhanced descriptions, quick start guide, and roadmap; improve layout section
+- Format & Fix CLI
+- No longer depends `native-executor`, use more portable `executor-core`
+- Update tutorial book
+- Add MIT license
+- Update README.md
+- hide reference count from public API and update documentation
+- update README to clarify framework features and demo; remove outdated sections
+- improve code formatting and readability across multiple files; enhance memory management in Rust FFI
+- Refactor documentation and examples across components for clarity and consistency
+- enhance FormBuilder derive macro and examples; update form handling and component mappings
+- Make compiler happy
+- remove CLI module and related files to streamline project structure
+- Remove build artifacts and update .gitignore
+- Fix Xcode
+- Update .gitignore to include .vscode directory and ensure proper newline formatting
+- Implement FFI bindings for navigation and text components, enhancing the interoperability of the WaterUI framework with C. This includes the addition of structures for navigation views, links, and tabs, as well as text configurations and font representations. The changes also streamline the conversion between Rust and FFI types, ensuring safe memory management and improved performance. Additionally, several utility functions for string manipulation have been updated to return pointers instead of structures, optimizing memory usage and access patterns.
+- Add WaterUI header file with core types and FFI bindings
+- Refactor tutorial content for WaterUI
+- Add FFI bindings for WaterUI and enhance Str utility functions
+- Update Cargo.toml members and improve documentation in various modules
+- Move waterui-swift to backends/swift directory
+- Add 'waterui-swift/' from commit '9b115886217ec33265a34c853b17ecb5c6baf563'
+- Refactor dependencies in Cargo.toml to use workspace references for waterui-str and nami.
+- Add URL utility crate & cleanup the book structure
+- Remove unused SecureField configuration and add Url struct with conversion implementations
+- Clean up whitespace and formatting in various files
+- Add media and navigation components to tutorial book
+- update dependencies in Cargo.toml and improve animation examples in documentation
+- Bring back `waterui_ffi`
+- Completely rewrite README.md with modern WaterUI patterns
+- Add tutorial book and window management module
+- Update README files for clarity and consistency across components
+- Fix color component naming in Srgb and P3 structs
+- Refactor WaterUI to integrate nami for reactive state management
+- Add Miri configuration and testing scripts for waterui-str
+- Implement CI workflow and remove outdated documentation files
+- Add more lints and docs
+- Add more lints and fix all warnings
+- Remove more ffi module, making whole project work
+- Remove unfinished FFI modules from main branch
+- Last version of UniFFI...This crate bring too much complexity for us!
+- New reactive API
+- Add Uniffi scaffolding and FFI support for form components
+- Use uniffi for FFI binding
+- Last version support C-API. May it is too early to consider this. Currently let's just focus on the interaction between renderer. And performance consideration could be delayed until we meet the bottleneck.
+- Polish document
+- Refine project and Migrate to Rust 2024
+- (Incomplete commit) Last version of mannual FFI implement
+- New reactive API & Locale support
+- New Extractor API & Task API
+- Enhancement & Performance optimization (what a large commit...)
+- SecureField & Image & pickers & Slider
+- i18n plugin
+- Icon plugin
+- Navigation Support
+- Ergonomics improvement
+- Animation Support & improve ergonomics
+- Brand-new architectural design and ergonomic improve
+- Fix bugs
+- Add FFI binding for `Picker` component
+- Add FFI binding for `TextField`
+- Fix FFI binding
+- Conditional render support
+- Improved Reactive System & Zero-copy string support
+- Zero-copy string utility
+- Reactive V2
+- Export C binding of `Bridge`
+- Export more C function
+- Fix up `Picker`
+- Add more unchecked downcast for `AnyView`
+- Remove `mpsc` from `waterui-reacitve`. Now it is for internal use in `waterui` .
+- Add `metadata` for subscriber & Add a wrapper for subscriber id & Use `waterui_fn` instead of `waterui_closure`
+- First-class async support & Remove `App`
+- Polish reactive system
+- New component API design
+- Implement `Each` component
+- Rename `waterui-view` to `waterui-core` & Introducing `Views` trait, which allows you manage views efficiently.
+- Polish them. Add derives and fix docs.
+- Move all FFI binding to `waterui-ffi`
+- New FFI binding, but what hell is going on??? Header file is broken!
+- Implement `Binding` as a two-way data binding container & `Subscriber` trait (allows you to implement `Drop` directly)
+- Now environment can include custom value
+- Split reactive feature as a trait
+- Improve reactive system
+- Progress View implement & better ergonomics
+- Use CoW in reactive system to reduce unnecessary copy
+- move FFI utils to `waterui-ffi`, distributing FFI bindings to components.
+- Remote image FFI & more soundness implement
+- Add padding modifier
+- Redeisgn modifier and add some convenient initializer for components
+- Add `task` method for `ViewExt`
+- Error handling for View
+- Split view-related traits and views from `waterui` crate
+- Fix bugs & Clearer app lanuch
+- Improved ffi binding & Strong-typed component
+- no-std support
+- Radio component & custom style for field and toggle
+- improve ergonomics for Binding::into & Implement RemoteImage
+- Fix bug of SubscriberManager & ZStack and TextField implement
+- Better structure for FFI module
+- use cbindgen
+- Rough ffi implement
+- Now every `Compute` will have a single output
+- Refactor our project
+- New reactive api
+- Better reactive implement
+- Async image support & update ffi
+- Support conditional render: show modifier
+- impl Debug for all components
+- Fix bugs(AsyncView)
+- Stepper support & export TextField
+- Toggle support
+- macro-free custom component support & bug fixes(but env still not work, but I improve it)
+- Environment support
+- Reorganize crates, merge main crate and core crate. Better async view support
+- strong-type raw pointer
+- Independent reactive crate
+- condition & reactive improvement, change task api
+- bug fixes & rename `view` method & Send + Sync implement
+- new reactive api
+- New reactive implement
+- TextField binding example (need fix)
+- Binding ffi support & TextField support
+- Menu implement & Unwrap BoxView correctly
+- Add `IntoView` trait
+- remove `when` and `or` method for `ViewExt`, use `Condition` view instead.
+- impl `Condition` view
+- increase `when` and `or` extension for View & move ViewExt
+- `view` method changed & new modifier api
+- the signature of view is changed, allowing more optimizations
+- async view improvement & layout api change
+- MacOS support (minimum) & counter example
+- Code refactoring
+- binding improvement
+- ffi and async view improvement & support modifier (also fix bugs)
+- consume `self` in `view`method & improve async view
+- rename `into_boxed` to `boxed`
+- remove vdom & frame improvement
+- improve ffi and macro
+- muti-window minimum support
+- window&ffi support
+- diff implement
+- trying to implement diff
+- serde support & async view & better html render
+- `widget` macro implement
+- move waterui to subfolder
+- dev
+- react-like api
+- vue-like reactive
+- a simple implement
+- experimental implement
