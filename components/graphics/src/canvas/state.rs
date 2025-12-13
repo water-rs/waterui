@@ -7,8 +7,8 @@ use waterui_color::ResolvedColor;
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
 
-use crate::gradient::{ConicGradient, LinearGradient, RadialGradient};
-use crate::text::FontSpec;
+use super::gradient::{ConicGradient, LinearGradient, RadialGradient};
+use super::text::FontSpec;
 
 // ============================================================================
 // Fill and Stroke Styles
