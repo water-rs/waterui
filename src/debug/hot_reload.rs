@@ -398,7 +398,7 @@ impl<V: View> View for Hotreload<V> {
                             }
                         };
 
-                        new_view.with(InHotReload);
+                        let new_view = new_view.with(InHotReload);
 
                         // Replace the content with the new view
                         content_handler.set(new_view);
