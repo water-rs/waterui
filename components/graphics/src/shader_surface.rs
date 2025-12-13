@@ -300,8 +300,8 @@ impl GpuRenderer for ShaderRenderer {
 
     fn render(&mut self, frame: &GpuFrame) {
         // Check if pipeline format matches current frame format
-        if let Some(pipeline_fmt) = self.pipeline_format {
-            if pipeline_fmt != frame.format {
+        if let Some(pipeline_fmt) = self.pipeline_format
+            && pipeline_fmt != frame.format {
                 tracing::error!(
                     "[ShaderSurface] FORMAT MISMATCH! Pipeline: {:?}, Frame: {:?}",
                     pipeline_fmt,
@@ -310,7 +310,6 @@ impl GpuRenderer for ShaderRenderer {
                 self.pipeline = None;
                 self.pipeline_format = None;
             }
-        }
 
         // If no pipeline, we need setup
         if self.pipeline.is_none() {
@@ -376,45 +375,3 @@ impl GpuRenderer for ShaderRenderer {
         frame.queue.submit(std::iter::once(encoder.finish()));
     }
 }
-
-/// WGSL shader for blitting from intermediate texture to target format
-const BLIT_SHADER: &str = r"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // Full-screen triangle pair
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-    );
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-    );
-
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    output.tex_coord = tex_coords[vertex_index];
-    return output;
-}
-
-@group(0) @binding(0) var t_source: texture_2d<f32>;
-@group(0) @binding(1) var s_source: sampler;
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_source, s_source, in.tex_coord);
-}
-";

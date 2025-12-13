@@ -99,6 +99,11 @@ pub async fn create_library(data: &[u8]) -> PathBuf {
         .await
         .expect("Failed to write library data");
 
+    // Flush and sync to ensure the file is fully written to disk
+    // before dlopen tries to load it (prevents race condition)
+    file.flush().await.expect("Failed to flush library file");
+    file.sync_all().await.expect("Failed to sync library file");
+
     path
 }
 

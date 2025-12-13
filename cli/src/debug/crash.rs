@@ -98,7 +98,7 @@ struct IpsReport {
 }
 
 /// Find the most recent macOS `.ips` crash report for a specific app run.
-pub(crate) async fn find_macos_ips_crash_report_since(
+pub async fn find_macos_ips_crash_report_since(
     device_name: &str,
     device_identifier: &str,
     app_identifier: &str,
@@ -131,7 +131,7 @@ pub(crate) async fn find_macos_ips_crash_report_since(
             (None, Some(_), None) => continue,
             (None, None, _) => continue,
             _ => {}
-        };
+        }
 
         if best
             .as_ref()

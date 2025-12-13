@@ -167,7 +167,11 @@ fn tex_uv(uv: vec2<f32>) -> vec2<f32> {
 }
 
 fn sample_film(uv: vec2<f32>) -> vec3<f32> {
-    return textureSample(t_film, s_linear, tex_uv(uv)).rgb;
+    return sample_film4(uv).rgb;
+}
+
+fn sample_film4(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(t_film, s_linear, tex_uv(uv));
 }
 
 fn sample_bloom(uv: vec2<f32>) -> vec3<f32> {
@@ -206,17 +210,18 @@ fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
     let n = fbm(q + vec2<f32>(0.0, t * 0.25));
     let r = rfbm(q * 1.6 + vec2<f32>(2.3, -t * 0.7));
     let tongue_n = rfbm(vec2<f32>((p.x - center) * 4.2, y * 7.5 - t * 4.5));
-    let tongues = smoothstep(0.35, 0.98, tongue_n);
+    var tongues = smoothstep(0.62, 1.10, tongue_n);
+    tongues = tongues * tongues;
 
     // Width profile: wide base -> thin tip.
-    let base_w = 0.18;
-    let tip_w = 0.006;
-    let w = mix(base_w, tip_w, pow(y01, 1.55));
-    let wv = w * (0.65 + 0.50 * n) * (0.80 + 0.55 * tongues);
+    let base_w = 0.13;
+    let tip_w = 0.0035;
+    let w = mix(base_w, tip_w, pow(y01, 1.65));
+    let wv = w * (0.72 + 0.40 * n) * (0.92 + 0.35 * tongues);
 
     // Lateral turbulence (adds tongues and breaks symmetry).
     let x_turb =
-        (fbm(q * 2.3 + vec2<f32>(12.0, t * 1.6)) - 0.5) * 0.12 * (0.15 + 0.85 * y01);
+        (fbm(q * 2.3 + vec2<f32>(12.0, t * 1.6)) - 0.5) * 0.09 * (0.15 + 0.85 * y01);
     let d = abs((p.x - center) + x_turb);
 
     // Main body mask with soft edge.
@@ -224,7 +229,7 @@ fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Add flame tongues (mostly in the upper half).
     let tongue_halo = 1.0 - smoothstep(wv * 0.45, wv * 2.4, d);
-    mask = clamp(mask + tongues * tongue_halo * (0.10 + 0.55 * y01), 0.0, 1.0);
+    mask = clamp(mask + tongues * tongue_halo * (0.05 + 0.35 * y01), 0.0, 1.0);
 
     // Streaky breakup.
     let breakup = smoothstep(0.15, 0.90, r);
@@ -238,25 +243,28 @@ fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
     mask *= clamp(tip_fade, 0.0, 1.0);
 
     // Halo glow around the flame.
-    let halo = (1.0 - smoothstep(wv * 0.8, wv * 3.2, d)) * (0.22 + 0.35 * y01);
+    let halo = (1.0 - smoothstep(wv * 1.0, wv * 2.8, d)) * (0.10 + 0.22 * y01);
 
     // Core is hottest near the centerline.
-    let core = exp(-d * d / (wv * wv * 0.08 + 1e-4));
+    let core = exp(-d * d / (wv * wv * 0.06 + 1e-4));
 
     // Flicker
-    let flicker = 0.82 + 0.18 * sin(t * 11.0 + (n + tongues) * 6.28318);
-    let intensity = (mask * 0.75 + halo) * flicker;
+    let flicker = 0.86 + 0.14 * sin(t * 10.0 + (n + tongues) * 6.28318);
+    let body = mask * flicker;
 
     // Temperature: hot core + hot base, cooler top/edges.
-    let heat = clamp(core * 0.85 + (1.0 - y01) * 0.30 + tongues * 0.10, 0.0, 1.0);
+    let heat = clamp(core * 0.90 + (1.0 - y01) * 0.32 + tongues * 0.06, 0.0, 1.0);
+    let hot = pow(heat, 2.2);
 
     // HDR emission (scaled so bloom can do the heavy lifting).
     let strength = globals.flame_strength;
     let outer_col = vec3<f32>(1.60, 0.34, 0.03);
     let inner_col = vec3<f32>(2.80, 1.90, 0.55);
-    let mixv = clamp(pow(heat, 1.35) * 0.90 + core * 0.20, 0.0, 1.0);
-    var col = mix(outer_col, inner_col, mixv) * intensity;
-    col *= (0.65 + 4.8 * pow(heat, 1.6)) * strength;
+    let mixv = clamp(pow(core, 1.6) * 0.92 + hot * 0.08, 0.0, 1.0);
+    let base_col = mix(outer_col, inner_col, mixv);
+    let emit = (0.18 + 7.0 * pow(hot, 1.5)) * strength;
+    var col = base_col * body * emit;
+    col += outer_col * halo * (0.20 + 0.90 * hot) * strength;
 
     // Slight soot/dimming near edges in the upper flame.
     let soot = smoothstep(0.25, 0.95, y01) * smoothstep(wv * 0.35, wv * 2.2, d);
@@ -266,7 +274,9 @@ fn fs_flame(input: VertexOutput) -> @location(0) vec4<f32> {
     var bg = vec3<f32>(0.0015, 0.0018, 0.0025);
     bg += vec3<f32>(0.010, 0.004, 0.002) * exp(-y01 * 4.0);
 
-    return vec4<f32>(bg + col, 1.0);
+    // Bloom mask in alpha: keep bloom mostly on the hot core (prevents "smoky" glow).
+    let bloom_mask = clamp(pow(core, 1.25) * mask * (0.35 + 0.65 * hot) * 1.25, 0.0, 1.0);
+    return vec4<f32>(bg + col, bloom_mask);
 }
 
 @fragment
@@ -275,12 +285,13 @@ fn fs_downsample(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.uv;
     let texel = globals.inv_resolution;
 
-    let c0 = sample_film(uv + vec2<f32>(-0.5 * texel.x, -0.5 * texel.y));
-    let c1 = sample_film(uv + vec2<f32>( 0.5 * texel.x, -0.5 * texel.y));
-    let c2 = sample_film(uv + vec2<f32>(-0.5 * texel.x,  0.5 * texel.y));
-    let c3 = sample_film(uv + vec2<f32>( 0.5 * texel.x,  0.5 * texel.y));
+    let f0 = sample_film4(uv + vec2<f32>(-0.5 * texel.x, -0.5 * texel.y));
+    let f1 = sample_film4(uv + vec2<f32>( 0.5 * texel.x, -0.5 * texel.y));
+    let f2 = sample_film4(uv + vec2<f32>(-0.5 * texel.x,  0.5 * texel.y));
+    let f3 = sample_film4(uv + vec2<f32>( 0.5 * texel.x,  0.5 * texel.y));
 
-    let col = (c0 + c1 + c2 + c3) * 0.25;
+    let col = (f0.rgb + f1.rgb + f2.rgb + f3.rgb) * 0.25;
+    let m = (f0.a + f1.a + f2.a + f3.a) * 0.25;
     let lum = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
 
     // Soft-knee bloom extraction (keeps bloom mostly on highlights).
@@ -289,7 +300,8 @@ fn fs_downsample(input: VertexOutput) -> @location(0) vec4<f32> {
     let soft = clamp((lum - thr + knee) / (2.0 * knee), 0.0, 1.0);
     let contrib = max(lum - thr, 0.0) + soft * soft * knee;
     let scale = contrib / max(lum, 1e-4);
-    return vec4<f32>(col * scale, 1.0);
+    let weight = m * m;
+    return vec4<f32>(col * scale * weight, 1.0);
 }
 
 @fragment
@@ -322,14 +334,9 @@ fn fs_final(input: VertexOutput) -> @location(0) vec4<f32> {
     // subtle vignette before tonemap
     col *= 0.55 + 0.45 * vignette(input.uv, aspect);
 
-    // Tonemap: SDR uses ACES; HDR uses a white-point rolloff that can exceed 1.0.
-    let edr = globals.edr_gain;
-    if (edr > 1.0) {
-        col = max(col, vec3<f32>(0.0));
-        col = col / (vec3<f32>(1.0) + col / edr);
-    } else {
-        col = aces(col);
-    }
+    // Tonemap to displayable range, then push into extended range on HDR surfaces.
+    col = aces(col);
+    col *= globals.edr_gain;
 
     // film grain (tiny, post-tonemap) to avoid banding
     let px = floor(input.uv * res);

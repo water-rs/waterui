@@ -7,8 +7,8 @@
 //! - Filter options for different media types
 
 use waterui::component::Dynamic;
-use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::media::Media;
+use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
@@ -34,7 +34,12 @@ pub fn main() -> impl View {
         hstack((
             picker_button(MediaFilter::Image, &selection, &loaded_media, &is_loading),
             picker_button(MediaFilter::Video, &selection, &loaded_media, &is_loading),
-            picker_button(MediaFilter::LivePhoto, &selection, &loaded_media, &is_loading),
+            picker_button(
+                MediaFilter::LivePhoto,
+                &selection,
+                &loaded_media,
+                &is_loading,
+            ),
         ))
         .spacing(12.0)
         .padding_with(16.0),

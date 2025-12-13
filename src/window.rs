@@ -83,6 +83,7 @@ impl Window {
     }
 
     /// Get a handle to control the window after showing it.
+    #[must_use] 
     pub fn handle(&self) -> WindowHandle {
         WindowHandle {
             frame: self.frame.clone(),

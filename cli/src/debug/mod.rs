@@ -1,4 +1,4 @@
-//! Hot reload and debugging utilities for WaterUI CLI.
+//! Hot reload and debugging utilities for `WaterUI` CLI.
 
 mod crash;
 mod file_watcher;

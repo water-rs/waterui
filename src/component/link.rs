@@ -6,7 +6,6 @@
 use nami::Computed;
 use nami::Signal;
 use nami::signal::IntoComputed;
-use nami::signal::IntoSignal;
 use waterui_controls::button::{Button, ButtonStyle};
 use waterui_core::{Environment, Str, View};
 
@@ -45,8 +44,9 @@ impl<Label> Link<Label>
 where
     Label: View,
 {
-    pub fn new(label: Label, url: impl IntoComputed<Str>) -> Link<Label> {
-        Link {
+    /// Creates a new `Link` view with the specified label and URL.
+    pub fn new(label: Label, url: impl IntoComputed<Str>) -> Self {
+        Self {
             label,
             url: url.into_computed(),
         }

@@ -11,7 +11,7 @@ use waterui_layout::{
 };
 use waterui_str::Str;
 use waterui_text::{
-    font::Body,
+    font::{Body, Font},
     highlight::{DefaultHighlighter, Highlighter, Language},
     styled::{Style, StyledStr},
     text,
@@ -21,6 +21,7 @@ use crate::{SignalExt, ViewExt};
 
 /// Copies text to the system clipboard.
 fn copy_to_clipboard(text: &str) {
+    #[cfg(not(target_os = "android"))]
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => {
             if let Err(e) = clipboard.set_text(text) {
@@ -29,6 +30,13 @@ fn copy_to_clipboard(text: &str) {
         }
         Err(e) => {
             tracing::error!("Failed to access clipboard: {}", e);
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        if let Err(e) = android_clipboard::set_text(text.to_string()) {
+            tracing::error!("Failed to copy to clipboard: {}", e);
         }
     }
 }
@@ -61,10 +69,13 @@ impl View for Code {
         let mut highlighter = DefaultHighlighter::new();
         let chunks = highlighter.highlight(self.language, &self.content);
 
+        let code_font = Font::from(Body).size(14.0);
         let highlighted = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
             s.push(
                 chunk.text.to_string(),
-                Style::default().foreground(chunk.color).font(Body),
+                Style::default()
+                    .foreground(chunk.color)
+                    .font(code_font.clone()),
             );
             s
         });
@@ -77,18 +88,22 @@ impl View for Code {
             8.0,
             (
                 hstack((
-                    text(lang_name).bold(),
+                    text(lang_name)
+                        .bold()
+                        .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
                     spacer(),
-                    text(copied.select("Copied", "Copy").animated()).on_tap(move || {
-                        copy_to_clipboard(&content_for_copy);
-                        let copied = copied.clone();
-                        spawn_local(async move {
-                            copied.set(true);
-                            sleep(Duration::from_secs(1)).await;
-                            copied.set(false);
-                        })
-                        .detach();
-                    }),
+                    text(copied.select("Copied", "Copy").animated())
+                        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+                        .on_tap(move || {
+                            copy_to_clipboard(&content_for_copy);
+                            let copied = copied.clone();
+                            spawn_local(async move {
+                                copied.set(true);
+                                sleep(Duration::from_secs(1)).await;
+                                copied.set(false);
+                            })
+                            .detach();
+                        }),
                 )),
                 text(highlighted),
             ),

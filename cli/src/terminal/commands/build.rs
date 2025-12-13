@@ -28,11 +28,11 @@ pub enum TargetPlatform {
 /// Target architecture for building.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TargetArch {
-    /// ARM64 / AArch64 (Apple Silicon, modern Android devices).
+    /// ARM64 / `AArch64` (Apple Silicon, modern Android devices).
     Arm64,
-    /// x86_64 (Intel Macs, Android emulators on Intel/AMD).
+    /// `x86_64` (Intel Macs, Android emulators on Intel/AMD).
     X86_64,
-    /// ARMv7 (older 32-bit Android devices).
+    /// `ARMv7` (older 32-bit Android devices).
     Armv7,
     /// x86 (older 32-bit Android emulators).
     X86,

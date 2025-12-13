@@ -1,5 +1,6 @@
 package __BUNDLE_IDENTIFIER__
 
+import android.content.Intent
 import android.os.Bundle
 import android.system.Os
 import android.util.Log
@@ -13,16 +14,39 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "WaterUI.MainActivity"
         private const val ENV_PREFIX = "waterui.env."
 
-        init {
-            setupEnvironmentFromProperties()
-            loadWaterUiLibraries()
-            bootstrapWaterUiRuntime()
+        @Volatile
+        private var runtimeBootstrapped = false
+
+        /**
+         * Read intent extras with prefix "waterui.env." and set them as environment variables.
+         *
+         * The CLI passes these extras via:
+         * `adb shell am start ... --es waterui.env.<KEY> <VALUE>`
+         *
+         * This runs before loading native libraries so Rust can read env vars at startup.
+         */
+        private fun setupEnvironmentFromIntent(intent: Intent?) {
+            val extras = intent?.extras ?: return
+
+            for (key in extras.keySet()) {
+                if (!key.startsWith(ENV_PREFIX)) continue
+
+                val envVar = key.removePrefix(ENV_PREFIX)
+                val value = extras.getString(key) ?: continue
+
+                try {
+                    Os.setenv(envVar, value, true)
+                    Log.d(TAG, "Set environment variable $envVar from intent extra")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
+                }
+            }
         }
 
         /**
          * Read system properties with prefix "waterui.env." and set them as environment variables.
          *
-         * The CLI sets these properties via `adb shell setprop waterui.env.<KEY> <VALUE>`
+         * Older CLI versions set these properties via `adb shell setprop waterui.env.<KEY> <VALUE>`
          * before launching the app. This allows passing environment variables to the native
          * Rust code since Android doesn't support direct environment variable passing.
          */
@@ -69,6 +93,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        @Synchronized
+        private fun ensureRuntimeBootstrapped() {
+            if (runtimeBootstrapped) return
+            loadWaterUiLibraries()
+            bootstrapWaterUiRuntime()
+            runtimeBootstrapped = true
+        }
+
         @Suppress("DiscouragedPrivateApi")
         private fun loadLibraryGlobal(name: String) {
             val runtime = Runtime.getRuntime()
@@ -88,6 +120,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize MediaPickerManager for this activity
+        dev.waterui.android.runtime.MediaPickerManager.initialize(this)
+
+        setupEnvironmentFromIntent(intent)
+        setupEnvironmentFromProperties()
+        ensureRuntimeBootstrapped()
 
         val rootView = WaterUiRootView(this)
         setContentView(rootView)
