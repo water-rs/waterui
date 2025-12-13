@@ -5,7 +5,6 @@
 //! - Various form field types (text, bool, numeric, slider)
 //! - Reactive data binding with live preview
 //! - Manual form control composition
-
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
