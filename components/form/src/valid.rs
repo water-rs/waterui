@@ -53,32 +53,12 @@ pub trait Validator<T>: Clone + 'static {
     /// # Arguments
     ///
     /// * `value` - The value to validate.
-    ///
-    /// # Errors
-    ///
-    /// * Returns a [`Reason<T>`] if the value is invalid.
-    ///
-    /// # Examples
-    /// ```
-    /// use waterui_form::valid::{Validator, Reason};
-    /// use core::ops::Range;
-    ///
-    /// struct RangeValidator(Range<i32>);
-    ///
-    /// impl Validator<i32> for RangeValidator {
-    ///     fn validate(&self, value: i32) -> Result<(), Reason<i32>> {
-    ///         if self.0.contains(&value) {
-    ///             Ok(())
-    ///        } else {
-    ///           Err(Reason::OutOfRange(self.0.clone()))
-    ///       }
-    ///     }
-    /// }
     fn validate(&self, value: T) -> Result<(), Self::Err>;
 
     /// Combines this validator with another using logical AND.
     /// # Arguments
     /// * `other` - The other validator to combine with.
+    ///
     /// # Returns
     /// A new validator that succeeds only if both validators succeed.
     fn and<V>(self, other: V) -> And<Self, V>
