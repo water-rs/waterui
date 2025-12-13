@@ -171,7 +171,6 @@ pub async fn run(args: Args) -> Result<()> {
         futures::select! {
             _ = FutureExt::fuse(timeout) => {
                 // Timeout - loop back to check hot reload events
-                continue;
             }
             dev_event = FutureExt::fuse(device_event) => {
                 if handle_device_event(dev_event, platform_name) {
@@ -429,7 +428,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
 fn handle_hot_reload_event(event: HotReloadEvent) {
     match event {
         HotReloadEvent::ServerStarted { host, port } => {
-            shell::status("◉", &format!("Hot reload server on {host}:{port}"));
+            shell::status("◉", format!("Hot reload server on {host}:{port}"));
         }
         HotReloadEvent::FileChanged => {
             shell::status("◌", "File changed, rebuilding...");
@@ -438,7 +437,7 @@ fn handle_hot_reload_event(event: HotReloadEvent) {
             shell::status("◐", "Building...");
         }
         HotReloadEvent::Built { path } => {
-            shell::status("◑", &format!("Built: {}", path.display()));
+            shell::status("◑", format!("Built: {}", path.display()));
         }
         HotReloadEvent::BuildFailed { error } => {
             error!("Build failed: {error}");

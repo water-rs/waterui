@@ -38,8 +38,6 @@ impl SubView for FixedSizeView {
 struct FlexibleTextView {
     /// Intrinsic single-line size (no wrapping)
     intrinsic_size: Size,
-    /// Character width for calculating wrapped sizes
-    char_width: f32,
     /// Line height
     line_height: f32,
 }
@@ -48,7 +46,6 @@ impl FlexibleTextView {
     fn new(text_width: f32, line_height: f32) -> Self {
         Self {
             intrinsic_size: Size::new(text_width, line_height),
-            char_width: 10.0, // Assume 10pt per character for simplicity
             line_height,
         }
     }

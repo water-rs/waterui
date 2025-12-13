@@ -21,10 +21,10 @@ use crate::{
     utils::{command, run_command},
 };
 
-/// Start streaming logs from a WaterUI app.
+/// Start streaming logs from a `WaterUI` app.
 ///
-/// This uses `log stream` with a predicate to filter by the WaterUI subsystem ("dev.waterui").
-/// This captures all tracing output from the Rust code via tracing_oslog.
+/// This uses `log stream` with a predicate to filter by the `WaterUI` subsystem ("dev.waterui").
+/// This captures all tracing output from the Rust code via `tracing_oslog`.
 ///
 /// If `log_level` is `None`, no log streaming is started.
 fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
@@ -45,48 +45,45 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    match log_cmd.spawn() {
-        Ok(mut log_child) => {
-            if let Some(stdout) = log_child.stdout.take() {
-                // Move log_child into the async task to keep it alive
-                spawn(async move {
-                    let mut lines = BufReader::new(stdout).lines();
-                    while let Some(Ok(line)) = lines.next().await {
-                        // Skip header lines from `log stream`
-                        if line.starts_with("Filtering") || line.starts_with("Timestamp") {
-                            continue;
-                        }
-
-                        // Parse log level from compact format: "timestamp Ty Process..."
-                        // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
-                        // Fault is Apple's highest severity - used by panic handler
-                        let level = if line.contains(" F ") || line.contains(" E ") {
-                            tracing::Level::ERROR
-                        } else if line.contains(" W ") {
-                            tracing::Level::WARN
-                        } else if line.contains(" D ") {
-                            tracing::Level::DEBUG
-                        } else {
-                            tracing::Level::INFO
-                        };
-
-                        if sender
-                            .try_send(DeviceEvent::Log {
-                                level,
-                                message: line,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
+    if let Ok(mut log_child) = log_cmd.spawn() {
+        if let Some(stdout) = log_child.stdout.take() {
+            // Move log_child into the async task to keep it alive
+            spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Some(Ok(line)) = lines.next().await {
+                    // Skip header lines from `log stream`
+                    if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+                        continue;
                     }
-                    // Keep log_child alive until stream ends, then let it drop to kill the process
-                    drop(log_child);
-                })
-                .detach();
-            }
+
+                    // Parse log level from compact format: "timestamp Ty Process..."
+                    // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
+                    // Fault is Apple's highest severity - used by panic handler
+                    let level = if line.contains(" F ") || line.contains(" E ") {
+                        tracing::Level::ERROR
+                    } else if line.contains(" W ") {
+                        tracing::Level::WARN
+                    } else if line.contains(" D ") {
+                        tracing::Level::DEBUG
+                    } else {
+                        tracing::Level::INFO
+                    };
+
+                    if sender
+                        .try_send(DeviceEvent::Log {
+                            level,
+                            message: line,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                // Keep log_child alive until stream ends, then let it drop to kill the process
+                drop(log_child);
+            })
+            .detach();
         }
-        Err(_) => {}
     }
 }
 

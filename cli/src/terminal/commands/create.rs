@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Args as ClapArgs;
 use color_eyre::eyre::Result;
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
-use heck::ToKebabCase;
+use heck::{ToKebabCase, ToSnakeCase};
 
 use crate::shell;
 use crate::{header, line, success};
@@ -189,7 +189,7 @@ fn prompt_waterui_path() -> Result<String> {
 }
 
 fn default_bundle_id(app_name: &str) -> String {
-    format!("com.example.{}", app_name.to_kebab_case())
+    format!("com.example.{}", app_name.to_snake_case())
 }
 
 fn prompt_bundle_id(app_name: &str) -> Result<String> {
