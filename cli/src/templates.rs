@@ -251,7 +251,10 @@ mod tests {
     use super::TemplateContext;
     use std::path::PathBuf;
 
-    fn ctx(waterui_path: Option<PathBuf>, backend_project_path: Option<PathBuf>) -> TemplateContext {
+    fn ctx(
+        waterui_path: Option<PathBuf>,
+        backend_project_path: Option<PathBuf>,
+    ) -> TemplateContext {
         TemplateContext {
             app_display_name: String::new(),
             app_name: String::new(),
