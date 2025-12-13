@@ -6,3 +6,4 @@ apple/build
 *.xcworkspace/xcuserdata
 web/pkg
 .build
+Cargo.lock
