@@ -4,7 +4,7 @@ use crate::{ViewExt, ext::SignalExt, prelude::*, widget::condition::when};
 use alloc::vec::Vec;
 use core::hash::Hash;
 use std::collections::HashSet;
-use waterui_core::id::Identifable;
+use waterui_core::id::Identifiable;
 use waterui_layout::stack::{VStack, hstack, vstack};
 
 /// Represents a node in the tree. It contains the data for the node,
@@ -19,7 +19,7 @@ pub struct TreeNode<T, ID> {
     pub children: Vec<TreeNode<T, ID>>,
 }
 
-impl<T, ID: Clone + Hash + Ord> Identifable for TreeNode<T, ID> {
+impl<T, ID: Clone + Hash + Ord> Identifiable for TreeNode<T, ID> {
     type Id = ID;
     fn id(&self) -> Self::Id {
         self.id.clone()

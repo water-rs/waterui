@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/waterui/badge.svg)](https://docs.rs/waterui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern, cross-platform UI framework for Rust that renders to native platform widgets (SwiftUI on Apple, Jetpack Compose on Android) rather than drawing its own pixels. Build reactive, declarative UIs with Rust's type safety and performance.
+A modern, cross-platform UI framework for Rust that renders to native platform widgets (UIKit/AppKit on Apple, Jetpack Compose on Android) rather than drawing its own pixels. Build reactive, declarative UIs with Rust's type safety and performance.
 
 ## Overview
 
@@ -12,7 +12,7 @@ WaterUI combines declarative, component-based architecture with fine-grained rea
 
 The framework is built on three core principles:
 
-- **Native-first rendering**: Your UI components compile to SwiftUI views on iOS/macOS and Jetpack Compose composables on Android, delivering authentic native behavior and performance.
+- **Native-first rendering**: Your UI components compile to UIKit/AppKit views on iOS/macOS and Android View on Android, delivering authentic native behavior and performance.
 - **Fine-grained reactivity**: Powered by the `nami` crate, UI updates are surgical and automatic—only affected components re-render when state changes.
 - **Hot reload**: Changes to your Rust code reload instantly in running apps via dynamic library swapping, providing a development experience similar to web frameworks.
 
@@ -57,7 +57,7 @@ Your app launches with hot reload enabled. Edit `src/lib.rs` and watch changes a
 
 ### 3. Write Your First View
 
-```rust
+```rust,ignore
 use waterui::prelude::*;
 use waterui::app::App;
 
@@ -85,6 +85,8 @@ waterui_ffi::export!();
 Every UI component implements the `View` trait, which defines how it renders:
 
 ```rust
+use waterui_core::Environment;
+
 pub trait View: 'static {
     fn body(self, env: &Environment) -> impl View;
 }
@@ -121,6 +123,8 @@ The `Environment` provides dependency injection for themes, fonts, and custom se
 ```rust
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui_core::Environment;
+use waterui_text::font::{ResolvedFont, FontWeight};
 
 pub fn app(mut env: Environment) -> App {
     let theme = Theme::new()
@@ -137,20 +141,23 @@ pub fn app(mut env: Environment) -> App {
 WaterUI provides a fluent API for styling and layout through the `ViewExt` trait:
 
 ```rust
+use waterui::prelude::*;
+use waterui_color::Color;
+
 text("Styled Text")
     .size(18.0)
     .bold()
     .foreground(Color::srgb(100, 150, 255))
     .padding()
     .background(Color::srgb_hex("#f0f0f0"))
-    .on_tap(|| println!("Tapped!"))
+    .on_tap(|| println!("Tapped!"));
 ```
 
 ## Examples
 
 ### Form with Reactive Bindings
 
-```rust
+```rust,ignore
 use waterui::prelude::*;
 
 #[form]
@@ -204,43 +211,6 @@ fn gestures() -> impl View {
 }
 ```
 
-### Video Player with Overlay
-
-```rust
-use waterui::prelude::*;
-
-#[hot_reload]
-fn video_player() -> impl View {
-    let url = Url::parse("https://example.com/video.mp4").unwrap();
-    let is_buffering = Binding::bool(false);
-
-    let player = VideoPlayer::new(url)
-        .show_controls(true)
-        .aspect_ratio(AspectRatio::Fill)
-        .on_event({
-            let is_buffering = is_buffering.clone();
-            move |event| match event {
-                video::Event::Buffering => is_buffering.set(true),
-                video::Event::ReadyToPlay => is_buffering.set(false),
-                _ => {}
-            }
-        });
-
-    let buffering_overlay = Dynamic::watch(is_buffering, |buffering| {
-        if buffering {
-            zstack((
-                spacer().background(Color::BLACK.with_opacity(0.5)),
-                loading(),
-            ))
-        } else {
-            spacer()
-        }
-    });
-
-    overlay(player, buffering_overlay)
-}
-```
-
 ### Dynamic List Rendering
 
 ```rust
@@ -254,7 +224,7 @@ struct Contact {
     role: &'static str,
 }
 
-impl Identifable for Contact {
+impl Identifiable for Contact {
     type Id = u64;
     fn id(&self) -> Self::Id {
         self.id
@@ -344,7 +314,7 @@ The base `waterui` crate includes layout, controls, text, media, navigation, and
 
 Every WaterUI app follows this pattern:
 
-```rust
+```rust,ignore
 use waterui::prelude::*;
 use waterui::app::App;
 
@@ -419,10 +389,8 @@ water devices
 
 ## Platform Support
 
-- **iOS/macOS**: Renders to SwiftUI (requires Xcode)
-- **Android**: Renders to Jetpack Compose (requires Android SDK)
-- **Desktop**: Hydrolysis self-drawn renderer (WIP, uses Vello/tiny-skia)
-- **Terminal**: TUI backend (WIP)
+- **iOS/macOS**: Renders to UIKit/AppKit (requires Xcode)
+- **Android**: Renders to Android View (requires Android SDK)
 
 ## Documentation
 

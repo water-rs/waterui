@@ -6,7 +6,7 @@
 pub use waterui_controls::*;
 
 pub mod badge;
-pub mod focu;
+pub mod focus;
 pub mod lazy;
 pub mod link;
 pub mod list;

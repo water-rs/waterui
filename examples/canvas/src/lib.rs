@@ -1,7 +1,5 @@
 use waterui::app::App;
 use waterui::graphics::Canvas;
-use waterui::graphics::kurbo::{Circle, Line, Point, Rect};
-use waterui::graphics::peniko::Color;
 use waterui::prelude::*;
 
 fn main() -> impl View {
@@ -15,10 +13,8 @@ fn main() -> impl View {
             // ----------------------------
             // Background
             // ----------------------------
-            ctx.fill(
-                Rect::from_origin_size(Point::ZERO, size),
-                Color::new([0.08, 0.1, 0.14, 1.0]),
-            );
+            ctx.set_fill_style(Color::srgb_f32(0.08, 0.1, 0.14));
+            ctx.fill_rect(Rect::new(Point::zero(), size));
 
             // ----------------------------
             // Molecule geometry
@@ -43,37 +39,22 @@ fn main() -> impl View {
             // ----------------------------
             // Bonds
             // ----------------------------
-            ctx.stroke(
-                Line::new(oxygen, hydrogen1),
-                Color::new([0.9, 0.9, 0.9, 0.8]),
-                4.0,
-            );
-
-            ctx.stroke(
-                Line::new(oxygen, hydrogen2),
-                Color::new([0.9, 0.9, 0.9, 0.8]),
-                4.0,
-            );
+            ctx.set_stroke_style(Color::srgb_f32(0.9, 0.9, 0.9).with_opacity(0.8));
+            ctx.set_line_width(4.0);
+            ctx.stroke_line(oxygen, hydrogen1);
+            ctx.stroke_line(oxygen, hydrogen2);
 
             // ----------------------------
             // Atoms
             // ----------------------------
             // Oxygen (O)
-            ctx.fill(
-                Circle::new(oxygen, oxygen_radius),
-                Color::new([0.85, 0.2, 0.25, 1.0]),
-            );
+            ctx.set_fill_style(Color::srgb_f32(0.85, 0.2, 0.25));
+            ctx.fill_circle(oxygen, oxygen_radius);
 
             // Hydrogens (H)
-            ctx.fill(
-                Circle::new(hydrogen1, hydrogen_radius),
-                Color::new([0.95, 0.95, 0.95, 1.0]),
-            );
-
-            ctx.fill(
-                Circle::new(hydrogen2, hydrogen_radius),
-                Color::new([0.95, 0.95, 0.95, 1.0]),
-            );
+            ctx.set_fill_style(Color::srgb_f32(0.95, 0.95, 0.95));
+            ctx.fill_circle(hydrogen1, hydrogen_radius);
+            ctx.fill_circle(hydrogen2, hydrogen_radius);
         }),
         text("Bond angle ≈ 104.5°").size(12),
     ))

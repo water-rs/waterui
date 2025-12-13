@@ -11,7 +11,7 @@ use nami::collection::Collection;
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Native, NativeView, View, id::Identifable, layout::StretchAxis,
+    AnyView, Environment, Native, NativeView, View, id::Identifiable, layout::StretchAxis,
 };
 
 /// Configuration for a list component.
@@ -44,7 +44,7 @@ where
 impl<C, F> List<ForEach<C, F, ListItem>>
 where
     C: Collection,
-    C::Item: Identifable,
+    C::Item: Identifiable,
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a new list by iterating over a collection and generating items.

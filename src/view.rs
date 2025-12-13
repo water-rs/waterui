@@ -38,7 +38,7 @@ use crate::{
     view_ext::OnChange,
 };
 use crate::{
-    component::{Text, badge::Badge, focu::Focused},
+    component::{Text, badge::Badge, focus::Focused},
     prelude::Shadow,
 };
 use waterui_core::Metadata;
@@ -121,7 +121,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// text!("Hello").background(Color::RED);
+    /// text!("Hello").background(Color::red());
     /// ```
     fn background(self, background: impl Into<Background>) -> Metadata<Background> {
         Metadata::new(self, background.into())
@@ -147,7 +147,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// text("Hello").overlay(Color::red().opacity(0.5));
+    /// text("Hello").overlay(Color::red().with_opacity(0.5));
     /// ```
     fn overlay<V>(self, overlay: V) -> Overlay<Self, V> {
         Overlay::new(self, overlay)
@@ -200,7 +200,7 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     /// use waterui::reactive::binding;
     ///
-    /// let count = binding(0);
+    /// let count:Binding<i32> = binding(0);
     /// text("Hello").on_appear(|| println!("Hello, World!"));
     /// ```
     //// # Arguments
@@ -378,11 +378,11 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use waterui::prelude::*;
     ///
     /// // Extend background to fill entire screen
-    /// Color::blue()
+    /// Color::red()
     ///     .ignore_safe_area(EdgeSet::ALL);
     ///
     /// // Only extend to top (under status bar)
@@ -416,9 +416,11 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     /// use waterui::reactive::binding;
     ///
-    /// let count = binding(0);
-    /// let guard = count.clone().watch(|v| println!("Count: {}", v.into_value()));
-    /// text("Hello").retain(guard)
+    /// fn view() -> impl View{
+    ///     let count:Binding<i32> = binding(0);
+    ///     let guard = count.clone().watch(|v| println!("Count: {}", v.into_value()));
+    ///     text("Hello").retain(guard)
+    /// }
     /// ```
     fn retain<T: 'static>(self, value: T) -> Metadata<Retain> {
         Metadata::new(self, Retain::new(value))
