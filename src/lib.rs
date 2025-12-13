@@ -125,6 +125,7 @@ mod entry;
 pub use entry::entry;
 
 pub mod app;
+pub mod overlay;
 pub mod window;
 
 pub use tracing as log;

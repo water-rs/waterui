@@ -8,7 +8,7 @@ use smol::channel::{self, Receiver, Sender};
 use target_lexicon::Triple;
 
 use super::file_watcher::FileWatcher;
-use super::hot_reload::{BuildManager, DEFAULT_PORT, HotReloadServer};
+use super::hot_reload::{BroadcastMessage, BuildManager, DEFAULT_PORT, HotReloadServer};
 use crate::build::RustBuild;
 use crate::project::Project;
 
@@ -129,7 +129,7 @@ impl HotReloadRunner {
 async fn run_loop(
     rust_build: RustBuild,
     file_rx: Receiver<()>,
-    broadcast_tx: Sender<Vec<u8>>,
+    broadcast_tx: Sender<BroadcastMessage>,
     event_tx: Sender<HotReloadEvent>,
     _watcher: FileWatcher, // Keep watcher alive
     crate_name: String,
@@ -178,7 +178,7 @@ async fn run_loop(
                             // Read and broadcast the library
                             match smol::fs::read(&dylib_path).await {
                                 Ok(data) => {
-                                    let _ = broadcast_tx.send(data).await;
+                                    let _ = broadcast_tx.send(BroadcastMessage::Binary(data)).await;
                                     let _ = event_tx.send(HotReloadEvent::Broadcast).await;
                                     reported_change = false;
                                 }
@@ -201,6 +201,8 @@ async fn run_loop(
 
                 // Check if debounce completed and we should start building
                 if build_manager.should_start_build() {
+                    // Notify clients that building is starting (instant feedback)
+                    let _ = broadcast_tx.send(BroadcastMessage::Text("building".to_string())).await;
                     let _ = event_tx.send(HotReloadEvent::Rebuilding).await;
                     build_manager.start_build(rust_build.clone());
                 }
