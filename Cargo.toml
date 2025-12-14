@@ -147,3 +147,8 @@ codegen-units = 1
 opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
 panic = "abort"    # Smaller panic handling
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
