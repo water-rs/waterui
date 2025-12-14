@@ -164,7 +164,7 @@ dependencies {
     // Use GitHub dependency in remote dev mode, local backend otherwise
     if (__USE_REMOTE_DEV_BACKEND__) {
         // JitPack multi-module format: com.github.USER:REPO-SUBMODULE:BRANCH-SNAPSHOT
-        implementation("com.github.water-rs:android-backend:main-SNAPSHOT")
+        implementation("com.github.water-rs:android-backend:0.2.0")
     } else {
         implementation("dev.waterui.android:runtime")
     }
