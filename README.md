@@ -33,7 +33,7 @@ Enable the graphics feature for GPU rendering capabilities:
 
 ```toml
 [dependencies]
-waterui = { version = "0.1.1", features = ["graphics"] }
+waterui = { version = "0.2", features = ["graphics"] }
 ```
 
 ## Quick Start
