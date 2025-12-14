@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/water-rs/waterui/compare/cli-v0.1.1...cli-v0.1.2) - 2025-12-14
+
+### Fixed
+
+- update android backend dependency version to 0.2.0
+- update minimum version for Swift package reference to 0.2.0
+- update repository URLs in template files for Apple and Android backends
+
 ## [0.1.0](https://github.com/water-rs/waterui/releases/tag/cli-v0.1.0) - 2025-12-13
 
 ### Added
