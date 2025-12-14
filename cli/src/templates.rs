@@ -8,8 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const WATERUI_VERSION: &str = "0.1.0";
-const WATERUI_FFI_VERSION: &str = "0.1.0";
+const WATERUI_VERSION: &str = "0.2";
+const WATERUI_FFI_VERSION: &str = "0.2";
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
