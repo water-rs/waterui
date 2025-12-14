@@ -43,7 +43,7 @@ The fastest way to experience WaterUI is through the CLI's playground mode, whic
 ### 1. Install the CLI
 
 ```bash
-cargo install --path cli
+cargo install waterui-cli
 ```
 
 ### 2. Create and Run a Playground
