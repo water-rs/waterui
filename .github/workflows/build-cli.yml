@@ -3,6 +3,15 @@ name: Build CLI
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build (e.g., cli-v0.1.0)"
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_PAT:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
