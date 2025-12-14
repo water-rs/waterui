@@ -402,12 +402,6 @@ water devices
 
 Contributions are welcome! Please submit pull requests to the `dev` branch. The `main` branch is reserved for releases.
 
-Before contributing, check:
-
-- Open issues for feature requests and bugs
-- [ROADMAP.md](ROADMAP.md) for planned work
-- [CLAUDE.md](CLAUDE.md) for development guidelines
-
 ## License
 
-Licensed under the MIT License. See [LICENSE](LICENSE) for details.
+License under Apache 2.0 OR MIT license.
