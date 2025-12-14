@@ -18,7 +18,7 @@ resolver = "2"
 
 [package]
 name = "waterui"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -70,10 +70,10 @@ waterui-media = { version = "0.2.0", path = "components/media" }
 waterui-form = { version = "0.2.0", path = "components/form" }
 waterui-controls = { version = "0.2.0", path = "components/controls"}
 waterui-graphics = { version = "0.2.0", path = "components/graphics" }
-waterui-ffi = { version = "0.2.0", path = "ffi" }
+waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.1", path = "components/layout" }
 waterui-navigation = { version = "0.2.0", path = "components/navigation" }
-waterui = { version = "0.2.0", path = "." }
+waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
