@@ -55,13 +55,13 @@ jobs:
 
           git checkout -q "${BROKEN_SHA}"
           mkdir -p derive/src
-          cat > derive/Cargo.toml <<'EOF'
-[package]
-name = "waterui-derive-placeholder"
-version = "0.0.0"
-edition = "2021"
-publish = false
-EOF
+          printf '%s\n' \
+            '[package]' \
+            'name = "waterui-derive-placeholder"' \
+            'version = "0.0.0"' \
+            'edition = "2021"' \
+            'publish = false' \
+            > derive/Cargo.toml
           echo "pub fn _placeholder() {}" > derive/src/lib.rs
           git add derive
           git commit -q -m "chore: add placeholder derive workspace member"
