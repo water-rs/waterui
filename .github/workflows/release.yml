@@ -9,17 +9,23 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 jobs:
   release-plz:
     name: Release
     runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'success'
+    outputs:
+      cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Work around missing workspace member in old commit
         shell: bash
         run: |
@@ -154,23 +160,40 @@ jobs:
             --git-token "${GITHUB_TOKEN}" \
             --config release-plz.toml
 
-      - name: Trigger CLI binary build (if released)
+      - name: Detect released CLI tag
+        id: cli_tag
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          CLI_TAG="$(git tag --points-at HEAD | grep '^cli-v' | head -n 1 || true)"
-          if [[ -z "${CLI_TAG}" ]]; then
-            echo "No cli-v* tag on HEAD; skipping CLI binary build."
-            exit 0
+          git fetch --force --tags origin main
+
+          EVENT_SHA="${{ github.event.workflow_run.head_sha }}"
+          MAIN_SHA="$(git rev-parse origin/main)"
+
+          find_cli_tag() {
+            local sha="$1"
+            git tag --points-at "${sha}" | grep '^cli-v' | sort -V | tail -n 1 || true
+          }
+
+          CLI_TAG="$(find_cli_tag "${EVENT_SHA}")"
+          if [[ -z "${CLI_TAG}" && "${MAIN_SHA}" != "${EVENT_SHA}" ]]; then
+            CLI_TAG="$(find_cli_tag "${MAIN_SHA}")"
           fi
 
-          echo "Dispatching build-cli.yml for tag ${CLI_TAG}..."
-          curl -fsSL \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-cli.yml/dispatches" \
-            -d "{\"ref\":\"main\",\"inputs\":{\"tag\":\"${CLI_TAG}\"}}"
+          echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${CLI_TAG}" ]]; then
+            echo "Detected CLI tag: ${CLI_TAG}"
+          else
+            echo "No cli-v* tag found on ${EVENT_SHA} (or origin/main ${MAIN_SHA})."
+          fi
+
+  build-cli:
+    name: Build waterui-cli binaries
+    needs: release-plz
+    if: needs.release-plz.outputs.cli_tag != ''
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      tag: ${{ needs.release-plz.outputs.cli_tag }}
+    secrets:
+      HOMEBREW_PAT: ${{ secrets.HOMEBREW_PAT }}
