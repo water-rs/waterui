@@ -31,6 +31,10 @@ jobs:
           # new one that adds a minimal `derive/` crate. This avoids rewriting history.
           set -euo pipefail
 
+          echo "GIT_NO_REPLACE_OBJECTS=${GIT_NO_REPLACE_OBJECTS-<unset>}"
+          git --version
+          git config core.replaceRefs true
+
           ORIGINAL_SHA="$(git rev-parse HEAD)"
           ORIGINAL_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
           if [[ -z "${ORIGINAL_BRANCH}" ]]; then
@@ -114,8 +118,36 @@ jobs:
 
             git replace -f "${BROKEN_SHA}" "${FIX_SHA}"
           done
+
+          echo "Replacements applied:"
+          git replace -l || true
+
+          # Sanity check: ensure `git checkout <sha>` yields a workspace with `derive/Cargo.toml`.
+          for sha in "${BROKEN_COMMITS[@]}"; do
+            git checkout -q "${sha}"
+            if [[ ! -f derive/Cargo.toml ]]; then
+              echo "Sanity check failed: derive/Cargo.toml missing at commit ${sha}"
+              exit 1
+            fi
+          done
+          git checkout -q "${ORIGINAL_BRANCH}"
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@0.45, release-plz@0.3.150
+      - name: Run release-plz
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          echo "-- Running release-plz release-pr --"
+          env -u GIT_NO_REPLACE_OBJECTS release-plz release-pr \
+            --git-token "${GITHUB_TOKEN}" \
+            --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
+            --config release-plz.toml
+          echo "-- Running release-plz release --"
+          env -u GIT_NO_REPLACE_OBJECTS release-plz release \
+            --git-token "${GITHUB_TOKEN}" \
+            --config release-plz.toml
