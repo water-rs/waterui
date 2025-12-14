@@ -19,7 +19,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui = "0.1"
+waterui = "0.2"
 ```
 
 The derive macros are automatically available when you import the prelude:
