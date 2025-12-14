@@ -6,10 +6,10 @@ members = [
     "utils/*",
     "ffi",
     "macros",
-    "cli"
+    "cli",
+    "examples/*",
 ]
 exclude = [
-  "examples/*",
   "hydrolysis",
   "derive"
 ]
