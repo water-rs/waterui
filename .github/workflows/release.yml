@@ -9,6 +9,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   release-plz:
@@ -152,3 +153,24 @@ jobs:
           env -u GIT_NO_REPLACE_OBJECTS release-plz release \
             --git-token "${GITHUB_TOKEN}" \
             --config release-plz.toml
+
+      - name: Trigger CLI binary build (if released)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          CLI_TAG="$(git tag --points-at HEAD | grep '^cli-v' | head -n 1 || true)"
+          if [[ -z "${CLI_TAG}" ]]; then
+            echo "No cli-v* tag on HEAD; skipping CLI binary build."
+            exit 0
+          fi
+
+          echo "Dispatching build-cli.yml for tag ${CLI_TAG}..."
+          curl -fsSL \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-cli.yml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"tag\":\"${CLI_TAG}\"}}"
