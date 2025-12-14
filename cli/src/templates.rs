@@ -214,7 +214,7 @@ impl TemplateContext {
     /// Generate the `XCode` package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
-        const REPO_URL: &str = "https://github.com/user/waterui-apple.git";
+        const REPO_URL: &str = "https://github.com/water-rs/apple-backend.git";
         const MIN_VERSION: &str = "1.0.0";
 
         self.compute_apple_backend_path().map_or_else(
