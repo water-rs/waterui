@@ -395,7 +395,7 @@ water devices
 ## Documentation
 
 - [API Reference](https://docs.rs/waterui) - Complete API documentation
-- [Architecture Guide](CODEBASE_DOCUMENTATION.md) - Technical architecture overview
+- [Tutorial Book](https://book.waterui.dev) - The official tutorial book
 - [Roadmap](ROADMAP.md) - Planned features and improvements
 
 ## Contributing
