@@ -23,56 +23,97 @@ jobs:
         shell: bash
         run: |
           # release-plz checks out historical commits while comparing packages with crates.io.
-          # A previously-published commit references a workspace member at `derive/` that was
-          # never committed to the repository, causing `cargo metadata`/`cargo package` to fail.
+          # In this repo, the `derive/` crate was deleted, but the workspace `members` list kept
+          # referencing it for a few subsequent commits, causing `cargo metadata`/`cargo package`
+          # to fail when release-plz checks out any of those commits.
           #
-          # Fix it in CI by using `git replace` to "patch" that historical commit with a new one
-          # that adds a minimal `derive/` crate. This avoids rewriting history while unblocking CI.
+          # Work around it in CI by using `git replace` to "patch" each affected commit with a
+          # new one that adds a minimal `derive/` crate. This avoids rewriting history.
           set -euo pipefail
 
-          BROKEN_SHA="16b2545c9a8120ddef03b26bee4bb469774319cd"
-          if ! git cat-file -e "${BROKEN_SHA}^{commit}" 2>/dev/null; then
-            echo "Commit ${BROKEN_SHA} not found; skipping workaround."
-            exit 0
-          fi
-
-          if ! git show "${BROKEN_SHA}:Cargo.toml" | grep -Eq '^[[:space:]]*"derive"[[:space:]]*,?[[:space:]]*$'; then
-            echo "Commit ${BROKEN_SHA} does not reference derive; skipping workaround."
-            exit 0
-          fi
-
-          if git ls-tree -r --name-only "${BROKEN_SHA}" | grep -qx "derive/Cargo.toml"; then
-            echo "Commit ${BROKEN_SHA} already contains derive/Cargo.toml; skipping workaround."
-            exit 0
-          fi
-
-          echo "Applying git-replace workaround for commit ${BROKEN_SHA}..."
           ORIGINAL_SHA="$(git rev-parse HEAD)"
           ORIGINAL_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
+          if [[ -z "${ORIGINAL_BRANCH}" ]]; then
+            # `actions/checkout` can leave the repo in detached HEAD state.
+            # Create a local branch so release-plz can determine the current branch.
+            ORIGINAL_BRANCH="main"
+            git checkout -q -B "${ORIGINAL_BRANCH}" "${ORIGINAL_SHA}"
+          fi
 
           git config user.email "release-plz-ci@users.noreply.github.com"
           git config user.name "release-plz-ci"
 
-          git checkout -q "${BROKEN_SHA}"
-          mkdir -p derive/src
-          printf '%s\n' \
-            '[package]' \
-            'name = "waterui-derive-placeholder"' \
-            'version = "0.0.0"' \
-            'edition = "2021"' \
-            'publish = false' \
-            > derive/Cargo.toml
-          echo "pub fn _placeholder() {}" > derive/src/lib.rs
-          git add derive
-          git commit -q -m "chore: add placeholder derive workspace member"
-          FIX_SHA="$(git rev-parse HEAD)"
+          BROKEN_COMMITS=()
+          while IFS= read -r sha; do
+            if ! git cat-file -e "${sha}:Cargo.toml" 2>/dev/null; then
+              continue
+            fi
 
-          if [[ -n "${ORIGINAL_BRANCH}" ]]; then
-            git checkout -q "${ORIGINAL_BRANCH}"
-          else
-            git checkout -q "${ORIGINAL_SHA}"
+            # Only consider commits where `derive` is a workspace member.
+            if ! git show "${sha}:Cargo.toml" 2>/dev/null | awk '
+              BEGIN { in_members = 0 }
+              /^[[:space:]]*members[[:space:]]*=[[:space:]]*\\[/ { in_members = 1 }
+              in_members { print }
+              in_members && /\\]/ { exit }
+            ' | grep -q '"derive"'; then
+              continue
+            fi
+
+            # Skip commits where `derive/` exists.
+            if git cat-file -e "${sha}:derive/Cargo.toml" 2>/dev/null; then
+              continue
+            fi
+
+            BROKEN_COMMITS+=("$sha")
+          done < <(git rev-list --reverse HEAD)
+
+          if [[ ${#BROKEN_COMMITS[@]} -eq 0 ]]; then
+            echo "No broken commits found; skipping workaround."
+            exit 0
           fi
-          git replace -f "${BROKEN_SHA}" "${FIX_SHA}"
+
+          echo "Applying git-replace workaround for ${#BROKEN_COMMITS[@]} commit(s): ${BROKEN_COMMITS[*]}"
+
+          for BROKEN_SHA in "${BROKEN_COMMITS[@]}"; do
+            if git show-ref --verify --quiet "refs/replace/${BROKEN_SHA}"; then
+              echo "Replacement already exists for ${BROKEN_SHA}; skipping."
+              continue
+            fi
+
+            echo "Patching commit ${BROKEN_SHA}..."
+
+            # Create a replacement commit with the *same parents* as the broken commit.
+            # IMPORTANT: don't create it as a child of BROKEN_SHA (that would create a cycle).
+            PARENTS_STR="$(git show -s --format=%P "${BROKEN_SHA}")"
+
+            git checkout -q "${BROKEN_SHA}"
+            mkdir -p derive/src
+            printf '%s\n' \
+              '[package]' \
+              'name = "waterui-derive-placeholder"' \
+              'version = "0.0.0"' \
+              'edition = "2021"' \
+              'publish = false' \
+              > derive/Cargo.toml
+            echo "pub fn _placeholder() {}" > derive/src/lib.rs
+            git add derive
+
+            TREE_SHA="$(git write-tree)"
+            PARENT_ARGS=()
+            for p in ${PARENTS_STR}; do
+              PARENT_ARGS+=("-p" "$p")
+            done
+            FIX_SHA="$(printf '%s\n' "chore: add placeholder derive workspace member" | git commit-tree "${TREE_SHA}" "${PARENT_ARGS[@]}")"
+            git reset -q --hard
+
+            if [[ -n "${ORIGINAL_BRANCH}" ]]; then
+              git checkout -q "${ORIGINAL_BRANCH}"
+            else
+              git checkout -q "${ORIGINAL_SHA}"
+            fi
+
+            git replace -f "${BROKEN_SHA}" "${FIX_SHA}"
+          done
       - uses: dtolnay/rust-toolchain@nightly
       - uses: MarcoIeni/release-plz-action@v0.5
         env:
