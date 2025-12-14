@@ -32,6 +32,7 @@ jobs:
           set -euo pipefail
 
           echo "GIT_NO_REPLACE_OBJECTS=${GIT_NO_REPLACE_OBJECTS-<unset>}"
+          unset GIT_NO_REPLACE_OBJECTS
           git --version
           git config core.replaceRefs true
 
@@ -56,9 +57,9 @@ jobs:
             # Only consider commits where `derive` is a workspace member.
             if ! git show "${sha}:Cargo.toml" 2>/dev/null | awk '
               BEGIN { in_members = 0 }
-              /^[[:space:]]*members[[:space:]]*=[[:space:]]*\\[/ { in_members = 1 }
+              /^[[:space:]]*members[[:space:]]*=[[:space:]]*[[]/ { in_members = 1 }
               in_members { print }
-              in_members && /\\]/ { exit }
+              in_members && /]/ { exit }
             ' | grep -q '"derive"'; then
               continue
             fi
