@@ -12,11 +12,11 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: water
+  DIST_VERSION: 0.30.2
 
 jobs:
   check:
@@ -26,6 +26,7 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       version: ${{ steps.check.outputs.version }}
       tag: ${{ steps.check.outputs.tag }}
+      dist_tag: ${{ steps.check.outputs.dist_tag }}
     steps:
       - name: Check release tag
         id: check
@@ -33,8 +34,10 @@ jobs:
           TAG="${{ github.event.release.tag_name || inputs.tag }}"
           if [[ "$TAG" == cli-v* ]]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "version=${TAG#cli-v}" >> $GITHUB_OUTPUT
+            VERSION="${TAG#cli-v}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "dist_tag=waterui-cli-v${VERSION}" >> $GITHUB_OUTPUT
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
@@ -50,28 +53,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
           - target: x86_64-apple-darwin
             os: macos-latest
-            cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
-            cross: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            cross: false
           - target: aarch64-pc-windows-msvc
             os: windows-latest
-            cross: false
 
     steps:
       - uses: actions/checkout@v4
@@ -80,46 +71,58 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Install zig (for linux aarch64)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: goto-bus-stop/setup-zig@v2
+
+      - name: Install cargo-zigbuild (for linux aarch64)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: build-${{ matrix.target }}
+          shared-key: dist-${{ matrix.target }}
 
-      - name: Build binary
-        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }} --package waterui-cli
-        shell: bash
-
-      - name: Prepare artifacts (Unix)
+      - name: Install cargo-dist (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/
-          cd dist && tar -czvf ${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz ${{ env.BINARY_NAME }} && rm ${{ env.BINARY_NAME }}
+          curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.sh" | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          dist --version
 
-      - name: Prepare artifacts (Windows)
+      - name: Install cargo-dist (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" -Destination "dist/"
-          Compress-Archive -Path "dist/${{ env.BINARY_NAME }}.exe" -DestinationPath "dist/${{ env.BINARY_NAME }}-${{ matrix.target }}.zip"
-          Remove-Item "dist/${{ env.BINARY_NAME }}.exe"
+          irm "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.ps1" | iex
+          "$env:USERPROFILE\\.cargo\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          dist --version
+
+      - name: Build artifacts
+        shell: bash
+        run: |
+          dist build \
+            --allow-dirty \
+            --tag "${{ needs.check.outputs.dist_tag }}" \
+            --artifacts=local \
+            --target "${{ matrix.target }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
-          path: dist/*
+          name: artifacts-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            target/distrib/*${{ matrix.target }}*.tar.*
+            target/distrib/*${{ matrix.target }}*.zip*
 
   release:
     name: Upload Release Assets
     needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -129,10 +132,99 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: cd artifacts && sha256sum * > checksums-sha256.txt
+        shell: bash
+        run: |
+          cd artifacts
+          find . -maxdepth 1 -type f \( -name '*.tar.xz' -o -name '*.zip' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > checksums-sha256.txt
 
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
           files: artifacts/*
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: water-rs/homebrew-water
+          token: ${{ secrets.HOMEBREW_PAT }}
+          path: homebrew-water
+
+      - name: Update Homebrew formula
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
+
+          MAC_ARM="waterui-cli-aarch64-apple-darwin.tar.xz"
+          MAC_X86="waterui-cli-x86_64-apple-darwin.tar.xz"
+          LINUX_ARM="waterui-cli-aarch64-unknown-linux-gnu.tar.xz"
+          LINUX_X86="waterui-cli-x86_64-unknown-linux-gnu.tar.xz"
+
+          for f in "$MAC_ARM" "$MAC_X86" "$LINUX_ARM" "$LINUX_X86"; do
+            test -f "artifacts/$f" || { echo "missing artifacts/$f"; exit 1; }
+            test -f "artifacts/$f.sha256" || { echo "missing artifacts/$f.sha256"; exit 1; }
+          done
+
+          MAC_ARM_SHA="$(cut -d' ' -f1 < "artifacts/$MAC_ARM.sha256")"
+          MAC_X86_SHA="$(cut -d' ' -f1 < "artifacts/$MAC_X86.sha256")"
+          LINUX_ARM_SHA="$(cut -d' ' -f1 < "artifacts/$LINUX_ARM.sha256")"
+          LINUX_X86_SHA="$(cut -d' ' -f1 < "artifacts/$LINUX_X86.sha256")"
+
+          mkdir -p homebrew-water/Formula
+          cat > homebrew-water/Formula/water.rb <<EOF
+          class Water < Formula
+            desc "Cross-platform tooling for WaterUI apps"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION}"
+            license any_of: ["Apache-2.0", "MIT"]
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/${MAC_ARM}"
+                sha256 "${MAC_ARM_SHA}"
+              else
+                url "${BASE_URL}/${MAC_X86}"
+                sha256 "${MAC_X86_SHA}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/${LINUX_ARM}"
+                sha256 "${LINUX_ARM_SHA}"
+              else
+                url "${BASE_URL}/${LINUX_X86}"
+                sha256 "${LINUX_X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install Dir["*/water"]
+            end
+          end
+          EOF
+
+      - name: Push Homebrew formula update
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd homebrew-water
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/water.rb
+          if git diff --cached --quiet; then
+            echo "No Homebrew changes to publish."
+            exit 0
+          fi
+          git commit -m "water ${VERSION}"
+          git push
