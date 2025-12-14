@@ -10,6 +10,7 @@ changelog_update = true
 name = "waterui"
 git_release_name = "v{{ version }}"
 git_tag_name = "v{{ version }}"
+publish = false
 
 [[package]]
 name = "waterui-core"
@@ -62,6 +63,7 @@ git_tag_name = "macros-v{{ version }}"
 [[package]]
 name = "waterui-ffi"
 git_tag_name = "ffi-v{{ version }}"
+publish = false
 
 [[package]]
 name = "waterui-cli"
