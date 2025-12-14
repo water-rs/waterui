@@ -11,8 +11,13 @@ members = [
 ]
 exclude = [
   "hydrolysis",
-  "derive"
+  "derive",
+  ".github",
+  ".claude",
+  "*.png",
 ]
+
+
 
 resolver = "2"
 
