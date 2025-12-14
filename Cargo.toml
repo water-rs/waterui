@@ -64,14 +64,14 @@ tracing = "0.1.41"
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.0", path = "utils/url" }
-waterui-color = { version = "0.2.0", path = "utils/color" }
-waterui-text = { version = "0.2.0", path = "components/text" }
+waterui-color = { version = "0.2.1", path = "utils/color" }
+waterui-text = { version = "0.2.1", path = "components/text" }
 waterui-media = { version = "0.2.0", path = "components/media" }
 waterui-form = { version = "0.2.0", path = "components/form" }
 waterui-controls = { version = "0.2.0", path = "components/controls"}
 waterui-graphics = { version = "0.2.0", path = "components/graphics" }
 waterui-ffi = { version = "0.2.0", path = "ffi" }
-waterui-layout = { version = "0.2.0", path = "components/layout" }
+waterui-layout = { version = "0.2.1", path = "components/layout" }
 waterui-navigation = { version = "0.2.0", path = "components/navigation" }
 waterui = { version = "0.2.0", path = "." }
 native-executor = { version = "0.7.0" }
