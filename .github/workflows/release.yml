@@ -19,6 +19,60 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Work around missing workspace member in old commit
+        shell: bash
+        run: |
+          # release-plz checks out historical commits while comparing packages with crates.io.
+          # A previously-published commit references a workspace member at `derive/` that was
+          # never committed to the repository, causing `cargo metadata`/`cargo package` to fail.
+          #
+          # Fix it in CI by using `git replace` to "patch" that historical commit with a new one
+          # that adds a minimal `derive/` crate. This avoids rewriting history while unblocking CI.
+          set -euo pipefail
+
+          BROKEN_SHA="16b2545c9a8120ddef03b26bee4bb469774319cd"
+          if ! git cat-file -e "${BROKEN_SHA}^{commit}" 2>/dev/null; then
+            echo "Commit ${BROKEN_SHA} not found; skipping workaround."
+            exit 0
+          fi
+
+          if ! git show "${BROKEN_SHA}:Cargo.toml" | grep -Eq '^[[:space:]]*"derive"[[:space:]]*,?[[:space:]]*$'; then
+            echo "Commit ${BROKEN_SHA} does not reference derive; skipping workaround."
+            exit 0
+          fi
+
+          if git ls-tree -r --name-only "${BROKEN_SHA}" | grep -qx "derive/Cargo.toml"; then
+            echo "Commit ${BROKEN_SHA} already contains derive/Cargo.toml; skipping workaround."
+            exit 0
+          fi
+
+          echo "Applying git-replace workaround for commit ${BROKEN_SHA}..."
+          ORIGINAL_SHA="$(git rev-parse HEAD)"
+          ORIGINAL_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
+
+          git config user.email "release-plz-ci@users.noreply.github.com"
+          git config user.name "release-plz-ci"
+
+          git checkout -q "${BROKEN_SHA}"
+          mkdir -p derive/src
+          cat > derive/Cargo.toml <<'EOF'
+[package]
+name = "waterui-derive-placeholder"
+version = "0.0.0"
+edition = "2021"
+publish = false
+EOF
+          echo "pub fn _placeholder() {}" > derive/src/lib.rs
+          git add derive
+          git commit -q -m "chore: add placeholder derive workspace member"
+          FIX_SHA="$(git rev-parse HEAD)"
+
+          if [[ -n "${ORIGINAL_BRANCH}" ]]; then
+            git checkout -q "${ORIGINAL_BRANCH}"
+          else
+            git checkout -q "${ORIGINAL_SHA}"
+          fi
+          git replace -f "${BROKEN_SHA}" "${FIX_SHA}"
       - uses: dtolnay/rust-toolchain@nightly
       - uses: MarcoIeni/release-plz-action@v0.5
         env:
