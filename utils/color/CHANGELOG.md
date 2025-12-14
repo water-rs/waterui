@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/water-rs/waterui/compare/color-v0.2.0...color-v0.2.1) - 2025-12-14
+
+### Fixed
+
+- add placeholder crate to work around missing workspace member in old commit; update waterui version in README
+
+### Other
+
+- update licenses to include Apache 2.0 and MIT, and update README badge
+- Release 0.2.0
+
 ## [0.2.0](https://github.com/water-rs/waterui/releases/tag/color-v0.2.0) - 2025-12-13
 
 ### Added
