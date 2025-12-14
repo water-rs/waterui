@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/water-rs/waterui/compare/cli-v0.1.0...cli-v0.1.1) - 2025-12-14
+
+### Fixed
+
+- update waterui version to 0.2 in templates and documentation
+
 ## [0.1.0](https://github.com/water-rs/waterui/releases/tag/cli-v0.1.0) - 2025-12-13
 
 ### Added
