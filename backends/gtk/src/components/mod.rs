@@ -1,5 +1,7 @@
-//! GTK widget implementations for WaterUI components.
+//! GTK widget implementations for `WaterUI` components.
 
+pub mod container;
+pub mod spacer;
 pub mod text;
 
 // Future components:
@@ -9,4 +11,3 @@ pub mod text;
 // pub mod text_field;
 // pub mod progress;
 // pub mod divider;
-// pub mod spacer;
