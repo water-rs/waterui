@@ -66,7 +66,7 @@ pub struct RunOptions {
     /// # Note
     ///
     /// Android do not support environment variables yet.
-    /// iOS/macOS support environment variables via `xcrun simctl launch --env`.
+    /// iOS/macOS support environment variables via `export SIMCTL_CHILD_KEY=Val`
     ///
     /// As a workaround, on Android we pass values as Activity intent extras using the
     /// `waterui.env.<KEY>` namespace, and the app reads them on startup and calls `Os.setenv()`.

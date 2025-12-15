@@ -22,7 +22,7 @@ use crate::{
     apple::platform::ApplePlatform,
     debug,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, Running},
-    utils::{command, run_command, run_command_output},
+    utils::{command, run_command},
 };
 
 /// Start streaming logs from a `WaterUI` app.
@@ -599,19 +599,22 @@ impl Device for AppleSimulator {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        let mut launch_args = vec![
-            "simctl".to_string(),
-            "launch".to_string(),
-            "--terminate-running-process".to_string(),
-        ];
-        for (key, value) in &env_vars {
-            launch_args.push("--env".to_string());
-            launch_args.push(format!("{key}={value}"));
-        }
-        launch_args.push(self.udid.clone());
-        launch_args.push(bundle_id.clone());
+        let mut launch = Command::new("xcrun");
 
-        let launch_output = run_command_output("xcrun", launch_args.iter().map(String::as_str))
+        launch
+            .arg("simctl")
+            .arg("launch")
+            .arg("--terminate-running-process")
+            .arg(&self.udid)
+            .arg(&bundle_id);
+
+        for (key, value) in &env_vars {
+            // Use `SIMCTL_CHILD_KEY` = Value for environment variables
+            launch.env(format!("SIMCTL_CHILD_{key}"), value);
+        }
+
+        let launch_output = launch
+            .output()
             .await
             .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
 
