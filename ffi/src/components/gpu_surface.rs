@@ -11,6 +11,7 @@ use core::ffi::c_void;
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
@@ -93,134 +94,254 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
     width: u32,
     height: u32,
 ) -> *mut WuiGpuSurfaceState {
-    if surface.is_null() || layer.is_null() || width == 0 || height == 0 {
-        tracing::error!(
-            "[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
-            surface,
-            layer,
-            width,
-            height
-        );
-        return core::ptr::null_mut();
-    }
-
-    let wui_surface = unsafe { &mut *surface };
-
-    // Take ownership of the renderer (it's a Box<Box<dyn GpuRenderer>> pointer)
-    // The double-boxing in into_ffi allows us to pass a thin pointer through FFI.
-    if wui_surface.renderer.is_null() {
-        tracing::error!("[GpuSurface] init failed: renderer pointer is null");
-        return core::ptr::null_mut();
-    }
-    let renderer: Box<dyn GpuRenderer> =
-        unsafe { *Box::from_raw(wui_surface.renderer as *mut Box<dyn GpuRenderer>) };
-
-    // Null out the pointer to prevent double-free
-    wui_surface.renderer = core::ptr::null_mut();
-
-    // Create wgpu instance
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
-        ..Default::default()
-    });
-
-    // Create surface from native layer
-    let wgpu_surface = match create_surface_from_layer(&instance, layer) {
-        Some(s) => s,
-        None => {
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if surface.is_null() || layer.is_null() || width == 0 || height == 0 {
             tracing::error!(
-                "[GpuSurface] init failed: could not create wgpu surface from native layer"
+                "[GpuSurface] init failed: invalid parameters (surface={:?}, layer={:?}, width={}, height={})",
+                surface,
+                layer,
+                width,
+                height
             );
             return core::ptr::null_mut();
         }
-    };
 
-    // Request adapter
-    let adapter: wgpu::Adapter =
-        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&wgpu_surface),
-            force_fallback_adapter: false,
-        })) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[GpuSurface] init failed: could not request GPU adapter: {e}");
-                return core::ptr::null_mut();
-            }
+        let wui_surface = unsafe { &mut *surface };
+
+        // Take ownership of the renderer (it's a Box<Box<dyn GpuRenderer>> pointer)
+        // The double-boxing in into_ffi allows us to pass a thin pointer through FFI.
+        if wui_surface.renderer.is_null() {
+            tracing::error!("[GpuSurface] init failed: renderer pointer is null");
+            return core::ptr::null_mut();
+        }
+        let renderer: Box<dyn GpuRenderer> =
+            unsafe { *Box::from_raw(wui_surface.renderer as *mut Box<dyn GpuRenderer>) };
+
+        // Null out the pointer to prevent double-free
+        wui_surface.renderer = core::ptr::null_mut();
+
+        // On Android, a Surface can only be connected to one GPU API at a time. When a wgpu
+        // `Surface` is created with multiple backends enabled, wgpu-core creates per-backend
+        // surfaces internally (e.g. Vulkan + GLES), which can cause the underlying
+        // `ANativeWindow` to become "already connected" and make subsequent configuration fail.
+        //
+        // To avoid this, try one backend at a time on Android.
+        let backend_attempts: Vec<wgpu::Backends> = if cfg!(target_os = "android") {
+            vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
+        } else {
+            vec![wgpu::Backends::all()]
         };
 
-    // Pick limits that are compatible with the selected adapter.
-    //
-    // On downlevel backends (notably GLES 3.0 / WebGL2-class), compute limits can be 0 and
-    // requesting WebGPU-default limits will fail the device request.
-    let adapter_limits = adapter.limits();
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let required_limits = if downlevel_caps.is_webgpu_compliant() {
-        wgpu::Limits::default()
-    } else if downlevel_caps
-        .flags
-        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-    {
-        wgpu::Limits::downlevel_defaults()
-    } else {
-        wgpu::Limits::downlevel_webgl2_defaults()
-    }
-    .using_resolution(adapter_limits.clone())
-    .using_alignment(adapter_limits);
+        for backends in backend_attempts {
+            tracing::info!("[GpuSurface] init: trying backends {backends:?}");
 
-    // Request device and queue with custom error handler to avoid panic on validation errors
-    let (device, queue) =
-        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("WaterUI GpuSurface Device"),
-            required_features: wgpu::Features::empty(),
-            required_limits,
-            memory_hints: wgpu::MemoryHints::Performance,
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            trace: wgpu::Trace::default(),
-        })) {
-            Ok((d, q)) => (d, q),
-            Err(e) => {
-                tracing::error!("[GpuSurface] init failed: could not request GPU device: {e}");
-                return core::ptr::null_mut();
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends,
+                ..Default::default()
+            });
+
+            // Create surface from native layer
+            let Some(wgpu_surface) = create_surface_from_layer(&instance, layer) else {
+                tracing::warn!(
+                    "[GpuSurface] init failed: could not create wgpu surface from native layer"
+                );
+                continue;
+            };
+
+            // Request adapter
+            let adapter: wgpu::Adapter =
+                match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&wgpu_surface),
+                    force_fallback_adapter: false,
+                })) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(
+                            "[GpuSurface] init: could not request GPU adapter for {backends:?}: {e}"
+                        );
+                        continue;
+                    }
+                };
+
+            // Pick limits that are compatible with the selected adapter.
+            //
+            // On downlevel backends (notably GLES 3.0 / WebGL2-class), compute limits can be 0 and
+            // requesting WebGPU-default limits will fail the device request.
+            let adapter_limits = adapter.limits();
+            let downlevel_caps = adapter.get_downlevel_capabilities();
+            let required_limits = if downlevel_caps.is_webgpu_compliant() {
+                wgpu::Limits::default()
+            } else if downlevel_caps
+                .flags
+                .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+            {
+                wgpu::Limits::downlevel_defaults()
+            } else {
+                wgpu::Limits::downlevel_webgl2_defaults()
             }
-        };
+            .using_resolution(adapter_limits.clone())
+            .using_alignment(adapter_limits);
 
-    // Set custom error handler to log validation errors via tracing
-    device.on_uncaptured_error(alloc::sync::Arc::new(|error: wgpu::Error| {
-        tracing::error!("[wgpu] Validation error: {error}");
+            // Request device and queue with custom error handler to avoid panic on validation errors
+            let (device, queue) =
+                match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    label: Some("WaterUI GpuSurface Device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits,
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
+                    trace: wgpu::Trace::default(),
+                })) {
+                    Ok((d, q)) => (d, q),
+                    Err(e) => {
+                        tracing::warn!(
+                            "[GpuSurface] init: could not request GPU device for {backends:?}: {e}"
+                        );
+                        continue;
+                    }
+                };
+
+            // Set custom error handler to log validation errors via tracing
+            device.on_uncaptured_error(alloc::sync::Arc::new(|error: wgpu::Error| {
+                tracing::error!("[wgpu] Validation error: {error}");
+            }));
+
+            // Ensure the queue is idle before configuring the surface.
+            // This avoids wgpu-core rejecting `Surface::configure` when there are in-flight submissions.
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+            let adapter_info = adapter.get_info();
+            tracing::info!("[GpuSurface] adapter: {adapter_info:?}");
+
+            // Android emulator Vulkan is commonly backed by SwiftShader (CPU). We've observed
+            // swapchain configuration/acquire crashing (SIGSEGV) for some formats on this stack.
+            // Prefer falling back to the GL backend in this case.
+            if cfg!(target_os = "android")
+                && backends == wgpu::Backends::VULKAN
+                && adapter_info.device_type == wgpu::DeviceType::Cpu
+            {
+                tracing::warn!(
+                    "[GpuSurface] init: Vulkan adapter is CPU ({:?}); falling back to GL",
+                    adapter_info.name
+                );
+                continue;
+            }
+
+            // Get surface capabilities and configure. Some backends (notably Android/GLES) may report
+            // formats that are not actually configurable on a given device/driver, so we probe with
+            // fallbacks.
+            let surface_caps = wgpu_surface.get_capabilities(&adapter);
+            tracing::info!(
+                "[GpuSurface] surface caps: formats={:?}, present_modes={:?}, alpha_modes={:?}, usages={:?}",
+                surface_caps.formats,
+                surface_caps.present_modes,
+                surface_caps.alpha_modes,
+                surface_caps.usages
+            );
+
+            if surface_caps.formats.is_empty() {
+                tracing::warn!("[GpuSurface] init: surface reported no supported formats");
+                continue;
+            }
+
+            // Prefer FIFO (vsync) for broad compatibility. Some Android drivers/emulators
+            // advertise Mailbox but behave poorly with it.
+            let present_mode = if surface_caps
+                .present_modes
+                .contains(&wgpu::PresentMode::Fifo)
+            {
+                wgpu::PresentMode::Fifo
+            } else {
+                surface_caps
+                    .present_modes
+                    .first()
+                    .copied()
+                    .unwrap_or(wgpu::PresentMode::Fifo)
+            };
+            let alpha_mode = surface_caps
+                .alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
+
+            let mut formats_to_try = Vec::<wgpu::TextureFormat>::new();
+            let preferred = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
+            for fmt in [
+                preferred,
+                preferred.remove_srgb_suffix(),
+                preferred.add_srgb_suffix(),
+            ] {
+                if surface_caps.formats.contains(&fmt) && !formats_to_try.contains(&fmt) {
+                    formats_to_try.push(fmt);
+                }
+            }
+            for fmt in &surface_caps.formats {
+                for candidate in [*fmt, fmt.remove_srgb_suffix(), fmt.add_srgb_suffix()] {
+                    if surface_caps.formats.contains(&candidate)
+                        && !formats_to_try.contains(&candidate)
+                    {
+                        formats_to_try.push(candidate);
+                    }
+                }
+            }
+
+            let mut selected_config: Option<wgpu::SurfaceConfiguration> = None;
+            for format in formats_to_try {
+                tracing::info!("[GpuSurface] trying surface format {format:?}");
+                let config = wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format,
+                    width,
+                    height,
+                    present_mode,
+                    alpha_mode,
+                    view_formats: vec![],
+                    desired_maximum_frame_latency: 2,
+                };
+
+                if try_configure_surface(&wgpu_surface, &device, &config) {
+                    tracing::info!("[GpuSurface] configured surface with format {format:?}");
+                    selected_config = Some(config);
+                    break;
+                }
+
+                tracing::warn!("[GpuSurface] surface configure probe failed for format {format:?}");
+            }
+
+            let Some(config) = selected_config else {
+                tracing::warn!(
+                    "[GpuSurface] init: could not configure surface for presentation using {backends:?}"
+                );
+                continue;
+            };
+
+            // Create state
+            let state = Box::new(WuiGpuSurfaceState {
+                device,
+                queue,
+                surface: wgpu_surface,
+                config,
+                renderer,
+                initialized: false,
+                current_width: width,
+                current_height: height,
+            });
+
+            return Box::into_raw(state);
+        }
+
+        tracing::error!("[GpuSurface] init failed: no compatible backend could configure the surface");
+        core::ptr::null_mut()
     }));
 
-    // Get surface capabilities and configure.
-    // Prefer HDR (Rgba16Float) when supported by the surface.
-    let surface_caps = wgpu_surface.get_capabilities(&adapter);
-    let surface_format = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
-
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: surface_format,
-        width,
-        height,
-        present_mode: wgpu::PresentMode::AutoVsync,
-        alpha_mode: surface_caps.alpha_modes[0],
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-    };
-
-    wgpu_surface.configure(&device, &config);
-
-    // Create state
-    let state = Box::new(WuiGpuSurfaceState {
-        device,
-        queue,
-        surface: wgpu_surface,
-        config,
-        renderer,
-        initialized: false,
-        current_width: width,
-        current_height: height,
-    });
-
-    Box::into_raw(state)
+    match init_result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            tracing::error!("[GpuSurface] init panicked");
+            core::ptr::null_mut()
+        }
+    }
 }
 
 /// Render a single frame.
@@ -247,90 +368,115 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     width: u32,
     height: u32,
 ) -> bool {
-    if state.is_null() || width == 0 || height == 0 {
-        return false;
-    }
-
-    let state = unsafe { &mut *state };
-
-    // Handle resize if needed
-    if width != state.current_width || height != state.current_height {
-        state.config.width = width;
-        state.config.height = height;
-        state.surface.configure(&state.device, &state.config);
-        state.current_width = width;
-        state.current_height = height;
-
-        // Call user's resize callback
-        state.renderer.resize(width, height);
-    }
-
-    // Call setup on first render
-    if !state.initialized {
-        let ctx = GpuContext {
-            device: &state.device,
-            queue: &state.queue,
-            surface_format: state.config.format,
-        };
-        state.renderer.setup(&ctx);
-        state.initialized = true;
-    }
-
-    // Get next frame texture
-    let output = match state.surface.get_current_texture() {
-        Ok(o) => o,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
-            // Reconfigure and try again
-            state.surface.configure(&state.device, &state.config);
-            match state.surface.get_current_texture() {
-                Ok(o) => o,
-                Err(wgpu::SurfaceError::Timeout) => {
-                    // Surface isn't ready yet (common during window move/resize); skip this frame.
-                    return true;
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
-                    );
-                    return false;
-                }
-            }
-        }
-        Err(wgpu::SurfaceError::Timeout) => {
-            // Surface isn't ready yet (common during window move/resize); skip this frame.
-            return true;
-        }
-        Err(e) => {
-            tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() || width == 0 || height == 0 {
             return false;
         }
-    };
 
-    let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("GpuSurface Frame View"),
-        format: Some(state.config.format),
-        ..Default::default()
-    });
+        let state = unsafe { &mut *state };
 
-    // Create frame data
-    let frame = GpuFrame {
-        device: &state.device,
-        queue: &state.queue,
-        texture: &output.texture,
-        view,
-        format: state.config.format,
-        width,
-        height,
-    };
+        // Handle resize if needed
+        if width != state.current_width || height != state.current_height {
+            // Ensure the queue is idle before reconfiguring the surface.
+            let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
 
-    // Call user's render callback
-    state.renderer.render(&frame);
+            state.config.width = width;
+            state.config.height = height;
 
-    // Present
-    output.present();
+            if !try_configure_surface(&state.surface, &state.device, &state.config) {
+                tracing::warn!("[GpuSurface] resize reconfigure failed ({width}x{height})");
+                return false;
+            }
+            state.current_width = width;
+            state.current_height = height;
 
-    true
+            // Call user's resize callback
+            state.renderer.resize(width, height);
+        }
+
+        // Call setup on first render
+        if !state.initialized {
+            let ctx = GpuContext {
+                device: &state.device,
+                queue: &state.queue,
+                surface_format: state.config.format,
+            };
+            state.renderer.setup(&ctx);
+            state.initialized = true;
+        }
+
+        // Get next frame texture (guard against wgpu panics so we don't abort across the FFI boundary).
+        let output = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.surface.get_current_texture()
+        })) {
+            Ok(Ok(o)) => o,
+            Ok(Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+                tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
+                if !try_configure_surface(&state.surface, &state.device, &state.config) {
+                    tracing::warn!("[GpuSurface] reconfigure failed after surface lost/outdated");
+                    return false;
+                }
+                match state.surface.get_current_texture() {
+                    Ok(o) => o,
+                    Err(wgpu::SurfaceError::Timeout) => {
+                        // Surface isn't ready yet (common during window move/resize); skip this frame.
+                        return true;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
+                        );
+                        return false;
+                    }
+                }
+            }
+            Ok(Err(wgpu::SurfaceError::Timeout)) => {
+                // Surface isn't ready yet (common during window move/resize); skip this frame.
+                return true;
+            }
+            Ok(Err(e)) => {
+                tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
+                return false;
+            }
+            Err(_) => {
+                tracing::error!("[GpuSurface] render panicked while acquiring swapchain texture");
+                return false;
+            }
+        };
+
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("GpuSurface Frame View"),
+            format: Some(state.config.format),
+            ..Default::default()
+        });
+
+        // Create frame data
+        let frame = GpuFrame {
+            device: &state.device,
+            queue: &state.queue,
+            texture: &output.texture,
+            view,
+            format: state.config.format,
+            width,
+            height,
+        };
+
+        // Call user's render callback
+        state.renderer.render(&frame);
+
+        // Present
+        output.present();
+
+        true
+    }));
+
+    match render_result {
+        Ok(ok) => ok,
+        Err(_) => {
+            tracing::error!("[GpuSurface] render panicked");
+            false
+        }
+    }
 }
 
 /// Clean up GPU resources.
@@ -409,4 +555,39 @@ fn create_surface_from_layer(
 ) -> Option<wgpu::Surface<'static>> {
     // Unsupported platform
     None
+}
+
+fn try_configure_surface(
+    surface: &wgpu::Surface<'static>,
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> bool {
+    // Keep the device/queue idle before attempting to (re)configure.
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+    // `Surface::configure` doesn't return a `Result`, so use error scopes to detect failures.
+    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    device.push_error_scope(wgpu::ErrorFilter::Internal);
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let configure_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        surface.configure(device, config);
+    }))
+    .is_err();
+
+    let validation_err = pollster::block_on(device.pop_error_scope());
+    let internal_err = pollster::block_on(device.pop_error_scope());
+    let oom_err = pollster::block_on(device.pop_error_scope());
+
+    if configure_panicked {
+        tracing::warn!("[GpuSurface] Surface::configure panicked");
+        return false;
+    }
+
+    if let Some(err) = validation_err.or(internal_err).or(oom_err) {
+        tracing::warn!("[GpuSurface] Surface::configure failed: {err}");
+        return false;
+    }
+
+    true
 }
