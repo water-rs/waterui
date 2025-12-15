@@ -149,12 +149,31 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             }
         };
 
+    // Pick limits that are compatible with the selected adapter.
+    //
+    // On downlevel backends (notably GLES 3.0 / WebGL2-class), compute limits can be 0 and
+    // requesting WebGPU-default limits will fail the device request.
+    let adapter_limits = adapter.limits();
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let required_limits = if downlevel_caps.is_webgpu_compliant() {
+        wgpu::Limits::default()
+    } else if downlevel_caps
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    {
+        wgpu::Limits::downlevel_defaults()
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    }
+    .using_resolution(adapter_limits.clone())
+    .using_alignment(adapter_limits);
+
     // Request device and queue with custom error handler to avoid panic on validation errors
     let (device, queue) =
         match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("WaterUI GpuSurface Device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             memory_hints: wgpu::MemoryHints::Performance,
             experimental_features: wgpu::ExperimentalFeatures::default(),
             trace: wgpu::Trace::default(),
