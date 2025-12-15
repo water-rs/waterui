@@ -4,12 +4,20 @@ use gtk4::prelude::*;
 use gtk4::Widget;
 use waterui_backend_core::ViewDispatcher;
 use waterui_core::{AnyView, Environment, Native, View};
+use waterui::component::progress::ProgressConfig;
+use waterui::prelude::Divider;
+use waterui_controls::button::ButtonConfig;
+use waterui_controls::slider::SliderConfig;
+use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::toggle::ToggleConfig;
 use waterui_layout::container::FixedContainer;
+use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
+use waterui_navigation::tab::Tabs;
+use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
 
-use crate::components::spacer::render_spacer;
-use crate::components::text::render_text;
+use crate::component::GtkComponent;
 
 /// Context passed to component renderers.
 #[derive(Debug, Clone)]
@@ -40,7 +48,7 @@ impl RenderContext {
     /// # Safety
     ///
     /// The caller must ensure the renderer pointer is valid.
-    unsafe fn renderer(&self) -> Option<&mut GtkRenderer> {
+    pub(crate) unsafe fn renderer(&self) -> Option<&mut GtkRenderer> {
         if self.renderer_ptr.is_null() {
             None
         } else {
@@ -80,32 +88,38 @@ impl GtkRenderer {
     }
 
     fn register_components(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
-        // Text component
-        dispatcher.register::<Native<TextConfig>>(|_state, _ctx, native, env| {
-            render_text(native.into_inner(), env)
+        // Register Native<T> wrapped components
+        Self::register_native::<TextConfig>(dispatcher);
+        Self::register_native::<Spacer>(dispatcher);
+        Self::register_native::<FixedContainer>(dispatcher);
+        Self::register_native::<ButtonConfig>(dispatcher);
+        Self::register_native::<ToggleConfig>(dispatcher);
+        Self::register_native::<SliderConfig>(dispatcher);
+        Self::register_native::<TextFieldConfig>(dispatcher);
+        Self::register_native::<ProgressConfig>(dispatcher);
+        Self::register_native::<ScrollView>(dispatcher);
+        Self::register_native::<Tabs>(dispatcher);
+
+        // Register views that implement View directly
+        Self::register::<Divider>(dispatcher);
+        Self::register::<NavigationView>(dispatcher);
+        Self::register::<NavigationStack<(), ()>>(dispatcher);
+    }
+
+    /// Registers a `Native<T>` wrapped component with the dispatcher.
+    fn register_native<T: 'static>(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>)
+    where
+        Native<T>: GtkComponent,
+    {
+        Self::register::<Native<T>>(dispatcher);
+    }
+
+    /// Registers a `GtkComponent` view type with the dispatcher.
+    fn register<V: GtkComponent>(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
+        dispatcher.register::<V>(|_state, ctx, view, env| {
+            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            view.render(env, renderer)
         });
-
-        // Spacer component
-        dispatcher.register::<Native<Spacer>>(|_state, _ctx, native, env| {
-            render_spacer(native.into_inner(), env)
-        });
-
-        // FixedContainer - layout container
-        dispatcher.register::<Native<FixedContainer>>(|_state, ctx, native, env| {
-            // SAFETY: We created the context with a valid renderer pointer
-            let renderer = unsafe { ctx.renderer() }
-                .expect("renderer must be set in context for container rendering");
-
-            crate::components::container::render_fixed_container(native.into_inner(), env, renderer)
-        });
-
-        // TODO: Register more components
-        // - Button
-        // - Toggle
-        // - Slider
-        // - TextField
-        // - Progress
-        // - Divider
     }
 }
 
