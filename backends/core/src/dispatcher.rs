@@ -1,4 +1,4 @@
-//! View dispatching infrastructure for WaterUI backends.
+//! View dispatching infrastructure for `WaterUI` backends.
 //!
 //! The [`ViewDispatcher`] maps [`AnyView`](waterui_core::AnyView) instances to
 //! backend-specific handlers based on their concrete types.
@@ -83,7 +83,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
     }
 
     /// Returns a mutable reference to the dispatcher's state.
-    pub fn state_mut(&mut self) -> &mut T {
+    pub const fn state_mut(&mut self) -> &mut T {
         &mut self.state
     }
 
@@ -93,7 +93,7 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
     /// - `&mut T`: Mutable reference to the dispatcher's state
     /// - `C`: Context from the dispatch call
     /// - `V`: The concrete view type (after downcasting)
-    /// - `&Environment`: The WaterUI environment
+    /// - `&Environment`: The `WaterUI` environment
     ///
     /// # Panics
     ///
