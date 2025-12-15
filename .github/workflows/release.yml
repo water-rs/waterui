@@ -176,9 +176,64 @@ jobs:
             git tag --points-at "${sha}" | grep '^cli-v' | sort -V | tail -n 1 || true
           }
 
+          echo "Event SHA: ${EVENT_SHA}"
+          echo "Main  SHA: ${MAIN_SHA}"
+
           CLI_TAG="$(find_cli_tag "${EVENT_SHA}")"
+          if [[ -n "${CLI_TAG}" ]]; then
+            echo "Found cli tag on event SHA: ${CLI_TAG}"
+          fi
+
           if [[ -z "${CLI_TAG}" && "${MAIN_SHA}" != "${EVENT_SHA}" ]]; then
             CLI_TAG="$(find_cli_tag "${MAIN_SHA}")"
+            if [[ -n "${CLI_TAG}" ]]; then
+              echo "Found cli tag on main SHA: ${CLI_TAG}"
+            fi
+          fi
+
+          # If the workflow_run SHA (or main SHA) is a merge commit, release-plz might tag the
+          # merged commit (typically the 2nd parent) instead of the merge commit itself.
+          if [[ -z "${CLI_TAG}" ]]; then
+            CANDIDATE_TAGS=()
+
+            check_merge_parents() {
+              local sha="$1"
+              local parents
+              parents="$(git show -s --format=%P "${sha}" || true)"
+              if [[ -z "${parents}" ]]; then
+                return 0
+              fi
+
+              # Only consider non-first parents to avoid re-triggering on previous main commits.
+              local parent_count
+              parent_count="$(wc -w <<<"${parents}" | tr -d ' ')"
+              if [[ "${parent_count}" -lt 2 ]]; then
+                return 0
+              fi
+
+              local non_first
+              non_first="${parents#* }"
+              echo "SHA ${sha} is a merge commit; checking non-first parent(s): ${non_first}"
+
+              local p tag
+              for p in ${non_first}; do
+                tag="$(find_cli_tag "${p}")"
+                if [[ -n "${tag}" ]]; then
+                  echo "Found cli tag on merge parent ${p}: ${tag}"
+                  CANDIDATE_TAGS+=("${tag}")
+                fi
+              done
+            }
+
+            check_merge_parents "${EVENT_SHA}"
+            if [[ "${MAIN_SHA}" != "${EVENT_SHA}" ]]; then
+              check_merge_parents "${MAIN_SHA}"
+            fi
+
+            if [[ ${#CANDIDATE_TAGS[@]} -gt 0 ]]; then
+              CLI_TAG="$(printf '%s\n' "${CANDIDATE_TAGS[@]}" | sort -V | tail -n 1)"
+              echo "Selected cli tag from merge parent(s): ${CLI_TAG}"
+            fi
           fi
 
           echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
