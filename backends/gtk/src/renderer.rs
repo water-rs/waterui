@@ -16,6 +16,8 @@ use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
+#[cfg(feature = "gpu")]
+use waterui_graphics::gpu_surface::GpuSurface;
 
 use crate::component::GtkComponent;
 
@@ -99,6 +101,10 @@ impl GtkRenderer {
         Self::register_native::<ProgressConfig>(dispatcher);
         Self::register_native::<ScrollView>(dispatcher);
         Self::register_native::<Tabs>(dispatcher);
+
+        // Register GPU surface (requires "gpu" feature)
+        #[cfg(feature = "gpu")]
+        Self::register_native::<GpuSurface>(dispatcher);
 
         // Register views that implement View directly
         Self::register::<Divider>(dispatcher);
