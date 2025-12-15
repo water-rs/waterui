@@ -7,9 +7,11 @@ rust-version.workspace = true
 description = "GTK4 backend for WaterUI"
 
 [dependencies]
+waterui.workspace = true
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
 waterui-layout.workspace = true
+waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
 nami.workspace = true

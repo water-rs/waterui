@@ -1,13 +1,14 @@
 //! GTK widget implementations for `WaterUI` components.
 
+pub mod button;
 pub mod container;
+pub mod divider;
+pub mod navigation;
+pub mod progress;
+pub mod scroll_view;
+pub mod slider;
 pub mod spacer;
+pub mod tabs;
 pub mod text;
-
-// Future components:
-// pub mod button;
-// pub mod toggle;
-// pub mod slider;
-// pub mod text_field;
-// pub mod progress;
-// pub mod divider;
+pub mod text_field;
+pub mod toggle;
