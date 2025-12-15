@@ -31,6 +31,7 @@ pub fn set_std_output(enabled: bool) {
     STD_OUTPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
+// Warn: You will lose stdout/stderr piping if you modify this function!
 pub(crate) fn command(command: &mut Command) -> &mut Command {
     command
         .kill_on_drop(true)
