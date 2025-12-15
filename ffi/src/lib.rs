@@ -150,6 +150,7 @@ pub unsafe fn __init() {
 
 #[cfg(target_os = "android")]
 pub unsafe fn __android_init(vm: *mut core::ffi::c_void) -> i32 {
+    tracing::debug!("Initializing Android context for WaterUI FFI");
     unsafe {
         ndk_context::initialize_android_context(vm, core::ptr::null_mut());
     }
