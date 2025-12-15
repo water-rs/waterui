@@ -8,6 +8,8 @@ members = [
     "macros",
     "cli",
     "examples/*",
+    "backends/core",
+    "backends/gtk",
 ]
 exclude = [
   "hydrolysis",
@@ -78,6 +80,8 @@ waterui-graphics = { version = "0.2.1", path = "components/graphics" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.2", path = "components/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/navigation" }
+waterui-backend-core = { version = "0.1.0", path = "backends/core" }
+waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
@@ -90,6 +94,9 @@ skyzen = { version = "0.1.0", default-features = false }
 pastey = "0.2.0"
 tracing-panic = "0.1.2"
 robius-open = { version = "0.1", default-features = false }
+gtk4 = "0.9"
+glib = "0.20"
+cairo-rs = { version = "0.20", features = ["v1_18"] }
 
 
 [dependencies]
