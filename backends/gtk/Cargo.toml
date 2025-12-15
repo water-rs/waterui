@@ -14,12 +14,33 @@ waterui-layout.workspace = true
 waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
+waterui-graphics = { workspace = true, features = ["wgpu"], optional = true }
 nami.workspace = true
 tracing.workspace = true
 
 gtk4.workspace = true
 glib.workspace = true
 cairo-rs.workspace = true
+
+# GPU surface dependencies
+wgpu = { workspace = true, optional = true }
+pollster = { version = "0.4", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
+# Platform-specific GDK backends for GPU surface
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+gdk4-x11 = { version = "0.9", optional = true }
+gdk4-wayland = { version = "0.9", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gdk4-macos = { version = "0.9", optional = true }
+
+[features]
+default = []
+gpu = ["dep:waterui-graphics", "dep:wgpu", "dep:pollster", "dep:raw-window-handle"]
+x11 = ["gpu", "dep:gdk4-x11"]
+wayland = ["gpu", "dep:gdk4-wayland"]
+macos = ["gpu", "dep:gdk4-macos"]
 
 [lints]
 workspace = true
