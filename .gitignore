@@ -7,3 +7,4 @@ apple/build
 web/pkg
 .build
 Cargo.lock
+*.log
