@@ -1,6 +1,6 @@
-//! Core backend infrastructure for WaterUI.
+//! Core backend infrastructure for `WaterUI`.
 //!
-//! This crate provides shared infrastructure used by WaterUI backends:
+//! This crate provides shared infrastructure used by `WaterUI` backends:
 //!
 //! - [`ViewDispatcher`]: Type-based view dispatch for routing views to handlers
 //!
