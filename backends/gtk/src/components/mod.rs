@@ -3,6 +3,8 @@
 pub mod button;
 pub mod container;
 pub mod divider;
+#[cfg(feature = "gpu")]
+pub mod gpu_surface;
 pub mod navigation;
 pub mod progress;
 pub mod scroll_view;
