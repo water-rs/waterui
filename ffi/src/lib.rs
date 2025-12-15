@@ -94,6 +94,15 @@ macro_rules! export {
 
                 $crate::IntoFFI::into_ffi(app)
             }
+
+            #[cfg(target_os = "android")]
+            #[unsafe(no_mangle)]
+            extern "system" fn JNI_OnLoad(
+                vm: *mut core::ffi::c_void,
+                _reserved: *mut core::ffi::c_void,
+            ) -> i32 {
+                unsafe { $crate::__android_init(vm) }
+            }
         };
     };
 }
@@ -137,6 +146,15 @@ pub unsafe fn __init() {
 
     init_global_executor(native_executor::NativeExecutor::new());
     init_local_executor(native_executor::NativeExecutor::new());
+}
+
+#[cfg(target_os = "android")]
+pub unsafe fn __android_init(vm: *mut core::ffi::c_void) -> i32 {
+    unsafe {
+        ndk_context::initialize_android_context(vm, core::ptr::null_mut());
+    }
+
+    jni::sys::JNI_VERSION_1_6
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
