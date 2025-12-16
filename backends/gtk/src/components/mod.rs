@@ -8,9 +8,13 @@ pub mod dynamic;
 #[cfg(feature = "gpu")]
 pub mod gpu_surface;
 pub mod lazy_container;
+pub mod list;
 pub mod navigation;
+pub mod photo;
+pub mod picker;
 pub mod progress;
 pub mod scroll_view;
+pub mod secure_field;
 pub mod slider;
 pub mod spacer;
 pub mod stepper;

@@ -7,6 +7,7 @@ use waterui_core::dynamic::Dynamic;
 use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Native, View};
+use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::prelude::Divider;
 use waterui_controls::button::ButtonConfig;
@@ -14,10 +15,13 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_form::picker::PickerConfig;
+use waterui_form::secure::SecureFieldConfig;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::padding::Padding;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
+use waterui_media::photo::PhotoConfig;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
@@ -111,6 +115,10 @@ impl GtkRenderer {
         Self::register_native::<ScrollView>(dispatcher);
         Self::register_native::<Tabs>(dispatcher);
         Self::register_native::<Color>(dispatcher);
+        Self::register_native::<ListConfig>(dispatcher);
+        Self::register_native::<PhotoConfig>(dispatcher);
+        Self::register_native::<SecureFieldConfig>(dispatcher);
+        Self::register_native::<PickerConfig>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
@@ -208,18 +216,68 @@ impl GtkRenderer {
 
         // Metadata<Background> - apply background color/style and render content
         dispatcher.register::<Metadata<Background>>(|_state, ctx, metadata, env| {
+            use nami::Signal;
+            use waterui::background::Background;
+            use waterui_core::resolve::Resolvable;
+
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
-            // TODO: Apply background styling to widget
-            // For now, just return the widget without styling
+
+            // Apply background color if it's a color background
+            if let Background::Color(color_signal) = metadata.value {
+                let color = color_signal.get();
+                // Resolve the color to get RGB values
+                let resolved = color.resolve(env).get();
+                let srgb = resolved.to_srgb();
+
+                // Create inline CSS for background color
+                let css = format!(
+                    "* {{ background-color: rgba({}, {}, {}, {}); }}",
+                    (srgb.red * 255.0) as u8,
+                    (srgb.green * 255.0) as u8,
+                    (srgb.blue * 255.0) as u8,
+                    resolved.opacity
+                );
+
+                let provider = gtk4::CssProvider::new();
+                provider.load_from_data(&css);
+
+                widget
+                    .style_context()
+                    .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            }
+
             widget
         });
 
         // Metadata<ForegroundColor> - apply foreground color and render content
         dispatcher.register::<Metadata<ForegroundColor>>(|_state, ctx, metadata, env| {
+            use nami::Signal;
+            use waterui_core::resolve::Resolvable;
+
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
-            // TODO: Apply foreground color styling
+
+            // Apply foreground color using CSS
+            let color = metadata.value.color.get();
+            let resolved = color.resolve(env).get();
+            let srgb = resolved.to_srgb();
+
+            let css = format!(
+                "* {{ color: rgba({}, {}, {}, {}); }}",
+                (srgb.red * 255.0) as u8,
+                (srgb.green * 255.0) as u8,
+                (srgb.blue * 255.0) as u8,
+                resolved.opacity
+            );
+
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_data(&css);
+
+            widget
+                .style_context()
+                .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
             widget
         });
 
