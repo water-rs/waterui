@@ -15,19 +15,9 @@ categories.workspace = true
 waterui-core.workspace = true
 tracing.workspace = true
 nami.workspace = true
-tiny-skia = { workspace = true, optional = true }
-vello = { workspace = true, optional = true }
-wgpu = { workspace = true, optional = true }
 waterui-color.workspace = true
 waterui-text.workspace = true
 waterui-layout.workspace = true
-waterui.workspace = true
 waterui-controls.workspace = true
 
 [features]
-default = ["cpu"]
-cpu = ["dep:tiny-skia"]
-gpu = ["dep:vello", "dep:wgpu"]
-
-[lints]
-rust.dead_code="allow"
