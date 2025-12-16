@@ -18,6 +18,12 @@ impl GtkComponent for Native<ScrollView> {
         scrolled_window.set_hexpand(true);
         scrolled_window.set_vexpand(true);
 
+        // Reset any default margins to ensure it fills the window
+        scrolled_window.set_margin_top(0);
+        scrolled_window.set_margin_bottom(0);
+        scrolled_window.set_margin_start(0);
+        scrolled_window.set_margin_end(0);
+
         // Set scrollbar policies based on axis
         let (h_policy, v_policy) = match axis {
             Axis::Horizontal => (gtk4::PolicyType::Automatic, gtk4::PolicyType::Never),
