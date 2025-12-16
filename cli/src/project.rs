@@ -141,10 +141,10 @@ impl Project {
         self.manifest.backends.android()
     }
 
-    /// Get the GTK backend configuration if available.
+    /// Get the GTK4 backend configuration if available.
     #[must_use]
-    pub const fn gtk_backend(&self) -> Option<&crate::gtk::backend::GtkBackend> {
-        self.manifest.backends.gtk()
+    pub const fn gtk4_backend(&self) -> Option<&crate::gtk4::backend::Gtk4Backend> {
+        self.manifest.backends.gtk4()
     }
 
     /// Get the manifest of the project.
@@ -178,7 +178,7 @@ impl Project {
     /// - Rust target directory
     /// - Apple build artifacts (if backend configured)
     /// - Android build artifacts (if backend configured)
-    /// - GTK build artifacts (if backend configured)
+    /// - GTK4 build artifacts (if backend configured)
     ///
     /// # Errors
     ///
@@ -186,7 +186,7 @@ impl Project {
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
             android::platform::clean_android, apple::platform::clean_apple,
-            gtk::platform::clean_gtk,
+            gtk4::platform::clean_gtk4,
         };
 
         // Clean Rust target directory
@@ -205,9 +205,9 @@ impl Project {
             clean_android(self).await?;
         }
 
-        // Clean GTK backend if configured
-        if self.gtk_backend().is_some() {
-            clean_gtk(self).await?;
+        // Clean GTK4 backend if configured
+        if self.gtk4_backend().is_some() {
+            clean_gtk4(self).await?;
         }
 
         Ok(())
@@ -468,17 +468,17 @@ impl Project {
         Ok(())
     }
 
-    /// Initialize the GTK backend for an existing project.
+    /// Initialize the GTK4 backend for an existing project.
     ///
-    /// Creates necessary files/folders for the GTK backend under `backend_path::<GtkBackend>()`.
+    /// Creates necessary files/folders for the GTK4 backend under `backend_path::<Gtk4Backend>()`.
     ///
     /// # Errors
     /// Returns an error if scaffolding fails.
-    pub async fn init_gtk_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
-        use crate::{backend::Backend, gtk::backend::GtkBackend};
+    pub async fn init_gtk4_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::{backend::Backend, gtk4::backend::Gtk4Backend};
 
-        let backend = GtkBackend::init(self).await?;
-        self.manifest.backends.set_gtk(backend);
+        let backend = Gtk4Backend::init(self).await?;
+        self.manifest.backends.set_gtk4(backend);
         self.manifest
             .save(&self.root)
             .await

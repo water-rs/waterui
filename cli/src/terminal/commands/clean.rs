@@ -9,28 +9,28 @@ use crate::shell;
 use crate::{header, success};
 use waterui_cli::{
     android::platform::clean_android, apple::platform::clean_apple,
-    gtk::platform::clean_gtk, project::Project,
+    gtk4::platform::clean_gtk4, project::Project,
 };
 
-/// Target platform for cleaning.
+/// Target backend for cleaning.
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum TargetPlatform {
-    /// iOS/macOS (Apple platforms).
+pub enum TargetBackend {
+    /// Apple backend (iOS/macOS).
     Apple,
-    /// Android.
+    /// Android backend.
     Android,
-    /// GTK (Linux/macOS/Windows).
-    Gtk,
-    /// All platforms.
+    /// GTK4 backend (Linux/macOS/Windows).
+    Gtk4,
+    /// All backends.
     All,
 }
 
 /// Arguments for the clean command.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Target platform to clean (defaults to all).
+    /// Target backend to clean (defaults to all).
     #[arg(short, long, value_enum, default_value = "all")]
-    platform: TargetPlatform,
+    backend: TargetBackend,
 
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
@@ -47,8 +47,8 @@ pub async fn run(args: Args) -> Result<()> {
 
     header!("Cleaning build artifacts...");
 
-    match args.platform {
-        TargetPlatform::All => {
+    match args.backend {
+        TargetBackend::All => {
             let spinner = shell::spinner("Cleaning all build artifacts...");
             project.clean_all().await?;
             if let Some(pb) = spinner {
@@ -56,7 +56,7 @@ pub async fn run(args: Args) -> Result<()> {
             }
             success!("Cleaned all build artifacts");
         }
-        TargetPlatform::Apple => {
+        TargetBackend::Apple => {
             let spinner = shell::spinner("Cleaning Apple build artifacts...");
             clean_apple(&project).await?;
             if let Some(pb) = spinner {
@@ -64,7 +64,7 @@ pub async fn run(args: Args) -> Result<()> {
             }
             success!("Cleaned Apple build artifacts");
         }
-        TargetPlatform::Android => {
+        TargetBackend::Android => {
             let spinner = shell::spinner("Cleaning Android build artifacts...");
             clean_android(&project).await?;
             if let Some(pb) = spinner {
@@ -72,13 +72,13 @@ pub async fn run(args: Args) -> Result<()> {
             }
             success!("Cleaned Android build artifacts");
         }
-        TargetPlatform::Gtk => {
-            let spinner = shell::spinner("Cleaning GTK build artifacts...");
-            clean_gtk(&project).await?;
+        TargetBackend::Gtk4 => {
+            let spinner = shell::spinner("Cleaning GTK4 build artifacts...");
+            clean_gtk4(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned GTK build artifacts");
+            success!("Cleaned GTK4 build artifacts");
         }
     }
 
