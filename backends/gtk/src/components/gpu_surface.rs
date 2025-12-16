@@ -1,16 +1,12 @@
 //! GTK4 GpuSurface component implementation.
 //!
 //! This module provides GPU-accelerated rendering for GTK using wgpu.
-//! The implementation uses a `gtk4::GLArea` widget and manages the wgpu
-//! surface lifecycle (setup, render, resize, cleanup).
 //!
 //! # Platform Support
 //!
-//! - **Linux X11**: Enable with `x11` feature
-//! - **Linux Wayland**: Enable with `wayland` feature
-//! - **macOS**: Enable with `macos` feature
-//!
-//! At least one platform feature must be enabled for GPU rendering to work.
+//! - **Linux X11**: Enable with `x11` feature - Full GPU rendering support
+//! - **Linux Wayland**: Enable with `wayland` feature - Full GPU rendering support
+//! - **macOS**: Placeholder only (wgpu GL backend requires ANGLE which is not bundled)
 
 use gtk4::prelude::*;
 use gtk4::Widget;
@@ -20,459 +16,437 @@ use waterui_graphics::gpu_surface::GpuSurface;
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 
-// The code below is kept for future reference when GPU rendering is properly implemented.
-// Currently, GPU rendering via wgpu is not working due to platform-specific issues.
+// macOS: Show placeholder (wgpu GL requires ANGLE)
+#[cfg(target_os = "macos")]
+impl GtkComponent for Native<GpuSurface> {
+    /// Renders a placeholder for `GpuSurface` on macOS.
+    ///
+    /// wgpu's GL backend requires ANGLE on macOS, which is not typically installed.
+    /// A placeholder label is shown instead.
+    fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
+        tracing::warn!(
+            "[GpuSurface] GPU rendering not supported on macOS GTK4 (requires ANGLE). Showing placeholder."
+        );
 
-#[allow(dead_code)]
-use waterui_graphics::gpu_surface::{
-    preferred_surface_format, GpuContext, GpuFrame, GpuRenderer,
-};
-
-/// Internal state for a GPU surface widget.
-#[allow(dead_code)]
-struct GpuSurfaceState {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    renderer: Box<dyn GpuRenderer>,
-    initialized: bool,
-    current_width: u32,
-    current_height: u32,
+        let label = gtk4::Label::new(Some("GpuSurface: Not supported on macOS GTK4"));
+        label.set_hexpand(true);
+        label.set_vexpand(true);
+        label.add_css_class("dim-label");
+        label.upcast()
+    }
 }
 
-#[allow(dead_code)]
-impl GpuSurfaceState {
-    /// Render a frame.
-    fn render(&mut self) {
-        let width = self.current_width;
-        let height = self.current_height;
+// Linux: Full GPU rendering with GLArea + wgpu GLES
+#[cfg(not(target_os = "macos"))]
+mod linux_impl {
+    use std::cell::RefCell;
+    use std::num::NonZeroU32;
+    use std::rc::Rc;
 
-        if width == 0 || height == 0 {
-            return;
-        }
+    use glow::HasContext;
+    use gtk4::prelude::*;
+    use gtk4::Widget;
+    use waterui_core::{Environment, Native};
+    use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
-        // Call setup on first render
-        if !self.initialized {
-            let ctx = GpuContext {
-                device: &self.device,
-                queue: &self.queue,
-                surface_format: self.config.format,
-            };
-            self.renderer.setup(&ctx);
-            self.initialized = true;
-        }
+    use crate::component::GtkComponent;
+    use crate::renderer::GtkRenderer;
 
-        // Get next frame texture
-        let output = match self.surface.get_current_texture() {
-            Ok(o) => o,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
-                self.surface.configure(&self.device, &self.config);
-                match self.surface.get_current_texture() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        tracing::error!(
-                            "[GpuSurface] render failed: could not get texture after reconfigure: {e}"
-                        );
-                        return;
-                    }
+    /// Internal state for a GPU surface widget using GLES backend.
+    struct GlesGpuState {
+        // wgpu resources (using GLES backend)
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+
+        // External framebuffer texture (bound to GLArea's FBO)
+        framebuffer_texture: wgpu::Texture,
+        framebuffer_view: wgpu::TextureView,
+        format: wgpu::TextureFormat,
+
+        // glow context for GL operations
+        gl: glow::Context,
+
+        // Current framebuffer ID (to detect changes)
+        current_fbo_id: u32,
+
+        // User renderer
+        renderer: Box<dyn GpuRenderer>,
+        initialized: bool,
+
+        // Dimensions
+        width: u32,
+        height: u32,
+    }
+
+    impl GlesGpuState {
+        /// Check if framebuffer changed and recreate texture wrapper if needed.
+        fn update_framebuffer(&mut self) {
+            let fbo_id =
+                unsafe { self.gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32 };
+
+            // If framebuffer changed, recreate texture wrapper
+            if fbo_id != self.current_fbo_id && fbo_id != 0 {
+                tracing::debug!(
+                    "[GpuSurface] Framebuffer changed: {} -> {}",
+                    self.current_fbo_id,
+                    fbo_id
+                );
+                self.current_fbo_id = fbo_id;
+
+                // Recreate texture from new framebuffer
+                if let Ok(new_texture) = create_texture_from_external_framebuffer(
+                    &self.device,
+                    glow::NativeFramebuffer(NonZeroU32::new(fbo_id).unwrap()),
+                    self.width,
+                    self.height,
+                    self.format,
+                ) {
+                    self.framebuffer_texture = new_texture;
+                    self.framebuffer_view = self
+                        .framebuffer_texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
                 }
             }
-            Err(wgpu::SurfaceError::Timeout) => {
-                // Surface isn't ready yet; skip this frame.
+        }
+
+        /// Render a frame.
+        fn render_frame(&mut self) {
+            // Setup renderer on first frame
+            if !self.initialized {
+                tracing::debug!(
+                    "[GpuSurface] Setting up renderer ({}x{})",
+                    self.width,
+                    self.height
+                );
+                let ctx = GpuContext {
+                    device: &self.device,
+                    queue: &self.queue,
+                    surface_format: self.format,
+                };
+                self.renderer.setup(&ctx);
+                self.initialized = true;
+                tracing::debug!("[GpuSurface] Renderer setup complete");
+            }
+
+            // Create frame data pointing to GTK's framebuffer
+            let frame = GpuFrame {
+                device: &self.device,
+                queue: &self.queue,
+                texture: &self.framebuffer_texture,
+                view: self.framebuffer_view.clone(),
+                format: self.format,
+                width: self.width,
+                height: self.height,
+            };
+
+            // User's render callback - renders directly to GTK's FBO
+            self.renderer.render(&frame);
+        }
+
+        /// Handle resize.
+        fn resize(&mut self, width: u32, height: u32) {
+            if width == 0 || height == 0 || (width == self.width && height == self.height) {
                 return;
             }
-            Err(e) => {
-                tracing::error!("[GpuSurface] render failed: could not get current texture: {e}");
-                return;
+
+            self.width = width;
+            self.height = height;
+
+            // Notify user renderer
+            self.renderer.resize(width, height);
+
+            // GTK manages framebuffer resize; we update dimensions
+            // The texture wrapper will be recreated on next render if FBO changed
+        }
+    }
+
+    /// Initialize epoxy library and return a reference to it.
+    fn init_epoxy() -> Result<&'static libloading::Library, String> {
+        use std::sync::OnceLock;
+
+        static EPOXY_LIB: OnceLock<Option<libloading::Library>> = OnceLock::new();
+
+        let lib = EPOXY_LIB.get_or_init(|| {
+            // Try multiple paths to find libepoxy on Linux
+            let paths = [
+                "libepoxy.so.0",
+                "/usr/lib/x86_64-linux-gnu/libepoxy.so.0",
+                "/usr/lib/libepoxy.so.0",
+                "/usr/local/lib/libepoxy.so.0",
+            ];
+
+            for path in paths {
+                if let Ok(lib) = unsafe { libloading::Library::new(path) } {
+                    tracing::debug!("[GpuSurface] Loaded libepoxy from: {}", path);
+                    epoxy::load_with(|name| unsafe {
+                        lib.get::<*const std::ffi::c_void>(name.as_bytes())
+                            .map(|sym| *sym)
+                            .unwrap_or(std::ptr::null())
+                    });
+                    return Some(lib);
+                }
             }
+            tracing::warn!("[GpuSurface] Failed to load libepoxy from any path");
+            None
+        });
+
+        lib.as_ref()
+            .ok_or_else(|| "Failed to load libepoxy library".to_string())
+    }
+
+    /// Initialize wgpu with GLES backend for GTK4 GLArea.
+    fn init_wgpu_gles(
+        gl_area: &gtk4::GLArea,
+        width: u32,
+        height: u32,
+        renderer: Box<dyn GpuRenderer>,
+    ) -> Result<GlesGpuState, String> {
+        // Load libepoxy library first
+        init_epoxy()?;
+
+        // Create glow context from GTK's GL loader (epoxy)
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                epoxy::get_proc_addr(s).cast::<std::ffi::c_void>()
+            })
         };
 
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("GpuSurface Frame View"),
-            format: Some(self.config.format),
+        // Force GLES backend for GTK4 compatibility
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::GL,
             ..Default::default()
         });
 
-        // Create frame data
-        let frame = GpuFrame {
-            device: &self.device,
-            queue: &self.queue,
-            texture: &output.texture,
-            view,
-            format: self.config.format,
-            width,
-            height,
-        };
+        // Request adapter
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .map_err(|e| format!("No GLES adapter available: {e}"))?;
 
-        // Call user's render callback
-        self.renderer.render(&frame);
+        tracing::info!("[GpuSurface] Using adapter: {:?}", adapter.get_info());
 
-        // Present
-        output.present();
-    }
-
-    /// Handle resize.
-    fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-
-        if width != self.current_width || height != self.current_height {
-            self.config.width = width;
-            self.config.height = height;
-            self.surface.configure(&self.device, &self.config);
-            self.current_width = width;
-            self.current_height = height;
-            self.renderer.resize(width, height);
-        }
-    }
-}
-
-/// Initialize wgpu for a GTK native surface.
-#[allow(dead_code)]
-fn init_wgpu_from_native(
-    native: &gtk4::Native,
-    width: u32,
-    height: u32,
-    renderer: Box<dyn GpuRenderer>,
-) -> Option<GpuSurfaceState> {
-    let gdk_surface = native.surface()?;
-    let display = gdk_surface.display();
-
-    // Determine backends based on platform
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
-    #[cfg(target_os = "macos")]
-    let backends = wgpu::Backends::METAL;
-    #[cfg(not(any(unix, target_os = "macos")))]
-    let backends = wgpu::Backends::all();
-
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends,
-        ..Default::default()
-    });
-
-    // Create surface from GDK surface using platform-specific code
-    let wgpu_surface = create_surface_from_gdk(&instance, &gdk_surface, &display)?;
-
-    // Request adapter
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&wgpu_surface),
-        force_fallback_adapter: false,
-    }))
-    .ok()?;
-
-    tracing::info!("[GpuSurface] adapter: {:?}", adapter.get_info());
-
-    // Request device and queue
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("WaterUI GTK GpuSurface Device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::downlevel_webgl2_defaults()
                 .using_resolution(adapter.limits()),
             ..Default::default()
-        },
-    ))
-    .ok()?;
+        }))
+        .map_err(|e: wgpu::RequestDeviceError| e.to_string())?;
 
-    // Configure surface
-    let surface_caps = wgpu_surface.get_capabilities(&adapter);
-    let format = preferred_surface_format(&surface_caps);
+        // Get GTK's framebuffer ID
+        gl_area.attach_buffers();
+        let fbo_id = unsafe { gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32 };
 
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width,
-        height,
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: surface_caps
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Opaque),
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-    };
+        tracing::debug!("[GpuSurface] GTK framebuffer ID: {}", fbo_id);
 
-    wgpu_surface.configure(&device, &config);
+        if fbo_id == 0 {
+            tracing::warn!("[GpuSurface] Framebuffer ID is 0, trying default framebuffer");
+            // On some systems, the default framebuffer (0) may be valid
+        }
 
-    Some(GpuSurfaceState {
-        device,
-        queue,
-        surface: wgpu_surface,
-        config,
-        renderer,
-        initialized: false,
-        current_width: width,
-        current_height: height,
-    })
-}
+        // Create wgpu texture from external framebuffer
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let framebuffer_texture = create_texture_from_external_framebuffer(
+            &device,
+            glow::NativeFramebuffer(NonZeroU32::new(fbo_id).unwrap()),
+            width,
+            height,
+            format,
+        )?;
 
-// =============================================================================
-// Linux X11 Implementation
-// =============================================================================
+        let framebuffer_view =
+            framebuffer_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-#[cfg(all(unix, not(target_os = "macos"), feature = "x11"))]
-#[allow(dead_code)]
-fn try_create_x11_surface(
-    instance: &wgpu::Instance,
-    gdk_surface: &gdk4::Surface,
-    display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    use gdk4::prelude::*;
-    use raw_window_handle::{RawDisplayHandle, RawWindowHandle, XlibDisplayHandle, XlibWindowHandle};
-    use std::ptr::NonNull;
-
-    // Check if this is an X11 surface
-    let x11_surface = gdk_surface.downcast_ref::<gdk4_x11::X11Surface>()?;
-    let x11_display = display.downcast_ref::<gdk4_x11::X11Display>()?;
-
-    let xid = x11_surface.xid();
-    let xdisplay = x11_display.xdisplay();
-
-    let display_ptr = NonNull::new(xdisplay.cast())?;
-    let display_handle = XlibDisplayHandle::new(Some(display_ptr), 0);
-    let window_handle = XlibWindowHandle::new(xid as _);
-
-    unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::Xlib(display_handle),
-                raw_window_handle: RawWindowHandle::Xlib(window_handle),
-            })
-            .ok()
-    }
-}
-
-#[cfg(not(all(unix, not(target_os = "macos"), feature = "x11")))]
-#[allow(dead_code)]
-fn try_create_x11_surface(
-    _instance: &wgpu::Instance,
-    _gdk_surface: &gdk4::Surface,
-    _display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    None
-}
-
-// =============================================================================
-// Linux Wayland Implementation
-// =============================================================================
-
-#[cfg(all(unix, not(target_os = "macos"), feature = "wayland"))]
-#[allow(dead_code)]
-fn try_create_wayland_surface(
-    instance: &wgpu::Instance,
-    gdk_surface: &gdk4::Surface,
-    display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    use gdk4::prelude::*;
-    use raw_window_handle::{
-        RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-    };
-    use std::ptr::NonNull;
-
-    // Check if this is a Wayland surface
-    let wayland_surface = gdk_surface.downcast_ref::<gdk4_wayland::WaylandSurface>()?;
-    let wayland_display = display.downcast_ref::<gdk4_wayland::WaylandDisplay>()?;
-
-    let wl_surface = wayland_surface.wl_surface();
-    let wl_display = wayland_display.wl_display();
-
-    // Get raw pointers from wayland-client objects
-    let surface_ptr = NonNull::new(wl_surface.id().as_ptr().cast_mut().cast())?;
-    let display_ptr = NonNull::new(wl_display.id().as_ptr().cast_mut().cast())?;
-
-    let display_handle = WaylandDisplayHandle::new(display_ptr);
-    let window_handle = WaylandWindowHandle::new(surface_ptr);
-
-    unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::Wayland(display_handle),
-                raw_window_handle: RawWindowHandle::Wayland(window_handle),
-            })
-            .ok()
-    }
-}
-
-#[cfg(not(all(unix, not(target_os = "macos"), feature = "wayland")))]
-#[allow(dead_code)]
-fn try_create_wayland_surface(
-    _instance: &wgpu::Instance,
-    _gdk_surface: &gdk4::Surface,
-    _display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    None
-}
-
-// =============================================================================
-// macOS Implementation
-// =============================================================================
-
-#[cfg(all(target_os = "macos", feature = "macos"))]
-#[allow(dead_code)]
-fn try_create_macos_surface(
-    instance: &wgpu::Instance,
-    gdk_surface: &gdk4::Surface,
-    _display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    use gdk4::prelude::*;
-    use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle};
-    use std::ptr::NonNull;
-
-    // Check if this is a macOS surface
-    let macos_surface = gdk_surface.downcast_ref::<gdk4_macos::MacosSurface>()?;
-
-    // Get the NSView from the macOS surface
-    let ns_view = macos_surface.native();
-    let view_ptr = NonNull::new(ns_view as *mut _)?;
-
-    let display_handle = AppKitDisplayHandle::new();
-    let window_handle = AppKitWindowHandle::new(view_ptr);
-
-    unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::AppKit(display_handle),
-                raw_window_handle: RawWindowHandle::AppKit(window_handle),
-            })
-            .ok()
-    }
-}
-
-#[cfg(not(all(target_os = "macos", feature = "macos")))]
-#[allow(dead_code)]
-fn try_create_macos_surface(
-    _instance: &wgpu::Instance,
-    _gdk_surface: &gdk4::Surface,
-    _display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    None
-}
-
-// =============================================================================
-// Unified Surface Creation
-// =============================================================================
-
-/// Create a wgpu surface from a GDK surface.
-///
-/// Tries platform-specific backends in order:
-/// - Linux: X11, then Wayland
-/// - macOS: AppKit/Metal
-#[allow(dead_code)]
-fn create_surface_from_gdk(
-    instance: &wgpu::Instance,
-    gdk_surface: &gdk4::Surface,
-    display: &gdk4::Display,
-) -> Option<wgpu::Surface<'static>> {
-    // Try X11 first (Linux)
-    if let Some(surface) = try_create_x11_surface(instance, gdk_surface, display) {
-        tracing::info!("[GpuSurface] Created X11 surface");
-        return Some(surface);
+        Ok(GlesGpuState {
+            device,
+            queue,
+            framebuffer_texture,
+            framebuffer_view,
+            format,
+            gl,
+            current_fbo_id: fbo_id,
+            renderer,
+            initialized: false,
+            width,
+            height,
+        })
     }
 
-    // Try Wayland (Linux)
-    if let Some(surface) = try_create_wayland_surface(instance, gdk_surface, display) {
-        tracing::info!("[GpuSurface] Created Wayland surface");
-        return Some(surface);
+    /// Create a wgpu::Texture from GTK's framebuffer using HAL.
+    fn create_texture_from_external_framebuffer(
+        device: &wgpu::Device,
+        fbo: glow::NativeFramebuffer,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<wgpu::Texture, String> {
+        use wgpu_hal::CopyExtent;
+        use wgpu_hal::gles::{Texture as HalTexture, TextureFormatDesc, TextureInner};
+
+        // Construct HAL texture with external framebuffer
+        let hal_texture = HalTexture {
+            inner: TextureInner::ExternalNativeFramebuffer { inner: fbo },
+            mip_level_count: 1,
+            array_layer_count: 1,
+            format: format.into(),
+            format_desc: TextureFormatDesc {
+                internal: 0, // Not needed for external framebuffer
+                external: 0,
+                data_type: 0,
+            },
+            copy_size: CopyExtent {
+                width,
+                height,
+                depth: 1,
+            },
+            drop_guard: None, // GTK manages the framebuffer lifetime
+        };
+
+        // Wrap HAL texture in wgpu::Texture
+        let desc = wgpu::TextureDescriptor {
+            label: Some("GpuSurface External Framebuffer"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+
+        // SAFETY: hal_texture is valid for the lifetime of GTK's GLArea
+        let texture =
+            unsafe { device.create_texture_from_hal::<wgpu_hal::gles::Api>(hal_texture, &desc) };
+
+        Ok(texture)
     }
 
-    // Try macOS
-    if let Some(surface) = try_create_macos_surface(instance, gdk_surface, display) {
-        tracing::info!("[GpuSurface] Created macOS surface");
-        return Some(surface);
-    }
+    impl GtkComponent for Native<GpuSurface> {
+        /// Renders a `WaterUI` `GpuSurface` as a GTK4 GLArea widget with wgpu GLES rendering.
+        fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
+            let gpu_surface = self.into_inner();
+            let user_renderer = gpu_surface.renderer;
 
-    // No platform support available
-    #[cfg(all(unix, not(target_os = "macos")))]
-    tracing::error!(
-        "[GpuSurface] No platform backend available. Enable 'x11' or 'wayland' feature."
-    );
+            // Use GLArea for OpenGL rendering
+            let gl_area = gtk4::GLArea::new();
+            gl_area.set_hexpand(true);
+            gl_area.set_vexpand(true);
+            gl_area.set_auto_render(false); // We control render timing
+            gl_area.set_required_version(3, 3); // OpenGL 3.3+ for wgpu
 
-    #[cfg(target_os = "macos")]
-    tracing::error!("[GpuSurface] No platform backend available. Enable 'macos' feature.");
+            let state: Rc<RefCell<Option<GlesGpuState>>> = Rc::new(RefCell::new(None));
+            let init_failed: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+            let renderer_cell = Rc::new(RefCell::new(Some(user_renderer)));
 
-    #[cfg(not(any(unix, target_os = "macos")))]
-    tracing::error!("[GpuSurface] Platform not supported for GPU rendering.");
+            // Initialize wgpu when GL context is ready
+            gl_area.connect_realize({
+                let state = state.clone();
+                let init_failed = init_failed.clone();
+                let renderer_cell = renderer_cell.clone();
+                move |area| {
+                    area.make_current();
+                    if let Some(err) = area.error() {
+                        tracing::error!("[GpuSurface] GL error on realize: {}", err);
+                        *init_failed.borrow_mut() = true;
+                        return;
+                    }
 
-    None
-}
+                    let width = area.width().max(1) as u32;
+                    let height = area.height().max(1) as u32;
 
-// =============================================================================
-// GtkComponent Implementation
-// =============================================================================
+                    if let Some(renderer) = renderer_cell.borrow_mut().take() {
+                        match init_wgpu_gles(area, width, height, renderer) {
+                            Ok(gpu_state) => {
+                                *state.borrow_mut() = Some(gpu_state);
+                                tracing::info!("[GpuSurface] wgpu GLES initialized successfully");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[GpuSurface] Initialization failed: {}. GPU rendering disabled.",
+                                    e
+                                );
+                                *init_failed.borrow_mut() = true;
+                            }
+                        }
+                    }
+                }
+            });
 
-impl GtkComponent for Native<GpuSurface> {
-    /// Renders a `WaterUI` `GpuSurface` as a GTK4 widget.
-    ///
-    /// NOTE: GPU rendering via wgpu is not fully supported on GTK4 macOS yet
-    /// due to incompatibilities between Metal and GTK's rendering model.
-    /// This implementation shows a placeholder on macOS and attempts wgpu
-    /// rendering on Linux where it's more likely to work.
-    fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
-        let _gpu_surface = self.into_inner();
+            // Render callback - wgpu renders to GTK's framebuffer
+            gl_area.connect_render({
+                let state = state.clone();
+                let init_failed = init_failed.clone();
+                move |area, _gl_context| {
+                    // If initialization failed, draw a placeholder (dark gray)
+                    if *init_failed.borrow() {
+                        area.make_current();
+                        // Try to clear the buffer using epoxy/glow
+                        if init_epoxy().is_ok() {
+                            unsafe {
+                                let gl = glow::Context::from_loader_function(|s| {
+                                    epoxy::get_proc_addr(s).cast::<std::ffi::c_void>()
+                                });
+                                gl.clear_color(0.18, 0.18, 0.18, 1.0);
+                                gl.clear(glow::COLOR_BUFFER_BIT);
+                            }
+                        }
+                        return glib::Propagation::Stop;
+                    }
 
-        // GPU rendering via wgpu is complex on GTK4 and has platform-specific issues.
-        // For now, show a placeholder with an explanation.
-        //
-        // The issues are:
-        // - macOS: wgpu uses Metal which is incompatible with GTK's Cairo/OpenGL rendering
-        // - Linux: Wayland compositor restrictions make raw surface access difficult
-        //
-        // A proper solution would require either:
-        // 1. Using GTK's GLArea with OpenGL backend for wgpu (not trivial)
-        // 2. Creating a separate window/overlay for Metal rendering
-        // 3. Using a different approach like rendering to a texture and displaying it
+                    area.attach_buffers(); // Ensure GTK's FBO is bound
 
-        let placeholder = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-        placeholder.set_hexpand(true);
-        placeholder.set_vexpand(true);
-        placeholder.set_halign(gtk4::Align::Center);
-        placeholder.set_valign(gtk4::Align::Center);
+                    if let Some(ref mut gpu_state) = *state.borrow_mut() {
+                        // Update framebuffer binding if needed
+                        gpu_state.update_framebuffer();
 
-        let label = gtk4::Label::new(Some("GPU Surface"));
-        label.add_css_class("title-2");
-        placeholder.append(&label);
+                        // Render frame
+                        gpu_state.render_frame();
+                    }
+                    glib::Propagation::Stop
+                }
+            });
 
-        let note = gtk4::Label::new(Some("(GPU rendering not yet supported in GTK4 backend)"));
-        note.add_css_class("dim-label");
-        placeholder.append(&note);
+            // Handle resize
+            gl_area.connect_resize({
+                let state = state.clone();
+                move |_area, width, height| {
+                    if let Some(ref mut gpu_state) = *state.borrow_mut() {
+                        gpu_state.resize(width as u32, height as u32);
+                    }
+                }
+            });
 
-        // Add a gray background to indicate the GPU surface area
-        let css_provider = gtk4::CssProvider::new();
-        css_provider.load_from_data(
-            r"
-            box {
-                background-color: #2d2d2d;
-                border-radius: 8px;
-                padding: 16px;
-            }
-            label.title-2 {
-                font-weight: bold;
-                font-size: 18px;
-                color: #888;
-            }
-            label.dim-label {
-                font-size: 12px;
-                color: #666;
-            }
-            ",
-        );
+            // Animation loop - requests redraw on each frame tick (60fps)
+            gl_area.add_tick_callback({
+                let area_weak = gl_area.downgrade();
+                move |_, _| {
+                    if let Some(area) = area_weak.upgrade() {
+                        area.queue_render();
+                        glib::ControlFlow::Continue
+                    } else {
+                        glib::ControlFlow::Break
+                    }
+                }
+            });
 
-        gtk4::style_context_add_provider_for_display(
-            &gdk4::Display::default().expect("display"),
-            &css_provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+            // Cleanup on unrealize
+            gl_area.connect_unrealize({
+                let state = state.clone();
+                move |_| {
+                    if state.borrow_mut().take().is_some() {
+                        tracing::debug!("[GpuSurface] Cleaned up GPU state");
+                    }
+                }
+            });
 
-        tracing::warn!(
-            "[GpuSurface] GPU rendering is not supported in GTK4 backend yet. Showing placeholder."
-        );
-
-        placeholder.upcast()
+            gl_area.upcast()
+        }
     }
 }
