@@ -1,13 +1,15 @@
+use alloc::boxed::Box;
+
 use crate::array::WuiArray;
 use crate::closure::WuiFn;
 use crate::components::text::WuiText;
 use crate::reactive::{WuiBinding, WuiComputed};
-use crate::{IntoFFI, WuiAnyView};
+use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
-use waterui_navigation::{Bar, NavigationStack, NavigationView};
+use waterui_navigation::{Bar, CustomNavigationController, NavigationController, NavigationStack, NavigationView};
 
 into_ffi! {
     NavigationView,
@@ -136,3 +138,114 @@ impl IntoFFI for Tabs {
 
 // FFI view binding for Tabs
 ffi_view!(Tabs, WuiTabs, tabs);
+
+// =============================================================================
+// Navigation Controller FFI
+// =============================================================================
+
+/// FFI-compatible navigation controller that bridges native push/pop callbacks to Rust.
+///
+/// Native backends create this controller with callback function pointers, then install
+/// it into the environment. When Rust views call `NavigationController::push()` or `pop()`,
+/// those calls are forwarded to the native callbacks.
+#[repr(C)]
+pub struct WuiNavigationController {
+    /// Opaque data pointer passed to all callbacks (typically a pointer to native controller).
+    data: *mut (),
+    /// Callback invoked when a view is pushed onto the navigation stack.
+    push: unsafe extern "C" fn(*mut (), WuiNavigationView),
+    /// Callback invoked when popping the top view from the navigation stack.
+    pop: unsafe extern "C" fn(*mut ()),
+    /// Callback invoked when the controller is dropped (for cleanup).
+    drop: unsafe extern "C" fn(*mut ()),
+}
+
+// SAFETY: WuiNavigationController is only accessed from main thread
+unsafe impl Send for WuiNavigationController {}
+
+impl CustomNavigationController for WuiNavigationController {
+    fn push(&mut self, content: NavigationView) {
+        let ffi_view = content.into_ffi();
+        // SAFETY: Caller guarantees data and push callback are valid
+        unsafe { (self.push)(self.data, ffi_view) }
+    }
+
+    fn pop(&mut self) {
+        // SAFETY: Caller guarantees data and pop callback are valid
+        unsafe { (self.pop)(self.data) }
+    }
+}
+
+impl Drop for WuiNavigationController {
+    fn drop(&mut self) {
+        // SAFETY: Caller guarantees data and drop callback are valid
+        unsafe { (self.drop)(self.data) }
+    }
+}
+
+/// Creates a new navigation controller from native callbacks.
+///
+/// # Arguments
+///
+/// * `data` - Opaque pointer passed to all callbacks (typically pointer to native controller)
+/// * `push` - Callback invoked when pushing a view onto the navigation stack
+/// * `pop` - Callback invoked when popping the top view
+/// * `drop` - Callback invoked when the controller is destroyed (for cleanup)
+///
+/// # Safety
+///
+/// - `data` must remain valid for the lifetime of the returned controller
+/// - All callback function pointers must be valid and safe to call
+/// - The `drop` callback must properly clean up resources associated with `data`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_controller_new(
+    data: *mut (),
+    push: unsafe extern "C" fn(*mut (), WuiNavigationView),
+    pop: unsafe extern "C" fn(*mut ()),
+    drop: unsafe extern "C" fn(*mut ()),
+) -> *mut WuiNavigationController {
+    Box::into_raw(Box::new(WuiNavigationController {
+        data,
+        push,
+        pop,
+        drop,
+    }))
+}
+
+/// Installs a navigation controller into the environment.
+///
+/// After calling this function, views rendered with this environment can extract
+/// the `NavigationController` and use it to push/pop navigation views.
+///
+/// # Safety
+///
+/// - `env` must be a valid pointer to a `WuiEnv`
+/// - `controller` must be a valid pointer returned by `waterui_navigation_controller_new`
+/// - `controller` is consumed by this function and must not be used afterward
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_navigation_controller(
+    env: *mut WuiEnv,
+    controller: *mut WuiNavigationController,
+) {
+    // SAFETY: Caller guarantees pointers are valid
+    unsafe {
+        let controller = *Box::from_raw(controller);
+        // NavigationController::new wraps in Rc<RefCell<...>> internally
+        let rust_controller = NavigationController::new(controller);
+        (*env).insert(rust_controller);
+    }
+}
+
+/// Drops a navigation controller.
+///
+/// # Safety
+///
+/// - `controller` must be a valid pointer returned by `waterui_navigation_controller_new`
+/// - `controller` must not have been previously dropped or consumed
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_navigation_controller(controller: *mut WuiNavigationController) {
+    // SAFETY: Caller guarantees pointer is valid and not previously dropped
+    unsafe {
+        drop(Box::from_raw(controller));
+    }
+}
