@@ -2,6 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::Signal;
 use waterui::component::progress::ProgressConfig;
 use waterui_core::{Environment, Native};
 
@@ -33,7 +34,7 @@ impl GtkComponent for Native<ProgressConfig> {
         let guard = config.value.watch({
             let progress_bar = progress_bar.clone();
             move |ctx| {
-                let value = ctx.value.clamp(0.0, 1.0);
+                let value = ctx.into_value().clamp(0.0, 1.0);
                 let progress_bar = progress_bar.clone();
                 glib::idle_add_local_once(move || {
                     progress_bar.set_fraction(value);

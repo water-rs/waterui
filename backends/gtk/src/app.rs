@@ -1,7 +1,11 @@
 //! GTK Application setup and lifecycle management.
 
+use std::cell::RefCell;
+
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow};
+use nami::Signal;
+use waterui::app::App;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::renderer::GtkRenderer;
@@ -38,6 +42,34 @@ impl GtkApp {
 
             let mut renderer = GtkRenderer::new();
             let widget = renderer.render(view.clone(), &env);
+
+            window.set_child(Some(&widget));
+            window.present();
+        });
+
+        self.app.run().into()
+    }
+
+    /// Runs a WaterUI `App` as a GTK application.
+    ///
+    /// This extracts the main window's content and environment from the App
+    /// and renders it using GTK.
+    pub fn run_app(self, mut waterui_app: App) -> i32 {
+        let main_window = waterui_app.main_window_mut();
+        let title: String = main_window.title.get().as_str().to_owned();
+        // Use RefCell to allow taking the content once (AnyView is not Clone)
+        // Take ownership of the content using mem::take
+        let content = RefCell::new(Some(std::mem::take(&mut main_window.content)));
+        let env = waterui_app.env;
+
+        self.app.connect_activate(move |app| {
+            // Take the content or use default if already taken (re-activation)
+            let content = content.borrow_mut().take().unwrap_or_default();
+
+            let window = create_window(app, &title, 800, 600);
+
+            let mut renderer = GtkRenderer::new();
+            let widget = renderer.render_any(content, &env);
 
             window.set_child(Some(&widget));
             window.present();

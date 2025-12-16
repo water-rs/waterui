@@ -2,6 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::{Signal, SignalExt};
 use waterui_controls::slider::SliderConfig;
 use waterui_core::{Environment, Native};
 
@@ -48,10 +49,11 @@ impl GtkComponent for Native<SliderConfig> {
         scale.set_value(binding.get());
 
         // Watch for binding changes -> update scale
-        let guard = binding.computed().watch({
+        // Clone before .computed() since it consumes self
+        let guard = binding.clone().computed().watch({
             let scale = scale.clone();
             move |ctx| {
-                let value = ctx.value;
+                let value = ctx.into_value();
                 let scale = scale.clone();
                 glib::idle_add_local_once(move || {
                     if (scale.value() - value).abs() > f64::EPSILON {
@@ -62,7 +64,7 @@ impl GtkComponent for Native<SliderConfig> {
         });
 
         // Watch for scale changes -> update binding
-        let binding_clone = binding.clone();
+        let binding_clone = binding;
         scale.connect_value_changed(move |scale| {
             let value = scale.value();
             if (binding_clone.get() - value).abs() > f64::EPSILON {

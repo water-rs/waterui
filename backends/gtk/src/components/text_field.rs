@@ -2,6 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::{Signal, SignalExt};
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::{Environment, Native};
 
@@ -39,10 +40,11 @@ impl GtkComponent for Native<TextFieldConfig> {
         entry.set_text(&binding.get());
 
         // Watch for binding changes -> update entry
-        let guard = binding.computed().watch({
+        // Clone before .computed() since it consumes self
+        let guard = binding.clone().computed().watch({
             let entry = entry.clone();
             move |ctx| {
-                let value = ctx.value.to_string();
+                let value = ctx.into_value().to_string();
                 let entry = entry.clone();
                 glib::idle_add_local_once(move || {
                     if entry.text().as_str() != value {
@@ -53,12 +55,11 @@ impl GtkComponent for Native<TextFieldConfig> {
         });
 
         // Watch for entry changes -> update binding
-        let binding_clone = binding.clone();
         entry.connect_changed(move |entry| {
-            let text = entry.text();
-            let current = binding_clone.get();
-            if current.as_str() != text.as_str() {
-                binding_clone.set(text.as_str().into());
+            let text = entry.text().to_string();
+            let current = binding.get();
+            if current.as_str() != text {
+                binding.set(text.into());
             }
         });
 

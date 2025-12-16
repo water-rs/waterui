@@ -1,5 +1,7 @@
 //! GTK4 Button component implementation.
 
+use std::cell::RefCell;
+
 use gtk4::prelude::*;
 use gtk4::Widget;
 use waterui_controls::button::ButtonConfig;
@@ -19,11 +21,12 @@ impl GtkComponent for Native<ButtonConfig> {
         let label_widget = renderer.render_any(config.label, env);
         button.set_child(Some(&label_widget));
 
-        // Connect click handler
-        let action = config.action;
+        // Connect click handler using RefCell for interior mutability
+        // since GTK's connect_clicked requires Fn, not FnMut
+        let action = RefCell::new(config.action);
         let env_clone = env.clone();
         button.connect_clicked(move |_| {
-            action.handle(&env_clone);
+            action.borrow_mut().handle(&env_clone);
         });
 
         // TODO: Apply button style based on config.style

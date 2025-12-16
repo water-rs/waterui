@@ -26,6 +26,7 @@ mod embedded {
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
+    pub static GTK: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
@@ -63,9 +64,13 @@ impl TemplateContext {
         // Android namespace must be a valid Java package name (no hyphens)
         let android_namespace = self.bundle_identifier.replace('-', "_");
 
+        // Rust identifier form of crate name (hyphens -> underscores)
+        let crate_name_ident = self.crate_name.replace('-', "_");
+
         template
             .replace("__APP_DISPLAY_NAME__", &self.app_display_name)
             .replace("__APP_NAME__", &self.app_name)
+            .replace("__CRATE_NAME_IDENT__", &crate_name_ident)
             .replace("__CRATE_NAME__", &self.crate_name)
             .replace("__ANDROID_NAMESPACE__", &android_namespace)
             .replace("__BUNDLE_IDENTIFIER__", &self.bundle_identifier)
@@ -430,6 +435,92 @@ pub mod android {
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             fs::write(&local_props, content).await?;
         }
+
+        Ok(())
+    }
+}
+
+/// GTK backend templates.
+pub mod gtk {
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
+
+    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
+
+    const WATERUI_GTK_VERSION: &str = "0.1";
+
+    /// Write all GTK templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        // Generate Cargo.toml programmatically
+        generate_cargo_toml(base_dir, ctx).await?;
+
+        // Scaffold remaining template files (main.rs, etc.)
+        scaffold_dir(&embedded::GTK, base_dir, ctx).await
+    }
+
+    /// Generate GTK Cargo.toml programmatically using cargo_toml crate.
+    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        let mut manifest = Manifest::<()>::default();
+
+        // Package section
+        manifest.package = Some(Package::new(
+            format!("{}-gtk", ctx.crate_name),
+            "0.1.0".to_string(),
+        ));
+        if let Some(ref mut pkg) = manifest.package {
+            pkg.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        }
+
+        // Add the user's crate as a path dependency
+        manifest.dependencies.insert(
+            ctx.crate_name.clone(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(ctx.project_root_relative_path()),
+                ..Default::default()
+            })),
+        );
+
+        // Add waterui-gtk dependency
+        if let Some(waterui_path) = &ctx.waterui_path {
+            // Path from GTK backend to waterui-gtk:
+            // 1. Go up to project root
+            // 2. Apply waterui_path (relative to project root)
+            // 3. Append backends/gtk
+            let gtk_path = if waterui_path.is_absolute() {
+                waterui_path.join("backends").join("gtk")
+            } else {
+                std::path::PathBuf::from(ctx.project_root_relative_path())
+                    .join(waterui_path)
+                    .join("backends")
+                    .join("gtk")
+            };
+            manifest.dependencies.insert(
+                "waterui-gtk".to_string(),
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    path: Some(normalize_path_for_config(&gtk_path)),
+                    ..Default::default()
+                })),
+            );
+        } else {
+            manifest.dependencies.insert(
+                "waterui-gtk".to_string(),
+                Dependency::Simple(WATERUI_GTK_VERSION.to_string()),
+            );
+        }
+
+        // Empty workspace section to exclude from parent workspace
+        manifest.workspace = Some(Workspace::default());
+
+        // Serialize to TOML
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let cargo_path = base_dir.join("Cargo.toml");
+        fs::create_dir_all(base_dir).await?;
+        fs::write(&cargo_path, toml_string).await?;
 
         Ok(())
     }

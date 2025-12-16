@@ -2,6 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{Label, Widget};
+use nami::Signal;
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
 
@@ -18,15 +19,14 @@ impl GtkComponent for Native<TextConfig> {
         let content = config.content.get();
         let label = Label::new(Some(&content.to_plain()));
 
-        // Apply basic styling
+        // Apply basic styling - let text maintain natural width
         label.set_selectable(true);
-        label.set_wrap(true);
 
         // Set up reactive updates
         let guard = config.content.watch({
             let label = label.clone();
             move |ctx| {
-                let text = ctx.value.to_plain();
+                let text = ctx.into_value().to_plain();
                 let label = label.clone();
                 // Schedule update on GTK main thread
                 glib::idle_add_local_once(move || {

@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::Signal;
 use waterui_core::Environment;
 use waterui_navigation::{CustomNavigationController, NavigationController, NavigationStack, NavigationView};
 
@@ -31,7 +32,7 @@ impl GtkComponent for NavigationView {
         let guard = self.bar.title.content().watch({
             let title_label = title_label.clone();
             move |ctx| {
-                let text = ctx.value.to_plain();
+                let text = ctx.into_value().to_plain();
                 let title_label = title_label.clone();
                 glib::idle_add_local_once(move || {
                     title_label.set_text(&text);
@@ -43,7 +44,7 @@ impl GtkComponent for NavigationView {
         let hidden_guard = self.bar.hidden.watch({
             let header_bar = header_bar.clone();
             move |ctx| {
-                let hidden = *ctx.value;
+                let hidden = ctx.into_value();
                 let header_bar = header_bar.clone();
                 glib::idle_add_local_once(move || {
                     header_bar.set_visible(!hidden);
@@ -98,7 +99,7 @@ impl GtkComponent for NavigationStack<(), ()> {
 
         // Install the controller in the environment for child views
         let mut child_env = env.clone();
-        child_env.set(navigation_controller);
+        child_env.insert(navigation_controller);
 
         // Render the root view
         let root_widget = renderer.render_any(root, &child_env);
@@ -181,7 +182,7 @@ impl CustomNavigationController for GtkNavigationController {
         }
 
         // Track the view
-        inner.view_stack.push(NavigationViewState { id, title });
+        inner.view_stack.push(NavigationViewState { id, title: title.to_string() });
     }
 
     fn pop(&mut self) {

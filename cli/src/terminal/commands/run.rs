@@ -17,16 +17,18 @@ use waterui_cli::{
         device::{AppleDevice, AppleSimulator, MacOS},
         platform::ApplePlatform,
     },
+    backend::reinit_backend,
     build::BuildOptions,
     debug::{HotReloadEvent, HotReloadRunner},
     device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
+    gtk::{backend::GtkBackend, device::GtkDevice, platform::GtkPlatform},
     platform::{PackageOptions, Platform},
     project::Project,
     toolchain::Toolchain,
 };
 
 /// Target platform for running.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TargetPlatform {
     /// iOS Simulator.
     Ios,
@@ -34,6 +36,8 @@ pub enum TargetPlatform {
     Android,
     /// macOS (current machine).
     Macos,
+    /// GTK (Linux/macOS/Windows native).
+    Gtk,
 }
 
 /// Arguments for the run command.
@@ -95,7 +99,7 @@ pub async fn run(args: Args) -> Result<()> {
         .path
         .canonicalize()
         .unwrap_or_else(|_| args.path.clone());
-    let project = Project::open(&project_path).await?;
+    let mut project = Project::open(&project_path).await?;
 
     header!(
         "Running {} on {}",
@@ -110,6 +114,18 @@ pub async fn run(args: Args) -> Result<()> {
         pb.finish_and_clear();
     }
     success!("Toolchain ready");
+
+    // Initialize GTK backend if needed (lazy initialization)
+    if args.platform == TargetPlatform::Gtk && project.gtk_backend().is_none() {
+        let spinner = shell::spinner("Initializing GTK backend...");
+        reinit_backend::<GtkBackend>(&project).await?;
+        // Reload project to pick up the new backend
+        project = Project::open(&project_path).await?;
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        success!("GTK backend initialized");
+    }
 
     // Step 2: Find device
     let spinner = shell::spinner("Scanning for devices...");
@@ -151,6 +167,7 @@ pub async fn run(args: Args) -> Result<()> {
     let platform_name = match args.platform {
         TargetPlatform::Android => "Android",
         TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
+        TargetPlatform::Gtk => "GTK",
     };
 
     // Get hot reload event receiver if available
@@ -210,6 +227,9 @@ async fn build_and_run(
         }
         SelectedDevice::AndroidEmulator(emu) => {
             build_and_run_device(project, emu, needs_launch, hot_reload, log_level).await
+        }
+        SelectedDevice::Gtk(gtk) => {
+            build_and_run_device(project, gtk, needs_launch, hot_reload, log_level).await
         }
     }
 }
@@ -299,6 +319,7 @@ enum SelectedDevice {
     AppleMacos(MacOS),
     AndroidDevice(AndroidDevice),
     AndroidEmulator(AndroidEmulator),
+    Gtk(GtkDevice),
 }
 
 impl SelectedDevice {
@@ -306,7 +327,7 @@ impl SelectedDevice {
     fn needs_launch(&self) -> bool {
         match self {
             Self::AppleSimulator(sim) => sim.state != "Booted",
-            Self::AppleMacos(_) | Self::AndroidDevice(_) => false,
+            Self::AppleMacos(_) | Self::AndroidDevice(_) | Self::Gtk(_) => false,
             Self::AndroidEmulator(_) => true,
         }
     }
@@ -323,6 +344,13 @@ async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
         }
         TargetPlatform::Android => {
             let platform = AndroidPlatform::arm64();
+            let toolchain = platform.toolchain();
+            if let Err(e) = toolchain.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+        }
+        TargetPlatform::Gtk => {
+            let platform = GtkPlatform::new();
             let toolchain = platform.toolchain();
             if let Err(e) = toolchain.check().await {
                 bail!("Toolchain check failed: {e}");
@@ -403,6 +431,10 @@ async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Resul
                 avd_name,
             )))
         }
+        TargetPlatform::Gtk => {
+            // GTK always runs on the local machine
+            Ok(SelectedDevice::Gtk(GtkDevice))
+        }
     }
 }
 
@@ -412,6 +444,7 @@ fn device_name(device: &SelectedDevice) -> String {
         SelectedDevice::AppleMacos(_) => "Current Machine".to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
+        SelectedDevice::Gtk(_) => "Local Machine (GTK)".to_string(),
     }
 }
 
@@ -420,6 +453,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Ios => "iOS Simulator",
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
+        TargetPlatform::Gtk => "GTK",
     }
 }
 
