@@ -50,7 +50,7 @@ pub trait Installation: Send + Sync {
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolchainError<Install: Installation> {
     /// The toolchain cannot be fixed automatically.
-    #[error("Unfixable toolchain, consider manual intervention")]
+    #[error("{0}")]
     Unfixable(#[from] UnfixableToolchain),
     /// The toolchain is missing components that can be installed.
     #[error("Toolchain is missing, but can be fixed automatically")]
