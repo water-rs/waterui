@@ -483,7 +483,14 @@ pub mod gtk4 {
             })),
         );
 
-        // Add waterui-gtk dependency
+        // Add waterui-gtk dependency with platform-specific GPU features
+        #[cfg(target_os = "macos")]
+        let gtk_features = vec!["macos".to_string()];
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let gtk_features = vec!["x11".to_string(), "wayland".to_string()];
+        #[cfg(not(unix))]
+        let gtk_features = vec![];
+
         if let Some(waterui_path) = &ctx.waterui_path {
             // Path from GTK4 backend to waterui-gtk:
             // 1. Go up to project root
@@ -501,13 +508,18 @@ pub mod gtk4 {
                 "waterui-gtk".to_string(),
                 Dependency::Detailed(Box::new(DependencyDetail {
                     path: Some(normalize_path_for_config(&gtk_path)),
+                    features: gtk_features,
                     ..Default::default()
                 })),
             );
         } else {
             manifest.dependencies.insert(
                 "waterui-gtk".to_string(),
-                Dependency::Simple(WATERUI_GTK_VERSION.to_string()),
+                Dependency::Detailed(Box::new(DependencyDetail {
+                    version: Some(WATERUI_GTK_VERSION.to_string()),
+                    features: gtk_features,
+                    ..Default::default()
+                })),
             );
         }
 
