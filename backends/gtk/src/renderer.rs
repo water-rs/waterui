@@ -313,9 +313,253 @@ impl GtkRenderer {
 
         // Metadata<GestureObserver> - handle gestures
         dispatcher.register::<Metadata<GestureObserver>>(|_state, ctx, metadata, env| {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            use waterui::gesture::{
+                DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent,
+                MagnificationEvent, TapEvent,
+            };
+            use waterui_core::handler::Handler;
+
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
-            // TODO: Connect gesture recognizers
+
+            let gesture = metadata.value.gesture;
+            // Wrap action in Rc<RefCell> so it can be shared across closures
+            let action = Rc::new(RefCell::new(metadata.value.action));
+            let env = env.clone();
+
+            // Make sure widget can receive pointer events
+            widget.set_can_target(true);
+
+            match gesture {
+                Gesture::Tap(tap) => {
+                    let click = gtk4::GestureClick::new();
+                    click.set_button(1); // Left mouse button
+                    click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+                    let env = env.clone();
+                    let action = action.clone();
+                    let required_count = tap.count;
+
+                    click.connect_pressed(move |gesture, n_press, x, y| {
+                        tracing::debug!(
+                            "[GestureObserver] Tap pressed: n_press={}, required={}",
+                            n_press,
+                            required_count
+                        );
+                        if n_press as u32 >= required_count {
+                            let tap_event = TapEvent {
+                                location: GesturePoint::new(x as f32, y as f32),
+                                count: n_press as u32,
+                            };
+
+                            let mut env = env.clone();
+                            env.insert(tap_event);
+
+                            if let Ok(mut handler) = action.try_borrow_mut() {
+                                handler.handle(&env);
+                            }
+                            gesture.set_state(gtk4::EventSequenceState::Claimed);
+                        }
+                    });
+
+                    widget.add_controller(click);
+                }
+
+                Gesture::LongPress(long_press) => {
+                    let press = gtk4::GestureLongPress::new();
+                    // delay_factor is a multiplier: 1.0 = 500ms default, 2.0 = 1000ms
+                    press.set_delay_factor(long_press.duration as f64 / 500.0);
+                    press.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+                    let env = env.clone();
+                    let action = action.clone();
+                    let duration = long_press.duration;
+
+                    press.connect_pressed(move |gesture, x, y| {
+                        tracing::debug!("[GestureObserver] Long press triggered");
+                        let event = LongPressEvent {
+                            location: GesturePoint::new(x as f32, y as f32),
+                            duration: duration as f32,
+                        };
+
+                        let mut env = env.clone();
+                        env.insert(event);
+
+                        if let Ok(mut handler) = action.try_borrow_mut() {
+                            handler.handle(&env);
+                        }
+                        gesture.set_state(gtk4::EventSequenceState::Claimed);
+                    });
+
+                    widget.add_controller(press);
+                }
+
+                Gesture::Drag(drag) => {
+                    let drag_gesture = gtk4::GestureDrag::new();
+                    drag_gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+                    let min_distance = drag.min_distance;
+
+                    let drag_started = Rc::new(RefCell::new(false));
+
+                    // Drag begin
+                    {
+                        let env = env.clone();
+                        let action = action.clone();
+                        let drag_started = drag_started.clone();
+
+                        drag_gesture.connect_drag_begin(move |gesture, x, y| {
+                            *drag_started.borrow_mut() = false;
+
+                            let event = DragEvent {
+                                phase: GesturePhase::Started,
+                                location: GesturePoint::new(x as f32, y as f32),
+                                translation: GesturePoint::new(0.0, 0.0),
+                                velocity: GesturePoint::new(0.0, 0.0),
+                            };
+
+                            let mut env = env.clone();
+                            env.insert(event);
+
+                            if let Ok(mut handler) = action.try_borrow_mut() {
+                                handler.handle(&env);
+                            }
+                            gesture.set_state(gtk4::EventSequenceState::Claimed);
+                        });
+                    }
+
+                    // Drag update
+                    {
+                        let env = env.clone();
+                        let action = action.clone();
+                        let drag_started = drag_started.clone();
+
+                        drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
+                            let distance = (offset_x * offset_x + offset_y * offset_y).sqrt() as f32;
+                            if distance < min_distance && !*drag_started.borrow() {
+                                return;
+                            }
+                            *drag_started.borrow_mut() = true;
+
+                            let start = gesture.start_point().unwrap_or((0.0, 0.0));
+
+                            let event = DragEvent {
+                                phase: GesturePhase::Updated,
+                                location: GesturePoint::new(
+                                    (start.0 + offset_x) as f32,
+                                    (start.1 + offset_y) as f32,
+                                ),
+                                translation: GesturePoint::new(offset_x as f32, offset_y as f32),
+                                velocity: GesturePoint::new(0.0, 0.0),
+                            };
+
+                            let mut env = env.clone();
+                            env.insert(event);
+
+                            if let Ok(mut handler) = action.try_borrow_mut() {
+                                handler.handle(&env);
+                            }
+                        });
+                    }
+
+                    // Drag end
+                    {
+                        let env = env.clone();
+                        let action = action.clone();
+                        let drag_started = drag_started.clone();
+
+                        drag_gesture.connect_drag_end(move |gesture, offset_x, offset_y| {
+                            if !*drag_started.borrow() {
+                                return;
+                            }
+
+                            let start = gesture.start_point().unwrap_or((0.0, 0.0));
+
+                            let event = DragEvent {
+                                phase: GesturePhase::Ended,
+                                location: GesturePoint::new(
+                                    (start.0 + offset_x) as f32,
+                                    (start.1 + offset_y) as f32,
+                                ),
+                                translation: GesturePoint::new(offset_x as f32, offset_y as f32),
+                                velocity: GesturePoint::new(0.0, 0.0),
+                            };
+
+                            let mut env = env.clone();
+                            env.insert(event);
+
+                            if let Ok(mut handler) = action.try_borrow_mut() {
+                                handler.handle(&env);
+                            }
+                        });
+                    }
+
+                    widget.add_controller(drag_gesture);
+                }
+
+                Gesture::Magnification(_magnify) => {
+                    let zoom = gtk4::GestureZoom::new();
+
+                    let env = env.clone();
+                    let action = action.clone();
+
+                    zoom.connect_scale_changed(move |gesture, scale| {
+                        let bbox = gesture.bounding_box();
+                        let center = bbox
+                            .map(|b| GesturePoint::new(b.x() as f32, b.y() as f32))
+                            .unwrap_or(GesturePoint::new(0.0, 0.0));
+
+                        let event = MagnificationEvent {
+                            phase: GesturePhase::Updated,
+                            center,
+                            scale: scale as f32,
+                            velocity: 0.0,
+                        };
+
+                        let mut env = env.clone();
+                        env.insert(event);
+
+                        if let Ok(mut handler) = action.try_borrow_mut() {
+                            handler.handle(&env);
+                        }
+                        gesture.set_state(gtk4::EventSequenceState::Claimed);
+                    });
+
+                    widget.add_controller(zoom);
+                }
+
+                Gesture::Rotation(_rotate) => {
+                    // GTK4 rotation gesture - no RotationEvent type defined yet
+                    let rotate = gtk4::GestureRotate::new();
+
+                    let env = env.clone();
+                    let action = action.clone();
+
+                    rotate.connect_angle_changed(move |gesture, _angle, _delta| {
+                        // Just call the handler without a specific event type
+                        let env = env.clone();
+
+                        if let Ok(mut handler) = action.try_borrow_mut() {
+                            handler.handle(&env);
+                        }
+                        gesture.set_state(gtk4::EventSequenceState::Claimed);
+                    });
+
+                    widget.add_controller(rotate);
+                }
+
+                Gesture::Then(_then) => {
+                    tracing::warn!(
+                        "[GestureObserver] Sequential gestures (Then) not fully implemented"
+                    );
+                }
+
+                _ => {
+                    tracing::warn!("[GestureObserver] Unhandled gesture type");
+                }
+            }
+
             widget
         });
 
