@@ -11,20 +11,27 @@ use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
     android::{
         device::{AndroidDevice, AndroidEmulator},
-        platform::AndroidPlatform,
+        platform::{build_android, package_android, AndroidPlatform},
+        toolchain::{AndroidNdk, AndroidSdk},
     },
     apple::{
-        device::{AppleDevice, AppleSimulator, MacOS},
-        platform::ApplePlatform,
+        device::{AppleSimulator, MacOS},
+        platform::{build_rust_lib, package_apple},
+        toolchain::{AppleSdk, Xcode},
     },
     backend::reinit_backend,
     build::BuildOptions,
     debug::{HotReloadEvent, HotReloadRunner},
     device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
-    gtk::{backend::GtkBackend, device::GtkDevice, platform::GtkPlatform},
-    platform::{PackageOptions, Platform},
+    gtk::{
+        backend::GtkBackend,
+        device::GtkDevice,
+        platform::{build_gtk, package_gtk},
+        toolchain::GtkToolchain,
+    },
+    platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
-    toolchain::Toolchain,
+    toolchain::{Toolchain, cmake::Cmake},
 };
 
 /// Target platform for running.
@@ -36,7 +43,20 @@ pub enum TargetPlatform {
     Android,
     /// macOS (current machine).
     Macos,
-    /// GTK (Linux/macOS/Windows native).
+    /// Linux (native desktop).
+    Linux,
+    /// GTK (alias for Linux with GTK backend).
+    Gtk,
+}
+
+/// Target backend for running (how the app is built and rendered).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TargetBackend {
+    /// Apple backend (UIKit/AppKit).
+    Apple,
+    /// Android backend (Android Views).
+    Android,
+    /// GTK4 backend (Linux/macOS/Windows).
     Gtk,
 }
 
@@ -46,6 +66,11 @@ pub struct Args {
     /// Target platform to run on.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
+
+    /// Backend to use (overrides default for platform).
+    /// E.g., `--platform macos --backend gtk` runs macOS app with GTK4 rendering.
+    #[arg(short, long, value_enum)]
+    backend: Option<TargetBackend>,
 
     /// Device identifier (if not specified, uses first available device).
     #[arg(short, long)]
@@ -93,6 +118,53 @@ impl From<CliLogLevel> for LogLevel {
     }
 }
 
+/// Resolve the effective backend for a platform.
+/// Returns the backend to use and validates compatibility.
+fn resolve_backend(
+    platform: TargetPlatform,
+    backend_override: Option<TargetBackend>,
+) -> Result<TargetBackend> {
+    // Default backends for each platform
+    let default_backend = match platform {
+        TargetPlatform::Ios => TargetBackend::Apple,
+        TargetPlatform::Macos => TargetBackend::Apple,
+        TargetPlatform::Android => TargetBackend::Android,
+        TargetPlatform::Linux | TargetPlatform::Gtk => TargetBackend::Gtk,
+    };
+
+    let backend = backend_override.unwrap_or(default_backend);
+
+    // Validate backend supports platform
+    let supported = match (platform, backend) {
+        // Apple backend: iOS, macOS
+        (TargetPlatform::Ios, TargetBackend::Apple) => true,
+        (TargetPlatform::Macos, TargetBackend::Apple) => true,
+        // Android backend: Android
+        (TargetPlatform::Android, TargetBackend::Android) => true,
+        // GTK backend: macOS, Linux, Gtk (alias)
+        (TargetPlatform::Macos, TargetBackend::Gtk) => true,
+        (TargetPlatform::Linux, TargetBackend::Gtk) => true,
+        (TargetPlatform::Gtk, TargetBackend::Gtk) => true,
+        // All other combinations are invalid
+        _ => false,
+    };
+
+    if !supported {
+        bail!(
+            "Backend {:?} does not support platform {:?}.\n\
+             Valid combinations:\n  \
+             - iOS: apple\n  \
+             - macOS: apple, gtk\n  \
+             - Android: android\n  \
+             - Linux: gtk",
+            backend,
+            platform
+        );
+    }
+
+    Ok(backend)
+}
+
 /// Run the run command.
 pub async fn run(args: Args) -> Result<()> {
     let project_path = args
@@ -101,22 +173,26 @@ pub async fn run(args: Args) -> Result<()> {
         .unwrap_or_else(|_| args.path.clone());
     let mut project = Project::open(&project_path).await?;
 
+    // Resolve the backend to use
+    let backend = resolve_backend(args.platform, args.backend)?;
+
     header!(
-        "Running {} on {}",
+        "Running {} on {} ({})",
         project.crate_name(),
-        platform_name(args.platform)
+        platform_name(args.platform),
+        backend_name(backend)
     );
 
     // Step 1: Check toolchain
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain(args.platform).await?;
+    check_toolchain_for_backend(backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!("Toolchain ready");
 
     // Initialize GTK backend if needed (lazy initialization)
-    if args.platform == TargetPlatform::Gtk && project.gtk_backend().is_none() {
+    if backend == TargetBackend::Gtk && project.gtk_backend().is_none() {
         let spinner = shell::spinner("Initializing GTK backend...");
         reinit_backend::<GtkBackend>(&project).await?;
         // Reload project to pick up the new backend
@@ -129,7 +205,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Step 2: Find device
     let spinner = shell::spinner("Scanning for devices...");
-    let device = find_device(args.platform, args.device.as_deref()).await?;
+    let device = find_device(args.platform, backend, args.device.as_deref()).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -148,6 +224,8 @@ pub async fn run(args: Args) -> Result<()> {
     let hot_reload = !args.no_hot_reload;
     let (running, hot_reload_runner) = display_output(build_and_run(
         &project,
+        args.platform,
+        backend,
         device,
         needs_launch,
         hot_reload,
@@ -164,10 +242,10 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Stream device events and hot reload events
     let mut running = std::pin::pin!(running);
-    let platform_name = match args.platform {
-        TargetPlatform::Android => "Android",
-        TargetPlatform::Ios | TargetPlatform::Macos => "Apple",
-        TargetPlatform::Gtk => "GTK",
+    let backend_log_name = match backend {
+        TargetBackend::Apple => "Apple",
+        TargetBackend::Android => "Android",
+        TargetBackend::Gtk => "GTK",
     };
 
     // Get hot reload event receiver if available
@@ -190,7 +268,7 @@ pub async fn run(args: Args) -> Result<()> {
                 // Timeout - loop back to check hot reload events
             }
             dev_event = FutureExt::fuse(device_event) => {
-                if handle_device_event(dev_event, platform_name) {
+                if handle_device_event(dev_event, backend_log_name) {
                     break;
                 }
             }
@@ -201,70 +279,63 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 /// Build, package, and run on device.
-///
-/// Handles:
-/// - Launching device in background (if needed) while building
-/// - Building and packaging via the device's platform
-/// - Running with hot reload support
-///
-/// Returns the running app stream and optionally a hot reload runner.
 async fn build_and_run(
     project: &Project,
+    cli_platform: TargetPlatform,
+    backend: TargetBackend,
     device: SelectedDevice,
     needs_launch: bool,
     hot_reload: bool,
     log_level: Option<LogLevel>,
 ) -> Result<(Running, Option<HotReloadRunner>)> {
-    match device {
-        SelectedDevice::AppleSimulator(sim) => {
-            build_and_run_device(project, sim, needs_launch, hot_reload, log_level).await
-        }
-        SelectedDevice::AppleMacos(macos) => {
-            build_and_run_device(project, macos, needs_launch, hot_reload, log_level).await
-        }
-        SelectedDevice::AndroidDevice(dev) => {
-            build_and_run_device(project, dev, needs_launch, hot_reload, log_level).await
-        }
-        SelectedDevice::AndroidEmulator(emu) => {
-            build_and_run_device(project, emu, needs_launch, hot_reload, log_level).await
-        }
-        SelectedDevice::Gtk(gtk) => {
-            build_and_run_device(project, gtk, needs_launch, hot_reload, log_level).await
-        }
-    }
-}
-
-/// Generic implementation for building and running on any device type.
-async fn build_and_run_device<D: Device + 'static>(
-    project: &Project,
-    device: D,
-    needs_launch: bool,
-    hot_reload: bool,
-    log_level: Option<LogLevel>,
-) -> Result<(Running, Option<HotReloadRunner>)>
-where
-    D::Platform: Platform,
-{
-    let platform = device.platform();
-    let triple = platform.triple();
+    // Get the library target platform for this CLI platform
+    let lib_platform = match cli_platform {
+        TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
+        TargetPlatform::Macos => LibTargetPlatform::MacOS,
+        TargetPlatform::Android => LibTargetPlatform::Android,
+        TargetPlatform::Linux | TargetPlatform::Gtk => LibTargetPlatform::Linux,
+    };
 
     // Launch device in background while building (if needed)
     let launch_task = smol::spawn(async move {
         if needs_launch {
-            device.launch().await?;
+            match &device {
+                SelectedDevice::AppleSimulator(sim) => sim.launch().await?,
+                SelectedDevice::AppleMacos(macos) => macos.launch().await?,
+                SelectedDevice::AndroidDevice(dev) => dev.launch().await?,
+                SelectedDevice::AndroidEmulator(emu) => emu.launch().await?,
+                SelectedDevice::Gtk(gtk) => gtk.launch().await?,
+            }
         }
         Ok::<_, color_eyre::eyre::Report>(device)
     });
 
     // Build and package while device launches in background
     shell::status("▶", "Building...");
-    platform
-        .build(project, BuildOptions::new(false, hot_reload))
-        .await?;
+    let build_options = BuildOptions::new(false, hot_reload);
+
+    // Build based on backend, not platform
+    match backend {
+        TargetBackend::Apple => {
+            build_rust_lib(project, lib_platform, build_options).await?;
+        }
+        TargetBackend::Android => {
+            build_android(project, lib_platform, build_options).await?;
+        }
+        TargetBackend::Gtk => {
+            build_gtk(project, build_options).await?;
+        }
+    }
+
     shell::status("▶", "Packaging...");
-    let artifact = platform
-        .package(project, PackageOptions::new(false, true))
-        .await?;
+    let package_options = PackageOptions::new(false, true);
+
+    // Package based on backend, not platform
+    let artifact = match backend {
+        TargetBackend::Apple => package_apple(project, lib_platform, package_options).await?,
+        TargetBackend::Android => package_android(project, lib_platform, package_options).await?,
+        TargetBackend::Gtk => package_gtk(project, package_options).await?,
+    };
 
     // Wait for device to be ready
     if needs_launch {
@@ -273,6 +344,7 @@ where
     let device = launch_task.await?;
 
     // Create hot reload runner if enabled
+    let triple = lib_platform.triple();
     let runner = if hot_reload {
         shell::status("▶", "Starting hot reload...");
         Some(HotReloadRunner::new(project, triple).await?)
@@ -287,8 +359,8 @@ where
 }
 
 /// Run artifact on device with hot reload support.
-async fn run_with_options<D: Device>(
-    device: D,
+async fn run_with_options(
+    device: SelectedDevice,
     artifact: Artifact,
     runner: Option<&HotReloadRunner>,
     log_level: Option<LogLevel>,
@@ -308,7 +380,13 @@ async fn run_with_options<D: Device>(
         );
     }
 
-    let running = device.run(artifact, run_options).await?;
+    let running = match device {
+        SelectedDevice::AppleSimulator(sim) => sim.run(artifact, run_options).await?,
+        SelectedDevice::AppleMacos(macos) => macos.run(artifact, run_options).await?,
+        SelectedDevice::AndroidDevice(dev) => dev.run(artifact, run_options).await?,
+        SelectedDevice::AndroidEmulator(emu) => emu.run(artifact, run_options).await?,
+        SelectedDevice::Gtk(gtk) => gtk.run(artifact, run_options).await?,
+    };
 
     Ok(running)
 }
@@ -333,25 +411,34 @@ impl SelectedDevice {
     }
 }
 
-async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
-    match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => {
-            let platform = ApplePlatform::ios_simulator();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+async fn check_toolchain_for_backend(backend: TargetBackend) -> Result<()> {
+    match backend {
+        TargetBackend::Apple => {
+            let xcode = Xcode;
+            if let Err(e) = xcode.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let sdk = AppleSdk::Ios;
+            if let Err(e) = sdk.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }
-        TargetPlatform::Android => {
-            let platform = AndroidPlatform::arm64();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+        TargetBackend::Android => {
+            let sdk = AndroidSdk;
+            if let Err(e) = sdk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let ndk = AndroidNdk;
+            if let Err(e) = ndk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let cmake = Cmake {};
+            if let Err(e) = cmake.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }
-        TargetPlatform::Gtk => {
-            let platform = GtkPlatform::new();
-            let toolchain = platform.toolchain();
+        TargetBackend::Gtk => {
+            let toolchain = GtkToolchain;
             if let Err(e) = toolchain.check().await {
                 bail!("Toolchain check failed: {e}");
             }
@@ -360,19 +447,25 @@ async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
     Ok(())
 }
 
-async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Result<SelectedDevice> {
+async fn find_device(
+    platform: TargetPlatform,
+    backend: TargetBackend,
+    device_id: Option<&str>,
+) -> Result<SelectedDevice> {
+    // For GTK backend, always use GtkDevice regardless of platform
+    if backend == TargetBackend::Gtk {
+        return Ok(SelectedDevice::Gtk(GtkDevice));
+    }
+
     match platform {
         TargetPlatform::Ios => {
-            let p = ApplePlatform::ios_simulator();
-            let devices = p.scan().await?;
+            let devices = AppleSimulator::scan().await?;
 
             if let Some(id) = device_id {
                 // Find specific device
-                for dev in devices {
-                    if let AppleDevice::Simulator(sim) = dev {
-                        if sim.udid == id || sim.name == id {
-                            return Ok(SelectedDevice::AppleSimulator(sim));
-                        }
+                for sim in devices {
+                    if sim.udid == id || sim.name == id {
+                        return Ok(SelectedDevice::AppleSimulator(sim));
                     }
                 }
                 bail!("Device not found: {id}");
@@ -380,14 +473,12 @@ async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Resul
 
             // Find first booted or first available
             let mut first_available = None;
-            for dev in devices {
-                if let AppleDevice::Simulator(sim) = dev {
-                    if sim.state == "Booted" {
-                        return Ok(SelectedDevice::AppleSimulator(sim));
-                    }
-                    if first_available.is_none() {
-                        first_available = Some(sim);
-                    }
+            for sim in devices {
+                if sim.state == "Booted" {
+                    return Ok(SelectedDevice::AppleSimulator(sim));
+                }
+                if first_available.is_none() {
+                    first_available = Some(sim);
                 }
             }
 
@@ -396,12 +487,11 @@ async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Resul
                 .ok_or_else(|| color_eyre::eyre::eyre!("No iOS simulators available"))
         }
         TargetPlatform::Macos => {
-            // macOS is always the current machine
+            // macOS with Apple backend uses the current machine
             Ok(SelectedDevice::AppleMacos(MacOS))
         }
         TargetPlatform::Android => {
-            let p = AndroidPlatform::arm64();
-            let devices = p.scan().await.unwrap_or_default();
+            let devices = AndroidDevice::scan().await.unwrap_or_default();
 
             if let Some(id) = device_id {
                 // Find specific device
@@ -431,8 +521,8 @@ async fn find_device(platform: TargetPlatform, device_id: Option<&str>) -> Resul
                 avd_name,
             )))
         }
-        TargetPlatform::Gtk => {
-            // GTK always runs on the local machine
+        TargetPlatform::Linux | TargetPlatform::Gtk => {
+            // Linux/GTK always runs on the local machine
             Ok(SelectedDevice::Gtk(GtkDevice))
         }
     }
@@ -453,7 +543,16 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Ios => "iOS Simulator",
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
+        TargetPlatform::Linux => "Linux",
         TargetPlatform::Gtk => "GTK",
+    }
+}
+
+const fn backend_name(backend: TargetBackend) -> &'static str {
+    match backend {
+        TargetBackend::Apple => "Apple",
+        TargetBackend::Android => "Android",
+        TargetBackend::Gtk => "GTK",
     }
 }
 
