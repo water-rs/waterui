@@ -1,7 +1,7 @@
-//! GTK platform build and package utilities.
+//! GTK4 platform build and package utilities.
 //!
-//! This module provides utility functions for building and packaging GTK apps.
-//! These functions are used by `GtkBackend` to implement the `Backend` trait.
+//! This module provides utility functions for building and packaging GTK4 apps.
+//! These functions are used by `Gtk4Backend` to implement the `Backend` trait.
 
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ use color_eyre::eyre::{self, bail};
 use crate::{
     build::BuildOptions,
     device::Artifact,
-    gtk::backend::GtkBackend,
+    gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     utils::run_command,
@@ -20,19 +20,19 @@ use crate::{
 // Build Utilities
 // ============================================================================
 
-/// Build GTK binary for the host platform.
-pub async fn build_gtk(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
-    let backend_path = project.backend_path::<GtkBackend>();
+/// Build GTK4 binary for the host platform.
+pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+    let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
 
     if !cargo_toml.exists() {
         bail!(
-            "GTK backend not found at {}. Run 'water run --platform gtk' to initialize it.",
+            "GTK4 backend not found at {}. Run 'water run --platform gtk4' to initialize it.",
             backend_path.display()
         );
     }
 
-    // Build the GTK binary crate
+    // Build the GTK4 binary crate
     let profile = if options.is_release() {
         "release"
     } else {
@@ -50,7 +50,7 @@ pub async fn build_gtk(project: &Project, options: BuildOptions) -> eyre::Result
     run_command("cargo", args.iter().copied()).await?;
 
     // Return the target directory where the binary was built
-    // GTK uses its own target directory since it's a standalone project
+    // GTK4 uses its own target directory since it's a standalone project
     let target_dir = backend_path.join("target").join(profile);
     Ok(target_dir)
 }
@@ -59,16 +59,16 @@ pub async fn build_gtk(project: &Project, options: BuildOptions) -> eyre::Result
 // Clean
 // ============================================================================
 
-/// Clean Cargo build artifacts for GTK.
-pub async fn clean_gtk(project: &Project) -> eyre::Result<()> {
-    let backend_path = project.backend_path::<GtkBackend>();
+/// Clean Cargo build artifacts for GTK4.
+pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
+    let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
 
     if !cargo_toml.exists() {
         return Ok(()); // Nothing to clean
     }
 
-    // Run cargo clean for the GTK crate
+    // Run cargo clean for the GTK4 crate
     run_command(
         "cargo",
         [
@@ -86,17 +86,17 @@ pub async fn clean_gtk(project: &Project) -> eyre::Result<()> {
 // Package
 // ============================================================================
 
-/// Package a GTK app (locate the built binary).
-pub async fn package_gtk(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
-    // For GTK, "packaging" just means locating the built binary
+/// Package a GTK4 app (locate the built binary).
+pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
+    // For GTK4, "packaging" just means locating the built binary
     let profile = if options.is_debug() { "debug" } else { "release" };
-    // GTK uses its own target directory since it's a standalone project
-    let backend_path = project.backend_path::<GtkBackend>();
+    // GTK4 uses its own target directory since it's a standalone project
+    let backend_path = project.backend_path::<Gtk4Backend>();
     let target_dir = backend_path.join("target").join(profile);
 
-    // The binary name is the GTK crate name (project-gtk)
+    // The binary name is the GTK4 crate name (project-gtk4)
     let crate_name = project.crate_name();
-    let binary_name = format!("{crate_name}-gtk");
+    let binary_name = format!("{crate_name}-gtk4");
 
     // Handle platform-specific binary extension
     let binary_path = if cfg!(windows) {
@@ -122,7 +122,7 @@ pub async fn package_gtk(project: &Project, options: PackageOptions) -> eyre::Re
         }
 
         bail!(
-            "Built GTK binary not found at {}. Did you run build first?",
+            "Built GTK4 binary not found at {}. Did you run build first?",
             binary_path.display()
         );
     }
@@ -134,8 +134,8 @@ pub async fn package_gtk(project: &Project, options: PackageOptions) -> eyre::Re
 // Platform Support Check
 // ============================================================================
 
-/// Check if a platform is supported by the GTK backend.
-pub const fn is_gtk_platform(platform: TargetPlatform) -> bool {
+/// Check if a platform is supported by the GTK4 backend.
+pub const fn is_gtk4_platform(platform: TargetPlatform) -> bool {
     matches!(
         platform,
         TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::MacOS
