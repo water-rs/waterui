@@ -1,9 +1,15 @@
 //! Toolchain diagnostics for the `water doctor` command.
 
+use std::future::Future;
+use std::pin::Pin;
+
+use color_eyre::eyre;
+
 use crate::{
     android::toolchain::{AndroidNdk, AndroidSdk, Java},
     apple::toolchain::{AppleSdk, Xcode},
-    toolchain::Toolchain,
+    gtk::toolchain::GtkToolchain,
+    toolchain::{Installation, Toolchain, ToolchainError},
 };
 
 /// Status of a toolchain check.
@@ -17,8 +23,11 @@ pub enum CheckStatus {
     Skipped,
 }
 
+/// A boxed async function that performs an installation.
+pub type BoxedInstallFn =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = eyre::Result<()>> + Send>> + Send>;
+
 /// A single item in the doctor report.
-#[derive(Debug)]
 pub struct DoctorItem {
     /// Name of the toolchain or component.
     pub name: &'static str,
@@ -26,8 +35,19 @@ pub struct DoctorItem {
     pub status: CheckStatus,
     /// Optional message with details or suggestions.
     pub message: Option<String>,
-    /// Whether the issue can be fixed automatically.
-    pub fixable: bool,
+    /// Optional installation function if the issue can be fixed automatically.
+    pub install_fn: Option<BoxedInstallFn>,
+}
+
+impl std::fmt::Debug for DoctorItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoctorItem")
+            .field("name", &self.name)
+            .field("status", &self.status)
+            .field("message", &self.message)
+            .field("install_fn", &self.install_fn.as_ref().map(|_| "..."))
+            .finish()
+    }
 }
 
 impl DoctorItem {
@@ -36,7 +56,7 @@ impl DoctorItem {
             name,
             status: CheckStatus::Ok,
             message: None,
-            fixable: false,
+            install_fn: None,
         }
     }
 
@@ -45,7 +65,22 @@ impl DoctorItem {
             name,
             status: CheckStatus::Missing,
             message: Some(message.into()),
-            fixable: false,
+            install_fn: None,
+        }
+    }
+
+    fn fixable<I: Installation + Send + 'static>(
+        name: &'static str,
+        message: impl Into<String>,
+        installation: I,
+    ) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Missing,
+            message: Some(message.into()),
+            install_fn: Some(Box::new(move || {
+                Box::pin(async move { installation.install().await.map_err(Into::into) })
+            })),
         }
     }
 
@@ -54,8 +89,14 @@ impl DoctorItem {
             name,
             status: CheckStatus::Skipped,
             message: None,
-            fixable: false,
+            install_fn: None,
         }
+    }
+
+    /// Returns `true` if the issue can be fixed automatically.
+    #[must_use]
+    pub const fn is_fixable(&self) -> bool {
+        self.install_fn.is_some()
     }
 }
 
@@ -106,6 +147,28 @@ pub async fn doctor() -> Vec<DoctorItem> {
             "Java",
             "Install JDK or set JAVA_HOME. Android Studio includes a bundled JDK.",
         )),
+    }
+
+    // Check GTK toolchain
+    match GtkToolchain.check().await {
+        Ok(()) => items.push(DoctorItem::ok("GTK4")),
+        Err(ToolchainError::Fixable(installation)) => {
+            let msg = match &installation {
+                crate::gtk::toolchain::GtkInstallation::PkgConfig => {
+                    "pkg-config not found (can be installed via Homebrew)"
+                }
+                crate::gtk::toolchain::GtkInstallation::Gtk4 => {
+                    "GTK4 not found (can be installed via Homebrew)"
+                }
+                crate::gtk::toolchain::GtkInstallation::Both => {
+                    "pkg-config and GTK4 not found (can be installed via Homebrew)"
+                }
+            };
+            items.push(DoctorItem::fixable("GTK4", msg, installation));
+        }
+        Err(ToolchainError::Unfixable(e)) => {
+            items.push(DoctorItem::missing("GTK4", e.to_string()));
+        }
     }
 
     items

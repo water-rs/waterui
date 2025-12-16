@@ -2,6 +2,8 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::{Signal, SignalExt};
+use waterui_core::id::Id;
 use waterui_core::{Environment, Native};
 use waterui_navigation::tab::{TabPosition, Tabs};
 
@@ -34,7 +36,7 @@ impl GtkComponent for Native<Tabs> {
             tab_ids.push(id);
 
             // Render the label
-            let label_widget = renderer.render_any(tab.label.inner, env);
+            let label_widget = renderer.render_any(tab.label.content, env);
 
             // Build and render the content (NavigationView)
             let navigation_view = tab.content.build();
@@ -51,11 +53,12 @@ impl GtkComponent for Native<Tabs> {
         }
 
         // Watch for selection binding changes -> update notebook
-        let guard = tabs.selection.computed().watch({
+        let binding = tabs.selection;
+        let guard = binding.clone().computed().watch({
             let notebook = notebook.clone();
             let tab_ids = tab_ids.clone();
-            move |ctx| {
-                let selected_id = *ctx.value;
+            move |ctx: nami::watcher::Context<Id>| {
+                let selected_id = ctx.into_value();
                 if let Some(index) = tab_ids.iter().position(|id| *id == selected_id) {
                     let notebook = notebook.clone();
                     #[allow(clippy::cast_possible_wrap)]
@@ -67,11 +70,10 @@ impl GtkComponent for Native<Tabs> {
         });
 
         // Watch for notebook page changes -> update selection binding
-        let binding = tabs.selection;
         notebook.connect_switch_page({
             let tab_ids = tab_ids.clone();
             move |_, _, page_num| {
-                if let Some(id) = tab_ids.get(page_num as usize) {
+                if let Some(id) = tab_ids.as_slice().get(page_num as usize) {
                     if binding.get() != *id {
                         binding.set(*id);
                     }

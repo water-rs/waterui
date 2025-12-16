@@ -133,6 +133,12 @@ impl Project {
         self.manifest.backends.android()
     }
 
+    /// Get the GTK backend configuration if available.
+    #[must_use]
+    pub const fn gtk_backend(&self) -> Option<&crate::gtk::backend::GtkBackend> {
+        self.manifest.backends.gtk()
+    }
+
     /// Get the manifest of the project.
     #[must_use]
     pub const fn manifest(&self) -> &Manifest {
@@ -161,13 +167,15 @@ impl Project {
     /// - Rust target directory
     /// - Apple build artifacts (if backend configured)
     /// - Android build artifacts (if backend configured)
+    /// - GTK build artifacts (if backend configured)
     ///
     /// # Errors
     ///
     /// Returns an error if any cleaning operation fails.
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
-            android::platform::AndroidPlatform, apple::platform::ApplePlatform, platform::Platform,
+            android::platform::AndroidPlatform, apple::platform::ApplePlatform,
+            gtk::platform::GtkPlatform, platform::Platform,
         };
 
         // Clean Rust target directory
@@ -186,6 +194,11 @@ impl Project {
         // Clean Android backend if configured
         if self.android_backend().is_some() {
             AndroidPlatform::arm64().clean(self).await?;
+        }
+
+        // Clean GTK backend if configured
+        if self.gtk_backend().is_some() {
+            GtkPlatform::new().clean(self).await?;
         }
 
         Ok(())
@@ -438,6 +451,24 @@ impl Project {
 
         let backend = AndroidBackend::init(self).await?;
         self.manifest.backends.set_android(backend);
+        self.manifest
+            .save(&self.root)
+            .await
+            .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+        Ok(())
+    }
+
+    /// Initialize the GTK backend for an existing project.
+    ///
+    /// Creates necessary files/folders for the GTK backend under `backend_path::<GtkBackend>()`.
+    ///
+    /// # Errors
+    /// Returns an error if scaffolding fails.
+    pub async fn init_gtk_backend(&mut self) -> Result<(), crate::backend::FailToInitBackend> {
+        use crate::{backend::Backend, gtk::backend::GtkBackend};
+
+        let backend = GtkBackend::init(self).await?;
+        self.manifest.backends.set_gtk(backend);
         self.manifest
             .save(&self.root)
             .await
