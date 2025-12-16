@@ -1,61 +1,41 @@
-//! GTK container component that uses `waterui-layout` for positioning.
+//! GTK container component using native GTK layout.
 
 use gtk4::prelude::*;
-use gtk4::{Fixed, Widget};
-use waterui_core::layout::{Layout, ProposalSize, Rect, SubView};
+use gtk4::{Box as GtkBox, Orientation, Widget};
 use waterui_core::{Environment, Native};
 use waterui_layout::container::FixedContainer;
+use waterui_layout::StretchAxis;
 
 use crate::component::GtkComponent;
-use crate::layout::{place_children, stretch_axis_for_widget, GtkSubView};
 use crate::renderer::GtkRenderer;
 
 impl GtkComponent for Native<FixedContainer> {
-    /// Renders a `FixedContainer` to a GTK `Fixed` widget.
+    /// Renders a `FixedContainer` to a GTK `Box` widget.
     ///
-    /// This function:
-    /// 1. Renders each child view to a GTK widget
-    /// 2. Wraps each widget in a `GtkSubView` for measurement
-    /// 3. Calls the layout's `size_that_fits` and `place` methods
-    /// 4. Positions the widgets using `Fixed`
+    /// This uses GTK's native Box layout instead of waterui-layout
+    /// for better integration with GTK's sizing system.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let (layout, children) = self.into_inner().into_inner();
 
-        // Render each child view to a GTK widget
-        let child_widgets: Vec<Widget> = children
-            .into_iter()
-            .map(|view| renderer.render_any(view, env))
-            .collect();
-
-        // Create GtkSubView wrappers for measurement
-        let subviews: Vec<GtkSubView> = child_widgets
-            .iter()
-            .map(|w| GtkSubView::new(w.clone(), stretch_axis_for_widget(w)))
-            .collect();
-
-        // Convert to trait object references for layout
-        let subview_refs: Vec<&dyn SubView> = subviews.iter().map(|s| s as &dyn SubView).collect();
-
-        // Create the Fixed container
-        let fixed = Fixed::new();
-
-        // Perform initial layout
-        // TODO: Get actual available size from parent/window
-        let proposal = ProposalSize {
-            width: Some(800.0),
-            height: Some(600.0),
+        // Infer orientation from stretch_axis:
+        // - VStack stretches Horizontal (fills width) -> children are vertical
+        // - HStack stretches Vertical (fills height) -> children are horizontal
+        // - ZStack stretches Both -> use vertical as default
+        let orientation = match layout.stretch_axis() {
+            StretchAxis::Vertical => Orientation::Horizontal,
+            // Horizontal, Both, and None all default to vertical orientation
+            _ => Orientation::Vertical,
         };
 
-        let size = layout.size_that_fits(proposal, &subview_refs);
-        let bounds = Rect::new(waterui_core::layout::Point::new(0.0, 0.0), size);
-        let rects = layout.place(bounds, &subview_refs);
+        // Create the Box container with default spacing
+        let container = GtkBox::new(orientation, 8);
 
-        // Place children
-        place_children(&fixed, &rects, &child_widgets);
+        // Render each child view and add to container
+        for view in children {
+            let widget = renderer.render_any(view, env);
+            container.append(&widget);
+        }
 
-        // Set size request based on layout result
-        fixed.set_size_request(size.width as i32, size.height as i32);
-
-        fixed.upcast()
+        container.upcast()
     }
 }
