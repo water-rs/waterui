@@ -8,7 +8,7 @@ use color_eyre::eyre;
 use crate::{
     android::toolchain::{AndroidNdk, AndroidSdk, Java},
     apple::toolchain::{AppleSdk, Xcode},
-    gtk::toolchain::GtkToolchain,
+    gtk4::toolchain::Gtk4Toolchain,
     toolchain::{Installation, Toolchain, ToolchainError},
 };
 
@@ -149,18 +149,18 @@ pub async fn doctor() -> Vec<DoctorItem> {
         )),
     }
 
-    // Check GTK toolchain
-    match GtkToolchain.check().await {
+    // Check GTK4 toolchain
+    match Gtk4Toolchain.check().await {
         Ok(()) => items.push(DoctorItem::ok("GTK4")),
         Err(ToolchainError::Fixable(installation)) => {
             let msg = match &installation {
-                crate::gtk::toolchain::GtkInstallation::PkgConfig => {
+                crate::gtk4::toolchain::Gtk4Installation::PkgConfig => {
                     "pkg-config not found (can be installed via Homebrew)"
                 }
-                crate::gtk::toolchain::GtkInstallation::Gtk4 => {
+                crate::gtk4::toolchain::Gtk4Installation::Gtk4 => {
                     "GTK4 not found (can be installed via Homebrew)"
                 }
-                crate::gtk::toolchain::GtkInstallation::Both => {
+                crate::gtk4::toolchain::Gtk4Installation::Both => {
                     "pkg-config and GTK4 not found (can be installed via Homebrew)"
                 }
             };

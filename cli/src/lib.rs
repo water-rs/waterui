@@ -2,7 +2,7 @@
 pub mod android;
 pub mod apple;
 pub mod backend;
-pub mod gtk;
+pub mod gtk4;
 pub mod brew;
 pub mod build;
 pub mod debug;
