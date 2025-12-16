@@ -11,7 +11,6 @@ use tracing::info;
 
 use crate::{
     device::{Artifact, Device, DeviceEvent, FailToRun, Running, RunOptions},
-    gtk::platform::GtkPlatform,
     utils::command,
 };
 
@@ -22,15 +21,13 @@ use crate::{
 pub struct GtkDevice;
 
 impl Device for GtkDevice {
-    type Platform = GtkPlatform;
+    fn name(&self) -> &str {
+        "Local Machine (GTK)"
+    }
 
     async fn launch(&self) -> eyre::Result<()> {
         // No-op - local machine is always "launched"
         Ok(())
-    }
-
-    fn platform(&self) -> Self::Platform {
-        GtkPlatform
     }
 
     async fn run(
@@ -158,6 +155,11 @@ impl Device for GtkDevice {
         .detach();
 
         Ok(running)
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        // GTK device is the local machine - always available
+        Ok(vec![Self])
     }
 }
 
