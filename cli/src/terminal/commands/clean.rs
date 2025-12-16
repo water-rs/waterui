@@ -8,7 +8,8 @@ use color_eyre::eyre::Result;
 use crate::shell;
 use crate::{header, success};
 use waterui_cli::{
-    android::platform::AndroidPlatform, apple::platform::ApplePlatform, project::Project,
+    android::platform::clean_android, apple::platform::clean_apple,
+    gtk::platform::clean_gtk, project::Project,
 };
 
 /// Target platform for cleaning.
@@ -18,6 +19,8 @@ pub enum TargetPlatform {
     Apple,
     /// Android.
     Android,
+    /// GTK (Linux/macOS/Windows).
+    Gtk,
     /// All platforms.
     All,
 }
@@ -55,8 +58,7 @@ pub async fn run(args: Args) -> Result<()> {
         }
         TargetPlatform::Apple => {
             let spinner = shell::spinner("Cleaning Apple build artifacts...");
-            let platform = ApplePlatform::macos();
-            project.clean(platform).await?;
+            clean_apple(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
@@ -64,12 +66,19 @@ pub async fn run(args: Args) -> Result<()> {
         }
         TargetPlatform::Android => {
             let spinner = shell::spinner("Cleaning Android build artifacts...");
-            let platform = AndroidPlatform::arm64();
-            project.clean(platform).await?;
+            clean_android(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
             success!("Cleaned Android build artifacts");
+        }
+        TargetPlatform::Gtk => {
+            let spinner = shell::spinner("Cleaning GTK build artifacts...");
+            clean_gtk(&project).await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Cleaned GTK build artifacts");
         }
     }
 

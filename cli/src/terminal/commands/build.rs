@@ -8,8 +8,14 @@ use color_eyre::eyre::{Result, bail};
 use crate::shell::{self, display_output};
 use crate::{error, header, success};
 use waterui_cli::{
-    android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
-    platform::Platform as _, project::Project, toolchain::Toolchain,
+    android::platform::build_android,
+    apple::platform::build_rust_lib,
+    apple::toolchain::{AppleSdk, Xcode},
+    android::toolchain::{AndroidNdk, AndroidSdk},
+    build::BuildOptions,
+    platform::TargetPlatform as LibTargetPlatform,
+    project::Project,
+    toolchain::{Toolchain, cmake::Cmake},
 };
 
 /// Target platform for building.
@@ -62,6 +68,7 @@ pub struct Args {
     #[arg(long)]
     output_dir: Option<PathBuf>,
 }
+
 #[allow(clippy::too_many_lines)]
 /// Run the build command.
 pub async fn run(args: Args) -> Result<()> {
@@ -100,28 +107,15 @@ pub async fn run(args: Args) -> Result<()> {
         match (args.platform, args.arch) {
             // iOS physical device - only arm64 supported
             (TargetPlatform::Ios, None | Some(TargetArch::Arm64)) => {
-                ApplePlatform::ios().build(&project, build_options).await
+                build_rust_lib(&project, LibTargetPlatform::IOS, build_options).await
             }
             (TargetPlatform::Ios, Some(arch)) => {
                 bail!("iOS physical devices only support arm64, not {:?}", arch)
             }
 
-            // iOS Simulator - arm64 (Apple Silicon) or x86_64 (Intel)
-            (TargetPlatform::IosSimulator, None) => {
-                // Default to native architecture
-                ApplePlatform::ios_simulator()
-                    .build(&project, build_options)
-                    .await
-            }
-            (TargetPlatform::IosSimulator, Some(TargetArch::Arm64)) => {
-                ApplePlatform::ios_simulator_arm64()
-                    .build(&project, build_options)
-                    .await
-            }
-            (TargetPlatform::IosSimulator, Some(TargetArch::X86_64)) => {
-                ApplePlatform::ios_simulator_x86_64()
-                    .build(&project, build_options)
-                    .await
+            // iOS Simulator - uses host architecture by default
+            (TargetPlatform::IosSimulator, None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64)) => {
+                build_rust_lib(&project, LibTargetPlatform::IOSSimulator, build_options).await
             }
             (TargetPlatform::IosSimulator, Some(arch)) => {
                 bail!(
@@ -130,42 +124,18 @@ pub async fn run(args: Args) -> Result<()> {
                 )
             }
 
-            // Android - all architectures supported
+            // Android - currently only arm64 supported via TargetPlatform::Android
             (TargetPlatform::Android, None | Some(TargetArch::Arm64)) => {
-                AndroidPlatform::arm64()
-                    .build(&project, build_options)
-                    .await
+                build_android(&project, LibTargetPlatform::Android, build_options).await
             }
-            (TargetPlatform::Android, Some(TargetArch::X86_64)) => {
-                AndroidPlatform::x86_64()
-                    .build(&project, build_options)
-                    .await
-            }
-            (TargetPlatform::Android, Some(TargetArch::Armv7)) => {
-                AndroidPlatform::from_abi("armeabi-v7a")
-                    .build(&project, build_options)
-                    .await
-            }
-            (TargetPlatform::Android, Some(TargetArch::X86)) => {
-                AndroidPlatform::from_abi("x86")
-                    .build(&project, build_options)
-                    .await
+            (TargetPlatform::Android, Some(_arch)) => {
+                // TODO: Support other Android architectures
+                build_android(&project, LibTargetPlatform::Android, build_options).await
             }
 
-            // macOS - arm64 (Apple Silicon) or x86_64 (Intel)
-            (TargetPlatform::Macos, None) => {
-                // Default to native architecture
-                ApplePlatform::macos().build(&project, build_options).await
-            }
-            (TargetPlatform::Macos, Some(TargetArch::Arm64)) => {
-                ApplePlatform::macos_arm64()
-                    .build(&project, build_options)
-                    .await
-            }
-            (TargetPlatform::Macos, Some(TargetArch::X86_64)) => {
-                ApplePlatform::macos_x86_64()
-                    .build(&project, build_options)
-                    .await
+            // macOS - uses host architecture
+            (TargetPlatform::Macos, None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64)) => {
+                build_rust_lib(&project, LibTargetPlatform::MacOS, build_options).await
             }
             (TargetPlatform::Macos, Some(arch)) => {
                 bail!("macOS only supports arm64 or x86_64, not {:?}", arch)
@@ -194,20 +164,28 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
-    use waterui_cli::platform::Platform;
-
     match platform {
         TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
-            let platform = ApplePlatform::ios_simulator();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+            let xcode = Xcode;
+            if let Err(e) = xcode.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let sdk = AppleSdk::Ios;
+            if let Err(e) = sdk.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }
         TargetPlatform::Android => {
-            let platform = AndroidPlatform::arm64();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+            let sdk = AndroidSdk;
+            if let Err(e) = sdk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let ndk = AndroidNdk;
+            if let Err(e) = ndk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let cmake = Cmake {};
+            if let Err(e) = cmake.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }

@@ -1,3 +1,8 @@
+//! Android platform build and package utilities.
+//!
+//! This module provides utility functions for building and packaging Android apps.
+//! These functions are used by `AndroidBackend` to implement the `Backend` trait.
+
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, bail};
@@ -7,14 +12,13 @@ use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 use crate::{
     android::{
         backend::AndroidBackend,
-        device::AndroidDevice,
-        toolchain::{AndroidNdk, AndroidSdk, AndroidToolchain},
+        toolchain::{AndroidNdk, AndroidSdk},
     },
     build::{BuildOptions, RustBuild},
     device::Artifact,
-    platform::{PackageOptions, Platform},
+    platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{copy_file, run_command},
+    utils::copy_file,
 };
 
 fn validate_android_package_name(package: &str) -> eyre::Result<()> {
@@ -216,6 +220,108 @@ impl AndroidPlatform {
         ALL_ABIS.iter().map(|abi| Self::from_abi(abi)).collect()
     }
 
+    /// Get the target triple for this Android platform.
+    #[must_use]
+    pub fn triple(&self) -> Triple {
+        Triple {
+            architecture: self.architecture.clone(),
+            vendor: target_lexicon::Vendor::Unknown,
+            operating_system: target_lexicon::OperatingSystem::Linux,
+            environment: target_lexicon::Environment::Android,
+            binary_format: target_lexicon::BinaryFormat::Elf,
+        }
+    }
+
+    /// Build Rust library for this Android platform.
+    ///
+    /// # Errors
+    /// Returns an error if the build fails.
+    pub async fn build(&self, project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+        let abi = self.abi();
+        let triple = self.triple();
+
+        // Get NDK path for configuring the linker
+        let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
+            eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
+        })?;
+
+        // Configure NDK environment for cargo
+        let linker = ndk_linker_path(&ndk_path, abi);
+        let ar = ndk_ar_path(&ndk_path);
+        let cxx = ndk_cxx_path(&ndk_path, abi);
+
+        // Set environment variables for the linker
+        let target_upper = triple.to_string().replace('-', "_").to_uppercase();
+
+        // Build with RustBuild
+        let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+
+        // Set environment variables for cargo, cc-rs, and cmake before building
+        // SAFETY: CLI is single-threaded at this point
+        unsafe {
+            // For cargo/rustc linker
+            std::env::set_var(format!("CARGO_TARGET_{target_upper}_LINKER"), &linker);
+            std::env::set_var(format!("CARGO_TARGET_{target_upper}_AR"), &ar);
+
+            // For cc-rs crate (used by ring, aws-lc-sys, etc.) - uses underscore format
+            let target_underscore = triple.to_string().replace('-', "_");
+            std::env::set_var(format!("CC_{target_underscore}"), &linker);
+            std::env::set_var(format!("CXX_{target_underscore}"), &cxx);
+            std::env::set_var(format!("AR_{target_underscore}"), &ar);
+
+            // For CMake-based builds (aws-lc-sys, etc.)
+            std::env::set_var("ANDROID_NDK", &ndk_path);
+            std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
+            std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+
+            // Create a wrapper CMake toolchain file
+            let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi)?;
+            std::env::set_var("CMAKE_TOOLCHAIN_FILE", &wrapper_toolchain);
+            std::env::set_var(
+                format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
+                &wrapper_toolchain,
+            );
+
+            std::env::set_var("ANDROID_ABI", abi);
+            std::env::set_var("ANDROID_PLATFORM", "android-24");
+
+            if which::which("ninja").is_ok() {
+                std::env::set_var("CMAKE_GENERATOR", "Ninja");
+            }
+        }
+
+        let lib_dir = build.build_lib(options.is_release()).await?;
+
+        // Get the crate name and find the built .so file
+        let lib_name = project.crate_name().replace('-', "_");
+        let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
+
+        if !source_lib.exists() {
+            bail!(
+                "Rust shared library not found at {}. Did the build succeed?",
+                source_lib.display()
+            );
+        }
+
+        // Determine output directory: use specified output_dir or default to jniLibs
+        let output_dir = options.output_dir().map_or_else(
+            || {
+                project
+                    .backend_path::<AndroidBackend>()
+                    .join("app/src/main/jniLibs")
+                    .join(abi)
+            },
+            std::path::Path::to_path_buf,
+        );
+        fs::create_dir_all(&output_dir).await?;
+
+        // Copy with standardized name
+        let dest_lib = output_dir.join("libwaterui_app.so");
+        copy_file(&source_lib, &dest_lib).await?;
+
+        Ok(lib_dir)
+    }
+
     /// Clean all jniLibs directories to remove stale libraries from previous builds.
     ///
     /// # Errors
@@ -327,229 +433,236 @@ impl AndroidPlatform {
     }
 }
 
-impl Platform for AndroidPlatform {
-    type Device = AndroidDevice;
-    type Toolchain = AndroidToolchain;
+// ============================================================================
+// Build Utilities
+// ============================================================================
 
-    async fn scan(&self) -> eyre::Result<Vec<Self::Device>> {
-        let adb = AndroidSdk::adb_path()
-            .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
+/// Build Rust library for Android platform.
+pub async fn build_android(
+    project: &Project,
+    platform: TargetPlatform,
+    options: BuildOptions,
+) -> eyre::Result<PathBuf> {
+    let abi = platform_to_abi(platform);
+    let triple = android_triple(platform);
 
-        // Use adb to list connected devices
-        let output = run_command(adb.to_str().unwrap(), ["devices"]).await?;
+    // Get NDK path for configuring the linker
+    let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
+        eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
+    })?;
 
-        let mut devices = Vec::new();
+    // Configure NDK environment for cargo
+    let linker = ndk_linker_path(&ndk_path, abi);
+    let ar = ndk_ar_path(&ndk_path);
+    let cxx = ndk_cxx_path(&ndk_path, abi);
 
-        for line in output.lines().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 && parts[1] == "device" {
-                let identifier = parts[0].to_string();
+    // Set environment variables for the linker
+    let target_upper = triple.to_string().replace('-', "_").to_uppercase();
 
-                // Query the device's primary ABI
-                let abi = run_command(
-                    adb.to_str().unwrap(),
-                    ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
-                )
-                .await
-                .map_or_else(|_| "arm64-v8a".to_string(), |abi| abi.trim().to_string());
+    // Build with RustBuild
+    let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
 
-                devices.push(AndroidDevice::new(identifier, abi));
-            }
+    // Set environment variables for cargo, cc-rs, and cmake before building
+    // SAFETY: CLI is single-threaded at this point
+    unsafe {
+        // For cargo/rustc linker
+        std::env::set_var(format!("CARGO_TARGET_{target_upper}_LINKER"), &linker);
+        std::env::set_var(format!("CARGO_TARGET_{target_upper}_AR"), &ar);
+
+        // For cc-rs crate (used by ring, aws-lc-sys, etc.) - uses underscore format
+        let target_underscore = triple.to_string().replace('-', "_");
+        std::env::set_var(format!("CC_{target_underscore}"), &linker);
+        std::env::set_var(format!("CXX_{target_underscore}"), &cxx);
+        std::env::set_var(format!("AR_{target_underscore}"), &ar);
+
+        // For CMake-based builds (aws-lc-sys, etc.)
+        // Set all variants as different crates check different env vars
+        std::env::set_var("ANDROID_NDK", &ndk_path);
+        std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
+        std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+
+        // Create a wrapper CMake toolchain file that sets ANDROID_ABI before
+        // including the NDK toolchain. This is required because cmake-rs doesn't
+        // pass ANDROID_ABI as a -D define, causing the NDK toolchain to default
+        // to armeabi-v7a (32-bit ARM) instead of the correct architecture.
+        let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi)?;
+
+        std::env::set_var("CMAKE_TOOLCHAIN_FILE", &wrapper_toolchain);
+        std::env::set_var(
+            format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
+            &wrapper_toolchain,
+        );
+
+        // Also set these for other tools that might check them
+        std::env::set_var("ANDROID_ABI", abi);
+        std::env::set_var("ANDROID_PLATFORM", "android-24");
+
+        // Use Ninja generator if available to avoid Xcode/Make conflicts on macOS
+        // The system Make on macOS can inject -arch and -isysroot flags that break Android builds
+        if which::which("ninja").is_ok() {
+            std::env::set_var("CMAKE_GENERATOR", "Ninja");
         }
-
-        Ok(devices)
     }
 
-    fn toolchain(&self) -> Self::Toolchain {
-        AndroidToolchain::default()
+    let lib_dir = build.build_lib(options.is_release()).await?;
+
+    // Get the crate name and find the built .so file
+    let lib_name = project.crate_name().replace('-', "_");
+    let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
+
+    if !source_lib.exists() {
+        bail!(
+            "Rust shared library not found at {}. Did the build succeed?",
+            source_lib.display()
+        );
     }
 
-    async fn clean(&self, project: &Project) -> eyre::Result<()> {
-        let backend_path = project.backend_path::<AndroidBackend>();
-        let gradlew = backend_path.join(if cfg!(windows) {
-            "gradlew.bat"
-        } else {
-            "gradlew"
-        });
+    // Determine output directory: use specified output_dir or default to jniLibs
+    let output_dir = options.output_dir().map_or_else(
+        || {
+            project
+                .backend_path::<AndroidBackend>()
+                .join("app/src/main/jniLibs")
+                .join(abi)
+        },
+        std::path::Path::to_path_buf,
+    );
+    fs::create_dir_all(&output_dir).await?;
 
-        if !gradlew.exists() {
-            // No Android project to clean
-            return Ok(());
-        }
+    // Copy with standardized name
+    let dest_lib = output_dir.join("libwaterui_app.so");
+    copy_file(&source_lib, &dest_lib).await?;
 
-        run_command(
-            gradlew.to_str().unwrap(),
-            ["clean", "--project-dir", backend_path.to_str().unwrap()],
-        )
+    Ok(lib_dir)
+}
+
+// ============================================================================
+// Clean
+// ============================================================================
+
+/// Clean Gradle build artifacts for Android.
+pub async fn clean_android(project: &Project) -> eyre::Result<()> {
+    let backend_path = project.backend_path::<AndroidBackend>();
+    let gradlew = backend_path.join(if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "gradlew"
+    });
+
+    if !gradlew.exists() {
+        // No Android project to clean
+        return Ok(());
+    }
+
+    let output = smol::process::Command::new(gradlew.to_str().unwrap())
+        .args(["clean", "--project-dir", backend_path.to_str().unwrap()])
+        .output()
         .await?;
 
-        Ok(())
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Gradle clean failed: {}", stderr.trim());
     }
 
-    async fn build(
-        &self,
-        project: &Project,
-        options: BuildOptions,
-    ) -> eyre::Result<std::path::PathBuf> {
-        // Get NDK path for configuring the linker
-        let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
-            eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
-        })?;
+    Ok(())
+}
 
-        // Configure NDK environment for cargo
-        let linker = ndk_linker_path(&ndk_path, self.abi());
-        let ar = ndk_ar_path(&ndk_path);
-        let cxx = ndk_cxx_path(&ndk_path, self.abi());
+// ============================================================================
+// Package
+// ============================================================================
 
-        // Set environment variables for the linker
-        let target_upper = self.triple().to_string().replace('-', "_").to_uppercase();
+/// Package an Android app using Gradle.
+pub async fn package_android(
+    project: &Project,
+    platform: TargetPlatform,
+    options: PackageOptions,
+) -> eyre::Result<Artifact> {
+    validate_android_package_name(project.bundle_identifier())?;
 
-        // Build with RustBuild
-        let build = RustBuild::new(project.root(), self.triple(), options.is_hot_reload());
+    let abi = platform_to_abi(platform);
+    let backend_path = project.backend_path::<AndroidBackend>();
+    let gradlew = backend_path.join(if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "gradlew"
+    });
 
-        // Set environment variables for cargo, cc-rs, and cmake before building
-        // SAFETY: CLI is single-threaded at this point
-        unsafe {
-            // For cargo/rustc linker
-            std::env::set_var(format!("CARGO_TARGET_{target_upper}_LINKER"), &linker);
-            std::env::set_var(format!("CARGO_TARGET_{target_upper}_AR"), &ar);
+    let (command_name, path) = if options.is_distribution() && !options.is_debug() {
+        (
+            "bundleRelease",
+            backend_path.join("app/build/outputs/bundle/release/app-release.aab"),
+        )
+    } else if !options.is_distribution() && !options.is_debug() {
+        (
+            "assembleRelease",
+            backend_path.join("app/build/outputs/apk/release/app-release.apk"),
+        )
+    } else if !options.is_distribution() && options.is_debug() {
+        (
+            "assembleDebug",
+            backend_path.join("app/build/outputs/apk/debug/app-debug.apk"),
+        )
+    } else if options.is_distribution() && options.is_debug() {
+        (
+            "bundleDebug",
+            backend_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
+        )
+    } else {
+        unreachable!()
+    };
 
-            // For cc-rs crate (used by ring, aws-lc-sys, etc.) - uses underscore format
-            let target_underscore = self.triple().to_string().replace('-', "_");
-            std::env::set_var(format!("CC_{target_underscore}"), &linker);
-            std::env::set_var(format!("CXX_{target_underscore}"), &cxx);
-            std::env::set_var(format!("AR_{target_underscore}"), &ar);
+    // Skip Rust build in Gradle - we already built the library via `water build`
+    // The Gradle build.gradle.kts checks this env var and skips its buildRust tasks
+    //
+    // Also pass the target ABI to filter which native libraries are included
+    // This ensures only the architectures we built are packaged in the APK
+    let output = smol::process::Command::new(gradlew.to_str().unwrap())
+        .args([
+            command_name,
+            "--project-dir",
+            backend_path.to_str().unwrap(),
+        ])
+        .env("WATERUI_SKIP_RUST_BUILD", "1")
+        .env("WATERUI_ANDROID_ABIS", abi)
+        .output()
+        .await?;
 
-            // For CMake-based builds (aws-lc-sys, etc.)
-            // Set all variants as different crates check different env vars
-            std::env::set_var("ANDROID_NDK", &ndk_path);
-            std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
-            std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
-
-            // Create a wrapper CMake toolchain file that sets ANDROID_ABI before
-            // including the NDK toolchain. This is required because cmake-rs doesn't
-            // pass ANDROID_ABI as a -D define, causing the NDK toolchain to default
-            // to armeabi-v7a (32-bit ARM) instead of the correct architecture.
-            let android_abi = self.abi();
-            let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, android_abi)?;
-
-            std::env::set_var("CMAKE_TOOLCHAIN_FILE", &wrapper_toolchain);
-            std::env::set_var(
-                format!("CMAKE_TOOLCHAIN_FILE_{target_underscore}"),
-                &wrapper_toolchain,
-            );
-
-            // Also set these for other tools that might check them
-            std::env::set_var("ANDROID_ABI", android_abi);
-            std::env::set_var("ANDROID_PLATFORM", "android-24");
-
-            // Use Ninja generator if available to avoid Xcode/Make conflicts on macOS
-            // The system Make on macOS can inject -arch and -isysroot flags that break Android builds
-            if which::which("ninja").is_ok() {
-                std::env::set_var("CMAKE_GENERATOR", "Ninja");
-            }
-        }
-
-        let lib_dir = build.build_lib(options.is_release()).await?;
-
-        // Get the crate name and find the built .so file
-        let lib_name = project.crate_name().replace('-', "_");
-        let source_lib = lib_dir.join(format!("lib{lib_name}.so"));
-
-        if !source_lib.exists() {
-            bail!(
-                "Rust shared library not found at {}. Did the build succeed?",
-                source_lib.display()
-            );
-        }
-
-        // Determine output directory: use specified output_dir or default to jniLibs
-        let output_dir = options.output_dir().map_or_else(
-            || {
-                project
-                    .backend_path::<AndroidBackend>()
-                    .join("app/src/main/jniLibs")
-                    .join(self.abi())
-            },
-            std::path::Path::to_path_buf,
-        );
-        fs::create_dir_all(&output_dir).await?;
-
-        // Copy with standardized name
-        let dest_lib = output_dir.join("libwaterui_app.so");
-        copy_file(&source_lib, &dest_lib).await?;
-
-        Ok(lib_dir)
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!("Gradle build failed:\n{}\n{}", stdout.trim(), stderr.trim());
     }
 
-    fn triple(&self) -> Triple {
-        Triple {
-            architecture: self.architecture,
+    Ok(Artifact::new(project.bundle_identifier(), path))
+}
+
+// ============================================================================
+// Platform Support Check
+// ============================================================================
+
+/// Check if a platform is supported by the Android backend.
+pub const fn is_android_platform(platform: TargetPlatform) -> bool {
+    matches!(platform, TargetPlatform::Android)
+}
+
+/// Get the Android ABI for a platform.
+fn platform_to_abi(platform: TargetPlatform) -> &'static str {
+    match platform {
+        TargetPlatform::Android => "arm64-v8a", // Default to arm64
+        _ => unreachable!("Not an Android platform"),
+    }
+}
+
+/// Get the target triple for Android.
+fn android_triple(platform: TargetPlatform) -> Triple {
+    match platform {
+        TargetPlatform::Android => Triple {
+            architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
             vendor: target_lexicon::Vendor::Unknown,
             operating_system: target_lexicon::OperatingSystem::Linux,
             environment: target_lexicon::Environment::Android,
             binary_format: target_lexicon::BinaryFormat::Elf,
-        }
-    }
-
-    async fn package(
-        &self,
-        project: &Project,
-        options: PackageOptions,
-    ) -> color_eyre::eyre::Result<Artifact> {
-        let backend_path = project.backend_path::<AndroidBackend>();
-        let gradlew = backend_path.join(if cfg!(windows) {
-            "gradlew.bat"
-        } else {
-            "gradlew"
-        });
-
-        let (command_name, path) = if options.is_distribution() && !options.is_debug() {
-            (
-                "bundleRelease",
-                backend_path.join("app/build/outputs/bundle/release/app-release.aab"),
-            )
-        } else if !options.is_distribution() && !options.is_debug() {
-            (
-                "assembleRelease",
-                backend_path.join("app/build/outputs/apk/release/app-release.apk"),
-            )
-        } else if !options.is_distribution() && options.is_debug() {
-            (
-                "assembleDebug",
-                backend_path.join("app/build/outputs/apk/debug/app-debug.apk"),
-            )
-        } else if options.is_distribution() && options.is_debug() {
-            (
-                "bundleDebug",
-                backend_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
-            )
-        } else {
-            unreachable!()
-        };
-
-        // Skip Rust build in Gradle - we already built the library via `water build`
-        // The Gradle build.gradle.kts checks this env var and skips its buildRust tasks
-        //
-        // Also pass the target ABI to filter which native libraries are included
-        // This ensures only the architectures we built are packaged in the APK
-        let output = smol::process::Command::new(gradlew.to_str().unwrap())
-            .args([
-                command_name,
-                "--project-dir",
-                backend_path.to_str().unwrap(),
-            ])
-            .env("WATERUI_SKIP_RUST_BUILD", "1")
-            .env("WATERUI_ANDROID_ABIS", self.abi())
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            bail!("Gradle build failed:\n{}\n{}", stdout.trim(), stderr.trim());
-        }
-
-        Ok(Artifact::new(project.bundle_identifier(), path))
+        },
+        _ => unreachable!("Not an Android platform"),
     }
 }

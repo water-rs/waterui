@@ -8,9 +8,9 @@ use crate::{header, line, warn};
 use smol::future::zip;
 use smol::process::Command;
 use waterui_cli::{
-    android::{device::AndroidDevice, platform::AndroidPlatform, toolchain::AndroidSdk},
-    apple::{device::AppleDevice, platform::ApplePlatform},
-    platform::Platform,
+    android::{device::AndroidDevice, toolchain::AndroidSdk},
+    apple::device::AppleSimulator,
+    device::Device,
 };
 
 /// Target platform for device listing.
@@ -70,9 +70,8 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 /// Scan iOS simulators.
-async fn scan_ios_devices() -> Result<Vec<AppleDevice>, String> {
-    let platform = ApplePlatform::ios_simulator();
-    platform.scan().await.map_err(|e| e.to_string())
+async fn scan_ios_devices() -> Result<Vec<AppleSimulator>, String> {
+    AppleSimulator::scan().await.map_err(|e| e.to_string())
 }
 
 /// Scan Android devices and emulators.
@@ -98,8 +97,7 @@ async fn scan_android_devices() -> Option<(Vec<String>, Vec<AndroidDevice>)> {
     };
 
     let devices_future = async {
-        let platform = AndroidPlatform::arm64();
-        platform.scan().await.unwrap_or_default()
+        AndroidDevice::scan().await.unwrap_or_default()
     };
 
     let (avds, connected_devices) = zip(avds_future, devices_future).await;
@@ -107,18 +105,16 @@ async fn scan_android_devices() -> Option<(Vec<String>, Vec<AndroidDevice>)> {
 }
 
 /// Display iOS devices.
-fn display_ios_devices(result: Result<Vec<AppleDevice>, String>) {
+fn display_ios_devices(result: Result<Vec<AppleSimulator>, String>) {
     match result {
         Ok(devs) => {
             if !devs.is_empty() {
                 header!("iOS Simulators");
             }
 
-            for device in &devs {
-                if let AppleDevice::Simulator(sim) = device {
-                    let state_icon = if sim.state == "Booted" { "●" } else { "○" };
-                    line!("  {} {} ({})", state_icon, sim.name, sim.udid);
-                }
+            for sim in &devs {
+                let state_icon = if sim.state == "Booted" { "●" } else { "○" };
+                line!("  {} {} ({})", state_icon, sim.name, sim.udid);
             }
 
             if devs.is_empty() {

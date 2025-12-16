@@ -21,9 +21,9 @@ pub struct Args {
     #[arg(long)]
     bundle_id: Option<String>,
 
-    /// Platforms to scaffold (ios, android, macos).
+    /// Backends to scaffold (apple, android, gtk).
     #[arg(long, value_delimiter = ',')]
-    platform: Option<Vec<String>>,
+    backends: Option<Vec<String>>,
 
     /// Path to local `WaterUI` repository (for development).
     #[arg(long, conflicts_with = "dev")]
@@ -38,30 +38,30 @@ pub struct Args {
     playground: bool,
 }
 
-/// Platform options for scaffolding.
+/// Backend options for scaffolding.
 #[derive(Debug, Clone, Copy)]
-enum Platform {
-    Ios,
+enum Backend {
+    Apple,
     Android,
-    MacOs,
+    Gtk,
 }
 
-impl Platform {
-    const ALL: [Self; 3] = [Self::Ios, Self::Android, Self::MacOs];
+impl Backend {
+    const ALL: [Self; 3] = [Self::Apple, Self::Android, Self::Gtk];
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Ios => "iOS",
+            Self::Apple => "Apple (iOS/macOS)",
             Self::Android => "Android",
-            Self::MacOs => "macOS",
+            Self::Gtk => "GTK (Linux/macOS/Windows)",
         }
     }
 
     fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "ios" => Some(Self::Ios),
+            "apple" | "ios" | "macos" => Some(Self::Apple),
             "android" => Some(Self::Android),
-            "macos" => Some(Self::MacOs),
+            "gtk" | "gtk4" | "linux" => Some(Self::Gtk),
             _ => None,
         }
     }
@@ -108,10 +108,10 @@ pub async fn run(args: Args) -> Result<()> {
         None => default_bundle_id(&name),
     };
 
-    let platforms = match &args.platform {
-        Some(plats) => parse_platforms(plats),
-        None if interactive => prompt_platforms()?,
-        None => vec![Platform::Ios, Platform::Android],
+    let backends = match &args.backends {
+        Some(b) => parse_backends(b),
+        None if interactive => prompt_backends()?,
+        None => vec![Backend::Apple, Backend::Android],
     };
 
     // Compute project path
@@ -140,10 +140,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Initialize backends (skip for playground projects)
     if !args.playground {
-        let has_apple = platforms
-            .iter()
-            .any(|p| matches!(p, Platform::Ios | Platform::MacOs));
-        let has_android = platforms.iter().any(|p| matches!(p, Platform::Android));
+        let has_apple = backends.iter().any(|b| matches!(b, Backend::Apple));
+        let has_android = backends.iter().any(|b| matches!(b, Backend::Android));
+        let has_gtk = backends.iter().any(|b| matches!(b, Backend::Gtk));
 
         if has_apple {
             let spinner = shell::spinner("Scaffolding Apple backend...");
@@ -162,6 +161,15 @@ pub async fn run(args: Args) -> Result<()> {
             }
             success!("Created Android backend in android/");
         }
+
+        if has_gtk {
+            let spinner = shell::spinner("Scaffolding GTK backend...");
+            project.init_gtk_backend().await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!("Created GTK backend in gtk/");
+        }
     }
 
     // Final message
@@ -170,7 +178,13 @@ pub async fn run(args: Args) -> Result<()> {
     line!();
     line!("Next steps:");
     line!("  cd {folder_name}");
-    line!("  water run --platform ios");
+    if backends.iter().any(|b| matches!(b, Backend::Apple)) {
+        line!("  water run --platform ios");
+    } else if backends.iter().any(|b| matches!(b, Backend::Android)) {
+        line!("  water run --platform android");
+    } else if backends.iter().any(|b| matches!(b, Backend::Gtk)) {
+        line!("  water run --platform gtk");
+    }
 
     Ok(())
 }
@@ -200,19 +214,22 @@ fn prompt_bundle_id(app_name: &str) -> Result<String> {
         .interact_text()?)
 }
 
-fn parse_platforms(plats: &[String]) -> Vec<Platform> {
-    plats.iter().filter_map(|s| Platform::from_str(s)).collect()
+fn parse_backends(backends: &[String]) -> Vec<Backend> {
+    backends
+        .iter()
+        .filter_map(|s| Backend::from_str(s))
+        .collect()
 }
 
-fn prompt_platforms() -> Result<Vec<Platform>> {
-    let items: Vec<&str> = Platform::ALL.iter().map(|p| p.label()).collect();
-    let defaults = vec![true, true, false]; // iOS and Android selected by default
+fn prompt_backends() -> Result<Vec<Backend>> {
+    let items: Vec<&str> = Backend::ALL.iter().map(|b| b.label()).collect();
+    let defaults = vec![true, true, false]; // Apple and Android selected by default
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select platforms")
+        .with_prompt("Select backends")
         .items(&items)
         .defaults(&defaults)
         .interact()?;
 
-    Ok(selections.into_iter().map(|i| Platform::ALL[i]).collect())
+    Ok(selections.into_iter().map(|i| Backend::ALL[i]).collect())
 }
