@@ -14,13 +14,14 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::toggle::ToggleConfig;
-use waterui_layout::container::FixedContainer;
+use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::padding::Padding;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
+use waterui_color::Color;
 #[cfg(feature = "gpu")]
 use waterui_graphics::gpu_surface::GpuSurface;
 
@@ -100,6 +101,7 @@ impl GtkRenderer {
         Self::register_native::<TextConfig>(dispatcher);
         Self::register_native::<Spacer>(dispatcher);
         Self::register_native::<FixedContainer>(dispatcher);
+        Self::register_native::<LazyContainer>(dispatcher);
         Self::register_native::<ButtonConfig>(dispatcher);
         Self::register_native::<ToggleConfig>(dispatcher);
         Self::register_native::<SliderConfig>(dispatcher);
@@ -108,6 +110,7 @@ impl GtkRenderer {
         Self::register_native::<StepperConfig>(dispatcher);
         Self::register_native::<ScrollView>(dispatcher);
         Self::register_native::<Tabs>(dispatcher);
+        Self::register_native::<Color>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
