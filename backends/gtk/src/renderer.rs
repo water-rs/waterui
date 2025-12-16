@@ -15,6 +15,7 @@ use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_layout::container::FixedContainer;
+use waterui_layout::padding::Padding;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
@@ -123,6 +124,9 @@ impl GtkRenderer {
         // Register metadata handlers
         Self::register_metadata_handlers(dispatcher);
 
+        // Register Padding to apply margins (before it becomes FixedContainer)
+        Self::register_padding_handler(dispatcher);
+
         // Register Str directly (before it wraps into Native<Str>)
         Self::register_str_handler(dispatcher);
 
@@ -130,10 +134,33 @@ impl GtkRenderer {
         Self::register_unit_handler(dispatcher);
     }
 
+    /// Registers a handler for `Padding` that applies GTK margins.
+    fn register_padding_handler(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
+        dispatcher.register::<Padding>(|_state, ctx, padding, env| {
+            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            let (edges, content) = padding.into_inner();
+
+            // Render the content
+            let widget = renderer.render_any(content, env);
+
+            // Apply margins from EdgeInsets
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                widget.set_margin_top(edges.top() as i32);
+                widget.set_margin_bottom(edges.bottom() as i32);
+                widget.set_margin_start(edges.leading() as i32);
+                widget.set_margin_end(edges.trailing() as i32);
+            }
+
+            widget
+        });
+    }
+
     /// Registers a handler for `Str` that renders it as a GTK Label.
     fn register_str_handler(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
         dispatcher.register::<Str>(|_state, _ctx, s, _env| {
             let label = gtk4::Label::new(Some(s.as_str()));
+            // Let text maintain natural width - layout system handles sizing
             label.upcast()
         });
     }

@@ -124,6 +124,30 @@ impl EdgeInsets {
             trailing: horizontal,
         }
     }
+
+    /// Returns the top inset.
+    #[must_use]
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+
+    /// Returns the bottom inset.
+    #[must_use]
+    pub const fn bottom(&self) -> f32 {
+        self.bottom
+    }
+
+    /// Returns the leading (left in LTR) inset.
+    #[must_use]
+    pub const fn leading(&self) -> f32 {
+        self.leading
+    }
+
+    /// Returns the trailing (right in LTR) inset.
+    #[must_use]
+    pub const fn trailing(&self) -> f32 {
+        self.trailing
+    }
 }
 
 /// View wrapper that applies [`PaddingLayout`] to a single child.
@@ -140,6 +164,12 @@ impl Padding {
             layout: PaddingLayout { edges },
             content: AnyView::new(content),
         }
+    }
+
+    /// Consumes the padding and returns the edge insets and content.
+    #[must_use]
+    pub fn into_inner(self) -> (EdgeInsets, AnyView) {
+        (self.layout.edges, self.content)
     }
 }
 

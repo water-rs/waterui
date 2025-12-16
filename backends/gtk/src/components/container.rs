@@ -27,8 +27,8 @@ impl GtkComponent for Native<FixedContainer> {
             _ => Orientation::Vertical,
         };
 
-        // Create the Box container with default spacing
-        let container = GtkBox::new(orientation, 8);
+        // Create the Box container with NO spacing - WaterUI's layout handles spacing
+        let container = GtkBox::new(orientation, 0);
 
         // Render each child view and add to container
         for view in children {
