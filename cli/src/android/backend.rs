@@ -65,6 +65,9 @@ impl Default for AndroidBackend {
 impl Backend for AndroidBackend {
     const DEFAULT_PATH: &'static str = "android";
 
+    // Preserve Gradle build caches during re-scaffolding
+    const CACHE_PATHS: &'static [&'static str] = &[".gradle", "build", "app"];
+
     fn path(&self) -> &Path {
         &self.project_path
     }
