@@ -28,3 +28,6 @@ pub mod window;
 
 pub use app::GtkApp;
 pub use renderer::GtkRenderer;
+
+// Re-export types needed by generated GTK entry points
+pub use waterui_core::Environment;

@@ -83,6 +83,9 @@ fn is_default_apple_project_path(s: &Path) -> bool {
 impl Backend for AppleBackend {
     const DEFAULT_PATH: &'static str = "apple";
 
+    // Preserve Xcode build caches during re-scaffolding
+    const CACHE_PATHS: &'static [&'static str] = &["DerivedData", ".water"];
+
     fn path(&self) -> &Path {
         &self.project_path
     }
@@ -99,9 +102,9 @@ impl Backend for AppleBackend {
         // For regular projects, derive from crate name
         let (scheme, app_name, crate_name_for_template) = if is_playground {
             (
-                "WaterUIApp".to_string(),
-                "WaterUIApp".to_string(),
-                "WaterUIApp".to_string(),
+                "WaterUI".to_string(),
+                "WaterUI".to_string(),
+                "WaterUI".to_string(),
             )
         } else {
             let crate_name = project.crate_name().to_string();

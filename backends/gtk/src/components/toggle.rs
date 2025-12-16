@@ -2,6 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::{Signal, SignalExt};
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::{Environment, Native};
 
@@ -39,10 +40,11 @@ impl GtkComponent for Native<ToggleConfig> {
         switch.set_active(binding.get());
 
         // Watch for binding changes -> update switch
-        let guard = binding.computed().watch({
+        // Clone before .computed() since it consumes self
+        let guard = binding.clone().computed().watch({
             let switch = switch.clone();
             move |ctx| {
-                let value = ctx.value;
+                let value = ctx.into_value();
                 let switch = switch.clone();
                 glib::idle_add_local_once(move || {
                     if switch.is_active() != value {
@@ -53,10 +55,9 @@ impl GtkComponent for Native<ToggleConfig> {
         });
 
         // Watch for switch changes -> update binding
-        let binding_clone = binding.clone();
         switch.connect_state_set(move |_, state| {
-            if binding_clone.get() != state {
-                binding_clone.set(state);
+            if binding.get() != state {
+                binding.set(state);
             }
             glib::Propagation::Proceed
         });

@@ -2,7 +2,7 @@
 
 use gtk4::prelude::*;
 use gtk4::Widget;
-use waterui_core::{Environment, Native};
+use waterui_core::{Environment, Native, NativeView};
 use waterui_layout::spacer::Spacer;
 
 use crate::component::GtkComponent;
@@ -20,8 +20,8 @@ impl GtkComponent for Native<Spacer> {
 
         // Set expand based on stretch axis
         let stretch = spacer.stretch_axis();
-        widget.set_hexpand(stretch.horizontal());
-        widget.set_vexpand(stretch.vertical());
+        widget.set_hexpand(stretch.stretches_horizontal());
+        widget.set_vexpand(stretch.stretches_vertical());
 
         widget.upcast()
     }
