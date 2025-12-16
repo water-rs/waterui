@@ -19,8 +19,11 @@ impl GtkComponent for Native<TextConfig> {
         let content = config.content.get();
         let label = Label::new(Some(&content.to_plain()));
 
-        // Apply basic styling - let text maintain natural width
+        // Apply basic styling
         label.set_selectable(true);
+        // TextConfig is used for content text which may need wrapping
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
 
         // Set up reactive updates
         let guard = config.content.watch({
