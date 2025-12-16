@@ -8,8 +8,14 @@ use color_eyre::eyre::{Result, bail};
 use crate::shell::{self, display_output};
 use crate::{header, success};
 use waterui_cli::{
-    android::platform::AndroidPlatform, apple::platform::ApplePlatform, build::BuildOptions,
-    platform::PackageOptions, platform::Platform, project::Project, toolchain::Toolchain,
+    android::platform::{build_android, package_android, AndroidPlatform},
+    apple::platform::{build_rust_lib, package_apple},
+    apple::toolchain::{AppleSdk, Xcode},
+    android::toolchain::{AndroidNdk, AndroidSdk},
+    build::BuildOptions,
+    platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
+    project::Project,
+    toolchain::{Toolchain, cmake::Cmake},
 };
 
 /// Target platform for packaging.
@@ -124,7 +130,7 @@ pub async fn run(args: Args) -> Result<()> {
         // Clean stale jniLibs before building
         AndroidPlatform::clean_jni_libs(&project).await?;
 
-        // Build for each specified architecture
+        // Build for each specified architecture using the AndroidPlatform helper
         for arch in &args.arch {
             let spinner = shell::spinner(format!("Building Rust library ({})...", arch.to_abi()));
             let platform = AndroidPlatform::from_abi(arch.to_abi());
@@ -177,20 +183,28 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
-    use waterui_cli::platform::Platform;
-
     match platform {
         TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
-            let platform = ApplePlatform::ios_simulator();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+            let xcode = Xcode;
+            if let Err(e) = xcode.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let sdk = AppleSdk::Ios;
+            if let Err(e) = sdk.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }
         TargetPlatform::Android => {
-            let platform = AndroidPlatform::arm64();
-            let toolchain = platform.toolchain();
-            if let Err(e) = toolchain.check().await {
+            let sdk = AndroidSdk;
+            if let Err(e) = sdk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let ndk = AndroidNdk;
+            if let Err(e) = ndk.check().await {
+                bail!("Toolchain check failed: {e}");
+            }
+            let cmake = Cmake {};
+            if let Err(e) = cmake.check().await {
                 bail!("Toolchain check failed: {e}");
             }
         }
@@ -205,20 +219,16 @@ async fn build_for_platform(
 ) -> Result<PathBuf> {
     match platform {
         TargetPlatform::Ios => {
-            let p = ApplePlatform::ios();
-            Ok(p.build(project, options).await?)
+            build_rust_lib(project, LibTargetPlatform::IOS, options).await
         }
         TargetPlatform::IosSimulator => {
-            let p = ApplePlatform::ios_simulator();
-            Ok(p.build(project, options).await?)
+            build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await
         }
         TargetPlatform::Android => {
-            let p = AndroidPlatform::arm64();
-            Ok(p.build(project, options).await?)
+            build_android(project, LibTargetPlatform::Android, options).await
         }
         TargetPlatform::Macos => {
-            let p = ApplePlatform::macos();
-            Ok(p.build(project, options).await?)
+            build_rust_lib(project, LibTargetPlatform::MacOS, options).await
         }
     }
 }
@@ -230,20 +240,16 @@ async fn package_for_platform(
 ) -> Result<waterui_cli::device::Artifact> {
     match platform {
         TargetPlatform::Ios => {
-            let p = ApplePlatform::ios();
-            Ok(project.package(p, options).await?)
+            package_apple(project, LibTargetPlatform::IOS, options).await
         }
         TargetPlatform::IosSimulator => {
-            let p = ApplePlatform::ios_simulator();
-            Ok(project.package(p, options).await?)
+            package_apple(project, LibTargetPlatform::IOSSimulator, options).await
         }
         TargetPlatform::Android => {
-            let p = AndroidPlatform::arm64();
-            Ok(project.package(p, options).await?)
+            package_android(project, LibTargetPlatform::Android, options).await
         }
         TargetPlatform::Macos => {
-            let p = ApplePlatform::macos();
-            Ok(project.package(p, options).await?)
+            package_apple(project, LibTargetPlatform::MacOS, options).await
         }
     }
 }

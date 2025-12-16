@@ -2,10 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::Backend,
+    build::BuildOptions,
+    device::Artifact,
+    gtk::platform::{build_gtk, clean_gtk, is_gtk_platform, package_gtk},
+    platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -94,6 +99,32 @@ impl Backend for GtkBackend {
             .map_err(crate::backend::FailToInitBackend::Io)?;
 
         Ok(Self { project_path })
+    }
+
+    fn supports(&self, platform: TargetPlatform) -> bool {
+        is_gtk_platform(platform)
+    }
+
+    async fn build(
+        &self,
+        project: &Project,
+        _platform: TargetPlatform,
+        options: BuildOptions,
+    ) -> eyre::Result<PathBuf> {
+        build_gtk(project, options).await
+    }
+
+    async fn package(
+        &self,
+        project: &Project,
+        _platform: TargetPlatform,
+        options: PackageOptions,
+    ) -> eyre::Result<Artifact> {
+        package_gtk(project, options).await
+    }
+
+    async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
+        clean_gtk(project).await
     }
 }
 

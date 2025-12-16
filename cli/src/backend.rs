@@ -1,13 +1,17 @@
 //! Backend configuration and initialization for `WaterUI` projects.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     android::backend::AndroidBackend,
     apple::backend::AppleBackend,
+    build::BuildOptions,
+    device::Artifact,
     gtk::backend::GtkBackend,
+    platform::{PackageOptions, TargetPlatform},
     project::Project,
 };
 
@@ -86,6 +90,12 @@ pub enum FailToInitBackend {
 }
 
 /// Trait for backends in a `WaterUI` project.
+///
+/// A backend handles building and packaging for specific platforms.
+/// Each backend knows:
+/// - Which platforms it supports
+/// - How to build Rust code for those platforms
+/// - How to package artifacts for distribution
 pub trait Backend: Sized + Send + Sync {
     /// The default relative path for this backend (e.g., "android", "apple").
     const DEFAULT_PATH: &'static str;
@@ -106,6 +116,40 @@ pub trait Backend: Sized + Send + Sync {
     /// Creates necessary files/folders for the backend at `project.backend_path::<Self>()`.
     /// Returns the initialized backend configuration.
     fn init(project: &Project) -> impl Future<Output = Result<Self, FailToInitBackend>> + Send;
+
+    // =========================================================================
+    // New methods for build/package (migrated from Platform trait)
+    // =========================================================================
+
+    /// Check if this backend supports the given platform.
+    fn supports(&self, platform: TargetPlatform) -> bool;
+
+    /// Build the Rust library for the target platform.
+    ///
+    /// Returns the target directory path where the built library is located.
+    fn build(
+        &self,
+        project: &Project,
+        platform: TargetPlatform,
+        options: BuildOptions,
+    ) -> impl Future<Output = eyre::Result<PathBuf>> + Send;
+
+    /// Package the project for the target platform.
+    ///
+    /// Returns the artifact (e.g., .app, .apk, binary).
+    fn package(
+        &self,
+        project: &Project,
+        platform: TargetPlatform,
+        options: PackageOptions,
+    ) -> impl Future<Output = eyre::Result<Artifact>> + Send;
+
+    /// Clean build artifacts for the platform.
+    fn clean(
+        &self,
+        project: &Project,
+        platform: TargetPlatform,
+    ) -> impl Future<Output = eyre::Result<()>> + Send;
 }
 
 /// Re-initialize a backend, preserving cache directories.

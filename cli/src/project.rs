@@ -4,8 +4,6 @@ use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use tracing::info;
 
-use crate::backend::Backend;
-
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -20,22 +18,32 @@ impl Project {
     ///
     /// This method handles building, packaging, and running the project.
     ///
+    /// # Arguments
+    /// - `backend`: The backend to use for building and packaging
+    /// - `platform`: The target platform to build for
+    /// - `device`: The device to run on
+    /// - `hot_reload`: Whether to enable hot reload
+    ///
     /// # Errors
     /// - If any step in the build, package, or run process fails.
-    pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
+    pub async fn run<B: Backend, D: Device>(
+        &self,
+        backend: &B,
+        platform: TargetPlatform,
+        device: D,
+        hot_reload: bool,
+    ) -> Result<Running, FailToRun> {
         use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
 
-        let platform = device.platform();
-
         // Build rust library for the target platform
-        platform
-            .build(self, BuildOptions::new(false, hot_reload))
+        backend
+            .build(self, platform, BuildOptions::new(false, hot_reload))
             .await
             .map_err(FailToRun::Build)?;
 
         // Package the build artifacts for the target platform
-        let artifact = platform
-            .package(self, PackageOptions::new(false, true))
+        let artifact = backend
+            .package(self, platform, PackageOptions::new(false, true))
             .await
             .map_err(FailToRun::Package)?;
 
@@ -151,14 +159,17 @@ impl Project {
         self.manifest.package.bundle_identifier.as_str()
     }
 
-    /// Clean build artifacts for the project on the specified platform.
+    /// Clean build artifacts for the project using the specified backend.
     ///
     /// # Errors
     ///
     /// Returns an error if cleaning fails.
-    pub async fn clean(&self, platform: impl Platform) -> Result<(), eyre::Report> {
-        // Parrelly clean rust build artifacts and platform specific build artifacts
-        platform.clean(self).await
+    pub async fn clean<B: Backend>(
+        &self,
+        backend: &B,
+        platform: TargetPlatform,
+    ) -> Result<(), eyre::Report> {
+        backend.clean(self, platform).await
     }
 
     /// Clean all build artifacts for the project.
@@ -174,8 +185,8 @@ impl Project {
     /// Returns an error if any cleaning operation fails.
     pub async fn clean_all(&self) -> Result<(), eyre::Report> {
         use crate::{
-            android::platform::AndroidPlatform, apple::platform::ApplePlatform,
-            gtk::platform::GtkPlatform, platform::Platform,
+            android::platform::clean_android, apple::platform::clean_apple,
+            gtk::platform::clean_gtk,
         };
 
         // Clean Rust target directory
@@ -186,19 +197,17 @@ impl Project {
 
         // Clean Apple backend if configured
         if self.apple_backend().is_some() {
-            // Use a default platform for cleaning - the actual platform doesn't matter
-            // since clean() operates on the project-level build artifacts
-            ApplePlatform::macos().clean(self).await?;
+            clean_apple(self).await?;
         }
 
         // Clean Android backend if configured
         if self.android_backend().is_some() {
-            AndroidPlatform::arm64().clean(self).await?;
+            clean_android(self).await?;
         }
 
         // Clean GTK backend if configured
         if self.gtk_backend().is_some() {
-            GtkPlatform::new().clean(self).await?;
+            clean_gtk(self).await?;
         }
 
         Ok(())
@@ -209,12 +218,13 @@ impl Project {
     /// # Errors
     ///
     /// Returns an error if packaging fails.
-    pub async fn package(
+    pub async fn package<B: Backend>(
         &self,
-        platform: impl Platform,
+        backend: &B,
+        platform: TargetPlatform,
         options: PackageOptions,
     ) -> Result<Artifact, eyre::Report> {
-        platform.package(self, options).await
+        backend.package(self, platform, options).await
     }
 }
 
@@ -589,10 +599,10 @@ use smol::{fs::read_to_string, process::Command, unblock};
 use crate::{
     android::backend::AndroidBackend,
     apple::backend::AppleBackend,
-    backend::Backends,
+    backend::{Backend, Backends},
     build::BuildOptions,
     device::{Artifact, Device, FailToRun, RunOptions, Running},
-    platform::{PackageOptions, Platform},
+    platform::{PackageOptions, TargetPlatform},
     templates::{self, TemplateContext},
     utils::command,
 };

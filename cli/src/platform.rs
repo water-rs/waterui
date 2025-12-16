@@ -1,23 +1,236 @@
 //! Platform abstraction for `WaterUI` CLI
 
-use std::path::PathBuf;
-
-use color_eyre::eyre;
-use target_lexicon::Triple;
-
-use crate::{
-    build::BuildOptions,
-    device::{Artifact, Device},
-    project::Project,
-    toolchain::Toolchain,
+use target_lexicon::{
+    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
 
-/// Build options for the platform
-#[derive(Debug, Clone)]
+// ============================================================================
+// Target Platform Enum (New Architecture)
+// ============================================================================
+
+/// Target platform for building and running WaterUI apps.
+///
+/// This enum replaces the old `Platform` trait with a simpler, more explicit model.
+/// Each variant represents a specific target platform that WaterUI can build for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetPlatform {
+    // Apple platforms
+    /// macOS (current machine architecture)
+    MacOS,
+    /// iOS (physical device, ARM64)
+    IOS,
+    /// iOS Simulator (host machine architecture)
+    IOSSimulator,
+    /// tvOS (physical device)
+    TvOS,
+    /// tvOS Simulator
+    TvOSSimulator,
+    /// watchOS (physical device)
+    WatchOS,
+    /// watchOS Simulator
+    WatchOSSimulator,
+    /// visionOS (physical device)
+    VisionOS,
+    /// visionOS Simulator
+    VisionOSSimulator,
+
+    // Other platforms
+    /// Android
+    Android,
+    /// Linux (GTK4)
+    Linux,
+    /// Windows (GTK4)
+    Windows,
+}
+
+/// Backend types available for building.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetBackend {
+    /// Apple backend (Xcode, UIKit/AppKit)
+    Apple,
+    /// Android backend (Gradle, Android Views)
+    Android,
+    /// GTK4 backend (pure Rust binary)
+    Gtk4,
+}
+
+impl TargetPlatform {
+    /// Get the target triple for this platform.
+    #[must_use]
+    pub fn triple(&self) -> Triple {
+        match self {
+            Self::MacOS => Triple {
+                architecture: DefaultToHost::default().0.architecture,
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::Darwin(None),
+                environment: Environment::Unknown,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::IOS => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::IOS(None),
+                environment: Environment::Unknown,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::IOSSimulator => {
+                let arch = DefaultToHost::default().0.architecture;
+                let env = match arch {
+                    Architecture::X86_64 => Environment::Unknown,
+                    _ => Environment::Sim,
+                };
+                Triple {
+                    architecture: arch,
+                    vendor: Vendor::Apple,
+                    operating_system: OperatingSystem::IOS(None),
+                    environment: env,
+                    binary_format: target_lexicon::BinaryFormat::Macho,
+                }
+            }
+            Self::TvOS => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::TvOS(None),
+                environment: Environment::Unknown,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::TvOSSimulator => Triple {
+                architecture: DefaultToHost::default().0.architecture,
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::TvOS(None),
+                environment: Environment::Sim,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::WatchOS => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::WatchOS(None),
+                environment: Environment::Unknown,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::WatchOSSimulator => Triple {
+                architecture: DefaultToHost::default().0.architecture,
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::WatchOS(None),
+                environment: Environment::Sim,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::VisionOS => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::VisionOS(None),
+                environment: Environment::Unknown,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::VisionOSSimulator => Triple {
+                architecture: DefaultToHost::default().0.architecture,
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::VisionOS(None),
+                environment: Environment::Sim,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
+            Self::Android => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Unknown,
+                operating_system: OperatingSystem::Linux,
+                environment: Environment::Android,
+                binary_format: target_lexicon::BinaryFormat::Elf,
+            },
+            Self::Linux => Triple::host(),
+            Self::Windows => Triple::host(),
+        }
+    }
+
+    /// Get available backends for this platform.
+    #[must_use]
+    pub const fn available_backends(&self) -> &[TargetBackend] {
+        match self {
+            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Gtk4],
+            Self::IOS
+            | Self::IOSSimulator
+            | Self::TvOS
+            | Self::TvOSSimulator
+            | Self::WatchOS
+            | Self::WatchOSSimulator
+            | Self::VisionOS
+            | Self::VisionOSSimulator => &[TargetBackend::Apple],
+            Self::Android => &[TargetBackend::Android],
+            Self::Linux | Self::Windows => &[TargetBackend::Gtk4],
+        }
+    }
+
+    /// Get the default backend for this platform.
+    #[must_use]
+    pub const fn default_backend(&self) -> TargetBackend {
+        match self {
+            Self::MacOS
+            | Self::IOS
+            | Self::IOSSimulator
+            | Self::TvOS
+            | Self::TvOSSimulator
+            | Self::WatchOS
+            | Self::WatchOSSimulator
+            | Self::VisionOS
+            | Self::VisionOSSimulator => TargetBackend::Apple,
+            Self::Android => TargetBackend::Android,
+            Self::Linux | Self::Windows => TargetBackend::Gtk4,
+        }
+    }
+
+    /// Check if this platform is a simulator/emulator.
+    #[must_use]
+    pub const fn is_simulator(&self) -> bool {
+        matches!(
+            self,
+            Self::IOSSimulator
+                | Self::TvOSSimulator
+                | Self::WatchOSSimulator
+                | Self::VisionOSSimulator
+        )
+    }
+
+    /// Get the SDK name for Apple platforms.
+    #[must_use]
+    pub const fn sdk_name(&self) -> Option<&'static str> {
+        match self {
+            Self::MacOS => Some("macosx"),
+            Self::IOS => Some("iphoneos"),
+            Self::IOSSimulator => Some("iphonesimulator"),
+            Self::TvOS => Some("appletvos"),
+            Self::TvOSSimulator => Some("appletvsimulator"),
+            Self::WatchOS => Some("watchos"),
+            Self::WatchOSSimulator => Some("watchsimulator"),
+            Self::VisionOS => Some("xros"),
+            Self::VisionOSSimulator => Some("xrsimulator"),
+            Self::Android | Self::Linux | Self::Windows => None,
+        }
+    }
+
+    /// Get the architecture for this platform.
+    #[must_use]
+    pub fn arch(&self) -> Architecture {
+        match self {
+            Self::MacOS | Self::IOSSimulator | Self::TvOSSimulator
+            | Self::WatchOSSimulator | Self::VisionOSSimulator
+            | Self::Linux | Self::Windows => {
+                DefaultToHost::default().0.architecture
+            }
+            Self::IOS | Self::TvOS | Self::WatchOS | Self::VisionOS | Self::Android => {
+                Architecture::Aarch64(Aarch64Architecture::Aarch64)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Package Options
+// ============================================================================
+
 /// Configuration options for packaging the application.
 ///
 /// This struct contains settings that control how the application
 /// is packaged for distribution across different platforms.
+#[derive(Debug, Clone)]
 pub struct PackageOptions {
     /// Whether to prepare the package for store distribution.
     ///
@@ -67,51 +280,4 @@ impl PackageOptions {
     pub const fn is_debug(&self) -> bool {
         self.debug
     }
-}
-
-/// Trait representing a specific platform (e.g., Android, iOS, etc.)
-///
-/// Note: `Platform` would never check toolchain since it is the responsibility of the `Toolchain`.
-/// We assume the toolchain is already set up correctly when calling methods of this trait.
-pub trait Platform: Send + Sync {
-    /// The associated toolchain type for this platform.
-    type Toolchain: Toolchain;
-    /// The associated device type for this platform.
-    type Device: Device;
-
-    /// Clean build artifacts for this platform (not include rust build artifacts)
-    fn clean(&self, project: &Project) -> impl Future<Output = eyre::Result<()>> + Send;
-
-    /// Package the project for this platform
-    ///
-    /// Return the path to the packaged file
-    ///
-    /// # Warnings
-    /// You should call `build` before calling this method to ensure the project is built for the platform.
-    fn package(
-        &self,
-        project: &Project,
-        options: PackageOptions,
-    ) -> impl Future<Output = eyre::Result<Artifact>> + Send;
-
-    /// Get the toolchain for this platform
-    fn toolchain(&self) -> Self::Toolchain;
-
-    /// Scan for connected devices for this platform
-    fn scan(&self) -> impl Future<Output = eyre::Result<Vec<Self::Device>>> + Send;
-
-    /// Get the target triple for this platform
-    fn triple(&self) -> Triple;
-
-    /// Build the Rust library for this platform
-    ///
-    /// Warning: This method would build and copy the built library to the appropriate location in the project directory.
-    /// However, it does not handle hot reload library building or management.
-    ///
-    /// Return the target directory path where the built library is located.
-    fn build(
-        &self,
-        project: &Project,
-        options: BuildOptions,
-    ) -> impl Future<Output = eyre::Result<PathBuf>> + Send;
 }

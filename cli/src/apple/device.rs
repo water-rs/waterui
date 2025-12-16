@@ -19,9 +19,8 @@ use time::OffsetDateTime;
 use tracing::info;
 
 use crate::{
-    apple::platform::ApplePlatform,
     debug,
-    device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, Running},
+    device::{Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running},
     utils::{command, run_command},
 };
 
@@ -236,8 +235,9 @@ pub enum AppleDevice {
 
     /// The current physical `macOS` device
     ///
-    /// Apple do not provide macOS simulator, so this represents the current physical machine
-    Current(MacOS),
+    /// Apple do not provide macOS simulator, so this represents the current physical machine.
+    /// Uses the shared `Local` device which handles both `.app` bundles and binaries.
+    Current(Local),
 }
 
 /// Local `MacOS` device (current physical machine)
@@ -245,15 +245,14 @@ pub enum AppleDevice {
 pub struct MacOS;
 
 impl Device for MacOS {
-    type Platform = ApplePlatform;
+    fn name(&self) -> &str {
+        "macOS"
+    }
+
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
         // No need to launch anything for MacOS physical device
         // This is the current machine
         Ok(())
-    }
-
-    fn platform(&self) -> Self::Platform {
-        ApplePlatform::macos()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -426,10 +425,22 @@ impl Device for MacOS {
 
         Ok(running)
     }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        // MacOS device is always available - just return a single instance
+        Ok(vec![Self])
+    }
 }
 
 impl Device for AppleDevice {
-    type Platform = ApplePlatform;
+    fn name(&self) -> &str {
+        match self {
+            Self::Simulator(simulator) => simulator.name(),
+            Self::Current(mac_os) => mac_os.name(),
+            Self::Physical(_) => "iOS Device",
+        }
+    }
+
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
         match self {
             Self::Simulator(simulator) => simulator.launch().await,
@@ -443,14 +454,6 @@ impl Device for AppleDevice {
                 // Connection is handled during run()
                 Ok(())
             }
-        }
-    }
-
-    fn platform(&self) -> Self::Platform {
-        match self {
-            Self::Simulator(simulator) => simulator.platform(),
-            Self::Current(mac_os) => mac_os.platform(),
-            Self::Physical(_) => ApplePlatform::ios(), // Physical devices are iOS
         }
     }
 
@@ -471,6 +474,22 @@ impl Device for AppleDevice {
                 )))
             }
         }
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        // Aggregate all available Apple devices: simulators + local
+        let mut devices = Vec::new();
+
+        // Add available simulators
+        let simulators = AppleSimulator::scan().await?;
+        for sim in simulators {
+            devices.push(Self::Simulator(sim));
+        }
+
+        // Add local machine
+        devices.push(Self::Current(Local));
+
+        Ok(devices)
     }
 }
 
@@ -518,32 +537,10 @@ pub struct AppleSimulator {
     pub last_booted_at: Option<String>,
 }
 
-impl AppleSimulator {
-    /// Scan for available simulators using `simctl`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `simctl` command fails or output cannot be parsed.
-    pub async fn scan() -> eyre::Result<Vec<Self>> {
-        #[derive(Deserialize)]
-        struct Root {
-            devices: HashMap<String, Vec<AppleSimulator>>,
-        }
-
-        let content = run_command("xcrun", ["simctl", "list", "devices", "--json"]).await?;
-
-        let simulators = serde_json::from_str::<Root>(&content)?
-            .devices
-            .into_values()
-            .flatten()
-            .collect();
-
-        Ok(simulators)
-    }
-}
-
 impl Device for AppleSimulator {
-    type Platform = ApplePlatform;
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     /// Launch the Apple simulator (boot it)
     async fn launch(&self) -> color_eyre::eyre::Result<()> {
@@ -552,11 +549,6 @@ impl Device for AppleSimulator {
             run_command("xcrun", ["simctl", "boot", &self.udid]).await?;
         }
         Ok(())
-    }
-
-    fn platform(&self) -> Self::Platform {
-        // Parse device type identifier to determine platform
-        ApplePlatform::from_device_type_identifier(&self.device_type_identifier)
     }
 
     /// Run an artifact on the Apple simulator
@@ -683,6 +675,23 @@ impl Device for AppleSimulator {
         .detach();
 
         Ok(running)
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        #[derive(Deserialize)]
+        struct Root {
+            devices: HashMap<String, Vec<AppleSimulator>>,
+        }
+
+        let content = run_command("xcrun", ["simctl", "list", "devices", "--json"]).await?;
+
+        let simulators = serde_json::from_str::<Root>(&content)?
+            .devices
+            .into_values()
+            .flatten()
+            .collect();
+
+        Ok(simulators)
     }
 }
 

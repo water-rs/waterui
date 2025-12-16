@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
 
+use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    apple::platform::{build_rust_lib, clean_apple, is_apple_platform, package_apple},
     backend::Backend,
+    build::BuildOptions,
+    device::Artifact,
+    platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -151,5 +156,31 @@ impl Backend for AppleBackend {
             revision: None,
             backend_path: manifest.waterui_path.clone(),
         })
+    }
+
+    fn supports(&self, platform: TargetPlatform) -> bool {
+        is_apple_platform(platform)
+    }
+
+    async fn build(
+        &self,
+        project: &Project,
+        platform: TargetPlatform,
+        options: BuildOptions,
+    ) -> eyre::Result<PathBuf> {
+        build_rust_lib(project, platform, options).await
+    }
+
+    async fn package(
+        &self,
+        project: &Project,
+        platform: TargetPlatform,
+        options: PackageOptions,
+    ) -> eyre::Result<Artifact> {
+        package_apple(project, platform, options).await
+    }
+
+    async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
+        clean_apple(project).await
     }
 }

@@ -5,7 +5,7 @@ use tracing::error;
 use std::process::Stdio;
 
 use crate::{
-    android::{platform::AndroidPlatform, toolchain::AndroidSdk},
+    android::toolchain::AndroidSdk,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
     utils::{parse_whitespace_separated_u32s, run_command, run_command_output},
 };
@@ -39,7 +39,9 @@ impl AndroidDevice {
 }
 
 impl Device for AndroidDevice {
-    type Platform = AndroidPlatform;
+    fn name(&self) -> &str {
+        &self.identifier
+    }
 
     async fn launch(&self) -> eyre::Result<()> {
         let adb = AndroidSdk::adb_path()
@@ -52,12 +54,39 @@ impl Device for AndroidDevice {
         Ok(())
     }
 
-    fn platform(&self) -> Self::Platform {
-        AndroidPlatform::from_abi(&self.abi)
-    }
-
     async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
         run_on_android(&self.identifier, artifact, options).await
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        let adb = AndroidSdk::adb_path()
+            .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
+
+        let output = run_command(adb.to_str().unwrap(), ["devices", "-l"])
+            .await
+            .map_err(|e| eyre!("Failed to list devices: {e}"))?;
+
+        let mut devices = Vec::new();
+
+        for line in output.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == "device" {
+                let identifier = parts[0].to_string();
+
+                // Get device ABI
+                let abi = run_command(
+                    adb.to_str().unwrap(),
+                    ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
+                )
+                .await
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "arm64-v8a".to_string());
+
+                devices.push(Self::new(identifier, abi));
+            }
+        }
+
+        Ok(devices)
     }
 }
 
@@ -660,7 +689,9 @@ impl AndroidEmulator {
 }
 
 impl Device for AndroidEmulator {
-    type Platform = AndroidPlatform;
+    fn name(&self) -> &str {
+        &self.avd_name
+    }
 
     async fn launch(&self) -> eyre::Result<()> {
         let emulator_path =
@@ -707,14 +738,34 @@ impl Device for AndroidEmulator {
         }
     }
 
-    fn platform(&self) -> Self::Platform {
-        // Default to arm64 for emulators - most common architecture
-        AndroidPlatform::arm64()
-    }
-
     async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
         let identifier = find_emulator_identifier().await?;
         run_on_android(&identifier, artifact, options).await
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        // List available AVDs using avdmanager or emulator -list-avds
+        let emulator_path = AndroidSdk::emulator_path()
+            .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+
+        let output = Command::new(&emulator_path)
+            .arg("-list-avds")
+            .output()
+            .await
+            .map_err(|e| eyre!("Failed to list AVDs: {e}"))?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let avds: Vec<Self> = stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|name| Self::new(name.trim().to_string()))
+            .collect();
+
+        Ok(avds)
     }
 }
 

@@ -12,8 +12,6 @@ use smol::{
     stream::Stream,
 };
 
-use crate::platform::Platform;
-
 /// Minimum log level for streaming device logs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
@@ -136,12 +134,20 @@ impl Artifact {
 }
 
 /// Trait representing a device (e.g., emulator, simulator, physical device)
-pub trait Device: Send {
-    /// Associated platform type for the device.
-    type Platform: Platform;
+///
+/// Devices are decoupled from platforms - a device just knows how to execute artifacts.
+/// The same device can be used with different backends (e.g., Local device works with
+/// both Apple and GTK4 backends on macOS).
+///
+/// Each device type knows how to scan for available devices of its kind via the
+/// associated `scan()` function.
+pub trait Device: Sized + Send {
+    /// Human-readable name for display purposes.
+    fn name(&self) -> &str;
+
     /// Launch the device emulator or simulator.
     ///
-    /// If the device is a physical device, this should do nothing.
+    /// If the device is a physical device or local machine, this should do nothing.
     fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send;
 
     /// Run the given artifact on the device with the specified options.
@@ -151,8 +157,13 @@ pub trait Device: Send {
         options: RunOptions,
     ) -> impl Future<Output = Result<Running, FailToRun>> + Send;
 
-    /// Get the platform this device belongs to.
-    fn platform(&self) -> Self::Platform;
+    /// Scan for available devices of this type.
+    ///
+    /// Each device type knows how to discover its own kind:
+    /// - `Local::scan()` → always returns `vec![Local]`
+    /// - `AppleSimulator::scan()` → uses `simctl list devices`
+    /// - `AndroidDevice::scan()` → uses `adb devices`
+    fn scan() -> impl Future<Output = eyre::Result<Vec<Self>>> + Send;
 }
 
 /// Represents a running application on a device.
@@ -303,4 +314,230 @@ pub enum DeviceState {
     Shutdown,
     /// Device is disconnected (e.g., physical device unplugged)
     Disconnected,
+}
+
+/// Local device representing the current machine.
+///
+/// This is a shared device that works with ANY backend:
+/// - Apple backend: runs `.app` bundles via `open` command
+/// - GTK4 backend: runs cargo binaries directly
+///
+/// The artifact type determines how it's executed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Local;
+
+impl Device for Local {
+    fn name(&self) -> &str {
+        "Local Machine"
+    }
+
+    async fn launch(&self) -> eyre::Result<()> {
+        // No-op - local machine is always "launched"
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        artifact: Artifact,
+        options: RunOptions,
+    ) -> Result<Running, FailToRun> {
+        let artifact_path = artifact.path();
+
+        // Dispatch based on artifact type
+        match artifact_path.extension().and_then(|e| e.to_str()) {
+            Some("app") => {
+                // macOS .app bundle - use `open` command
+                run_macos_app(artifact, options).await
+            }
+            _ => {
+                // Binary executable - run directly
+                run_binary(artifact, options).await
+            }
+        }
+    }
+
+    async fn scan() -> eyre::Result<Vec<Self>> {
+        // Local machine is always available - just return a single instance
+        Ok(vec![Self])
+    }
+}
+
+/// Run a macOS .app bundle using the `open` command.
+async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+    use smol::process::{Command, Stdio};
+    use smol::spawn;
+
+    let artifact_path = artifact.path();
+
+    // Build the `open` command
+    let mut cmd = Command::new("open");
+    cmd.arg("-W") // Wait for app to exit
+        .arg("-n") // Open a new instance
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    // Add environment variables
+    for (key, value) in options.env_vars() {
+        cmd.arg("--env").arg(format!("{key}={value}"));
+    }
+
+    cmd.arg(artifact_path);
+
+    // Spawn the open command
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| FailToRun::Launch(eyre::eyre!("Failed to launch app: {e}")))?;
+
+    // Create Running instance
+    let (running, sender) = Running::new(move || {
+        // Process will be killed on drop
+    });
+
+    // Monitor the process for exit
+    spawn(async move {
+        let status = child.status().await;
+        match status {
+            Ok(exit_status) if exit_status.success() => {
+                let _ = sender.try_send(DeviceEvent::Exited);
+            }
+            Ok(exit_status) => {
+                let code = exit_status.code().unwrap_or(-1);
+                let _ = sender.try_send(DeviceEvent::Crashed(format!("Exit code: {code}")));
+            }
+            Err(e) => {
+                let _ = sender.try_send(DeviceEvent::Crashed(format!("Process error: {e}")));
+            }
+        }
+    })
+    .detach();
+
+    Ok(running)
+}
+
+/// Run a binary executable directly.
+async fn run_binary(artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+    use smol::io::{AsyncBufReadExt, BufReader};
+    use smol::process::{Command, Stdio};
+    use smol::spawn;
+    use smol::stream::StreamExt;
+
+    let binary_path = artifact.path();
+
+    // Verify the binary exists
+    if !binary_path.exists() {
+        return Err(FailToRun::InvalidArtifact);
+    }
+
+    // Build the command to run the binary
+    let mut cmd = Command::new(binary_path);
+
+    // Set environment variables
+    for (key, value) in options.env_vars() {
+        cmd.env(key, value);
+    }
+
+    // Capture stdout/stderr for logging
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    // Spawn the process
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| FailToRun::Launch(eyre::eyre!("Failed to launch binary: {e}")))?;
+
+    // Create Running instance
+    let (running, sender) = Running::new(move || {
+        // Process will be killed on drop due to kill_on_drop(true)
+    });
+
+    // Capture stdout
+    if let Some(stdout) = child.stdout.take() {
+        let stdout_sender = sender.clone();
+        spawn(async move {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Some(result) = lines.next().await {
+                let Ok(line) = result else { break };
+                let level = parse_log_level(&line);
+                if stdout_sender
+                    .try_send(DeviceEvent::Log { level, message: line })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    // Capture stderr
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_sender = sender.clone();
+        spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Some(result) = lines.next().await {
+                let Ok(line) = result else { break };
+                if stderr_sender
+                    .try_send(DeviceEvent::Stderr { message: line })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    // Monitor the process for exit
+    let exit_sender = sender;
+    spawn(async move {
+        let status = child.status().await;
+        match status {
+            Ok(exit_status) if exit_status.success() => {
+                let _ = exit_sender.try_send(DeviceEvent::Exited);
+            }
+            Ok(exit_status) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(signal) = exit_status.signal() {
+                        let crash_msg = match signal {
+                            6 => "Process aborted (SIGABRT)".to_string(),
+                            11 => "Segmentation fault (SIGSEGV)".to_string(),
+                            _ => format!("Terminated by signal {signal}"),
+                        };
+                        let _ = exit_sender.try_send(DeviceEvent::Crashed(crash_msg));
+                        return;
+                    }
+                }
+                let code = exit_status.code().unwrap_or(-1);
+                let _ = exit_sender.try_send(DeviceEvent::Crashed(format!("Exit code: {code}")));
+            }
+            Err(e) => {
+                let _ = exit_sender.try_send(DeviceEvent::Crashed(format!("Process error: {e}")));
+            }
+        }
+    })
+    .detach();
+
+    Ok(running)
+}
+
+/// Parse log level from a line of output.
+fn parse_log_level(line: &str) -> tracing::Level {
+    let line_lower = line.to_lowercase();
+    if line_lower.contains("error") || line_lower.contains("fatal") || line_lower.contains("panic") {
+        tracing::Level::ERROR
+    } else if line_lower.contains("warn") {
+        tracing::Level::WARN
+    } else if line_lower.contains("debug") {
+        tracing::Level::DEBUG
+    } else if line_lower.contains("trace") {
+        tracing::Level::TRACE
+    } else {
+        tracing::Level::INFO
+    }
 }
