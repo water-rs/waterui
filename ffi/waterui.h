@@ -1421,6 +1421,32 @@ typedef struct WuiTabs {
 } WuiTabs;
 
 /**
+ * FFI-compatible navigation controller that bridges native push/pop callbacks to Rust.
+ *
+ * Native backends create this controller with callback function pointers, then install
+ * it into the environment. When Rust views call `NavigationController::push()` or `pop()`,
+ * those calls are forwarded to the native callbacks.
+ */
+typedef struct WuiNavigationController {
+  /**
+   * Opaque data pointer passed to all callbacks (typically a pointer to native controller).
+   */
+  void *data;
+  /**
+   * Callback invoked when a view is pushed onto the navigation stack.
+   */
+  void (*push)(void*, struct WuiNavigationView);
+  /**
+   * Callback invoked when popping the top view from the navigation stack.
+   */
+  void (*pop)(void*);
+  /**
+   * Callback invoked when the controller is dropped (for cleanup).
+   */
+  void (*drop)(void*);
+} WuiNavigationController;
+
+/**
  * FFI representation of a photo event.
  */
 typedef struct WuiPhotoEvent {
@@ -1541,14 +1567,9 @@ typedef struct WuiComputedVideo {
 typedef struct Computed_Video WuiComputed_Video;
 
 /**
- * FFI representation of a selected media item.
+ * Unique identifier for selected media items.
  */
-typedef struct WuiSelected {
-  /**
-   * The unique identifier of the selected media item.
-   */
-  uint32_t id;
-} WuiSelected;
+typedef uint32_t SelectedId;
 
 /**
  * A callback for receiving selected media ID when user picks media.
@@ -1563,7 +1584,7 @@ typedef struct MediaPickerPresentCallback {
   /**
    * Function to call with the selected media. This consumes the callback.
    */
-  void (*call)(void*, struct WuiSelected);
+  void (*call)(void*, SelectedId);
 } MediaPickerPresentCallback;
 
 /**
@@ -2681,6 +2702,53 @@ struct WuiTabs waterui_force_as_tabs(struct WuiAnyView *view);
 struct WuiTypeId waterui_tabs_id(void);
 
 /**
+ * Creates a new navigation controller from native callbacks.
+ *
+ * # Arguments
+ *
+ * * `data` - Opaque pointer passed to all callbacks (typically pointer to native controller)
+ * * `push` - Callback invoked when pushing a view onto the navigation stack
+ * * `pop` - Callback invoked when popping the top view
+ * * `drop` - Callback invoked when the controller is destroyed (for cleanup)
+ *
+ * # Safety
+ *
+ * - `data` must remain valid for the lifetime of the returned controller
+ * - All callback function pointers must be valid and safe to call
+ * - The `drop` callback must properly clean up resources associated with `data`
+ */
+struct WuiNavigationController *waterui_navigation_controller_new(void *data,
+                                                                  void (*push)(void*,
+                                                                               struct WuiNavigationView),
+                                                                  void (*pop)(void*),
+                                                                  void (*drop)(void*));
+
+/**
+ * Installs a navigation controller into the environment.
+ *
+ * After calling this function, views rendered with this environment can extract
+ * the `NavigationController` and use it to push/pop navigation views.
+ *
+ * # Safety
+ *
+ * - `env` must be a valid pointer to a `WuiEnv`
+ * - `controller` must be a valid pointer returned by `waterui_navigation_controller_new`
+ * - `controller` is consumed by this function and must not be used afterward
+ */
+void waterui_env_install_navigation_controller(struct WuiEnv *env,
+                                               struct WuiNavigationController *controller);
+
+/**
+ * Drops a navigation controller.
+ *
+ * # Safety
+ *
+ * - `controller` must be a valid pointer returned by `waterui_navigation_controller_new`
+ * - `controller` must not have been previously dropped or consumed
+ */
+void waterui_drop_navigation_controller(struct WuiNavigationController *controller);
+
+/**
  * # Safety
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
@@ -3718,11 +3786,17 @@ WuiComputed_ColorScheme *waterui_computed_color_scheme_constant(enum WuiColorSch
 
 /**
  * Installs a color scheme signal into the environment.
+ *
+ * # Safety
+ * The signal pointer must be valid.
  */
 void waterui_theme_install_color_scheme(struct WuiEnv *env, WuiComputed_ColorScheme *signal);
 
 /**
  * Returns the current color scheme signal from the environment.
+ *
+ * # Safety
+ * The returned pointer must be dropped by the caller when no longer needed.
  */
 WuiComputed_ColorScheme *waterui_theme_color_scheme(const struct WuiEnv *env);
 
@@ -3730,6 +3804,9 @@ WuiComputed_ColorScheme *waterui_theme_color_scheme(const struct WuiEnv *env);
  * Installs a color signal for a specific slot.
  *
  * Takes ownership of the signal pointer.
+ *
+ * # Safety
+ * The signal pointer must be valid.
  */
 void waterui_theme_install_color(struct WuiEnv *env,
                                  enum WuiColorSlot slot,
@@ -3739,6 +3816,9 @@ void waterui_theme_install_color(struct WuiEnv *env,
  * Returns the color signal for a specific slot.
  *
  * Returns a new reference to the signal. Caller must drop it when done.
+ *
+ * # Safety
+ * The env pointer must be valid.
  */
 WuiComputed_ResolvedColor *waterui_theme_color(const struct WuiEnv *env, enum WuiColorSlot slot);
 
@@ -3746,6 +3826,9 @@ WuiComputed_ResolvedColor *waterui_theme_color(const struct WuiEnv *env, enum Wu
  * Installs a font signal for a specific slot.
  *
  * Takes ownership of the signal pointer.
+ *
+ * # Safety
+ * The env pointer must be valid.
  */
 void waterui_theme_install_font(struct WuiEnv *env,
                                 enum WuiFontSlot slot,
@@ -3755,6 +3838,9 @@ void waterui_theme_install_font(struct WuiEnv *env,
  * Returns the font signal for a specific slot.
  *
  * Returns a new reference to the signal. Caller must drop it when done.
+ *
+ * # Safety
+ * The env pointer must be valid.
  */
 WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env, enum WuiFontSlot slot);
 
@@ -3765,6 +3851,11 @@ WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env, enum WuiF
  * - `waterui_theme_install_color_scheme()`
  * - `waterui_theme_install_color()`
  * - `waterui_theme_install_font()`
+ *
+ * # Safety
+ * - `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ * - Each `WuiComputed<...>` pointer may be null; non-null pointers must be valid and were
+ *   allocated by WaterUI FFI constructors and are transferred to Rust (consumed).
  */
 void waterui_env_install_theme(struct WuiEnv *env,
                                WuiComputed_ResolvedColor *background,
@@ -3781,32 +3872,116 @@ void waterui_env_install_theme(struct WuiEnv *env,
                                WuiComputed_ResolvedFont *subheadline,
                                WuiComputed_ResolvedFont *caption);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_background(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_surface(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_surface_variant(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_border(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_foreground(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_muted_foreground(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_accent(const struct WuiEnv *env);
 
+/**
+ * Returns the theme color signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedColor *waterui_theme_color_accent_foreground(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_body(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_title(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_headline(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_subheadline(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv *env);
 
+/**
+ * Returns the theme font signal for a specific token.
+ *
+ * # Safety
+ * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
+ */
 WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
 
 /**

@@ -93,12 +93,19 @@ impl GtkComponent for NavigationStack<(), ()> {
 
         container.append(&gtk_stack);
 
-        // Create the GTK navigation controller
-        let controller = GtkNavigationController::new(gtk_stack.clone(), header_bar.clone());
-        let navigation_controller = NavigationController::new(controller.clone());
-
         // Install the controller in the environment for child views
         let mut child_env = env.clone();
+
+        // Create the GTK navigation controller with renderer and environment access
+        let controller = GtkNavigationController::new(
+            gtk_stack.clone(),
+            header_bar.clone(),
+            renderer,
+            &child_env,
+        );
+        let navigation_controller = NavigationController::new(controller.clone());
+
+        // Insert controller into environment so child views can access it
         child_env.insert(navigation_controller);
 
         // Render the root view
@@ -121,6 +128,11 @@ struct GtkNavigationControllerInner {
     header_bar: gtk4::HeaderBar,
     view_stack: Vec<NavigationViewState>,
     next_id: usize,
+    /// Raw pointer to the renderer for rendering pushed views.
+    /// SAFETY: The renderer must outlive the navigation controller.
+    renderer_ptr: *mut GtkRenderer,
+    /// Environment for rendering child views.
+    env: Environment,
 }
 
 struct NavigationViewState {
@@ -129,13 +141,25 @@ struct NavigationViewState {
 }
 
 impl GtkNavigationController {
-    fn new(stack: gtk4::Stack, header_bar: gtk4::HeaderBar) -> Self {
+    /// Creates a new GTK navigation controller.
+    ///
+    /// # Safety
+    ///
+    /// The renderer pointer must remain valid for the lifetime of this controller.
+    fn new(
+        stack: gtk4::Stack,
+        header_bar: gtk4::HeaderBar,
+        renderer: &mut GtkRenderer,
+        env: &Environment,
+    ) -> Self {
         Self {
             inner: Rc::new(RefCell::new(GtkNavigationControllerInner {
                 stack,
                 header_bar,
                 view_stack: Vec::new(),
                 next_id: 0,
+                renderer_ptr: renderer as *mut GtkRenderer,
+                env: env.clone(),
             })),
         }
     }
@@ -150,15 +174,25 @@ impl CustomNavigationController for GtkNavigationController {
 
         let title = content.bar.title.content().get().to_plain();
 
-        // Create container for the view content
+        // Render the NavigationView content using stored renderer
+        // SAFETY: The renderer pointer is valid for the lifetime of this controller
+        let content_widget = unsafe {
+            if inner.renderer_ptr.is_null() {
+                tracing::error!("NavigationController: renderer pointer is null");
+                // Fallback to placeholder if renderer is unavailable
+                let label = gtk4::Label::new(Some(&format!("Content for: {title}")));
+                label.upcast::<Widget>()
+            } else {
+                let renderer = &mut *inner.renderer_ptr;
+                renderer.render_any(content.content, &inner.env)
+            }
+        };
+
+        // Create container and add the rendered content
         let view_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         view_container.set_hexpand(true);
         view_container.set_vexpand(true);
-
-        // For now, we'll just create a placeholder
-        // Full implementation would render the content view
-        let label = gtk4::Label::new(Some(&format!("Content for: {title}")));
-        view_container.append(&label);
+        view_container.append(&content_widget);
 
         // Add to stack
         inner.stack.add_named(&view_container, Some(&id));
