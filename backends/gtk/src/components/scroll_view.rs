@@ -22,7 +22,7 @@ impl GtkComponent for Native<ScrollView> {
         let (h_policy, v_policy) = match axis {
             Axis::Horizontal => (gtk4::PolicyType::Automatic, gtk4::PolicyType::Never),
             Axis::Vertical => (gtk4::PolicyType::Never, gtk4::PolicyType::Automatic),
-            Axis::All => (gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic),
+            Axis::All | _ => (gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic),
         };
 
         scrolled_window.set_policy(h_policy, v_policy);
