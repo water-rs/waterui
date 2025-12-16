@@ -87,6 +87,8 @@ native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
+wgpu-hal = { version = "27.0", features = ["gles"] }
+glow = "0.16"
 time = "0.3"
 tiny-skia = "0.11"
 zenwave = { version = "0.3.0", default-features = false, features = ["hyper-backend", "ws"] }
