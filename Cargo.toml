@@ -95,6 +95,7 @@ pastey = "0.2.0"
 tracing-panic = "0.1.2"
 robius-open = { version = "0.1", default-features = false }
 gtk4 = "0.9"
+gdk4 = "0.9"
 glib = "0.20"
 cairo-rs = { version = "0.20", features = ["v1_18"] }
 
