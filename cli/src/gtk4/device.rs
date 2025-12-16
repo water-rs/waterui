@@ -1,4 +1,4 @@
-//! GTK device implementation for running on the local machine.
+//! GTK4 device implementation for running on the local machine.
 
 use color_eyre::eyre::{self, eyre};
 use smol::{
@@ -14,15 +14,15 @@ use crate::{
     utils::command,
 };
 
-/// GTK device representing the local machine.
+/// GTK4 device representing the local machine.
 ///
-/// GTK apps run directly on the host machine without emulation or simulation.
+/// GTK4 apps run directly on the host machine without emulation or simulation.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GtkDevice;
+pub struct Gtk4Device;
 
-impl Device for GtkDevice {
+impl Device for Gtk4Device {
     fn name(&self) -> &str {
-        "Local Machine (GTK)"
+        "Local Machine (GTK4)"
     }
 
     async fn launch(&self) -> eyre::Result<()> {
@@ -42,9 +42,9 @@ impl Device for GtkDevice {
             return Err(FailToRun::InvalidArtifact);
         }
 
-        info!("Launching GTK app: {}", binary_path.display());
+        info!("Launching GTK4 app: {}", binary_path.display());
 
-        // Build the command to run the GTK binary
+        // Build the command to run the GTK4 binary
         let mut cmd = Command::new(binary_path);
         command(&mut cmd);
 
@@ -158,7 +158,7 @@ impl Device for GtkDevice {
     }
 
     async fn scan() -> eyre::Result<Vec<Self>> {
-        // GTK device is the local machine - always available
+        // GTK4 device is the local machine - always available
         Ok(vec![Self])
     }
 }

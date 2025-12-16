@@ -1,19 +1,19 @@
-//! GTK toolchain checking.
+//! GTK4 toolchain checking.
 
 use color_eyre::eyre;
 use smol::process::Command;
 
 use crate::toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain};
 
-/// GTK toolchain checker.
+/// GTK4 toolchain checker.
 ///
 /// Verifies that GTK4 development libraries are installed on the system.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GtkToolchain;
+pub struct Gtk4Toolchain;
 
-/// Installation plan for GTK dependencies.
+/// Installation plan for GTK4 dependencies.
 #[derive(Debug)]
-pub enum GtkInstallation {
+pub enum Gtk4Installation {
     /// Install pkg-config via Homebrew (macOS).
     PkgConfig,
     /// Install GTK4 via Homebrew (macOS).
@@ -22,7 +22,7 @@ pub enum GtkInstallation {
     Both,
 }
 
-impl Installation for GtkInstallation {
+impl Installation for Gtk4Installation {
     type Error = eyre::Report;
 
     async fn install(&self) -> Result<(), Self::Error> {
@@ -41,8 +41,8 @@ impl Installation for GtkInstallation {
     }
 }
 
-impl Toolchain for GtkToolchain {
-    type Installation = GtkInstallation;
+impl Toolchain for Gtk4Toolchain {
+    type Installation = Gtk4Installation;
 
     async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
         let pkg_config_ok = check_pkg_config_exists().await;
@@ -57,11 +57,11 @@ impl Toolchain for GtkToolchain {
             (false, _) if cfg!(target_os = "macos") => {
                 // On macOS, we can install both via brew
                 // Check if gtk4 would be available after pkg-config is installed
-                Err(ToolchainError::Fixable(GtkInstallation::Both))
+                Err(ToolchainError::Fixable(Gtk4Installation::Both))
             }
             (true, false) if cfg!(target_os = "macos") => {
                 // pkg-config available, just missing GTK4
-                Err(ToolchainError::Fixable(GtkInstallation::Gtk4))
+                Err(ToolchainError::Fixable(Gtk4Installation::Gtk4))
             }
             (false, _) => Err(ToolchainError::Unfixable(UnfixableToolchain::new(
                 "pkg-config not found",
