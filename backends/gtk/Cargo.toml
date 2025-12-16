@@ -26,8 +26,12 @@ cairo-rs.workspace = true
 
 # GPU surface dependencies
 wgpu = { workspace = true, optional = true }
+wgpu-hal = { workspace = true, optional = true }
+glow = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+epoxy = { version = "0.1", optional = true }
+libloading = { version = "0.9", optional = true }
 
 # Platform-specific GDK backends for GPU surface
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
@@ -39,7 +43,7 @@ gdk4-macos = { version = "0.9", optional = true }
 
 [features]
 default = []
-gpu = ["dep:waterui-graphics", "dep:wgpu", "dep:pollster", "dep:raw-window-handle"]
+gpu = ["dep:waterui-graphics", "dep:wgpu", "dep:wgpu-hal", "dep:glow", "dep:pollster", "dep:raw-window-handle", "dep:epoxy", "dep:libloading"]
 x11 = ["gpu", "dep:gdk4-x11"]
 wayland = ["gpu", "dep:gdk4-wayland"]
 macos = ["gpu", "dep:gdk4-macos"]
