@@ -37,8 +37,12 @@ impl GtkComponent for Native<StepperConfig> {
             0.0,                  // page size (unused for spin buttons)
         );
 
+        // Add spacer to push spin button to the right
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        container.append(&spacer);
+
         let spin_button = SpinButton::new(Some(&adjustment), 1.0, 0);
-        spin_button.set_hexpand(true);
 
         // Two-way binding: Binding -> SpinButton
         let binding = config.value.clone();
