@@ -26,7 +26,7 @@ mod embedded {
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
-    pub static GTK: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk");
+    pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
@@ -440,15 +440,15 @@ pub mod android {
     }
 }
 
-/// GTK backend templates.
-pub mod gtk {
+/// GTK4 backend templates.
+pub mod gtk4 {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
     use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
 
     const WATERUI_GTK_VERSION: &str = "0.1";
 
-    /// Write all GTK templates to the given directory.
+    /// Write all GTK4 templates to the given directory.
     ///
     /// # Errors
     ///
@@ -458,16 +458,16 @@ pub mod gtk {
         generate_cargo_toml(base_dir, ctx).await?;
 
         // Scaffold remaining template files (main.rs, etc.)
-        scaffold_dir(&embedded::GTK, base_dir, ctx).await
+        scaffold_dir(&embedded::GTK4, base_dir, ctx).await
     }
 
-    /// Generate GTK Cargo.toml programmatically using cargo_toml crate.
+    /// Generate GTK4 Cargo.toml programmatically using cargo_toml crate.
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         let mut manifest = Manifest::<()>::default();
 
         // Package section
         manifest.package = Some(Package::new(
-            format!("{}-gtk", ctx.crate_name),
+            format!("{}-gtk4", ctx.crate_name),
             "0.1.0".to_string(),
         ));
         if let Some(ref mut pkg) = manifest.package {
@@ -485,7 +485,7 @@ pub mod gtk {
 
         // Add waterui-gtk dependency
         if let Some(waterui_path) = &ctx.waterui_path {
-            // Path from GTK backend to waterui-gtk:
+            // Path from GTK4 backend to waterui-gtk:
             // 1. Go up to project root
             // 2. Apply waterui_path (relative to project root)
             // 3. Append backends/gtk

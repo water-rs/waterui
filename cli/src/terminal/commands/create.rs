@@ -21,7 +21,7 @@ pub struct Args {
     #[arg(long)]
     bundle_id: Option<String>,
 
-    /// Backends to scaffold (apple, android, gtk).
+    /// Backends to scaffold (apple, android, gtk4).
     #[arg(long, value_delimiter = ',')]
     backends: Option<Vec<String>>,
 
@@ -43,17 +43,17 @@ pub struct Args {
 enum Backend {
     Apple,
     Android,
-    Gtk,
+    Gtk4,
 }
 
 impl Backend {
-    const ALL: [Self; 3] = [Self::Apple, Self::Android, Self::Gtk];
+    const ALL: [Self; 3] = [Self::Apple, Self::Android, Self::Gtk4];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Apple => "Apple (iOS/macOS)",
             Self::Android => "Android",
-            Self::Gtk => "GTK (Linux/macOS/Windows)",
+            Self::Gtk4 => "GTK4 (Linux/macOS/Windows)",
         }
     }
 
@@ -61,7 +61,7 @@ impl Backend {
         match s.to_lowercase().as_str() {
             "apple" | "ios" | "macos" => Some(Self::Apple),
             "android" => Some(Self::Android),
-            "gtk" | "gtk4" | "linux" => Some(Self::Gtk),
+            "gtk" | "gtk4" | "linux" => Some(Self::Gtk4),
             _ => None,
         }
     }
@@ -142,7 +142,7 @@ pub async fn run(args: Args) -> Result<()> {
     if !args.playground {
         let has_apple = backends.iter().any(|b| matches!(b, Backend::Apple));
         let has_android = backends.iter().any(|b| matches!(b, Backend::Android));
-        let has_gtk = backends.iter().any(|b| matches!(b, Backend::Gtk));
+        let has_gtk4 = backends.iter().any(|b| matches!(b, Backend::Gtk4));
 
         if has_apple {
             let spinner = shell::spinner("Scaffolding Apple backend...");
@@ -162,13 +162,13 @@ pub async fn run(args: Args) -> Result<()> {
             success!("Created Android backend in android/");
         }
 
-        if has_gtk {
-            let spinner = shell::spinner("Scaffolding GTK backend...");
-            project.init_gtk_backend().await?;
+        if has_gtk4 {
+            let spinner = shell::spinner("Scaffolding GTK4 backend...");
+            project.init_gtk4_backend().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Created GTK backend in gtk/");
+            success!("Created GTK4 backend in gtk4/");
         }
     }
 
@@ -182,8 +182,8 @@ pub async fn run(args: Args) -> Result<()> {
         line!("  water run --platform ios");
     } else if backends.iter().any(|b| matches!(b, Backend::Android)) {
         line!("  water run --platform android");
-    } else if backends.iter().any(|b| matches!(b, Backend::Gtk)) {
-        line!("  water run --platform gtk");
+    } else if backends.iter().any(|b| matches!(b, Backend::Gtk4)) {
+        line!("  water run --platform gtk4");
     }
 
     Ok(())

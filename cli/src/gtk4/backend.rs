@@ -1,4 +1,4 @@
-//! GTK backend configuration and initialization.
+//! GTK4 backend configuration and initialization.
 
 use std::path::{Path, PathBuf};
 
@@ -9,58 +9,58 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    gtk::platform::{build_gtk, clean_gtk, is_gtk_platform, package_gtk},
+    gtk4::platform::{build_gtk4, clean_gtk4, is_gtk4_platform, package_gtk4},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
 
-/// Configuration for the GTK backend in a `WaterUI` project.
+/// Configuration for the GTK4 backend in a `WaterUI` project.
 ///
-/// `[backend.gtk]` in `Water.toml`
+/// `[backend.gtk4]` in `Water.toml`
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GtkBackend {
+pub struct Gtk4Backend {
     #[serde(
-        default = "default_gtk_project_path",
-        skip_serializing_if = "is_default_gtk_project_path"
+        default = "default_gtk4_project_path",
+        skip_serializing_if = "is_default_gtk4_project_path"
     )]
     project_path: PathBuf,
 }
 
-impl GtkBackend {
-    /// Create a new GTK backend configuration with default settings.
+impl Gtk4Backend {
+    /// Create a new GTK4 backend configuration with default settings.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            project_path: default_gtk_project_path(),
+            project_path: default_gtk4_project_path(),
         }
     }
 
-    /// Set a custom project path (defaults to "gtk").
+    /// Set a custom project path (defaults to "gtk4").
     #[must_use]
     pub fn with_project_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.project_path = path.into();
         self
     }
 
-    /// Get the path to the GTK project within the `WaterUI` project.
+    /// Get the path to the GTK4 project within the `WaterUI` project.
     #[must_use]
     pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
     }
 }
 
-impl Default for GtkBackend {
+impl Default for Gtk4Backend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Backend for GtkBackend {
-    const DEFAULT_PATH: &'static str = "gtk";
+impl Backend for Gtk4Backend {
+    const DEFAULT_PATH: &'static str = "gtk4";
 
-    // GTK uses cargo's target directory for build caches
-    // Since GTK project is a simple Rust binary crate, it uses the workspace target
+    // GTK4 uses cargo's target directory for build caches
+    // Since GTK4 project is a simple Rust binary crate, it uses the workspace target
     // No need to preserve local target - it's part of the workspace
     const CACHE_PATHS: &'static [&'static str] = &[];
 
@@ -71,10 +71,10 @@ impl Backend for GtkBackend {
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
 
-        // Get the relative path to the backend from project root (e.g., "gtk" or ".water/gtk")
+        // Get the relative path to the backend from project root (e.g., "gtk4" or ".water/gtk4")
         let backend_relative_path = project.backend_relative_path::<Self>();
 
-        let project_path = default_gtk_project_path();
+        let project_path = default_gtk4_project_path();
 
         let ctx = TemplateContext {
             app_display_name: manifest.package.name.clone(),
@@ -94,7 +94,7 @@ impl Backend for GtkBackend {
             android_permissions: Vec::new(),
         };
 
-        templates::gtk::scaffold(&project.backend_path::<Self>(), &ctx)
+        templates::gtk4::scaffold(&project.backend_path::<Self>(), &ctx)
             .await
             .map_err(crate::backend::FailToInitBackend::Io)?;
 
@@ -102,7 +102,7 @@ impl Backend for GtkBackend {
     }
 
     fn supports(&self, platform: TargetPlatform) -> bool {
-        is_gtk_platform(platform)
+        is_gtk4_platform(platform)
     }
 
     async fn build(
@@ -111,7 +111,7 @@ impl Backend for GtkBackend {
         _platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
-        build_gtk(project, options).await
+        build_gtk4(project, options).await
     }
 
     async fn package(
@@ -120,18 +120,18 @@ impl Backend for GtkBackend {
         _platform: TargetPlatform,
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
-        package_gtk(project, options).await
+        package_gtk4(project, options).await
     }
 
     async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
-        clean_gtk(project).await
+        clean_gtk4(project).await
     }
 }
 
-fn default_gtk_project_path() -> PathBuf {
-    PathBuf::from("gtk")
+fn default_gtk4_project_path() -> PathBuf {
+    PathBuf::from("gtk4")
 }
 
-fn is_default_gtk_project_path(s: &Path) -> bool {
-    s == Path::new("gtk")
+fn is_default_gtk4_project_path(s: &Path) -> bool {
+    s == Path::new("gtk4")
 }

@@ -23,11 +23,11 @@ use waterui_cli::{
     build::BuildOptions,
     debug::{HotReloadEvent, HotReloadRunner},
     device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
-    gtk::{
-        backend::GtkBackend,
-        device::GtkDevice,
-        platform::{build_gtk, package_gtk},
-        toolchain::GtkToolchain,
+    gtk4::{
+        backend::Gtk4Backend,
+        device::Gtk4Device,
+        platform::{build_gtk4, package_gtk4},
+        toolchain::Gtk4Toolchain,
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
@@ -45,8 +45,6 @@ pub enum TargetPlatform {
     Macos,
     /// Linux (native desktop).
     Linux,
-    /// GTK (alias for Linux with GTK backend).
-    Gtk,
 }
 
 /// Target backend for running (how the app is built and rendered).
@@ -57,7 +55,7 @@ pub enum TargetBackend {
     /// Android backend (Android Views).
     Android,
     /// GTK4 backend (Linux/macOS/Windows).
-    Gtk,
+    Gtk4,
 }
 
 /// Arguments for the run command.
@@ -68,7 +66,7 @@ pub struct Args {
     platform: TargetPlatform,
 
     /// Backend to use (overrides default for platform).
-    /// E.g., `--platform macos --backend gtk` runs macOS app with GTK4 rendering.
+    /// E.g., `--platform macos --backend gtk4` runs macOS app with GTK4 rendering.
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
 
@@ -129,7 +127,7 @@ fn resolve_backend(
         TargetPlatform::Ios => TargetBackend::Apple,
         TargetPlatform::Macos => TargetBackend::Apple,
         TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Gtk => TargetBackend::Gtk,
+        TargetPlatform::Linux => TargetBackend::Gtk4,
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -141,10 +139,9 @@ fn resolve_backend(
         (TargetPlatform::Macos, TargetBackend::Apple) => true,
         // Android backend: Android
         (TargetPlatform::Android, TargetBackend::Android) => true,
-        // GTK backend: macOS, Linux, Gtk (alias)
-        (TargetPlatform::Macos, TargetBackend::Gtk) => true,
-        (TargetPlatform::Linux, TargetBackend::Gtk) => true,
-        (TargetPlatform::Gtk, TargetBackend::Gtk) => true,
+        // GTK4 backend: macOS, Linux
+        (TargetPlatform::Macos, TargetBackend::Gtk4) => true,
+        (TargetPlatform::Linux, TargetBackend::Gtk4) => true,
         // All other combinations are invalid
         _ => false,
     };
@@ -154,9 +151,9 @@ fn resolve_backend(
             "Backend {:?} does not support platform {:?}.\n\
              Valid combinations:\n  \
              - iOS: apple\n  \
-             - macOS: apple, gtk\n  \
+             - macOS: apple, gtk4\n  \
              - Android: android\n  \
-             - Linux: gtk",
+             - Linux: gtk4",
             backend,
             platform
         );
@@ -191,16 +188,16 @@ pub async fn run(args: Args) -> Result<()> {
     }
     success!("Toolchain ready");
 
-    // Initialize GTK backend if needed (lazy initialization)
-    if backend == TargetBackend::Gtk && project.gtk_backend().is_none() {
-        let spinner = shell::spinner("Initializing GTK backend...");
-        reinit_backend::<GtkBackend>(&project).await?;
+    // Initialize GTK4 backend if needed (lazy initialization)
+    if backend == TargetBackend::Gtk4 && project.gtk4_backend().is_none() {
+        let spinner = shell::spinner("Initializing GTK4 backend...");
+        reinit_backend::<Gtk4Backend>(&project).await?;
         // Reload project to pick up the new backend
         project = Project::open(&project_path).await?;
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        success!("GTK backend initialized");
+        success!("GTK4 backend initialized");
     }
 
     // Step 2: Find device
@@ -245,7 +242,7 @@ pub async fn run(args: Args) -> Result<()> {
     let backend_log_name = match backend {
         TargetBackend::Apple => "Apple",
         TargetBackend::Android => "Android",
-        TargetBackend::Gtk => "GTK",
+        TargetBackend::Gtk4 => "GTK4",
     };
 
     // Get hot reload event receiver if available
@@ -293,7 +290,7 @@ async fn build_and_run(
         TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Android => LibTargetPlatform::Android,
-        TargetPlatform::Linux | TargetPlatform::Gtk => LibTargetPlatform::Linux,
+        TargetPlatform::Linux => LibTargetPlatform::Linux,
     };
 
     // Launch device in background while building (if needed)
@@ -304,7 +301,7 @@ async fn build_and_run(
                 SelectedDevice::AppleMacos(macos) => macos.launch().await?,
                 SelectedDevice::AndroidDevice(dev) => dev.launch().await?,
                 SelectedDevice::AndroidEmulator(emu) => emu.launch().await?,
-                SelectedDevice::Gtk(gtk) => gtk.launch().await?,
+                SelectedDevice::Gtk4(gtk4) => gtk4.launch().await?,
             }
         }
         Ok::<_, color_eyre::eyre::Report>(device)
@@ -322,8 +319,8 @@ async fn build_and_run(
         TargetBackend::Android => {
             build_android(project, lib_platform, build_options).await?;
         }
-        TargetBackend::Gtk => {
-            build_gtk(project, build_options).await?;
+        TargetBackend::Gtk4 => {
+            build_gtk4(project, build_options).await?;
         }
     }
 
@@ -334,7 +331,7 @@ async fn build_and_run(
     let artifact = match backend {
         TargetBackend::Apple => package_apple(project, lib_platform, package_options).await?,
         TargetBackend::Android => package_android(project, lib_platform, package_options).await?,
-        TargetBackend::Gtk => package_gtk(project, package_options).await?,
+        TargetBackend::Gtk4 => package_gtk4(project, package_options).await?,
     };
 
     // Wait for device to be ready
@@ -385,7 +382,7 @@ async fn run_with_options(
         SelectedDevice::AppleMacos(macos) => macos.run(artifact, run_options).await?,
         SelectedDevice::AndroidDevice(dev) => dev.run(artifact, run_options).await?,
         SelectedDevice::AndroidEmulator(emu) => emu.run(artifact, run_options).await?,
-        SelectedDevice::Gtk(gtk) => gtk.run(artifact, run_options).await?,
+        SelectedDevice::Gtk4(gtk4) => gtk4.run(artifact, run_options).await?,
     };
 
     Ok(running)
@@ -397,7 +394,7 @@ enum SelectedDevice {
     AppleMacos(MacOS),
     AndroidDevice(AndroidDevice),
     AndroidEmulator(AndroidEmulator),
-    Gtk(GtkDevice),
+    Gtk4(Gtk4Device),
 }
 
 impl SelectedDevice {
@@ -405,7 +402,7 @@ impl SelectedDevice {
     fn needs_launch(&self) -> bool {
         match self {
             Self::AppleSimulator(sim) => sim.state != "Booted",
-            Self::AppleMacos(_) | Self::AndroidDevice(_) | Self::Gtk(_) => false,
+            Self::AppleMacos(_) | Self::AndroidDevice(_) | Self::Gtk4(_) => false,
             Self::AndroidEmulator(_) => true,
         }
     }
@@ -437,8 +434,8 @@ async fn check_toolchain_for_backend(backend: TargetBackend) -> Result<()> {
                 bail!("Toolchain check failed: {e}");
             }
         }
-        TargetBackend::Gtk => {
-            let toolchain = GtkToolchain;
+        TargetBackend::Gtk4 => {
+            let toolchain = Gtk4Toolchain;
             if let Err(e) = toolchain.check().await {
                 bail!("Toolchain check failed: {e}");
             }
@@ -452,9 +449,9 @@ async fn find_device(
     backend: TargetBackend,
     device_id: Option<&str>,
 ) -> Result<SelectedDevice> {
-    // For GTK backend, always use GtkDevice regardless of platform
-    if backend == TargetBackend::Gtk {
-        return Ok(SelectedDevice::Gtk(GtkDevice));
+    // For GTK4 backend, always use Gtk4Device regardless of platform
+    if backend == TargetBackend::Gtk4 {
+        return Ok(SelectedDevice::Gtk4(Gtk4Device));
     }
 
     match platform {
@@ -521,9 +518,9 @@ async fn find_device(
                 avd_name,
             )))
         }
-        TargetPlatform::Linux | TargetPlatform::Gtk => {
-            // Linux/GTK always runs on the local machine
-            Ok(SelectedDevice::Gtk(GtkDevice))
+        TargetPlatform::Linux => {
+            // Linux always runs on the local machine with GTK4 backend
+            Ok(SelectedDevice::Gtk4(Gtk4Device))
         }
     }
 }
@@ -534,7 +531,7 @@ fn device_name(device: &SelectedDevice) -> String {
         SelectedDevice::AppleMacos(_) => "Current Machine".to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
-        SelectedDevice::Gtk(_) => "Local Machine (GTK)".to_string(),
+        SelectedDevice::Gtk4(_) => "Local Machine (GTK4)".to_string(),
     }
 }
 
@@ -544,7 +541,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Android => "Android",
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
-        TargetPlatform::Gtk => "GTK",
     }
 }
 
@@ -552,7 +548,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
         TargetBackend::Android => "Android",
-        TargetBackend::Gtk => "GTK",
+        TargetBackend::Gtk4 => "GTK4",
     }
 }
 
