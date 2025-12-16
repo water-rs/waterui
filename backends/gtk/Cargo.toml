@@ -14,11 +14,13 @@ waterui-layout.workspace = true
 waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
+waterui-color.workspace = true
 waterui-graphics = { workspace = true, features = ["wgpu"], optional = true }
 nami.workspace = true
 tracing.workspace = true
 
 gtk4.workspace = true
+gdk4.workspace = true
 glib.workspace = true
 cairo-rs.workspace = true
 
