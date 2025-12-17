@@ -124,6 +124,24 @@ typedef enum WuiKeyboardType {
 } WuiKeyboardType;
 
 /**
+ * The display mode for the navigation bar title (FFI-compatible).
+ */
+typedef enum WuiNavigationTitleDisplayMode {
+  /**
+   * System decides based on context.
+   */
+  WuiNavigationTitleDisplayMode_Automatic = 0,
+  /**
+   * Always use inline (small) title.
+   */
+  WuiNavigationTitleDisplayMode_Inline = 1,
+  /**
+   * Always use large title.
+   */
+  WuiNavigationTitleDisplayMode_Large = 2,
+} WuiNavigationTitleDisplayMode;
+
+/**
  * Position of the tab bar within the tab container.
  */
 typedef enum WuiTabPosition {
@@ -1351,6 +1369,7 @@ typedef struct WuiBar {
   struct WuiText title;
   WuiComputed_Color *color;
   WuiComputed_bool *hidden;
+  enum WuiNavigationTitleDisplayMode display_mode;
 } WuiBar;
 
 typedef struct WuiNavigationView {
@@ -2747,6 +2766,29 @@ void waterui_env_install_navigation_controller(struct WuiEnv *env,
  * - `controller` must not have been previously dropped or consumed
  */
 void waterui_drop_navigation_controller(struct WuiNavigationController *controller);
+
+/**
+ * Checks if a navigation controller is installed in the environment.
+ *
+ * Returns true if a NavigationController is available, false otherwise.
+ * Use this to determine whether to show a back button in navigation views.
+ *
+ * # Safety
+ *
+ * - `env` must be a valid pointer to a `WuiEnv`
+ */
+bool waterui_env_has_navigation_controller(const struct WuiEnv *env);
+
+/**
+ * Pops the top view from the navigation stack.
+ *
+ * If no NavigationController is installed in the environment, this function does nothing.
+ *
+ * # Safety
+ *
+ * - `env` must be a valid pointer to a `WuiEnv`
+ */
+void waterui_navigation_pop(const struct WuiEnv *env);
 
 /**
  * # Safety

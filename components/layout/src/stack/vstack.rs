@@ -124,6 +124,7 @@ impl Layout for VStackLayout {
             })
             .collect();
 
+
         // Calculate stretch child height - only for main-axis (vertically) stretching children
         let main_axis_stretch_count = measurements
             .iter()
