@@ -746,6 +746,190 @@ pub type WuiMetadataOffset = WuiMetadata<WuiOffset>;
 // Generate waterui_metadata_offset_id() and waterui_force_as_metadata_offset()
 ffi_metadata!(Offset, WuiMetadataOffset, offset);
 
+// ========== Metadata<Blur> FFI ==========
+// Used to apply blur filter to views
+
+use waterui::filter::{Blur, Brightness, Contrast, Grayscale, HueRotation, Opacity, Saturation};
+
+/// FFI-safe representation of a blur filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiBlur {
+    /// Blur radius in points (0 = no blur).
+    pub radius: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Blur {
+    type FFI = WuiBlur;
+    fn into_ffi(self) -> Self::FFI {
+        WuiBlur {
+            radius: self.radius.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Blur> FFI struct
+pub type WuiMetadataBlur = WuiMetadata<WuiBlur>;
+
+// Generate waterui_metadata_blur_id() and waterui_force_as_metadata_blur()
+ffi_metadata!(Blur, WuiMetadataBlur, blur);
+
+// ========== Metadata<Brightness> FFI ==========
+// Used to apply brightness filter to views
+
+/// FFI-safe representation of a brightness filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiBrightness {
+    /// Brightness adjustment (0 = normal, negative = darker, positive = brighter).
+    pub amount: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Brightness {
+    type FFI = WuiBrightness;
+    fn into_ffi(self) -> Self::FFI {
+        WuiBrightness {
+            amount: self.amount.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Brightness> FFI struct
+pub type WuiMetadataBrightness = WuiMetadata<WuiBrightness>;
+
+// Generate waterui_metadata_brightness_id() and waterui_force_as_metadata_brightness()
+ffi_metadata!(Brightness, WuiMetadataBrightness, brightness);
+
+// ========== Metadata<Saturation> FFI ==========
+// Used to apply saturation filter to views
+
+/// FFI-safe representation of a saturation filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiSaturation {
+    /// Saturation amount (0 = grayscale, 1 = normal, >1 = oversaturated).
+    pub amount: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Saturation {
+    type FFI = WuiSaturation;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSaturation {
+            amount: self.amount.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Saturation> FFI struct
+pub type WuiMetadataSaturation = WuiMetadata<WuiSaturation>;
+
+// Generate waterui_metadata_saturation_id() and waterui_force_as_metadata_saturation()
+ffi_metadata!(Saturation, WuiMetadataSaturation, saturation);
+
+// ========== Metadata<Contrast> FFI ==========
+// Used to apply contrast filter to views
+
+/// FFI-safe representation of a contrast filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiContrast {
+    /// Contrast amount (1 = normal, <1 = less contrast, >1 = more contrast).
+    pub amount: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Contrast {
+    type FFI = WuiContrast;
+    fn into_ffi(self) -> Self::FFI {
+        WuiContrast {
+            amount: self.amount.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Contrast> FFI struct
+pub type WuiMetadataContrast = WuiMetadata<WuiContrast>;
+
+// Generate waterui_metadata_contrast_id() and waterui_force_as_metadata_contrast()
+ffi_metadata!(Contrast, WuiMetadataContrast, contrast);
+
+// ========== Metadata<HueRotation> FFI ==========
+// Used to apply hue rotation filter to views
+
+/// FFI-safe representation of a hue rotation filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiHueRotation {
+    /// Hue rotation angle in degrees (0-360).
+    pub angle: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for HueRotation {
+    type FFI = WuiHueRotation;
+    fn into_ffi(self) -> Self::FFI {
+        WuiHueRotation {
+            angle: self.angle.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<HueRotation> FFI struct
+pub type WuiMetadataHueRotation = WuiMetadata<WuiHueRotation>;
+
+// Generate waterui_metadata_hue_rotation_id() and waterui_force_as_metadata_hue_rotation()
+ffi_metadata!(HueRotation, WuiMetadataHueRotation, hue_rotation);
+
+// ========== Metadata<Grayscale> FFI ==========
+// Used to apply grayscale filter to views
+
+/// FFI-safe representation of a grayscale filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiGrayscale {
+    /// Grayscale intensity (0 = full color, 1 = full grayscale).
+    pub intensity: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Grayscale {
+    type FFI = WuiGrayscale;
+    fn into_ffi(self) -> Self::FFI {
+        WuiGrayscale {
+            intensity: self.intensity.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Grayscale> FFI struct
+pub type WuiMetadataGrayscale = WuiMetadata<WuiGrayscale>;
+
+// Generate waterui_metadata_grayscale_id() and waterui_force_as_metadata_grayscale()
+ffi_metadata!(Grayscale, WuiMetadataGrayscale, grayscale);
+
+// ========== Metadata<Opacity> FFI ==========
+// Used to apply opacity filter to views
+
+/// FFI-safe representation of an opacity filter.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiOpacity {
+    /// Opacity value (0 = transparent, 1 = opaque).
+    pub value: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Opacity {
+    type FFI = WuiOpacity;
+    fn into_ffi(self) -> Self::FFI {
+        WuiOpacity {
+            value: self.value.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Opacity> FFI struct
+pub type WuiMetadataOpacity = WuiMetadata<WuiOpacity>;
+
+// Generate waterui_metadata_opacity_id() and waterui_force_as_metadata_opacity()
+ffi_metadata!(Opacity, WuiMetadataOpacity, opacity);
+
 // ========== Metadata<Focused> FFI ==========
 // Used to track focus state for views
 
