@@ -593,6 +593,46 @@ pub type WuiMetadataShadow = WuiMetadata<WuiShadow>;
 // Generate waterui_metadata_shadow_id() and waterui_force_as_metadata_shadow()
 ffi_metadata!(Shadow, WuiMetadataShadow, shadow);
 
+// ========== Metadata<Transform> FFI ==========
+// Used to apply 2D transforms (scale, rotation, translation) to views
+
+use waterui::style::Transform;
+
+/// FFI-safe representation of a 2D transform.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiTransform {
+    /// Scale factor along X axis (1.0 = no scale)
+    pub scale_x: *mut WuiComputed<f32>,
+    /// Scale factor along Y axis (1.0 = no scale)
+    pub scale_y: *mut WuiComputed<f32>,
+    /// Rotation angle in degrees (positive = clockwise)
+    pub rotation: *mut WuiComputed<f32>,
+    /// Translation offset along X axis in points
+    pub translate_x: *mut WuiComputed<f32>,
+    /// Translation offset along Y axis in points
+    pub translate_y: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Transform {
+    type FFI = WuiTransform;
+    fn into_ffi(self) -> Self::FFI {
+        WuiTransform {
+            scale_x: self.scale_x.into_ffi(),
+            scale_y: self.scale_y.into_ffi(),
+            rotation: self.rotation.into_ffi(),
+            translate_x: self.translate_x.into_ffi(),
+            translate_y: self.translate_y.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Transform> FFI struct
+pub type WuiMetadataTransform = WuiMetadata<WuiTransform>;
+
+// Generate waterui_metadata_transform_id() and waterui_force_as_metadata_transform()
+ffi_metadata!(Transform, WuiMetadataTransform, transform);
+
 // ========== Metadata<Focused> FFI ==========
 // Used to track focus state for views
 
