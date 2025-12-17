@@ -16,7 +16,7 @@ use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::Binding;
-use waterui::style::Transform;
+use waterui::style::Scale;
 
 /// Demo: Scale animation - visual transform on colored boxes
 fn scale_animation_section(scale: Binding<f32>) -> impl View {
@@ -30,7 +30,7 @@ fn scale_animation_section(scale: Binding<f32>) -> impl View {
         zstack((
             Color::srgb_hex("#3B82F6")
                 .size(80.0, 80.0)
-                .transform(Transform::scale(animated_scale)),
+                .scale(animated_scale),
         ))
         .min_height(120.0),
         hstack((
@@ -67,7 +67,7 @@ fn rotation_animation_section(rotation: Binding<f32>) -> impl View {
         zstack((
             Color::srgb_hex("#22C55E")
                 .size(60.0, 60.0)
-                .transform(Transform::rotation(animated_rotation)),
+                .rotation(animated_rotation),
         ))
         .min_height(100.0),
         hstack((
@@ -111,7 +111,7 @@ fn translation_animation_section(offset_x: Binding<f32>, offset_y: Binding<f32>)
         zstack((
             Color::srgb_hex("#A855F7")
                 .size(50.0, 50.0)
-                .transform(Transform::translation(animated_x, animated_y)),
+                .offset(animated_x, animated_y),
         ))
         .min_height(150.0),
         hstack((
@@ -162,10 +162,8 @@ fn combined_transform_section(
         zstack((
             Color::srgb_hex("#F59E0B")
                 .size(60.0, 60.0)
-                .transform(
-                    Transform::scale(animated_scale)
-                        .with_rotation(animated_rotation),
-                ),
+                .scale(animated_scale)
+                .rotation(animated_rotation),
         ))
         .min_height(150.0),
         hstack((
@@ -297,7 +295,7 @@ fn animation_curves_section(bar_scale: Binding<f32>) -> impl View {
                 zstack((
                     Color::srgb_hex("#06B6D4")
                         .size(200.0, 24.0)
-                        .transform(Transform::scale_xy(linear_scale.clone(), 1.0_f32)),
+                        .metadata(Scale::xy(linear_scale.clone(), 1.0_f32)),
                 ))
                 .min_width(220.0),
             )),
@@ -307,7 +305,7 @@ fn animation_curves_section(bar_scale: Binding<f32>) -> impl View {
                 zstack((
                     Color::srgb_hex("#22C55E")
                         .size(200.0, 24.0)
-                        .transform(Transform::scale_xy(ease_in_scale.clone(), 1.0_f32)),
+                        .metadata(Scale::xy(ease_in_scale.clone(), 1.0_f32)),
                 ))
                 .min_width(220.0),
             )),
@@ -317,7 +315,7 @@ fn animation_curves_section(bar_scale: Binding<f32>) -> impl View {
                 zstack((
                     Color::srgb_hex("#F59E0B")
                         .size(200.0, 24.0)
-                        .transform(Transform::scale_xy(ease_out_scale.clone(), 1.0_f32)),
+                        .metadata(Scale::xy(ease_out_scale.clone(), 1.0_f32)),
                 ))
                 .min_width(220.0),
             )),
@@ -327,7 +325,7 @@ fn animation_curves_section(bar_scale: Binding<f32>) -> impl View {
                 zstack((
                     Color::srgb_hex("#EF4444")
                         .size(200.0, 24.0)
-                        .transform(Transform::scale_xy(spring_scale.clone(), 1.0_f32)),
+                        .metadata(Scale::xy(spring_scale.clone(), 1.0_f32)),
                 ))
                 .min_width(220.0),
             )),
@@ -374,9 +372,8 @@ fn toggle_animation_section(toggle_state: Binding<bool>) -> impl View {
             zstack((
                 Color::srgb_hex("#22C55E")
                     .size(60.0, 60.0)
-                    .transform(
-                        Transform::scale(indicator_scale).with_rotation(indicator_rotation),
-                    ),
+                    .scale(indicator_scale)
+                    .rotation(indicator_rotation),
             ))
             .min_width(80.0)
             .min_height(80.0),
@@ -415,28 +412,28 @@ fn staggered_section(expanded: Binding<bool>) -> impl View {
             zstack((
                 Color::srgb_hex("#22C55E")
                     .size(50.0, 80.0)
-                    .transform(Transform::scale_xy(1.0_f32, bar1_scale)),
+                    .metadata(Scale::xy(1.0_f32, bar1_scale)),
             ))
             .min_height(100.0)
             .min_width(60.0),
             zstack((
                 Color::srgb_hex("#3B82F6")
                     .size(50.0, 80.0)
-                    .transform(Transform::scale_xy(1.0_f32, bar2_scale)),
+                    .metadata(Scale::xy(1.0_f32, bar2_scale)),
             ))
             .min_height(100.0)
             .min_width(60.0),
             zstack((
                 Color::srgb_hex("#A855F7")
                     .size(50.0, 80.0)
-                    .transform(Transform::scale_xy(1.0_f32, bar3_scale)),
+                    .metadata(Scale::xy(1.0_f32, bar3_scale)),
             ))
             .min_height(100.0)
             .min_width(60.0),
             zstack((
                 Color::srgb_hex("#F59E0B")
                     .size(50.0, 80.0)
-                    .transform(Transform::scale_xy(1.0_f32, bar4_scale)),
+                    .metadata(Scale::xy(1.0_f32, bar4_scale)),
             ))
             .min_height(100.0)
             .min_width(60.0),
@@ -475,7 +472,7 @@ fn size_indicator_section(size_value: Binding<f64>) -> impl View {
             zstack((
                 Color::srgb_hex("#3B82F6")
                     .size(30.0, 100.0)
-                    .transform(Transform::scale_xy(1.0_f32, animated_y_scale)),
+                    .metadata(Scale::xy(1.0_f32, animated_y_scale)),
             ))
             .min_height(120.0)
             .min_width(50.0),
@@ -484,7 +481,7 @@ fn size_indicator_section(size_value: Binding<f64>) -> impl View {
             zstack((
                 Color::srgb_hex("#EF4444")
                     .size(50.0, 50.0)
-                    .transform(Transform::rotation(animated_rotation)),
+                    .rotation(animated_rotation),
             ))
             .min_height(80.0)
             .min_width(80.0),
@@ -493,7 +490,7 @@ fn size_indicator_section(size_value: Binding<f64>) -> impl View {
             zstack((
                 Color::srgb_hex("#22C55E")
                     .size(60.0, 60.0)
-                    .transform(Transform::scale(animated_scale)),
+                    .scale(animated_scale),
             ))
             .min_height(100.0)
             .min_width(100.0),

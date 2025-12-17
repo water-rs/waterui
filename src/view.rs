@@ -40,7 +40,7 @@ use crate::{
 use crate::{
     component::{Text, badge::Badge, focus::Focused},
     prelude::Shadow,
-    style::Transform,
+    style::{Anchor, Offset, Rotation, Scale, Transform},
 };
 use waterui_core::Metadata;
 use waterui_core::event::{Event, OnEvent};
@@ -397,6 +397,120 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn transform(self, transform: Transform) -> Metadata<Transform> {
         Metadata::new(self, transform)
+    }
+
+    /// Applies a uniform scale transform to this view around its center.
+    ///
+    /// Scales are purely visual and do not affect layout calculations.
+    ///
+    /// # Arguments
+    /// * `factor` - The scale factor (1.0 = no scale, 0.5 = half size, 2.0 = double size)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Scale a view to 150%
+    /// Color::red()
+    ///     .width(100.0)
+    ///     .height(100.0)
+    ///     .scale(1.5);
+    ///
+    /// // Animate scale
+    /// let factor = binding(1.0_f32).animated();
+    /// Color::blue()
+    ///     .width(80.0)
+    ///     .height(80.0)
+    ///     .scale(factor);
+    /// ```
+    fn scale(self, factor: impl IntoComputed<f32>) -> Metadata<Scale> {
+        Metadata::new(self, Scale::uniform(factor))
+    }
+
+    /// Applies a uniform scale transform to this view around a specific anchor point.
+    ///
+    /// # Arguments
+    /// * `factor` - The scale factor
+    /// * `anchor` - The anchor point for the scale (e.g., `Anchor::TOP_LEFT`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::style::Anchor;
+    ///
+    /// // Scale from top-left corner
+    /// view.scale_from(0.5, Anchor::TOP_LEFT);
+    /// ```
+    fn scale_from(self, factor: impl IntoComputed<f32>, anchor: Anchor) -> Metadata<Scale> {
+        Metadata::new(self, Scale::uniform_from(factor, anchor))
+    }
+
+    /// Applies a rotation transform to this view around its center.
+    ///
+    /// Rotations are purely visual and do not affect layout calculations.
+    ///
+    /// # Arguments
+    /// * `degrees` - The rotation angle in degrees (positive = clockwise)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Rotate 45 degrees
+    /// view.rotation(45.0);
+    ///
+    /// // Animate rotation
+    /// let angle = binding(0.0_f32).animated();
+    /// view.rotation(angle);
+    /// ```
+    fn rotation(self, degrees: impl IntoComputed<f32>) -> Metadata<Rotation> {
+        Metadata::new(self, Rotation::degrees(degrees))
+    }
+
+    /// Applies a rotation transform to this view around a specific anchor point.
+    ///
+    /// # Arguments
+    /// * `degrees` - The rotation angle in degrees
+    /// * `anchor` - The anchor point for the rotation
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::style::Anchor;
+    ///
+    /// // Rotate around top-left corner
+    /// view.rotation_from(45.0, Anchor::TOP_LEFT);
+    /// ```
+    fn rotation_from(self, degrees: impl IntoComputed<f32>, anchor: Anchor) -> Metadata<Rotation> {
+        Metadata::new(self, Rotation::degrees_from(degrees, anchor))
+    }
+
+    /// Applies an offset (translation) transform to this view.
+    ///
+    /// Offsets are purely visual and do not affect layout calculations.
+    ///
+    /// # Arguments
+    /// * `x` - The offset along the X axis in points
+    /// * `y` - The offset along the Y axis in points
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Move view by (10, 20) points
+    /// view.offset(10.0, 20.0);
+    ///
+    /// // Animate offset
+    /// let x = binding(0.0_f32).animated();
+    /// view.offset(x, 0.0);
+    /// ```
+    fn offset(self, x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Metadata<Offset> {
+        Metadata::new(self, Offset::new(x, y))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.

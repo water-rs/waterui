@@ -139,43 +139,233 @@ impl<T> Vector<T> {
 }
 
 // ============================================================================
-// Transform
+// Transform Components (Scale, Rotation, Offset)
 // ============================================================================
 
 use nami::Computed;
 use nami::signal::IntoComputed;
 
-/// A 2D transform that can be applied to views as metadata.
+/// Anchor point for transforms, specified as normalized coordinates.
+/// (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    /// X coordinate (0.0 = left, 0.5 = center, 1.0 = right)
+    pub x: f32,
+    /// Y coordinate (0.0 = top, 0.5 = center, 1.0 = bottom)
+    pub y: f32,
+}
+
+impl Anchor {
+    /// Center anchor point (0.5, 0.5)
+    pub const CENTER: Self = Self { x: 0.5, y: 0.5 };
+    /// Top-left anchor point (0.0, 0.0)
+    pub const TOP_LEFT: Self = Self { x: 0.0, y: 0.0 };
+    /// Top-right anchor point (1.0, 0.0)
+    pub const TOP_RIGHT: Self = Self { x: 1.0, y: 0.0 };
+    /// Bottom-left anchor point (0.0, 1.0)
+    pub const BOTTOM_LEFT: Self = Self { x: 0.0, y: 1.0 };
+    /// Bottom-right anchor point (1.0, 1.0)
+    pub const BOTTOM_RIGHT: Self = Self { x: 1.0, y: 1.0 };
+
+    /// Creates a custom anchor point.
+    #[must_use]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+impl Default for Anchor {
+    fn default() -> Self {
+        Self::CENTER
+    }
+}
+
+// ============================================================================
+// Scale Metadata
+// ============================================================================
+
+/// Scale transform that can be applied to views.
 ///
-/// Transforms are purely visual and do not affect layout calculations.
-/// They are applied after layout, making them ideal for animations.
+/// Scales are purely visual and do not affect layout calculations.
+/// The scale is applied around the specified anchor point.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// use waterui::prelude::*;
-/// use waterui::style::Transform;
 ///
-/// // Scale a view to 150%
-/// Color::red()
-///     .width(100.0)
-///     .height(100.0)
-///     .transform(Transform::scale(1.5));
+/// // Scale from center (default)
+/// view.scale(1.5)
 ///
-/// // Rotate a view 45 degrees
-/// Color::blue()
-///     .width(50.0)
-///     .height(50.0)
-///     .transform(Transform::rotation(45.0));
+/// // Scale from top-left corner
+/// view.scale_from(1.5, Anchor::TOP_LEFT)
 ///
-/// // Animate a transform
-/// let scale = binding(1.0).animated();
-/// Color::green()
-///     .width(80.0)
-///     .height(80.0)
-///     .transform(Transform::scale(scale));
+/// // Animate scale
+/// let factor = Binding::container(1.0_f32).with(Animation::spring(300.0, 15.0));
+/// view.scale(factor)
 /// ```
 #[derive(Debug)]
+pub struct Scale {
+    /// Scale factor along X axis (1.0 = no scale)
+    pub x: Computed<f32>,
+    /// Scale factor along Y axis (1.0 = no scale)
+    pub y: Computed<f32>,
+    /// Anchor point for the scale transform
+    pub anchor: Anchor,
+}
+
+impl MetadataKey for Scale {}
+
+impl Scale {
+    /// Creates a uniform scale transform from center.
+    #[must_use]
+    pub fn uniform(factor: impl IntoComputed<f32>) -> Self {
+        let factor = factor.into_computed();
+        Self {
+            x: factor.clone(),
+            y: factor,
+            anchor: Anchor::CENTER,
+        }
+    }
+
+    /// Creates a uniform scale transform from a specific anchor point.
+    #[must_use]
+    pub fn uniform_from(factor: impl IntoComputed<f32>, anchor: Anchor) -> Self {
+        let factor = factor.into_computed();
+        Self {
+            x: factor.clone(),
+            y: factor,
+            anchor,
+        }
+    }
+
+    /// Creates a non-uniform scale transform from center.
+    #[must_use]
+    pub fn xy(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        Self {
+            x: x.into_computed(),
+            y: y.into_computed(),
+            anchor: Anchor::CENTER,
+        }
+    }
+
+    /// Creates a non-uniform scale transform from a specific anchor point.
+    #[must_use]
+    pub fn xy_from(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>, anchor: Anchor) -> Self {
+        Self {
+            x: x.into_computed(),
+            y: y.into_computed(),
+            anchor,
+        }
+    }
+}
+
+// ============================================================================
+// Rotation Metadata
+// ============================================================================
+
+/// Rotation transform that can be applied to views.
+///
+/// Rotations are purely visual and do not affect layout calculations.
+/// The rotation is applied around the specified anchor point.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// // Rotate around center (default)
+/// view.rotation(45.0)
+///
+/// // Rotate around top-left corner
+/// view.rotation_from(45.0, Anchor::TOP_LEFT)
+///
+/// // Animate rotation
+/// let angle = Binding::container(0.0_f32).with(Animation::spring(300.0, 15.0));
+/// view.rotation(angle)
+/// ```
+#[derive(Debug)]
+pub struct Rotation {
+    /// Rotation angle in degrees (positive = clockwise)
+    pub angle: Computed<f32>,
+    /// Anchor point for the rotation transform
+    pub anchor: Anchor,
+}
+
+impl MetadataKey for Rotation {}
+
+impl Rotation {
+    /// Creates a rotation transform around center.
+    #[must_use]
+    pub fn degrees(angle: impl IntoComputed<f32>) -> Self {
+        Self {
+            angle: angle.into_computed(),
+            anchor: Anchor::CENTER,
+        }
+    }
+
+    /// Creates a rotation transform around a specific anchor point.
+    #[must_use]
+    pub fn degrees_from(angle: impl IntoComputed<f32>, anchor: Anchor) -> Self {
+        Self {
+            angle: angle.into_computed(),
+            anchor,
+        }
+    }
+}
+
+// ============================================================================
+// Offset Metadata
+// ============================================================================
+
+/// Offset (translation) transform that can be applied to views.
+///
+/// Offsets are purely visual and do not affect layout calculations.
+/// This is a simple translation with no anchor point needed.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// // Move view by (10, 20) points
+/// view.offset(10.0, 20.0)
+///
+/// // Animate offset
+/// let x = Binding::container(0.0_f32).with(Animation::spring(300.0, 15.0));
+/// view.offset(x, 0.0)
+/// ```
+#[derive(Debug)]
+pub struct Offset {
+    /// Offset along X axis in points
+    pub x: Computed<f32>,
+    /// Offset along Y axis in points
+    pub y: Computed<f32>,
+}
+
+impl MetadataKey for Offset {}
+
+impl Offset {
+    /// Creates an offset transform.
+    #[must_use]
+    pub fn new(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        Self {
+            x: x.into_computed(),
+            y: y.into_computed(),
+        }
+    }
+}
+
+// ============================================================================
+// Legacy Transform (deprecated, will be removed)
+// ============================================================================
+
+/// A 2D transform that can be applied to views as metadata.
+///
+/// **Deprecated**: Use `Scale`, `Rotation`, and `Offset` separately instead.
+/// This combined transform has issues with anchor points and transform ordering.
+#[derive(Debug)]
+#[deprecated(note = "Use Scale, Rotation, and Offset metadata separately")]
 pub struct Transform {
     /// Scale factor along the X axis (1.0 = no scale)
     pub scale_x: Computed<f32>,
@@ -189,14 +379,17 @@ pub struct Transform {
     pub translate_y: Computed<f32>,
 }
 
+#[allow(deprecated)]
 impl MetadataKey for Transform {}
 
+#[allow(deprecated)]
 impl Default for Transform {
     fn default() -> Self {
         Self::identity()
     }
 }
 
+#[allow(deprecated)]
 impl Transform {
     /// Creates an identity transform (no transformation).
     #[must_use]
@@ -211,9 +404,6 @@ impl Transform {
     }
 
     /// Creates a uniform scale transform.
-    ///
-    /// # Arguments
-    /// * `scale` - The scale factor (1.0 = no scale, 2.0 = double size, 0.5 = half size)
     #[must_use]
     pub fn scale(scale: impl IntoComputed<f32>) -> Self {
         let scale = scale.into_computed();
@@ -227,10 +417,6 @@ impl Transform {
     }
 
     /// Creates a non-uniform scale transform.
-    ///
-    /// # Arguments
-    /// * `x` - Scale factor along the X axis
-    /// * `y` - Scale factor along the Y axis
     #[must_use]
     pub fn scale_xy(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
         Self {
@@ -243,9 +429,6 @@ impl Transform {
     }
 
     /// Creates a rotation transform.
-    ///
-    /// # Arguments
-    /// * `degrees` - Rotation angle in degrees (positive = clockwise)
     #[must_use]
     pub fn rotation(degrees: impl IntoComputed<f32>) -> Self {
         Self {
@@ -258,10 +441,6 @@ impl Transform {
     }
 
     /// Creates a translation transform.
-    ///
-    /// # Arguments
-    /// * `x` - Offset in points along the X axis
-    /// * `y` - Offset in points along the Y axis
     #[must_use]
     pub fn translation(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
         Self {
