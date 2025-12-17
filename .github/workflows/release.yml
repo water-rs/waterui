@@ -11,14 +11,24 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: release-main
+  group: release-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
   release-plz:
     name: Release
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    env:
+      GIT_AUTHOR_NAME: "github-actions[bot]"
+      GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+      GIT_COMMITTER_NAME: "github-actions[bot]"
+      GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+      WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
     outputs:
       cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
@@ -41,19 +51,15 @@ jobs:
           echo "GIT_NO_REPLACE_OBJECTS=${GIT_NO_REPLACE_OBJECTS-<unset>}"
           unset GIT_NO_REPLACE_OBJECTS
           git --version
-          git config core.replaceRefs true
 
           ORIGINAL_SHA="$(git rev-parse HEAD)"
           ORIGINAL_BRANCH="$(git symbolic-ref -q --short HEAD || true)"
           if [[ -z "${ORIGINAL_BRANCH}" ]]; then
             # `actions/checkout` can leave the repo in detached HEAD state.
             # Create a local branch so release-plz can determine the current branch.
-            ORIGINAL_BRANCH="main"
+            ORIGINAL_BRANCH="${WORKFLOW_HEAD_BRANCH:-main}"
             git checkout -q -B "${ORIGINAL_BRANCH}" "${ORIGINAL_SHA}"
           fi
-
-          git config user.email "release-plz-ci@users.noreply.github.com"
-          git config user.name "release-plz-ci"
 
           BROKEN_COMMITS=()
           while IFS= read -r sha; do
@@ -246,7 +252,7 @@ jobs:
   build-cli:
     name: Build waterui-cli binaries
     needs: release-plz
-    if: needs.release-plz.outputs.cli_tag != ''
+    if: needs.release-plz.result == 'success' && needs.release-plz.outputs.cli_tag != ''
     uses: ./.github/workflows/build-cli.yml
     with:
       tag: ${{ needs.release-plz.outputs.cli_tag }}
