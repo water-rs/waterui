@@ -596,7 +596,7 @@ ffi_metadata!(Shadow, WuiMetadataShadow, shadow);
 // ========== Metadata<Transform> FFI ==========
 // Used to apply 2D transforms (scale, rotation, translation) to views
 
-use waterui::style::Transform;
+use waterui::style::{Anchor, Offset, Rotation, Scale, Transform};
 
 /// FFI-safe representation of a 2D transform.
 /// All values are reactive (Computed) and can be animated.
@@ -614,6 +614,7 @@ pub struct WuiTransform {
     pub translate_y: *mut WuiComputed<f32>,
 }
 
+#[allow(deprecated)]
 impl IntoFFI for Transform {
     type FFI = WuiTransform;
     fn into_ffi(self) -> Self::FFI {
@@ -631,7 +632,119 @@ impl IntoFFI for Transform {
 pub type WuiMetadataTransform = WuiMetadata<WuiTransform>;
 
 // Generate waterui_metadata_transform_id() and waterui_force_as_metadata_transform()
+#[allow(deprecated)]
 ffi_metadata!(Transform, WuiMetadataTransform, transform);
+
+// ========== Metadata<Scale> FFI ==========
+// Used to apply scale transforms to views
+
+/// FFI-safe representation of an anchor point.
+/// Normalized coordinates: (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WuiAnchor {
+    /// X coordinate (0.0 = left, 0.5 = center, 1.0 = right)
+    pub x: f32,
+    /// Y coordinate (0.0 = top, 0.5 = center, 1.0 = bottom)
+    pub y: f32,
+}
+
+impl IntoFFI for Anchor {
+    type FFI = WuiAnchor;
+    fn into_ffi(self) -> Self::FFI {
+        WuiAnchor {
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
+/// FFI-safe representation of a scale transform.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiScale {
+    /// Scale factor along X axis (1.0 = no scale)
+    pub x: *mut WuiComputed<f32>,
+    /// Scale factor along Y axis (1.0 = no scale)
+    pub y: *mut WuiComputed<f32>,
+    /// Anchor point for the scale transform
+    pub anchor: WuiAnchor,
+}
+
+impl IntoFFI for Scale {
+    type FFI = WuiScale;
+    fn into_ffi(self) -> Self::FFI {
+        WuiScale {
+            x: self.x.into_ffi(),
+            y: self.y.into_ffi(),
+            anchor: self.anchor.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Scale> FFI struct
+pub type WuiMetadataScale = WuiMetadata<WuiScale>;
+
+// Generate waterui_metadata_scale_id() and waterui_force_as_metadata_scale()
+ffi_metadata!(Scale, WuiMetadataScale, scale);
+
+// ========== Metadata<Rotation> FFI ==========
+// Used to apply rotation transforms to views
+
+/// FFI-safe representation of a rotation transform.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiRotation {
+    /// Rotation angle in degrees (positive = clockwise)
+    pub angle: *mut WuiComputed<f32>,
+    /// Anchor point for the rotation transform
+    pub anchor: WuiAnchor,
+}
+
+impl IntoFFI for Rotation {
+    type FFI = WuiRotation;
+    fn into_ffi(self) -> Self::FFI {
+        WuiRotation {
+            angle: self.angle.into_ffi(),
+            anchor: self.anchor.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Rotation> FFI struct
+pub type WuiMetadataRotation = WuiMetadata<WuiRotation>;
+
+// Generate waterui_metadata_rotation_id() and waterui_force_as_metadata_rotation()
+ffi_metadata!(Rotation, WuiMetadataRotation, rotation);
+
+// ========== Metadata<Offset> FFI ==========
+// Used to apply offset (translation) transforms to views
+
+/// FFI-safe representation of an offset transform.
+/// All values are reactive (Computed) and can be animated.
+#[repr(C)]
+pub struct WuiOffset {
+    /// Offset along X axis in points
+    pub x: *mut WuiComputed<f32>,
+    /// Offset along Y axis in points
+    pub y: *mut WuiComputed<f32>,
+}
+
+impl IntoFFI for Offset {
+    type FFI = WuiOffset;
+    fn into_ffi(self) -> Self::FFI {
+        WuiOffset {
+            x: self.x.into_ffi(),
+            y: self.y.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Offset> FFI struct
+pub type WuiMetadataOffset = WuiMetadata<WuiOffset>;
+
+// Generate waterui_metadata_offset_id() and waterui_force_as_metadata_offset()
+ffi_metadata!(Offset, WuiMetadataOffset, offset);
 
 // ========== Metadata<Focused> FFI ==========
 // Used to track focus state for views
