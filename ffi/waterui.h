@@ -1075,6 +1075,153 @@ typedef struct WuiMetadata_WuiOffset {
  */
 typedef struct WuiMetadata_WuiOffset WuiMetadataOffset;
 
+/**
+ * FFI-safe representation of a blur filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiBlur {
+  /**
+   * Blur radius in points (0 = no blur).
+   */
+  WuiComputed_f32 *radius;
+} WuiBlur;
+
+typedef struct WuiMetadata_WuiBlur {
+  struct WuiAnyView *content;
+  struct WuiBlur value;
+} WuiMetadata_WuiBlur;
+
+/**
+ * Type alias for Metadata<Blur> FFI struct
+ */
+typedef struct WuiMetadata_WuiBlur WuiMetadataBlur;
+
+/**
+ * FFI-safe representation of a brightness filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiBrightness {
+  /**
+   * Brightness adjustment (0 = normal, negative = darker, positive = brighter).
+   */
+  WuiComputed_f32 *amount;
+} WuiBrightness;
+
+typedef struct WuiMetadata_WuiBrightness {
+  struct WuiAnyView *content;
+  struct WuiBrightness value;
+} WuiMetadata_WuiBrightness;
+
+/**
+ * Type alias for Metadata<Brightness> FFI struct
+ */
+typedef struct WuiMetadata_WuiBrightness WuiMetadataBrightness;
+
+/**
+ * FFI-safe representation of a saturation filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiSaturation {
+  /**
+   * Saturation amount (0 = grayscale, 1 = normal, >1 = oversaturated).
+   */
+  WuiComputed_f32 *amount;
+} WuiSaturation;
+
+typedef struct WuiMetadata_WuiSaturation {
+  struct WuiAnyView *content;
+  struct WuiSaturation value;
+} WuiMetadata_WuiSaturation;
+
+/**
+ * Type alias for Metadata<Saturation> FFI struct
+ */
+typedef struct WuiMetadata_WuiSaturation WuiMetadataSaturation;
+
+/**
+ * FFI-safe representation of a contrast filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiContrast {
+  /**
+   * Contrast amount (1 = normal, <1 = less contrast, >1 = more contrast).
+   */
+  WuiComputed_f32 *amount;
+} WuiContrast;
+
+typedef struct WuiMetadata_WuiContrast {
+  struct WuiAnyView *content;
+  struct WuiContrast value;
+} WuiMetadata_WuiContrast;
+
+/**
+ * Type alias for Metadata<Contrast> FFI struct
+ */
+typedef struct WuiMetadata_WuiContrast WuiMetadataContrast;
+
+/**
+ * FFI-safe representation of a hue rotation filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiHueRotation {
+  /**
+   * Hue rotation angle in degrees (0-360).
+   */
+  WuiComputed_f32 *angle;
+} WuiHueRotation;
+
+typedef struct WuiMetadata_WuiHueRotation {
+  struct WuiAnyView *content;
+  struct WuiHueRotation value;
+} WuiMetadata_WuiHueRotation;
+
+/**
+ * Type alias for Metadata<HueRotation> FFI struct
+ */
+typedef struct WuiMetadata_WuiHueRotation WuiMetadataHueRotation;
+
+/**
+ * FFI-safe representation of a grayscale filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiGrayscale {
+  /**
+   * Grayscale intensity (0 = full color, 1 = full grayscale).
+   */
+  WuiComputed_f32 *intensity;
+} WuiGrayscale;
+
+typedef struct WuiMetadata_WuiGrayscale {
+  struct WuiAnyView *content;
+  struct WuiGrayscale value;
+} WuiMetadata_WuiGrayscale;
+
+/**
+ * Type alias for Metadata<Grayscale> FFI struct
+ */
+typedef struct WuiMetadata_WuiGrayscale WuiMetadataGrayscale;
+
+/**
+ * FFI-safe representation of an opacity filter.
+ * All values are reactive (Computed) and can be animated.
+ */
+typedef struct WuiOpacity {
+  /**
+   * Opacity value (0 = transparent, 1 = opaque).
+   */
+  WuiComputed_f32 *value;
+} WuiOpacity;
+
+typedef struct WuiMetadata_WuiOpacity {
+  struct WuiAnyView *content;
+  struct WuiOpacity value;
+} WuiMetadata_WuiOpacity;
+
+/**
+ * Type alias for Metadata<Opacity> FFI struct
+ */
+typedef struct WuiMetadata_WuiOpacity WuiMetadataOpacity;
+
 typedef struct Binding_bool WuiBinding_bool;
 
 /**
@@ -2342,6 +2489,111 @@ struct WuiTypeId waterui_metadata_offset_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataOffset waterui_force_as_metadata_offset(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_blur_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataBlur waterui_force_as_metadata_blur(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_brightness_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataBrightness waterui_force_as_metadata_brightness(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_saturation_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataSaturation waterui_force_as_metadata_saturation(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_contrast_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataContrast waterui_force_as_metadata_contrast(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_hue_rotation_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataHueRotation waterui_force_as_metadata_hue_rotation(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_grayscale_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataGrayscale waterui_force_as_metadata_grayscale(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_opacity_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataOpacity waterui_force_as_metadata_opacity(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
