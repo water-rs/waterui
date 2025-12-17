@@ -1,8 +1,6 @@
 name: Build CLI
 
 on:
-  release:
-    types: [published]
   workflow_call:
     inputs:
       tag:
@@ -40,7 +38,7 @@ jobs:
       - name: Check release tag
         id: check
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          TAG="${{ inputs.tag }}"
           if [[ "$TAG" == cli-v* ]]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
             VERSION="${TAG#cli-v}"
