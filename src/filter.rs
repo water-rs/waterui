@@ -4,103 +4,133 @@
 //! Filters allow for visual effects such as blurring, color adjustments, and other
 //! transformations to be applied to the rendered content.
 //!
-//! Each filter is represented by a structure that can be configured and applied to
-//! a view to achieve the desired visual effect.
+//! Each filter is represented by a structure with reactive values that can be animated.
+//! Filters are purely visual and do not affect layout calculations.
+
+use nami::signal::IntoComputed;
+use nami::Computed;
+use waterui_core::metadata::MetadataKey;
 
 /// A structure representing a blur filter operation.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Applies a Gaussian blur to the view content.
+#[derive(Debug)]
 pub struct Blur {
-    /// The radius of the blur effect in pixels.
-    pub radius: f32,
+    /// The radius of the blur effect in points.
+    /// 0 means no blur, higher values increase blur intensity.
+    pub radius: Computed<f32>,
 }
+
+impl MetadataKey for Blur {}
 
 impl Blur {
     /// Creates a new blur filter with the specified radius.
     ///
     /// # Arguments
     ///
-    /// * `radius` - The radius of the blur in pixels.
+    /// * `radius` - The radius of the blur in points (0 = no blur).
     #[must_use]
-    pub const fn new(radius: f32) -> Self {
-        Self { radius }
+    pub fn new(radius: impl IntoComputed<f32>) -> Self {
+        Self {
+            radius: radius.into_computed(),
+        }
     }
 }
 
 /// A structure representing a brightness adjustment filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Adjusts the overall brightness of the view content.
+#[derive(Debug)]
 pub struct Brightness {
     /// The amount of brightness adjustment.
-    /// Values above 1.0 increase brightness, values below 1.0 decrease brightness.
-    pub amount: f32,
+    /// 0 is normal brightness, negative values darken, positive values brighten.
+    /// Range: typically -1.0 to 1.0.
+    pub amount: Computed<f32>,
 }
+
+impl MetadataKey for Brightness {}
 
 impl Brightness {
     /// Creates a new brightness filter with the specified amount.
     ///
     /// # Arguments
     ///
-    /// * `amount` - The brightness adjustment amount. 1.0 is normal brightness,
-    ///   values above 1.0 increase brightness, values below 1.0 decrease brightness.
+    /// * `amount` - The brightness adjustment amount.
+    ///   0 is normal brightness, negative darkens, positive brightens.
     #[must_use]
-    pub const fn new(amount: f32) -> Self {
-        Self { amount }
+    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+        Self {
+            amount: amount.into_computed(),
+        }
     }
 }
 
 /// A structure representing a contrast adjustment filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Adjusts the contrast of the view content.
+#[derive(Debug)]
 pub struct Contrast {
     /// The amount of contrast adjustment.
-    /// Values above 1.0 increase contrast, values below 1.0 decrease contrast.
-    pub amount: f32,
+    /// 1.0 is normal contrast, values below 1.0 decrease contrast,
+    /// values above 1.0 increase contrast.
+    pub amount: Computed<f32>,
 }
+
+impl MetadataKey for Contrast {}
 
 impl Contrast {
     /// Creates a new contrast filter with the specified amount.
     ///
     /// # Arguments
     ///
-    /// * `amount` - The contrast adjustment amount. 1.0 is normal contrast,
-    ///   values above 1.0 increase contrast, values below 1.0 decrease contrast.
+    /// * `amount` - The contrast adjustment amount.
+    ///   1.0 is normal contrast, <1.0 decreases, >1.0 increases.
     #[must_use]
-    pub const fn new(amount: f32) -> Self {
-        Self { amount }
+    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+        Self {
+            amount: amount.into_computed(),
+        }
     }
 }
 
 /// A structure representing a saturation adjustment filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Adjusts the color saturation of the view content.
+#[derive(Debug)]
 pub struct Saturation {
     /// The amount of saturation adjustment.
-    /// Values above 1.0 increase saturation, values below 1.0 decrease saturation.
-    pub amount: f32,
+    /// 1.0 is normal saturation, 0 is grayscale, values above 1.0 oversaturate.
+    pub amount: Computed<f32>,
 }
+
+impl MetadataKey for Saturation {}
 
 impl Saturation {
     /// Creates a new saturation filter with the specified amount.
     ///
     /// # Arguments
     ///
-    /// * `amount` - The saturation adjustment amount. 1.0 is normal saturation,
-    ///   values above 1.0 increase saturation, values below 1.0 decrease saturation.
+    /// * `amount` - The saturation adjustment amount.
+    ///   1.0 is normal, 0 is grayscale, >1.0 oversaturates.
     #[must_use]
-    pub const fn new(amount: f32) -> Self {
-        Self { amount }
+    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+        Self {
+            amount: amount.into_computed(),
+        }
     }
 }
 
 /// A structure representing a grayscale filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Converts the view content to grayscale.
+#[derive(Debug)]
 pub struct Grayscale {
     /// The intensity of the grayscale effect.
-    /// 0.0 means no effect, 1.0 means full grayscale.
-    pub intensity: f32,
+    /// 0.0 means no effect (full color), 1.0 means full grayscale.
+    pub intensity: Computed<f32>,
 }
+
+impl MetadataKey for Grayscale {}
 
 impl Grayscale {
     /// Creates a new grayscale filter with the specified intensity.
@@ -110,49 +140,61 @@ impl Grayscale {
     /// * `intensity` - The intensity of the grayscale effect.
     ///   0.0 means no effect, 1.0 means full grayscale.
     #[must_use]
-    pub const fn new(intensity: f32) -> Self {
-        Self { intensity }
+    pub fn new(intensity: impl IntoComputed<f32>) -> Self {
+        Self {
+            intensity: intensity.into_computed(),
+        }
     }
 }
 
 /// A structure representing a hue rotation filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
+///
+/// Rotates the hue of all colors in the view content.
+#[derive(Debug)]
 pub struct HueRotation {
     /// The angle of rotation in degrees.
-    pub angle: f32,
+    /// 0 means no rotation, 180 inverts colors, 360 is a full rotation.
+    pub angle: Computed<f32>,
 }
+
+impl MetadataKey for HueRotation {}
 
 impl HueRotation {
     /// Creates a new hue rotation filter with the specified angle.
     ///
     /// # Arguments
     ///
-    /// * `angle` - The angle of hue rotation in degrees.
+    /// * `angle` - The angle of hue rotation in degrees (0-360).
     #[must_use]
-    pub const fn new(angle: f32) -> Self {
-        Self { angle }
+    pub fn new(angle: impl IntoComputed<f32>) -> Self {
+        Self {
+            angle: angle.into_computed(),
+        }
     }
 }
 
-/// A structure representing an inversion filter.
-#[derive(Debug, Clone)]
-#[repr(C)]
-pub struct Invert {
-    /// The intensity of the inversion effect.
-    /// 0.0 means no effect, 1.0 means full inversion.
-    pub intensity: f32,
+/// A structure representing an opacity filter.
+///
+/// Adjusts the transparency of the view content.
+#[derive(Debug)]
+pub struct Opacity {
+    /// The opacity value.
+    /// 0.0 is fully transparent, 1.0 is fully opaque.
+    pub value: Computed<f32>,
 }
 
-impl Invert {
-    /// Creates a new inversion filter with the specified intensity.
+impl MetadataKey for Opacity {}
+
+impl Opacity {
+    /// Creates a new opacity filter with the specified value.
     ///
     /// # Arguments
     ///
-    /// * `intensity` - The intensity of the inversion effect.
-    ///   0.0 means no effect, 1.0 means full inversion.
+    /// * `value` - The opacity value (0.0 = transparent, 1.0 = opaque).
     #[must_use]
-    pub const fn new(intensity: f32) -> Self {
-        Self { intensity }
+    pub fn new(value: impl IntoComputed<f32>) -> Self {
+        Self {
+            value: value.into_computed(),
+        }
     }
 }
