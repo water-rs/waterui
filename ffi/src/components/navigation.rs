@@ -9,7 +9,7 @@ use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
-use waterui_navigation::{Bar, CustomNavigationController, NavigationController, NavigationStack, NavigationView};
+use waterui_navigation::{Bar, CustomNavigationController, NavigationController, NavigationStack, NavigationTitleDisplayMode, NavigationView};
 
 into_ffi! {
     NavigationView,
@@ -24,11 +24,35 @@ pub struct WuiNavigationLink {
     pub destination: *mut WuiFn<*mut WuiAnyView>,
 }
 
+/// The display mode for the navigation bar title (FFI-compatible).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiNavigationTitleDisplayMode {
+    /// System decides based on context.
+    Automatic = 0,
+    /// Always use inline (small) title.
+    Inline = 1,
+    /// Always use large title.
+    Large = 2,
+}
+
+impl IntoFFI for NavigationTitleDisplayMode {
+    type FFI = WuiNavigationTitleDisplayMode;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            NavigationTitleDisplayMode::Automatic => WuiNavigationTitleDisplayMode::Automatic,
+            NavigationTitleDisplayMode::Inline => WuiNavigationTitleDisplayMode::Inline,
+            NavigationTitleDisplayMode::Large => WuiNavigationTitleDisplayMode::Large,
+        }
+    }
+}
+
 into_ffi! {Bar,
     pub struct WuiBar {
         title: WuiText,
         color: *mut WuiComputed<Color>,
         hidden: *mut WuiComputed<bool>,
+        display_mode: WuiNavigationTitleDisplayMode,
     }
 }
 
@@ -249,3 +273,41 @@ pub unsafe extern "C" fn waterui_drop_navigation_controller(controller: *mut Wui
         drop(Box::from_raw(controller));
     }
 }
+
+/// Checks if a navigation controller is installed in the environment.
+///
+/// Returns true if a NavigationController is available, false otherwise.
+/// Use this to determine whether to show a back button in navigation views.
+///
+/// # Safety
+///
+/// - `env` must be a valid pointer to a `WuiEnv`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_has_navigation_controller(env: *const WuiEnv) -> bool {
+    if env.is_null() {
+        return false;
+    }
+    // SAFETY: Caller guarantees pointer is valid
+    unsafe { (*env).get::<NavigationController>().is_some() }
+}
+
+/// Pops the top view from the navigation stack.
+///
+/// If no NavigationController is installed in the environment, this function does nothing.
+///
+/// # Safety
+///
+/// - `env` must be a valid pointer to a `WuiEnv`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_navigation_pop(env: *const WuiEnv) {
+    if env.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees pointer is valid
+    unsafe {
+        if let Some(controller) = (*env).get::<NavigationController>() {
+            controller.pop();
+        }
+    }
+}
+
