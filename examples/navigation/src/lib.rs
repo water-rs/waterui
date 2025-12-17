@@ -258,7 +258,11 @@ fn settings_view() -> impl View {
         vstack((
             text("Settings").size(24.0).bold(),
             spacer_min(16.0),
-            toggle_row("Notifications", "Receive push notifications", &notifications),
+            toggle_row(
+                "Notifications",
+                "Receive push notifications",
+                &notifications,
+            ),
             Divider,
             toggle_row("Dark Mode", "Use dark color scheme", &dark_mode),
             Divider,
@@ -340,8 +344,7 @@ fn privacy_view() -> impl View {
             spacer_min(16.0),
             text("This is a sample privacy policy page."),
             spacer_min(16.0),
-            text("Navigation allows easy access to information.")
-                .foreground(Color::grey()),
+            text("Navigation allows easy access to information.").foreground(Color::grey()),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
