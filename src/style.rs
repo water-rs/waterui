@@ -137,3 +137,162 @@ impl<T> Vector<T> {
         }
     }
 }
+
+// ============================================================================
+// Transform
+// ============================================================================
+
+use nami::Computed;
+use nami::signal::IntoComputed;
+
+/// A 2D transform that can be applied to views as metadata.
+///
+/// Transforms are purely visual and do not affect layout calculations.
+/// They are applied after layout, making them ideal for animations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+/// use waterui::style::Transform;
+///
+/// // Scale a view to 150%
+/// Color::red()
+///     .width(100.0)
+///     .height(100.0)
+///     .transform(Transform::scale(1.5));
+///
+/// // Rotate a view 45 degrees
+/// Color::blue()
+///     .width(50.0)
+///     .height(50.0)
+///     .transform(Transform::rotation(45.0));
+///
+/// // Animate a transform
+/// let scale = binding(1.0).animated();
+/// Color::green()
+///     .width(80.0)
+///     .height(80.0)
+///     .transform(Transform::scale(scale));
+/// ```
+#[derive(Debug)]
+pub struct Transform {
+    /// Scale factor along the X axis (1.0 = no scale)
+    pub scale_x: Computed<f32>,
+    /// Scale factor along the Y axis (1.0 = no scale)
+    pub scale_y: Computed<f32>,
+    /// Rotation angle in degrees (positive = clockwise)
+    pub rotation: Computed<f32>,
+    /// Translation offset along the X axis in points
+    pub translate_x: Computed<f32>,
+    /// Translation offset along the Y axis in points
+    pub translate_y: Computed<f32>,
+}
+
+impl MetadataKey for Transform {}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl Transform {
+    /// Creates an identity transform (no transformation).
+    #[must_use]
+    pub fn identity() -> Self {
+        Self {
+            scale_x: Computed::new(1.0_f32),
+            scale_y: Computed::new(1.0_f32),
+            rotation: Computed::new(0.0_f32),
+            translate_x: Computed::new(0.0_f32),
+            translate_y: Computed::new(0.0_f32),
+        }
+    }
+
+    /// Creates a uniform scale transform.
+    ///
+    /// # Arguments
+    /// * `scale` - The scale factor (1.0 = no scale, 2.0 = double size, 0.5 = half size)
+    #[must_use]
+    pub fn scale(scale: impl IntoComputed<f32>) -> Self {
+        let scale = scale.into_computed();
+        Self {
+            scale_x: scale.clone(),
+            scale_y: scale,
+            rotation: Computed::new(0.0_f32),
+            translate_x: Computed::new(0.0_f32),
+            translate_y: Computed::new(0.0_f32),
+        }
+    }
+
+    /// Creates a non-uniform scale transform.
+    ///
+    /// # Arguments
+    /// * `x` - Scale factor along the X axis
+    /// * `y` - Scale factor along the Y axis
+    #[must_use]
+    pub fn scale_xy(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        Self {
+            scale_x: x.into_computed(),
+            scale_y: y.into_computed(),
+            rotation: Computed::new(0.0_f32),
+            translate_x: Computed::new(0.0_f32),
+            translate_y: Computed::new(0.0_f32),
+        }
+    }
+
+    /// Creates a rotation transform.
+    ///
+    /// # Arguments
+    /// * `degrees` - Rotation angle in degrees (positive = clockwise)
+    #[must_use]
+    pub fn rotation(degrees: impl IntoComputed<f32>) -> Self {
+        Self {
+            scale_x: Computed::new(1.0_f32),
+            scale_y: Computed::new(1.0_f32),
+            rotation: degrees.into_computed(),
+            translate_x: Computed::new(0.0_f32),
+            translate_y: Computed::new(0.0_f32),
+        }
+    }
+
+    /// Creates a translation transform.
+    ///
+    /// # Arguments
+    /// * `x` - Offset in points along the X axis
+    /// * `y` - Offset in points along the Y axis
+    #[must_use]
+    pub fn translation(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        Self {
+            scale_x: Computed::new(1.0_f32),
+            scale_y: Computed::new(1.0_f32),
+            rotation: Computed::new(0.0_f32),
+            translate_x: x.into_computed(),
+            translate_y: y.into_computed(),
+        }
+    }
+
+    /// Sets the scale factors.
+    #[must_use]
+    pub fn with_scale(mut self, x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        self.scale_x = x.into_computed();
+        self.scale_y = y.into_computed();
+        self
+    }
+
+    /// Sets the rotation angle.
+    #[must_use]
+    pub fn with_rotation(mut self, degrees: impl IntoComputed<f32>) -> Self {
+        self.rotation = degrees.into_computed();
+        self
+    }
+
+    /// Sets the translation offset.
+    #[must_use]
+    pub fn with_translation(mut self, x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+        self.translate_x = x.into_computed();
+        self.translate_y = y.into_computed();
+        self
+    }
+}

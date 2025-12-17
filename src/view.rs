@@ -40,6 +40,7 @@ use crate::{
 use crate::{
     component::{Text, badge::Badge, focus::Focused},
     prelude::Shadow,
+    style::Transform,
 };
 use waterui_core::Metadata;
 use waterui_core::event::{Event, OnEvent};
@@ -365,6 +366,37 @@ pub trait ViewExt: View + Sized {
     /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
+    }
+
+    /// Applies a 2D transform to this view.
+    ///
+    /// Transforms are purely visual and do not affect layout calculations.
+    /// They are applied after layout, making them ideal for animations.
+    ///
+    /// # Arguments
+    /// * `transform` - The transform to apply (scale, rotation, translation)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::style::Transform;
+    ///
+    /// // Scale and rotate a colored box
+    /// Color::red()
+    ///     .width(100.0)
+    ///     .height(100.0)
+    ///     .transform(Transform::scale(1.5).with_rotation(45.0));
+    ///
+    /// // Animate a transform
+    /// let scale = binding(1.0).animated();
+    /// Color::blue()
+    ///     .width(80.0)
+    ///     .height(80.0)
+    ///     .transform(Transform::scale(scale));
+    /// ```
+    fn transform(self, transform: Transform) -> Metadata<Transform> {
+        Metadata::new(self, transform)
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
