@@ -91,6 +91,22 @@ impl NavigationController {
 
 raw_view!(NavigationView, StretchAxis::Both);
 
+/// The display mode for the navigation bar title.
+///
+/// Controls how the navigation bar title is displayed, similar to SwiftUI's
+/// `navigationBarTitleDisplayMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum NavigationTitleDisplayMode {
+    /// System decides based on context (large on root, inline when pushed).
+    #[default]
+    Automatic = 0,
+    /// Always use inline (small) title in the navigation bar.
+    Inline = 1,
+    /// Always use large title that collapses on scroll.
+    Large = 2,
+}
+
 /// Configuration for a navigation bar.
 ///
 /// Represents the appearance and behavior of a navigation bar, including
@@ -103,6 +119,8 @@ pub struct Bar {
     pub color: Computed<Color>,
     /// Whether the navigation bar is hidden
     pub hidden: Computed<bool>,
+    /// The display mode for the title (automatic, inline, or large)
+    pub display_mode: NavigationTitleDisplayMode,
 }
 
 /// A link that navigates to another view when activated.
@@ -330,6 +348,37 @@ impl NavigationView {
             bar,
             content: AnyView::new(content),
         }
+    }
+
+    /// Sets the display mode for the navigation bar title.
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - The display mode to use
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// some_view
+    ///     .title("Settings")
+    ///     .navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large)
+    /// ```
+    #[must_use]
+    pub fn navigation_bar_title_display_mode(mut self, mode: NavigationTitleDisplayMode) -> Self {
+        self.bar.display_mode = mode;
+        self
+    }
+
+    /// Sets the display mode to inline (small title).
+    #[must_use]
+    pub fn inline_title(self) -> Self {
+        self.navigation_bar_title_display_mode(NavigationTitleDisplayMode::Inline)
+    }
+
+    /// Sets the display mode to large title.
+    #[must_use]
+    pub fn large_title(self) -> Self {
+        self.navigation_bar_title_display_mode(NavigationTitleDisplayMode::Large)
     }
 }
 
