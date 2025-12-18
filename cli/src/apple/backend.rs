@@ -107,9 +107,9 @@ impl Backend for AppleBackend {
         // For regular projects, derive from crate name
         let (scheme, app_name, crate_name_for_template) = if is_playground {
             (
-                "WaterUI".to_string(),
-                "WaterUI".to_string(),
-                "WaterUI".to_string(),
+                "WaterUIApp".to_string(),
+                "WaterUIApp".to_string(),
+                "WaterUIApp".to_string(),
             )
         } else {
             let crate_name = project.crate_name().to_string();

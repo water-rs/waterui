@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use smol::process::Command;
 use time::OffsetDateTime;
+use tracing::debug;
 
 /// Structured crash diagnostics captured while launching or monitoring an app.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -110,21 +111,39 @@ pub async fn find_macos_ips_crash_report_since(
     let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
 
     if !crash_dir.exists() {
+        debug!("Crash report directory does not exist: {}", crash_dir.display());
         return None;
     }
 
     let process_pattern = format!("{process_name}*.ips");
-    let candidates = list_recent_ips_reports(&crash_dir, &process_pattern).await?;
-    let mut best = pick_best_ips_report(candidates, app_identifier, pid, since).await;
+    debug!(
+        "Looking for crash reports matching pattern '{}' in {}",
+        process_pattern,
+        crash_dir.display()
+    );
+
+    let candidates = list_recent_ips_reports(&crash_dir, &process_pattern).await;
+    debug!("Found {} candidates with process pattern", candidates.as_ref().map_or(0, |v| v.len()));
+
+    let mut best = if let Some(c) = candidates {
+        pick_best_ips_report(c, app_identifier, pid, since).await
+    } else {
+        None
+    };
 
     if best.is_none() {
         // Fallback: if the crash filename doesn't include the process name (common on iOS simulator),
         // scan recent `.ips` reports and filter by bundle ID / PID.
-        let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await?;
-        best = pick_best_ips_report(candidates, app_identifier, pid, since).await;
+        debug!("No match with process pattern, falling back to *.ips");
+        let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await;
+        debug!("Found {} candidates with *.ips pattern", candidates.as_ref().map_or(0, |v| v.len()));
+        if let Some(c) = candidates {
+            best = pick_best_ips_report(c, app_identifier, pid, since).await;
+        }
     }
 
     let (path, report) = best?;
+    debug!("Matched crash report: {}", path.display());
     Some(CrashReport::new(
         report.time,
         device_name,
@@ -144,18 +163,62 @@ async fn pick_best_ips_report(
     let mut best: Option<(PathBuf, IpsReport)> = None;
     for path in candidates {
         let Some(report) = parse_ips_report(&path).await else {
+            debug!("Failed to parse crash report: {}", path.display());
             continue;
         };
 
         if report.time <= since {
+            debug!(
+                "Skipping {} - report time {:?} is not after start time {:?}",
+                path.display(),
+                report.time,
+                since
+            );
             continue;
         }
 
         match (report.bundle_id.as_deref(), pid, report.pid) {
-            (Some(found_bundle_id), _, _) if found_bundle_id != app_identifier => continue,
-            (None, Some(expected_pid), Some(found_pid)) if expected_pid != found_pid => continue,
-            (None, Some(_), None) | (None, None, _) => continue,
-            _ => {}
+            (Some(found_bundle_id), _, _) if found_bundle_id != app_identifier => {
+                debug!(
+                    "Skipping {} - bundle_id '{}' != expected '{}'",
+                    path.display(),
+                    found_bundle_id,
+                    app_identifier
+                );
+                continue;
+            }
+            (None, Some(expected_pid), Some(found_pid)) if expected_pid != found_pid => {
+                debug!(
+                    "Skipping {} - pid {} != expected {}",
+                    path.display(),
+                    found_pid,
+                    expected_pid
+                );
+                continue;
+            }
+            (None, Some(_expected_pid), None) => {
+                debug!(
+                    "Skipping {} - no bundle_id and no pid in report (expected pid {})",
+                    path.display(),
+                    _expected_pid
+                );
+                continue;
+            }
+            (None, None, _) => {
+                debug!(
+                    "Skipping {} - no bundle_id in report and no expected pid",
+                    path.display()
+                );
+                continue;
+            }
+            _ => {
+                debug!(
+                    "Candidate match: {} bundle_id={:?} pid={:?}",
+                    path.display(),
+                    report.bundle_id,
+                    report.pid
+                );
+            }
         }
 
         if best

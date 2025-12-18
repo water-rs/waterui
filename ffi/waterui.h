@@ -1309,6 +1309,141 @@ typedef struct WuiMetadata_WuiRetain {
 typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
 
 /**
+ * FFI-safe representation of a path command.
+ * All coordinates are normalized (0.0-1.0) and scale with view bounds.
+ */
+typedef enum WuiPathCommand_Tag {
+  /**
+   * Move to a position without drawing.
+   */
+  WuiPathCommand_MoveTo,
+  /**
+   * Draw a straight line to a position.
+   */
+  WuiPathCommand_LineTo,
+  /**
+   * Draw a quadratic bezier curve.
+   */
+  WuiPathCommand_QuadTo,
+  /**
+   * Draw a cubic bezier curve.
+   */
+  WuiPathCommand_CubicTo,
+  /**
+   * Draw an arc.
+   */
+  WuiPathCommand_Arc,
+  /**
+   * Close the current subpath.
+   */
+  WuiPathCommand_Close,
+} WuiPathCommand_Tag;
+
+typedef struct WuiPathCommand_MoveTo_Body {
+  float x;
+  float y;
+} WuiPathCommand_MoveTo_Body;
+
+typedef struct WuiPathCommand_LineTo_Body {
+  float x;
+  float y;
+} WuiPathCommand_LineTo_Body;
+
+typedef struct WuiPathCommand_QuadTo_Body {
+  float cx;
+  float cy;
+  float x;
+  float y;
+} WuiPathCommand_QuadTo_Body;
+
+typedef struct WuiPathCommand_CubicTo_Body {
+  float c1x;
+  float c1y;
+  float c2x;
+  float c2y;
+  float x;
+  float y;
+} WuiPathCommand_CubicTo_Body;
+
+typedef struct WuiPathCommand_Arc_Body {
+  float cx;
+  float cy;
+  float rx;
+  float ry;
+  float start;
+  float sweep;
+} WuiPathCommand_Arc_Body;
+
+typedef struct WuiPathCommand {
+  WuiPathCommand_Tag tag;
+  union {
+    WuiPathCommand_MoveTo_Body move_to;
+    WuiPathCommand_LineTo_Body line_to;
+    WuiPathCommand_QuadTo_Body quad_to;
+    WuiPathCommand_CubicTo_Body cubic_to;
+    WuiPathCommand_Arc_Body arc;
+  };
+} WuiPathCommand;
+
+typedef struct WuiArraySlice_WuiPathCommand {
+  struct WuiPathCommand *head;
+  uintptr_t len;
+} WuiArraySlice_WuiPathCommand;
+
+typedef struct WuiArrayVTable_WuiPathCommand {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
+} WuiArrayVTable_WuiPathCommand;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiPathCommand {
+  NonNull data;
+  struct WuiArrayVTable_WuiPathCommand vtable;
+} WuiArray_WuiPathCommand;
+
+/**
+ * FFI-safe representation of a clip shape.
+ * Contains the path commands that define the clipping mask.
+ */
+typedef struct WuiClipShape {
+  /**
+   * Array of path commands defining the shape.
+   */
+  struct WuiArray_WuiPathCommand commands;
+} WuiClipShape;
+
+typedef struct WuiMetadata_WuiClipShape {
+  struct WuiAnyView *content;
+  struct WuiClipShape value;
+} WuiMetadata_WuiClipShape;
+
+/**
+ * Type alias for Metadata<ClipShape> FFI struct
+ */
+typedef struct WuiMetadata_WuiClipShape WuiMetadataClipShape;
+
+/**
+ * FFI-safe representation of a filled shape.
+ * Contains the path commands and fill color.
+ */
+typedef struct WuiFilledShape {
+  /**
+   * Array of path commands defining the shape.
+   */
+  struct WuiArray_WuiPathCommand commands;
+  /**
+   * Fill color (opaque pointer to Color).
+   */
+  struct WuiColor *fill;
+} WuiFilledShape;
+
+/**
  * FFI-safe representation of an animation.
  *
  * cbindgen generates a tagged union with:
@@ -2648,6 +2783,34 @@ WuiMetadataRetain waterui_force_as_metadata_retain(struct WuiAnyView *view);
  * `waterui_force_as_metadata_retain` and has not been dropped before.
  */
 void waterui_drop_retain(struct WuiRetain retain);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_clip_shape_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataClipShape waterui_force_as_metadata_clip_shape(struct WuiAnyView *view);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiFilledShape waterui_force_as_filled_shape(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_filled_shape_id(void);
 
 /**
  * # Safety
