@@ -608,6 +608,183 @@ pub async fn screenshot(udid: &str, output: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Capture a screenshot from an iOS simulator and return the raw PNG bytes.
+///
+/// This is used for the diff workflow where we need in-memory screenshots.
+///
+/// # Errors
+///
+/// Returns an error if the screenshot command fails or the simulator is not available.
+pub async fn screenshot_bytes(udid: &str) -> eyre::Result<Vec<u8>> {
+    // Use "-" to output to stdout
+    let output = Command::new("xcrun")
+        .args(["simctl", "io", udid, "screenshot", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to capture screenshot: {}", stderr.trim());
+    }
+
+    Ok(output.stdout)
+}
+
+/// Check if IDB (iOS Development Bridge) is installed.
+///
+/// IDB is required for gesture automation on iOS simulators.
+async fn check_idb_installed() -> eyre::Result<()> {
+    let output = Command::new("which")
+        .arg("idb")
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        eyre::bail!(
+            "IDB (iOS Development Bridge) is not installed.\n\n\
+            Gesture commands require IDB for iOS simulator automation.\n\n\
+            To install IDB:\n\
+            \x20 brew tap facebook/fb && brew install idb-companion\n\
+            \x20 pipx install fb-idb --python python3.12\n\n\
+            For more information: https://fbidb.io/"
+        );
+    }
+
+    Ok(())
+}
+
+/// Perform a tap gesture on an iOS simulator at the specified coordinates.
+///
+/// Uses IDB (iOS Development Bridge) to send touch events to the simulator.
+///
+/// # Arguments
+///
+/// * `udid` - The simulator's unique device identifier
+/// * `x` - X coordinate within the simulator screen
+/// * `y` - Y coordinate within the simulator screen
+///
+/// # Errors
+///
+/// Returns an error if IDB is not installed or the tap fails.
+pub async fn tap(udid: &str, x: u32, y: u32) -> eyre::Result<()> {
+    check_idb_installed().await?;
+
+    let output = Command::new("idb")
+        .args(["ui", "tap", "--udid", udid, &x.to_string(), &y.to_string()])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to tap: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Perform a swipe gesture on an iOS simulator.
+///
+/// Uses IDB (iOS Development Bridge) to send swipe events to the simulator.
+///
+/// # Arguments
+///
+/// * `udid` - The simulator's unique device identifier
+/// * `from` - Starting coordinates (x, y)
+/// * `to` - Ending coordinates (x, y)
+/// * `duration_ms` - Duration of the swipe in milliseconds (optional)
+///
+/// # Errors
+///
+/// Returns an error if IDB is not installed or the swipe fails.
+pub async fn swipe(
+    udid: &str,
+    from: (u32, u32),
+    to: (u32, u32),
+    duration_ms: Option<u32>,
+) -> eyre::Result<()> {
+    check_idb_installed().await?;
+
+    let mut args = vec![
+        "ui".to_string(),
+        "swipe".to_string(),
+        "--udid".to_string(),
+        udid.to_string(),
+        from.0.to_string(),
+        from.1.to_string(),
+        to.0.to_string(),
+        to.1.to_string(),
+    ];
+
+    if let Some(duration) = duration_ms {
+        // IDB uses duration in seconds as a float
+        let duration_sec = f64::from(duration) / 1000.0;
+        args.push("--duration".to_string());
+        args.push(format!("{duration_sec:.2}"));
+    }
+
+    let output = Command::new("idb")
+        .args(&args)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to swipe: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Input text on an iOS simulator.
+///
+/// Uses IDB (iOS Development Bridge) to send text input to the simulator.
+///
+/// # Errors
+///
+/// Returns an error if IDB is not installed or the text input fails.
+pub async fn text(udid: &str, input: &str) -> eyre::Result<()> {
+    check_idb_installed().await?;
+
+    let output = Command::new("idb")
+        .args(["ui", "text", "--udid", udid, input])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to input text: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Describe UI elements on the screen.
+///
+/// Uses IDB to get accessibility information about all UI elements.
+/// Returns JSON string with element details (frame, label, type, etc.).
+///
+/// # Errors
+///
+/// Returns an error if IDB is not installed or the command fails.
+pub async fn describe(udid: &str) -> eyre::Result<String> {
+    check_idb_installed().await?;
+
+    let output = Command::new("idb")
+        .args(["ui", "describe-all", "--udid", udid, "--json"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to describe UI: {}", stderr.trim());
+    }
+
+    let json = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_simctl_launch_pid;
