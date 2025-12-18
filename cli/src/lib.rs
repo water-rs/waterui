@@ -2,11 +2,12 @@
 pub mod android;
 pub mod apple;
 pub mod backend;
-pub mod gtk4;
 pub mod brew;
 pub mod build;
+pub mod capture;
 pub mod debug;
 pub mod device;
+pub mod gtk4;
 pub mod platform;
 pub mod project;
 pub mod templates;
