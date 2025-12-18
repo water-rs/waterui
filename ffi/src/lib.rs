@@ -1055,3 +1055,141 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
         }
     }
 }
+
+// ========== Metadata<ClipShape> FFI ==========
+// Used to clip views to shapes
+
+use waterui::shape::{ClipShape, FilledShape, PathCommand};
+
+/// FFI-safe representation of a path command.
+/// All coordinates are normalized (0.0-1.0) and scale with view bounds.
+#[repr(C)]
+pub enum WuiPathCommand {
+    /// Move to a position without drawing.
+    MoveTo { x: f32, y: f32 },
+    /// Draw a straight line to a position.
+    LineTo { x: f32, y: f32 },
+    /// Draw a quadratic bezier curve.
+    QuadTo { cx: f32, cy: f32, x: f32, y: f32 },
+    /// Draw a cubic bezier curve.
+    CubicTo {
+        c1x: f32,
+        c1y: f32,
+        c2x: f32,
+        c2y: f32,
+        x: f32,
+        y: f32,
+    },
+    /// Draw an arc.
+    Arc {
+        cx: f32,
+        cy: f32,
+        rx: f32,
+        ry: f32,
+        start: f32,
+        sweep: f32,
+    },
+    /// Close the current subpath.
+    Close,
+}
+
+impl IntoFFI for PathCommand {
+    type FFI = WuiPathCommand;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            PathCommand::MoveTo { x, y } => WuiPathCommand::MoveTo { x, y },
+            PathCommand::LineTo { x, y } => WuiPathCommand::LineTo { x, y },
+            PathCommand::QuadTo { cx, cy, x, y } => WuiPathCommand::QuadTo { cx, cy, x, y },
+            PathCommand::CubicTo {
+                c1x,
+                c1y,
+                c2x,
+                c2y,
+                x,
+                y,
+            } => WuiPathCommand::CubicTo {
+                c1x,
+                c1y,
+                c2x,
+                c2y,
+                x,
+                y,
+            },
+            PathCommand::Arc {
+                cx,
+                cy,
+                rx,
+                ry,
+                start,
+                sweep,
+            } => WuiPathCommand::Arc {
+                cx,
+                cy,
+                rx,
+                ry,
+                start,
+                sweep,
+            },
+            PathCommand::Close => WuiPathCommand::Close,
+        }
+    }
+}
+
+/// FFI-safe representation of a clip shape.
+/// Contains the path commands that define the clipping mask.
+#[repr(C)]
+pub struct WuiClipShape {
+    /// Array of path commands defining the shape.
+    pub commands: WuiArray<WuiPathCommand>,
+}
+
+impl IntoFFI for ClipShape {
+    type FFI = WuiClipShape;
+    fn into_ffi(self) -> Self::FFI {
+        let commands: alloc::vec::Vec<WuiPathCommand> = self
+            .commands()
+            .iter()
+            .map(|cmd| cmd.into_ffi())
+            .collect();
+        WuiClipShape {
+            commands: WuiArray::new(commands),
+        }
+    }
+}
+
+/// Type alias for Metadata<ClipShape> FFI struct
+pub type WuiMetadataClipShape = WuiMetadata<WuiClipShape>;
+
+// Generate waterui_metadata_clip_shape_id() and waterui_force_as_metadata_clip_shape()
+ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
+
+// ========== FilledShape FFI ==========
+// Shapes filled with color, rendered as native views
+
+/// FFI-safe representation of a filled shape.
+/// Contains the path commands and fill color.
+#[repr(C)]
+pub struct WuiFilledShape {
+    /// Array of path commands defining the shape.
+    pub commands: WuiArray<WuiPathCommand>,
+    /// Fill color (opaque pointer to Color).
+    pub fill: *mut WuiColor,
+}
+
+impl IntoFFI for FilledShape {
+    type FFI = WuiFilledShape;
+    fn into_ffi(self) -> Self::FFI {
+        let commands: alloc::vec::Vec<WuiPathCommand> = self
+            .commands()
+            .iter()
+            .map(|cmd| cmd.into_ffi())
+            .collect();
+        WuiFilledShape {
+            commands: WuiArray::new(commands),
+            fill: self.fill().clone().into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_filled_shape_id() and waterui_force_as_filled_shape()
+ffi_view!(FilledShape, WuiFilledShape, filled_shape);
