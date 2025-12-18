@@ -16,23 +16,40 @@ use smol::{
     stream::StreamExt,
 };
 use time::OffsetDateTime;
-use tracing::{debug as trace_debug, info, warn};
+use tracing::{debug as trace_debug, info};
 
 use crate::{
     debug,
     device::{Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running},
-    utils::{command, run_command},
+    utils::run_command,
 };
+
+use smol::channel::Receiver;
+
+/// Panic information extracted from log stream.
+#[derive(Debug, Clone)]
+struct PanicInfo {
+    /// The panic message payload
+    payload: String,
+    /// The source location where the panic occurred
+    location: Option<String>,
+}
 
 /// Start streaming logs from a `WaterUI` app.
 ///
 /// This uses `log stream` with a predicate to filter by the `WaterUI` subsystem ("dev.waterui").
 /// This captures all tracing output from the Rust code via `tracing_oslog`.
 ///
-/// If `log_level` is `None`, no log streaming is started.
-fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
+/// Returns a receiver for panic info that fires if a panic is detected.
+fn start_log_stream(
+    sender: Sender<DeviceEvent>,
+    log_level: Option<LogLevel>,
+) -> Receiver<PanicInfo> {
+    // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
+    let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
+
     let Some(level) = log_level else {
-        return;
+        return panic_rx;
     };
 
     let mut log_cmd = Command::new("log");
@@ -57,6 +74,13 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
                     // Skip header lines from `log stream`
                     if line.starts_with("Filtering") || line.starts_with("Timestamp") {
                         continue;
+                    }
+
+                    // Extract panic info from log line if present (only first panic via try_send)
+                    if line.contains("panic.payload=") {
+                        if let Some(info) = extract_panic_info_from_log(&line) {
+                            let _ = panic_tx.try_send(info);
+                        }
                     }
 
                     // Parse log level from compact format: "timestamp Ty Process..."
@@ -88,6 +112,35 @@ fn start_log_stream(sender: Sender<DeviceEvent>, log_level: Option<LogLevel>) {
             .detach();
         }
     }
+
+    panic_rx
+}
+
+/// Extract panic information from a log line containing panic.payload and panic.location fields.
+fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
+    let mut payload = None;
+    let mut location = None;
+
+    // Extract panic.payload="..."
+    if let Some(start) = line.find("panic.payload=\"") {
+        let start = start + 15;
+        if let Some(end) = line[start..].find('"') {
+            payload = Some(line[start..start + end].to_string());
+        }
+    }
+
+    // Extract panic.location="..."
+    if let Some(start) = line.find("panic.location=\"") {
+        let start = start + 16;
+        if let Some(end) = line[start..].find('"') {
+            location = Some(line[start..start + end].to_string());
+        }
+    }
+
+    payload.map(|p| PanicInfo {
+        payload: p,
+        location,
+    })
 }
 
 /// Fetch recent panic logs from the unified logging system.
@@ -250,209 +303,6 @@ pub enum AppleDevice {
     /// Apple do not provide macOS simulator, so this represents the current physical machine.
     /// Uses the shared `Local` device which handles both `.app` bundles and binaries.
     Current(Local),
-}
-
-/// Local `MacOS` device (current physical machine)
-#[derive(Debug)]
-pub struct MacOS;
-
-impl Device for MacOS {
-    fn name(&self) -> &str {
-        "macOS"
-    }
-
-    async fn launch(&self) -> color_eyre::eyre::Result<()> {
-        // No need to launch anything for MacOS physical device
-        // This is the current machine
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn run(
-        &self,
-        artifact: Artifact,
-        options: crate::device::RunOptions,
-    ) -> Result<crate::device::Running, crate::device::FailToRun> {
-        let bundle_id = artifact.bundle_id().to_string();
-
-        // Artifact must end with `.app` for MacOS
-        let artifact_path = artifact.path();
-
-        if artifact_path.extension().and_then(|e| e.to_str()) != Some("app") {
-            return Err(FailToRun::InvalidArtifact);
-        }
-
-        let app_name = artifact_path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .ok_or(FailToRun::InvalidArtifact)?
-            .to_string();
-
-        info!("Launching app on MacOS: {}", artifact.path().display());
-
-        // Build the `open` command
-        let mut cmd = Command::new("open");
-        command(&mut cmd);
-        cmd.arg("-W") // Wait for app to exit
-            .arg("-n"); // Open a new instance
-
-        // Add environment variables
-        for (key, value) in options.env_vars() {
-            cmd.arg("--env").arg(format!("{key}={value}"));
-        }
-
-        cmd.arg(artifact_path);
-
-        // Spawn the open command
-        let start_time = OffsetDateTime::now_utc();
-        let start_instant = Instant::now();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| FailToRun::Launch(eyre!("Failed to launch app: {e}")))?;
-
-        // Give the app a moment to start, then get its PID
-        smol::Timer::after(std::time::Duration::from_millis(500)).await;
-
-        // Get the PID of the launched app using pgrep
-        let app_pid = Command::new("pgrep")
-            .arg("-n") // Newest matching process
-            .arg("-x") // Exact match
-            .arg(&app_name)
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.trim().parse::<u32>().ok());
-
-        trace_debug!(
-            "App launched: name={}, bundle_id={}, pid={:?}",
-            app_name,
-            bundle_id,
-            app_pid
-        );
-
-        if app_pid.is_none() {
-            warn!("Could not determine app PID - crash detection may be unreliable");
-        }
-
-        // Create Running instance - kill the app process on drop
-        let pid_for_termination = app_pid;
-        let app_name_for_termination = app_name.clone();
-        let (running, sender) = Running::new(move || {
-            // pkill the app by name to ensure it's terminated
-            if pid_for_termination.is_some() {
-                let _ = std::process::Command::new("pkill")
-                    .arg("-x")
-                    .arg(&app_name_for_termination)
-                    .status();
-            }
-        });
-
-        // Start log streaming (uses WaterUI subsystem predicate)
-        start_log_stream(sender.clone(), options.log_level());
-
-        // Spawn a task to wait for the app to exit and detect crashes.
-        // We monitor two things in parallel:
-        // 1. The `open -W` command completing (normal exit)
-        // 2. A crash report appearing (app crashed but may be stuck)
-        //
-        // `open -W` exits with code 0 regardless of how the app terminated,
-        // so we check for crash reports to detect crashes.
-        let app_name_for_crash = app_name.clone();
-        let app_name_for_kill = app_name;
-        spawn(async move {
-            let device_name = "macOS";
-            let device_identifier =
-                whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into());
-
-            // Race between: open command exiting vs crash report appearing
-            let crash_check_sender = sender.clone();
-            let crash_app_name = app_name_for_crash.clone();
-            let bundle_id_for_crash = bundle_id.clone();
-            let pid_for_crash = app_pid;
-
-            // Task 1: Wait for `open` command to exit
-            let open_task = async {
-                let _ = child.status().await;
-                // Give crash reporter a moment to write
-                Timer::after(Duration::from_millis(500)).await;
-            };
-
-            // Task 2: Poll for crash reports (check every 500ms)
-            let crash_poll_task = async {
-                loop {
-                    Timer::after(Duration::from_millis(500)).await;
-                    if let Some(report) = debug::find_macos_ips_crash_report_since(
-                        device_name,
-                        &device_identifier,
-                        &bundle_id_for_crash,
-                        &crash_app_name,
-                        pid_for_crash,
-                        start_time,
-                    )
-                    .await
-                    {
-                        return Some(report);
-                    }
-                }
-            };
-
-            // Race the two tasks
-            let open_task = std::pin::pin!(open_task);
-            let crash_poll_task = std::pin::pin!(crash_poll_task);
-            let result = futures::future::select(open_task, crash_poll_task).await;
-
-            match result {
-                // open exited first - check for crash report or panic logs
-                futures::future::Either::Left(_) => {
-                    // Check for crash report first (macOS .ips files)
-                    if let Some(report) = poll_for_crash_report(
-                        device_name,
-                        &device_identifier,
-                        &bundle_id,
-                        &app_name_for_crash,
-                        app_pid,
-                        start_time,
-                        Duration::from_secs(5),
-                    )
-                    .await
-                    {
-                        let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
-                    } else if let Some(panic_msg) =
-                        fetch_recent_panic_logs(start_instant, app_pid).await
-                    {
-                        // Check for Rust panic logs
-                        let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
-                    } else {
-                        let _ = sender.try_send(DeviceEvent::Exited);
-                    }
-                }
-                // Crash report appeared first - kill the app and report
-                futures::future::Either::Right((Some(report), _open_future)) => {
-                    // Kill the stuck app
-                    let _ = std::process::Command::new("pkill")
-                        .arg("-9") // Force kill
-                        .arg("-x")
-                        .arg(&app_name_for_kill)
-                        .status();
-
-                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(report.to_string()));
-                }
-                futures::future::Either::Right((None, _)) => {
-                    // Should never happen (crash_poll_task loops forever)
-                    let _ = sender.try_send(DeviceEvent::Exited);
-                }
-            }
-        })
-        .detach();
-
-        Ok(running)
-    }
-
-    async fn scan() -> eyre::Result<Vec<Self>> {
-        // MacOS device is always available - just return a single instance
-        Ok(vec![Self])
-    }
 }
 
 impl Device for AppleDevice {
@@ -663,8 +513,8 @@ impl Device for AppleSimulator {
             }
         });
 
-        // Start log streaming (uses WaterUI subsystem predicate)
-        start_log_stream(sender.clone(), log_level);
+        // Start log streaming (uses WaterUI subsystem predicate) and get panic info receiver
+        let panic_rx = start_log_stream(sender.clone(), log_level);
 
         // Monitor the actual app process and classify crash vs normal exit.
         let device_name = self.name.clone();
@@ -672,6 +522,19 @@ impl Device for AppleSimulator {
         let sender_for_exit = sender;
         spawn(async move {
             wait_for_pid_exit(pid).await;
+
+            // Helper to build crash message with panic info if available
+            let build_crash_message = |base_msg: String| -> String {
+                if let Ok(info) = panic_rx.try_recv() {
+                    let mut msg = format!("Panic: {}", info.payload);
+                    if let Some(loc) = &info.location {
+                        msg.push_str(&format!("\n  at {loc}"));
+                    }
+                    msg.push_str(&format!("\n\n{base_msg}"));
+                    return msg;
+                }
+                base_msg
+            };
 
             if let Some(report) = poll_for_crash_report(
                 &device_name,
@@ -684,12 +547,23 @@ impl Device for AppleSimulator {
             )
             .await
             {
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(report.to_string()));
+                let crash_msg = build_crash_message(report.to_string());
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(crash_msg));
                 return;
             }
 
             if let Some(panic_msg) = fetch_recent_panic_logs(start_instant, Some(pid)).await {
                 let _ = sender_for_exit.try_send(DeviceEvent::Crashed(panic_msg));
+                return;
+            }
+
+            // Check if we captured panic info from log stream even without crash report
+            if let Ok(info) = panic_rx.try_recv() {
+                let mut msg = format!("Panic: {}", info.payload);
+                if let Some(loc) = &info.location {
+                    msg.push_str(&format!("\n  at {loc}"));
+                }
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(msg));
                 return;
             }
 
