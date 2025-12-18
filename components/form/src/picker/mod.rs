@@ -2,6 +2,7 @@ pub mod color;
 pub use color::ColorPicker;
 pub mod date;
 pub use date::DatePicker;
+pub mod file;
 pub mod multi_date;
 
 use alloc::vec::Vec;
