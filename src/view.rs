@@ -41,6 +41,7 @@ use crate::{
 use crate::{
     component::{Text, badge::Badge, focus::Focused},
     prelude::Shadow,
+    shape::{ClipShape, Shape},
     style::{Anchor, Offset, Rotation, Scale, Transform},
 };
 use waterui_core::Metadata;
@@ -673,6 +674,39 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn opacity(self, value: impl IntoComputed<f32>) -> Metadata<filter::Opacity> {
         Metadata::new(self, filter::Opacity::new(value))
+    }
+
+    /// Clips this view to the specified shape.
+    ///
+    /// The shape defines a mask - only the portion of the view inside the shape
+    /// will be visible. Coordinates in the shape are normalized (0.0-1.0) and
+    /// scale with the view's bounds.
+    ///
+    /// # Arguments
+    /// * `shape` - The shape to clip to (e.g., `Circle`, `RoundedRectangle`, custom `Path`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::shape::*;
+    ///
+    /// // Clip image to a circle
+    /// image("avatar.jpg").clip(Circle);
+    ///
+    /// // Clip to rounded rectangle
+    /// card.clip(RoundedRectangle::new(0.1));
+    ///
+    /// // Custom triangle shape
+    /// let triangle = Path::new()
+    ///     .move_to(0.5, 0.0)
+    ///     .line_to(1.0, 1.0)
+    ///     .line_to(0.0, 1.0)
+    ///     .close();
+    /// Color::red().size(100.0, 100.0).clip(triangle);
+    /// ```
+    fn clip(self, shape: impl Shape) -> Metadata<ClipShape> {
+        Metadata::new(self, ClipShape::new(shape))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.

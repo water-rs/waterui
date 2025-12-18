@@ -16,7 +16,7 @@ use smol::{
     stream::StreamExt,
 };
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{debug as trace_debug, info, warn};
 
 use crate::{
     debug,
@@ -161,8 +161,18 @@ async fn poll_for_crash_report(
     since: OffsetDateTime,
     timeout: Duration,
 ) -> Option<debug::CrashReport> {
+    trace_debug!(
+        "Polling for crash report: bundle_id={}, process_name={}, pid={:?}, timeout={:?}",
+        bundle_id,
+        process_name,
+        pid,
+        timeout
+    );
+
     let deadline = Instant::now() + timeout;
+    let mut poll_count = 0;
     loop {
+        poll_count += 1;
         if let Some(report) = debug::find_macos_ips_crash_report_since(
             device_name,
             device_identifier,
@@ -173,10 +183,12 @@ async fn poll_for_crash_report(
         )
         .await
         {
+            trace_debug!("Found crash report after {} polls: {}", poll_count, report.summary());
             return Some(report);
         }
 
         if Instant::now() >= deadline {
+            trace_debug!("No crash report found after {} polls within {:?}", poll_count, timeout);
             return None;
         }
 
@@ -311,6 +323,17 @@ impl Device for MacOS {
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| s.trim().parse::<u32>().ok());
+
+        trace_debug!(
+            "App launched: name={}, bundle_id={}, pid={:?}",
+            app_name,
+            bundle_id,
+            app_pid
+        );
+
+        if app_pid.is_none() {
+            warn!("Could not determine app PID - crash detection may be unreliable");
+        }
 
         // Create Running instance - kill the app process on drop
         let pid_for_termination = app_pid;

@@ -71,6 +71,7 @@ pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;
 pub mod metadata;
+pub mod shape;
 pub mod style;
 
 #[doc(inline)]
