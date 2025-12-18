@@ -180,7 +180,7 @@ pub async fn package_apple(
         "Release"
     };
 
-    let derived_data = project_path.join(".water/DerivedData");
+    let derived_data = project_path.join("DerivedData");
     let target_dir = project.target_dir();
     let triple = platform.triple();
 
