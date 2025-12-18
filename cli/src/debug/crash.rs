@@ -10,6 +10,20 @@ use smol::process::Command;
 use time::OffsetDateTime;
 use tracing::debug;
 
+/// Check if crash debug output is enabled via `WATERUI_CRASH_DEBUG=1`
+fn crash_debug_enabled() -> bool {
+    std::env::var("WATERUI_CRASH_DEBUG").is_ok_and(|v| v == "1")
+}
+
+macro_rules! crash_debug {
+    ($($arg:tt)*) => {
+        if crash_debug_enabled() {
+            eprintln!("[crash-debug] {}", format!($($arg)*));
+        }
+        debug!($($arg)*);
+    };
+}
+
 /// Structured crash diagnostics captured while launching or monitoring an app.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CrashReport {
@@ -111,19 +125,21 @@ pub async fn find_macos_ips_crash_report_since(
     let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
 
     if !crash_dir.exists() {
-        debug!("Crash report directory does not exist: {}", crash_dir.display());
+        crash_debug!("Crash report directory does not exist: {}", crash_dir.display());
         return None;
     }
 
     let process_pattern = format!("{process_name}*.ips");
-    debug!(
-        "Looking for crash reports matching pattern '{}' in {}",
+    crash_debug!(
+        "Looking for crash reports matching pattern '{}' in {} since {:?}",
         process_pattern,
-        crash_dir.display()
+        crash_dir.display(),
+        since
     );
 
     let candidates = list_recent_ips_reports(&crash_dir, &process_pattern).await;
-    debug!("Found {} candidates with process pattern", candidates.as_ref().map_or(0, |v| v.len()));
+    let candidate_count = candidates.as_ref().map_or(0, Vec::len);
+    crash_debug!("Found {} candidates with process pattern", candidate_count);
 
     let mut best = if let Some(c) = candidates {
         pick_best_ips_report(c, app_identifier, pid, since).await
@@ -134,16 +150,16 @@ pub async fn find_macos_ips_crash_report_since(
     if best.is_none() {
         // Fallback: if the crash filename doesn't include the process name (common on iOS simulator),
         // scan recent `.ips` reports and filter by bundle ID / PID.
-        debug!("No match with process pattern, falling back to *.ips");
+        crash_debug!("No match with process pattern, falling back to *.ips");
         let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await;
-        debug!("Found {} candidates with *.ips pattern", candidates.as_ref().map_or(0, |v| v.len()));
+        crash_debug!("Found {} candidates with *.ips pattern", candidates.as_ref().map_or(0, |v| v.len()));
         if let Some(c) = candidates {
             best = pick_best_ips_report(c, app_identifier, pid, since).await;
         }
     }
 
     let (path, report) = best?;
-    debug!("Matched crash report: {}", path.display());
+    crash_debug!("Matched crash report: {}", path.display());
     Some(CrashReport::new(
         report.time,
         device_name,
@@ -163,12 +179,22 @@ async fn pick_best_ips_report(
     let mut best: Option<(PathBuf, IpsReport)> = None;
     for path in candidates {
         let Some(report) = parse_ips_report(&path).await else {
-            debug!("Failed to parse crash report: {}", path.display());
+            crash_debug!("Failed to parse crash report: {}", path.display());
             continue;
         };
 
+        crash_debug!(
+            "Checking {} - report_time={:?}, since={:?}, bundle_id={:?}, report_pid={:?}, expected_pid={:?}",
+            path.display(),
+            report.time,
+            since,
+            report.bundle_id,
+            report.pid,
+            pid
+        );
+
         if report.time <= since {
-            debug!(
+            crash_debug!(
                 "Skipping {} - report time {:?} is not after start time {:?}",
                 path.display(),
                 report.time,
@@ -179,7 +205,7 @@ async fn pick_best_ips_report(
 
         match (report.bundle_id.as_deref(), pid, report.pid) {
             (Some(found_bundle_id), _, _) if found_bundle_id != app_identifier => {
-                debug!(
+                crash_debug!(
                     "Skipping {} - bundle_id '{}' != expected '{}'",
                     path.display(),
                     found_bundle_id,
@@ -188,7 +214,7 @@ async fn pick_best_ips_report(
                 continue;
             }
             (None, Some(expected_pid), Some(found_pid)) if expected_pid != found_pid => {
-                debug!(
+                crash_debug!(
                     "Skipping {} - pid {} != expected {}",
                     path.display(),
                     found_pid,
@@ -197,7 +223,7 @@ async fn pick_best_ips_report(
                 continue;
             }
             (None, Some(_expected_pid), None) => {
-                debug!(
+                crash_debug!(
                     "Skipping {} - no bundle_id and no pid in report (expected pid {})",
                     path.display(),
                     _expected_pid
@@ -205,14 +231,14 @@ async fn pick_best_ips_report(
                 continue;
             }
             (None, None, _) => {
-                debug!(
+                crash_debug!(
                     "Skipping {} - no bundle_id in report and no expected pid",
                     path.display()
                 );
                 continue;
             }
             _ => {
-                debug!(
+                crash_debug!(
                     "Candidate match: {} bundle_id={:?} pid={:?}",
                     path.display(),
                     report.bundle_id,
@@ -263,7 +289,13 @@ async fn parse_ips_report(path: &Path) -> Option<IpsReport> {
     let crash = iter.next()?.ok()?;
 
     let timestamp_str = header.get("timestamp")?.as_str()?;
-    let time = parse_ips_timestamp(timestamp_str)?;
+    crash_debug!("Parsing timestamp from {}: '{}'", path.display(), timestamp_str);
+    let time = parse_ips_timestamp(timestamp_str);
+    if time.is_none() {
+        crash_debug!("Failed to parse timestamp: '{}'", timestamp_str);
+        return None;
+    }
+    let time = time?;
 
     let crash = crash.get("crash").unwrap_or(&crash);
 
@@ -300,6 +332,13 @@ async fn parse_ips_report(path: &Path) -> Option<IpsReport> {
     });
 
     let summary = extract_ips_crash_summary(crash);
+
+    crash_debug!(
+        "Parsed IPS report: time={:?}, bundle_id={:?}, pid={:?}",
+        time,
+        bundle_id,
+        pid
+    );
 
     Some(IpsReport {
         time,
