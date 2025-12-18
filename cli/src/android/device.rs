@@ -1,9 +1,11 @@
 use color_eyre::eyre::{self, eyre};
 use smol::channel::{Receiver, Sender};
+use smol::io::AsyncWriteExt;
 use smol::process::Command;
 use smol::spawn;
 use tracing::error;
 
+use std::path::Path;
 use std::process::Stdio;
 
 use crate::{
@@ -844,6 +846,40 @@ impl Device for AndroidEmulator {
 
         Ok(avds)
     }
+}
+
+/// Capture a screenshot from an Android device.
+///
+/// Uses `adb exec-out screencap -p` to capture the screen and writes
+/// the PNG data directly to the output file.
+///
+/// # Errors
+///
+/// Returns an error if the screenshot command fails, the device is not
+/// available, or the output file cannot be written.
+pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    let child = Command::new(&adb)
+        .args(["-s", device_id, "exec-out", "screencap", "-p"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let output_result = child.output().await?;
+
+    if !output_result.status.success() {
+        let stderr = String::from_utf8_lossy(&output_result.stderr);
+        eyre::bail!("Failed to capture screenshot: {}", stderr.trim());
+    }
+
+    // Write the PNG data to the output file
+    let mut file = smol::fs::File::create(output).await?;
+    file.write_all(&output_result.stdout).await?;
+    file.flush().await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
