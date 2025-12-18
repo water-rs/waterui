@@ -48,9 +48,8 @@ fn start_log_stream(
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
-    let Some(level) = log_level else {
-        return panic_rx;
-    };
+    // Always stream at fault level to capture panics, even if user didn't request logs
+    let stream_level = log_level.map_or("fault", |l| l.to_apple_level());
 
     let mut log_cmd = Command::new("log");
     log_cmd
@@ -58,7 +57,7 @@ fn start_log_stream(
         .arg("--predicate")
         .arg("subsystem == \"dev.waterui\"")
         .arg("--level")
-        .arg(level.to_apple_level())
+        .arg(stream_level)
         .arg("--style")
         .arg("compact")
         .stdout(Stdio::piped())
@@ -83,27 +82,30 @@ fn start_log_stream(
                         }
                     }
 
-                    // Parse log level from compact format: "timestamp Ty Process..."
-                    // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
-                    // Fault is Apple's highest severity - used by panic handler
-                    let level = if line.contains(" F ") || line.contains(" E ") {
-                        tracing::Level::ERROR
-                    } else if line.contains(" W ") {
-                        tracing::Level::WARN
-                    } else if line.contains(" D ") {
-                        tracing::Level::DEBUG
-                    } else {
-                        tracing::Level::INFO
-                    };
+                    // Only send log events to display if user requested logs
+                    if log_level.is_some() {
+                        // Parse log level from compact format: "timestamp Ty Process..."
+                        // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
+                        // Fault is Apple's highest severity - used by panic handler
+                        let level = if line.contains(" F ") || line.contains(" E ") {
+                            tracing::Level::ERROR
+                        } else if line.contains(" W ") {
+                            tracing::Level::WARN
+                        } else if line.contains(" D ") {
+                            tracing::Level::DEBUG
+                        } else {
+                            tracing::Level::INFO
+                        };
 
-                    if sender
-                        .try_send(DeviceEvent::Log {
-                            level,
-                            message: line,
-                        })
-                        .is_err()
-                    {
-                        break;
+                        if sender
+                            .try_send(DeviceEvent::Log {
+                                level,
+                                message: line,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 // Keep log_child alive until stream ends, then let it drop to kill the process
@@ -191,9 +193,9 @@ async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Optio
         }
 
         if payload.is_some() || location.is_some() {
-            let mut msg = String::from("Panic occurred");
+            let mut msg = String::from("Panic:");
             if let Some(p) = payload {
-                msg = format!("{msg}: {p}");
+                msg = format!("{msg} {p}");
             }
             if let Some(l) = location {
                 msg = format!("{msg}\n  at {l}");
@@ -523,19 +525,17 @@ impl Device for AppleSimulator {
         spawn(async move {
             wait_for_pid_exit(pid).await;
 
-            // Helper to build crash message with panic info if available
-            let build_crash_message = |base_msg: String| -> String {
-                if let Ok(info) = panic_rx.try_recv() {
-                    let mut msg = format!("Panic: {}", info.payload);
-                    if let Some(loc) = &info.location {
-                        msg.push_str(&format!("\n  at {loc}"));
-                    }
-                    msg.push_str(&format!("\n\n{base_msg}"));
-                    return msg;
+            // Priority 1: Use panic info from log stream (immediate - no waiting)
+            if let Ok(info) = panic_rx.try_recv() {
+                let mut msg = format!("Panic: {}", info.payload);
+                if let Some(loc) = &info.location {
+                    msg.push_str(&format!("\n  at {loc}"));
                 }
-                base_msg
-            };
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(msg));
+                return;
+            }
 
+            // Priority 2: Poll for crash report (slower, but has more details for non-panic crashes)
             if let Some(report) = poll_for_crash_report(
                 &device_name,
                 &device_identifier,
@@ -543,27 +543,17 @@ impl Device for AppleSimulator {
                 &process_name,
                 Some(pid),
                 start_time,
-                Duration::from_secs(8),
+                Duration::from_secs(3),
             )
             .await
             {
-                let crash_msg = build_crash_message(report.to_string());
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(crash_msg));
+                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(report.to_string()));
                 return;
             }
 
+            // Priority 3: Try unified log (fallback)
             if let Some(panic_msg) = fetch_recent_panic_logs(start_instant, Some(pid)).await {
                 let _ = sender_for_exit.try_send(DeviceEvent::Crashed(panic_msg));
-                return;
-            }
-
-            // Check if we captured panic info from log stream even without crash report
-            if let Ok(info) = panic_rx.try_recv() {
-                let mut msg = format!("Panic: {}", info.payload);
-                if let Some(loc) = &info.location {
-                    msg.push_str(&format!("\n  at {loc}"));
-                }
-                let _ = sender_for_exit.try_send(DeviceEvent::Crashed(msg));
                 return;
             }
 
