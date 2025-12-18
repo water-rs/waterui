@@ -15,17 +15,16 @@ use waterui_cli::{
         toolchain::{AndroidNdk, AndroidSdk},
     },
     apple::{
-        device::{AppleSimulator, MacOS},
+        device::AppleSimulator,
         platform::{build_rust_lib, package_apple},
         toolchain::{AppleSdk, Xcode},
     },
     backend::reinit_backend,
     build::BuildOptions,
     debug::{HotReloadEvent, HotReloadRunner},
-    device::{Artifact, Device, DeviceEvent, LogLevel, RunOptions, Running},
+    device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
     gtk4::{
         backend::Gtk4Backend,
-        device::Gtk4Device,
         platform::{build_gtk4, package_gtk4},
         toolchain::Gtk4Toolchain,
     },
@@ -298,10 +297,9 @@ async fn build_and_run(
         if needs_launch {
             match &device {
                 SelectedDevice::AppleSimulator(sim) => sim.launch().await?,
-                SelectedDevice::AppleMacos(macos) => macos.launch().await?,
+                SelectedDevice::Local(local) => local.launch().await?,
                 SelectedDevice::AndroidDevice(dev) => dev.launch().await?,
                 SelectedDevice::AndroidEmulator(emu) => emu.launch().await?,
-                SelectedDevice::Gtk4(gtk4) => gtk4.launch().await?,
             }
         }
         Ok::<_, color_eyre::eyre::Report>(device)
@@ -379,10 +377,9 @@ async fn run_with_options(
 
     let running = match device {
         SelectedDevice::AppleSimulator(sim) => sim.run(artifact, run_options).await?,
-        SelectedDevice::AppleMacos(macos) => macos.run(artifact, run_options).await?,
+        SelectedDevice::Local(local) => local.run(artifact, run_options).await?,
         SelectedDevice::AndroidDevice(dev) => dev.run(artifact, run_options).await?,
         SelectedDevice::AndroidEmulator(emu) => emu.run(artifact, run_options).await?,
-        SelectedDevice::Gtk4(gtk4) => gtk4.run(artifact, run_options).await?,
     };
 
     Ok(running)
@@ -391,10 +388,10 @@ async fn run_with_options(
 /// A device that can be selected for running.
 enum SelectedDevice {
     AppleSimulator(AppleSimulator),
-    AppleMacos(MacOS),
+    /// Local machine - used for macOS (Apple backend) and any platform with GTK4 backend
+    Local(Local),
     AndroidDevice(AndroidDevice),
     AndroidEmulator(AndroidEmulator),
-    Gtk4(Gtk4Device),
 }
 
 impl SelectedDevice {
@@ -402,7 +399,7 @@ impl SelectedDevice {
     fn needs_launch(&self) -> bool {
         match self {
             Self::AppleSimulator(sim) => sim.state != "Booted",
-            Self::AppleMacos(_) | Self::AndroidDevice(_) | Self::Gtk4(_) => false,
+            Self::Local(_) | Self::AndroidDevice(_) => false,
             Self::AndroidEmulator(_) => true,
         }
     }
@@ -449,9 +446,9 @@ async fn find_device(
     backend: TargetBackend,
     device_id: Option<&str>,
 ) -> Result<SelectedDevice> {
-    // For GTK4 backend, always use Gtk4Device regardless of platform
+    // For GTK4 backend, always use Local device regardless of platform
     if backend == TargetBackend::Gtk4 {
-        return Ok(SelectedDevice::Gtk4(Gtk4Device));
+        return Ok(SelectedDevice::Local(Local));
     }
 
     match platform {
@@ -484,8 +481,8 @@ async fn find_device(
                 .ok_or_else(|| color_eyre::eyre::eyre!("No iOS simulators available"))
         }
         TargetPlatform::Macos => {
-            // macOS with Apple backend uses the current machine
-            Ok(SelectedDevice::AppleMacos(MacOS))
+            // macOS with Apple backend uses the local machine
+            Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Android => {
             let devices = AndroidDevice::scan().await.unwrap_or_default();
@@ -519,8 +516,8 @@ async fn find_device(
             )))
         }
         TargetPlatform::Linux => {
-            // Linux always runs on the local machine with GTK4 backend
-            Ok(SelectedDevice::Gtk4(Gtk4Device))
+            // Linux runs on the local machine
+            Ok(SelectedDevice::Local(Local))
         }
     }
 }
@@ -528,10 +525,9 @@ async fn find_device(
 fn device_name(device: &SelectedDevice) -> String {
     match device {
         SelectedDevice::AppleSimulator(sim) => sim.name.clone(),
-        SelectedDevice::AppleMacos(_) => "Current Machine".to_string(),
+        SelectedDevice::Local(local) => local.name().to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
-        SelectedDevice::Gtk4(_) => "Local Machine (GTK4)".to_string(),
     }
 }
 
