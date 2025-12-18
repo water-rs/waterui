@@ -602,7 +602,12 @@ fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool 
             true
         }
         Some(DeviceEvent::Crashed(msg)) => {
-            error!("Application crashed: {msg}");
+            // Use panic_report for panic messages, regular error for others
+            if msg.starts_with("Panic:") {
+                shell::panic_report(&msg);
+            } else {
+                error!("Application crashed: {msg}");
+            }
             true
         }
         None => true,
