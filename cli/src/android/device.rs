@@ -1,5 +1,7 @@
 use color_eyre::eyre::{self, eyre};
+use smol::channel::{Receiver, Sender};
 use smol::process::Command;
+use smol::spawn;
 use tracing::error;
 
 use std::process::Stdio;
@@ -9,6 +11,13 @@ use crate::{
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
     utils::{parse_whitespace_separated_u32s, run_command, run_command_output},
 };
+
+/// Panic information extracted from logcat.
+#[derive(Debug, Clone)]
+struct PanicInfo {
+    payload: String,
+    location: Option<String>,
+}
 
 /// Represents an Android device (physical or emulator).
 #[derive(Debug)]
@@ -257,9 +266,13 @@ async fn run_on_android(
         }
     });
 
+    // Clone sender for different tasks before moving
+    let sender_for_monitor = sender.clone();
+    let sender_for_panic = sender.clone();
+    let sender_for_logs = sender;
+
     // Spawn a background task to monitor the process
     let adb_for_monitor = adb.clone();
-    let sender_for_monitor = sender.clone();
     smol::spawn(async move {
         monitor_android_process(
             adb_for_monitor,
@@ -272,15 +285,29 @@ async fn run_on_android(
     })
     .detach();
 
-    // Spawn a background task to stream logs if log_level is set
-    if let Some(level) = log_level {
-        let adb_for_logs = adb;
-        let identifier_for_logs = device_id.to_string();
-        smol::spawn(async move {
-            stream_android_logs(adb_for_logs, &identifier_for_logs, pid, level, sender).await;
-        })
-        .detach();
-    }
+    // Always stream logs at fatal level to capture panics, with optional display
+    let adb_for_logs = adb;
+    let identifier_for_logs = device_id.to_string();
+    let panic_rx = start_android_log_stream(
+        adb_for_logs,
+        identifier_for_logs,
+        pid,
+        log_level,
+        sender_for_logs,
+    );
+
+    // Listen for panic info and send as crash event
+    spawn(async move {
+        if let Ok(info) = panic_rx.recv().await {
+            // Format panic message for panic_report() display
+            let mut msg = format!("Panic: {}", info.payload);
+            if let Some(loc) = info.location {
+                msg = format!("{msg}\n  at {loc}");
+            }
+            let _ = sender_for_panic.send(DeviceEvent::Crashed(msg)).await;
+        }
+    })
+    .detach();
 
     Ok(running)
 }
@@ -516,25 +543,30 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32, pid_filter
         && (log.contains("E AndroidRuntime") || log.contains("Exception"))
 }
 
-/// Stream logs from an Android process using logcat.
-async fn stream_android_logs(
+/// Start log streaming from an Android process using logcat.
+///
+/// Always streams at minimum fatal level to capture panics.
+/// Returns a receiver for panic info that fires if a panic is detected.
+fn start_android_log_stream(
     adb: std::path::PathBuf,
-    device_id: &str,
+    device_id: String,
     pid: u32,
-    level: LogLevel,
-    sender: smol::channel::Sender<DeviceEvent>,
-) {
-    use futures::StreamExt;
+    log_level: Option<LogLevel>,
+    sender: Sender<DeviceEvent>,
+) -> Receiver<PanicInfo> {
     use futures::io::{AsyncBufReadExt, BufReader};
-    use smol::process::Command;
+    use futures::StreamExt;
 
-    let priority = level.to_android_priority();
+    // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
+    let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
+
+    // Always stream at fatal level to capture panics, even if user didn't request logs
+    let priority = log_level.map_or('F', |l| l.to_android_priority());
 
     // Build logcat command with PID filter and minimum priority
-    // Format: `adb -s <device> logcat --pid=<pid> *:<priority>`
     let pid_arg = format!("--pid={pid}");
     let mut cmd = Command::new(&adb);
-    cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
+    cmd.args(["-s", &device_id, "logcat", "-v", "threadtime"])
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
@@ -544,34 +576,79 @@ async fn stream_android_logs(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to spawn logcat: {e}");
-            return;
+            return panic_rx;
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        return;
+        return panic_rx;
     };
 
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    // Parse logcat output and send as DeviceEvent::Log
-    // Logcat format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
-    while let Some(result) = lines.next().await {
-        let Ok(line) = result else { break };
+    spawn(async move {
+        // Parse logcat output and send as DeviceEvent::Log
+        // Logcat format: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: message"
+        while let Some(result) = lines.next().await {
+            let Ok(line) = result else { break };
 
-        let (parsed_level, message) = parse_logcat_line(&line);
+            // Extract panic info from log line if present (only first panic via try_send)
+            if line.contains("panic.payload=") {
+                if let Some(info) = extract_panic_info_from_log(&line) {
+                    let _ = panic_tx.try_send(info);
+                }
+            }
 
-        let _ = sender
-            .send(DeviceEvent::Log {
-                level: parsed_level,
-                message,
-            })
-            .await;
+            // Only send log events to display if user requested logs
+            if log_level.is_some() {
+                let (parsed_level, message) = parse_logcat_line(&line);
+
+                if sender
+                    .try_send(DeviceEvent::Log {
+                        level: parsed_level,
+                        message,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+
+        // Clean up child process
+        let _ = child.kill();
+    })
+    .detach();
+
+    panic_rx
+}
+
+/// Extract panic information from a log line containing panic.payload and panic.location fields.
+fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
+    let mut payload = None;
+    let mut location = None;
+
+    // Extract panic.payload="..."
+    if let Some(start) = line.find("panic.payload=\"") {
+        let start = start + 15;
+        if let Some(end) = line[start..].find('"') {
+            payload = Some(line[start..start + end].to_string());
+        }
     }
 
-    // Clean up child process
-    let _ = child.kill();
+    // Extract panic.location="..."
+    if let Some(start) = line.find("panic.location=\"") {
+        let start = start + 16;
+        if let Some(end) = line[start..].find('"') {
+            location = Some(line[start..start + end].to_string());
+        }
+    }
+
+    payload.map(|p| PanicInfo {
+        payload: p,
+        location,
+    })
 }
 
 /// Parsed logcat line with level, tag, and message.
