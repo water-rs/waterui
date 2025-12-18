@@ -53,6 +53,7 @@ pub enum ButtonStyle {
 }
 
 use alloc::boxed::Box;
+use executor_core::spawn_local;
 use waterui_core::handler::{
     BoxHandler, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
     into_handler, into_handler_with_state,
@@ -148,7 +149,7 @@ pub struct Button<Label, Action> {
     style: ButtonStyle,
 }
 
-impl<Label> Button<Label, ()> {
+impl<Label: View> Button<Label, ()> {
     /// Creates a new button with the specified label.
     ///
     /// # Arguments
@@ -163,7 +164,7 @@ impl<Label> Button<Label, ()> {
     }
 }
 
-impl<Label, Action> Button<Label, Action> {
+impl<Label: View, Action> Button<Label, Action> {
     /// Sets the visual style of the button.
     ///
     /// # Arguments
@@ -200,6 +201,35 @@ impl<Label, Action> Button<Label, Action> {
             style: self.style,
         }
     }
+
+    /// Sets the asynchronous action to be performed when the button is clicked.
+    pub fn action_async<H, Fut, P>(self, mut action: H) -> impl View
+    where
+        H: HandlerFn<P, Fut> + 'static,
+        Fut: Future<Output = ()> + 'static,
+        P: 'static,
+    {
+        self.action(move |env: Environment| {
+            let fut = action.handle_inner(&env);
+            spawn_local(fut).detach();
+        })
+    }
+
+    /// Sets the asynchronous action to be performed when the button is clicked, with access to a state.
+    pub fn action_with_async<H, Fut, P, S>(self, state: &S, mut action: H) -> impl View
+    where
+        H: HandlerFnWithState<P, Fut, S> + 'static,
+        Fut: Future<Output = ()> + 'static,
+        S: 'static + Clone,
+        P: 'static,
+    {
+        let state = state.clone();
+        self.action(move |env: Environment| {
+            let fut = action.handle_inner(state.clone(), &env);
+            spawn_local(fut).detach();
+        })
+    }
+
     /// Sets the action to be performed when the button is clicked, with access to a state.
     ///
     /// # Arguments
@@ -238,6 +268,6 @@ impl<Label, Action> Button<Label, Action> {
 /// # Returns
 ///
 /// A new button instance
-pub const fn button<Label>(label: Label) -> Button<Label, ()> {
+pub const fn button<Label: View>(label: Label) -> Button<Label, ()> {
     Button::new(label)
 }
