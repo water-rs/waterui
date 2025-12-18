@@ -332,6 +332,285 @@ fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     Some((tag, rest))
 }
 
+/// Find a file by walking up from cwd to find workspace root.
+///
+/// Tries to find the file relative to directories containing Cargo.toml.
+fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+
+    // First try relative to cwd
+    let direct = cwd.join(relative_path);
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    // Walk up the directory tree looking for Cargo.toml (workspace root indicators)
+    let mut current = cwd.as_path();
+    while let Some(parent) = current.parent() {
+        let candidate = parent.join(relative_path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+
+        // Stop at filesystem root or if we've gone too far up
+        if parent.join("Cargo.toml").exists() || parent.components().count() <= 2 {
+            // Keep going but check this level too
+        }
+
+        current = parent;
+    }
+
+    None
+}
+
+/// Parsed panic information for display.
+pub struct PanicReport<'a> {
+    /// The panic message (e.g., "Test panic: something failed")
+    pub message: &'a str,
+    /// Source file path
+    pub file: Option<&'a str>,
+    /// Line number (1-indexed)
+    pub line: Option<usize>,
+    /// Column number (1-indexed)
+    pub column: Option<usize>,
+    /// Additional crash info (exception, signal, etc.)
+    pub extra: Option<&'a str>,
+    /// Path to crash report file
+    pub crash_report_path: Option<&'a str>,
+}
+
+impl<'a> PanicReport<'a> {
+    /// Parse a crash message into a structured panic report.
+    ///
+    /// Expected format:
+    /// ```text
+    /// Panic: message
+    ///   at file.rs:123:45
+    ///
+    /// Exception: EXC_CRASH, Signal: SIGABRT, Reason: ...
+    ///
+    /// Crash report: /path/to/crash.ips
+    /// ```
+    pub fn parse(crash_msg: &'a str) -> Self {
+        let mut message = crash_msg;
+        let mut file = None;
+        let mut line = None;
+        let mut column = None;
+        let mut extra = None;
+        let mut crash_report_path = None;
+
+        // Split into lines for parsing
+        let lines: Vec<&str> = crash_msg.lines().collect();
+
+        for (i, ln) in lines.iter().enumerate() {
+            let ln = ln.trim();
+
+            // Parse "Panic: message"
+            if ln.starts_with("Panic:") {
+                message = ln.strip_prefix("Panic:").unwrap_or(ln).trim();
+            }
+            // Parse "  at file:line:col"
+            else if ln.starts_with("at ") {
+                if let Some(loc) = ln.strip_prefix("at ") {
+                    let parts: Vec<&str> = loc.rsplitn(3, ':').collect();
+                    match parts.as_slice() {
+                        [col, ln_num, path] => {
+                            file = Some(*path);
+                            line = ln_num.parse().ok();
+                            column = col.parse().ok();
+                        }
+                        [ln_num, path] => {
+                            file = Some(*path);
+                            line = ln_num.parse().ok();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Parse "Crash report: path"
+            else if ln.starts_with("Crash report:") {
+                crash_report_path = ln.strip_prefix("Crash report:").map(str::trim);
+            }
+            // Capture exception/signal info
+            else if ln.starts_with("Exception:") || ln.starts_with("Signal:") {
+                // Find the range of extra info (from this line to before "Crash report:")
+                let extra_end = lines[i..]
+                    .iter()
+                    .position(|l| l.starts_with("Crash report:"))
+                    .map_or(lines.len(), |pos| i + pos);
+                if extra_end > i {
+                    let extra_lines: Vec<&str> = lines[i..extra_end]
+                        .iter()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !extra_lines.is_empty() {
+                        // We'll store the first line as extra
+                        extra = Some(lines[i].trim());
+                    }
+                }
+            }
+        }
+
+        Self {
+            message,
+            file,
+            line,
+            column,
+            extra,
+            crash_report_path,
+        }
+    }
+}
+
+impl Shell {
+    /// Display a panic report with colored output and code context.
+    pub fn panic_report(&self, report: &PanicReport<'_>) -> io::Result<()> {
+        match &self.output {
+            ShellOut::Human => self.panic_report_human(report),
+            ShellOut::Json => self.panic_report_json(report),
+        }
+    }
+
+    fn panic_report_human(&self, report: &PanicReport<'_>) -> io::Result<()> {
+        use std::fs::File;
+        use std::io::BufRead;
+        use std::path::Path;
+
+        let mut stderr = anstream::stderr().lock();
+        let reset = Style::new().render_reset();
+
+        // Style definitions
+        let error_style = styles::ERROR;
+        let note_style = styles::NOTE;
+        let line_num_style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Blue)));
+        let highlight_style = Style::new()
+            .bold()
+            .fg_color(Some(anstyle::Color::Ansi(AnsiColor::Red)));
+
+        // Print "error: Panic: message"
+        writeln!(
+            stderr,
+            "{error_style}error{reset}: {error_style}Panic{reset}: {}",
+            report.message
+        )?;
+
+        // Print location if available
+        if let (Some(file), Some(line)) = (report.file, report.line) {
+            let col = report.column.unwrap_or(1);
+            writeln!(
+                stderr,
+                "   {note_style}-->{reset} {file}:{line}:{col}"
+            )?;
+
+            // Try to resolve the file path (may be relative to workspace root)
+            let file_path = Path::new(file);
+            let resolved_path = if file_path.is_absolute() {
+                Some(file_path.to_path_buf())
+            } else {
+                // Try to find the file by walking up from cwd to find workspace root
+                find_file_in_workspace(file_path)
+            };
+
+            // Try to read and display code context
+            if let Some(ref resolved) = resolved_path {
+            if let Ok(source_file) = File::open(resolved) {
+                let reader = io::BufReader::new(source_file);
+                let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+
+                let line_idx = line.saturating_sub(1);
+                let start = line_idx.saturating_sub(1);
+                let end = (line_idx + 2).min(lines.len());
+
+                // Calculate the width needed for line numbers
+                let max_line_num = end;
+                let line_num_width = max_line_num.to_string().len();
+
+                writeln!(stderr, "    {line_num_style}|{reset}")?;
+
+                for (idx, source_line) in lines[start..end].iter().enumerate() {
+                    let current_line = start + idx + 1;
+                    let is_panic_line = current_line == line;
+
+                    if is_panic_line {
+                        // Highlight the panic line
+                        writeln!(
+                            stderr,
+                            "{error_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {highlight_style}{source_line}{reset}"
+                        )?;
+
+                        // Print the column indicator
+                        let col_offset = col.saturating_sub(1);
+                        let spaces = " ".repeat(col_offset);
+                        let carets = "^".repeat(source_line.len().saturating_sub(col_offset).min(20).max(1));
+                        writeln!(
+                            stderr,
+                            "{:>line_num_width$} {line_num_style}|{reset} {spaces}{error_style}{carets}{reset}",
+                            ""
+                        )?;
+                    } else {
+                        writeln!(
+                            stderr,
+                            "{line_num_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {source_line}"
+                        )?;
+                    }
+                }
+
+                writeln!(stderr, "    {line_num_style}|{reset}")?;
+            }
+            }
+        }
+
+        // Print extra info (exception, signal, etc.)
+        if let Some(extra) = report.extra {
+            writeln!(stderr)?;
+            writeln!(stderr, "{note_style}note{reset}: {extra}")?;
+        }
+
+        // Print crash report path
+        if let Some(path) = report.crash_report_path {
+            writeln!(stderr)?;
+            writeln!(
+                stderr,
+                "{note_style}crash report{reset}: {path}"
+            )?;
+        }
+
+        stderr.flush()
+    }
+
+    fn panic_report_json(&self, report: &PanicReport<'_>) -> io::Result<()> {
+        #[derive(Serialize)]
+        struct JsonPanic<'a> {
+            #[serde(rename = "type")]
+            ty: &'static str,
+            message: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            file: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            line: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            column: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            extra: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            crash_report: Option<&'a str>,
+        }
+
+        let json = serde_json::to_string(&JsonPanic {
+            ty: "panic",
+            message: report.message,
+            file: report.file,
+            line: report.line,
+            column: report.column,
+            extra: report.extra,
+            crash_report: report.crash_report_path,
+        })?;
+        writeln!(io::stdout(), "{json}")?;
+        io::stdout().flush()
+    }
+}
+
 // Convenience functions that use the global shell
 
 /// Print a status message.
@@ -348,6 +627,12 @@ pub fn device_log(platform: &str, level: tracing::Level, message: impl Display) 
 #[doc(hidden)]
 pub fn error_fn(message: impl Display) {
     let _ = get().error(message);
+}
+
+/// Display a panic report with colored output and code context.
+pub fn panic_report(crash_msg: &str) {
+    let report = PanicReport::parse(crash_msg);
+    let _ = get().panic_report(&report);
 }
 
 /// Print a warning message (use `warn!` macro instead).
