@@ -12,6 +12,10 @@ pub struct ColorPickerConfig {
     pub label: AnyView,
     /// The binding to the color value.
     pub value: Binding<Color>,
+    /// Whether to support alpha channel selection.
+    pub support_alpha: bool,
+    /// Whether to support HDR color selection.
+    pub support_hdr: bool,
 }
 
 configurable!(
@@ -44,7 +48,23 @@ impl ColorPicker {
         Self(ColorPickerConfig {
             label: AnyView::default(),
             value: value.clone(),
+            support_alpha: false,
+            support_hdr: false,
         })
+    }
+
+    /// Enables or disables alpha channel support.
+    #[must_use]
+    pub fn support_alpha(mut self, enable: bool) -> Self {
+        self.0.support_alpha = enable;
+        self
+    }
+
+    /// Enables or disables HDR color support.
+    #[must_use]
+    pub fn support_hdr(mut self, enable: bool) -> Self {
+        self.0.support_hdr = enable;
+        self
     }
 
     /// Sets the label of the color picker.

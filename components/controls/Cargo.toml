@@ -16,6 +16,7 @@ waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
+executor-core.workspace = true
 
 
 [features]
