@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use futures::future::{self, Either};
 
-use commands::{build, clean, create, devices, doctor, package, run};
+use commands::{build, clean, create, device, devices, doctor, package, run};
 
 /// Flag to track if Ctrl+C was pressed.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -56,6 +56,9 @@ enum Commands {
     /// Check development environment.
     Doctor(doctor::Args),
 
+    /// Manage individual devices.
+    Device(device::Args),
+
     /// List available devices.
     Devices(devices::Args),
 }
@@ -93,6 +96,7 @@ fn main() -> Result<()> {
                 Commands::Package(args) => package::run(args).await,
                 Commands::Clean(args) => clean::run(args).await,
                 Commands::Doctor(args) => doctor::run(args).await,
+                Commands::Device(args) => device::run(args).await,
                 Commands::Devices(args) => devices::run(args).await,
             }
         };
