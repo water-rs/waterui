@@ -514,6 +514,32 @@ impl Resolvable for Mix {
     }
 }
 
+/// Foreground color key for environment queries.
+#[derive(Debug, Clone, Copy)]
+pub struct ForegroundColor;
+
+/// Background color key for environment queries.
+#[derive(Debug, Clone, Copy)]
+pub struct BackgroundColor;
+
+impl Resolvable for ForegroundColor {
+    type Resolved = ResolvedColor;
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        env.query::<Self, ResolvedColor>()
+            .copied()
+            .expect("ForegroundColor not found in environment")
+    }
+}
+
+impl Resolvable for BackgroundColor {
+    type Resolved = ResolvedColor;
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        env.query::<Self, ResolvedColor>()
+            .copied()
+            .expect("BackgroundColor not found in environment")
+    }
+}
+
 macro_rules! color_const {
     ($name:ident,$doc:expr) => {
         paste! {
