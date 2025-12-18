@@ -3,6 +3,7 @@ use crate::locale::Formatter;
 use crate::{font::Font, styled::StyledStr};
 use alloc::string::ToString;
 use core::fmt::Display;
+use core::ops::{Add, AddAssign};
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
@@ -67,6 +68,38 @@ configurable!(
 pub struct TextConfig {
     /// The rich text content to be displayed.
     pub content: Computed<StyledStr>,
+}
+
+impl<T> Add<T> for Text
+where
+    T: Into<Text>,
+{
+    type Output = Self;
+    fn add(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into();
+        self.0
+            .content
+            .zip(rhs.0.content)
+            .map(|(a, b)| a + b)
+            .computed()
+            .into()
+    }
+}
+
+impl<T> AddAssign<T> for Text
+where
+    T: Into<Text>,
+{
+    fn add_assign(&mut self, rhs: T) {
+        let rhs = rhs.into();
+        self.0.content = self
+            .0
+            .content
+            .clone()
+            .zip(rhs.0.content)
+            .map(|(a, b)| a + b)
+            .computed();
+    }
 }
 
 impl Clone for Text {
