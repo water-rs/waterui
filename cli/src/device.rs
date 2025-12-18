@@ -363,9 +363,8 @@ fn start_log_stream(
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
-    let Some(level) = log_level else {
-        return panic_rx;
-    };
+    // Always stream at fault level to capture panics, even if user didn't request logs
+    let stream_level = log_level.map_or("fault", |l| l.to_apple_level());
 
     let mut log_cmd = smol::process::Command::new("log");
     log_cmd
@@ -373,7 +372,7 @@ fn start_log_stream(
         .arg("--predicate")
         .arg("subsystem == \"dev.waterui\"")
         .arg("--level")
-        .arg(level.to_apple_level())
+        .arg(stream_level)
         .arg("--style")
         .arg("compact")
         .stdout(Stdio::piped())
@@ -396,24 +395,27 @@ fn start_log_stream(
                         }
                     }
 
-                    let level = if line.contains(" F ") || line.contains(" E ") {
-                        tracing::Level::ERROR
-                    } else if line.contains(" W ") {
-                        tracing::Level::WARN
-                    } else if line.contains(" D ") {
-                        tracing::Level::DEBUG
-                    } else {
-                        tracing::Level::INFO
-                    };
+                    // Only send log events to display if user requested logs
+                    if log_level.is_some() {
+                        let level = if line.contains(" F ") || line.contains(" E ") {
+                            tracing::Level::ERROR
+                        } else if line.contains(" W ") {
+                            tracing::Level::WARN
+                        } else if line.contains(" D ") {
+                            tracing::Level::DEBUG
+                        } else {
+                            tracing::Level::INFO
+                        };
 
-                    if sender
-                        .try_send(DeviceEvent::Log {
-                            level,
-                            message: line,
-                        })
-                        .is_err()
-                    {
-                        break;
+                        if sender
+                            .try_send(DeviceEvent::Log {
+                                level,
+                                message: line,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 drop(log_child);
@@ -503,9 +505,9 @@ async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Optio
         }
 
         if payload.is_some() || location.is_some() {
-            let mut msg = String::from("Panic occurred");
+            let mut msg = String::from("Panic:");
             if let Some(p) = payload {
-                msg = format!("{msg}: {p}");
+                msg = format!("{msg} {p}");
             }
             if let Some(l) = location {
                 msg = format!("{msg}\n  at {l}");
@@ -743,22 +745,20 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
         let crash_poll_task = std::pin::pin!(crash_poll_task);
         let result = futures::future::select(open_task, crash_poll_task).await;
 
-        // Helper to build crash message with panic info if available
-        let build_crash_message = |base_msg: String| -> String {
-            if let Ok(info) = panic_rx.try_recv() {
-                let mut msg = format!("Panic: {}", info.payload);
-                if let Some(loc) = &info.location {
-                    msg.push_str(&format!("\n  at {loc}"));
-                }
-                msg.push_str(&format!("\n\n{base_msg}"));
-                return msg;
-            }
-            base_msg
-        };
-
         match result {
-            // open exited first - check for crash report or panic logs
+            // open exited first - check panic info from log stream first (fastest)
             futures::future::Either::Left(_) => {
+                // Priority 1: Use panic info from log stream (immediate)
+                if let Ok(info) = panic_rx.try_recv() {
+                    let mut msg = format!("Panic: {}", info.payload);
+                    if let Some(loc) = &info.location {
+                        msg.push_str(&format!("\n  at {loc}"));
+                    }
+                    let _ = sender.try_send(DeviceEvent::Crashed(msg));
+                    return;
+                }
+
+                // Priority 2: Poll for crash report (slower, but has more details)
                 if let Some(report) = poll_for_crash_report(
                     device_name,
                     &device_identifier,
@@ -766,28 +766,21 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
                     &app_name_for_crash,
                     app_pid,
                     start_time,
-                    Duration::from_secs(5),
+                    Duration::from_secs(3),
                 )
                 .await
                 {
-                    let crash_msg = build_crash_message(report.to_string());
-                    let _ = sender.try_send(DeviceEvent::Crashed(crash_msg));
-                } else if let Some(panic_msg) =
-                    fetch_recent_panic_logs(start_instant, app_pid).await
-                {
-                    let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
-                } else {
-                    // Check if we captured panic info from log stream even without crash report
-                    if let Ok(info) = panic_rx.try_recv() {
-                        let mut msg = format!("Panic: {}", info.payload);
-                        if let Some(loc) = &info.location {
-                            msg.push_str(&format!("\n  at {loc}"));
-                        }
-                        let _ = sender.try_send(DeviceEvent::Crashed(msg));
-                        return;
-                    }
-                    let _ = sender.try_send(DeviceEvent::Exited);
+                    let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
+                    return;
                 }
+
+                // Priority 3: Try unified log (fallback)
+                if let Some(panic_msg) = fetch_recent_panic_logs(start_instant, app_pid).await {
+                    let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
+                    return;
+                }
+
+                let _ = sender.try_send(DeviceEvent::Exited);
             }
             // Crash report appeared first - kill the app and report
             futures::future::Either::Right((Some(report), _)) => {
@@ -796,8 +789,16 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
                     .arg("-x")
                     .arg(&app_name_for_kill)
                     .status();
-                let crash_msg = build_crash_message(report.to_string());
-                let _ = crash_check_sender.try_send(DeviceEvent::Crashed(crash_msg));
+                // Check if we have panic info from log stream
+                if let Ok(info) = panic_rx.try_recv() {
+                    let mut msg = format!("Panic: {}", info.payload);
+                    if let Some(loc) = &info.location {
+                        msg.push_str(&format!("\n  at {loc}"));
+                    }
+                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(msg));
+                } else {
+                    let _ = crash_check_sender.try_send(DeviceEvent::Crashed(report.to_string()));
+                }
             }
             futures::future::Either::Right((None, _)) => {
                 let _ = sender.try_send(DeviceEvent::Exited);

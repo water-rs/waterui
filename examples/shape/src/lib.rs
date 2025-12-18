@@ -311,6 +311,7 @@ fn layout_demo() -> impl View {
 
 #[hot_reload]
 fn main() -> impl View {
+    panic!("Shape example app requires WaterUI runtime.");
     scroll(
         vstack((
             // Header
