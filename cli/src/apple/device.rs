@@ -18,6 +18,8 @@ use smol::{
 use time::OffsetDateTime;
 use tracing::{debug as trace_debug, info};
 
+use std::path::Path;
+
 use crate::{
     debug,
     device::{Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running},
@@ -580,6 +582,30 @@ impl Device for AppleSimulator {
 
         Ok(simulators)
     }
+}
+
+/// Capture a screenshot from an iOS simulator.
+///
+/// Uses `xcrun simctl io <udid> screenshot <output_path>` to capture
+/// the current screen of the simulator.
+///
+/// # Errors
+///
+/// Returns an error if the screenshot command fails or the simulator
+/// is not available.
+pub async fn screenshot(udid: &str, output: &Path) -> eyre::Result<()> {
+    run_command(
+        "xcrun",
+        [
+            "simctl",
+            "io",
+            udid,
+            "screenshot",
+            output.to_str().ok_or_else(|| eyre!("Invalid output path"))?,
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
