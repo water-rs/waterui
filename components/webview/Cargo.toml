@@ -1,0 +1,15 @@
+[package]
+name = "waterui-webview"
+version = "0.2.2"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[dependencies]
+waterui-core.workspace = true
+
+
+[lints]
+workspace = true

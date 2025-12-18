@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, Subcommand};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{self, Result};
 
-use crate::{error, success};
-use waterui_cli::capture;
+use crate::{error, note, shell, success};
+use waterui_cli::{android, apple, capture, gesture};
 
 /// Arguments for the device command.
 #[derive(ClapArgs, Debug)]
@@ -20,12 +20,24 @@ pub struct Args {
 pub enum DeviceCommand {
     /// Capture a screenshot from a device.
     Capture(CaptureArgs),
+
+    /// Perform a tap gesture on a device.
+    Tap(TapArgs),
+
+    /// Perform a swipe gesture on a device.
+    Swipe(SwipeArgs),
+
+    /// Input text on a device.
+    Text(TextArgs),
+
+    /// Describe UI elements on the screen (for automation).
+    Describe(DescribeArgs),
 }
 
 /// Arguments for the capture subcommand.
 #[derive(ClapArgs, Debug)]
 pub struct CaptureArgs {
-    /// Device identifier (UDID for iOS, serial for Android).
+    /// Device identifier (UDID for iOS, serial for Android, "local" for macOS).
     #[arg(long)]
     id: String,
 
@@ -34,16 +46,147 @@ pub struct CaptureArgs {
     output: Option<PathBuf>,
 }
 
+/// Arguments for the tap subcommand.
+#[derive(ClapArgs, Debug)]
+pub struct TapArgs {
+    /// Device identifier (UDID for iOS, serial for Android, "local" for macOS).
+    #[arg(long)]
+    id: String,
+
+    /// X coordinate.
+    #[arg(long)]
+    x: u32,
+
+    /// Y coordinate.
+    #[arg(long)]
+    y: u32,
+
+    /// Capture before/after screenshots and output diff info.
+    #[arg(long)]
+    diff: bool,
+
+    /// Path to save the diff image (only used with --diff).
+    #[arg(long)]
+    diff_output: Option<PathBuf>,
+
+    /// Delay in milliseconds after gesture before capturing "after" screenshot.
+    #[arg(long, default_value = "500")]
+    delay: u32,
+}
+
+/// Arguments for the swipe subcommand.
+#[derive(ClapArgs, Debug)]
+pub struct SwipeArgs {
+    /// Device identifier (UDID for iOS, serial for Android, "local" for macOS).
+    #[arg(long)]
+    id: String,
+
+    /// Starting coordinates as "x,y".
+    #[arg(long, value_parser = parse_coords)]
+    from: (u32, u32),
+
+    /// Ending coordinates as "x,y".
+    #[arg(long, value_parser = parse_coords)]
+    to: (u32, u32),
+
+    /// Duration of the swipe in milliseconds.
+    #[arg(long)]
+    duration: Option<u32>,
+
+    /// Capture before/after screenshots and output diff info.
+    #[arg(long)]
+    diff: bool,
+
+    /// Path to save the diff image (only used with --diff).
+    #[arg(long)]
+    diff_output: Option<PathBuf>,
+
+    /// Delay in milliseconds after gesture before capturing "after" screenshot.
+    #[arg(long, default_value = "500")]
+    delay: u32,
+}
+
+/// Arguments for the text subcommand.
+#[derive(ClapArgs, Debug)]
+pub struct TextArgs {
+    /// Device identifier (UDID for iOS, serial for Android, "local" for macOS).
+    #[arg(long)]
+    id: String,
+
+    /// Text to input.
+    #[arg(long)]
+    input: String,
+
+    /// Capture before/after screenshots and output diff info.
+    #[arg(long)]
+    diff: bool,
+
+    /// Path to save the diff image (only used with --diff).
+    #[arg(long)]
+    diff_output: Option<PathBuf>,
+
+    /// Delay in milliseconds after gesture before capturing "after" screenshot.
+    #[arg(long, default_value = "500")]
+    delay: u32,
+}
+
+/// Arguments for the describe subcommand.
+#[derive(ClapArgs, Debug)]
+pub struct DescribeArgs {
+    /// Device identifier (UDID for iOS, serial for Android).
+    #[arg(long)]
+    id: String,
+}
+
+/// Parse coordinate string "x,y" into tuple.
+fn parse_coords(s: &str) -> Result<(u32, u32), String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 2 {
+        return Err("Expected format: x,y (e.g., 100,200)".to_string());
+    }
+    let x = parts[0]
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "Invalid X coordinate")?;
+    let y = parts[1]
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "Invalid Y coordinate")?;
+    Ok((x, y))
+}
+
 /// Run the device command.
 pub async fn run(args: Args) -> Result<()> {
     match args.command {
         DeviceCommand::Capture(capture_args) => run_capture(capture_args).await,
+        DeviceCommand::Tap(tap_args) => run_tap(tap_args).await,
+        DeviceCommand::Swipe(swipe_args) => run_swipe(swipe_args).await,
+        DeviceCommand::Text(text_args) => run_text(text_args).await,
+        DeviceCommand::Describe(describe_args) => run_describe(describe_args).await,
     }
 }
 
 /// Run the capture subcommand.
 async fn run_capture(args: CaptureArgs) -> Result<()> {
     let device_id = &args.id;
+
+    // Handle local device for macOS
+    if device_id == gesture::LOCAL_DEVICE_ID {
+        let output = args
+            .output
+            .unwrap_or_else(capture::generate_screenshot_filename);
+
+        match waterui_cli::apple::local::screenshot(&output).await {
+            Ok(()) => {
+                success!("Screenshot saved to {} (from macOS local)", output.display());
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to capture screenshot: {e}");
+                return Err(e);
+            }
+        }
+    }
 
     // Verify the device exists
     let platform = match capture::verify_device(device_id).await {
@@ -79,4 +222,186 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
             Err(e)
         }
     }
+}
+
+/// Build gesture options from args.
+fn build_gesture_options(
+    diff: bool,
+    diff_output: Option<PathBuf>,
+    delay: u32,
+) -> gesture::GestureOptions {
+    let mut options = gesture::GestureOptions::default();
+    options.diff = diff;
+    options.diff_output = diff_output;
+    options.delay_ms = Some(delay);
+    options
+}
+
+/// Print diff result if present.
+fn print_diff_result(result: &gesture::GestureResult, diff_output: &Option<PathBuf>) {
+    if let Some(diff) = &result.diff {
+        if let Some(path) = diff_output {
+            success!("Diff image saved to {}", path.display());
+        }
+        note!("Diff result:\n{diff}");
+    }
+}
+
+/// Run the tap subcommand.
+async fn run_tap(args: TapArgs) -> Result<()> {
+    let device_id = &args.id;
+
+    // Verify device exists
+    gesture::verify_device(device_id).await?;
+
+    let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
+
+    match gesture::tap(device_id, args.x, args.y, &options).await {
+        Ok(result) => {
+            success!("Tap at ({}, {})", args.x, args.y);
+            print_diff_result(&result, &args.diff_output);
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to tap: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// Run the swipe subcommand.
+async fn run_swipe(args: SwipeArgs) -> Result<()> {
+    let device_id = &args.id;
+
+    // Verify device exists
+    gesture::verify_device(device_id).await?;
+
+    let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
+
+    match gesture::swipe(device_id, args.from, args.to, args.duration, &options).await {
+        Ok(result) => {
+            success!(
+                "Swipe from ({}, {}) to ({}, {})",
+                args.from.0,
+                args.from.1,
+                args.to.0,
+                args.to.1
+            );
+            print_diff_result(&result, &args.diff_output);
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to swipe: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// Run the text subcommand.
+async fn run_text(args: TextArgs) -> Result<()> {
+    let device_id = &args.id;
+
+    // Verify device exists
+    gesture::verify_device(device_id).await?;
+
+    let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
+
+    match gesture::text(device_id, &args.input, &options).await {
+        Ok(result) => {
+            success!("Text input: \"{}\"", args.input);
+            print_diff_result(&result, &args.diff_output);
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to input text: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// Run the describe subcommand.
+async fn run_describe(args: DescribeArgs) -> Result<()> {
+    let device_id = &args.id;
+
+    // Local macOS device is not supported
+    if device_id == gesture::LOCAL_DEVICE_ID {
+        eyre::bail!("Describe is not supported for local macOS device");
+    }
+
+    // Get platform and call appropriate describe function
+    let json = match capture::detect_platform(device_id) {
+        capture::DevicePlatform::Ios => apple::device::describe(device_id).await?,
+        capture::DevicePlatform::Android => android::device::describe(device_id).await?,
+    };
+
+    if shell::get().is_json() {
+        // JSON mode: output raw JSON
+        println!("{json}");
+    } else {
+        // Readable mode: format as table
+        print_ui_elements_readable(&json)?;
+    }
+
+    Ok(())
+}
+
+/// Print UI elements in human-readable format.
+fn print_ui_elements_readable(json: &str) -> Result<()> {
+    let elements: Vec<serde_json::Value> = serde_json::from_str(json)?;
+
+    println!("UI Elements ({} found):", elements.len());
+    println!("{}", "-".repeat(80));
+
+    for (i, elem) in elements.iter().enumerate() {
+        let label = elem
+            .get("AXLabel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let elem_type = elem
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let value = elem
+            .get("AXValue")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Get frame info
+        let frame = elem.get("frame");
+        let (x, y, w, h) = if let Some(f) = frame {
+            (
+                f.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                f.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                f.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                f.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            )
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        // Calculate center point for tapping
+        let center_x = x + w / 2.0;
+        let center_y = y + h / 2.0;
+
+        // Only show elements with a label or value
+        if label != "-" || !value.is_empty() {
+            println!(
+                "[{}] {} \"{}\"{}",
+                i,
+                elem_type,
+                if !value.is_empty() { value } else { label },
+                if !value.is_empty() && label != "-" {
+                    format!(" ({})", label)
+                } else {
+                    String::new()
+                }
+            );
+            println!(
+                "    tap: --x {} --y {}  (frame: {:.0},{:.0} {}x{})",
+                center_x as u32, center_y as u32, x, y, w as u32, h as u32
+            );
+        }
+    }
+
+    Ok(())
 }
