@@ -882,6 +882,271 @@ pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Perform a tap gesture on an Android device at the specified coordinates.
+///
+/// Uses `adb shell input tap <x> <y>` to simulate a touch event.
+///
+/// # Errors
+///
+/// Returns an error if the tap command fails or the device is not available.
+pub async fn tap(device_id: &str, x: u32, y: u32) -> eyre::Result<()> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    run_command(
+        adb.to_str().unwrap(),
+        ["-s", device_id, "shell", "input", "tap", &x.to_string(), &y.to_string()],
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Perform a swipe gesture on an Android device.
+///
+/// Uses `adb shell input swipe <x1> <y1> <x2> <y2> [duration_ms]` to simulate a swipe.
+///
+/// # Arguments
+///
+/// * `device_id` - The Android device identifier
+/// * `from` - Starting coordinates (x, y)
+/// * `to` - Ending coordinates (x, y)
+/// * `duration_ms` - Optional duration in milliseconds (default ~300ms if not specified)
+///
+/// # Errors
+///
+/// Returns an error if the swipe command fails or the device is not available.
+pub async fn swipe(
+    device_id: &str,
+    from: (u32, u32),
+    to: (u32, u32),
+    duration_ms: Option<u32>,
+) -> eyre::Result<()> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    let mut args = vec![
+        "-s",
+        device_id,
+        "shell",
+        "input",
+        "swipe",
+    ];
+
+    let x1 = from.0.to_string();
+    let y1 = from.1.to_string();
+    let x2 = to.0.to_string();
+    let y2 = to.1.to_string();
+    let duration = duration_ms.map(|d| d.to_string());
+
+    args.push(&x1);
+    args.push(&y1);
+    args.push(&x2);
+    args.push(&y2);
+
+    if let Some(ref d) = duration {
+        args.push(d);
+    }
+
+    run_command(adb.to_str().unwrap(), args).await?;
+
+    Ok(())
+}
+
+/// Input text on an Android device.
+///
+/// Uses `adb shell input text "<string>"` to type text.
+/// Note: Special characters may need escaping.
+///
+/// # Errors
+///
+/// Returns an error if the text input command fails or the device is not available.
+pub async fn text(device_id: &str, input: &str) -> eyre::Result<()> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    // Escape special characters for shell
+    let escaped = input
+        .replace('\\', "\\\\")
+        .replace(' ', "%s")
+        .replace('"', "\\\"")
+        .replace('\'', "\\'")
+        .replace('&', "\\&")
+        .replace('<', "\\<")
+        .replace('>', "\\>")
+        .replace('|', "\\|")
+        .replace(';', "\\;")
+        .replace('(', "\\(")
+        .replace(')', "\\)");
+
+    run_command(
+        adb.to_str().unwrap(),
+        ["-s", device_id, "shell", "input", "text", &escaped],
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Capture a screenshot from an Android device and return the raw PNG bytes.
+///
+/// This is used for the diff workflow where we need in-memory screenshots.
+///
+/// # Errors
+///
+/// Returns an error if the screenshot command fails or the device is not available.
+pub async fn screenshot_bytes(device_id: &str) -> eyre::Result<Vec<u8>> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    let child = Command::new(&adb)
+        .args(["-s", device_id, "exec-out", "screencap", "-p"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let output = child.output().await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to capture screenshot: {}", stderr.trim());
+    }
+
+    Ok(output.stdout)
+}
+
+/// Describe UI elements on the screen.
+///
+/// Uses `uiautomator dump` to get UI hierarchy as XML, then converts to JSON.
+///
+/// # Errors
+///
+/// Returns an error if adb is not available or the command fails.
+pub async fn describe(device_id: &str) -> eyre::Result<String> {
+    let adb = AndroidSdk::adb_path()
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+
+    // Dump UI hierarchy to a temp file on device
+    let dump_path = "/sdcard/window_dump.xml";
+    run_command(
+        adb.to_str().unwrap(),
+        ["-s", device_id, "shell", "uiautomator", "dump", dump_path],
+    )
+    .await?;
+
+    // Read the dump file
+    let output = Command::new(adb.to_str().unwrap())
+        .args(["-s", device_id, "shell", "cat", dump_path])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eyre::bail!("Failed to read UI dump: {}", stderr.trim());
+    }
+
+    let xml = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Convert XML to simplified JSON format
+    let json = xml_to_ui_json(&xml)?;
+
+    // Clean up
+    let _ = run_command(
+        adb.to_str().unwrap(),
+        ["-s", device_id, "shell", "rm", dump_path],
+    )
+    .await;
+
+    Ok(json)
+}
+
+/// Convert Android UI XML dump to a JSON format similar to iOS IDB output.
+fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
+    let mut elements = Vec::new();
+
+    // Simple XML parsing - find all <node> elements
+    for line in xml.lines() {
+        if !line.contains("<node") {
+            continue;
+        }
+
+        let mut element = serde_json::Map::new();
+
+        // Extract bounds attribute: bounds="[left,top][right,bottom]"
+        if let Some(bounds_start) = line.find("bounds=\"[") {
+            let bounds_str = &line[bounds_start + 8..];
+            if let Some(bounds_end) = bounds_str.find('"') {
+                let bounds = &bounds_str[..bounds_end];
+                // Parse [left,top][right,bottom]
+                let parts: Vec<&str> = bounds
+                    .trim_matches(|c| c == '[' || c == ']')
+                    .split("][")
+                    .collect();
+                if parts.len() == 2 {
+                    let lt: Vec<i32> = parts[0]
+                        .split(',')
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    let rb: Vec<i32> = parts[1]
+                        .split(',')
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    if lt.len() == 2 && rb.len() == 2 {
+                        let mut frame = serde_json::Map::new();
+                        frame.insert("x".to_string(), serde_json::Value::Number(lt[0].into()));
+                        frame.insert("y".to_string(), serde_json::Value::Number(lt[1].into()));
+                        frame.insert(
+                            "width".to_string(),
+                            serde_json::Value::Number((rb[0] - lt[0]).into()),
+                        );
+                        frame.insert(
+                            "height".to_string(),
+                            serde_json::Value::Number((rb[1] - lt[1]).into()),
+                        );
+                        element.insert("frame".to_string(), serde_json::Value::Object(frame));
+                    }
+                }
+            }
+        }
+
+        // Extract common attributes
+        for attr in ["text", "content-desc", "class", "resource-id"] {
+            let search = format!("{attr}=\"");
+            if let Some(start) = line.find(&search) {
+                let value_start = start + search.len();
+                let rest = &line[value_start..];
+                if let Some(end) = rest.find('"') {
+                    let value = &rest[..end];
+                    if !value.is_empty() {
+                        let key = match attr {
+                            "content-desc" => "AXLabel",
+                            "class" => "type",
+                            "resource-id" => "AXUniqueId",
+                            "text" => "AXValue",
+                            _ => attr,
+                        };
+                        element.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Extract clickable/enabled attributes
+        if line.contains("clickable=\"true\"") {
+            element.insert("clickable".to_string(), serde_json::Value::Bool(true));
+        }
+        if line.contains("enabled=\"true\"") {
+            element.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        }
+
+        if !element.is_empty() {
+            elements.push(serde_json::Value::Object(element));
+        }
+    }
+
+    serde_json::to_string(&elements).map_err(|e| eyre!("Failed to serialize UI elements: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{android_log_looks_like_crash, log_mentions_pid};
