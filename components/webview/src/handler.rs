@@ -287,8 +287,15 @@ impl AnyWebViewHandle {
         self.inner.run_javascript(script).await
     }
 
-    /// Attempts to downcast the handle to a concrete type.
-    pub fn downcast_ref<T: WebViewHandle>(&self) -> Option<&T> {
-        (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
+    /// Downcasts the handle to a concrete type without runtime checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the handle was created with type `T`.
+    /// This is intended for native backends that control both the creation
+    /// and retrieval of the handle (e.g., Swift creates `FfiWebViewHandle`
+    /// and later retrieves it via FFI).
+    pub unsafe fn downcast_ref_unchecked<T: WebViewHandle>(&self) -> &T {
+        unsafe { &*(self.inner.as_ref() as *const dyn Any as *const T) }
     }
 }

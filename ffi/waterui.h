@@ -732,6 +732,8 @@ typedef struct WuiWatcher_f64 WuiWatcher_f64;
 
 typedef struct WuiWatcher_i32 WuiWatcher_i32;
 
+typedef struct WuiWebView WuiWebView;
+
 /**
  * Type ID as a 128-bit value for O(1) comparison.
  *
@@ -742,6 +744,32 @@ typedef struct WuiTypeId {
   uint64_t low;
   uint64_t high;
 } WuiTypeId;
+
+typedef struct WuiArraySlice_u8 {
+  uint8_t *head;
+  uintptr_t len;
+} WuiArraySlice_u8;
+
+typedef struct WuiArrayVTable_u8 {
+  void (*drop)(void*);
+  struct WuiArraySlice_u8 (*slice)(const void*);
+} WuiArrayVTable_u8;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_u8 {
+  NonNull data;
+  struct WuiArrayVTable_u8 vtable;
+} WuiArray_u8;
+
+typedef struct WuiStr {
+  struct WuiArray_u8 _0;
+} WuiStr;
 
 typedef struct WuiMetadata_____WuiEnv {
   struct WuiAnyView *content;
@@ -1595,32 +1623,6 @@ typedef struct WuiResolvedColor {
 typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 
 typedef struct Binding_Color WuiBinding_Color;
-
-typedef struct WuiArraySlice_u8 {
-  uint8_t *head;
-  uintptr_t len;
-} WuiArraySlice_u8;
-
-typedef struct WuiArrayVTable_u8 {
-  void (*drop)(void*);
-  struct WuiArraySlice_u8 (*slice)(const void*);
-} WuiArrayVTable_u8;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_u8 {
-  NonNull data;
-  struct WuiArrayVTable_u8 vtable;
-} WuiArray_u8;
-
-typedef struct WuiStr {
-  struct WuiArray_u8 _0;
-} WuiStr;
 
 typedef struct WuiArraySlice_____WuiAnyView {
   struct WuiAnyView **head;
@@ -2620,6 +2622,17 @@ struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env
  * duration of this function call.
  */
 struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
+
+/**
+ * Debug function to get the type name of a view as a string.
+ * This is useful for debugging type ID mismatches.
+ */
+struct WuiStr waterui_view_type_name(const struct WuiAnyView *view);
+
+/**
+ * Debug function to get the expected type name for WebView.
+ */
+struct WuiStr waterui_webview_type_name(void);
 
 /**
  * Gets the stretch axis of a view.
@@ -4000,6 +4013,41 @@ bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width
  * and must not be used after this call.
  */
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_web_view(struct WuiWebView *value);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiWebView *waterui_force_as_webview(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_webview_id(void);
+
+/**
+ * Gets the native handle pointer from a WebView.
+ *
+ * Returns the opaque pointer to the native WebView wrapper (Swift/Kotlin).
+ * This pointer can be used by native backends to access the underlying
+ * WKWebView or Android WebView.
+ *
+ * # Safety
+ *
+ * - The caller must ensure that `webview` is a valid pointer to a `WuiWebView`.
+ * - The WebView must have been created via the FFI WebViewController (i.e., the handle
+ *   must be an `FfiWebViewHandle`). This is guaranteed when the native backend properly
+ *   installed the WebViewController via `waterui_env_install_webview_controller`.
+ */
+void *waterui_webview_native_handle(struct WuiWebView *webview);
 
 /**
  * Installs a WebViewController into the environment from a native factory function.
