@@ -163,7 +163,11 @@ impl IntoFFI for WebViewEvent {
 
 /// Parses a URL string, returning a fallback URL if parsing fails.
 fn parse_url_or_blank(s: Str) -> Url {
-    s.parse().unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank is valid"))
+    let text = s.as_str();
+    if text.is_empty() {
+        return Url::from("about:blank");
+    }
+    Url::parse(text).unwrap_or_else(|| Url::from(s))
 }
 
 impl IntoRust for WuiWebViewEvent {
@@ -241,6 +245,9 @@ pub struct WuiWebViewHandle {
     /// Set user agent string.
     pub set_user_agent: unsafe extern "C" fn(*mut (), WuiStr),
 
+    /// Enable or disable following redirects.
+    pub set_redirects_enabled: unsafe extern "C" fn(*mut (), bool),
+
     // Script injection
     /// Inject a script that runs on every page load.
     pub inject_script: unsafe extern "C" fn(*mut (), WuiStr, WuiScriptInjectionTime),
@@ -317,6 +324,10 @@ impl WebViewHandle for FfiWebViewHandle {
     fn set_user_agent(&self, user_agent: &str) {
         let owned_ua = Str::from(user_agent.to_string());
         unsafe { (self.ffi.set_user_agent)(self.ffi.data, owned_ua.into_ffi()) }
+    }
+
+    fn set_redirects_enabled(&self, enabled: bool) {
+        unsafe { (self.ffi.set_redirects_enabled)(self.ffi.data, enabled) }
     }
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {

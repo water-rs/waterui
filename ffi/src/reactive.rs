@@ -400,6 +400,11 @@ ffi_reactive!(f32, f32);
 
 ffi_reactive!(f64, f64);
 
+// Date reactive bindings (using WuiDate FFI representation)
+use crate::components::form::WuiDate;
+use waterui_form::picker::date::Date;
+ffi_reactive!(Date, WuiDate, date);
+
 ffi_computed!(Vec<PickerItem<Id>>, WuiArray<WuiPickerItem>, picker_items);
 
 ffi_computed!(LivePhotoSource, WuiLivePhotoSource);

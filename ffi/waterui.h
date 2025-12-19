@@ -118,6 +118,14 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
+typedef enum WuiDatePickerType {
+  WuiDatePickerType_Date,
+  WuiDatePickerType_HourAndMinute,
+  WuiDatePickerType_HourMinuteAndSecond,
+  WuiDatePickerType_DateHourAndMinute,
+  WuiDatePickerType_DateHourMinuteAndSecond,
+} WuiDatePickerType;
+
 /**
  * The display mode for the navigation bar title (FFI-compatible).
  */
@@ -411,6 +419,14 @@ typedef struct Binding_Color Binding_Color;
  * Bindings provide a reactive way to work with values. When a binding's value
  * changes, it can notify watchers that have registered interest in the value.
  */
+typedef struct Binding_Date Binding_Date;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
 typedef struct Binding_Font Binding_Font;
 
 /**
@@ -524,6 +540,14 @@ typedef struct Computed_Color Computed_Color;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_ColorScheme Computed_ColorScheme;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Date Computed_Date;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -702,6 +726,8 @@ typedef struct WuiWatcher_Color WuiWatcher_Color;
 
 typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
 
+typedef struct WuiWatcher_Date WuiWatcher_Date;
+
 typedef struct WuiWatcher_Font WuiWatcher_Font;
 
 typedef struct WuiWatcher_Id WuiWatcher_Id;
@@ -744,32 +770,6 @@ typedef struct WuiTypeId {
   uint64_t low;
   uint64_t high;
 } WuiTypeId;
-
-typedef struct WuiArraySlice_u8 {
-  uint8_t *head;
-  uintptr_t len;
-} WuiArraySlice_u8;
-
-typedef struct WuiArrayVTable_u8 {
-  void (*drop)(void*);
-  struct WuiArraySlice_u8 (*slice)(const void*);
-} WuiArrayVTable_u8;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_u8 {
-  NonNull data;
-  struct WuiArrayVTable_u8 vtable;
-} WuiArray_u8;
-
-typedef struct WuiStr {
-  struct WuiArray_u8 _0;
-} WuiStr;
 
 typedef struct WuiMetadata_____WuiEnv {
   struct WuiAnyView *content;
@@ -1624,6 +1624,32 @@ typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 
 typedef struct Binding_Color WuiBinding_Color;
 
+typedef struct WuiArraySlice_u8 {
+  uint8_t *head;
+  uintptr_t len;
+} WuiArraySlice_u8;
+
+typedef struct WuiArrayVTable_u8 {
+  void (*drop)(void*);
+  struct WuiArraySlice_u8 (*slice)(const void*);
+} WuiArrayVTable_u8;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_u8 {
+  NonNull data;
+  struct WuiArrayVTable_u8 vtable;
+} WuiArray_u8;
+
+typedef struct WuiStr {
+  struct WuiArray_u8 _0;
+} WuiStr;
+
 typedef struct WuiArraySlice_____WuiAnyView {
   struct WuiAnyView **head;
   uintptr_t len;
@@ -1921,6 +1947,47 @@ typedef struct WuiSecureField {
   struct WuiAnyView *label;
   WuiBinding_Secure *value;
 } WuiSecureField;
+
+typedef struct Binding_Date WuiBinding_Date;
+
+/**
+ * C-compatible date representation using year, month (1-12), and day (1-31).
+ */
+typedef struct WuiDate {
+  /**
+   * Year (e.g., 2024)
+   */
+  int32_t year;
+  /**
+   * Month (1-12)
+   */
+  uint8_t month;
+  /**
+   * Day of month (1-31)
+   */
+  uint8_t day;
+} WuiDate;
+
+/**
+ * C representation of a range
+ */
+typedef struct WuiRange_WuiDate {
+  /**
+   * Start of the range
+   */
+  struct WuiDate start;
+  /**
+   * End of the range
+   */
+  struct WuiDate end;
+} WuiRange_WuiDate;
+
+typedef struct WuiDatePicker {
+  struct WuiAnyView *label;
+  WuiBinding_Date *value;
+  struct WuiRange_WuiDate range;
+  enum WuiDatePickerType ty;
+} WuiDatePicker;
 
 typedef struct Computed_bool WuiComputed_bool;
 
@@ -2388,6 +2455,10 @@ typedef struct WuiWebViewHandle {
    */
   void (*set_user_agent)(void*, struct WuiStr);
   /**
+   * Enable or disable following redirects.
+   */
+  void (*set_redirects_enabled)(void*, bool);
+  /**
    * Inject a script that runs on every page load.
    */
   void (*inject_script)(void*, struct WuiStr, enum WuiScriptInjectionTime);
@@ -2421,6 +2492,8 @@ typedef struct Binding_AnyView WuiBinding_AnyView;
 typedef struct Computed_AnyView WuiComputed_AnyView;
 
 typedef struct Binding_f32 WuiBinding_f32;
+
+typedef struct Computed_Date WuiComputed_Date;
 
 typedef struct WuiPickerItem {
   struct WuiId tag;
@@ -2622,17 +2695,6 @@ struct WuiAnyView *waterui_view_body(struct WuiAnyView *view, struct WuiEnv *env
  * duration of this function call.
  */
 struct WuiTypeId waterui_view_id(const struct WuiAnyView *view);
-
-/**
- * Debug function to get the type name of a view as a string.
- * This is useful for debugging type ID mismatches.
- */
-struct WuiStr waterui_view_type_name(const struct WuiAnyView *view);
-
-/**
- * Debug function to get the expected type name for WebView.
- */
-struct WuiStr waterui_webview_type_name(void);
 
 /**
  * Gets the stretch axis of a view.
@@ -3564,6 +3626,19 @@ struct WuiSecureField waterui_force_as_secure_field(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_secure_field_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiDatePicker waterui_force_as_date_picker(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_date_picker_id(void);
 
 /**
  * # Safety
@@ -4591,6 +4666,76 @@ struct WuiWatcher_f64 *waterui_new_watcher_f64(void *data,
                                                             double,
                                                             struct WuiWatcherMetadata*),
                                                void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiDate waterui_read_binding_date(const WuiBinding_Date *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_date(WuiBinding_Date *binding, struct WuiDate value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_date(const WuiBinding_Date *binding,
+                                                   struct WuiWatcher_Date *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_date(WuiBinding_Date *binding);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiDate waterui_read_computed_date(const WuiComputed_Date *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_date(const WuiComputed_Date *computed,
+                                                    struct WuiWatcher_Date *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_date(WuiComputed_Date *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Date *waterui_clone_computed_date(const WuiComputed_Date *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Date *waterui_new_watcher_date(void *data,
+                                                 void (*call)(void*,
+                                                              struct WuiDate,
+                                                              struct WuiWatcherMetadata*),
+                                                 void (*drop)(void*));
 
 /**
  * Reads the current value from a computed

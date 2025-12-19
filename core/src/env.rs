@@ -182,6 +182,13 @@ impl Environment {
             .get(&TypeId::of::<T>())
             .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
+
+    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, f: F) -> &T {
+        if !self.map.contains_key(&TypeId::of::<T>()) {
+            self.insert(f());
+        }
+        self.get::<T>().unwrap()
+    }
 }
 
 /// A view that provides access to the environment.

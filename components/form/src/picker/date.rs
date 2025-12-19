@@ -3,8 +3,10 @@
 use core::ops::{RangeBounds, RangeInclusive};
 
 use nami::Binding;
-use time::Date;
 use waterui_core::{AnyView, View, configurable};
+
+// Re-export essential time types for FFI and external use
+pub use time::{Date, Month};
 /// Configuration for the `DatePicker` component.
 #[derive(Debug)]
 #[non_exhaustive]
