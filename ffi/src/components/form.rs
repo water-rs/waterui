@@ -14,6 +14,7 @@ use waterui::{
 };
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
+use waterui_form::picker::date::{Date, DatePickerConfig, DatePickerType, Month};
 use waterui_form::picker::{PickerConfig, PickerItem};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
@@ -147,3 +148,67 @@ into_ffi! {SecureFieldConfig,
         value: *mut WuiBinding<Secure>,
     }
 }
+
+// ========== DatePicker ==========
+
+/// C-compatible date representation using year, month (1-12), and day (1-31).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiDate {
+    /// Year (e.g., 2024)
+    pub year: i32,
+    /// Month (1-12)
+    pub month: u8,
+    /// Day of month (1-31)
+    pub day: u8,
+}
+
+impl IntoFFI for Date {
+    type FFI = WuiDate;
+    fn into_ffi(self) -> Self::FFI {
+        WuiDate {
+            year: self.year(),
+            month: self.month() as u8,
+            day: self.day(),
+        }
+    }
+}
+
+impl crate::IntoRust for WuiDate {
+    type Rust = Date;
+    unsafe fn into_rust(self) -> Self::Rust {
+        // Safe: We clamp invalid values to valid ranges
+        let month = Month::try_from(self.month).unwrap_or(Month::January);
+        Date::from_calendar_date(self.year, month, self.day.clamp(1, 31))
+            .unwrap_or(Date::MIN)
+    }
+}
+
+impl IntoFFI for core::ops::RangeInclusive<Date> {
+    type FFI = WuiRange<WuiDate>;
+    fn into_ffi(self) -> Self::FFI {
+        WuiRange {
+            start: (*self.start()).into_ffi(),
+            end: (*self.end()).into_ffi(),
+        }
+    }
+}
+
+into_ffi! {DatePickerType, DateHourAndMinute, pub enum WuiDatePickerType {
+    Date,
+    HourAndMinute,
+    HourMinuteAndSecond,
+    DateHourAndMinute,
+    DateHourMinuteAndSecond,
+}}
+
+into_ffi! {DatePickerConfig,
+    pub struct WuiDatePicker {
+        label: *mut WuiAnyView,
+        value: *mut WuiBinding<Date>,
+        range: WuiRange<WuiDate>,
+        ty: WuiDatePickerType,
+    }
+}
+
+ffi_view!(DatePickerConfig, WuiDatePicker, date_picker);
