@@ -5,6 +5,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod menu;
 pub mod slider;
 
 pub use slider::Slider;
