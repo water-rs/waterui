@@ -81,6 +81,11 @@ pub trait WebViewHandle: 'static {
     fn refresh(&self);
     /// Sets the user agent string for the web view.
     fn set_user_agent(&self, user_agent: &str);
+
+    /// Enables or disables following redirects.
+    ///
+    /// Redirect handling is backend-specific; unsupported backends may ignore this.
+    fn set_redirects_enabled(&self, _enabled: bool) {}
     /// Watches for web view events.
     ///
     /// Only one watcher can be active at a time; setting a new watcher replaces the previous one.
@@ -117,6 +122,7 @@ trait WebViewHandleImpl: Any {
     fn inject_script(&self, script: &str, time: ScriptInjectionTime);
     fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>);
     fn set_user_agent(&self, user_agent: &str);
+    fn set_redirects_enabled(&self, enabled: bool);
     fn can_go_back(&self) -> bool;
     fn can_go_forward(&self) -> bool;
     fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>);
@@ -166,6 +172,10 @@ impl<T: WebViewHandle> WebViewHandleImpl for T {
 
     fn set_user_agent(&self, user_agent: &str) {
         WebViewHandle::set_user_agent(self, user_agent);
+    }
+
+    fn set_redirects_enabled(&self, enabled: bool) {
+        WebViewHandle::set_redirects_enabled(self, enabled);
     }
 
     fn can_go_back(&self) -> bool {
@@ -233,6 +243,11 @@ impl AnyWebViewHandle {
     /// Sets the user agent string for the web view.
     pub fn set_user_agent(&self, user_agent: &str) {
         self.inner.set_user_agent(user_agent);
+    }
+
+    /// Enables or disables following redirects.
+    pub fn set_redirects_enabled(&self, enabled: bool) {
+        self.inner.set_redirects_enabled(enabled);
     }
 
     /// Stops the current loading operation.
