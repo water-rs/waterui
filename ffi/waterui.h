@@ -204,6 +204,58 @@ typedef enum WuiProgressStyle {
 } WuiProgressStyle;
 
 /**
+ * FFI representation of script injection timing.
+ */
+typedef enum WuiScriptInjectionTime {
+  /**
+   * Inject at the start of document loading, before the DOM is constructed.
+   */
+  WuiScriptInjectionTime_DocumentStart = 0,
+  /**
+   * Inject after the document has finished loading.
+   */
+  WuiScriptInjectionTime_DocumentEnd = 1,
+} WuiScriptInjectionTime;
+
+/**
+ * FFI representation of WebView event types.
+ */
+typedef enum WuiWebViewEventType {
+  /**
+   * No event (initial state).
+   */
+  WuiWebViewEventType_None = 0,
+  /**
+   * The web view is about to navigate to a new URL.
+   */
+  WuiWebViewEventType_WillNavigate = 1,
+  /**
+   * The web view is loading content.
+   */
+  WuiWebViewEventType_Loading = 2,
+  /**
+   * The web view has finished loading.
+   */
+  WuiWebViewEventType_Loaded = 3,
+  /**
+   * A redirect occurred.
+   */
+  WuiWebViewEventType_Redirect = 4,
+  /**
+   * An SSL error occurred.
+   */
+  WuiWebViewEventType_SslError = 5,
+  /**
+   * A general error occurred.
+   */
+  WuiWebViewEventType_Error = 6,
+  /**
+   * Navigation state changed.
+   */
+  WuiWebViewEventType_StateChanged = 7,
+} WuiWebViewEventType;
+
+/**
  * Color scheme enum for FFI.
  *
  * Maps directly to `waterui::theme::ColorScheme`.
@@ -2231,6 +2283,131 @@ typedef struct WuiGpuSurface {
   void *renderer;
 } WuiGpuSurface;
 
+/**
+ * FFI representation of a WebView event.
+ */
+typedef struct WuiWebViewEvent {
+  /**
+   * The type of event.
+   */
+  enum WuiWebViewEventType event_type;
+  /**
+   * URL associated with the event (for WillNavigate, SslError, Error, Redirect from).
+   */
+  struct WuiStr url;
+  /**
+   * Second URL (for Redirect to).
+   */
+  struct WuiStr url2;
+  /**
+   * Error/message string (for SslError, Error).
+   */
+  struct WuiStr message;
+  /**
+   * Loading progress (0.0 to 1.0, for Loading event).
+   */
+  float progress;
+  /**
+   * Whether can navigate back (for StateChanged).
+   */
+  bool can_go_back;
+  /**
+   * Whether can navigate forward (for StateChanged).
+   */
+  bool can_go_forward;
+} WuiWebViewEvent;
+
+/**
+ * A C-compatible function wrapper that can be called multiple times.
+ *
+ * This structure wraps a Rust `Fn` closure to allow it to be passed across
+ * the FFI boundary while maintaining proper memory management.
+ */
+typedef struct WuiFn_WuiWebViewEvent {
+  void *data;
+  void (*call)(const void*, struct WuiWebViewEvent);
+  void (*drop)(void*);
+} WuiFn_WuiWebViewEvent;
+
+/**
+ * Callback for JavaScript execution results.
+ */
+typedef struct WuiJsCallback {
+  /**
+   * Opaque pointer to callback data.
+   */
+  void *data;
+  /**
+   * Function to call with result. success=true means result is the value, false means error.
+   */
+  void (*call)(void *data, bool success, struct WuiStr result);
+} WuiJsCallback;
+
+/**
+ * FFI representation of a WebView handle with function pointers.
+ *
+ * Native backends create this struct with function pointers to their implementation.
+ */
+typedef struct WuiWebViewHandle {
+  /**
+   * Opaque pointer to native WebView wrapper.
+   */
+  void *data;
+  /**
+   * Navigate back in history.
+   */
+  void (*go_back)(void*);
+  /**
+   * Navigate forward in history.
+   */
+  void (*go_forward)(void*);
+  /**
+   * Navigate to URL.
+   */
+  void (*go_to)(void*, struct WuiStr);
+  /**
+   * Stop loading.
+   */
+  void (*stop)(void*);
+  /**
+   * Refresh/reload page.
+   */
+  void (*refresh)(void*);
+  /**
+   * Returns whether can go back.
+   */
+  bool (*can_go_back)(const void*);
+  /**
+   * Returns whether can go forward.
+   */
+  bool (*can_go_forward)(const void*);
+  /**
+   * Set user agent string.
+   */
+  void (*set_user_agent)(void*, struct WuiStr);
+  /**
+   * Inject a script that runs on every page load.
+   */
+  void (*inject_script)(void*, struct WuiStr, enum WuiScriptInjectionTime);
+  /**
+   * Set event callback. Native calls this when events occur.
+   */
+  void (*watch)(void*, struct WuiFn_WuiWebViewEvent);
+  /**
+   * Execute JavaScript on the currently loaded page and call callback with result.
+   */
+  void (*run_javascript)(void*, struct WuiStr, struct WuiJsCallback);
+  /**
+   * Release the native handle.
+   */
+  void (*drop)(void*);
+} WuiWebViewHandle;
+
+/**
+ * Type for the native function that creates a new WebView.
+ */
+typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
+
 typedef struct WuiId {
   int32_t inner;
 } WuiId;
@@ -3823,6 +4000,20 @@ bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width
  * and must not be used after this call.
  */
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
+
+/**
+ * Installs a WebViewController into the environment from a native factory function.
+ *
+ * Native backends call this during initialization to register their WebView factory.
+ * The factory creates blank WebViews that can be navigated with `go_to()`.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `env` is a valid pointer to a `WuiEnv`
+ * - `create_fn` is a valid function pointer that returns a properly initialized `WuiWebViewHandle`
+ */
+void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
 
 /**
  * Calls an OnEvent handler with the given environment.

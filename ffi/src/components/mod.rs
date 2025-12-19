@@ -41,3 +41,6 @@ pub mod progress;
 
 /// GPU surface FFI bindings for high-performance wgpu rendering
 pub mod gpu_surface;
+
+/// WebView component FFI bindings
+pub mod webview;

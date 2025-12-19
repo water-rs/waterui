@@ -1,17 +1,79 @@
 use std::{any::Any, pin::Pin, rc::Rc};
 
+use cookie::Cookie;
 use waterui_core::impl_debug;
+use waterui_str::Str;
 
 use crate::WebViewEvent;
 
+/// When to inject a user script into the web view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptInjectionTime {
+    /// Inject at the start of document loading, before the DOM is constructed.
+    ///
+    /// Use this for:
+    /// - Setting up JavaScript-to-native bridges
+    /// - Modifying global objects
+    /// - Intercepting network requests
+    #[default]
+    DocumentStart,
+    /// Inject after the document has finished loading.
+    ///
+    /// Use this for:
+    /// - Manipulating DOM elements
+    /// - Adding event listeners to existing elements
+    DocumentEnd,
+}
+
 /// A handle to control and interact with a web view component.
-pub trait WebViewHandle {
+///
+/// This is a pure imperative API - native backends implement this trait.
+/// The `WebView` struct wraps this with nami reactive state.
+pub trait WebViewHandle: 'static {
     /// Navigates back in the web view's history.
     fn go_back(&self);
     /// Navigates forward in the web view's history.
     fn go_forward(&self);
     /// Navigates to the specified URL.
     fn go_to(&self, url: &str);
+
+    /// Injects a script that will run on every page load.
+    ///
+    /// Use [`ScriptInjectionTime::DocumentStart`] to run before the DOM is constructed,
+    /// which is ideal for setting up JavaScript-to-native bridges.
+    ///
+    /// # Example: Setting up a native bridge
+    ///
+    /// ```ignore
+    /// // Inject bridge script at document start
+    /// handle.inject_script(r#"
+    ///     window.myApp = {
+    ///         callNative: function(data) {
+    ///             window.webkit.messageHandlers.myHandler.postMessage(data);
+    ///         }
+    ///     };
+    /// "#, ScriptInjectionTime::DocumentStart);
+    ///
+    /// // Register the native handler
+    /// handle.add_handler("myHandler", Box::new(|data| {
+    ///     // Handle the call from JavaScript
+    ///     vec![]
+    /// }));
+    /// ```
+    fn inject_script(&self, script: &str, time: ScriptInjectionTime);
+
+    /// Adds a handler that can be called from JavaScript.
+    ///
+    /// JavaScript can call the handler using platform-specific APIs:
+    /// - **iOS/macOS**: `window.webkit.messageHandlers.<name>.postMessage(data)`
+    /// - **Android**: `window.<name>.postMessage(data)`
+    ///
+    /// The handler receives data as bytes and returns a response as bytes.
+    /// Use [`inject_script`](Self::inject_script) to set up a convenient JavaScript API.
+    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>);
+
+    /// Removes a previously added handler.
+    fn remove_handler(&self, name: &str);
 
     /// Stops the current loading operation.
     fn stop(&self);
@@ -23,7 +85,27 @@ pub trait WebViewHandle {
     ///
     /// Only one watcher can be active at a time; setting a new watcher replaces the previous one.
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static);
-    fn run_javascript(&self, script: &str) -> impl Future<Output = Result<String, String>>;
+
+    /// Returns whether the web view can navigate back in its history.
+    fn can_go_back(&self) -> bool;
+
+    /// Returns whether the web view can navigate forward in its history.
+    fn can_go_forward(&self) -> bool;
+
+    /// Sets a cookie for the web view.
+    fn set_cookie(&self, cookie: Cookie<'static>);
+
+    /// Retrieves all cookies for the current web view.
+    fn get_cookies(&self) -> Vec<Cookie<'static>>;
+
+    /// Runs JavaScript code in the context of the currently loaded page.
+    ///
+    /// This executes the script **after** the page has loaded. For scripts that need
+    /// to run before the DOM is constructed (e.g., setting up bridges), use
+    /// [`inject_script`](Self::inject_script) with [`ScriptInjectionTime::DocumentStart`].
+    ///
+    /// Returns the result of the script execution, or an error message.
+    fn run_javascript(&self, script: &str) -> impl Future<Output = Result<Str, Str>>;
 }
 
 trait WebViewHandleImpl: Any {
@@ -32,20 +114,28 @@ trait WebViewHandleImpl: Any {
     fn stop(&self);
     fn refresh(&self);
     fn go_to(&self, url: &str);
+    fn inject_script(&self, script: &str, time: ScriptInjectionTime);
     fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>);
     fn set_user_agent(&self, user_agent: &str);
+    fn can_go_back(&self) -> bool;
+    fn can_go_forward(&self) -> bool;
+    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>);
+    fn remove_handler(&self, name: &str);
+    fn set_cookie(&self, cookie: Cookie<'static>);
+    fn get_cookies(&self) -> Vec<Cookie<'static>>;
     fn run_javascript<'a>(
         &'a self,
         script: &'a str,
-    ) -> Pin<Box<dyn 'a + Future<Output = Result<String, String>>>>;
+    ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>>;
 }
 
+/// A type-erased handle to control and interact with a web view component.
 #[derive(Clone)]
 pub struct AnyWebViewHandle {
     inner: Rc<dyn WebViewHandleImpl>,
 }
 
-impl<T: WebViewHandle + 'static> WebViewHandleImpl for T {
+impl<T: WebViewHandle> WebViewHandleImpl for T {
     fn go_back(&self) {
         WebViewHandle::go_back(self);
     }
@@ -66,18 +156,46 @@ impl<T: WebViewHandle + 'static> WebViewHandleImpl for T {
         WebViewHandle::refresh(self);
     }
 
+    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+        WebViewHandle::inject_script(self, script, time);
+    }
+
     fn watch(&self, f: Box<dyn Fn(WebViewEvent) + 'static>) {
-        WebViewHandle::watch(self, f)
+        WebViewHandle::watch(self, f);
     }
 
     fn set_user_agent(&self, user_agent: &str) {
         WebViewHandle::set_user_agent(self, user_agent);
     }
 
+    fn can_go_back(&self) -> bool {
+        WebViewHandle::can_go_back(self)
+    }
+
+    fn can_go_forward(&self) -> bool {
+        WebViewHandle::can_go_forward(self)
+    }
+
+    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+        WebViewHandle::add_handler(self, name, handler);
+    }
+
+    fn remove_handler(&self, name: &str) {
+        WebViewHandle::remove_handler(self, name);
+    }
+
+    fn set_cookie(&self, cookie: Cookie<'static>) {
+        WebViewHandle::set_cookie(self, cookie);
+    }
+
+    fn get_cookies(&self) -> Vec<Cookie<'static>> {
+        WebViewHandle::get_cookies(self)
+    }
+
     fn run_javascript<'a>(
         &'a self,
         script: &'a str,
-    ) -> Pin<Box<dyn 'a + Future<Output = Result<String, String>>>> {
+    ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>> {
         Box::pin(WebViewHandle::run_javascript(self, script))
     }
 }
@@ -86,7 +204,7 @@ impl_debug!(AnyWebViewHandle);
 
 impl AnyWebViewHandle {
     /// Creates a new `AnyWebViewHandle` from a type implementing `WebViewHandle`.
-    pub fn new(handle: impl WebViewHandle + 'static) -> Self {
+    pub fn new(handle: impl WebViewHandle) -> Self {
         Self {
             inner: Rc::new(handle),
         }
@@ -97,7 +215,7 @@ impl AnyWebViewHandle {
         self.inner.go_to(url);
     }
 
-    /// Navigates to the specified URL.
+    /// Navigates back in the web view's history.
     pub fn go_back(&self) {
         self.inner.go_back();
     }
@@ -127,15 +245,50 @@ impl AnyWebViewHandle {
         self.inner.refresh();
     }
 
-    /// Sets the user agent string for the web view.
-    pub async fn run_javascript(&self, script: &str) -> Result<String, String> {
+    /// Injects a script that will run on every page load.
+    ///
+    /// See [`WebViewHandle::inject_script`] for details.
+    pub fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+        self.inner.inject_script(script, time);
+    }
+
+    /// Returns whether the web view can navigate back in its history.
+    pub fn can_go_back(&self) -> bool {
+        self.inner.can_go_back()
+    }
+
+    /// Returns whether the web view can navigate forward in its history.
+    pub fn can_go_forward(&self) -> bool {
+        self.inner.can_go_forward()
+    }
+
+    /// Adds a custom handler that can be called from JavaScript.
+    pub fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+        self.inner.add_handler(name, handler);
+    }
+
+    /// Removes a previously added custom handler.
+    pub fn remove_handler(&self, name: &str) {
+        self.inner.remove_handler(name);
+    }
+
+    /// Sets a cookie for the web view.
+    pub fn set_cookie(&self, cookie: Cookie<'static>) {
+        self.inner.set_cookie(cookie);
+    }
+
+    /// Retrieves all cookies for the current web view.
+    pub fn get_cookies(&self) -> Vec<Cookie<'static>> {
+        self.inner.get_cookies()
+    }
+
+    /// Runs the given JavaScript code in the context of the web view.
+    pub async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         self.inner.run_javascript(script).await
     }
 
-    /// Sets the user agent string for the web view.
-    pub fn downcast<T: WebViewHandle + 'static>(self) -> Option<T> {
-        Rc::downcast::<T>(self.inner as Rc<dyn Any>)
-            .ok()
-            .map(|rc| Rc::try_unwrap(rc).ok().unwrap())
+    /// Attempts to downcast the handle to a concrete type.
+    pub fn downcast_ref<T: WebViewHandle>(&self) -> Option<&T> {
+        (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
     }
 }

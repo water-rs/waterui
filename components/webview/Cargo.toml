@@ -9,7 +9,10 @@ repository.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-
+waterui-url.workspace = true
+waterui-str.workspace = true
+thiserror.workspace = true
+cookie = "0.18.1"
 
 [lints]
 workspace = true

@@ -1,71 +1,157 @@
+//! WebView component for WaterUI framework.
+//!
+//! This module provides a web view component for embedding web content in WaterUI applications.
+//!
+//! # Architecture
+//!
+//! - [`WebViewHandle`] - Imperative trait that native backends implement
+//! - [`AnyWebViewHandle`] - Type-erased wrapper with downcast support
+//! - [`WebViewController`] - Factory injected into Environment by native backends
+//! - [`WebView`] - Reactive wrapper with `Binding<T>` state
+//!
+//! # Example
+//!
+//! ```ignore
+//! use waterui_webview::{WebViewController, WebView};
+//!
+//! // Get controller from environment and create a web view
+//! let webview = controller.open();
+//! webview.go_to("https://example.com");
+//!
+//! // Use reactive state for UI
+//! let can_go_back = webview.can_go_back();  // Computed<bool>
+//! ```
+
 mod controller;
 pub use controller::*;
 mod handler;
 pub use handler::*;
-use std::{pin::Pin, rc::Rc};
-use waterui_core::reactive::CustomBinding;
 
-use waterui_core::{
-    Computed, Signal, Str, View,
-    binding::Container,
-    configurable,
-    env::use_env,
-    impl_debug, impl_extractor,
-    layout::StretchAxis,
-    reactive::watcher::{BoxWatcherGuard, WatcherGuard},
-};
+// Re-export dependencies for FFI layer
+pub use cookie;
+pub use waterui_url::Url;
 
-use crate::controller::WebViewController;
+use waterui_core::{Binding, Computed, Signal, binding};
+use waterui_str::Str;
 
+/// Events emitted by the WebView component.
 #[derive(Debug, Clone)]
 pub enum WebViewEvent {
+    /// No event (initial state).
     None,
-    WillNavigate { url: Str },
-    Loading { progress: f32 },
+    /// The web view is about to navigate to a new URL.
+    WillNavigate {
+        /// The URL being navigated to.
+        url: Url,
+    },
+    /// The web view is loading content.
+    Loading {
+        /// The progress of the loading operation (0.0 to 1.0).
+        progress: f32,
+    },
+    /// The web view has finished loading the content.
     Loaded,
-    Error { code: i32, message: String },
+    /// A redirect occurred during navigation.
+    Redirect {
+        /// The original URL.
+        from: Url,
+        /// The redirected URL.
+        to: Url,
+    },
+    /// An error occurred during navigation or loading.
+    Error(WebViewError),
+    /// Navigation state changed (can_go_back/can_go_forward updated).
+    ///
+    /// This is an internal event used to update reactive state.
+    /// It is filtered out from the public `event()` signal.
+    #[doc(hidden)]
+    StateChanged {
+        /// Whether the web view can navigate back.
+        can_go_back: bool,
+        /// Whether the web view can navigate forward.
+        can_go_forward: bool,
+    },
 }
 
+/// Errors that can occur in the WebView component.
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum WebViewError {
+    /// A network error occurred.
+    #[error("Network error: {0}")]
+    Network(Str),
+    /// An SSL/TLS error occurred.
+    #[error("SSL error at {url}: {message}")]
+    Ssl {
+        /// The URL that caused the error.
+        url: Url,
+        /// The error message.
+        message: Str,
+    },
+    /// Failed to load the page.
+    #[error("Load failed: {0}")]
+    LoadFailed(Str),
+}
+
+/// A WebView component that displays web content and handles navigation events.
+///
+/// This struct wraps [`AnyWebViewHandle`] and adds reactive state via nami bindings.
+/// The `can_go_back` and `can_go_forward` bindings are automatically updated when
+/// the native backend emits [`WebViewEvent::StateChanged`] events.
 #[derive(Clone, Debug)]
 pub struct WebView {
-    event: Container<WebViewEvent>,
+    event: Binding<WebViewEvent>,
     handle: AnyWebViewHandle,
-    can_go_back: Computed<bool>,
-    can_go_forward: Computed<bool>,
+    can_go_back: Binding<bool>,
+    can_go_forward: Binding<bool>,
 }
 
 impl WebView {
-    pub fn open(f: impl FnOnce(Self) + 'static) -> impl View {
-        use_env(|controller: WebViewController| {
-            let handler = controller.open();
-
-            let webview = Self::new(handler);
-
-            f(webview);
-        })
-    }
+    /// Creates a new WebView component with the given handle.
     pub fn new(handle: AnyWebViewHandle) -> Self {
-        // For demonstration purposes, we'll use dummy computed values.
-        let can_go_back = Computed::constant(true);
-        let can_go_forward = Computed::constant(true);
-        let container = Container::new(WebViewEvent::None);
+        let event = binding(WebViewEvent::None);
+        let can_go_back = binding(handle.can_go_back());
+        let can_go_forward = binding(handle.can_go_forward());
 
+        // Set up event handler to update reactive state
         handle.watch({
-            let container = container.clone();
-            move |event| {
-                container.set(event);
+            let event = event.clone();
+            let can_go_back = can_go_back.clone();
+            let can_go_forward = can_go_forward.clone();
+            move |e| {
+                // Handle StateChanged internally without exposing to users
+                if let WebViewEvent::StateChanged {
+                    can_go_back: back,
+                    can_go_forward: forward,
+                } = &e
+                {
+                    can_go_back.set(*back);
+                    can_go_forward.set(*forward);
+                    // Don't propagate StateChanged to the public event signal
+                    return;
+                }
+                event.set(e);
             }
         });
 
         Self {
             handle,
+            event,
             can_go_back,
             can_go_forward,
-            event: container,
         }
     }
 
-    /// Creates a new WebView component with the given handle.
+    /// Returns a signal that emits WebView events.
+    pub fn event(&self) -> impl Signal<Output = WebViewEvent> {
+        self.event.clone()
+    }
+
+    /// Navigates to the specified URL.
+    pub fn go_to(&self, url: &str) {
+        self.handle.go_to(url);
+    }
+
+    /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
     }
@@ -85,23 +171,30 @@ impl WebView {
         self.handle.go_forward();
     }
 
+    /// Returns a reactive signal for whether the web view can navigate back.
+    pub fn can_go_back(&self) -> Computed<bool> {
+        Computed::from(self.can_go_back.clone())
+    }
+
+    /// Returns a reactive signal for whether the web view can navigate forward.
+    pub fn can_go_forward(&self) -> Computed<bool> {
+        Computed::from(self.can_go_forward.clone())
+    }
+
     /// Runs the given JavaScript code in the web view and returns the result.
-    pub async fn run_javascript(&self, script: &str) -> Result<String, String> {
+    pub async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         self.handle.run_javascript(script).await
     }
 
-    /// Checks if the web view can navigate back.
-    pub fn can_go_back(&self) -> Computed<bool> {
-        self.can_go_back.clone()
+    /// Sets the user agent string for the web view.
+    pub fn set_user_agent(&self, user_agent: &str) {
+        self.handle.set_user_agent(user_agent);
     }
 
-    /// Checks if the web view can navigate forward.
-    pub fn handle(&self) -> AnyWebViewHandle {
-        self.handle.clone()
-    }
-
-    /// Checks if the web view can navigate forward.
-    pub fn can_go_forward(&self) -> Computed<bool> {
-        self.can_go_forward.clone()
+    /// Returns the underlying handle.
+    ///
+    /// Use this to access lower-level functionality or to downcast to a native type.
+    pub fn handle(&self) -> &AnyWebViewHandle {
+        &self.handle
     }
 }
