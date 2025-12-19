@@ -1,0 +1,18 @@
+[package]
+name = "waterui-icon"
+version = "0.2.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[dependencies]
+waterui-core.workspace = true
+waterui-url.workspace = true
+waterui-str.workspace = true
+thiserror.workspace = true
+cookie = "0.18.1"
+
+[lints]
+workspace = true
