@@ -82,7 +82,8 @@ waterui-graphics = { version = "0.2.1", path = "components/graphics" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.2", path = "components/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/navigation" }
-waterui-webview = { version = "0.2.2", path = "components/webview" }
+waterui-webview = { version = "0.2.0", path = "components/webview" }
+waterui-icon = { version = "0.2.0", path = "components/icon" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
