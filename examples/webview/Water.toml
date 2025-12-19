@@ -1,0 +1,10 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Webview Example"
+bundle_identifier = "com.waterui.example.webview"
+
+[permissions.internet]
+enable = true
+description = "Required to access web content from the internet"
