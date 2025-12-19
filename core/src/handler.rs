@@ -13,6 +13,7 @@
 use crate::{AnyView, View, extract::Extractor};
 use alloc::boxed::Box;
 use core::{any::type_name, fmt::Debug, marker::PhantomData};
+use std::rc::Rc;
 
 use crate::Environment;
 
@@ -66,6 +67,9 @@ pub trait HandlerOnce<T>: 'static {
 
 /// A boxed handler with dynamic dispatch.
 pub type BoxHandler<T> = Box<dyn Handler<T>>;
+
+/// A reference-counted handler with dynamic dispatch.
+pub type SharedHandler<T> = Rc<dyn Handler<T>>;
 
 impl<T: 'static> Handler<T> for BoxHandler<T> {
     fn handle(&mut self, env: &Environment) -> T {
