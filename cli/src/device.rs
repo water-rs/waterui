@@ -378,8 +378,8 @@ fn start_log_stream(
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
-    // Always stream at fault level to capture panics, even if user didn't request logs
-    let stream_level = log_level.map_or("fault", |l| l.to_apple_level());
+    // Always stream at default level to capture errors/faults, even if user didn't request logs
+    let stream_level = log_level.map_or("default", |l| l.to_apple_level());
 
     let mut log_cmd = smol::process::Command::new("log");
     log_cmd
@@ -781,7 +781,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
                     &app_name_for_crash,
                     app_pid,
                     start_time,
-                    Duration::from_secs(3),
+                    Duration::from_secs(10),
                 )
                 .await
                 {

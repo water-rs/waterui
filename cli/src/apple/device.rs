@@ -53,8 +53,8 @@ fn start_log_stream(
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
-    // Always stream at fault level to capture panics, even if user didn't request logs
-    let stream_level = log_level.map_or("fault", |l| l.to_apple_level());
+    // Always stream at default level to capture errors/faults, even if user didn't request logs
+    let stream_level = log_level.map_or("default", |l| l.to_apple_level());
 
     // Build predicate: use processID for native logs, subsystem for WaterUI-only logs
     let predicate = if native_logs {
@@ -557,7 +557,7 @@ impl Device for AppleSimulator {
                 &process_name,
                 Some(pid),
                 start_time,
-                Duration::from_secs(3),
+                Duration::from_secs(10),
             )
             .await
             {
