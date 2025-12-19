@@ -79,6 +79,10 @@ pub struct RunOptions {
 
     /// If set, stream device logs at or above this level.
     log_level: Option<LogLevel>,
+
+    /// If true, stream all native platform logs (NSLog, print, etc.), not just WaterUI logs.
+    /// This filters by process ID instead of subsystem, which is noisier but includes all output.
+    native_logs: bool,
 }
 
 impl RunOptions {
@@ -107,6 +111,17 @@ impl RunOptions {
     #[must_use]
     pub const fn log_level(&self) -> Option<LogLevel> {
         self.log_level
+    }
+
+    /// Set whether to stream all native platform logs.
+    pub const fn set_native_logs(&mut self, native_logs: bool) {
+        self.native_logs = native_logs;
+    }
+
+    /// Get whether native logs are enabled.
+    #[must_use]
+    pub const fn native_logs(&self) -> bool {
+        self.native_logs
     }
 }
 
