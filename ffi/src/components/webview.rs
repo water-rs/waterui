@@ -1,0 +1,463 @@
+//! WebView component FFI bindings.
+//!
+//! This module provides FFI bindings for the WebView component, allowing native backends
+//! to create and control web views.
+
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::pin::Pin;
+
+use crate::closure::WuiFn;
+use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
+use waterui_str::Str;
+use waterui_webview::{
+    cookie::Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController,
+    WebViewError, WebViewEvent, WebViewHandle,
+};
+
+// =============================================================================
+// Script Injection Time FFI
+// =============================================================================
+
+/// FFI representation of script injection timing.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiScriptInjectionTime {
+    /// Inject at the start of document loading, before the DOM is constructed.
+    DocumentStart = 0,
+    /// Inject after the document has finished loading.
+    DocumentEnd = 1,
+}
+
+impl IntoFFI for ScriptInjectionTime {
+    type FFI = WuiScriptInjectionTime;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            ScriptInjectionTime::DocumentStart => WuiScriptInjectionTime::DocumentStart,
+            ScriptInjectionTime::DocumentEnd => WuiScriptInjectionTime::DocumentEnd,
+        }
+    }
+}
+
+impl IntoRust for WuiScriptInjectionTime {
+    type Rust = ScriptInjectionTime;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            WuiScriptInjectionTime::DocumentStart => ScriptInjectionTime::DocumentStart,
+            WuiScriptInjectionTime::DocumentEnd => ScriptInjectionTime::DocumentEnd,
+        }
+    }
+}
+
+// =============================================================================
+// Event FFI Types
+// =============================================================================
+
+/// FFI representation of WebView event types.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiWebViewEventType {
+    /// No event (initial state).
+    None = 0,
+    /// The web view is about to navigate to a new URL.
+    WillNavigate = 1,
+    /// The web view is loading content.
+    Loading = 2,
+    /// The web view has finished loading.
+    Loaded = 3,
+    /// A redirect occurred.
+    Redirect = 4,
+    /// An SSL error occurred.
+    SslError = 5,
+    /// A general error occurred.
+    Error = 6,
+    /// Navigation state changed.
+    StateChanged = 7,
+}
+
+/// FFI representation of a WebView event.
+#[repr(C)]
+pub struct WuiWebViewEvent {
+    /// The type of event.
+    pub event_type: WuiWebViewEventType,
+    /// URL associated with the event (for WillNavigate, SslError, Error, Redirect from).
+    pub url: WuiStr,
+    /// Second URL (for Redirect to).
+    pub url2: WuiStr,
+    /// Error/message string (for SslError, Error).
+    pub message: WuiStr,
+    /// Loading progress (0.0 to 1.0, for Loading event).
+    pub progress: f32,
+    /// Whether can navigate back (for StateChanged).
+    pub can_go_back: bool,
+    /// Whether can navigate forward (for StateChanged).
+    pub can_go_forward: bool,
+}
+
+impl WuiWebViewEvent {
+    /// Create an empty event.
+    pub fn empty() -> Self {
+        Self {
+            event_type: WuiWebViewEventType::None,
+            url: Str::from_static("").into_ffi(),
+            url2: Str::from_static("").into_ffi(),
+            message: Str::from_static("").into_ffi(),
+            progress: 0.0,
+            can_go_back: false,
+            can_go_forward: false,
+        }
+    }
+}
+
+impl IntoFFI for WebViewEvent {
+    type FFI = WuiWebViewEvent;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            WebViewEvent::None => WuiWebViewEvent::empty(),
+            WebViewEvent::WillNavigate { url } => WuiWebViewEvent {
+                event_type: WuiWebViewEventType::WillNavigate,
+                url: url.inner().into_ffi(),
+                ..WuiWebViewEvent::empty()
+            },
+            WebViewEvent::Loading { progress } => WuiWebViewEvent {
+                event_type: WuiWebViewEventType::Loading,
+                progress,
+                ..WuiWebViewEvent::empty()
+            },
+            WebViewEvent::Loaded => WuiWebViewEvent {
+                event_type: WuiWebViewEventType::Loaded,
+                ..WuiWebViewEvent::empty()
+            },
+            WebViewEvent::Redirect { from, to } => WuiWebViewEvent {
+                event_type: WuiWebViewEventType::Redirect,
+                url: from.inner().into_ffi(),
+                url2: to.inner().into_ffi(),
+                ..WuiWebViewEvent::empty()
+            },
+            WebViewEvent::Error(err) => match err {
+                WebViewError::Ssl { url, message } => WuiWebViewEvent {
+                    event_type: WuiWebViewEventType::SslError,
+                    url: url.inner().into_ffi(),
+                    message: message.into_ffi(),
+                    ..WuiWebViewEvent::empty()
+                },
+                _ => WuiWebViewEvent {
+                    event_type: WuiWebViewEventType::Error,
+                    message: Str::from(err.to_string()).into_ffi(),
+                    ..WuiWebViewEvent::empty()
+                },
+            },
+            WebViewEvent::StateChanged {
+                can_go_back,
+                can_go_forward,
+            } => WuiWebViewEvent {
+                event_type: WuiWebViewEventType::StateChanged,
+                can_go_back,
+                can_go_forward,
+                ..WuiWebViewEvent::empty()
+            },
+        }
+    }
+}
+
+/// Parses a URL string, returning a fallback URL if parsing fails.
+fn parse_url_or_blank(s: Str) -> Url {
+    s.parse().unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank is valid"))
+}
+
+impl IntoRust for WuiWebViewEvent {
+    type Rust = WebViewEvent;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self.event_type {
+            WuiWebViewEventType::None => WebViewEvent::None,
+            WuiWebViewEventType::WillNavigate => WebViewEvent::WillNavigate {
+                url: parse_url_or_blank(unsafe { self.url.into_rust() }),
+            },
+            WuiWebViewEventType::Loading => WebViewEvent::Loading {
+                progress: self.progress,
+            },
+            WuiWebViewEventType::Loaded => WebViewEvent::Loaded,
+            WuiWebViewEventType::Redirect => WebViewEvent::Redirect {
+                from: parse_url_or_blank(unsafe { self.url.into_rust() }),
+                to: parse_url_or_blank(unsafe { self.url2.into_rust() }),
+            },
+            WuiWebViewEventType::SslError => WebViewEvent::Error(WebViewError::Ssl {
+                url: parse_url_or_blank(unsafe { self.url.into_rust() }),
+                message: unsafe { self.message.into_rust() },
+            }),
+            WuiWebViewEventType::Error => {
+                let msg: Str = unsafe { self.message.into_rust() };
+                WebViewEvent::Error(WebViewError::LoadFailed(msg))
+            }
+            WuiWebViewEventType::StateChanged => WebViewEvent::StateChanged {
+                can_go_back: self.can_go_back,
+                can_go_forward: self.can_go_forward,
+            },
+        }
+    }
+}
+
+// =============================================================================
+// WebViewHandle FFI
+// =============================================================================
+
+/// Callback for JavaScript execution results.
+#[repr(C)]
+pub struct WuiJsCallback {
+    /// Opaque pointer to callback data.
+    pub data: *mut (),
+    /// Function to call with result. success=true means result is the value, false means error.
+    pub call: unsafe extern "C" fn(data: *mut (), success: bool, result: WuiStr),
+}
+
+/// FFI representation of a WebView handle with function pointers.
+///
+/// Native backends create this struct with function pointers to their implementation.
+#[repr(C)]
+pub struct WuiWebViewHandle {
+    /// Opaque pointer to native WebView wrapper.
+    pub data: *mut (),
+
+    // Navigation
+    /// Navigate back in history.
+    pub go_back: unsafe extern "C" fn(*mut ()),
+    /// Navigate forward in history.
+    pub go_forward: unsafe extern "C" fn(*mut ()),
+    /// Navigate to URL.
+    pub go_to: unsafe extern "C" fn(*mut (), WuiStr),
+    /// Stop loading.
+    pub stop: unsafe extern "C" fn(*mut ()),
+    /// Refresh/reload page.
+    pub refresh: unsafe extern "C" fn(*mut ()),
+
+    // State queries
+    /// Returns whether can go back.
+    pub can_go_back: unsafe extern "C" fn(*const ()) -> bool,
+    /// Returns whether can go forward.
+    pub can_go_forward: unsafe extern "C" fn(*const ()) -> bool,
+
+    // Configuration
+    /// Set user agent string.
+    pub set_user_agent: unsafe extern "C" fn(*mut (), WuiStr),
+
+    // Script injection
+    /// Inject a script that runs on every page load.
+    pub inject_script: unsafe extern "C" fn(*mut (), WuiStr, WuiScriptInjectionTime),
+
+    // Event watching
+    /// Set event callback. Native calls this when events occur.
+    pub watch: unsafe extern "C" fn(*mut (), WuiFn<WuiWebViewEvent>),
+
+    // JavaScript
+    /// Execute JavaScript on the currently loaded page and call callback with result.
+    pub run_javascript: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
+
+    // Cleanup
+    /// Release the native handle.
+    pub drop: unsafe extern "C" fn(*mut ()),
+}
+
+/// Rust wrapper that implements `WebViewHandle` by delegating to FFI function pointers.
+struct FfiWebViewHandle {
+    ffi: WuiWebViewHandle,
+}
+
+impl Drop for FfiWebViewHandle {
+    fn drop(&mut self) {
+        unsafe {
+            (self.ffi.drop)(self.ffi.data);
+        }
+    }
+}
+
+impl WebViewHandle for FfiWebViewHandle {
+    fn go_back(&self) {
+        unsafe { (self.ffi.go_back)(self.ffi.data) }
+    }
+
+    fn go_forward(&self) {
+        unsafe { (self.ffi.go_forward)(self.ffi.data) }
+    }
+
+    fn go_to(&self, url: &str) {
+        let owned_url = Str::from(url.to_string());
+        unsafe { (self.ffi.go_to)(self.ffi.data, owned_url.into_ffi()) }
+    }
+
+    fn stop(&self) {
+        unsafe { (self.ffi.stop)(self.ffi.data) }
+    }
+
+    fn refresh(&self) {
+        unsafe { (self.ffi.refresh)(self.ffi.data) }
+    }
+
+    fn can_go_back(&self) -> bool {
+        unsafe { (self.ffi.can_go_back)(self.ffi.data) }
+    }
+
+    fn can_go_forward(&self) -> bool {
+        unsafe { (self.ffi.can_go_forward)(self.ffi.data) }
+    }
+
+    fn set_user_agent(&self, user_agent: &str) {
+        let owned_ua = Str::from(user_agent.to_string());
+        unsafe { (self.ffi.set_user_agent)(self.ffi.data, owned_ua.into_ffi()) }
+    }
+
+    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+        let owned_script = Str::from(script.to_string());
+        unsafe {
+            (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi())
+        }
+    }
+
+    fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
+        // Wrap the Rust closure in a WuiFn that converts FFI events to Rust events
+        let callback = WuiFn::from(move |ffi_event: WuiWebViewEvent| {
+            let rust_event = unsafe { ffi_event.into_rust() };
+            f(rust_event);
+        });
+        unsafe { (self.ffi.watch)(self.ffi.data, callback) }
+    }
+
+    fn add_handler(&self, _name: &str, _handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+        // Not implemented in FFI layer yet
+        tracing::warn!("add_handler not implemented in FFI");
+    }
+
+    fn remove_handler(&self, _name: &str) {
+        // Not implemented in FFI layer yet
+        tracing::warn!("remove_handler not implemented in FFI");
+    }
+
+    fn set_cookie(&self, _cookie: Cookie<'static>) {
+        // Not implemented in FFI layer yet
+        tracing::warn!("set_cookie not implemented in FFI");
+    }
+
+    fn get_cookies(&self) -> Vec<Cookie<'static>> {
+        // Not implemented in FFI layer yet
+        tracing::warn!("get_cookies not implemented in FFI");
+        Vec::new()
+    }
+
+    fn run_javascript(&self, script: &str) -> impl core::future::Future<Output = Result<Str, Str>> {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use core::task::{Poll, Waker};
+
+        // Create a shared state for the async result
+        struct JsResultState {
+            result: Option<Result<Str, Str>>,
+            waker: Option<Waker>,
+        }
+
+        let state = Rc::new(RefCell::new(JsResultState {
+            result: None,
+            waker: None,
+        }));
+
+        // Create the callback
+        let state_clone = state.clone();
+        let callback_box: Box<Box<dyn FnOnce(bool, Str)>> = Box::new(Box::new(
+            move |success: bool, result_str: Str| {
+                let mut state = state_clone.borrow_mut();
+                state.result = Some(if success {
+                    Ok(result_str)
+                } else {
+                    Err(result_str)
+                });
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+            },
+        ));
+        let callback_data = Box::into_raw(callback_box).cast::<()>();
+
+        unsafe extern "C" fn js_callback_trampoline(data: *mut (), success: bool, result: WuiStr) {
+            let callback = unsafe { Box::from_raw(data.cast::<Box<dyn FnOnce(bool, Str)>>()) };
+            let result_str: Str = unsafe { result.into_rust() };
+            callback(success, result_str);
+        }
+
+        let ffi_callback = WuiJsCallback {
+            data: callback_data,
+            call: js_callback_trampoline,
+        };
+
+        // Call the FFI function
+        let owned_script = Str::from(script.to_string());
+        unsafe {
+            (self.ffi.run_javascript)(self.ffi.data, owned_script.into_ffi(), ffi_callback);
+        }
+
+        // Return a future that polls the state
+        struct JsFuture {
+            state: Rc<RefCell<JsResultState>>,
+        }
+
+        impl core::future::Future for JsFuture {
+            type Output = Result<Str, Str>;
+
+            fn poll(
+                self: Pin<&mut Self>,
+                cx: &mut core::task::Context<'_>,
+            ) -> Poll<Self::Output> {
+                let mut state = self.state.borrow_mut();
+                if let Some(result) = state.result.take() {
+                    Poll::Ready(result)
+                } else {
+                    state.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+
+        JsFuture { state }
+    }
+}
+
+// =============================================================================
+// WebViewController Installation
+// =============================================================================
+
+/// Type for the native function that creates a new WebView.
+pub type WuiCreateWebViewFn = unsafe extern "C" fn() -> WuiWebViewHandle;
+
+/// FFI-compatible WebViewController implementation.
+struct FfiWebViewController {
+    create_fn: WuiCreateWebViewFn,
+}
+
+impl CustomWebViewController for FfiWebViewController {
+    fn open(&self) -> impl WebViewHandle {
+        let handle = unsafe { (self.create_fn)() };
+        FfiWebViewHandle { ffi: handle }
+    }
+}
+
+/// Installs a WebViewController into the environment from a native factory function.
+///
+/// Native backends call this during initialization to register their WebView factory.
+/// The factory creates blank WebViews that can be navigated with `go_to()`.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `env` is a valid pointer to a `WuiEnv`
+/// - `create_fn` is a valid function pointer that returns a properly initialized `WuiWebViewHandle`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_webview_controller(
+    env: *mut WuiEnv,
+    create_fn: WuiCreateWebViewFn,
+) {
+    if env.is_null() {
+        return;
+    }
+    let env = unsafe { &mut *env };
+
+    let controller = WebViewController::new(FfiWebViewController { create_fn });
+    env.insert(controller);
+}
