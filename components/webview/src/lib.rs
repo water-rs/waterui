@@ -219,6 +219,18 @@ impl WebView {
         self.handle.set_user_agent(user_agent);
     }
 
+    /// Injects a script that will run on every page load.
+    pub fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+        self.handle.inject_script(script, time);
+    }
+
+    /// Enables or disables following redirects.
+    ///
+    /// Unsupported backends may ignore this setting.
+    pub fn set_redirects_enabled(&self, enabled: bool) {
+        self.handle.set_redirects_enabled(enabled);
+    }
+
     /// Returns the underlying handle.
     ///
     /// Use this to access lower-level functionality or to downcast to a native type.
