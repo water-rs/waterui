@@ -39,13 +39,16 @@ struct PanicInfo {
 
 /// Start streaming logs from a `WaterUI` app.
 ///
-/// This uses `log stream` with a predicate to filter by the `WaterUI` subsystem ("dev.waterui").
-/// This captures all tracing output from the Rust code via `tracing_oslog`.
+/// This uses `log stream` with a predicate to filter logs.
+/// - By default, filters by the `WaterUI` subsystem ("dev.waterui").
+/// - If `native_logs` is true, filters by process ID instead to capture all native output.
 ///
 /// Returns a receiver for panic info that fires if a panic is detected.
 fn start_log_stream(
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
+    pid: u32,
+    native_logs: bool,
 ) -> Receiver<PanicInfo> {
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
@@ -53,11 +56,18 @@ fn start_log_stream(
     // Always stream at fault level to capture panics, even if user didn't request logs
     let stream_level = log_level.map_or("fault", |l| l.to_apple_level());
 
+    // Build predicate: use processID for native logs, subsystem for WaterUI-only logs
+    let predicate = if native_logs {
+        format!("processID == {pid}")
+    } else {
+        "subsystem == \"dev.waterui\"".to_string()
+    };
+
     let mut log_cmd = Command::new("log");
     log_cmd
         .arg("stream")
         .arg("--predicate")
-        .arg("subsystem == \"dev.waterui\"")
+        .arg(&predicate)
         .arg("--level")
         .arg(stream_level)
         .arg("--style")
@@ -463,6 +473,7 @@ impl Device for AppleSimulator {
             .to_string();
 
         let log_level = options.log_level();
+        let native_logs = options.native_logs();
         let env_vars: Vec<(String, String)> = options
             .env_vars()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -517,8 +528,9 @@ impl Device for AppleSimulator {
             }
         });
 
-        // Start log streaming (uses WaterUI subsystem predicate) and get panic info receiver
-        let panic_rx = start_log_stream(sender.clone(), log_level);
+        // Start log streaming and get panic info receiver
+        // Uses WaterUI subsystem predicate by default, or processID if native_logs is enabled
+        let panic_rx = start_log_stream(sender.clone(), log_level, pid, native_logs);
 
         // Monitor the actual app process and classify crash vs normal exit.
         let device_name = self.name.clone();

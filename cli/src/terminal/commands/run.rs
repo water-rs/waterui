@@ -85,6 +85,11 @@ pub struct Args {
     /// Streams device logs at or above this level.
     #[arg(long, value_enum)]
     logs: Option<CliLogLevel>,
+
+    /// Include all native platform logs (NSLog, print, etc.), not just WaterUI logs.
+    /// This is noisy but useful for debugging native code issues.
+    #[arg(long)]
+    native_logs: bool,
 }
 
 /// Log level for filtering device logs (CLI argument wrapper).
@@ -218,6 +223,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Launch happens in background while building for efficiency
     let log_level = args.logs.map(LogLevel::from);
     let hot_reload = !args.no_hot_reload;
+    let native_logs = args.native_logs;
     let (running, hot_reload_runner) = display_output(build_and_run(
         &project,
         args.platform,
@@ -226,6 +232,7 @@ pub async fn run(args: Args) -> Result<()> {
         needs_launch,
         hot_reload,
         log_level,
+        native_logs,
     ))
     .await?;
 
@@ -283,6 +290,7 @@ async fn build_and_run(
     needs_launch: bool,
     hot_reload: bool,
     log_level: Option<LogLevel>,
+    native_logs: bool,
 ) -> Result<(Running, Option<HotReloadRunner>)> {
     // Get the library target platform for this CLI platform
     let lib_platform = match cli_platform {
@@ -348,7 +356,7 @@ async fn build_and_run(
     };
 
     shell::status("▶", "Running...");
-    let running = run_with_options(device, artifact, runner.as_ref(), log_level).await?;
+    let running = run_with_options(device, artifact, runner.as_ref(), log_level, native_logs).await?;
 
     Ok((running, runner))
 }
@@ -359,12 +367,14 @@ async fn run_with_options(
     artifact: Artifact,
     runner: Option<&HotReloadRunner>,
     log_level: Option<LogLevel>,
+    native_logs: bool,
 ) -> Result<Running> {
     let mut run_options = RunOptions::new();
 
     if let Some(level) = log_level {
         run_options.set_log_level(level);
     }
+    run_options.set_native_logs(native_logs);
 
     // Set hot reload env vars if runner is provided
     if let Some(runner) = runner {
