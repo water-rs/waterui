@@ -188,7 +188,7 @@ waterui_set_binding_i32(binding, value + 1)
 
 // Watch for changes
 let guard = waterui_watch_binding_i32(binding) { newValue, metadata in
-    print("Counter changed to \(newValue)")
+    Logger.waterui.info("Counter changed to \(newValue)")
 }
 ```
 
