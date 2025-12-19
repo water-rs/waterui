@@ -117,6 +117,7 @@ waterui-navigation.workspace = true
 waterui-color.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
+waterui-webview.workspace = true
 executor-core.workspace = true
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
