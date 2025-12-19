@@ -12,7 +12,7 @@ use crate::closure::WuiFn;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
 use waterui_str::Str;
 use waterui_webview::{
-    cookie::Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController,
+    WebView, cookie::Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController,
     WebViewError, WebViewEvent, WebViewHandle,
 };
 
@@ -259,8 +259,21 @@ pub struct WuiWebViewHandle {
 }
 
 /// Rust wrapper that implements `WebViewHandle` by delegating to FFI function pointers.
-struct FfiWebViewHandle {
+///
+/// This struct is public so that the FFI layer can downcast `AnyWebViewHandle`
+/// to extract the native webview pointer for rendering.
+pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
+}
+
+impl FfiWebViewHandle {
+    /// Returns the raw pointer to the native WebView wrapper.
+    ///
+    /// This pointer points to the native `WebViewWrapper` (Swift/Kotlin)
+    /// which contains the underlying WKWebView or Android WebView.
+    pub fn native_ptr(&self) -> *mut () {
+        self.ffi.data
+    }
 }
 
 impl Drop for FfiWebViewHandle {
@@ -416,6 +429,40 @@ impl WebViewHandle for FfiWebViewHandle {
         }
 
         JsFuture { state }
+    }
+}
+
+// =============================================================================
+// WebView Raw View
+// =============================================================================
+
+opaque!(WuiWebView, WebView);
+ffi_view!(WebView, *mut WuiWebView, webview);
+
+/// Gets the native handle pointer from a WebView.
+///
+/// Returns the opaque pointer to the native WebView wrapper (Swift/Kotlin).
+/// This pointer can be used by native backends to access the underlying
+/// WKWebView or Android WebView.
+///
+/// # Safety
+///
+/// - The caller must ensure that `webview` is a valid pointer to a `WuiWebView`.
+/// - The WebView must have been created via the FFI WebViewController (i.e., the handle
+///   must be an `FfiWebViewHandle`). This is guaranteed when the native backend properly
+///   installed the WebViewController via `waterui_env_install_webview_controller`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView) -> *mut () {
+    if webview.is_null() {
+        return core::ptr::null_mut();
+    }
+    unsafe {
+        let webview = &*webview;
+        let handle = webview.0.handle();
+        // Safety: Native backend controls both sides - they install the WebViewController
+        // which creates FfiWebViewHandle, and they call this function to retrieve it.
+        let ffi_handle = handle.downcast_ref_unchecked::<FfiWebViewHandle>();
+        ffi_handle.native_ptr()
     }
 }
 

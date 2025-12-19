@@ -3,7 +3,15 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 <important>
-    YOU CANNOT USE println, use tracing::debug!() instead for debug output.
+    For rust: YOU CANNOT USE println, use tracing::debug!() instead for debug output.
+    For swift: YOU CANNOT USE print(), use Logger instead for debug output. It uses `dev.waterui` as the log subsystem.
+    For kotlin: YOU CANNOT USE println(), use Log.d() instead for debug output.
+
+    Note that debug output will only appear if the CLI is run with --logs debug flag.
+
+    For any code that involves CLI commands, ALWAYS use the water CLI (water run, water build, etc.) to build and run the project.
+    
+    If you have to use adb/xcodebuild/other build tools directly, please propose adding a new command to the water CLI instead.
 </important>
 
 ## Build Commands

@@ -31,7 +31,9 @@ pub use handler::*;
 pub use cookie;
 pub use waterui_url::Url;
 
-use waterui_core::{Binding, Computed, Signal, binding};
+use waterui_core::{
+    Binding, Computed, Signal, View, binding, env::use_env, layout::StretchAxis, raw_view,
+};
 use waterui_str::Str;
 
 /// Events emitted by the WebView component.
@@ -97,6 +99,8 @@ pub enum WebViewError {
 /// This struct wraps [`AnyWebViewHandle`] and adds reactive state via nami bindings.
 /// The `can_go_back` and `can_go_forward` bindings are automatically updated when
 /// the native backend emits [`WebViewEvent::StateChanged`] events.
+///
+/// WebView implements [`View`] so it can be used directly in the view hierarchy.
 #[derive(Clone, Debug)]
 pub struct WebView {
     event: Binding<WebViewEvent>,
@@ -139,6 +143,30 @@ impl WebView {
             can_go_back,
             can_go_forward,
         }
+    }
+
+    /// Opens a new WebView and navigates to the specified URL.
+    pub fn open(url: impl AsRef<str>) -> impl View {
+        let url = url.as_ref().to_string();
+        use_env(move |controller: WebViewController| {
+            let handle = controller.open();
+            handle.go_to(&url);
+            WebView::new(handle)
+        })
+    }
+
+    /// Opens a new WebView, navigates to the specified URL, and applies a configuration function.
+    pub fn open_then(
+        url: impl AsRef<str>,
+        f: impl FnOnce(AnyWebViewHandle) + 'static,
+    ) -> impl View {
+        let url = url.as_ref().to_string();
+        use_env(move |controller: WebViewController| {
+            let handle = controller.open();
+            handle.go_to(&url);
+            f(handle.clone());
+            WebView::new(handle)
+        })
     }
 
     /// Returns a signal that emits WebView events.
@@ -198,3 +226,6 @@ impl WebView {
         &self.handle
     }
 }
+
+// WebView is a raw view - native backends render it directly
+raw_view!(WebView, StretchAxis::Both);
