@@ -6,6 +6,12 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
+mod locale;
+
+#[proc_macro]
+pub fn text(input: TokenStream) -> TokenStream {
+    locale::text(input)
+}
 
 /// Derives the `FormBuilder` trait for structs, enabling automatic form generation.
 ///
