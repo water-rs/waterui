@@ -5,6 +5,50 @@
 //!
 //! They are defined as types that implement the `MetadataKey` trait.
 
+/// Context menu metadata module.
+pub mod context_menu {
+    use alloc::vec::Vec;
+    use nami::{Computed, signal::IntoComputed};
+    use waterui_core::metadata::MetadataKey;
+
+    pub use waterui_controls::menu::MenuItem;
+
+    /// Context menu metadata for views.
+    ///
+    /// Attaches a context menu to a view that appears when the user:
+    /// - Long-presses on iOS/Android
+    /// - Right-clicks on macOS
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Right-click me")
+    ///     .context_menu(vec![
+    ///         MenuItem::new("Copy", || println!("Copy")),
+    ///         MenuItem::new("Paste", || println!("Paste")),
+    ///     ])
+    /// ```
+    #[derive(Debug)]
+    pub struct ContextMenu {
+        /// The menu items to display in the context menu.
+        pub items: Computed<Vec<MenuItem>>,
+    }
+
+    impl MetadataKey for ContextMenu {}
+
+    impl ContextMenu {
+        /// Creates a new context menu with the given items.
+        #[must_use]
+        pub fn new(items: impl IntoComputed<Vec<MenuItem>>) -> Self {
+            Self {
+                items: items.into_computed(),
+            }
+        }
+    }
+}
+
 /// Secure metadata module.
 pub mod secure {
     use waterui_core::metadata::MetadataKey;
