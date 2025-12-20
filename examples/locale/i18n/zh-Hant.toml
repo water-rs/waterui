@@ -1,0 +1,53 @@
+# Chinese (Traditional) - Common translations for zh-TW and zh-HK
+# Both zh-TW and zh-HK will fall back to this file for shared translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI 國際化範例"
+"Locale is injected from native side via FFI" = "語言區域透過FFI從原生端注入"
+"text! macros react to Computed<Locale> automatically" = "text! 巨集自動響應 Computed<Locale> 變化"
+
+# Section headers
+"Greeting" = "問候語"
+"Date Formatting (2006-03-20)" = "日期格式化 (2006-03-20)"
+"Plural Rules" = "複數規則"
+"Unit Formatting" = "單位格式化"
+"Regional Vocabulary" = "地區詞彙差異"
+"Language Selection" = "語言選擇"
+
+# Greeting
+"Hello, World!" = "你好，世界！"
+
+# Labels
+"Language:" = "語言："
+"System Locale:" = "系統語言："
+"Selected:" = "已選擇："
+"Short:" = "短格式："
+"Long:" = "長格式："
+"Marathon:" = "馬拉松："
+"Computer:" = "電腦："
+"Color:" = "顏色："
+
+# Language names
+"en" = "英語"
+"en-US" = "英語 (美國)"
+"en-GB" = "英語 (英國)"
+"zh" = "簡體中文"
+"zh-TW" = "繁體中文 (台灣)"
+"zh-HK" = "繁體中文 (香港)"
+"ja" = "日語"
+"ko" = "韓語"
+"de" = "德語"
+"fr" = "法語"
+"es" = "西班牙語"
+"ru" = "俄語"
+
+# Regional vocabulary (common)
+"computer" = "電腦"
+"color" = "顏色"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "經典段落"
+"$constitution_preamble" = "我們美利堅合眾國的人民，為了組織一個更完善的聯邦，樹立正義，保障國內的安寧，建立共同的國防，增進全民福利和確保我們自己及我們後代能安享自由帶來的幸福，乃為美利堅合眾國制定和確立這一部憲法。"
+
+# Plural forms - Chinese has no plural distinction
+"I have {#count} apple" = { other = "我有{count}個蘋果" }

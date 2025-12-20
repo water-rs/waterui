@@ -1,0 +1,57 @@
+# American English translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI i18n Example"
+"Locale is injected from native side via FFI" = "Locale is injected from native side via FFI"
+"text! macros react to Computed<Locale> automatically" = "text! macros react to Computed<Locale> automatically"
+
+# Section headers
+"Greeting" = "Greeting"
+"Date Formatting (2006-03-20)" = "Date Formatting (2006-03-20)"
+"Plural Rules" = "Plural Rules"
+"Unit Formatting" = "Unit Formatting"
+"Regional Vocabulary" = "Regional Vocabulary"
+"Language Selection" = "Language Selection"
+
+# Greeting
+"Hello, World!" = "Hello, World!"
+
+# Labels
+"Language:" = "Language:"
+"System Locale:" = "System Locale:"
+"Selected:" = "Selected:"
+"Short:" = "Short:"
+"Long:" = "Long:"
+"1500m:" = "1500m:"
+"Marathon:" = "Marathon:"
+"Computer:" = "Computer:"
+"Software:" = "Software:"
+"Color:" = "Color:"
+"Favorite:" = "Favorite:"
+
+# Language names
+"en" = "English"
+"en-US" = "English (US)"
+"en-GB" = "English (UK)"
+"zh" = "Chinese"
+"ja" = "Japanese"
+"ko" = "Korean"
+"de" = "German"
+"fr" = "French"
+"es" = "Spanish"
+"ru" = "Russian"
+
+# Regional vocabulary (American English)
+"computer" = "computer"
+"software" = "software"
+"color" = "color"
+"favorite" = "favorite"
+"center" = "center"
+"organization" = "organization"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "Famous Paragraph"
+"$constitution_preamble" = "We the People of the United States, in Order to form a more perfect Union, establish Justice, insure domestic Tranquility, provide for the common defence, promote the general Welfare, and secure the Blessings of Liberty to ourselves and our Posterity, do ordain and establish this Constitution for the United States of America."
+
+# Plural forms
+"I have {#count} apple" = { one = "I have {count} apple", other = "I have {count} apples" }

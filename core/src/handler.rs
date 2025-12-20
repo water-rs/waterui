@@ -12,8 +12,8 @@
 
 use crate::{AnyView, View, extract::Extractor};
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use core::{any::type_name, fmt::Debug, marker::PhantomData};
-use std::rc::Rc;
 
 use crate::Environment;
 

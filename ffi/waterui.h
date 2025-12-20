@@ -264,6 +264,62 @@ typedef enum WuiWebViewEventType {
 } WuiWebViewEventType;
 
 /**
+ * Locale enum for common locales (for convenience).
+ *
+ * For locales not in this enum, use `waterui_env_install_locale_string()`.
+ */
+typedef enum WuiLocale {
+  /**
+   * English (US)
+   */
+  WuiLocale_EnUs = 0,
+  /**
+   * English (UK)
+   */
+  WuiLocale_EnGb = 1,
+  /**
+   * Chinese (Simplified, China)
+   */
+  WuiLocale_ZhCn = 2,
+  /**
+   * Chinese (Traditional, Taiwan)
+   */
+  WuiLocale_ZhTw = 3,
+  /**
+   * Chinese (Traditional, Hong Kong)
+   */
+  WuiLocale_ZhHk = 4,
+  /**
+   * Japanese
+   */
+  WuiLocale_Ja = 5,
+  /**
+   * Korean
+   */
+  WuiLocale_Ko = 6,
+  /**
+   * German
+   */
+  WuiLocale_De = 7,
+  /**
+   * French
+   */
+  WuiLocale_Fr = 8,
+  /**
+   * Spanish
+   */
+  WuiLocale_Es = 9,
+  /**
+   * Russian
+   */
+  WuiLocale_Ru = 10,
+  /**
+   * Arabic
+   */
+  WuiLocale_Ar = 11,
+} WuiLocale;
+
+/**
  * Color scheme enum for FFI.
  *
  * Maps directly to `waterui::theme::ColorScheme`.
@@ -1930,6 +1986,8 @@ typedef struct WuiStepper {
 typedef struct WuiColorPicker {
   struct WuiAnyView *label;
   WuiBinding_Color *value;
+  bool support_alpha;
+  bool support_hdr;
 } WuiColorPicker;
 
 typedef struct Computed_Vec_PickerItem_Id WuiComputed_Vec_PickerItem_Id;
@@ -4865,6 +4923,39 @@ struct WuiWatcher_Secure *waterui_new_watcher_secure(void *data,
                                                                   struct WuiStr,
                                                                   struct WuiWatcherMetadata*),
                                                      void (*drop)(void*));
+
+/**
+ * Installs a locale into the environment using a predefined locale enum.
+ *
+ * # Safety
+ * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
+ */
+void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
+
+/**
+ * Installs a locale into the environment using a BCP 47 locale string.
+ *
+ * This is more flexible than `waterui_env_install_locale()` as it accepts
+ * any valid BCP 47 locale identifier (e.g., "en-US", "zh-Hans-CN", "ja-JP").
+ *
+ * If the locale string is invalid, falls back to English ("en").
+ *
+ * # Safety
+ * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
+ * - `locale_str` must be a valid null-terminated C string.
+ */
+void waterui_env_install_locale_string(struct WuiEnv *env, const char *locale_str);
+
+/**
+ * Gets the current locale from the environment.
+ *
+ * Returns the locale as a WuiLocale enum. If the locale doesn't match
+ * any predefined enum value, returns `WuiLocale::EnUs` as default.
+ *
+ * # Safety
+ * - `env` must be a valid pointer.
+ */
+enum WuiLocale waterui_env_get_locale(const struct WuiEnv *env);
 
 /**
  * Reads the current value from a computed

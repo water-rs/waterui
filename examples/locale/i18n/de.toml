@@ -1,0 +1,54 @@
+# German translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI Internationalisierung Beispiel"
+"Locale is injected from native side via FFI" = "Locale wird von der nativen Seite via FFI injiziert"
+
+# Section headers
+"Greeting" = "Begruessung"
+"Date Formatting (2006-03-20)" = "Datumsformatierung (2006-03-20)"
+"Plural Rules" = "Pluralregeln"
+"Unit Formatting" = "Einheitenformatierung"
+"Regional Vocabulary" = "Regionale Vokabeln"
+
+# Greeting
+"Hello, World!" = "Hallo, Welt!"
+
+# Labels
+"Language:" = "Sprache:"
+"Short:" = "Kurz:"
+"Long:" = "Lang:"
+"1500m:" = "1500m:"
+"Marathon:" = "Marathon:"
+"Computer:" = "Computer:"
+"Software:" = "Software:"
+
+# Language names
+"en" = "Englisch"
+"zh" = "Chinesisch"
+"ja" = "Japanisch"
+"ko" = "Koreanisch"
+"de" = "Deutsch"
+"fr" = "Franzoesisch"
+"es" = "Spanisch"
+"ru" = "Russisch"
+
+# New labels
+"Language Selection" = "Sprachauswahl"
+"System Locale:" = "System-Locale:"
+"Selected:" = "Ausgewaehlt:"
+"Color:" = "Farbe:"
+"Favorite:" = "Favorit:"
+
+# Regional vocabulary
+"computer" = "Computer"
+"software" = "Software"
+"color" = "Farbe"
+"favorite" = "Favorit"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "Beruehmter Absatz"
+"$constitution_preamble" = "Wir, das Volk der Vereinigten Staaten, von der Absicht geleitet, unseren Bund zu vervollkommnen, die Gerechtigkeit zu verwirklichen, die Ruhe im Innern zu sichern, fuer die Landesverteidigung zu sorgen, das allgemeine Wohl zu foerdern und das Glueck der Freiheit uns selbst und unseren Nachkommen zu bewahren, setzen und begruenden diese Verfassung fuer die Vereinigten Staaten von Amerika."
+
+# Plural forms - German has one/other
+"I have {#count} apple" = { one = "Ich habe {count} Apfel", other = "Ich habe {count} Aepfel" }

@@ -1,0 +1,54 @@
+# Spanish translations
+
+# Title and description
+"WaterUI i18n Example" = "Ejemplo de internacionalizacion de WaterUI"
+"Locale is injected from native side via FFI" = "La configuracion regional se inyecta desde el lado nativo via FFI"
+
+# Section headers
+"Greeting" = "Saludo"
+"Date Formatting (2006-03-20)" = "Formato de fecha (2006-03-20)"
+"Plural Rules" = "Reglas de plural"
+"Unit Formatting" = "Formato de unidades"
+"Regional Vocabulary" = "Vocabulario regional"
+
+# Greeting
+"Hello, World!" = "Hola, mundo!"
+
+# Labels
+"Language:" = "Idioma:"
+"Short:" = "Corto:"
+"Long:" = "Largo:"
+"1500m:" = "1500m:"
+"Marathon:" = "Maraton:"
+"Computer:" = "Computadora:"
+"Software:" = "Software:"
+
+# Language names
+"en" = "Ingles"
+"zh" = "Chino"
+"ja" = "Japones"
+"ko" = "Coreano"
+"de" = "Aleman"
+"fr" = "Frances"
+"es" = "Espanol"
+"ru" = "Ruso"
+
+# New labels
+"Language Selection" = "Seleccion de idioma"
+"System Locale:" = "Configuracion regional del sistema:"
+"Selected:" = "Seleccionado:"
+"Color:" = "Color:"
+"Favorite:" = "Favorito:"
+
+# Regional vocabulary
+"computer" = "computadora"
+"software" = "software"
+"color" = "color"
+"favorite" = "favorito"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "Parrafo famoso"
+"$constitution_preamble" = "Nosotros, el Pueblo de los Estados Unidos, a fin de formar una Union mas perfecta, establecer Justicia, asegurar la Tranquilidad interior, proveer para la defensa comun, promover el Bienestar general y asegurar las Bendiciones de la Libertad para nosotros y nuestra Posteridad, ordenamos y establecemos esta Constitucion para los Estados Unidos de America."
+
+# Plural forms - Spanish has one/other
+"I have {#count} apple" = { one = "Tengo {count} manzana", other = "Tengo {count} manzanas" }

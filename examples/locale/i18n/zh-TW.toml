@@ -1,0 +1,13 @@
+# Chinese (Traditional - Taiwan) translations
+# Falls back to zh-Hant.toml for common Traditional Chinese
+# Only Taiwan-specific vocabulary here
+
+# Taiwan-specific labels
+"1500m:" = "1500公尺："
+"Software:" = "軟體："
+"Favorite:" = "最愛："
+
+# Regional vocabulary (Taiwan-specific)
+# Note: Taiwan uses 軟體 while HK uses 軟件
+"software" = "軟體"
+"favorite" = "最愛"
