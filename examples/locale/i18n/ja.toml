@@ -1,25 +1,32 @@
 # Japanese translations
 
 # Title and description
-"WaterUI i18n Example" = "WaterUI 国際化サンプル"
+"WaterUI World Fair" = "WaterUI 世界フェア"
 "Locale is injected from native side via FFI" = "ロケールはFFI経由でネイティブ側から注入されます"
+"Live translations for a tiny world-fair kiosk" = "小さな世界フェアのキオスクのライブ翻訳"
 
 # Section headers
-"Greeting" = "挨拶"
-"Date Formatting (2006-03-20)" = "日付フォーマット (2006-03-20)"
-"Plural Rules" = "複数形ルール"
-"Unit Formatting" = "単位フォーマット"
-"Regional Vocabulary" = "地域語彙"
+"Welcome Desk" = "ウェルカムデスク"
+"Festival Date (2006-03-20)" = "フェスティバル日付 (2006-03-20)"
+"Passport Stamps" = "パスポートスタンプ"
+"Distance Guide" = "距離ガイド"
+"Local Flavor" = "ローカルの味わい"
+"Language Booth" = "言語ブース"
+"Human Rights - Article 1" = "人権 - 第1条"
 
 # Greeting
-"Hello, World!" = "こんにちは、世界！"
+"Welcome to the World Fair!" = "世界フェアへようこそ！"
 
 # Labels
+"Color" = "色"
+"Favorite" = "お気に入り"
 "Language:" = "言語："
+"Detected Locale:" = "検出されたロケール："
+"Chosen Language:" = "選択した言語："
 "Short:" = "短い形式："
 "Long:" = "長い形式："
-"1500m:" = "1500メートル："
-"Marathon:" = "マラソン："
+"City Walk:" = "街歩き："
+"Marathon Route:" = "マラソンコース："
 "Computer:" = "コンピューター："
 "Software:" = "ソフトウェア："
 
@@ -33,22 +40,12 @@
 "es" = "スペイン語"
 "ru" = "ロシア語"
 
-# New labels
-"Language Selection" = "言語選択"
-"System Locale:" = "システムロケール："
-"Selected:" = "選択済み："
-"Color:" = "色："
-"Favorite:" = "お気に入り："
-
 # Regional vocabulary
 "computer" = "コンピューター"
 "software" = "ソフトウェア"
-"color" = "色"
-"favorite" = "お気に入り"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "有名な一節"
-"$constitution_preamble" = "われら合衆国の人民は、より完全な連邦を形成し、正義を樹立し、国内の平穏を保障し、共同の防衛に備え、一般の福祉を増進し、われらとわれらの子孫のために自由の祝福を確保する目的をもって、アメリカ合衆国のためにこの憲法を制定し、確定する。"
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "すべての人間は、生まれながらにして自由であり、かつ、尊厳と権利とについて平等である。人間は、理性と良心とを授けられており、互いに同胞の精神をもって行動しなければならない。"
 
 # Plural forms - Japanese has no plural distinction
-"I have {#count} apple" = { other = "私はリンゴを{count}個持っています" }
+"I have {#count} passport stamp" = { other = "私はパスポートスタンプを{count}個持っています" }

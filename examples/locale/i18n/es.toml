@@ -1,25 +1,32 @@
 # Spanish translations
 
 # Title and description
-"WaterUI i18n Example" = "Ejemplo de internacionalizacion de WaterUI"
+"WaterUI World Fair" = "Feria mundial de WaterUI"
 "Locale is injected from native side via FFI" = "La configuracion regional se inyecta desde el lado nativo via FFI"
+"Live translations for a tiny world-fair kiosk" = "Traducciones en vivo para un pequeno kiosco de feria mundial"
 
 # Section headers
-"Greeting" = "Saludo"
-"Date Formatting (2006-03-20)" = "Formato de fecha (2006-03-20)"
-"Plural Rules" = "Reglas de plural"
-"Unit Formatting" = "Formato de unidades"
-"Regional Vocabulary" = "Vocabulario regional"
+"Welcome Desk" = "Mostrador de bienvenida"
+"Festival Date (2006-03-20)" = "Fecha del festival (2006-03-20)"
+"Passport Stamps" = "Sellos de pasaporte"
+"Distance Guide" = "Guia de distancias"
+"Local Flavor" = "Sabor local"
+"Language Booth" = "Puesto de idiomas"
+"Human Rights - Article 1" = "Derechos Humanos - Articulo 1"
 
 # Greeting
-"Hello, World!" = "Hola, mundo!"
+"Welcome to the World Fair!" = "Bienvenido a la feria mundial!"
 
 # Labels
+"Color" = "Color"
+"Favorite" = "Favorito"
 "Language:" = "Idioma:"
+"Detected Locale:" = "Idioma detectado:"
+"Chosen Language:" = "Idioma elegido:"
 "Short:" = "Corto:"
 "Long:" = "Largo:"
-"1500m:" = "1500m:"
-"Marathon:" = "Maraton:"
+"City Walk:" = "Paseo por la ciudad:"
+"Marathon Route:" = "Ruta del maraton:"
 "Computer:" = "Computadora:"
 "Software:" = "Software:"
 
@@ -33,22 +40,12 @@
 "es" = "Espanol"
 "ru" = "Ruso"
 
-# New labels
-"Language Selection" = "Seleccion de idioma"
-"System Locale:" = "Configuracion regional del sistema:"
-"Selected:" = "Seleccionado:"
-"Color:" = "Color:"
-"Favorite:" = "Favorito:"
-
 # Regional vocabulary
 "computer" = "computadora"
 "software" = "software"
-"color" = "color"
-"favorite" = "favorito"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "Parrafo famoso"
-"$constitution_preamble" = "Nosotros, el Pueblo de los Estados Unidos, a fin de formar una Union mas perfecta, establecer Justicia, asegurar la Tranquilidad interior, proveer para la defensa comun, promover el Bienestar general y asegurar las Bendiciones de la Libertad para nosotros y nuestra Posteridad, ordenamos y establecemos esta Constitucion para los Estados Unidos de America."
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "Todos los seres humanos nacen libres e iguales en dignidad y derechos. Estan dotados de razon y conciencia y deben comportarse fraternalmente los unos con los otros."
 
 # Plural forms - Spanish has one/other
-"I have {#count} apple" = { one = "Tengo {count} manzana", other = "Tengo {count} manzanas" }
+"I have {#count} passport stamp" = { one = "Tengo {count} sello de pasaporte", other = "Tengo {count} sellos de pasaporte" }
