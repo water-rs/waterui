@@ -1,0 +1,54 @@
+# Chinese (Simplified) translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI 国际化示例"
+"Locale is injected from native side via FFI" = "语言区域通过FFI从原生端注入"
+
+# Section headers
+"Greeting" = "问候语"
+"Date Formatting (2006-03-20)" = "日期格式化 (2006-03-20)"
+"Plural Rules" = "复数规则"
+"Unit Formatting" = "单位格式化"
+"Regional Vocabulary" = "地区词汇差异"
+
+# Greeting
+"Hello, World!" = "你好，世界！"
+
+# Labels
+"Language:" = "语言："
+"Short:" = "短格式："
+"Long:" = "长格式："
+"1500m:" = "1500米："
+"Marathon:" = "马拉松："
+"Computer:" = "电脑："
+"Software:" = "软件："
+
+# Language names
+"en" = "英语"
+"zh" = "简体中文"
+"ja" = "日语"
+"ko" = "韩语"
+"de" = "德语"
+"fr" = "法语"
+"es" = "西班牙语"
+"ru" = "俄语"
+
+# New labels
+"Language Selection" = "语言选择"
+"System Locale:" = "系统语言："
+"Selected:" = "已选择："
+"Color:" = "颜色："
+"Favorite:" = "最爱："
+
+# Regional vocabulary (Simplified Chinese / Mainland)
+"computer" = "电脑"
+"software" = "软件"
+"color" = "颜色"
+"favorite" = "最爱"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "经典段落"
+"$constitution_preamble" = "我们美利坚合众国的人民，为了组织一个更完善的联邦，树立正义，保障国内的安宁，建立共同的国防，增进全民福利和确保我们自己及我们后代能安享自由带来的幸福，乃为美利坚合众国制定和确立这一部宪法。"
+
+# Plural forms - Chinese has no plural distinction
+"I have {#count} apple" = { other = "我有{count}个苹果" }
