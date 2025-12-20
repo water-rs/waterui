@@ -51,7 +51,7 @@ pub mod prelude {
 
     pub use theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
 
-    pub use text::{TextConfig, font, highlight, locale, styled};
+    pub use text::{TextConfig, font, highlight, styled};
 
     pub use component::link::{Link, link};
 
@@ -67,6 +67,7 @@ pub use waterui_form as form;
 pub use waterui_layout as layout;
 #[doc(inline)]
 pub use waterui_macros::*;
+pub use waterui_locale as locale;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;

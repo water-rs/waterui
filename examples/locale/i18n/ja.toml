@@ -1,0 +1,54 @@
+# Japanese translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI 国際化サンプル"
+"Locale is injected from native side via FFI" = "ロケールはFFI経由でネイティブ側から注入されます"
+
+# Section headers
+"Greeting" = "挨拶"
+"Date Formatting (2006-03-20)" = "日付フォーマット (2006-03-20)"
+"Plural Rules" = "複数形ルール"
+"Unit Formatting" = "単位フォーマット"
+"Regional Vocabulary" = "地域語彙"
+
+# Greeting
+"Hello, World!" = "こんにちは、世界！"
+
+# Labels
+"Language:" = "言語："
+"Short:" = "短い形式："
+"Long:" = "長い形式："
+"1500m:" = "1500メートル："
+"Marathon:" = "マラソン："
+"Computer:" = "コンピューター："
+"Software:" = "ソフトウェア："
+
+# Language names
+"en" = "英語"
+"zh" = "中国語"
+"ja" = "日本語"
+"ko" = "韓国語"
+"de" = "ドイツ語"
+"fr" = "フランス語"
+"es" = "スペイン語"
+"ru" = "ロシア語"
+
+# New labels
+"Language Selection" = "言語選択"
+"System Locale:" = "システムロケール："
+"Selected:" = "選択済み："
+"Color:" = "色："
+"Favorite:" = "お気に入り："
+
+# Regional vocabulary
+"computer" = "コンピューター"
+"software" = "ソフトウェア"
+"color" = "色"
+"favorite" = "お気に入り"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "有名な一節"
+"$constitution_preamble" = "われら合衆国の人民は、より完全な連邦を形成し、正義を樹立し、国内の平穏を保障し、共同の防衛に備え、一般の福祉を増進し、われらとわれらの子孫のために自由の祝福を確保する目的をもって、アメリカ合衆国のためにこの憲法を制定し、確定する。"
+
+# Plural forms - Japanese has no plural distinction
+"I have {#count} apple" = { other = "私はリンゴを{count}個持っています" }

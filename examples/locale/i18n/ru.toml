@@ -1,0 +1,54 @@
+# Russian translations
+
+# Title and description
+"WaterUI i18n Example" = "Пример интернационализации WaterUI"
+"Locale is injected from native side via FFI" = "Локаль внедряется с нативной стороны через FFI"
+
+# Section headers
+"Greeting" = "Приветствие"
+"Date Formatting (2006-03-20)" = "Форматирование даты (2006-03-20)"
+"Plural Rules" = "Правила множественного числа"
+"Unit Formatting" = "Форматирование единиц"
+"Regional Vocabulary" = "Региональная лексика"
+
+# Greeting
+"Hello, World!" = "Привет, мир!"
+
+# Labels
+"Language:" = "Язык:"
+"Short:" = "Короткий:"
+"Long:" = "Длинный:"
+"1500m:" = "1500м:"
+"Marathon:" = "Марафон:"
+"Computer:" = "Компьютер:"
+"Software:" = "Программное обеспечение:"
+
+# Language names
+"en" = "Английский"
+"zh" = "Китайский"
+"ja" = "Японский"
+"ko" = "Корейский"
+"de" = "Немецкий"
+"fr" = "Французский"
+"es" = "Испанский"
+"ru" = "Русский"
+
+# New labels
+"Language Selection" = "Выбор языка"
+"System Locale:" = "Системная локаль:"
+"Selected:" = "Выбрано:"
+"Color:" = "Цвет:"
+"Favorite:" = "Избранное:"
+
+# Regional vocabulary
+"computer" = "компьютер"
+"software" = "программное обеспечение"
+"color" = "цвет"
+"favorite" = "избранное"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "Знаменитый абзац"
+"$constitution_preamble" = "Мы, народ Соединённых Штатов, в целях образования более совершенного Союза, утверждения правосудия, обеспечения внутреннего спокойствия, организации совместной обороны, содействия общему благосостоянию и обеспечения нам и нашему потомству благ свободы, учреждаем и принимаем эту Конституцию для Соединённых Штатов Америки."
+
+# Plural forms - Russian has one/few/many/other
+"I have {#count} apple" = { one = "У меня {count} яблоко", few = "У меня {count} яблока", many = "У меня {count} яблок", other = "У меня {count} яблок" }

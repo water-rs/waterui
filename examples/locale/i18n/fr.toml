@@ -1,0 +1,54 @@
+# French translations
+
+# Title and description
+"WaterUI i18n Example" = "Exemple d'internationalisation WaterUI"
+"Locale is injected from native side via FFI" = "La locale est injectee cote natif via FFI"
+
+# Section headers
+"Greeting" = "Salutation"
+"Date Formatting (2006-03-20)" = "Formatage de date (2006-03-20)"
+"Plural Rules" = "Regles de pluriel"
+"Unit Formatting" = "Formatage d'unites"
+"Regional Vocabulary" = "Vocabulaire regional"
+
+# Greeting
+"Hello, World!" = "Bonjour, le monde !"
+
+# Labels
+"Language:" = "Langue :"
+"Short:" = "Court :"
+"Long:" = "Long :"
+"1500m:" = "1500m :"
+"Marathon:" = "Marathon :"
+"Computer:" = "Ordinateur :"
+"Software:" = "Logiciel :"
+
+# Language names
+"en" = "Anglais"
+"zh" = "Chinois"
+"ja" = "Japonais"
+"ko" = "Coreen"
+"de" = "Allemand"
+"fr" = "Francais"
+"es" = "Espagnol"
+"ru" = "Russe"
+
+# New labels
+"Language Selection" = "Selection de la langue"
+"System Locale:" = "Locale systeme :"
+"Selected:" = "Selectionne :"
+"Color:" = "Couleur :"
+"Favorite:" = "Favori :"
+
+# Regional vocabulary
+"computer" = "ordinateur"
+"software" = "logiciel"
+"color" = "couleur"
+"favorite" = "favori"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "Paragraphe celebre"
+"$constitution_preamble" = "Nous, le Peuple des Etats-Unis, en vue de former une Union plus parfaite, d'etablir la justice, de faire regner la paix interieure, de pourvoir a la defense commune, de developper le bien-etre general et d'assurer les bienfaits de la liberte a nous-memes et a notre posterite, nous decretons et etablissons cette Constitution pour les Etats-Unis d'Amerique."
+
+# Plural forms - French has one/other (0 and 1 are singular)
+"I have {#count} apple" = { one = "J'ai {count} pomme", other = "J'ai {count} pommes" }

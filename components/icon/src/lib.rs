@@ -32,7 +32,7 @@ impl<T: IconProvider> IconProviderPlugin<T> {
 
 impl<T: IconProvider> Plugin for IconProviderPlugin<T> {
     fn install(self, env: &mut waterui_core::Environment) {
-        let mut providers = env.get_or_insert_with(|| IconProviders::default())
+        //let mut providers = env.get_or_insert_with(|| IconProviders::default())
         todo!()
     }
 }

@@ -1,0 +1,54 @@
+# Korean translations
+
+# Title and description
+"WaterUI i18n Example" = "WaterUI 국제화 예제"
+"Locale is injected from native side via FFI" = "로케일은 FFI를 통해 네이티브 측에서 주입됩니다"
+
+# Section headers
+"Greeting" = "인사말"
+"Date Formatting (2006-03-20)" = "날짜 형식 (2006-03-20)"
+"Plural Rules" = "복수형 규칙"
+"Unit Formatting" = "단위 형식"
+"Regional Vocabulary" = "지역 어휘"
+
+# Greeting
+"Hello, World!" = "안녕하세요, 세계!"
+
+# Labels
+"Language:" = "언어:"
+"Short:" = "짧은 형식:"
+"Long:" = "긴 형식:"
+"1500m:" = "1500미터:"
+"Marathon:" = "마라톤:"
+"Computer:" = "컴퓨터:"
+"Software:" = "소프트웨어:"
+
+# Language names
+"en" = "영어"
+"zh" = "중국어"
+"ja" = "일본어"
+"ko" = "한국어"
+"de" = "독일어"
+"fr" = "프랑스어"
+"es" = "스페인어"
+"ru" = "러시아어"
+
+# New labels
+"Language Selection" = "언어 선택"
+"System Locale:" = "시스템 로케일:"
+"Selected:" = "선택됨:"
+"Color:" = "색상:"
+"Favorite:" = "즐겨찾기:"
+
+# Regional vocabulary
+"computer" = "컴퓨터"
+"software" = "소프트웨어"
+"color" = "색상"
+"favorite" = "즐겨찾기"
+
+# Famous paragraph - US Constitution Preamble
+"Famous Paragraph" = "유명한 문단"
+"$constitution_preamble" = "우리 합중국 국민은 보다 완벽한 연방을 형성하고, 정의를 수립하며, 국내의 안녕을 보장하고, 공동 방위를 도모하며, 일반 복지를 증진하고, 우리와 우리 후손에게 자유의 축복을 확보할 목적으로, 이 헌법을 미합중국을 위하여 제정하고 확립한다."
+
+# Plural forms - Korean has no plural distinction
+"I have {#count} apple" = { other = "저는 사과 {count}개를 가지고 있습니다" }

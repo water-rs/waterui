@@ -20,7 +20,8 @@ fn main(webview: WebView) -> impl View {
     let progress_value: Binding<f64> = binding(0.0);
     let js_result: Binding<Str> = binding("");
     let allow_redirects: Binding<bool> = binding(false);
-    let user_agent: Binding<Str> = binding("");
+    let system_user_agent: Binding<Str> = binding("");
+    let custom_user_agent: Binding<Str> = binding("");
 
     let can_go_back = webview.can_go_back();
     let can_go_forward = webview.can_go_forward();
@@ -32,6 +33,9 @@ fn main(webview: WebView) -> impl View {
         let status = status.clone();
         let progress_value = progress_value.clone();
         let address = address.clone();
+        let allow_redirects = allow_redirects.clone();
+        let system_user_agent = system_user_agent.clone();
+        let webview = webview.clone();
         event_signal.watch(move |ctx| match ctx.into_value() {
             WebViewEvent::None => {
                 status.set(Str::from_static("Idle"));
@@ -49,10 +53,33 @@ fn main(webview: WebView) -> impl View {
             WebViewEvent::Loaded => {
                 status.set(Str::from_static("Loaded"));
                 progress_value.set(1.0);
+                let webview = webview.clone();
+                let system_user_agent = system_user_agent.clone();
+                let address = address.clone();
+                spawn_local(async move {
+                    if let Ok(url) = webview.run_javascript("location.href").await {
+                        if !url.as_str().is_empty() && url.as_str() != "null" {
+                            address.set(url);
+                        }
+                    }
+                    if system_user_agent.get().as_str().is_empty() {
+                        if let Ok(ua) = webview.run_javascript("navigator.userAgent").await {
+                            if !ua.as_str().is_empty() && ua.as_str() != "null" {
+                                system_user_agent.set(ua);
+                            }
+                        }
+                    }
+                })
+                .detach();
             }
             WebViewEvent::Redirect { from, to } => {
-                address.set(Str::from(to.to_string()));
-                status.set(Str::from(format!("Redirect: {from} -> {to}")));
+                if allow_redirects.get() {
+                    address.set(Str::from(to.to_string()));
+                    status.set(Str::from(format!("Redirect: {from} -> {to}")));
+                } else {
+                    progress_value.set(0.0);
+                    status.set(Str::from(format!("Redirect blocked: {from} -> {to}")));
+                }
             }
             WebViewEvent::Error(err) => {
                 status.set(Str::from(format!("Error: {err}")));
@@ -111,14 +138,27 @@ fn main(webview: WebView) -> impl View {
             spacer(),
         )),
         hstack((
-            TextField::new(&user_agent).prompt("Custom user agent"),
-            button("Apply UA").style(ButtonStyle::Bordered).action({
+            text("System UA:"),
+            Text::new(system_user_agent.clone()),
+        ))
+        .spacing(8.0),
+        hstack((
+            TextField::new(&custom_user_agent).prompt("Custom user agent (optional)"),
+            button("Apply Custom UA").style(ButtonStyle::Bordered).action({
                 let webview = webview.clone();
-                let user_agent = user_agent.clone();
+                let custom_user_agent = custom_user_agent.clone();
                 move || {
-                    let ua = user_agent.get();
-                    webview.set_user_agent(ua.as_str());
+                    let ua = custom_user_agent.get();
+                    if ua.as_str().trim().is_empty() {
+                        webview.set_user_agent("");
+                    } else {
+                        webview.set_user_agent(ua.as_str());
+                    }
                 }
+            }),
+            button("Reset UA").style(ButtonStyle::Bordered).action({
+                let webview = webview.clone();
+                move || webview.set_user_agent("")
             }),
         ))
         .spacing(8.0),

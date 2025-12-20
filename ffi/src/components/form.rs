@@ -127,6 +127,8 @@ into_ffi! {ColorPickerConfig,
     pub struct WuiColorPicker {
         label: *mut WuiAnyView,
         value: *mut WuiBinding<Color>,
+        support_alpha: bool,
+        support_hdr: bool,
     }
 }
 

@@ -1,0 +1,14 @@
+# Chinese (Traditional - Hong Kong) translations
+# Falls back to zh-Hant.toml for common Traditional Chinese
+# Only Hong Kong-specific vocabulary here
+
+# Hong Kong-specific labels
+"1500m:" = "1500米："
+"Software:" = "軟件："
+"Favorite:" = "至愛："
+
+# Regional vocabulary (Hong Kong-specific)
+# Note: HK uses 軟件 (same as mainland) while Taiwan uses 軟體
+# HK uses 至愛 while Taiwan uses 最愛
+"software" = "軟件"
+"favorite" = "至愛"
