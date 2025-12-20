@@ -54,6 +54,7 @@ pub mod prelude {
     pub use text::{TextConfig, font, highlight, styled};
 
     pub use component::link::{Link, link};
+    pub use component::menu::MenuItem;
 
     pub use widget::{Card, Divider, card, suspense};
 }
@@ -65,9 +66,9 @@ pub use waterui_color as color;
 pub use waterui_form as form;
 
 pub use waterui_layout as layout;
+pub use waterui_locale as locale;
 #[doc(inline)]
 pub use waterui_macros::*;
-pub use waterui_locale as locale;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;
@@ -83,30 +84,6 @@ pub use waterui_core::{
     id::{self, Identifiable},
     impl_extractor, raw_view, views,
 };
-
-/// Creates a reactive text component with formatted content.
-///
-/// This macro provides a convenient way to create text components with
-/// formatted content that automatically updates when reactive values change.
-///
-/// # Usage
-///
-/// ```rust
-/// use waterui::prelude::*;
-/// use waterui::reactive::binding;
-///
-/// let name = Binding::container("World");
-/// let greeting = text!("Hello, {}!", name);
-/// ```
-#[macro_export]
-macro_rules! text {
-    ($($arg:tt)*) => {
-        {
-            #[allow(unused_parens)]
-            $crate::text::Text::new($crate::s!($($arg)*))
-        }
-    };
-}
 
 mod reactive_ext;
 pub(crate) mod view_ext;

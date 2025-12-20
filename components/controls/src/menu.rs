@@ -1,5 +1,5 @@
 use alloc::{rc::Rc, vec::Vec};
-use nami::Computed;
+use nami::{Computed, impl_constant};
 use waterui_core::{
     AnyView,
     handler::{HandlerFn, SharedHandler, into_handler},
@@ -25,6 +25,8 @@ pub struct MenuItem {
     /// The action to perform when the menu item is selected.
     pub action: SharedHandler<()>,
 }
+
+impl_constant!(MenuItem);
 
 impl MenuItem {
     /// Creates a new menu item with the given label and action.
