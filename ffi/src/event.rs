@@ -1,23 +1,105 @@
-//! FFI bindings for event types.
+//! FFI bindings for event and lifecycle types.
 
 use crate::IntoFFI;
-use waterui_core::event::{Event, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 
-/// FFI event enum.
+// ============================================================================
+// LifeCycle (one-time handlers for appear/disappear)
+// ============================================================================
+
+/// FFI lifecycle enum for one-time lifecycle events.
 #[repr(C)]
-pub enum WuiEvent {
+pub enum WuiLifeCycle {
     Appear,
     Disappear,
+}
+
+impl IntoFFI for LifeCycle {
+    type FFI = WuiLifeCycle;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            LifeCycle::Appear => WuiLifeCycle::Appear,
+            LifeCycle::Disappear => WuiLifeCycle::Disappear,
+            // Handle any future lifecycle variants
+            _ => WuiLifeCycle::Appear,
+        }
+    }
+}
+
+/// Wrapper for LifeCycleHook to avoid orphan rule issues.
+pub struct WuiLifeCycleHookHandler(pub LifeCycleHook);
+
+/// FFI-safe representation of a lifecycle hook.
+#[repr(C)]
+pub struct WuiLifeCycleHook {
+    /// The lifecycle event to listen for.
+    pub lifecycle: WuiLifeCycle,
+    /// Opaque pointer to the LifeCycleHook (owns the handler).
+    pub handler: *mut WuiLifeCycleHookHandler,
+}
+
+impl IntoFFI for LifeCycleHook {
+    type FFI = WuiLifeCycleHook;
+    fn into_ffi(self) -> Self::FFI {
+        let lifecycle = self.lifecycle().into_ffi();
+        WuiLifeCycleHook {
+            lifecycle,
+            handler: alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WuiLifeCycleHookHandler(
+                self,
+            ))),
+        }
+    }
+}
+
+/// Calls a LifeCycleHook handler with the given environment.
+///
+/// # Safety
+///
+/// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+/// * `env` must be a valid pointer to a WuiEnv.
+/// * This consumes the handler - it can only be called once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_lifecycle_hook(
+    handler: *mut WuiLifeCycleHookHandler,
+    env: *const crate::WuiEnv,
+) {
+    unsafe {
+        let hook = alloc::boxed::Box::from_raw(handler);
+        hook.0.handle(&*env);
+    }
+}
+
+/// Drops a LifeCycleHook handler without calling it.
+///
+/// # Safety
+///
+/// * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleHookHandler) {
+    unsafe {
+        drop(alloc::boxed::Box::from_raw(handler));
+    }
+}
+
+// ============================================================================
+// Event (repeatable handlers for interaction events like hover)
+// ============================================================================
+
+/// FFI event enum for repeatable interaction events.
+#[repr(C)]
+pub enum WuiEvent {
+    HoverEnter,
+    HoverExit,
 }
 
 impl IntoFFI for Event {
     type FFI = WuiEvent;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Event::Appear => WuiEvent::Appear,
-            Event::Disappear => WuiEvent::Disappear,
+            Event::HoverEnter => WuiEvent::HoverEnter,
+            Event::HoverExit => WuiEvent::HoverExit,
             // Handle any future event variants
-            _ => WuiEvent::Appear,
+            _ => WuiEvent::HoverEnter,
         }
     }
 }
@@ -46,24 +128,24 @@ impl IntoFFI for OnEvent {
 }
 
 /// Calls an OnEvent handler with the given environment.
+/// This handler can be called multiple times (repeatable).
 ///
 /// # Safety
 ///
 /// * `handler` must be a valid pointer to a WuiOnEventHandler.
 /// * `env` must be a valid pointer to a WuiEnv.
-/// * This consumes the handler - it can only be called once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_on_event(
     handler: *mut WuiOnEventHandler,
     env: *const crate::WuiEnv,
 ) {
     unsafe {
-        let on_event = alloc::boxed::Box::from_raw(handler);
+        let on_event = &mut *handler;
         on_event.0.handle(&*env);
     }
 }
 
-/// Drops an OnEvent handler without calling it.
+/// Drops an OnEvent handler.
 ///
 /// # Safety
 ///
