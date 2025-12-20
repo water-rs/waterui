@@ -1,25 +1,32 @@
 # Korean translations
 
 # Title and description
-"WaterUI i18n Example" = "WaterUI 국제화 예제"
+"WaterUI World Fair" = "WaterUI 세계 박람회"
 "Locale is injected from native side via FFI" = "로케일은 FFI를 통해 네이티브 측에서 주입됩니다"
+"Live translations for a tiny world-fair kiosk" = "작은 세계 박람회 키오스크를 위한 실시간 번역"
 
 # Section headers
-"Greeting" = "인사말"
-"Date Formatting (2006-03-20)" = "날짜 형식 (2006-03-20)"
-"Plural Rules" = "복수형 규칙"
-"Unit Formatting" = "단위 형식"
-"Regional Vocabulary" = "지역 어휘"
+"Welcome Desk" = "환영 데스크"
+"Festival Date (2006-03-20)" = "축제 날짜 (2006-03-20)"
+"Passport Stamps" = "여권 도장"
+"Distance Guide" = "거리 안내"
+"Local Flavor" = "지역 색채"
+"Language Booth" = "언어 부스"
+"Human Rights - Article 1" = "인권 - 제1조"
 
 # Greeting
-"Hello, World!" = "안녕하세요, 세계!"
+"Welcome to the World Fair!" = "세계 박람회에 오신 것을 환영합니다!"
 
 # Labels
+"Color" = "색"
+"Favorite" = "좋아하는 것"
 "Language:" = "언어:"
+"Detected Locale:" = "감지된 로케일:"
+"Chosen Language:" = "선택한 언어:"
 "Short:" = "짧은 형식:"
 "Long:" = "긴 형식:"
-"1500m:" = "1500미터:"
-"Marathon:" = "마라톤:"
+"City Walk:" = "도시 산책:"
+"Marathon Route:" = "마라톤 코스:"
 "Computer:" = "컴퓨터:"
 "Software:" = "소프트웨어:"
 
@@ -33,22 +40,12 @@
 "es" = "스페인어"
 "ru" = "러시아어"
 
-# New labels
-"Language Selection" = "언어 선택"
-"System Locale:" = "시스템 로케일:"
-"Selected:" = "선택됨:"
-"Color:" = "색상:"
-"Favorite:" = "즐겨찾기:"
-
 # Regional vocabulary
 "computer" = "컴퓨터"
 "software" = "소프트웨어"
-"color" = "색상"
-"favorite" = "즐겨찾기"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "유명한 문단"
-"$constitution_preamble" = "우리 합중국 국민은 보다 완벽한 연방을 형성하고, 정의를 수립하며, 국내의 안녕을 보장하고, 공동 방위를 도모하며, 일반 복지를 증진하고, 우리와 우리 후손에게 자유의 축복을 확보할 목적으로, 이 헌법을 미합중국을 위하여 제정하고 확립한다."
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "모든 인간은 태어날 때부터 자유롭고 존엄과 권리에 있어 동등하다. 인간은 이성과 양심을 부여받았으며 서로 형제애의 정신으로 행동해야 한다."
 
 # Plural forms - Korean has no plural distinction
-"I have {#count} apple" = { other = "저는 사과 {count}개를 가지고 있습니다" }
+"I have {#count} passport stamp" = { other = "여권 도장 {count}개가 있습니다" }

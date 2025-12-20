@@ -3,11 +3,10 @@
 # Only Taiwan-specific vocabulary here
 
 # Taiwan-specific labels
-"1500m:" = "1500公尺："
+"City Walk:" = "城市散步："
 "Software:" = "軟體："
-"Favorite:" = "最愛："
+"Favorite" = "最愛"
 
 # Regional vocabulary (Taiwan-specific)
 # Note: Taiwan uses 軟體 while HK uses 軟件
 "software" = "軟體"
-"favorite" = "最愛"

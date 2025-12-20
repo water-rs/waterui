@@ -1,25 +1,32 @@
 # French translations
 
 # Title and description
-"WaterUI i18n Example" = "Exemple d'internationalisation WaterUI"
+"WaterUI World Fair" = "Foire mondiale WaterUI"
 "Locale is injected from native side via FFI" = "La locale est injectee cote natif via FFI"
+"Live translations for a tiny world-fair kiosk" = "Traductions en direct pour un petit kiosque de foire mondiale"
 
 # Section headers
-"Greeting" = "Salutation"
-"Date Formatting (2006-03-20)" = "Formatage de date (2006-03-20)"
-"Plural Rules" = "Regles de pluriel"
-"Unit Formatting" = "Formatage d'unites"
-"Regional Vocabulary" = "Vocabulaire regional"
+"Welcome Desk" = "Accueil"
+"Festival Date (2006-03-20)" = "Date du festival (2006-03-20)"
+"Passport Stamps" = "Tampons de passeport"
+"Distance Guide" = "Guide des distances"
+"Local Flavor" = "Couleur locale"
+"Language Booth" = "Guichet des langues"
+"Human Rights - Article 1" = "Droits de l'homme - Article 1"
 
 # Greeting
-"Hello, World!" = "Bonjour, le monde !"
+"Welcome to the World Fair!" = "Bienvenue a la foire mondiale !"
 
 # Labels
+"Color" = "Couleur"
+"Favorite" = "Favori"
 "Language:" = "Langue :"
+"Detected Locale:" = "Locale detectee :"
+"Chosen Language:" = "Langue choisie :"
 "Short:" = "Court :"
 "Long:" = "Long :"
-"1500m:" = "1500m :"
-"Marathon:" = "Marathon :"
+"City Walk:" = "Promenade en ville :"
+"Marathon Route:" = "Parcours du marathon :"
 "Computer:" = "Ordinateur :"
 "Software:" = "Logiciel :"
 
@@ -33,22 +40,12 @@
 "es" = "Espagnol"
 "ru" = "Russe"
 
-# New labels
-"Language Selection" = "Selection de la langue"
-"System Locale:" = "Locale systeme :"
-"Selected:" = "Selectionne :"
-"Color:" = "Couleur :"
-"Favorite:" = "Favori :"
-
 # Regional vocabulary
 "computer" = "ordinateur"
 "software" = "logiciel"
-"color" = "couleur"
-"favorite" = "favori"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "Paragraphe celebre"
-"$constitution_preamble" = "Nous, le Peuple des Etats-Unis, en vue de former une Union plus parfaite, d'etablir la justice, de faire regner la paix interieure, de pourvoir a la defense commune, de developper le bien-etre general et d'assurer les bienfaits de la liberte a nous-memes et a notre posterite, nous decretons et etablissons cette Constitution pour les Etats-Unis d'Amerique."
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "Tous les etres humains naissent libres et egaux en dignite et en droits. Ils sont doues de raison et de conscience et doivent agir les uns envers les autres dans un esprit de fraternite."
 
 # Plural forms - French has one/other (0 and 1 are singular)
-"I have {#count} apple" = { one = "J'ai {count} pomme", other = "J'ai {count} pommes" }
+"I have {#count} passport stamp" = { one = "J'ai {count} tampon de passeport", other = "J'ai {count} tampons de passeport" }
