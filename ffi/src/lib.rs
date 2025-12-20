@@ -25,6 +25,7 @@ pub mod array;
 pub mod closure;
 pub mod color;
 pub mod components;
+pub mod cursor;
 pub mod event;
 pub mod gesture;
 mod type_id;
@@ -482,16 +483,36 @@ pub type WuiMetadataGesture = WuiMetadata<WuiGestureObserver>;
 ffi_metadata!(GestureObserver, WuiMetadataGesture, gesture);
 
 // ========== Metadata<OnEvent> FFI ==========
-// Used to attach lifecycle event handlers (appear/disappear)
+// Used to attach lifecycle event handlers (appear/disappear) - one-time handlers
 
-use crate::event::WuiOnEvent;
-use waterui_core::event::OnEvent;
+use crate::event::{WuiLifeCycleHook, WuiOnEvent};
+use waterui_core::event::{LifeCycleHook, OnEvent};
+
+/// Type alias for Metadata<LifeCycleHook> FFI struct
+pub type WuiMetadataLifeCycleHook = WuiMetadata<WuiLifeCycleHook>;
+
+// Generate waterui_metadata_lifecycle_hook_id() and waterui_force_as_metadata_lifecycle_hook()
+ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, lifecycle_hook);
+
+// Used to attach interaction event handlers (hover enter/exit) - repeatable handlers
 
 /// Type alias for Metadata<OnEvent> FFI struct
 pub type WuiMetadataOnEvent = WuiMetadata<WuiOnEvent>;
 
 // Generate waterui_metadata_on_event_id() and waterui_force_as_metadata_on_event()
 ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
+
+// ========== Metadata<Cursor> FFI ==========
+// Used to set cursor style when hovering over views
+
+use crate::cursor::WuiCursor;
+use waterui::cursor::Cursor;
+
+/// Type alias for Metadata<Cursor> FFI struct
+pub type WuiMetadataCursor = WuiMetadata<WuiCursor>;
+
+// Generate waterui_metadata_cursor_id() and waterui_force_as_metadata_cursor()
+ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 
 // ========== Metadata<Background> FFI ==========
 // Used to apply background colors or images to views

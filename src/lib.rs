@@ -7,6 +7,7 @@ extern crate alloc;
 mod macros;
 pub mod background;
 pub mod component;
+pub mod cursor;
 /// Error handling utilities for converting standard errors into renderable views.
 pub mod error;
 pub mod filter;
