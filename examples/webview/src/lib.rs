@@ -123,6 +123,8 @@ fn main(webview: WebView) -> impl View {
                     }
                 }
             }),
+        )),
+        hstack((
             button("Reload").action({
                 let webview = webview.clone();
                 move || webview.refresh()
@@ -131,38 +133,35 @@ fn main(webview: WebView) -> impl View {
                 let webview = webview.clone();
                 move || webview.stop()
             }),
-        ))
-        .spacing(8.0),
-        hstack((
-            Toggle::new(&allow_redirects).label(text("Allow redirects")),
-            spacer(),
         )),
-        hstack((
-            text("System UA:"),
-            Text::new(system_user_agent.clone()),
-        ))
-        .spacing(8.0),
-        hstack((
+        Toggle::new(&allow_redirects).label(text("Allow redirects")),
+        text!(
+            "System User Agent: {system_user_agent}",
+            system_user_agent = system_user_agent.get() // Wrong use of macro, but works for display
+        ),
+        vstack((
             TextField::new(&custom_user_agent).prompt("Custom user agent (optional)"),
-            button("Apply Custom UA").style(ButtonStyle::Bordered).action({
-                let webview = webview.clone();
-                let custom_user_agent = custom_user_agent.clone();
-                move || {
-                    let ua = custom_user_agent.get();
-                    if ua.as_str().trim().is_empty() {
-                        webview.set_user_agent("");
-                    } else {
-                        webview.set_user_agent(ua.as_str());
+            button("Apply Custom UA")
+                .style(ButtonStyle::Bordered)
+                .action({
+                    let webview = webview.clone();
+                    let custom_user_agent = custom_user_agent.clone();
+                    move || {
+                        let ua = custom_user_agent.get();
+                        if ua.as_str().trim().is_empty() {
+                            webview.set_user_agent("");
+                        } else {
+                            webview.set_user_agent(ua.as_str());
+                        }
                     }
-                }
-            }),
+                }),
             button("Reset UA").style(ButtonStyle::Bordered).action({
                 let webview = webview.clone();
                 move || webview.set_user_agent("")
             }),
         ))
         .spacing(8.0),
-        hstack((
+        vstack((
             button("Inject JS").action({
                 let webview = webview.clone();
                 move || {
@@ -189,9 +188,8 @@ fn main(webview: WebView) -> impl View {
                         .detach();
                     }
                 }),
-        ))
-        .spacing(8.0),
-        hstack((
+        )),
+        vstack((
             text("Status:"),
             Text::new(status.clone()),
             spacer(),
@@ -204,11 +202,10 @@ fn main(webview: WebView) -> impl View {
         progress(progress_value.clone()).label(text("Load progress")),
         hstack((text("JS Result:"), Text::new(js_result.clone()))).spacing(8.0),
     ))
-    .spacing(10.0)
-    .padding_with(12.0);
+    .spacing(5.0)
+    .width(250.0);
 
-    vstack((toolbar, Divider, webview.clone()))
-        .spacing(8.0)
+    hstack((webview.clone(), toolbar))
         .on_change(&allow_redirects, move |enabled| {
             webview.set_redirects_enabled(enabled)
         })

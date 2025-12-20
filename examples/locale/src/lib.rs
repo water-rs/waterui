@@ -1,4 +1,4 @@
-//! Locale Example - Demonstrates WaterUI's i18n capabilities
+//! Locale Example - Demonstrates WaterUI's i18n capabilities with a world fair kiosk
 //!
 //! This example showcases:
 //! - Translation files in `i18n/` folder (TOML format)
@@ -64,42 +64,42 @@ fn locale_from_code(code: &str) -> Locale {
 /// Locale picker section
 fn locale_picker_section(selection: &Binding<&'static str>, system_locale: &Locale) -> impl View {
     vstack((
-        text!("Language Selection").size(16.0).bold(),
+        text!("Language Booth").size(16.0).bold(),
         hstack((
-            text!("System Locale:"),
+            text!("Detected Locale:"),
             spacer(),
             text(system_locale.to_string()),
         )),
         hstack((
-            text!("Selected:"),
+            text!("Chosen Language:"),
             spacer(),
             Picker::new(available_locales(), selection),
         )),
     ))
 }
 
-/// Greeting section using text! macro
+/// Welcome desk section using text! macro
 fn greeting_section() -> impl View {
     vstack((
-        text!("Greeting").size(16.0).bold(),
-        text!("Hello, World!").size(24.0),
+        text!("Welcome Desk").size(16.0).bold(),
+        text!("Welcome to the World Fair!").size(24.0),
     ))
 }
 
-/// Regional vocabulary section - demonstrates variant differences (US vs UK English)
+/// Local flavor section - demonstrates variant differences (US vs UK English)
 fn regional_vocab_section() -> impl View {
     vstack((
-        text!("Regional Vocabulary").size(16.0).bold(),
-        hstack((text!("Color:"), spacer(), text!("color"))),
-        hstack((text!("Favorite:"), spacer(), text!("favorite"))),
+        text!("Local Flavor").size(16.0).bold(),
+        hstack((spacer(), text!("Color"), spacer())),
+        hstack((spacer(), text!("Favorite"), spacer())),
     ))
 }
 
-/// Famous paragraph section - US Constitution Preamble
+/// Human rights section - UDHR Article 1
 fn paragraph_section() -> impl View {
     vstack((
-        text!("Famous Paragraph").size(16.0).bold(),
-        text!("$constitution_preamble").size(14.0),
+        text!("Human Rights - Article 1").size(16.0).bold(),
+        text!("$udhr_article_1").size(14.0),
     ))
 }
 
@@ -110,20 +110,20 @@ fn date_section(locale: Locale) -> impl View {
     let date_long = format_date(&locale, &date, DateStyle::Long);
 
     vstack((
-        text!("Date Formatting (2006-03-20)").size(16.0).bold(),
+        text!("Festival Date (2006-03-20)").size(16.0).bold(),
         hstack((text!("Short:"), spacer(), text(date_short))),
         hstack((text!("Long:"), spacer(), text(date_long))),
     ))
 }
 
-/// Plural rules section using text! macro with plural source
+/// Plural section using text! macro with plural source
 fn plural_section() -> impl View {
     vstack((
-        text!("Plural Rules").size(16.0).bold(),
-        text!("I have {#count} apple", count = 0),
-        text!("I have {#count} apple", count = 1),
-        text!("I have {#count} apple", count = 2),
-        text!("I have {#count} apple", count = 5),
+        text!("Passport Stamps").size(16.0).bold(),
+        text!("I have {#count} passport stamp", count = 0),
+        text!("I have {#count} passport stamp", count = 1),
+        text!("I have {#count} passport stamp", count = 2),
+        text!("I have {#count} passport stamp", count = 5),
     ))
 }
 
@@ -133,14 +133,14 @@ fn unit_section(locale: Locale) -> impl View {
     let marathon = Length::<Kilometer>::new(42.195);
 
     vstack((
-        text!("Unit Formatting").size(16.0).bold(),
+        text!("Distance Guide").size(16.0).bold(),
         hstack((
-            text!("1500m:"),
+            text!("City Walk:"),
             spacer(),
             text(distance.to_localized_string(&locale)),
         )),
         hstack((
-            text!("Marathon:"),
+            text!("Marathon Route:"),
             spacer(),
             text(marathon.to_localized_string(&locale)),
         )),
@@ -208,8 +208,8 @@ fn main(env: &Environment) -> impl View {
     scroll(
         vstack((
             // Title
-            text!("WaterUI i18n Example").size(28.0).bold(),
-            text!("text! macros react to Computed<Locale> automatically").size(14.0),
+            text!("WaterUI World Fair").size(28.0).bold(),
+            text!("Live translations for a tiny world-fair kiosk").size(14.0),
             Divider,
             // Locale picker
             locale_picker_section(&selection, &system_locale),
