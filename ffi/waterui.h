@@ -635,6 +635,14 @@ typedef struct Computed_LivePhotoSource Computed_LivePhotoSource;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_MenuItems Computed_MenuItems;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_ResolvedColor Computed_ResolvedColor;
 
 /**
@@ -768,6 +776,8 @@ typedef struct WuiLayout WuiLayout;
  */
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
+typedef struct WuiSharedAction WuiSharedAction;
+
 typedef struct WuiTabContent WuiTabContent;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
@@ -789,6 +799,8 @@ typedef struct WuiWatcher_Font WuiWatcher_Font;
 typedef struct WuiWatcher_Id WuiWatcher_Id;
 
 typedef struct WuiWatcher_LivePhotoSource WuiWatcher_LivePhotoSource;
+
+typedef struct WuiWatcher_MenuItems WuiWatcher_MenuItems;
 
 typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
 
@@ -1579,6 +1591,70 @@ typedef struct WuiFilledShape {
   struct WuiColor *fill;
 } WuiFilledShape;
 
+typedef struct Computed_MenuItems WuiComputed_MenuItems;
+
+/**
+ * FFI-safe representation of a context menu.
+ */
+typedef struct WuiContextMenu {
+  /**
+   * The menu items as a computed array.
+   */
+  WuiComputed_MenuItems *items;
+} WuiContextMenu;
+
+typedef struct WuiMetadata_WuiContextMenu {
+  struct WuiAnyView *content;
+  struct WuiContextMenu value;
+} WuiMetadata_WuiContextMenu;
+
+/**
+ * Type alias for Metadata<ContextMenu> FFI struct
+ */
+typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
+
+typedef struct Computed_StyledStr WuiComputed_StyledStr;
+
+typedef struct WuiText {
+  WuiComputed_StyledStr *content;
+} WuiText;
+
+/**
+ * FFI-safe representation of a menu item.
+ */
+typedef struct WuiMenuItem {
+  /**
+   * The label for the menu item.
+   */
+  struct WuiText label;
+  /**
+   * The action handler pointer (SharedHandler wrapped for FFI).
+   */
+  struct WuiSharedAction *action;
+} WuiMenuItem;
+
+typedef struct WuiArraySlice_WuiMenuItem {
+  struct WuiMenuItem *head;
+  uintptr_t len;
+} WuiArraySlice_WuiMenuItem;
+
+typedef struct WuiArrayVTable_WuiMenuItem {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiMenuItem (*slice)(const void*);
+} WuiArrayVTable_WuiMenuItem;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiMenuItem {
+  NonNull data;
+  struct WuiArrayVTable_WuiMenuItem vtable;
+} WuiArray_WuiMenuItem;
+
 /**
  * FFI-safe representation of an animation.
  *
@@ -1903,15 +1979,9 @@ typedef struct WuiStyledStr {
   struct WuiArray_WuiStyledChunk chunks;
 } WuiStyledStr;
 
-typedef struct Computed_StyledStr WuiComputed_StyledStr;
-
 typedef struct Binding_Font WuiBinding_Font;
 
 typedef struct Computed_Font WuiComputed_Font;
-
-typedef struct WuiText {
-  WuiComputed_StyledStr *content;
-} WuiText;
 
 typedef struct WuiResolvedFont {
   float size;
@@ -3121,6 +3191,76 @@ struct WuiFilledShape waterui_force_as_filled_shape(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_filled_shape_id(void);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_shared_action(struct WuiSharedAction *value);
+
+/**
+ * Call a shared action with the given environment.
+ *
+ * # Safety
+ * * `action` must be a valid pointer to a `WuiSharedAction`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
+ */
+void waterui_call_shared_action(const struct WuiSharedAction *action, const struct WuiEnv *env);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_context_menu_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataContextMenu waterui_force_as_metadata_context_menu(struct WuiAnyView *view);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiArray_WuiMenuItem waterui_read_computed_menu_items(const WuiComputed_MenuItems *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_menu_items(const WuiComputed_MenuItems *computed,
+                                                          struct WuiWatcher_MenuItems *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_menu_items(WuiComputed_MenuItems *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_MenuItems *waterui_clone_computed_menu_items(const WuiComputed_MenuItems *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_MenuItems *waterui_new_watcher_menu_items(void *data,
+                                                            void (*call)(void*,
+                                                                         struct WuiArray_WuiMenuItem,
+                                                                         struct WuiWatcherMetadata*),
+                                                            void (*drop)(void*));
 
 /**
  * # Safety

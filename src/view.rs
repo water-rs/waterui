@@ -9,8 +9,9 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use alloc::vec::Vec;
 use executor_core::spawn_local;
-use nami::{Binding, Signal, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -35,7 +36,7 @@ use crate::{
     background::{Background, ForegroundColor},
     filter,
     gesture::{Gesture, GestureObserver, TapGesture},
-    metadata::secure::Secure,
+    metadata::{context_menu::ContextMenu, secure::Secure},
     view_ext::OnChange,
 };
 use crate::{
@@ -707,6 +708,33 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn clip(self, shape: impl Shape) -> Metadata<ClipShape> {
         Metadata::new(self, ClipShape::new(shape))
+    }
+
+    /// Attaches a context menu to this view.
+    ///
+    /// The context menu appears when the user:
+    /// - Long-presses on iOS/Android
+    /// - Right-clicks on macOS
+    ///
+    /// # Arguments
+    /// * `items` - The menu items to display
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Right-click me")
+    ///     .context_menu(vec![
+    ///         MenuItem::new("Copy", || println!("Copy")),
+    ///         MenuItem::new("Paste", || println!("Paste")),
+    ///     ]);
+    /// ```
+    fn context_menu(
+        self,
+        items: impl IntoComputed<Vec<crate::metadata::context_menu::MenuItem>>,
+    ) -> Metadata<ContextMenu> {
+        Metadata::new(self, ContextMenu::new(items))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
