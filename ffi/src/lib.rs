@@ -33,6 +33,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 pub use type_id::WuiTypeId;
 pub mod id;
 pub mod reactive;
+pub mod locale;
 pub mod theme;
 mod ty;
 pub mod views;
