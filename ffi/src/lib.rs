@@ -1194,3 +1194,99 @@ impl IntoFFI for FilledShape {
 
 // Generate waterui_filled_shape_id() and waterui_force_as_filled_shape()
 ffi_view!(FilledShape, WuiFilledShape, filled_shape);
+
+// ========== Metadata<ContextMenu> FFI ==========
+// Used to attach context menus to views
+
+use crate::components::text::WuiText;
+use core::cell::RefCell;
+use waterui::metadata::context_menu::{ContextMenu, MenuItem};
+use waterui_core::handler::{Handler, SharedHandler};
+
+/// Wrapper around SharedHandler that provides interior mutability for FFI.
+pub struct SharedActionWrapper(RefCell<SharedHandler<()>>);
+
+opaque!(WuiSharedAction, SharedActionWrapper, shared_action);
+
+/// Call a shared action with the given environment.
+///
+/// # Safety
+/// * `action` must be a valid pointer to a `WuiSharedAction`.
+/// * `env` must be a valid pointer to a `WuiEnv`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_shared_action(
+    action: *const WuiSharedAction,
+    env: *const WuiEnv,
+) {
+    unsafe {
+        // WuiSharedAction wraps SharedActionWrapper which wraps RefCell<SharedHandler>
+        // Access: (*action).0 -> SharedActionWrapper, .0 -> RefCell<SharedHandler>
+        let wrapper = &(*action).0;
+        let shared = wrapper.0.borrow().clone();
+
+        // Use a wrapper struct that implements Handler and calls through to the Rc
+        struct SharedHandlerCaller(SharedHandler<()>);
+        impl Handler<()> for SharedHandlerCaller {
+            fn handle(&mut self, env: &waterui_core::Environment) {
+                // The shared handler's inner value is typically a closure that doesn't
+                // actually need mutation, so we can safely cast to get &mut
+                // This is safe because the underlying closures use Fn, not FnMut with state
+                let ptr = alloc::rc::Rc::as_ptr(&self.0) as *mut dyn Handler<()>;
+                unsafe { (*ptr).handle(env) };
+            }
+        }
+
+        let mut caller = SharedHandlerCaller(shared);
+        caller.handle(&*env);
+    }
+}
+
+/// FFI-safe representation of a menu item.
+#[repr(C)]
+pub struct WuiMenuItem {
+    /// The label for the menu item.
+    pub label: WuiText,
+    /// The action handler pointer (SharedHandler wrapped for FFI).
+    pub action: *mut WuiSharedAction,
+}
+
+ffi_safe!(WuiMenuItem);
+
+impl IntoFFI for MenuItem {
+    type FFI = WuiMenuItem;
+    fn into_ffi(self) -> Self::FFI {
+        let wrapper = SharedActionWrapper(RefCell::new(self.action));
+        WuiMenuItem {
+            label: self.label.into_ffi(),
+            action: wrapper.into_ffi(),
+        }
+    }
+}
+
+/// FFI-safe representation of a context menu.
+#[repr(C)]
+pub struct WuiContextMenu {
+    /// The menu items as a computed array.
+    pub items: *mut WuiComputed<MenuItems>,
+}
+
+/// Type alias for Vec<MenuItem> to use with ffi_computed! macro
+type MenuItems = alloc::vec::Vec<MenuItem>;
+
+impl IntoFFI for ContextMenu {
+    type FFI = WuiContextMenu;
+    fn into_ffi(self) -> Self::FFI {
+        WuiContextMenu {
+            items: self.items.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<ContextMenu> FFI struct
+pub type WuiMetadataContextMenu = WuiMetadata<WuiContextMenu>;
+
+// Generate waterui_metadata_context_menu_id() and waterui_force_as_metadata_context_menu()
+ffi_metadata!(ContextMenu, WuiMetadataContextMenu, context_menu);
+
+// Computed<Vec<MenuItem>> support
+ffi_computed!(MenuItems, WuiArray<WuiMenuItem>, menu_items);
