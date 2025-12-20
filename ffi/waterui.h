@@ -76,11 +76,19 @@ typedef enum WuiStretchAxis {
 } WuiStretchAxis;
 
 /**
- * FFI event enum.
+ * FFI lifecycle enum for one-time lifecycle events.
+ */
+typedef enum WuiLifeCycle {
+  WuiLifeCycle_Appear,
+  WuiLifeCycle_Disappear,
+} WuiLifeCycle;
+
+/**
+ * FFI event enum for repeatable interaction events.
  */
 typedef enum WuiEvent {
-  WuiEvent_Appear,
-  WuiEvent_Disappear,
+  WuiEvent_HoverEnter,
+  WuiEvent_HoverExit,
 } WuiEvent;
 
 typedef enum WuiAxis {
@@ -262,6 +270,28 @@ typedef enum WuiWebViewEventType {
    */
   WuiWebViewEventType_StateChanged = 7,
 } WuiWebViewEventType;
+
+/**
+ * FFI-safe cursor style enum.
+ */
+typedef enum WuiCursorStyle {
+  WuiCursorStyle_Arrow = 0,
+  WuiCursorStyle_PointingHand = 1,
+  WuiCursorStyle_IBeam = 2,
+  WuiCursorStyle_Crosshair = 3,
+  WuiCursorStyle_OpenHand = 4,
+  WuiCursorStyle_ClosedHand = 5,
+  WuiCursorStyle_NotAllowed = 6,
+  WuiCursorStyle_ResizeLeft = 7,
+  WuiCursorStyle_ResizeRight = 8,
+  WuiCursorStyle_ResizeUp = 9,
+  WuiCursorStyle_ResizeDown = 10,
+  WuiCursorStyle_ResizeLeftRight = 11,
+  WuiCursorStyle_ResizeUpDown = 12,
+  WuiCursorStyle_Move = 13,
+  WuiCursorStyle_Wait = 14,
+  WuiCursorStyle_Copy = 15,
+} WuiCursorStyle;
 
 /**
  * Locale enum for common locales (for convenience).
@@ -603,6 +633,14 @@ typedef struct Computed_ColorScheme Computed_ColorScheme;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_CursorStyle Computed_CursorStyle;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Date Computed_Date;
 
 /**
@@ -772,6 +810,11 @@ typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
 typedef struct WuiLayout WuiLayout;
 
 /**
+ * Wrapper for LifeCycleHook to avoid orphan rule issues.
+ */
+typedef struct WuiLifeCycleHookHandler WuiLifeCycleHookHandler;
+
+/**
  * Wrapper for OnEvent to avoid orphan rule issues.
  */
 typedef struct WuiOnEventHandler WuiOnEventHandler;
@@ -791,6 +834,8 @@ typedef struct WuiWatcher_AnyViews_AnyView WuiWatcher_AnyViews_AnyView;
 typedef struct WuiWatcher_Color WuiWatcher_Color;
 
 typedef struct WuiWatcher_ColorScheme WuiWatcher_ColorScheme;
+
+typedef struct WuiWatcher_CursorStyle WuiWatcher_CursorStyle;
 
 typedef struct WuiWatcher_Date WuiWatcher_Date;
 
@@ -971,6 +1016,30 @@ typedef struct WuiMetadata_WuiGestureObserver {
 typedef struct WuiMetadata_WuiGestureObserver WuiMetadataGesture;
 
 /**
+ * FFI-safe representation of a lifecycle hook.
+ */
+typedef struct WuiLifeCycleHook {
+  /**
+   * The lifecycle event to listen for.
+   */
+  enum WuiLifeCycle lifecycle;
+  /**
+   * Opaque pointer to the LifeCycleHook (owns the handler).
+   */
+  struct WuiLifeCycleHookHandler *handler;
+} WuiLifeCycleHook;
+
+typedef struct WuiMetadata_WuiLifeCycleHook {
+  struct WuiAnyView *content;
+  struct WuiLifeCycleHook value;
+} WuiMetadata_WuiLifeCycleHook;
+
+/**
+ * Type alias for Metadata<LifeCycleHook> FFI struct
+ */
+typedef struct WuiMetadata_WuiLifeCycleHook WuiMetadataLifeCycleHook;
+
+/**
  * FFI-safe representation of an event handler.
  */
 typedef struct WuiOnEvent {
@@ -993,6 +1062,28 @@ typedef struct WuiMetadata_WuiOnEvent {
  * Type alias for Metadata<OnEvent> FFI struct
  */
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
+
+typedef struct Computed_CursorStyle WuiComputed_CursorStyle;
+
+/**
+ * FFI-safe representation of cursor metadata.
+ */
+typedef struct WuiCursor {
+  /**
+   * The cursor style (reactive).
+   */
+  WuiComputed_CursorStyle *style;
+} WuiCursor;
+
+typedef struct WuiMetadata_WuiCursor {
+  struct WuiAnyView *content;
+  struct WuiCursor value;
+} WuiMetadata_WuiCursor;
+
+/**
+ * Type alias for Metadata<Cursor> FFI struct
+ */
+typedef struct WuiMetadata_WuiCursor WuiMetadataCursor;
 
 typedef struct Computed_Color WuiComputed_Color;
 
@@ -2889,6 +2980,21 @@ WuiMetadataGesture waterui_force_as_metadata_gesture(struct WuiAnyView *view);
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
+struct WuiTypeId waterui_metadata_lifecycle_hook_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataLifeCycleHook waterui_force_as_metadata_lifecycle_hook(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
 struct WuiTypeId waterui_metadata_on_event_id(void);
 
 /**
@@ -2899,6 +3005,21 @@ struct WuiTypeId waterui_metadata_on_event_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_cursor_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataCursor waterui_force_as_metadata_cursor(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -4337,18 +4458,78 @@ void *waterui_webview_native_handle(struct WuiWebView *webview);
 void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
 
 /**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiCursorStyle waterui_read_computed_cursor_style(const WuiComputed_CursorStyle *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_cursor_style(const WuiComputed_CursorStyle *computed,
+                                                            struct WuiWatcher_CursorStyle *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_cursor_style(WuiComputed_CursorStyle *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_CursorStyle *waterui_clone_computed_cursor_style(const WuiComputed_CursorStyle *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_CursorStyle *waterui_new_watcher_cursor_style(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiCursorStyle,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
+ * Calls a LifeCycleHook handler with the given environment.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+ * * `env` must be a valid pointer to a WuiEnv.
+ * * This consumes the handler - it can only be called once.
+ */
+void waterui_call_lifecycle_hook(struct WuiLifeCycleHookHandler *handler, const struct WuiEnv *env);
+
+/**
+ * Drops a LifeCycleHook handler without calling it.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+ */
+void waterui_drop_lifecycle_hook(struct WuiLifeCycleHookHandler *handler);
+
+/**
  * Calls an OnEvent handler with the given environment.
+ * This handler can be called multiple times (repeatable).
  *
  * # Safety
  *
  * * `handler` must be a valid pointer to a WuiOnEventHandler.
  * * `env` must be a valid pointer to a WuiEnv.
- * * This consumes the handler - it can only be called once.
  */
 void waterui_call_on_event(struct WuiOnEventHandler *handler, const struct WuiEnv *env);
 
 /**
- * Drops an OnEvent handler without calling it.
+ * Drops an OnEvent handler.
  *
  * # Safety
  *

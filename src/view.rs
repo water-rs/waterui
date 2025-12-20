@@ -46,7 +46,7 @@ use crate::{
     style::{Anchor, Offset, Rotation, Scale, Transform},
 };
 use waterui_core::Metadata;
-use waterui_core::event::{Event, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
@@ -157,19 +157,19 @@ pub trait ViewExt: View + Sized {
         Overlay::new(self, overlay)
     }
 
-    /// Adds an event handler for the specified event.
+    /// Adds a lifecycle hook for the specified lifecycle event.
     ///
-    /// You may would like use `ViewExt::on_appear` or `ViewExt::on_disappear` for convenience.
+    /// You may want to use `ViewExt::on_appear` or `ViewExt::on_disappear` for convenience.
     ///
     /// # Arguments
-    /// * `event` - The event to listen for
-    /// * `handler` - The action to execute when the event occurs
-    fn event<H: 'static>(
+    /// * `lifecycle` - The lifecycle event to listen for
+    /// * `handler` - The action to execute when the event occurs (called once)
+    fn lifecycle<H: 'static>(
         self,
-        event: Event,
+        lifecycle: LifeCycle,
         handler: impl HandlerFnOnce<H, ()> + 'static,
-    ) -> Metadata<OnEvent> {
-        Metadata::new(self, OnEvent::new(event, handler))
+    ) -> Metadata<LifeCycleHook> {
+        Metadata::new(self, LifeCycleHook::new(lifecycle, handler))
     }
 
     /// Adds a handler that triggers when the view disappears.
@@ -177,14 +177,14 @@ pub trait ViewExt: View + Sized {
     /// Warning: This handler will be called when the view is removed from the view hierarchy,
     /// not when the view is hidden. Also, removed from the view hierarchy does not mean the view is destroyed,
     /// if you want to release resources when the view is destroyed, consider to use [`ViewExt::retain`] to keep the view alive.
-    ////
+    ///
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
     fn on_disappear<H: 'static>(
         self,
         handler: impl HandlerFnOnce<H, ()> + 'static,
-    ) -> Metadata<OnEvent> {
-        self.event(Event::Disappear, handler)
+    ) -> Metadata<LifeCycleHook> {
+        self.lifecycle(LifeCycle::Disappear, handler)
     }
 
     /// Adds a handler that triggers when the view appears.
@@ -207,13 +207,83 @@ pub trait ViewExt: View + Sized {
     /// let count:Binding<i32> = binding(0);
     /// text("Hello").on_appear(|| println!("Hello, World!"));
     /// ```
-    //// # Arguments
+    ///
+    /// # Arguments
     /// * `handler` - The action to execute when the view appears
     fn on_appear<H: 'static>(
         self,
         handler: impl HandlerFnOnce<H, ()> + 'static,
+    ) -> Metadata<LifeCycleHook> {
+        self.lifecycle(LifeCycle::Appear, handler)
+    }
+
+    /// Adds an event handler for the specified interaction event.
+    ///
+    /// You may want to use `ViewExt::on_hover_enter` or `ViewExt::on_hover_exit` for convenience.
+    ///
+    /// # Arguments
+    /// * `event` - The event to listen for
+    /// * `handler` - The action to execute when the event occurs (can be called multiple times)
+    fn event<H: 'static>(
+        self,
+        event: Event,
+        handler: impl HandlerFn<H, ()> + 'static,
     ) -> Metadata<OnEvent> {
-        self.event(Event::Appear, handler)
+        Metadata::new(self, OnEvent::new(event, handler))
+    }
+
+    /// Adds a handler that triggers when the cursor enters this view's bounds.
+    ///
+    /// This event can fire multiple times as the cursor moves in and out of the view.
+    /// Only affects platforms with cursor support (macOS, iPadOS with trackpad, Android API 24+).
+    ///
+    /// # Arguments
+    /// * `handler` - The action to execute when hover starts
+    fn on_hover_enter<H: 'static>(
+        self,
+        handler: impl HandlerFn<H, ()> + 'static,
+    ) -> Metadata<OnEvent> {
+        self.event(Event::HoverEnter, handler)
+    }
+
+    /// Adds a handler that triggers when the cursor exits this view's bounds.
+    ///
+    /// This event can fire multiple times as the cursor moves in and out of the view.
+    /// Only affects platforms with cursor support (macOS, iPadOS with trackpad, Android API 24+).
+    ///
+    /// # Arguments
+    /// * `handler` - The action to execute when hover ends
+    fn on_hover_exit<H: 'static>(
+        self,
+        handler: impl HandlerFn<H, ()> + 'static,
+    ) -> Metadata<OnEvent> {
+        self.event(Event::HoverExit, handler)
+    }
+
+    /// Sets the cursor style when hovering over this view.
+    ///
+    /// The cursor style is scoped to the view's bounds - when the cursor exits
+    /// the view, the cursor automatically reverts to the parent view's cursor
+    /// or the system default.
+    ///
+    /// Only affects platforms with cursor support (macOS, iPadOS with trackpad, Android API 24+).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::cursor::CursorStyle;
+    ///
+    /// text!("Click me").cursor(CursorStyle::PointingHand)
+    /// ```
+    ///
+    /// # Arguments
+    /// * `style` - The cursor style to display (can be reactive)
+    fn cursor(
+        self,
+        style: impl IntoComputed<crate::cursor::CursorStyle>,
+    ) -> Metadata<crate::cursor::Cursor> {
+        Metadata::new(self, crate::cursor::Cursor::new(style))
     }
 
     /// Adds a badge to this view.
