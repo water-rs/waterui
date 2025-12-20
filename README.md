@@ -5,6 +5,12 @@
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Coverage](https://img.shields.io/codecov/c/github/water-rs/waterui?logo=codecov)](https://app.codecov.io/gh/water-rs/waterui)
 
+
+<center>
+    <h1>Learn once, apply everywhere with WaterUI</h1>
+    <img src="./waterui-logo.png" alt="WaterUI Logo" width="150"/>
+</center>
+
 A modern, cross-platform UI framework for Rust that renders to native platform widgets (UIKit/AppKit on Apple, Android View on Android) rather than drawing its own pixels. Build reactive, declarative UIs with Rust's type safety and performance.
 
 ## Overview
