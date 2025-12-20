@@ -1,25 +1,32 @@
 # German translations
 
 # Title and description
-"WaterUI i18n Example" = "WaterUI Internationalisierung Beispiel"
+"WaterUI World Fair" = "WaterUI Weltmesse"
 "Locale is injected from native side via FFI" = "Locale wird von der nativen Seite via FFI injiziert"
+"Live translations for a tiny world-fair kiosk" = "Live-Uebersetzungen fuer einen kleinen Weltmesse-Kiosk"
 
 # Section headers
-"Greeting" = "Begruessung"
-"Date Formatting (2006-03-20)" = "Datumsformatierung (2006-03-20)"
-"Plural Rules" = "Pluralregeln"
-"Unit Formatting" = "Einheitenformatierung"
-"Regional Vocabulary" = "Regionale Vokabeln"
+"Welcome Desk" = "Willkommensschalter"
+"Festival Date (2006-03-20)" = "Festivaldatum (2006-03-20)"
+"Passport Stamps" = "Passstempel"
+"Distance Guide" = "Entfernungsuebersicht"
+"Local Flavor" = "Lokalkolorit"
+"Language Booth" = "Sprachstand"
+"Human Rights - Article 1" = "Menschenrechte - Artikel 1"
 
 # Greeting
-"Hello, World!" = "Hallo, Welt!"
+"Welcome to the World Fair!" = "Willkommen auf der Weltmesse!"
 
 # Labels
+"Color" = "Farbe"
+"Favorite" = "Favorit"
 "Language:" = "Sprache:"
+"Detected Locale:" = "Erkannte Locale:"
+"Chosen Language:" = "Ausgewaehlte Sprache:"
 "Short:" = "Kurz:"
 "Long:" = "Lang:"
-"1500m:" = "1500m:"
-"Marathon:" = "Marathon:"
+"City Walk:" = "Stadtspaziergang:"
+"Marathon Route:" = "Marathonstrecke:"
 "Computer:" = "Computer:"
 "Software:" = "Software:"
 
@@ -33,22 +40,12 @@
 "es" = "Spanisch"
 "ru" = "Russisch"
 
-# New labels
-"Language Selection" = "Sprachauswahl"
-"System Locale:" = "System-Locale:"
-"Selected:" = "Ausgewaehlt:"
-"Color:" = "Farbe:"
-"Favorite:" = "Favorit:"
-
 # Regional vocabulary
 "computer" = "Computer"
 "software" = "Software"
-"color" = "Farbe"
-"favorite" = "Favorit"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "Beruehmter Absatz"
-"$constitution_preamble" = "Wir, das Volk der Vereinigten Staaten, von der Absicht geleitet, unseren Bund zu vervollkommnen, die Gerechtigkeit zu verwirklichen, die Ruhe im Innern zu sichern, fuer die Landesverteidigung zu sorgen, das allgemeine Wohl zu foerdern und das Glueck der Freiheit uns selbst und unseren Nachkommen zu bewahren, setzen und begruenden diese Verfassung fuer die Vereinigten Staaten von Amerika."
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "Alle Menschen sind frei und gleich an Wuerde und Rechten geboren. Sie sind mit Vernunft und Gewissen begabt und sollen einander im Geist der Bruederlichkeit begegnen."
 
 # Plural forms - German has one/other
-"I have {#count} apple" = { one = "Ich habe {count} Apfel", other = "Ich habe {count} Aepfel" }
+"I have {#count} passport stamp" = { one = "Ich habe {count} Passstempel", other = "Ich habe {count} Passstempel" }

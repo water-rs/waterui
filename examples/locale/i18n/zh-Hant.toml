@@ -2,30 +2,33 @@
 # Both zh-TW and zh-HK will fall back to this file for shared translations
 
 # Title and description
-"WaterUI i18n Example" = "WaterUI 國際化範例"
+"WaterUI World Fair" = "WaterUI 世界博覽會"
 "Locale is injected from native side via FFI" = "語言區域透過FFI從原生端注入"
-"text! macros react to Computed<Locale> automatically" = "text! 巨集自動響應 Computed<Locale> 變化"
+"Live translations for a tiny world-fair kiosk" = "為小小的世界博覽會服務亭提供即時翻譯"
 
 # Section headers
-"Greeting" = "問候語"
-"Date Formatting (2006-03-20)" = "日期格式化 (2006-03-20)"
-"Plural Rules" = "複數規則"
-"Unit Formatting" = "單位格式化"
-"Regional Vocabulary" = "地區詞彙差異"
-"Language Selection" = "語言選擇"
+"Welcome Desk" = "歡迎台"
+"Festival Date (2006-03-20)" = "節日日期 (2006-03-20)"
+"Passport Stamps" = "護照章"
+"Distance Guide" = "距離指南"
+"Local Flavor" = "在地風味"
+"Language Booth" = "語言展台"
+"Human Rights - Article 1" = "人權宣言 - 第一條"
 
 # Greeting
-"Hello, World!" = "你好，世界！"
+"Welcome to the World Fair!" = "歡迎來到世界博覽會！"
 
 # Labels
+"Color" = "顏色"
+"Favorite" = "最愛"
 "Language:" = "語言："
-"System Locale:" = "系統語言："
-"Selected:" = "已選擇："
+"Detected Locale:" = "偵測到的語言："
+"Chosen Language:" = "已選擇的語言："
 "Short:" = "短格式："
 "Long:" = "長格式："
-"Marathon:" = "馬拉松："
+"City Walk:" = "城市步行："
+"Marathon Route:" = "馬拉松路線："
 "Computer:" = "電腦："
-"Color:" = "顏色："
 
 # Language names
 "en" = "英語"
@@ -43,11 +46,9 @@
 
 # Regional vocabulary (common)
 "computer" = "電腦"
-"color" = "顏色"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "經典段落"
-"$constitution_preamble" = "我們美利堅合眾國的人民，為了組織一個更完善的聯邦，樹立正義，保障國內的安寧，建立共同的國防，增進全民福利和確保我們自己及我們後代能安享自由帶來的幸福，乃為美利堅合眾國制定和確立這一部憲法。"
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "人人生而自由，在尊嚴和權利上一律平等。他們賦有理性和良心，並應以兄弟情誼的精神相待。"
 
 # Plural forms - Chinese has no plural distinction
-"I have {#count} apple" = { other = "我有{count}個蘋果" }
+"I have {#count} passport stamp" = { other = "我有{count}個護照章" }

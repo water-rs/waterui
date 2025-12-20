@@ -1,25 +1,32 @@
 # Russian translations
 
 # Title and description
-"WaterUI i18n Example" = "Пример интернационализации WaterUI"
+"WaterUI World Fair" = "Всемирная ярмарка WaterUI"
 "Locale is injected from native side via FFI" = "Локаль внедряется с нативной стороны через FFI"
+"Live translations for a tiny world-fair kiosk" = "Живой перевод для маленького киоска всемирной ярмарки"
 
 # Section headers
-"Greeting" = "Приветствие"
-"Date Formatting (2006-03-20)" = "Форматирование даты (2006-03-20)"
-"Plural Rules" = "Правила множественного числа"
-"Unit Formatting" = "Форматирование единиц"
-"Regional Vocabulary" = "Региональная лексика"
+"Welcome Desk" = "Стойка приветствия"
+"Festival Date (2006-03-20)" = "Дата фестиваля (2006-03-20)"
+"Passport Stamps" = "Штампы в паспорте"
+"Distance Guide" = "Навигатор дистанций"
+"Local Flavor" = "Местный колорит"
+"Language Booth" = "Языковой киоск"
+"Human Rights - Article 1" = "Права человека - статья 1"
 
 # Greeting
-"Hello, World!" = "Привет, мир!"
+"Welcome to the World Fair!" = "Добро пожаловать на всемирную ярмарку!"
 
 # Labels
+"Color" = "Цвет"
+"Favorite" = "Избранное"
 "Language:" = "Язык:"
+"Detected Locale:" = "Обнаруженная локаль:"
+"Chosen Language:" = "Выбранный язык:"
 "Short:" = "Короткий:"
 "Long:" = "Длинный:"
-"1500m:" = "1500м:"
-"Marathon:" = "Марафон:"
+"City Walk:" = "Прогулка по городу:"
+"Marathon Route:" = "Маршрут марафона:"
 "Computer:" = "Компьютер:"
 "Software:" = "Программное обеспечение:"
 
@@ -33,22 +40,12 @@
 "es" = "Испанский"
 "ru" = "Русский"
 
-# New labels
-"Language Selection" = "Выбор языка"
-"System Locale:" = "Системная локаль:"
-"Selected:" = "Выбрано:"
-"Color:" = "Цвет:"
-"Favorite:" = "Избранное:"
-
 # Regional vocabulary
 "computer" = "компьютер"
 "software" = "программное обеспечение"
-"color" = "цвет"
-"favorite" = "избранное"
 
-# Famous paragraph - US Constitution Preamble
-"Famous Paragraph" = "Знаменитый абзац"
-"$constitution_preamble" = "Мы, народ Соединённых Штатов, в целях образования более совершенного Союза, утверждения правосудия, обеспечения внутреннего спокойствия, организации совместной обороны, содействия общему благосостоянию и обеспечения нам и нашему потомству благ свободы, учреждаем и принимаем эту Конституцию для Соединённых Штатов Америки."
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "Все люди рождаются свободными и равными в своем достоинстве и правах. Они наделены разумом и совестью и должны поступать в отношении друг друга в духе братства."
 
 # Plural forms - Russian has one/few/many/other
-"I have {#count} apple" = { one = "У меня {count} яблоко", few = "У меня {count} яблока", many = "У меня {count} яблок", other = "У меня {count} яблок" }
+"I have {#count} passport stamp" = { one = "У меня {count} паспортный штамп", few = "У меня {count} паспортных штампа", many = "У меня {count} паспортных штампов", other = "У меня {count} паспортных штампов" }
