@@ -2,7 +2,7 @@
 
 use nami::{Computed, SignalExt};
 use waterui_core::{Environment, View, dynamic::watch};
-use waterui_text::{Text, styled::StyledStr};
+use waterui_text::{Text, font::Font, styled::StyledStr};
 
 use crate::locale::{Locale, locales};
 
@@ -93,6 +93,20 @@ where
         LocalizedText {
             text_fn: self.text_fn,
             transform: move |t| prev_transform(t).italic(true),
+        }
+    }
+
+    pub fn font(
+        self,
+        font: Font,
+    ) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
+    where
+        T: Clone + 'static,
+    {
+        let prev_transform = self.transform;
+        LocalizedText {
+            text_fn: self.text_fn,
+            transform: move |t| prev_transform(t).font(font.clone()),
         }
     }
 }
