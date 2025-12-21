@@ -26,7 +26,7 @@ fn tap_section(tap_count: Binding<i32>) -> impl View {
                     tap_count.set(tap_count.get() + 1);
                 })
         },
-        hstack(("Tap count: ", waterui::text!("{}", tap_count))),
+        hstack(("Tap count: ", text!("{tap_count}"))),
     ))
     .padding()
 }
@@ -45,7 +45,7 @@ fn double_tap_section(double_tap_count: Binding<i32>) -> impl View {
                     double_tap_count.set(double_tap_count.get() + 1);
                 })
         },
-        hstack(("Double tap count: ", waterui::text!("{}", double_tap_count))),
+        hstack(("Double tap count: ", text!("{double_tap_count}"))),
     ))
     .padding()
 }
@@ -64,7 +64,7 @@ fn long_press_section(long_press_count: Binding<i32>) -> impl View {
                     long_press_count.set(long_press_count.get() + 1);
                 })
         },
-        hstack(("Long press count: ", waterui::text!("{}", long_press_count))),
+        hstack(("Long press count: ", text!("{long_press_count}"))),
     ))
     .padding()
 }
@@ -85,7 +85,7 @@ fn drag_section(drag_count: Binding<i32>) -> impl View {
                     drag_count.set(drag_count.get() + 1);
                 })
         },
-        hstack(("Drag events: ", waterui::text!("{}", drag_count))),
+        hstack(("Drag events: ", text!("{drag_count}"))),
     ))
     .padding()
 }
@@ -107,7 +107,7 @@ fn chained_section(chained_status: Binding<String>) -> impl View {
                     },
                 )
         },
-        waterui::text!("{}", chained_status),
+        text!("{chained_status}"),
     ))
     .padding()
 }
