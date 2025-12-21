@@ -66,23 +66,17 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
                 Divider,
                 // Live preview of form data
                 text("Live Preview:").bold(),
-                hstack((
-                    "Name: ",
-                    waterui::text!("{}", registration.project().full_name),
-                )),
-                hstack((
-                    "Email: ",
-                    waterui::text!("{}", registration.project().email),
-                )),
-                hstack(("Age: ", waterui::text!("{}", registration.project().age))),
-                hstack((
-                    "Newsletter: ",
-                    waterui::text!("{}", registration.project().newsletter),
-                )),
-                hstack((
-                    "Volume: ",
-                    waterui::text!("{}", registration.project().volume),
-                )),
+                text!(
+                    "Name: {registration}",
+                    registration = registration.project().full_name
+                ),
+                text!("Email: {email}", email = registration.project().email),
+                text!("Age: {age}", age = registration.project().age),
+                text!(
+                    "Newsletter: {newsletter}",
+                    newsletter = registration.project().newsletter
+                ),
+                text!("Volume: {volume}", volume = registration.project().volume),
             )),
             spacer(),
             // Section 2: Settings Form
@@ -94,11 +88,14 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
                 text("Current Settings:").bold(),
                 hstack((
                     "Dark Mode: ",
-                    waterui::text!("{}", settings.project().dark_mode),
+                    text!("{dark_mode}", dark_mode = settings.project().dark_mode),
                 )),
                 hstack((
                     "Brightness: ",
-                    waterui::text!("{:.4}", settings.project().brightness),
+                    text!(
+                        "{brightness:.4}",
+                        brightness = settings.project().brightness
+                    ),
                 )),
             )),
             spacer(),
@@ -123,10 +120,10 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
                 progress(custom_slider.clone()),
                 Divider,
                 text("Manual Controls Preview:").bold(),
-                hstack(("Username: ", waterui::text!("{}", custom_name))),
-                hstack(("Feature Enabled: ", waterui::text!("{}", custom_enabled))),
-                hstack(("Count: ", waterui::text!("{}", custom_count))),
-                hstack(("Progress: ", waterui::text!("{}", custom_slider))),
+                hstack(("Username: ", text!("{custom_name}"))),
+                hstack(("Feature Enabled: ", text!("{custom_enabled}"))),
+                hstack(("Count: ", text!("{custom_count}"))),
+                hstack(("Progress: ", text!("{custom_slider}"))),
             )),
             spacer(),
             Divider,

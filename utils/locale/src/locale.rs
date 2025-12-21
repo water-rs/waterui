@@ -5,14 +5,17 @@ use core::str::FromStr;
 
 use icu_locid::LanguageIdentifier;
 use icu_locid_transform::LocaleFallbacker;
-use waterui_core::extract::Extractor;
+use nami::impl_constant;
 use waterui_core::Environment;
+use waterui_core::extract::Extractor;
 
 /// A locale identifier wrapper around ICU4X `LanguageIdentifier`.
 ///
 /// This wrapper allows us to implement traits like `Extractor` for locale types.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Locale(pub LanguageIdentifier);
+
+impl_constant!(Locale);
 
 impl Locale {
     /// Create a new locale from a language identifier.
