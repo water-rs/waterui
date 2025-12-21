@@ -62,7 +62,7 @@ impl LifeCycleHook {
     /// Handles the lifecycle event by invoking the stored handler.
     /// This consumes the hook since the handler is one-time.
     pub fn handle(self, env: &crate::Environment) {
-        crate::handler::HandlerOnce::handle(self.handler, env);
+        self.handler.call_box(env);
     }
 }
 
