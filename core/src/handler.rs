@@ -50,6 +50,10 @@ impl Handler<()> for () {
 
 impl HandlerOnce<()> for () {
     fn handle(self, _env: &Environment) {}
+
+    fn call_box(self: Box<Self>, env: &Environment) {
+        (*self).handle(env);
+    }
 }
 
 /// Handler trait for single-use handlers that are consumed during execution.
@@ -62,7 +66,15 @@ pub trait HandlerOnce<T>: 'static {
     /// # Arguments
     ///
     /// * `env` - The environment containing request data and context
-    fn handle(self, env: &Environment) -> T;
+    fn handle(self, env: &Environment) -> T
+    where
+        Self: Sized;
+
+    /// Calls the handler when boxed. This is used for trait object dispatch.
+    ///
+    /// This method exists to enable proper vtable dispatch for `Box<dyn HandlerOnce<T>>`.
+    /// Implementations should typically just unbox and call `handle`.
+    fn call_box(self: Box<Self>, env: &Environment) -> T;
 }
 
 /// A boxed handler with dynamic dispatch.
@@ -81,21 +93,17 @@ impl<T: 'static> Handler<T> for BoxHandler<T> {
 pub type BoxHandlerOnce<T> = Box<dyn HandlerOnce<T>>;
 
 impl<T: 'static> HandlerOnce<T> for Box<dyn HandlerOnce<T>> {
-    fn handle(self, env: &Environment) -> T {
-        trait CallBoxHandlerOnce<T> {
-            fn call_box(self: Box<Self>, env: &Environment) -> T;
-        }
+    fn handle(self, env: &Environment) -> T
+    where
+        Self: Sized,
+    {
+        // Delegate to call_box which dispatches through the vtable
+        HandlerOnce::call_box(self, env)
+    }
 
-        impl<T, H> CallBoxHandlerOnce<T> for H
-        where
-            H: HandlerOnce<T>,
-        {
-            fn call_box(self: Box<Self>, env: &Environment) -> T {
-                self.handle(env)
-            }
-        }
-
-        Box::call_box(self.into(), env)
+    fn call_box(self: Box<Self>, env: &Environment) -> T {
+        // Double-boxed case: unwrap one layer and dispatch again
+        (*self).call_box(env)
     }
 }
 
@@ -282,6 +290,10 @@ where
 {
     fn handle(self, env: &Environment) -> T {
         self.h.handle_inner(env)
+    }
+
+    fn call_box(self: Box<Self>, env: &Environment) -> T {
+        (*self).handle(env)
     }
 }
 
