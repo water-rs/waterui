@@ -1311,3 +1311,30 @@ ffi_metadata!(ContextMenu, WuiMetadataContextMenu, context_menu);
 
 // Computed<Vec<MenuItem>> support
 ffi_computed!(MenuItems, WuiArray<WuiMenuItem>, menu_items);
+
+// ========== Menu FFI ==========
+// Menu component that displays a dropdown menu when tapped
+
+use waterui::prelude::Menu;
+
+/// FFI-safe representation of a Menu component.
+#[repr(C)]
+pub struct WuiMenu {
+    /// The label view displayed on the menu button.
+    pub label: *mut WuiAnyView,
+    /// The menu items as a computed array.
+    pub items: *mut WuiComputed<MenuItems>,
+}
+
+impl IntoFFI for Menu {
+    type FFI = WuiMenu;
+    fn into_ffi(self) -> Self::FFI {
+        WuiMenu {
+            label: self.label.into_ffi(),
+            items: self.items.into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_menu_id() and waterui_force_as_menu()
+ffi_view!(Menu, WuiMenu, menu);

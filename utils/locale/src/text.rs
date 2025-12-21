@@ -1,9 +1,8 @@
 //! `LocalizedText` view for i18n support.
 
-use nami::{Computed, Signal, SignalExt};
-use waterui_core::{Environment, View};
-use waterui_text::Text;
-use waterui_text::styled::StyledStr;
+use nami::{Computed, SignalExt};
+use waterui_core::{Environment, View, dynamic::watch};
+use waterui_text::{Text, styled::StyledStr};
 
 use crate::locale::{Locale, locales};
 
@@ -26,10 +25,10 @@ use crate::locale::{Locale, locales};
 ///     text!("I have {#count} apple").size(24.0)
 /// }
 /// ```
-pub struct LocalizedText<F, T = fn(Text) -> Text>
+pub struct LocalizedText<F, T = fn(StyledStr) -> StyledStr>
 where
     F: Fn(&Locale) -> Text,
-    T: Fn(Text) -> Text,
+    T: Fn(StyledStr) -> StyledStr,
 {
     /// Function that generates text based on locale
     text_fn: F,
@@ -37,7 +36,7 @@ where
     transform: T,
 }
 
-impl<F> LocalizedText<F, fn(Text) -> Text>
+impl<F> LocalizedText<F, fn(StyledStr) -> StyledStr>
 where
     F: Fn(&Locale) -> Text,
 {
@@ -53,11 +52,14 @@ where
 impl<F, T> LocalizedText<F, T>
 where
     F: Fn(&Locale) -> Text,
-    T: Fn(Text) -> Text,
+    T: Fn(StyledStr) -> StyledStr,
 {
     /// Sets the font size.
     #[must_use]
-    pub fn size(self, size: f64) -> LocalizedText<F, impl Fn(Text) -> Text + Clone + 'static>
+    pub fn size(
+        self,
+        size: f32,
+    ) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
     where
         T: Clone + 'static,
     {
@@ -70,7 +72,7 @@ where
 
     /// Makes the text bold.
     #[must_use]
-    pub fn bold(self) -> LocalizedText<F, impl Fn(Text) -> Text + Clone + 'static>
+    pub fn bold(self) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
     where
         T: Clone + 'static,
     {
@@ -83,7 +85,7 @@ where
 
     /// Makes the text italic.
     #[must_use]
-    pub fn italic(self) -> LocalizedText<F, impl Fn(Text) -> Text + Clone + 'static>
+    pub fn italic(self) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
     where
         T: Clone + 'static,
     {
@@ -98,45 +100,33 @@ where
 impl<F, T> View for LocalizedText<F, T>
 where
     F: Fn(&Locale) -> Text + Clone + 'static,
-    T: Fn(Text) -> Text + Clone + 'static,
+    T: Fn(StyledStr) -> StyledStr + Clone + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        // Try to get Computed<Locale> for reactive locale changes
-        if let Some(locale_computed) = env.get::<Computed<Locale>>() {
-            // Create a reactive text that updates when locale changes
-            let locale_signal = locale_computed.clone();
-            let text_fn = self.text_fn;
-            let transform = self.transform;
+        // Get locale - either reactive Computed<Locale> or static Locale wrapped in constant
+        let locale = env.get::<Computed<Locale>>().cloned().unwrap_or_else(|| {
+            // Fallback to default locale if none found
+            Computed::constant(locales::EN_US)
+        });
 
-            // Map the locale signal to styled string
-            let content: Computed<StyledStr> = locale_signal
-                .map(move |locale| {
-                    let text = text_fn(&locale);
-                    let transformed = transform(text);
-                    // Extract the styled string from the text using public content() method
-                    transformed.content().get()
-                })
-                .computed();
+        // Map locale to styled content reactively
+        let text_fn = self.text_fn;
+        let transform = self.transform;
 
-            Text::new(content)
-        } else {
-            // Fallback: extract static Locale from environment
-            let locale = env
-                .get::<Locale>()
-                .cloned()
-                .unwrap_or_else(|| locales::EN.clone());
-
-            // Call the inner function with the locale and apply transform
-            let text = (self.text_fn)(&locale);
-            (self.transform)(text)
-        }
+        watch(locale, move |locale| {
+            let text = text_fn(&locale);
+            let styled = text.content();
+            let transform = transform.clone();
+            let styled = styled.map(move |styled| transform(styled));
+            Text::new(styled)
+        })
     }
 }
 
 impl<F, T> core::fmt::Debug for LocalizedText<F, T>
 where
     F: Fn(&Locale) -> Text,
-    T: Fn(Text) -> Text,
+    T: Fn(StyledStr) -> StyledStr,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalizedText").finish_non_exhaustive()

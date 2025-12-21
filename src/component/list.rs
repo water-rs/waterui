@@ -7,19 +7,34 @@
 
 use alloc::boxed::Box;
 use nami::collection::Collection;
+use nami::{Computed, Signal};
 
+use crate::reactive_ext::SignalExt;
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View, id::Identifiable, layout::StretchAxis,
 };
 
+/// Callback type for delete operations (receives environment and index).
+pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
+
+/// Callback type for move/reorder operations (receives environment, from index, to index).
+pub type OnMove = Box<dyn Fn(&Environment, usize, usize)>;
+
 /// Configuration for a list component.
-#[derive(Debug, Clone)]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
     pub contents: SharedAnyViews<ListItem>,
+    /// Read-only signal for edit mode state.
+    pub editing: Computed<bool>,
+    /// Optional callback when any item is deleted.
+    pub on_delete: Option<OnDelete>,
+    /// Optional callback when items are moved/reordered.
+    pub on_move: Option<OnMove>,
 }
+
+impl_debug!(ListConfig);
 
 impl NativeView for ListConfig {
     fn stretch_axis(&self) -> StretchAxis {
@@ -38,6 +53,41 @@ where
     /// Creates a new list with the specified contents.
     pub const fn new(contents: V) -> Self {
         Self(contents)
+    }
+
+    /// Enables edit mode with the given reactive signal.
+    ///
+    /// When edit mode is enabled, delete buttons and drag handles are shown.
+    #[must_use]
+    pub fn editing(self, editing: impl Signal<Output = bool> + Clone + 'static) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.0,
+            editing: editing.computed(),
+            on_delete: None,
+            on_move: None,
+        }
+    }
+
+    /// Sets the callback for when any item is deleted.
+    #[must_use]
+    pub fn on_delete(self, on_delete: impl Fn(&Environment, usize) + 'static) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.0,
+            editing: Computed::new(false),
+            on_delete: Some(Box::new(on_delete)),
+            on_move: None,
+        }
+    }
+
+    /// Sets the callback for when items are moved/reordered.
+    #[must_use]
+    pub fn on_move(self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.0,
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: Some(Box::new(on_move)),
+        }
     }
 }
 
@@ -62,6 +112,9 @@ where
     fn config(self) -> Self::Config {
         ListConfig {
             contents: SharedAnyViews::new(self.0),
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
         }
     }
 }
@@ -97,12 +150,93 @@ where
     }
 }
 
+// ============================================================================
+// ListBuilder - Fluent API for configuring lists
+// ============================================================================
+
+/// Builder for configuring a list with editing, delete, and move capabilities.
+pub struct ListBuilder<V: Views<View = ListItem>> {
+    contents: V,
+    editing: Computed<bool>,
+    on_delete: Option<OnDelete>,
+    on_move: Option<OnMove>,
+}
+
+impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilder<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ListBuilder")
+    }
+}
+
+impl<V> ListBuilder<V>
+where
+    V: Views<View = ListItem>,
+{
+    /// Enables edit mode with the given reactive signal.
+    #[must_use]
+    pub fn editing(mut self, editing: impl Signal<Output = bool> + Clone + 'static) -> Self {
+        self.editing = editing.computed();
+        self
+    }
+
+    /// Sets the callback for when any item is deleted.
+    #[must_use]
+    pub fn on_delete(mut self, on_delete: impl Fn(&Environment, usize) + 'static) -> Self {
+        self.on_delete = Some(Box::new(on_delete));
+        self
+    }
+
+    /// Sets the callback for when items are moved/reordered.
+    #[must_use]
+    pub fn on_move(mut self, on_move: impl Fn(&Environment, usize, usize) + 'static) -> Self {
+        self.on_move = Some(Box::new(on_move));
+        self
+    }
+}
+
+impl<V> ConfigurableView for ListBuilder<V>
+where
+    V: Views<View = ListItem> + 'static,
+{
+    type Config = ListConfig;
+
+    fn config(self) -> Self::Config {
+        ListConfig {
+            contents: SharedAnyViews::new(self.contents),
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+        }
+    }
+}
+
+impl<V> View for ListBuilder<V>
+where
+    V: Views<View = ListItem> + 'static,
+{
+    fn body(self, env: &Environment) -> impl View {
+        let config = ConfigurableView::config(self);
+        // User customization via Hook takes precedence
+        if let Some(hook) = env.get::<Hook<ListConfig>>() {
+            return AnyView::new(hook.apply(env, config));
+        }
+        // Native backend can catch ListConfig, otherwise falls back to Lazy::vstack
+        let fallback =
+            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
+        AnyView::new(Native::new(config).with_fallback(fallback))
+    }
+}
+
+// ============================================================================
+// ListItem - Individual item in a list
+// ============================================================================
+
 /// An item in a list that can be configured with various behaviors.
 pub struct ListItem {
     /// The view content to display for this item.
     pub content: AnyView,
-    /// Optional callback function for when the item is deleted.
-    pub on_delete: Option<OnDelete>,
+    /// Read-only signal indicating whether this item can be deleted.
+    pub deletable: Computed<bool>,
 }
 
 impl NativeView for ListItem {}
@@ -113,25 +247,25 @@ impl View for ListItem {
     }
 }
 
-type OnDelete = Box<dyn Fn(&Environment, usize)>;
-
 impl_debug!(ListItem);
 
 impl ListItem {
-    /// Sets a callback function to be executed when the item is deleted.
+    /// Creates a new list item with the given content.
     ///
-    /// # Arguments
-    /// * `on_delete` - The callback function that receives environment and index
-    #[must_use]
-    pub fn on_delete(mut self, on_delete: impl Fn(&Environment, usize) + 'static) -> Self {
-        self.on_delete = Some(Box::new(on_delete));
-        self
+    /// By default, the item is deletable (if the list has on_delete).
+    pub fn new(content: impl View) -> Self {
+        Self {
+            content: AnyView::new(content),
+            deletable: Computed::new(true),
+        }
     }
 
-    /// Disables deletion functionality for this item.
+    /// Sets whether this item can be deleted using a reactive signal.
+    ///
+    /// When false, swipe-to-delete and delete button are disabled for this item.
     #[must_use]
-    pub fn disable_delete(mut self) -> Self {
-        self.on_delete = None;
+    pub fn deletable(mut self, deletable: impl Signal<Output = bool> + Clone + 'static) -> Self {
+        self.deletable = deletable.computed();
         self
     }
 }

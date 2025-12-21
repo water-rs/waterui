@@ -6,6 +6,7 @@
 extern crate alloc;
 
 pub mod menu;
+pub use menu::{Menu, MenuItem};
 pub mod slider;
 
 pub use slider::Slider;

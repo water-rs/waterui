@@ -807,12 +807,16 @@ typedef struct WuiFont WuiFont;
  */
 typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
 
+typedef struct WuiIndexAction WuiIndexAction;
+
 typedef struct WuiLayout WuiLayout;
 
 /**
  * Wrapper for LifeCycleHook to avoid orphan rule issues.
  */
 typedef struct WuiLifeCycleHookHandler WuiLifeCycleHookHandler;
+
+typedef struct WuiMoveAction WuiMoveAction;
 
 /**
  * Wrapper for OnEvent to avoid orphan rule issues.
@@ -1747,6 +1751,20 @@ typedef struct WuiArray_WuiMenuItem {
 } WuiArray_WuiMenuItem;
 
 /**
+ * FFI-safe representation of a Menu component.
+ */
+typedef struct WuiMenu {
+  /**
+   * The label view displayed on the menu button.
+   */
+  struct WuiAnyView *label;
+  /**
+   * The menu items as a computed array.
+   */
+  WuiComputed_MenuItems *items;
+} WuiMenu;
+
+/**
  * FFI-safe representation of an animation.
  *
  * cbindgen generates a tagged union with:
@@ -2506,12 +2524,40 @@ typedef struct MediaLoadCallback {
  */
 typedef void (*MediaLoadFn)(uint32_t, struct MediaLoadCallback);
 
+/**
+ * FFI representation of a list item.
+ */
 typedef struct WuiListItem {
+  /**
+   * The content view for this item.
+   */
   struct WuiAnyView *content;
+  /**
+   * Read-only signal indicating whether this item can be deleted.
+   */
+  WuiComputed_bool *deletable;
 } WuiListItem;
 
+/**
+ * FFI representation of a list.
+ */
 typedef struct WuiList {
+  /**
+   * The list contents (array of list items).
+   */
   struct WuiAnyViews *contents;
+  /**
+   * Read-only signal for edit mode state.
+   */
+  WuiComputed_bool *editing;
+  /**
+   * Optional delete callback (null if not deletable).
+   */
+  struct WuiIndexAction *on_delete;
+  /**
+   * Optional move callback (null if not reorderable).
+   */
+  struct WuiMoveAction *on_move;
 } WuiList;
 
 typedef struct WuiTableColumn {
@@ -3385,6 +3431,19 @@ struct WuiWatcher_MenuItems *waterui_new_watcher_menu_items(void *data,
 
 /**
  * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiMenu waterui_force_as_menu(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_menu_id(void);
+
+/**
+ * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
 void waterui_drop_action(struct WuiAction *value);
@@ -3398,6 +3457,43 @@ void waterui_drop_action(struct WuiAction *value);
  * * `env` must be a valid pointer to a `waterui_env` struct.
  */
 void waterui_call_action(struct WuiAction *action, const struct WuiEnv *env);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_index_action(struct WuiIndexAction *value);
+
+/**
+ * Calls an index action with the given environment and index.
+ *
+ * # Safety
+ *
+ * * `action` must be a valid pointer to a `WuiIndexAction` struct.
+ * * `env` must be a valid pointer to a `WuiEnv` struct.
+ */
+void waterui_call_index_action(struct WuiIndexAction *action,
+                               const struct WuiEnv *env,
+                               uintptr_t index);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_move_action(struct WuiMoveAction *value);
+
+/**
+ * Calls a move action with the given environment and from/to indices.
+ *
+ * # Safety
+ *
+ * * `action` must be a valid pointer to a `WuiMoveAction` struct.
+ * * `env` must be a valid pointer to a `WuiEnv` struct.
+ */
+void waterui_call_move_action(struct WuiMoveAction *action,
+                              const struct WuiEnv *env,
+                              uintptr_t from_index,
+                              uintptr_t to_index);
 
 /**
  * Extracts animation metadata from a watcher context.
@@ -4241,16 +4337,6 @@ struct WuiList waterui_force_as_list(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_list_id(void);
-
-/**
- * Calls the delete callback for a list item.
- *
- * # Safety
- * The caller must ensure that `item` and `env` are valid pointers.
- */
-void waterui_list_item_call_delete(struct WuiListItem *item,
-                                   const struct WuiEnv *env,
-                                   uintptr_t index);
 
 /**
  * Reads the current value from a computed

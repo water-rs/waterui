@@ -13,8 +13,9 @@
 //! text!("Click me").cursor(CursorStyle::PointingHand)
 //!
 //! // Reactive cursor based on state
-//! let is_dragging = binding(false);
-//! view.cursor(computed(|| if is_dragging.get() {
+//! let is_dragging = Binding::bool(false);
+//! let is_dragging_for_cursor = is_dragging.clone();
+//! view.cursor(Computed::new(move || if is_dragging_for_cursor.get() {
 //!     CursorStyle::ClosedHand
 //! } else {
 //!     CursorStyle::OpenHand
@@ -66,6 +67,8 @@ pub enum CursorStyle {
     /// Copy cursor (for copy operations).
     Copy,
 }
+
+impl_constant!(CursorStyle);
 
 /// Metadata to set the cursor style when hovering over a view.
 ///
