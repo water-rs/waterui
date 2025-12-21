@@ -60,8 +60,10 @@ fn home_view(counter: Binding<i32>) -> impl View {
 /// Header section of home view
 fn header_section() -> impl View {
     vstack((
-        text("Welcome to Navigation Demo").size(24.0),
-        "Tap any item below to navigate",
+        text("Welcome to Navigation Demo").font(font::Title),
+        text("Tap any item below to navigate")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
     ))
 }
 
@@ -72,24 +74,26 @@ fn counter_section(counter: Binding<i32>) -> impl View {
         Divider,
         spacer_min(16.0),
         vstack((
-            text("Shared Counter").size(18.0).bold(),
+            text("Shared Counter").font(font::Subheadline),
             hstack((
                 button("-").action({
                     let counter = counter.clone();
                     move || counter.set(counter.get() - 1)
                 }),
                 spacer_min(16.0),
-                waterui::text!("Count: {}", counter),
+                text!("Count: {counter}").font(font::Body),
                 spacer_min(16.0),
                 button("+").action({
                     let counter = counter.clone();
                     move || counter.set(counter.get() + 1)
                 }),
             )),
-            "This counter persists across navigation",
+            text("This counter persists across navigation")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
         ))
         .padding_with(EdgeInsets::all(12.0))
-        .background(Color::grey().with_opacity(0.2)),
+        .background(theme_color::SurfaceVariant),
     ))
 }
 
@@ -99,7 +103,7 @@ fn topics_section(items: Vec<Item>, counter: Binding<i32>) -> impl View {
         spacer_min(16.0),
         Divider,
         spacer_min(16.0),
-        text("Topics").size(18.0).bold(),
+        text("Topics").font(font::Subheadline),
         spacer_min(8.0),
         vstack(
             items
@@ -118,9 +122,9 @@ fn settings_section() -> impl View {
         spacer_min(16.0),
         NavigationLink::new(
             hstack((
-                text("Settings").bold(),
+                text("Settings").font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
             || settings_view().title("Settings"),
@@ -136,11 +140,13 @@ fn item_row(item: Item, counter: Binding<i32>) -> impl View {
     NavigationLink::new(
         vstack((
             hstack((
-                text(name).bold(),
+                text(name).font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             )),
-            text(description).size(14.0).foreground(Color::grey()),
+            text(description)
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
         ))
         .padding_with(EdgeInsets::symmetric(8.0, 0.0)),
         move || detail_view(item.clone(), counter.clone()).title(name),
@@ -163,9 +169,11 @@ fn detail_view(item: Item, counter: Binding<i32>) -> impl View {
 /// Header section of detail view
 fn detail_header(item: &Item) -> impl View {
     vstack((
-        text(item.name).size(28.0).bold(),
+        text(item.name).font(font::Headline),
         spacer_min(8.0),
-        text(item.description).foreground(Color::grey()),
+        text(item.description)
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer_min(24.0),
         Divider,
     ))
@@ -176,12 +184,14 @@ fn counter_display(counter: Binding<i32>) -> impl View {
     vstack((
         spacer_min(24.0),
         vstack((
-            text("Shared Counter").size(18.0),
-            waterui::text!("Current value: {}", counter),
-            "Modified from any screen",
+            text("Shared Counter").font(font::Subheadline),
+            text!("Current value: {counter}").font(font::Body),
+            text("Modified from any screen")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
         ))
         .padding_with(EdgeInsets::all(12.0))
-        .background(Color::grey().with_opacity(0.2)),
+        .background(theme_color::SurfaceVariant),
     ))
 }
 
@@ -191,9 +201,9 @@ fn detail_navigation(item: Item) -> impl View {
         spacer_min(24.0),
         NavigationLink::new(
             hstack((
-                text("Go Deeper").bold(),
+                text("Go Deeper").font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
             move || nested_detail_view(item.clone()).title("Nested View"),
@@ -206,10 +216,12 @@ fn detail_content() -> impl View {
     vstack((
         spacer_min(16.0),
         vstack((
-            text("Content Area").size(18.0),
+            text("Content Area").font(font::Subheadline),
             spacer_min(8.0),
-            "This is where the main content would appear.",
-            "Try using the back button to go back.",
+            text("This is where the main content would appear.").font(font::Body),
+            text("Try using the back button to go back.")
+                .font(font::Body)
+                .foreground(theme_color::MutedForeground),
         ))
         .padding_with(EdgeInsets::all(12.0)),
     ))
@@ -218,17 +230,19 @@ fn detail_content() -> impl View {
 /// A nested detail view to demonstrate deep navigation
 fn nested_detail_view(item: Item) -> impl View {
     vstack((
-        text("Nested Navigation").size(24.0).bold(),
+        text("Nested Navigation").font(font::Title),
         spacer_min(16.0),
-        waterui::text!("You navigated from: {}", item.name),
+        text!("You navigated from: {name}", name = item.name).font(font::Body),
         spacer_min(24.0),
-        text("This demonstrates multi-level navigation."),
+        text("This demonstrates multi-level navigation.")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer_min(24.0),
         NavigationLink::new(
             hstack((
-                text("Go Even Deeper").bold(),
+                text("Go Even Deeper").font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
             || deepest_view().title("Level 3"),
@@ -240,11 +254,13 @@ fn nested_detail_view(item: Item) -> impl View {
 /// The deepest level view
 fn deepest_view() -> impl View {
     vstack((
-        text("You're Deep!").size(28.0).bold(),
+        text("You're Deep!").font(font::Headline),
         spacer_min(24.0),
-        text("This is 3 levels deep in the navigation stack."),
+        text("This is 3 levels deep in the navigation stack.").font(font::Body),
         spacer_min(16.0),
-        text("Use the back button to return."),
+        text("Use the back button to return.")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
     ))
     .padding_with(EdgeInsets::all(16.0))
 }
@@ -256,7 +272,7 @@ fn settings_view() -> impl View {
 
     scroll(
         vstack((
-            text("Settings").size(24.0).bold(),
+            text("Settings").font(font::Title),
             spacer_min(16.0),
             toggle_row(
                 "Notifications",
@@ -276,8 +292,10 @@ fn settings_view() -> impl View {
 fn toggle_row(title: &'static str, subtitle: &'static str, value: &Binding<bool>) -> impl View {
     hstack((
         vstack((
-            text(title).bold(),
-            text(subtitle).size(14.0).foreground(Color::grey()),
+            text(title).font(font::Subheadline),
+            text(subtitle)
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
         )),
         spacer(),
         Toggle::new(value),
@@ -290,9 +308,9 @@ fn settings_links() -> impl View {
     vstack((
         NavigationLink::new(
             hstack((
-                text("About").bold(),
+                text("About").font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
             || about_view().title("About"),
@@ -300,9 +318,9 @@ fn settings_links() -> impl View {
         Divider,
         NavigationLink::new(
             hstack((
-                text("Privacy Policy").bold(),
+                text("Privacy Policy").font(font::Subheadline),
                 spacer(),
-                text(">").foreground(Color::grey()),
+                text(">").foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 0.0)),
             || privacy_view().title("Privacy"),
@@ -313,11 +331,13 @@ fn settings_links() -> impl View {
 /// About view
 fn about_view() -> impl View {
     vstack((
-        text("Navigation Example").size(24.0).bold(),
+        text("Navigation Example").font(font::Title),
         spacer_min(8.0),
-        text("Version 1.0.0").foreground(Color::grey()),
+        text("Version 1.0.0")
+            .font(font::Caption)
+            .foreground(theme_color::MutedForeground),
         spacer_min(24.0),
-        text("Demonstrates WaterUI navigation capabilities."),
+        text("Demonstrates WaterUI navigation capabilities.").font(font::Body),
         spacer_min(16.0),
         features_list(),
     ))
@@ -340,11 +360,13 @@ fn features_list() -> impl View {
 fn privacy_view() -> impl View {
     scroll(
         vstack((
-            text("Privacy Policy").size(24.0).bold(),
+            text("Privacy Policy").font(font::Title),
             spacer_min(16.0),
-            text("This is a sample privacy policy page."),
+            text("This is a sample privacy policy page.").font(font::Body),
             spacer_min(16.0),
-            text("Navigation allows easy access to information.").foreground(Color::grey()),
+            text("Navigation allows easy access to information.")
+                .font(font::Body)
+                .foreground(theme_color::MutedForeground),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )

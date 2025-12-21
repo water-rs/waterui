@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Picker Gallery"
+bundle_identifier = "com.waterui.example.picker"
