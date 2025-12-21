@@ -32,13 +32,12 @@ impl GtkComponent for Native<Color> {
         let color_ref = current_color.clone();
         drawing_area.set_draw_func(move |_, cr, width, height| {
             let c = *color_ref.borrow();
-            // Convert linear RGB to sRGB for display
-            let srgb = c.to_srgb();
+            let srgb = c.to_srgb_with_headroom();
             cr.set_source_rgba(
-                f64::from(srgb.red),
-                f64::from(srgb.green),
-                f64::from(srgb.blue),
-                f64::from(c.opacity),
+                f64::from(srgb.red.clamp(0.0, 1.0)),
+                f64::from(srgb.green.clamp(0.0, 1.0)),
+                f64::from(srgb.blue.clamp(0.0, 1.0)),
+                f64::from(c.opacity.clamp(0.0, 1.0)),
             );
             cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
             let _ = cr.fill();
