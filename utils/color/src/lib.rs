@@ -194,6 +194,25 @@ impl ResolvedColor {
         linear_srgb_to_oklch(self.red, self.green, self.blue)
     }
 
+    /// Returns linear RGB components with HDR headroom applied.
+    #[must_use]
+    pub fn linear_with_headroom(&self) -> [f32; 3] {
+        let headroom = if self.headroom.is_finite() && self.headroom > 0.0 {
+            self.headroom
+        } else {
+            0.0
+        };
+        let scale = 1.0 + headroom;
+        [self.red * scale, self.green * scale, self.blue * scale]
+    }
+
+    /// Converts this resolved color into sRGB space with headroom applied.
+    #[must_use]
+    pub fn to_srgb_with_headroom(&self) -> Srgb {
+        let [red, green, blue] = self.linear_with_headroom();
+        Srgb::new(linear_to_srgb(red), linear_to_srgb(green), linear_to_srgb(blue))
+    }
+
     /// Creates a resolved color from an OKLCH color with the provided metadata.
     #[must_use]
     pub fn from_oklch(oklch: Oklch, headroom: f32, opacity: f32) -> Self {

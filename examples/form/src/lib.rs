@@ -54,13 +54,13 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
     scroll(
         vstack((
             // Header
-            text("WaterUI Form Examples").size(28.0),
+            text("WaterUI Form Examples").title(),
             "Demonstrating form building with reactive data binding",
             Divider,
             spacer(),
             // Section 1: Auto-generated Registration Form
             vstack((
-                text("Registration Form").size(20.0),
+                text("Registration Form").sub_headline(),
                 "Using #[form] derive macro",
                 form(&registration),
                 Divider,
@@ -81,7 +81,7 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
             spacer(),
             // Section 2: Settings Form
             vstack((
-                text("App Settings").size(20.0),
+                text("App Settings").sub_headline(),
                 "Another form with different field types",
                 form(settings),
                 Divider,
@@ -101,7 +101,7 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
             spacer(),
             // Section 3: Manual Form Controls
             vstack((
-                text("Manual Form Controls").size(20.0),
+                text("Manual Form Controls").sub_headline(),
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
                 TextField::new(&custom_name)

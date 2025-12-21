@@ -174,7 +174,7 @@ impl Text {
             .0
             .content
             .zip(font)
-            .map(|(content, font)| content.font(&font))
+            .map(|(content, font)| content.font(font))
             .computed();
         self
     }
@@ -281,7 +281,7 @@ impl_text_font!(
     (body, crate::font::Body),
     (title, crate::font::Title),
     (headline, crate::font::Headline),
-    (subheadline, crate::font::Subheadline),
+    (sub_headline, crate::font::Subheadline),
     (caption, crate::font::Caption),
     (footnote, crate::font::Footnote)
 );
