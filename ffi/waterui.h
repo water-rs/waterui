@@ -1188,43 +1188,6 @@ typedef struct WuiMetadata_WuiShadow WuiMetadataShadow;
 typedef struct Computed_f32 WuiComputed_f32;
 
 /**
- * FFI-safe representation of a 2D transform.
- * All values are reactive (Computed) and can be animated.
- */
-typedef struct WuiTransform {
-  /**
-   * Scale factor along X axis (1.0 = no scale)
-   */
-  WuiComputed_f32 *scale_x;
-  /**
-   * Scale factor along Y axis (1.0 = no scale)
-   */
-  WuiComputed_f32 *scale_y;
-  /**
-   * Rotation angle in degrees (positive = clockwise)
-   */
-  WuiComputed_f32 *rotation;
-  /**
-   * Translation offset along X axis in points
-   */
-  WuiComputed_f32 *translate_x;
-  /**
-   * Translation offset along Y axis in points
-   */
-  WuiComputed_f32 *translate_y;
-} WuiTransform;
-
-typedef struct WuiMetadata_WuiTransform {
-  struct WuiAnyView *content;
-  struct WuiTransform value;
-} WuiMetadata_WuiTransform;
-
-/**
- * Type alias for Metadata<Transform> FFI struct
- */
-typedef struct WuiMetadata_WuiTransform WuiMetadataTransform;
-
-/**
  * FFI-safe representation of an anchor point.
  * Normalized coordinates: (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right.
  */
@@ -3111,21 +3074,6 @@ struct WuiTypeId waterui_metadata_shadow_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataShadow waterui_force_as_metadata_shadow(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_metadata_transform_id(void);
-
-/**
- * Force-casts an AnyView to this metadata type
- *
- * # Safety
- * The caller must ensure that `view` is a valid pointer to an `AnyView`
- * that contains a `Metadata<$ty>`.
- */
-WuiMetadataTransform waterui_force_as_metadata_transform(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.

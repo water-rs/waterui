@@ -13,15 +13,17 @@ use waterui::reactive::Binding;
 fn menu_section(selected: Binding<String>) -> impl View {
     let selected_display = selected.clone();
     vstack((
-        text("Menu Component").size(20.0).bold(),
-        "Tap the menu button to see options",
+        text("Menu Component").font(font::Subheadline),
+        text("Tap the menu button to see options")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer().height(12.0),
         {
             let selected = selected.clone();
             Menu::new(
                 hstack((
                     text("Choose an Option"),
-                    text(" ▼").foreground(Color::grey()),
+                    text(" ▼").foreground(theme_color::MutedForeground),
                 )),
                 vec![
                     MenuItem::new("Option A", {
@@ -41,8 +43,10 @@ fn menu_section(selected: Binding<String>) -> impl View {
         },
         spacer().height(12.0),
         hstack((
-            "Selected: ",
-            watch(selected_display, |s| text(s.clone())),
+            text("Selected: ")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+            Text::new(selected_display).font(font::Body),
         )),
     ))
     .padding()
@@ -52,16 +56,20 @@ fn menu_section(selected: Binding<String>) -> impl View {
 fn styled_menu_section(action_log: Binding<String>) -> impl View {
     let action_display = action_log.clone();
     vstack((
-        text("Styled Menu").size(20.0).bold(),
-        "Menu with custom styled label",
+        text("Styled Menu").font(font::Subheadline),
+        text("Menu with custom styled label")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer().height(12.0),
         {
             let action_log = action_log.clone();
             Menu::new(
                 hstack((
-                    text("Actions").bold().foreground(Color::srgb_hex("#2196F3")),
+                    text("Actions")
+                        .bold()
+                        .foreground(Color::srgb_hex("#2196F3")),
                     spacer().width(8.0),
-                    text("▼").size(12.0),
+                    text("▼").font(font::Caption),
                 ))
                 .padding_with(EdgeInsets::symmetric(8.0, 12.0))
                 .background(Color::srgb_hex("#E3F2FD")),
@@ -82,7 +90,9 @@ fn styled_menu_section(action_log: Binding<String>) -> impl View {
             )
         },
         spacer().height(12.0),
-        watch(action_display, |s| text(s.clone()).foreground(Color::grey())),
+        Text::display(action_display)
+            .font(font::Caption)
+            .foreground(theme_color::MutedForeground),
     ))
     .padding()
 }
@@ -91,8 +101,10 @@ fn styled_menu_section(action_log: Binding<String>) -> impl View {
 fn context_menu_section(context_action: Binding<String>) -> impl View {
     let action_display = context_action.clone();
     vstack((
-        text("Context Menu").size(20.0).bold(),
-        "Long press the box below to see context menu",
+        text("Context Menu").font(font::Subheadline),
+        text("Long press the box below to see context menu")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer().height(12.0),
         {
             let context_action = context_action.clone();
@@ -120,7 +132,9 @@ fn context_menu_section(context_action: Binding<String>) -> impl View {
                 ])
         },
         spacer().height(12.0),
-        watch(action_display, |s| text(s.clone()).foreground(Color::grey())),
+        Text::display(action_display)
+            .font(font::Caption)
+            .foreground(theme_color::MutedForeground),
     ))
     .padding()
 }
@@ -129,8 +143,10 @@ fn context_menu_section(context_action: Binding<String>) -> impl View {
 fn context_menu_views_section(view_action: Binding<String>) -> impl View {
     let action_display = view_action.clone();
     vstack((
-        text("Context Menu on Views").size(20.0).bold(),
-        "Long press any colored box",
+        text("Context Menu on Views").font(font::Subheadline),
+        text("Long press any colored box")
+            .font(font::Body)
+            .foreground(theme_color::MutedForeground),
         spacer().height(12.0),
         hstack((
             {
@@ -188,7 +204,9 @@ fn context_menu_views_section(view_action: Binding<String>) -> impl View {
             },
         )),
         spacer().height(12.0),
-        watch(action_display, |s| text(s.clone()).foreground(Color::grey())),
+        Text::display(action_display)
+            .font(font::Caption)
+            .foreground(theme_color::MutedForeground),
     ))
     .padding()
 }
@@ -203,8 +221,10 @@ fn main() -> impl View {
     scroll(
         vstack((
             // Header
-            text("WaterUI Menu Examples").size(28.0).bold(),
-            text("Demonstrating Menu and Context Menu components").foreground(Color::grey()),
+            text("WaterUI Menu Examples").font(font::Headline),
+            text("Demonstrating Menu and Context Menu components")
+                .font(font::Body)
+                .foreground(theme_color::MutedForeground),
             Divider,
             spacer().height(8.0),
             // Menu component section

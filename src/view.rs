@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 use executor_core::spawn_local;
-use nami::{Binding, Computed, Signal, signal::IntoComputed};
+use nami::{Binding, Signal, signal::IntoComputed};
 use waterui_color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -43,7 +43,7 @@ use crate::{
     component::{Text, badge::Badge, focus::Focused},
     prelude::Shadow,
     shape::{ClipShape, Shape},
-    style::{Anchor, Offset, Rotation, Scale, Transform},
+    style::{Anchor, Offset, Rotation, Scale},
 };
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
@@ -439,37 +439,6 @@ pub trait ViewExt: View + Sized {
     /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
-    }
-
-    /// Applies a 2D transform to this view.
-    ///
-    /// Transforms are purely visual and do not affect layout calculations.
-    /// They are applied after layout, making them ideal for animations.
-    ///
-    /// # Arguments
-    /// * `transform` - The transform to apply (scale, rotation, translation)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use waterui::prelude::*;
-    /// use waterui::style::Transform;
-    ///
-    /// // Scale and rotate a colored box
-    /// Color::red()
-    ///     .width(100.0)
-    ///     .height(100.0)
-    ///     .transform(Transform::scale(1.5).with_rotation(45.0));
-    ///
-    /// // Animate a transform
-    /// let scale = binding(1.0).animated();
-    /// Color::blue()
-    ///     .width(80.0)
-    ///     .height(80.0)
-    ///     .transform(Transform::scale(scale));
-    /// ```
-    fn transform(self, transform: Transform) -> Metadata<Transform> {
-        Metadata::new(self, transform)
     }
 
     /// Applies a uniform scale transform to this view around its center.

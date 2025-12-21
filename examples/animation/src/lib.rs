@@ -1,7 +1,7 @@
 //! Animation Example - Demonstrates WaterUI's animation system
 //!
 //! This example showcases visual animations:
-//! - Transform animations (scale, rotation, translation)
+//! - Scale/rotation/translation animations
 //! - Progress bar animations with smooth value transitions
 //! - Text transitions with cross-fade effects
 //! - Toggle state animations
@@ -546,7 +546,7 @@ fn main() -> impl View {
             text("WaterUI Animation Examples").size(28.0),
             "Visual demonstrations of the animation system",
             Divider,
-            // Transform animations - the most visual demos
+            // Scale/rotation/translation animations - the most visual demos
             vstack((
                 scale_animation_section(scale),
                 Divider,

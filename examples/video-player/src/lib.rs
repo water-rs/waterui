@@ -71,19 +71,18 @@ fn main() -> impl View {
     // Video with buffering overlay
     let video_layer = overlay(player, buffering_overlay);
 
+    let title_signal = selected_index.clone().map(move |idx| sample_videos[idx].0);
+
     // Bottom controls overlay
     let controls_overlay = vstack((
         spacer(),
         // Bottom panel
         vstack((
             // Current video title
-            Dynamic::watch(selected_index.clone(), move |idx| {
-                let (title, _) = sample_videos[idx];
-                text(title)
-                    .size(28.0)
-                    .bold()
-                    .foreground(Color::from(Srgb::WHITE))
-            }),
+            Text::display(title_signal)
+                .size(28.0)
+                .bold()
+                .foreground(Color::from(Srgb::WHITE)),
             spacer_min(20.0),
             // Video selector pills
             hstack((
