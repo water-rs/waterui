@@ -212,8 +212,20 @@ fn main(webview: WebView) -> impl View {
         .retain(event_guard)
 }
 
+fn missing_controller_view() -> impl View {
+    vstack((
+        text("WebView not available on this backend.").size(18.0).bold(),
+        text("The native runtime did not install a WebViewController."),
+        text("Run this example on a backend with WebView support."),
+    ))
+    .spacing(8.0)
+    .padding()
+}
+
 pub fn app(env: Environment) -> App {
-    let controller: &WebViewController = env.get().expect("WebViewController not installed");
+    let Some(controller) = env.get::<WebViewController>().cloned() else {
+        return App::new(missing_controller_view(), env);
+    };
     let handle = controller.open();
     let webview = WebView::new(handle);
 

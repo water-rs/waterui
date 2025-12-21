@@ -68,8 +68,8 @@ fn main() -> impl View {
         },
     ];
 
-    List::for_each(contacts, |contact| ListItem {
-        content: AnyView::new(
+    List::for_each(contacts, |contact| {
+        ListItem::new(
             vstack((
                 text(contact.name).size(17.0).bold(),
                 text(contact.role)
@@ -77,8 +77,7 @@ fn main() -> impl View {
                     .foreground(Color::srgb(128, 128, 128)),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
-        ),
-        on_delete: None,
+        )
     })
 }
 
