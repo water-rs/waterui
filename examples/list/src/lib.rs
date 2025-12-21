@@ -71,10 +71,12 @@ fn main() -> impl View {
     List::for_each(contacts, |contact| {
         ListItem::new(
             vstack((
-                text(contact.name).size(17.0).bold(),
+                text(contact.name)
+                    .font(font::Subheadline)
+                    .foreground(theme_color::Foreground),
                 text(contact.role)
-                    .size(14.0)
-                    .foreground(Color::srgb(128, 128, 128)),
+                    .font(font::Caption)
+                    .foreground(theme_color::MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
         )

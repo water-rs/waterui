@@ -91,7 +91,9 @@ fn main(webview: WebView) -> impl View {
     webview.go_to(address.get().as_str());
 
     let toolbar = vstack((
-        text("WebView Playground").size(22.0).bold(),
+        text("WebView Playground")
+            .font(font::Title)
+            .foreground(theme_color::Foreground),
         hstack((
             TextField::new(&address),
             button("Go").style(ButtonStyle::Bordered).action({
@@ -134,11 +136,17 @@ fn main(webview: WebView) -> impl View {
                 move || webview.stop()
             }),
         )),
-        Toggle::new(&allow_redirects).label(text("Allow redirects")),
+        Toggle::new(&allow_redirects).label(
+            text("Allow redirects")
+                .font(font::Body)
+                .foreground(theme_color::Foreground),
+        ),
         text!(
             "System User Agent: {system_user_agent}",
             system_user_agent = system_user_agent.get() // Wrong use of macro, but works for display
-        ),
+        )
+        .font(font::Caption)
+        .foreground(theme_color::MutedForeground),
         vstack((
             TextField::new(&custom_user_agent).prompt("Custom user agent (optional)"),
             button("Apply Custom UA")
@@ -190,17 +198,41 @@ fn main(webview: WebView) -> impl View {
                 }),
         )),
         vstack((
-            text("Status:"),
-            Text::new(status.clone()),
+            text("Status:")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+            Text::new(status.clone())
+                .font(font::Body)
+                .foreground(theme_color::Foreground),
             spacer(),
-            text("Back:"),
-            Text::display(can_go_back.clone()),
-            text("Forward:"),
-            Text::display(can_go_forward.clone()),
+            text("Back:")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+            Text::display(can_go_back.clone())
+                .font(font::Body)
+                .foreground(theme_color::Foreground),
+            text("Forward:")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+            Text::display(can_go_forward.clone())
+                .font(font::Body)
+                .foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
-        progress(progress_value.clone()).label(text("Load progress")),
-        hstack((text("JS Result:"), Text::new(js_result.clone()))).spacing(8.0),
+        progress(progress_value.clone()).label(
+            text("Load progress")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+        ),
+        hstack((
+            text("JS Result:")
+                .font(font::Caption)
+                .foreground(theme_color::MutedForeground),
+            Text::new(js_result.clone())
+                .font(font::Body)
+                .foreground(theme_color::Foreground),
+        ))
+        .spacing(8.0),
     ))
     .spacing(5.0)
     .width(250.0);
