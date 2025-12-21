@@ -55,7 +55,7 @@ pub mod prelude {
     pub use text::{TextConfig, font, highlight, styled};
 
     pub use component::link::{Link, link};
-    pub use component::menu::MenuItem;
+    pub use component::menu::{Menu, MenuItem};
 
     pub use widget::{Card, Divider, card, suspense};
 }
