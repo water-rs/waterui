@@ -17,6 +17,7 @@ wgpu = ["dep:wgpu", "dep:bytemuck"]
 [dependencies]
 waterui-core.workspace = true
 waterui-color.workspace = true
+waterui-str.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
 tracing.workspace = true
