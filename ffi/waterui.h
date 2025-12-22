@@ -294,6 +294,20 @@ typedef enum WuiCursorStyle {
 } WuiCursorStyle;
 
 /**
+ * FFI-safe representation of a drag data type tag.
+ */
+typedef enum WuiDragDataTag {
+  /**
+   * Plain text content.
+   */
+  WuiDragDataTag_Text = 0,
+  /**
+   * A URL string.
+   */
+  WuiDragDataTag_Url = 1,
+} WuiDragDataTag;
+
+/**
  * Locale enum for common locales (for convenience).
  *
  * For locales not in this enum, use `waterui_env_install_locale_string()`.
@@ -791,6 +805,16 @@ typedef struct WuiAnyView WuiAnyView;
 typedef struct WuiAnyViews WuiAnyViews;
 
 typedef struct WuiColor WuiColor;
+
+/**
+ * Opaque wrapper for Draggable.
+ */
+typedef struct WuiDraggableWrapper WuiDraggableWrapper;
+
+/**
+ * Wrapper for DropDestination to avoid orphan rule issues.
+ */
+typedef struct WuiDropHandler WuiDropHandler;
 
 typedef struct WuiDynamic WuiDynamic;
 
@@ -1748,6 +1772,46 @@ typedef struct WuiMenu {
    */
   WuiComputed_MenuItems *items;
 } WuiMenu;
+
+/**
+ * FFI-safe representation of a draggable metadata.
+ */
+typedef struct WuiDraggable {
+  /**
+   * Opaque pointer to the Draggable wrapper.
+   */
+  struct WuiDraggableWrapper *inner;
+} WuiDraggable;
+
+typedef struct WuiMetadata_WuiDraggable {
+  struct WuiAnyView *content;
+  struct WuiDraggable value;
+} WuiMetadata_WuiDraggable;
+
+/**
+ * Type alias for Metadata<Draggable> FFI struct
+ */
+typedef struct WuiMetadata_WuiDraggable WuiMetadataDraggable;
+
+/**
+ * FFI-safe representation of a drop destination metadata.
+ */
+typedef struct WuiDropDestination {
+  /**
+   * Opaque pointer to the drop handler.
+   */
+  struct WuiDropHandler *handler;
+} WuiDropDestination;
+
+typedef struct WuiMetadata_WuiDropDestination {
+  struct WuiAnyView *content;
+  struct WuiDropDestination value;
+} WuiMetadata_WuiDropDestination;
+
+/**
+ * Type alias for Metadata<DropDestination> FFI struct
+ */
+typedef struct WuiMetadata_WuiDropDestination WuiMetadataDropDestination;
 
 /**
  * FFI-safe representation of an animation.
@@ -2731,6 +2795,20 @@ typedef struct WuiWebViewHandle {
  */
 typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
 
+/**
+ * FFI-safe representation of drag data.
+ */
+typedef struct WuiDragData {
+  /**
+   * The type of data.
+   */
+  enum WuiDragDataTag tag;
+  /**
+   * The content (text or URL string).
+   */
+  struct WuiStr value;
+} WuiDragData;
+
 typedef struct WuiId {
   int32_t inner;
 } WuiId;
@@ -3441,6 +3519,36 @@ struct WuiMenu waterui_force_as_menu(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_menu_id(void);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_draggable_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataDraggable waterui_force_as_metadata_draggable(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_drop_destination_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataDropDestination waterui_force_as_metadata_drop_destination(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -4658,6 +4766,70 @@ void waterui_drop_on_event(struct WuiOnEventHandler *handler);
  * The gesture pointer must be valid and properly initialized.
  */
 void waterui_drop_gesture(struct WuiGesture *gesture);
+
+/**
+ * Gets the current drag data value from a draggable.
+ *
+ * # Safety
+ *
+ * * `draggable` must be a valid pointer to a WuiDraggable.
+ */
+struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggable);
+
+/**
+ * Drops a draggable.
+ *
+ * # Safety
+ *
+ * * `draggable` must be a valid pointer to a WuiDraggable.
+ */
+void waterui_drop_draggable(struct WuiDraggable *draggable);
+
+/**
+ * Calls the drop handler with the given data.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiDropDestination.
+ * * `env` must be a valid pointer to a WuiEnv.
+ * * `data_tag` must be a valid WuiDragDataTag value.
+ * * `data_value` must be a valid null-terminated UTF-8 string.
+ */
+void waterui_call_drop_handler(const struct WuiDropDestination *dest,
+                               const struct WuiEnv *env,
+                               enum WuiDragDataTag data_tag,
+                               const char *data_value);
+
+/**
+ * Calls the enter handler if set.
+ *
+ * # Safety
+ *
+ * * `dest` must be a valid pointer to a WuiDropDestination.
+ * * `env` must be a valid pointer to a WuiEnv.
+ */
+void waterui_call_drop_enter_handler(const struct WuiDropDestination *dest,
+                                     const struct WuiEnv *env);
+
+/**
+ * Calls the exit handler if set.
+ *
+ * # Safety
+ *
+ * * `dest` must be a valid pointer to a WuiDropDestination.
+ * * `env` must be a valid pointer to a WuiEnv.
+ */
+void waterui_call_drop_exit_handler(const struct WuiDropDestination *dest,
+                                    const struct WuiEnv *env);
+
+/**
+ * Drops a drop destination handler.
+ *
+ * # Safety
+ *
+ * * `dest` must be a valid pointer to a WuiDropDestination.
+ */
+void waterui_drop_drop_destination(struct WuiDropDestination *dest);
 
 /**
  * Reads the current value from a binding
