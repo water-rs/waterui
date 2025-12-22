@@ -43,17 +43,9 @@ pub fn rect_to_kurbo(r: Rect) -> kurbo::Rect {
 // ============================================================================
 
 #[inline]
-#[allow(clippy::cast_possible_truncation)]
-#[allow(clippy::cast_sign_loss)]
 pub fn resolved_color_to_peniko(c: ResolvedColor) -> peniko::Color {
-    // WaterUI ResolvedColor uses linear RGB with headroom
-    // peniko::Color expects RGBA in [0, 1] range
-    // Apply headroom to support HDR colors
-    let scale = 1.0 + c.headroom;
-    peniko::Color::from_rgba8(
-        (c.red * scale * 255.0) as u8,
-        (c.green * scale * 255.0) as u8,
-        (c.blue * scale * 255.0) as u8,
-        (c.opacity * 255.0) as u8,
-    )
+    // Convert linear RGB (with headroom) into sRGB for peniko.
+    let srgb = c.to_srgb_with_headroom();
+    let opacity = c.opacity.clamp(0.0, 1.0);
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, opacity])
 }
