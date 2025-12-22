@@ -12,6 +12,7 @@ pub mod cursor;
 pub mod error;
 pub mod filter;
 pub mod gesture;
+pub mod drag_drop;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.

@@ -28,6 +28,7 @@ pub mod components;
 pub mod cursor;
 pub mod event;
 pub mod gesture;
+pub mod drag_drop;
 mod type_id;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -1342,3 +1343,21 @@ impl IntoFFI for Menu {
 
 // Generate waterui_menu_id() and waterui_force_as_menu()
 ffi_view!(Menu, WuiMenu, menu);
+
+// ========== Drag and Drop FFI ==========
+// Used to make views draggable or drop destinations
+
+use crate::drag_drop::{WuiDraggable, WuiDropDestination};
+use waterui::drag_drop::{Draggable, DropDestination};
+
+/// Type alias for Metadata<Draggable> FFI struct
+pub type WuiMetadataDraggable = WuiMetadata<WuiDraggable>;
+
+// Generate waterui_metadata_draggable_id() and waterui_force_as_metadata_draggable()
+ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
+
+/// Type alias for Metadata<DropDestination> FFI struct
+pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
+
+// Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
+ffi_metadata!(DropDestination, WuiMetadataDropDestination, drop_destination);
