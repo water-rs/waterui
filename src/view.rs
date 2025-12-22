@@ -34,6 +34,7 @@ use waterui_str::Str;
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
     background::{Background, ForegroundColor},
+    drag_drop::{DragData, Draggable, DropDestination},
     filter,
     gesture::{Gesture, GestureObserver, TapGesture},
     metadata::{context_menu::ContextMenu, secure::Secure},
@@ -833,6 +834,53 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn retain<T: 'static>(self, value: T) -> Metadata<Retain> {
         Metadata::new(self, Retain::new(value))
+    }
+
+    /// Makes this view draggable with the specified data.
+    ///
+    /// When the user drags this view (click-drag on macOS, long-press-drag on iOS/Android),
+    /// the data will be transferred to any compatible drop destination.
+    ///
+    /// # Arguments
+    /// * `data` - The data to transfer when dragging (can be reactive)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::drag_drop::DragData;
+    ///
+    /// text!("Drag me")
+    ///     .draggable(DragData::text("Hello!"));
+    /// ```
+    fn draggable(self, data: impl IntoComputed<DragData>) -> Metadata<Draggable> {
+        Metadata::new(self, Draggable::new(data))
+    }
+
+    /// Makes this view a drop destination for dragged content.
+    ///
+    /// When compatible data is dropped onto this view, the handler is called
+    /// with the dropped data.
+    ///
+    /// # Arguments
+    /// * `on_drop` - Handler called when data is dropped (receives `DragData`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::drag_drop::DragData;
+    ///
+    /// text!("Drop here")
+    ///     .drop_destination(|data: DragData| {
+    ///         println!("Received: {}", data.as_str());
+    ///     });
+    /// ```
+    fn drop_destination<P: 'static>(
+        self,
+        on_drop: impl HandlerFn<P, ()> + 'static,
+    ) -> Metadata<DropDestination> {
+        Metadata::new(self, DropDestination::new(on_drop))
     }
 }
 
