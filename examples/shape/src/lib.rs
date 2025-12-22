@@ -12,10 +12,13 @@
 
 use core::f32::consts::{FRAC_PI_2, PI};
 use waterui::app::App;
+use waterui::metadata::secure::{HighDynamicRange, StandardDynamicRange};
 use waterui::prelude::*;
+use waterui::reactive::binding;
 use waterui::shape::{
     Capsule, Circle, Ellipse, Path, Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
 };
+use waterui::widget::condition::when;
 
 /// Demo: Circle shape
 fn circle_demo() -> impl View {
@@ -196,6 +199,43 @@ fn custom_path_demo() -> impl View {
     .padding()
 }
 
+/// Demo: HDR shapes
+fn hdr_shapes() -> impl View {
+    let sdr = Color::srgb_f32(0.9, 0.2, 0.35);
+    let hdr = Color::srgb_f32(0.9, 0.2, 0.35).with_headroom(1.5);
+    let hdr_blue = Color::srgb_f32(0.2, 0.6, 1.0).with_headroom(1.0);
+
+    hstack((
+        zstack((
+            RoundedRectangle::new(0.18).fill(sdr),
+            text("SDR").foreground(Color::srgb(255, 255, 255)),
+        ))
+        .size(100.0, 60.0),
+        zstack((
+            RoundedRectangle::new(0.18).fill(hdr),
+            text("HDR").foreground(Color::srgb(255, 255, 255)),
+        ))
+        .size(100.0, 60.0),
+        Circle.fill(hdr_blue).size(60.0, 60.0),
+    ))
+    .spacing(12.0)
+}
+
+/// Demo: HDR shapes
+fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
+    let show_hdr = show_hdr.clone();
+    vstack((
+        text("HDR Shapes").size(18.0),
+        "Extended range colors via headroom",
+        Toggle::new(&show_hdr).label(text("Show HDR")),
+        when(show_hdr.clone(), || {
+            hdr_shapes().metadata(HighDynamicRange::new())
+        })
+        .or(|| hdr_shapes().metadata(StandardDynamicRange::new())),
+    ))
+    .padding()
+}
+
 /// Helper: Create a star path
 fn create_star(points: usize, inner_ratio: f32) -> Path {
     let mut path = Path::new();
@@ -311,6 +351,8 @@ fn layout_demo() -> impl View {
 
 #[hot_reload]
 fn main() -> impl View {
+    let show_hdr = binding(true);
+
     //panic!("Shape example app requires WaterUI runtime.");
     scroll(
         vstack((
@@ -336,6 +378,8 @@ fn main() -> impl View {
                 uneven_rounded_rectangle_demo(),
                 Divider,
                 custom_path_demo(),
+                Divider,
+                hdr_shape_demo(&show_hdr),
             )),
             // Showcase group
             vstack((

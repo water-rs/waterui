@@ -191,7 +191,7 @@ impl GtkRenderer {
         use waterui::background::{Background, ForegroundColor};
         use waterui::component::focus::Focused;
         use waterui::gesture::GestureObserver;
-        use waterui::metadata::secure::Secure;
+        use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
         use waterui::style::Shadow;
         use waterui_core::event::OnEvent;
         use waterui_layout::safe_area::IgnoreSafeArea;
@@ -228,15 +228,15 @@ impl GtkRenderer {
                 let color = color_signal.get();
                 // Resolve the color to get RGB values
                 let resolved = color.resolve(env).get();
-                let srgb = resolved.to_srgb();
+                let srgb = resolved.to_srgb_with_headroom();
 
                 // Create inline CSS for background color
                 let css = format!(
                     "* {{ background-color: rgba({}, {}, {}, {}); }}",
-                    (srgb.red * 255.0) as u8,
-                    (srgb.green * 255.0) as u8,
-                    (srgb.blue * 255.0) as u8,
-                    resolved.opacity
+                    (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
+                    (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
+                    (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
+                    resolved.opacity.clamp(0.0, 1.0)
                 );
 
                 let provider = gtk4::CssProvider::new();
@@ -261,14 +261,14 @@ impl GtkRenderer {
             // Apply foreground color using CSS
             let color = metadata.value.color.get();
             let resolved = color.resolve(env).get();
-            let srgb = resolved.to_srgb();
+            let srgb = resolved.to_srgb_with_headroom();
 
             let css = format!(
                 "* {{ color: rgba({}, {}, {}, {}); }}",
-                (srgb.red * 255.0) as u8,
-                (srgb.green * 255.0) as u8,
-                (srgb.blue * 255.0) as u8,
-                resolved.opacity
+                (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
+                (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
+                (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
+                resolved.opacity.clamp(0.0, 1.0)
             );
 
             let provider = gtk4::CssProvider::new();
@@ -299,6 +299,18 @@ impl GtkRenderer {
 
         // Metadata<Secure> - mark content as secure (e.g., password fields)
         dispatcher.register::<Metadata<Secure>>(|_state, ctx, metadata, env| {
+            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            renderer.render_any(metadata.content, env)
+        });
+
+        // Metadata<StandardDynamicRange> - render content with SDR color handling
+        dispatcher.register::<Metadata<StandardDynamicRange>>(|_state, ctx, metadata, env| {
+            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
+            renderer.render_any(metadata.content, env)
+        });
+
+        // Metadata<HighDynamicRange> - render content with HDR color handling
+        dispatcher.register::<Metadata<HighDynamicRange>>(|_state, ctx, metadata, env| {
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             renderer.render_any(metadata.content, env)
         });
