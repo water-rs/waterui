@@ -82,6 +82,9 @@ impl DragData {
     }
 }
 
+// Implement IntoSignal/IntoComputed so DragData can be passed directly to .draggable()
+nami::impl_constant!(DragData);
+
 /// Metadata that makes a view draggable.
 ///
 /// When attached to a view, the view becomes a drag source. Users can initiate
