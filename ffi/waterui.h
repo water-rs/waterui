@@ -923,6 +923,28 @@ typedef struct WuiMetadata_WuiSecureMarker {
 typedef struct WuiMetadata_WuiSecureMarker WuiMetadataSecure;
 
 /**
+ * C-compatible empty marker struct for dynamic range metadata.
+ */
+typedef struct WuiDynamicRangeMarker {
+  uint8_t _marker;
+} WuiDynamicRangeMarker;
+
+typedef struct WuiMetadata_WuiDynamicRangeMarker {
+  struct WuiAnyView *content;
+  struct WuiDynamicRangeMarker value;
+} WuiMetadata_WuiDynamicRangeMarker;
+
+/**
+ * Type alias for Metadata<StandardDynamicRange> FFI struct.
+ */
+typedef struct WuiMetadata_WuiDynamicRangeMarker WuiMetadataStandardDynamicRange;
+
+/**
+ * Type alias for Metadata<HighDynamicRange> FFI struct.
+ */
+typedef struct WuiMetadata_WuiDynamicRangeMarker WuiMetadataHighDynamicRange;
+
+/**
  * FFI-safe representation of a gesture type.
  */
 typedef enum WuiGesture_Tag {
@@ -2974,6 +2996,36 @@ WuiMetadataSecure waterui_force_as_metadata_secure(struct WuiAnyView *view);
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
+struct WuiTypeId waterui_metadata_standard_dynamic_range_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataStandardDynamicRange waterui_force_as_metadata_standard_dynamic_range(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_high_dynamic_range_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataHighDynamicRange waterui_force_as_metadata_high_dynamic_range(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
 struct WuiTypeId waterui_metadata_gesture_id(void);
 
 /**
@@ -3590,6 +3642,33 @@ struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
                                                                 struct WuiColor*,
                                                                 struct WuiWatcherMetadata*),
                                                    void (*drop)(void*));
+
+/**
+ * Creates a new linear sRGBA color with optional HDR headroom.
+ *
+ * `headroom` is an HDR scale factor where `0.0` means SDR and values above
+ * `0.0` allow the renderer to apply an extended range multiplier.
+ *
+ * # Safety
+ *
+ * This function returns an owned pointer that must be dropped with
+ * `waterui_drop_color` unless it is passed to a binding setter that consumes it.
+ */
+struct WuiColor *waterui_color_from_linear_rgba_headroom(float red,
+                                                         float green,
+                                                         float blue,
+                                                         float alpha,
+                                                         float headroom);
+
+/**
+ * Creates a new linear sRGBA color (SDR only).
+ *
+ * # Safety
+ *
+ * This function returns an owned pointer that must be dropped with
+ * `waterui_drop_color` unless it is passed to a binding setter that consumes it.
+ */
+struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, float alpha);
 
 /**
  * Resolves a color in the given environment.
