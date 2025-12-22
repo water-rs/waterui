@@ -3,6 +3,9 @@
 
 extern crate alloc;
 
+/// SVG component for native vector graphics rendering.
+pub mod svg;
+
 /// High-performance GPU rendering surface using wgpu (advanced API).
 #[cfg(feature = "wgpu")]
 pub mod gpu_surface;
@@ -16,6 +19,9 @@ pub mod shader_surface;
 //pub mod canvas;
 //pub use canvas::{Canvas, DrawingContext};
 // Canvas is not available on main branch yet
+
+// Re-export Svg for user convenience.
+pub use svg::Svg;
 
 // Re-export key types for user convenience.
 #[cfg(feature = "wgpu")]

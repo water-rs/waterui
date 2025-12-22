@@ -1,0 +1,25 @@
+[package]
+name = "waterui-icons-fontawesome7"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license = "CC-BY-4.0"
+repository.workspace = true
+description = "Font Awesome 7 Free icons for WaterUI"
+keywords = ["icons", "fontawesome", "fa", "waterui"]
+categories = ["gui"]
+readme = "README.md"
+
+[features]
+default = ["svg"]
+svg = []
+webfont = []
+
+[dependencies]
+waterui-graphics.workspace = true
+waterui-text = { workspace = true, optional = true }
+waterui-core.workspace = true
+waterui-str.workspace = true
+
+[lints]
+workspace = true

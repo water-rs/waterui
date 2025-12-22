@@ -2,7 +2,7 @@ use core::fmt::Debug;
 
 use nami::{Computed, Signal, impl_constant};
 use waterui_core::{
-    Environment,
+    Environment, Str,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -20,7 +20,7 @@ impl Default for Font {
     }
 }
 
-/// A resolved font with specific size and weight.
+/// A resolved font with specific size, weight, and optional family.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ResolvedFont {
@@ -28,13 +28,41 @@ pub struct ResolvedFont {
     pub size: f32,
     /// Font weight.
     pub weight: FontWeight,
+    /// Optional font family name (e.g., "MaterialIcons-Regular").
+    /// None means use the system default font.
+    pub family: Option<Str>,
 }
 
 impl ResolvedFont {
     /// Creates a new resolved font with the given size and weight.
+    /// Uses the system default font family.
     #[must_use]
     pub const fn new(size: f32, weight: FontWeight) -> Self {
-        Self { size, weight }
+        Self {
+            size,
+            weight,
+            family: None,
+        }
+    }
+
+    /// Creates a new resolved font with a specific font family.
+    #[must_use]
+    pub fn with_family(size: f32, weight: FontWeight, family: impl Into<Str>) -> Self {
+        Self {
+            size,
+            weight,
+            family: Some(family.into()),
+        }
+    }
+
+    /// Creates a new resolved font with a static font family (const-compatible).
+    #[must_use]
+    pub const fn with_static_family(size: f32, weight: FontWeight, family: &'static str) -> Self {
+        Self {
+            size,
+            weight,
+            family: Some(Str::from_static(family)),
+        }
     }
 }
 
@@ -76,6 +104,7 @@ impl Font {
         Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
             size: font.size,
             weight,
+            family: font.family,
         }))
     }
 
@@ -85,6 +114,17 @@ impl Font {
         Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
             size,
             weight: font.weight,
+            family: font.family,
+        }))
+    }
+
+    /// Sets the font family.
+    #[must_use]
+    pub fn family(self, family: impl Into<Str> + Clone + 'static) -> Self {
+        Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
+            size: font.size,
+            weight: font.weight,
+            family: Some(family.clone().into()),
         }))
     }
 
@@ -114,7 +154,11 @@ macro_rules! impl_font {
                 env.query::<Self, Computed<Self::Resolved>>()
                     .cloned()
                     .unwrap_or_else(|| {
-                        Computed::constant(ResolvedFont::new($default_size, $default_weight))
+                        Computed::constant(ResolvedFont {
+                            size: $default_size,
+                            weight: $default_weight,
+                            family: None,
+                        })
                     })
             }
         }
