@@ -882,6 +882,28 @@ pub trait ViewExt: View + Sized {
     ) -> Metadata<DropDestination> {
         Metadata::new(self, DropDestination::new(on_drop))
     }
+
+    /// Makes this view a drop destination with all event handlers.
+    ///
+    /// Provides full control over drag events including enter/exit feedback.
+    ///
+    /// # Arguments
+    /// * `on_drop` - Handler called when data is dropped
+    /// * `on_enter` - Handler called when drag enters view bounds
+    /// * `on_exit` - Handler called when drag exits view bounds
+    fn drop_destination_with_events<P1: 'static, P2: 'static, P3: 'static>(
+        self,
+        on_drop: impl HandlerFn<P1, ()> + 'static,
+        on_enter: impl HandlerFn<P2, ()> + 'static,
+        on_exit: impl HandlerFn<P3, ()> + 'static,
+    ) -> Metadata<DropDestination> {
+        Metadata::new(
+            self,
+            DropDestination::new(on_drop)
+                .on_enter(on_enter)
+                .on_exit(on_exit),
+        )
+    }
 }
 
 impl<V: View + Sized> ViewExt for V {}
