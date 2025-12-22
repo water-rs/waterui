@@ -445,7 +445,7 @@ ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
 // ========== Metadata<Secure> FFI ==========
 // Used to mark views as secure (prevent screenshots)
 
-use waterui::metadata::secure::Secure;
+use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 
 /// C-compatible empty marker struct for Secure metadata.
 /// This is needed because `()` (unit type) is not representable in C.
@@ -469,6 +469,51 @@ pub type WuiMetadataSecure = WuiMetadata<WuiSecureMarker>;
 
 // Generate waterui_metadata_secure_id() and waterui_force_as_metadata_secure()
 ffi_metadata!(Secure, WuiMetadataSecure, secure);
+
+// ========== Metadata<StandardDynamicRange>/Metadata<HighDynamicRange> FFI ==========
+// Used to toggle HDR color handling for a subtree.
+
+/// C-compatible empty marker struct for dynamic range metadata.
+#[repr(C)]
+pub struct WuiDynamicRangeMarker {
+    _marker: u8,
+}
+
+impl IntoFFI for StandardDynamicRange {
+    type FFI = WuiDynamicRangeMarker;
+    fn into_ffi(self) -> Self::FFI {
+        WuiDynamicRangeMarker { _marker: 0 }
+    }
+}
+
+impl IntoFFI for HighDynamicRange {
+    type FFI = WuiDynamicRangeMarker;
+    fn into_ffi(self) -> Self::FFI {
+        WuiDynamicRangeMarker { _marker: 0 }
+    }
+}
+
+/// Type alias for Metadata<StandardDynamicRange> FFI struct.
+pub type WuiMetadataStandardDynamicRange = WuiMetadata<WuiDynamicRangeMarker>;
+
+/// Type alias for Metadata<HighDynamicRange> FFI struct.
+pub type WuiMetadataHighDynamicRange = WuiMetadata<WuiDynamicRangeMarker>;
+
+// Generate waterui_metadata_standard_dynamic_range_id()
+// and waterui_force_as_metadata_standard_dynamic_range().
+ffi_metadata!(
+    StandardDynamicRange,
+    WuiMetadataStandardDynamicRange,
+    standard_dynamic_range
+);
+
+// Generate waterui_metadata_high_dynamic_range_id()
+// and waterui_force_as_metadata_high_dynamic_range().
+ffi_metadata!(
+    HighDynamicRange,
+    WuiMetadataHighDynamicRange,
+    high_dynamic_range
+);
 
 // ========== Metadata<GestureObserver> FFI ==========
 // Used to attach gesture recognizers to views

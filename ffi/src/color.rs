@@ -2,8 +2,9 @@ use crate::{
     IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, ffi_reactive, reactive::WuiComputed,
 };
 
-use waterui::Color;
+use waterui::{Color, Signal};
 use waterui_color::ResolvedColor;
+use waterui_core::{Environment, resolve::Resolvable};
 
 opaque!(WuiColor, Color);
 
@@ -37,6 +38,61 @@ ffi_computed!(ResolvedColor, WuiResolvedColor);
 ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
 ffi_reactive!(Color, *mut WuiColor);
+
+#[derive(Debug, Clone)]
+struct LinearResolvedColor {
+    resolved: ResolvedColor,
+}
+
+impl Resolvable for LinearResolvedColor {
+    type Resolved = ResolvedColor;
+    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        self.resolved
+    }
+}
+
+/// Creates a new linear sRGBA color with optional HDR headroom.
+///
+/// `headroom` is an HDR scale factor where `0.0` means SDR and values above
+/// `0.0` allow the renderer to apply an extended range multiplier.
+///
+/// # Safety
+///
+/// This function returns an owned pointer that must be dropped with
+/// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_color_from_linear_rgba_headroom(
+    red: f32,
+    green: f32,
+    blue: f32,
+    alpha: f32,
+    headroom: f32,
+) -> *mut WuiColor {
+    let resolved = ResolvedColor {
+        red,
+        green,
+        blue,
+        opacity: alpha.clamp(0.0, 1.0),
+        headroom: headroom.max(0.0),
+    };
+    Color::new(LinearResolvedColor { resolved }).into_ffi()
+}
+
+/// Creates a new linear sRGBA color (SDR only).
+///
+/// # Safety
+///
+/// This function returns an owned pointer that must be dropped with
+/// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_color_from_srgba(
+    red: f32,
+    green: f32,
+    blue: f32,
+    alpha: f32,
+) -> *mut WuiColor {
+    unsafe { waterui_color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
+}
 
 /// Resolves a color in the given environment.
 ///
