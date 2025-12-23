@@ -12,7 +12,7 @@ use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 use crate::{
     android::{
         backend::AndroidBackend,
-        toolchain::{AndroidNdk, AndroidSdk},
+        toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
     },
     build::{BuildOptions, RustBuild},
     device::Artifact,
@@ -101,6 +101,45 @@ fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
         .join("toolchains/llvm/prebuilt")
         .join(ndk_host_tag())
         .join("bin/llvm-ar")
+}
+
+/// Find the android.jar from any installed Android platform.
+/// Returns the path to android.jar from the highest installed API level.
+fn find_android_jar(sdk_path: &Path) -> Option<PathBuf> {
+    let platforms_dir = sdk_path.join("platforms");
+    if !platforms_dir.exists() {
+        return None;
+    }
+
+    // Find all installed platforms and sort by API level descending
+    let mut platforms: Vec<PathBuf> = std::fs::read_dir(&platforms_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+
+    // Sort by API level (android-XX format) - highest first
+    platforms.sort_by(|a, b| {
+        let get_api_level = |p: &Path| -> u32 {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("android-"))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        };
+        get_api_level(b).cmp(&get_api_level(a))
+    });
+
+    // Find first platform with android.jar
+    for platform in platforms {
+        let android_jar = platform.join("android.jar");
+        if android_jar.exists() {
+            return Some(android_jar);
+        }
+    }
+
+    None
 }
 
 /// Create a wrapper `CMake` toolchain file that sets `ANDROID_ABI` before including
@@ -256,6 +295,9 @@ impl AndroidPlatform {
         // Build with RustBuild
         let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
 
+        // Detect Kotlin path before entering unsafe block (detect_path is async)
+        let kotlin_bin_dir = Kotlin::detect_path().await.and_then(|p| p.parent().map(PathBuf::from));
+
         // Set environment variables for cargo, cc-rs, and cmake before building
         // SAFETY: CLI is single-threaded at this point
         unsafe {
@@ -273,6 +315,24 @@ impl AndroidPlatform {
             std::env::set_var("ANDROID_NDK", &ndk_path);
             std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
             std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+
+            // Set Android SDK environment variables (needed by waterkit and other crates)
+            if let Some(sdk_path) = AndroidSdk::detect_path() {
+                std::env::set_var("ANDROID_HOME", &sdk_path);
+                std::env::set_var("ANDROID_SDK_ROOT", &sdk_path);
+
+                // Set ANDROID_JAR path from highest installed API level
+                if let Some(android_jar) = find_android_jar(&sdk_path) {
+                    std::env::set_var("ANDROID_JAR", &android_jar);
+                }
+            }
+
+            // Add kotlinc to PATH (needed by waterkit and other crates that compile Kotlin)
+            if let Some(kotlin_bin) = &kotlin_bin_dir {
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                let new_path = format!("{}:{}", kotlin_bin.display(), current_path);
+                std::env::set_var("PATH", new_path);
+            }
 
             // Create a wrapper CMake toolchain file
             let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi)?;
@@ -389,16 +449,22 @@ impl AndroidPlatform {
         // Join ABIs with comma for the environment variable
         let abis_str = abis.join(",");
 
-        let output = smol::process::Command::new(gradlew.to_str().unwrap())
-            .args([
-                command_name,
-                "--project-dir",
-                backend_path.to_str().unwrap(),
-            ])
-            .env("WATERUI_SKIP_RUST_BUILD", "1")
-            .env("WATERUI_ANDROID_ABIS", &abis_str)
-            .output()
-            .await?;
+        // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
+        // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
+        let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
+        cmd.args([
+            command_name,
+            "--project-dir",
+            backend_path.to_str().unwrap(),
+        ])
+        .env("WATERUI_SKIP_RUST_BUILD", "1")
+        .env("WATERUI_ANDROID_ABIS", &abis_str);
+
+        if let Some(java_home) = Java::detect_home().await {
+            cmd.env("JAVA_HOME", java_home);
+        }
+
+        let output = cmd.output().await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -462,6 +528,9 @@ pub async fn build_android(
     // Build with RustBuild
     let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
 
+    // Detect Kotlin path before entering unsafe block (detect_path is async)
+    let kotlin_bin_dir = Kotlin::detect_path().await.and_then(|p| p.parent().map(PathBuf::from));
+
     // Set environment variables for cargo, cc-rs, and cmake before building
     // SAFETY: CLI is single-threaded at this point
     unsafe {
@@ -480,6 +549,24 @@ pub async fn build_android(
         std::env::set_var("ANDROID_NDK", &ndk_path);
         std::env::set_var("ANDROID_NDK_HOME", &ndk_path);
         std::env::set_var("ANDROID_NDK_ROOT", &ndk_path);
+
+        // Set Android SDK environment variables (needed by waterkit and other crates)
+        if let Some(sdk_path) = AndroidSdk::detect_path() {
+            std::env::set_var("ANDROID_HOME", &sdk_path);
+            std::env::set_var("ANDROID_SDK_ROOT", &sdk_path);
+
+            // Set ANDROID_JAR path from highest installed API level
+            if let Some(android_jar) = find_android_jar(&sdk_path) {
+                std::env::set_var("ANDROID_JAR", &android_jar);
+            }
+        }
+
+        // Add kotlinc to PATH (needed by waterkit and other crates that compile Kotlin)
+        if let Some(kotlin_bin) = &kotlin_bin_dir {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", kotlin_bin.display(), current_path);
+            std::env::set_var("PATH", new_path);
+        }
 
         // Create a wrapper CMake toolchain file that sets ANDROID_ABI before
         // including the NDK toolchain. This is required because cmake-rs doesn't
@@ -554,10 +641,15 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
         return Ok(());
     }
 
-    let output = smol::process::Command::new(gradlew.to_str().unwrap())
-        .args(["clean", "--project-dir", backend_path.to_str().unwrap()])
-        .output()
-        .await?;
+    // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
+    let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
+    cmd.args(["clean", "--project-dir", backend_path.to_str().unwrap()]);
+
+    if let Some(java_home) = Java::detect_home().await {
+        cmd.env("JAVA_HOME", java_home);
+    }
+
+    let output = cmd.output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -616,16 +708,23 @@ pub async fn package_android(
     //
     // Also pass the target ABI to filter which native libraries are included
     // This ensures only the architectures we built are packaged in the APK
-    let output = smol::process::Command::new(gradlew.to_str().unwrap())
-        .args([
-            command_name,
-            "--project-dir",
-            backend_path.to_str().unwrap(),
-        ])
-        .env("WATERUI_SKIP_RUST_BUILD", "1")
-        .env("WATERUI_ANDROID_ABIS", abi)
-        .output()
-        .await?;
+    //
+    // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
+    // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
+    let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
+    cmd.args([
+        command_name,
+        "--project-dir",
+        backend_path.to_str().unwrap(),
+    ])
+    .env("WATERUI_SKIP_RUST_BUILD", "1")
+    .env("WATERUI_ANDROID_ABIS", abi);
+
+    if let Some(java_home) = Java::detect_home().await {
+        cmd.env("JAVA_HOME", java_home);
+    }
+
+    let output = cmd.output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

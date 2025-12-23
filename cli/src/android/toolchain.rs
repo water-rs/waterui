@@ -5,8 +5,8 @@ use crate::{
     utils::which,
 };
 
-/// Complete Android toolchain including SDK, NDK, and `CMake`.
-pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Cmake);
+/// Complete Android toolchain including SDK, NDK, Kotlin, and `CMake`.
+pub type AndroidToolchain = (AndroidSdk, AndroidNdk, Kotlin, Cmake);
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -92,7 +92,7 @@ pub struct AndroidSdkInstallation;
 pub struct AndroidNdk;
 
 /// Java toolchain component for Android development.
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct Java;
 
 impl Java {
@@ -122,6 +122,143 @@ impl Java {
 
         // Check PATH
         which("java").await.ok()
+    }
+
+    /// Get the JAVA_HOME directory (parent of bin/).
+    pub async fn detect_home() -> Option<PathBuf> {
+        let java_path = Self::detect_path().await?;
+        // java_path is .../bin/java, we want ...
+        java_path.parent()?.parent().map(PathBuf::from)
+    }
+}
+
+/// Kotlin toolchain component for Android development.
+#[derive(Debug, Clone, Default)]
+pub struct Kotlin;
+
+impl Kotlin {
+    /// Detect the path to the kotlinc compiler.
+    pub async fn detect_path() -> Option<PathBuf> {
+        // Check KOTLIN_HOME first
+        if let Ok(home) = env::var("KOTLIN_HOME") {
+            let kotlinc_path = PathBuf::from(&home).join("bin/kotlinc");
+            if kotlinc_path.exists() {
+                return Some(kotlinc_path);
+            }
+        }
+
+        // Check PATH first (prefers system-installed Kotlin from Homebrew, etc.)
+        if let Ok(path) = which("kotlinc").await {
+            return Some(path);
+        }
+
+        // Fall back to Android Studio's bundled Kotlin on macOS
+        if cfg!(target_os = "macos") {
+            const ANDROID_STUDIO_KOTLINS: &[&str] = &[
+                "/Applications/Android Studio.app/Contents/plugins/Kotlin/kotlinc/bin/kotlinc",
+                "/Applications/Android Studio Preview.app/Contents/plugins/Kotlin/kotlinc/bin/kotlinc",
+            ];
+            for path in ANDROID_STUDIO_KOTLINS {
+                let kotlinc_path = PathBuf::from(path);
+                if kotlinc_path.exists() {
+                    return Some(kotlinc_path);
+                }
+            }
+        }
+
+        // Fall back to Android Studio on Linux
+        if cfg!(target_os = "linux") {
+            if let Ok(home) = env::var("HOME") {
+                let paths = [
+                    format!("{home}/.local/share/JetBrains/Toolbox/apps/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
+                    format!("{home}/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
+                ];
+                for path in paths {
+                    let kotlinc_path = PathBuf::from(&path);
+                    if kotlinc_path.exists() {
+                        return Some(kotlinc_path);
+                    }
+                }
+            }
+        }
+
+        // Fall back to Android Studio on Windows
+        if cfg!(target_os = "windows") {
+            if let Ok(program_files) = env::var("ProgramFiles") {
+                let kotlinc_path = PathBuf::from(&program_files)
+                    .join("Android/Android Studio/plugins/Kotlin/kotlinc/bin/kotlinc.bat");
+                if kotlinc_path.exists() {
+                    return Some(kotlinc_path);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get the KOTLIN_HOME directory (parent of bin/).
+    pub async fn detect_home() -> Option<PathBuf> {
+        let kotlinc_path = Self::detect_path().await?;
+        // kotlinc_path is .../bin/kotlinc, we want ...
+        kotlinc_path.parent()?.parent().map(PathBuf::from)
+    }
+}
+
+/// Kotlin installation handler.
+#[derive(Debug)]
+pub struct KotlinInstallation;
+
+/// Errors that can occur when installing Kotlin.
+#[derive(Debug, thiserror::Error)]
+pub enum FailToInstallKotlin {}
+
+impl Toolchain for Kotlin {
+    type Installation = KotlinInstallation;
+
+    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
+        use crate::toolchain::ToolchainError;
+
+        let kotlinc_path = Self::detect_path().await.ok_or_else(|| {
+            ToolchainError::unfixable(
+                "Kotlin compiler (kotlinc) not found",
+                "Install Android Studio from https://developer.android.com/studio \
+                 (includes Kotlin), or install Kotlin separately via 'brew install kotlin' \
+                 or set KOTLIN_HOME environment variable.",
+            )
+        })?;
+
+        // Check if kotlinc is executable (common issue on macOS with quarantined apps)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&kotlinc_path) {
+                let permissions = metadata.permissions();
+                if permissions.mode() & 0o111 == 0 {
+                    return Err(ToolchainError::unfixable(
+                        "Kotlin compiler (kotlinc) is not executable",
+                        &format!(
+                            "The kotlinc script at '{}' doesn't have execute permission. \
+                             Fix it with: sudo chmod +x '{}'\n\
+                             Alternatively, install Kotlin via Homebrew: brew install kotlin",
+                            kotlinc_path.display(),
+                            kotlinc_path.display()
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Installation for KotlinInstallation {
+    type Error = FailToInstallKotlin;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        // Kotlin installation is typically bundled with Android Studio
+        // or installed via package managers. This is intentionally a no-op.
+        Ok(())
     }
 }
 
