@@ -154,6 +154,12 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
 
+typedef enum WuiPickerStyle {
+  WuiPickerStyle_Automatic,
+  WuiPickerStyle_Menu,
+  WuiPickerStyle_Radio,
+} WuiPickerStyle;
+
 typedef enum WuiDatePickerType {
   WuiDatePickerType_Date,
   WuiDatePickerType_HourAndMinute,
@@ -2275,6 +2281,7 @@ typedef struct Binding_Id WuiBinding_Id;
 typedef struct WuiPicker {
   WuiComputed_Vec_PickerItem_Id *items;
   WuiBinding_Id *selection;
+  enum WuiPickerStyle style;
 } WuiPicker;
 
 typedef struct Binding_Secure WuiBinding_Secure;
