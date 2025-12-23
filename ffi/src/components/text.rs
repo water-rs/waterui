@@ -8,11 +8,28 @@ use waterui_text::font::{Font, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 use waterui_text::{Text, TextConfig};
 
-into_ffi! {
-    ResolvedFont,
-    pub struct WuiResolvedFont {
-        size: f32,
-        weight: WuiFontWeight,
+/// FFI representation of a resolved font.
+#[repr(C)]
+pub struct WuiResolvedFont {
+    /// Font size in points.
+    pub size: f32,
+    /// Font weight.
+    pub weight: WuiFontWeight,
+    /// Font family name (empty string means system default).
+    pub family: WuiStr,
+}
+
+impl IntoFFI for ResolvedFont {
+    type FFI = WuiResolvedFont;
+    fn into_ffi(self) -> Self::FFI {
+        WuiResolvedFont {
+            size: self.size,
+            weight: self.weight.into_ffi(),
+            family: self.family.map_or_else(
+                || waterui::Str::from("").into_ffi(),
+                IntoFFI::into_ffi,
+            ),
+        }
     }
 }
 
@@ -20,7 +37,12 @@ impl IntoRust for WuiResolvedFont {
     type Rust = ResolvedFont;
     unsafe fn into_rust(self) -> Self::Rust {
         let weight = unsafe { self.weight.into_rust() };
-        ResolvedFont::new(self.size, weight)
+        let family_str: waterui::Str = unsafe { self.family.into_rust() };
+        if family_str.is_empty() {
+            ResolvedFont::new(self.size, weight)
+        } else {
+            ResolvedFont::with_family(self.size, weight, family_str)
+        }
     }
 }
 
