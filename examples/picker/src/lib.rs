@@ -13,7 +13,7 @@ use waterui::form::picker::file::FilePicker;
 use waterui::media::Url;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::RoundedRectangle;
 
 fn main() -> impl View {
     // DatePicker bindings
@@ -102,16 +102,15 @@ fn main() -> impl View {
 
 /// Helper view to display a color preview
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
-    let color = color.clone();
+    use waterui::color::ReactiveColor;
+    use waterui::shape::{Rectangle, ShapeExt};
     hstack((
         text(label).bold(),
         ": ",
-        watch(color, |c: Color| {
-            Rectangle
-                .fill(c)
-                .size(64.0, 32.0)
-                .clip(RoundedRectangle::new(0.1))
-        }),
+        Rectangle
+            .fill(ReactiveColor::new(color.clone()))
+            .size(64.0, 32.0)
+            .clip(RoundedRectangle::new(0.1)),
     ))
 }
 

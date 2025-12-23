@@ -129,6 +129,19 @@ ffi_view!(TextConfig, WuiText, text);
 ffi_computed!(ResolvedFont, WuiResolvedFont);
 ffi_computed_ctor!(ResolvedFont, WuiResolvedFont);
 
+/// Creates a new WuiResolvedFont with a properly initialized empty family string.
+///
+/// This function is needed for native code (Android JNI) to create WuiResolvedFont
+/// structs with valid vtables for the family field.
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) -> WuiResolvedFont {
+    WuiResolvedFont {
+        size,
+        weight,
+        family: waterui::Str::from("").into_ffi(),
+    }
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn waterui_resolve_font(
     font: *const WuiFont,
