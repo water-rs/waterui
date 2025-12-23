@@ -1,11 +1,11 @@
 use core::ptr::null_mut;
 
 use waterui::Str;
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
 use waterui_layout::Rect;
 
 use crate::{
-    IntoFFI, WuiAnyView,
+    IntoFFI, WuiAnyView, WuiMaterial, color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
 };
 
@@ -56,6 +56,35 @@ impl From<WindowState> for WuiWindowState {
     }
 }
 
+/// FFI-compatible representation of [`WindowBackground`].
+#[repr(C)]
+pub enum WuiWindowBackground {
+    /// Opaque system default background.
+    Opaque,
+    /// Fully transparent window (no background).
+    Transparent,
+    /// Solid color background (can be semi-transparent via alpha).
+    /// Native must resolve the color using the environment.
+    Color { color: *mut WuiColor },
+    /// Material blur effect.
+    Material { material: WuiMaterial },
+}
+
+impl From<WindowBackground> for WuiWindowBackground {
+    fn from(bg: WindowBackground) -> Self {
+        match bg {
+            WindowBackground::Opaque => Self::Opaque,
+            WindowBackground::Transparent => Self::Transparent,
+            WindowBackground::Color(color) => Self::Color {
+                color: color.into_ffi(),
+            },
+            WindowBackground::Material(material) => Self::Material {
+                material: material.into_ffi(),
+            },
+        }
+    }
+}
+
 /// FFI-compatible representation of a window.
 #[repr(C)]
 pub struct WuiWindow {
@@ -75,6 +104,8 @@ pub struct WuiWindow {
     pub toolbar: *mut WuiAnyView,
     /// The visual style of the window.
     pub style: WuiWindowStyle,
+    /// The background style of the window.
+    pub background: WuiWindowBackground,
 }
 
 impl IntoFFI for Window {
@@ -90,6 +121,7 @@ impl IntoFFI for Window {
             state: self.state.into_ffi(),
             toolbar: self.toolbar.map_or(null_mut(), IntoFFI::into_ffi),
             style: self.style.into(),
+            background: self.background.into(),
         }
     }
 }
