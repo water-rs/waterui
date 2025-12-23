@@ -13,6 +13,7 @@ categories = ["gui"]
 [features]
 default = []
 wgpu = ["dep:wgpu", "dep:bytemuck"]
+svg-render = ["wgpu", "dep:resvg", "dep:usvg", "dep:tiny-skia"]
 
 [dependencies]
 waterui-core.workspace = true
@@ -22,6 +23,9 @@ wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
 tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = { version = "0.45", optional = true }
+usvg = { version = "0.45", optional = true }
+tiny-skia = { workspace = true, optional = true }
 
 [lints]
 workspace = true
