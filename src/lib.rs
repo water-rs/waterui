@@ -59,6 +59,8 @@ pub mod prelude {
     pub use component::menu::{Menu, MenuItem};
 
     pub use widget::{Card, Divider, card, suspense};
+
+    pub use background::Material;
 }
 pub use color::Color;
 pub use form::FormBuilder;
