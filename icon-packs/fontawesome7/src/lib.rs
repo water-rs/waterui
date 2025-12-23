@@ -1,6 +1,8 @@
 //! Font Awesome 7 Free icons for WaterUI.
 //!
-//! This crate provides 2800+ Font Awesome 7 Free icons as SVG components.
+//! This crate provides 2800+ Font Awesome 7 Free icons with two rendering modes:
+//! - **Webfont** (default) - Icons rendered as styled text using Font Awesome webfont
+//! - **SVG** (optional) - Icons rendered as SVG paths
 //!
 //! # License
 //!
@@ -14,21 +16,40 @@
 //! - [`regular`] - Regular weight icons (273 icons)
 //! - [`solid`] - Solid filled icons (1984 icons)
 //!
-//! # Usage
+//! # Usage (Webfont - Default)
 //!
 //! ```ignore
 //! use waterui_icons_fontawesome7 as fa;
 //!
-//! // Solid icons (most common)
+//! // Use icon constants directly (renders as webfont glyph)
+//! fa::solid::HOUSE
+//! fa::solid::USER
+//! fa::regular::HEART
+//! fa::brands::GITHUB
+//!
+//! // With custom size
+//! fa::solid::HOUSE.with_size(32.0)
+//! ```
+//!
+//! # Font Bundle Requirements
+//!
+//! To use webfont icons, bundle the Font Awesome webfont files with your app:
+//! - `fa-solid-900.ttf` (FontAwesome7Free-Solid)
+//! - `fa-regular-400.ttf` (FontAwesome7Free-Regular)
+//! - `fa-brands-400.ttf` (FontAwesome7Free-Brands)
+//!
+//! Register fonts in your app bundle (Info.plist on Apple, assets on Android).
+//!
+//! # Usage (SVG - Optional)
+//!
+//! Enable the `svg` feature for SVG rendering:
+//!
+//! ```ignore
+//! use waterui_icons_fontawesome7 as fa;
+//!
+//! // SVG icons (requires "svg" feature)
 //! fa::solid::house()
-//! fa::solid::user()
-//!
-//! // Regular (outlined) icons
-//! fa::regular::heart()
-//!
-//! // Brand icons
 //! fa::brands::github()
-//! fa::brands::twitter()
 //!
 //! // Access raw path data
 //! fa::solid::HOUSE_PATH
@@ -48,6 +69,9 @@
 
 #[cfg(feature = "svg")]
 pub use waterui_graphics::Svg;
+
+#[cfg(feature = "webfont")]
+pub use waterui_icon::IconGlyph;
 
 /// Brand logos.
 pub mod brands {
