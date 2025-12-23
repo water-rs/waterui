@@ -11,15 +11,20 @@ categories = ["gui"]
 readme = "README.md"
 
 [features]
-default = ["svg"]
+default = ["webfont"]
 svg = []
-webfont = []
+webfont = ["dep:waterui-icon"]
 
 [dependencies]
 waterui-graphics.workspace = true
 waterui-text = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-str.workspace = true
+waterui-icon = { workspace = true, optional = true }
+
+[build-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [lints]
 workspace = true
