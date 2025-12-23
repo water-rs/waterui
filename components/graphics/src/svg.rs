@@ -1,9 +1,25 @@
-//! SVG component for native vector graphics rendering.
+//! SVG component for vector graphics rendering.
 //!
-//! This module provides `Svg`, a raw view that renders SVG content
-//! using native platform vector graphics:
+//! This module provides `Svg`, a view for rendering SVG content.
+//!
+//! # Rendering Modes
+//!
+//! ## Native Rendering (default)
+//!
+//! By default, `Svg` is a raw view that passes SVG data to native backends:
 //! - Apple: CAShapeLayer with CGPath
 //! - Android: VectorDrawable or android.graphics.Path
+//!
+//! ## Rust-side Rendering (with `svg-render` feature)
+//!
+//! With the `svg-render` feature enabled, you can use `Svg::render()` to create
+//! a `GpuSurface` that renders the SVG using `resvg` in Rust. This avoids
+//! native SVG parsing issues and provides consistent rendering across platforms.
+//!
+//! ```ignore
+//! // Rust-side rendering with resvg
+//! Svg::new(svg_content).render()
+//! ```
 
 use waterui_color::Color;
 use waterui_core::raw_view;
@@ -94,6 +110,55 @@ impl Svg {
         self.width = Some(width);
         self.height = Some(height);
         self
+    }
+
+    /// Converts this SVG to a GPU-rendered view using resvg.
+    ///
+    /// Instead of passing SVG data to native backends, this creates a
+    /// `GpuSurface` that renders the SVG in Rust using resvg. This provides:
+    /// - Consistent rendering across all platforms
+    /// - No reliance on potentially buggy native SVG parsers
+    /// - Automatic re-rendering on resize for crisp display
+    ///
+    /// # Note
+    ///
+    /// The `tint` modifier is not applied in Rust-side rendering.
+    /// To colorize an SVG, set fill/stroke colors in the SVG content directly.
+    ///
+    /// # Feature
+    ///
+    /// Requires the `svg-render` feature to be enabled.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Svg::new(svg_content).render()
+    /// ```
+    #[cfg(feature = "svg-render")]
+    #[must_use]
+    pub fn render(self) -> crate::GpuSurface {
+        use crate::{GpuSurface, SvgRenderer};
+
+        // Build full SVG document if we only have path data
+        let svg_content = if let (Some(width), Some(height)) = (self.width, self.height) {
+            // Check if content looks like path data (starts with M, m, or is just commands)
+            let content = self.content.as_str();
+            if content.trim_start().starts_with('<') {
+                // Already full SVG markup
+                self.content.to_string()
+            } else {
+                // Path data only - wrap in SVG document
+                alloc::format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}"><path d="{}"/></svg>"#,
+                    width, height, content
+                )
+            }
+        } else {
+            // Assume full SVG content
+            self.content.to_string()
+        };
+
+        GpuSurface::new(SvgRenderer::new(&svg_content))
     }
 }
 
