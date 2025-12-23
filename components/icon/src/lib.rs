@@ -1,10 +1,27 @@
 //! Icon components for WaterUI.
 //!
-//! This module provides icon components for displaying platform-native icons.
+//! This module provides icon components for displaying icons in WaterUI apps.
 //!
-//! # System Icons
+//! # Icon Types
 //!
-//! `SystemIcon` renders platform-native icons:
+//! ## [`IconGlyph`] - Webfont Icons (Recommended)
+//!
+//! Renders icons using icon fonts (webfonts). Simpler and more reliable than SVG.
+//! Requires the icon font to be bundled with your app.
+//!
+//! ```ignore
+//! use waterui_icon::IconGlyph;
+//!
+//! // Material Icons
+//! const HOME: IconGlyph = IconGlyph::new('\u{e88a}', "MaterialIcons-Regular");
+//!
+//! // Font Awesome
+//! const HOUSE: IconGlyph = IconGlyph::new('\u{f015}', "FontAwesome7Free-Solid");
+//! ```
+//!
+//! ## [`SystemIcon`] - Platform-Native Icons
+//!
+//! Renders platform-native icons:
 //! - Apple: SF Symbols
 //! - Android: Material Icons (with mapping)
 //!
@@ -21,6 +38,9 @@
 
 #![no_std]
 extern crate alloc;
+
+mod glyph;
+pub use glyph::IconGlyph;
 
 use waterui_core::raw_view;
 use waterui_str::Str;
