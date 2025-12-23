@@ -91,6 +91,34 @@ typedef enum WuiEvent {
   WuiEvent_HoverExit,
 } WuiEvent;
 
+/**
+ * FFI-safe representation of a material blur style.
+ *
+ * Maps to SwiftUI's Material types on Apple platforms.
+ */
+typedef enum WuiMaterial {
+  /**
+   * Ultra-thin blur, most transparent.
+   */
+  WuiMaterial_UltraThin = 0,
+  /**
+   * Thin blur.
+   */
+  WuiMaterial_Thin = 1,
+  /**
+   * Regular blur (default).
+   */
+  WuiMaterial_Regular = 2,
+  /**
+   * Thick blur.
+   */
+  WuiMaterial_Thick = 3,
+  /**
+   * Ultra-thick blur, most opaque.
+   */
+  WuiMaterial_UltraThick = 4,
+} WuiMaterial;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -1151,6 +1179,10 @@ typedef enum WuiBackground_Tag {
    * An image background.
    */
   WuiBackground_Image,
+  /**
+   * A material blur background.
+   */
+  WuiBackground_Material,
 } WuiBackground_Tag;
 
 typedef struct WuiBackground_Color_Body {
@@ -1161,11 +1193,16 @@ typedef struct WuiBackground_Image_Body {
   WuiComputed_Str *image;
 } WuiBackground_Image_Body;
 
+typedef struct WuiBackground_Material_Body {
+  enum WuiMaterial material;
+} WuiBackground_Material_Body;
+
 typedef struct WuiBackground {
   WuiBackground_Tag tag;
   union {
     WuiBackground_Color_Body color;
     WuiBackground_Image_Body image;
+    WuiBackground_Material_Body material;
   };
 } WuiBackground;
 
@@ -2916,6 +2953,45 @@ typedef struct Binding_Rect WuiBinding_Rect;
 typedef struct Binding_WindowState WuiBinding_WindowState;
 
 /**
+ * FFI-compatible representation of [`WindowBackground`].
+ */
+typedef enum WuiWindowBackground_Tag {
+  /**
+   * Opaque system default background.
+   */
+  WuiWindowBackground_Opaque,
+  /**
+   * Fully transparent window (no background).
+   */
+  WuiWindowBackground_Transparent,
+  /**
+   * Solid color background (can be semi-transparent via alpha).
+   * Native must resolve the color using the environment.
+   */
+  WuiWindowBackground_Color,
+  /**
+   * Material blur effect.
+   */
+  WuiWindowBackground_Material,
+} WuiWindowBackground_Tag;
+
+typedef struct WuiWindowBackground_Color_Body {
+  struct WuiColor *color;
+} WuiWindowBackground_Color_Body;
+
+typedef struct WuiWindowBackground_Material_Body {
+  enum WuiMaterial material;
+} WuiWindowBackground_Material_Body;
+
+typedef struct WuiWindowBackground {
+  WuiWindowBackground_Tag tag;
+  union {
+    WuiWindowBackground_Color_Body color;
+    WuiWindowBackground_Material_Body material;
+  };
+} WuiWindowBackground;
+
+/**
  * FFI-compatible representation of a window.
  */
 typedef struct WuiWindow {
@@ -2951,6 +3027,10 @@ typedef struct WuiWindow {
    * The visual style of the window.
    */
   enum WuiWindowStyle style;
+  /**
+   * The background style of the window.
+   */
+  struct WuiWindowBackground background;
 } WuiWindow;
 
 typedef struct WuiArraySlice_WuiWindow {
@@ -4134,6 +4214,14 @@ WuiComputed_ResolvedFont *waterui_new_computed_resolved_font(void *data,
                                                              struct WuiWatcherGuard *(*watch)(const void*,
                                                                                               struct WuiWatcher_ResolvedFont*),
                                                              void (*drop)(void*));
+
+/**
+ * Creates a new WuiResolvedFont with a properly initialized empty family string.
+ *
+ * This function is needed for native code (Android JNI) to create WuiResolvedFont
+ * structs with valid vtables for the family field.
+ */
+struct WuiResolvedFont waterui_resolved_font_new(float size, enum WuiFontWeight weight);
 
 WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                const struct WuiEnv *env);

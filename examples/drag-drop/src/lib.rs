@@ -7,8 +7,8 @@
 
 use waterui::app::App;
 use waterui::drag_drop::DragData;
+use waterui::prelude::font::{Headline, Title};
 use waterui::prelude::*;
-use waterui::prelude::font::{Title, Headline};
 use waterui::reactive::Binding;
 use waterui_core::extract::Use;
 
@@ -127,4 +127,3 @@ pub fn app(env: Environment) -> App {
 }
 
 waterui_ffi::export!();
-

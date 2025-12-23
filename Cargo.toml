@@ -85,7 +85,13 @@ waterui-layout = { version = "0.2.2", path = "components/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/navigation" }
 waterui-webview = { version = "0.2.0", path = "components/webview" }
 waterui-icon = { version = "0.2.0", path = "components/icon" }
+waterui-icons-sf-symbol = { version = "0.1.0", path = "icon-packs/sf-symbol" }
+waterui-icons-material-icon = { version = "0.1.0", path = "icon-packs/material-icon" }
+waterui-icons-fontawesome7 = { version = "0.1.0", path = "icon-packs/fontawesome7" }
+waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
+waterui-map = { version = "0.1.0", path = "components/map" }
+waterkit-location = { git = "https://github.com/water-rs/kit", package = "waterkit-location" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }

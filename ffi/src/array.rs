@@ -170,3 +170,10 @@ impl<T: Default + IntoRust> IntoRust for WuiArray<T> {
             .collect::<Vec<_>>()
     }
 }
+
+// NOTE: WuiArray does NOT implement Drop because:
+// 1. It crosses FFI boundaries where Rust's Drop semantics don't apply
+// 2. C/C++ code may copy the struct by value (memcpy), creating shared ownership
+// 3. Cleanup must be done explicitly by calling vtable.drop() at the right places
+// 4. For Rust-created arrays passed to native code, native code is responsible for cleanup
+// 5. For native-created arrays passed to Rust, the data is consumed by into_rust()
