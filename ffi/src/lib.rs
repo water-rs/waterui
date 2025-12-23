@@ -566,7 +566,38 @@ ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
 use waterui::Color;
-use waterui::background::Background;
+use waterui::background::{Background, Material};
+
+/// FFI-safe representation of a material blur style.
+///
+/// Maps to SwiftUI's Material types on Apple platforms.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum WuiMaterial {
+    /// Ultra-thin blur, most transparent.
+    UltraThin = 0,
+    /// Thin blur.
+    Thin = 1,
+    /// Regular blur (default).
+    Regular = 2,
+    /// Thick blur.
+    Thick = 3,
+    /// Ultra-thick blur, most opaque.
+    UltraThick = 4,
+}
+
+impl IntoFFI for Material {
+    type FFI = WuiMaterial;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Material::UltraThin => WuiMaterial::UltraThin,
+            Material::Thin => WuiMaterial::Thin,
+            Material::Regular => WuiMaterial::Regular,
+            Material::Thick => WuiMaterial::Thick,
+            Material::UltraThick => WuiMaterial::UltraThick,
+        }
+    }
+}
 
 /// FFI-safe representation of a background.
 #[repr(C)]
@@ -575,6 +606,8 @@ pub enum WuiBackground {
     Color { color: *mut WuiComputed<Color> },
     /// An image background.
     Image { image: *mut WuiComputed<Str> },
+    /// A material blur background.
+    Material { material: WuiMaterial },
 }
 
 impl IntoFFI for Background {
@@ -587,7 +620,10 @@ impl IntoFFI for Background {
             Background::Image(image) => WuiBackground::Image {
                 image: image.into_ffi(),
             },
-            _ => unimplemented!(),
+            Background::Material(material) => WuiBackground::Material {
+                material: material.into_ffi(),
+            },
+            Background::Shader(_) => unimplemented!("Shader backgrounds not yet supported"),
         }
     }
 }
