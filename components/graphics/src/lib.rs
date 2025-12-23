@@ -18,6 +18,10 @@ pub mod shader_surface;
 #[cfg(feature = "wgpu")]
 pub mod gradient_renderer;
 
+/// SVG renderer using resvg and GpuSurface.
+#[cfg(feature = "svg-render")]
+pub mod svg_renderer;
+
 // Canvas for 2D vector graphics using Vello (beginner-friendly API).
 // #[cfg(feature = "canvas")]
 //pub mod canvas;
@@ -36,6 +40,10 @@ pub use shader_surface::ShaderSurface;
 
 #[cfg(feature = "wgpu")]
 pub use gradient_renderer::{GradientConfig, GradientRenderer, GradientType, GradientView};
+
+/// SVG renderer using resvg.
+#[cfg(feature = "svg-render")]
+pub use svg_renderer::SvgRenderer;
 
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 #[cfg(feature = "wgpu")]
