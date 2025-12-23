@@ -50,3 +50,7 @@ pub mod icon;
 
 /// WebView component FFI bindings
 pub mod webview;
+
+/// Map component FFI bindings
+pub mod map;
+
