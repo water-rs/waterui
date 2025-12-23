@@ -1,9 +1,36 @@
-//! This module provides types for defining background and foreground colors in a UI.
+//! Background and foreground styling for views.
+//!
+//! Backgrounds fill the bounds behind a view. They support solid colors, gradients,
+//! blur effects (materials), and images.
+//!
+//! # Gradient Backgrounds
+//!
+//! Gradients are rendered using GPU shaders for consistent cross-platform appearance:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//! use waterui::gradient::{LinearGradient, ColorStop, UnitPoint};
+//!
+//! text!("Hello")
+//!     .background(LinearGradient::new(
+//!         vec![
+//!             ColorStop::new(Color::red(), 0.0),
+//!             ColorStop::new(Color::blue(), 1.0),
+//!         ],
+//!         UnitPoint::TOP,
+//!         UnitPoint::BOTTOM,
+//!     ));
+//! ```
 
 use nami::signal::IntoComputed;
 use waterui_color::{Color, Srgb};
 use waterui_core::{Computed, metadata::MetadataKey};
 use waterui_str::Str;
+
+use crate::gradient::{
+    AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
+    RadialGradient, UnitPoint,
+};
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.
 #[derive(Debug)]
@@ -12,12 +39,12 @@ pub enum Background {
     Color(Computed<Color>),
     /// An image background.
     Image(Computed<Str>),
-
-    /// A material background.
+    /// A material background (blur effects).
     Material(Computed<Material>),
-
     /// WebGPU shader background.
     Shader(Shader),
+    /// A gradient background (linear, radial, angular, or mesh).
+    Gradient(Gradient),
 }
 
 /// A WebGPU shader background.
@@ -59,6 +86,120 @@ impl Background {
     /// A new `Background` instance with the specified color.
     pub fn color(color: impl IntoComputed<Color>) -> Self {
         Self::Color(color.into_computed())
+    }
+
+    /// Creates a linear gradient background.
+    ///
+    /// # Arguments
+    ///
+    /// * `stops` - Color stops defining the gradient colors
+    /// * `start` - Starting point of the gradient
+    /// * `end` - Ending point of the gradient
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// Background::linear_gradient(
+    ///     vec![
+    ///         ColorStop::new(Color::red(), 0.0),
+    ///         ColorStop::new(Color::blue(), 1.0),
+    ///     ],
+    ///     UnitPoint::TOP,
+    ///     UnitPoint::BOTTOM,
+    /// )
+    /// ```
+    pub fn linear_gradient(
+        stops: Vec<ColorStop>,
+        start: impl Into<UnitPoint>,
+        end: impl Into<UnitPoint>,
+    ) -> Self {
+        Self::Gradient(Gradient::Linear(LinearGradient::new(stops, start, end)))
+    }
+
+    /// Creates a radial gradient background.
+    ///
+    /// # Arguments
+    ///
+    /// * `stops` - Color stops defining the gradient colors
+    /// * `center` - Center point of the gradient
+    /// * `start_radius` - Inner radius (0.0 = point at center)
+    /// * `end_radius` - Outer radius (fraction of view size)
+    pub fn radial_gradient(
+        stops: Vec<ColorStop>,
+        center: impl Into<UnitPoint>,
+        start_radius: f32,
+        end_radius: f32,
+    ) -> Self {
+        Self::Gradient(Gradient::Radial(RadialGradient::new(
+            stops,
+            center,
+            start_radius,
+            end_radius,
+        )))
+    }
+
+    /// Creates an angular (conic) gradient background.
+    ///
+    /// # Arguments
+    ///
+    /// * `stops` - Color stops defining the gradient colors
+    /// * `center` - Center point of the gradient
+    /// * `start_angle` - Starting angle in radians
+    /// * `end_angle` - Ending angle in radians
+    pub fn angular_gradient(
+        stops: Vec<ColorStop>,
+        center: impl Into<UnitPoint>,
+        start_angle: f32,
+        end_angle: f32,
+    ) -> Self {
+        Self::Gradient(Gradient::Angular(AngularGradient::new(
+            stops,
+            center,
+            start_angle,
+            end_angle,
+        )))
+    }
+
+    /// Creates a mesh gradient background.
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Number of columns in the vertex grid
+    /// * `height` - Number of rows in the vertex grid
+    /// * `vertices` - Vertices arranged row by row (width × height total)
+    pub fn mesh_gradient(width: u32, height: u32, vertices: Vec<MeshVertex>) -> Self {
+        Self::Gradient(Gradient::Mesh(MeshGradient::new(width, height, vertices)))
+    }
+}
+
+// Gradient From implementations
+impl From<LinearGradient> for Background {
+    fn from(gradient: LinearGradient) -> Self {
+        Self::Gradient(Gradient::Linear(gradient))
+    }
+}
+
+impl From<RadialGradient> for Background {
+    fn from(gradient: RadialGradient) -> Self {
+        Self::Gradient(Gradient::Radial(gradient))
+    }
+}
+
+impl From<AngularGradient> for Background {
+    fn from(gradient: AngularGradient) -> Self {
+        Self::Gradient(Gradient::Angular(gradient))
+    }
+}
+
+impl From<MeshGradient> for Background {
+    fn from(gradient: MeshGradient) -> Self {
+        Self::Gradient(Gradient::Mesh(gradient))
+    }
+}
+
+impl From<Gradient> for Background {
+    fn from(gradient: Gradient) -> Self {
+        Self::Gradient(gradient)
     }
 }
 
