@@ -11,6 +11,7 @@ repository.workspace = true
 waterui-core.workspace = true
 waterui-url.workspace = true
 waterui-str.workspace = true
+waterui-text.workspace = true
 thiserror.workspace = true
 cookie = "0.18.1"
 
