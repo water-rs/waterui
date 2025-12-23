@@ -7,6 +7,7 @@ extern crate alloc;
 mod macros;
 pub mod background;
 pub mod component;
+pub mod gradient;
 pub mod cursor;
 /// Error handling utilities for converting standard errors into renderable views.
 pub mod error;
@@ -38,27 +39,46 @@ pub mod prelude {
     //!     // Your view implementation here
     //! }
     //! ```
-    pub use super::*;
-    pub use color::*;
-    pub use fullscreen::*;
+    // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
+    pub use super::{
+        AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt, accessibility,
+        animation, app, color, component, cursor, drag_drop, entry, env, error, filter, form,
+        fullscreen, gesture, gradient, id, layout, locale, media, metadata, navigation, reactive,
+        shape, signal, style, task, text, webview, widget, window,
+    };
+    pub use super::env::Environment;
 
-    pub use component::*;
-    pub use dynamic::{DynamicHandler, watch};
-    pub use form::*;
-    pub use layout::*;
-    pub use media::*;
-    pub use navigation::*;
-    pub use padding::*;
-    pub use style::*;
+    pub use super::color::*;
+    pub use super::fullscreen::*;
 
-    pub use theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
+    pub use super::component::*;
+    pub use waterui_core::dynamic::{DynamicHandler, watch};
+    pub use super::form::*;
+    pub use super::layout::*;
+    pub use super::navigation::*;
+    pub use super::layout::padding::*;
+    pub use super::style::*;
 
-    pub use text::{TextConfig, font, highlight, styled};
+    pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
 
-    pub use component::link::{Link, link};
-    pub use component::menu::{Menu, MenuItem};
+    pub use super::text::{TextConfig, font, highlight, styled};
 
-    pub use widget::{Card, Divider, card, suspense};
+    pub use super::component::link::{Link, link};
+    pub use super::component::menu::{Menu, MenuItem};
+
+    pub use super::widget::{Card, Divider, card, suspense};
+
+    // Gradient types
+    pub use super::gradient::{
+        AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
+        RadialGradient, UnitPoint,
+    };
+
+    // Background types (explicit to avoid module name conflict with layout::background)
+    pub use super::background::{Background, ForegroundColor, Material, Shader};
+
+    // Re-export macros
+    pub use waterui_macros::hot_reload;
 }
 pub use color::Color;
 pub use form::FormBuilder;
