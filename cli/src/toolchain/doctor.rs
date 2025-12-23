@@ -6,7 +6,7 @@ use std::pin::Pin;
 use color_eyre::eyre;
 
 use crate::{
-    android::toolchain::{AndroidNdk, AndroidSdk, Java},
+    android::toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
     toolchain::{Installation, Toolchain, ToolchainError},
@@ -147,6 +147,12 @@ pub async fn doctor() -> Vec<DoctorItem> {
             "Java",
             "Install JDK or set JAVA_HOME. Android Studio includes a bundled JDK.",
         )),
+    }
+
+    // Check Kotlin
+    match Kotlin.check().await {
+        Ok(()) => items.push(DoctorItem::ok("Kotlin")),
+        Err(e) => items.push(DoctorItem::missing("Kotlin", e.to_string())),
     }
 
     // Check GTK4 toolchain
