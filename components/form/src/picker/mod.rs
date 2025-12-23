@@ -15,6 +15,25 @@ use waterui_core::id::{Id, Mapping, TaggedView};
 
 use waterui_text::Text;
 
+/// Visual style options for pickers.
+///
+/// Different picker styles provide different visual presentation for selecting from options.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PickerStyle {
+    /// The default picker style, determined by the platform and context.
+    /// On iOS, this typically renders as a segmented control.
+    /// On macOS, this typically renders as a popup button.
+    #[default]
+    Automatic,
+    /// A dropdown menu style picker.
+    /// Displays as a button that opens a menu when tapped.
+    Menu,
+    /// A radio button group style picker.
+    /// Displays all options vertically with radio button indicators.
+    Radio,
+}
+
 #[non_exhaustive]
 #[derive(Debug)]
 /// Configuration for the `Picker` component.
@@ -23,6 +42,8 @@ pub struct PickerConfig {
     pub items: Computed<Vec<PickerItem<Id>>>,
     /// The binding to the currently selected item.
     pub selection: Binding<Id>,
+    /// The visual style of the picker.
+    pub style: PickerStyle,
 }
 
 configurable!(
@@ -76,7 +97,23 @@ impl Picker {
         Self(PickerConfig {
             items,
             selection: mapping.binding(selection),
+            style: PickerStyle::default(),
         })
+    }
+
+    /// Sets the visual style of the picker.
+    ///
+    /// # Arguments
+    ///
+    /// * `style` - The picker style to apply
+    ///
+    /// # Returns
+    ///
+    /// The modified picker with the style set
+    #[must_use]
+    pub const fn style(mut self, style: PickerStyle) -> Self {
+        self.0.style = style;
+        self
     }
 }
 
