@@ -15,7 +15,7 @@ use waterui::{
 use waterui_core::id::Id;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::{Date, DatePickerConfig, DatePickerType, Month};
-use waterui_form::picker::{PickerConfig, PickerItem};
+use waterui_form::picker::{PickerConfig, PickerItem, PickerStyle};
 use waterui_form::secure::{Secure, SecureFieldConfig};
 
 into_ffi! {KeyboardType, Text, pub enum WuiKeyboardType {
@@ -109,10 +109,17 @@ ffi_view!(PickerConfig, WuiPicker, picker);
 
 ffi_view!(SecureFieldConfig, WuiSecureField, secure_field);
 
+into_ffi! {PickerStyle, Automatic, pub enum WuiPickerStyle {
+    Automatic,
+    Menu,
+    Radio,
+}}
+
 into_ffi! {PickerConfig,
     pub struct WuiPicker {
         items: *mut WuiComputed<Vec<PickerItem<Id>>>,
         selection: *mut WuiBinding<Id>,
+        style: WuiPickerStyle,
     }
 }
 
