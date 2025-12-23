@@ -1,11 +1,9 @@
 //! A `WaterUI` application representation.
 
 use nami::signal::IntoComputed;
-use waterui_core::{AnyView, Environment, View};
-use waterui_layout::stack::zstack;
+use waterui_core::{Environment, View};
 use waterui_str::Str;
 
-use crate::fullscreen::FullScreenOverlayManager;
 use crate::window::Window;
 
 /// Represents a `WaterUI` application.
@@ -19,22 +17,14 @@ pub struct App {
 
 impl App {
     /// Create a new application with the given main content view and environment.
-    ///
-    /// This injects a `FullScreenOverlayManager` into the environment and wraps
-    /// the content with a [`ZStack`] overlay layer.
     pub fn new(content: impl View, env: Environment) -> Self {
-        // Create overlay manager and view
-        let (manager, overlay_view) = FullScreenOverlayManager::new();
+        Self::new_with_windows([Window::new("WaterUI App", content)], env)
+    }
 
-        // Install the manager into the environment
-        let mut env = env;
-        env.install(manager);
-
-        // Wrap content with overlay using ZStack
-        let wrapped = zstack((content, overlay_view));
-
+    /// Create a new application with the given windows and environment.
+    pub fn new_with_windows(windows: impl Into<Vec<Window>>, env: Environment) -> Self {
         Self {
-            windows: vec![Window::new("WaterUI App", AnyView::new(wrapped))],
+            windows: windows.into(),
             env,
         }
     }
