@@ -2141,9 +2141,22 @@ typedef struct Binding_Font WuiBinding_Font;
 
 typedef struct Computed_Font WuiComputed_Font;
 
+/**
+ * FFI representation of a resolved font.
+ */
 typedef struct WuiResolvedFont {
+  /**
+   * Font size in points.
+   */
   float size;
+  /**
+   * Font weight.
+   */
   enum WuiFontWeight weight;
+  /**
+   * Font family name (empty string means system default).
+   */
+  struct WuiStr family;
 } WuiResolvedFont;
 
 typedef struct Computed_ResolvedFont WuiComputed_ResolvedFont;
@@ -2665,6 +2678,45 @@ typedef struct WuiGpuSurface {
    */
   void *renderer;
 } WuiGpuSurface;
+
+/**
+ * FFI representation of the Svg component.
+ *
+ * The SVG content can be either path data (d attribute) or full SVG markup.
+ * Native backends parse and render using platform-native vector graphics.
+ */
+typedef struct WuiSvg {
+  /**
+   * SVG content (path data or full SVG markup).
+   */
+  struct WuiStr content;
+  /**
+   * Intrinsic width (0 means unspecified).
+   */
+  float width;
+  /**
+   * Intrinsic height (0 means unspecified).
+   */
+  float height;
+  /**
+   * Optional tint color (null means no tint, use original colors).
+   */
+  struct WuiColor *tint;
+} WuiSvg;
+
+/**
+ * FFI representation of the SystemIcon component.
+ *
+ * Native backends render this as platform-native icons:
+ * - Apple: SF Symbols
+ * - Android: Material Icons (with placeholder fallback)
+ */
+typedef struct WuiSystemIcon {
+  /**
+   * The name of the system icon.
+   */
+  struct WuiStr name;
+} WuiSystemIcon;
 
 /**
  * FFI representation of a WebView event.
@@ -4628,6 +4680,32 @@ bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width
  * and must not be used after this call.
  */
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiSvg waterui_force_as_svg(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_svg_id(void);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_system_icon_id(void);
 
 /**
  * # Safety

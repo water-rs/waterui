@@ -1,59 +1,105 @@
 //! Icon components for WaterUI.
+//!
+//! This module provides icon components for displaying platform-native icons.
+//!
+//! # System Icons
+//!
+//! `SystemIcon` renders platform-native icons:
+//! - Apple: SF Symbols
+//! - Android: Material Icons (with mapping)
+//!
+//! ```ignore
+//! use waterui_icon::SystemIcon;
+//!
+//! // Use predefined constants
+//! SystemIcon::HOME
+//! SystemIcon::SETTINGS
+//!
+//! // Or create from a name
+//! SystemIcon::new("custom.icon.name")
+//! ```
 
-use std::{cell::RefCell, collections::BTreeMap};
+#![no_std]
+extern crate alloc;
 
-use waterui_core::{View, plugin::Plugin, raw_view};
+use waterui_core::raw_view;
 use waterui_str::Str;
-use waterui_url::Url;
 
-/// Icon component representing an icon by name.
-#[derive(Debug, Clone)]
-pub struct Icon {
-    namespace: Str,
-    name: Str,
-}
-
-/// Plugin for providing icons from a specific provider.
-pub struct IconProviderPlugin<T> {
-    provider: T,
-}
-
-#[derive(Default)]
-struct IconProviders {
-    map: RefCell<BTreeMap<Str, Box<dyn IconProvider>>>,
-}
-
-impl<T: IconProvider> IconProviderPlugin<T> {
-    /// Create a new IconProviderPlugin with the given provider.
-    pub const fn new(provider: T) -> Self {
-        Self { provider }
-    }
-}
-
-impl<T: IconProvider> Plugin for IconProviderPlugin<T> {
-    fn install(self, env: &mut waterui_core::Environment) {
-        //let mut providers = env.get_or_insert_with(|| IconProviders::default())
-        todo!()
-    }
-}
-
-/// Trait for providing icons from a specific namespace.
-pub trait IconProvider: 'static {
-    /// Get the namespace of this icon provider.
-    fn namespace(&self) -> Str;
-    /// Get the URL of the icon with the given name in this namespace.
-    fn get_icon(&self, name: &Str) -> Option<Url>;
-}
-
-impl View for Icon {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {}
-}
-
-/// SystemIcon component representing a system icon by name.
+/// SystemIcon component representing a platform system icon by name.
+///
+/// On Apple platforms, this renders SF Symbols.
+/// On Android, this maps to Material Icons (with placeholder fallback for unmapped icons).
+///
+/// # Example
+///
+/// ```ignore
+/// use waterui_icon::SystemIcon;
+///
+/// // Use predefined constants
+/// SystemIcon::HOME
+/// SystemIcon::SETTINGS
+///
+/// // Or create dynamically
+/// SystemIcon::new("house")
+/// ```
 #[derive(Debug, Clone)]
 pub struct SystemIcon {
     /// The name of the system icon.
     pub name: Str,
+}
+
+impl SystemIcon {
+    /// Creates a new system icon with the given name.
+    #[must_use]
+    pub fn new(name: impl Into<Str>) -> Self {
+        Self { name: name.into() }
+    }
+
+    /// Creates a system icon from a static string (const-compatible).
+    #[must_use]
+    pub const fn from_static(name: &'static str) -> Self {
+        Self {
+            name: Str::from_static(name),
+        }
+    }
+
+    // Common system icon constants
+
+    /// Home icon.
+    pub const HOME: Self = Self::from_static("house");
+
+    /// Settings/gear icon.
+    pub const SETTINGS: Self = Self::from_static("gear");
+
+    /// Search/magnifying glass icon.
+    pub const SEARCH: Self = Self::from_static("magnifyingglass");
+
+    /// Person icon.
+    pub const PERSON: Self = Self::from_static("person");
+
+    /// Plus/add icon.
+    pub const PLUS: Self = Self::from_static("plus");
+
+    /// Trash/delete icon.
+    pub const TRASH: Self = Self::from_static("trash");
+
+    /// Chevron right icon.
+    pub const CHEVRON_RIGHT: Self = Self::from_static("chevron.right");
+
+    /// Chevron left icon.
+    pub const CHEVRON_LEFT: Self = Self::from_static("chevron.left");
+
+    /// Close/X icon.
+    pub const CLOSE: Self = Self::from_static("xmark");
+
+    /// Checkmark icon.
+    pub const CHECKMARK: Self = Self::from_static("checkmark");
+
+    /// Star icon.
+    pub const STAR: Self = Self::from_static("star");
+
+    /// Heart icon.
+    pub const HEART: Self = Self::from_static("heart");
 }
 
 raw_view!(SystemIcon);
