@@ -14,6 +14,10 @@ pub mod gpu_surface;
 #[cfg(feature = "wgpu")]
 pub mod shader_surface;
 
+/// GPU-accelerated gradient rendering.
+#[cfg(feature = "wgpu")]
+pub mod gradient_renderer;
+
 // Canvas for 2D vector graphics using Vello (beginner-friendly API).
 // #[cfg(feature = "canvas")]
 //pub mod canvas;
@@ -29,6 +33,9 @@ pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 #[cfg(feature = "wgpu")]
 pub use shader_surface::ShaderSurface;
+
+#[cfg(feature = "wgpu")]
+pub use gradient_renderer::{GradientConfig, GradientRenderer, GradientType, GradientView};
 
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 #[cfg(feature = "wgpu")]

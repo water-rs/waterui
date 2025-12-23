@@ -55,11 +55,13 @@ pub mod container;
 
 pub use container::LazyContainer;
 
+pub mod background;
 pub mod grid;
 pub mod overlay;
 pub mod padding;
 pub mod safe_area;
 
+pub use background::{BackgroundLayout, BackgroundView, background};
 pub use overlay::{Overlay, OverlayLayout, overlay};
 pub use safe_area::{EdgeSet, IgnoreSafeArea};
 
