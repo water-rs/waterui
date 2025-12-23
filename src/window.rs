@@ -1,11 +1,31 @@
 //! Module defining the `Window` struct for UI windows.
+//!
+//! # Transparent and Material Windows
+//!
+//! Windows can have transparent or blurred backgrounds for modern UI effects:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//! use waterui::window::{Window, WindowBackground};
+//!
+//! // Transparent window
+//! Window::new("Transparent", content)
+//!     .background(WindowBackground::Transparent);
+//!
+//! // Frosted glass window (macOS vibrancy)
+//! Window::new("Frosted", content)
+//!     .background(WindowBackground::Material(Material::Regular));
+//! ```
 
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
-use waterui_core::{AnyView, Environment, View};
-use waterui_layout::{Point, Rect, Size};
+use waterui_color::Color;
+use waterui_core::{AnyView, Environment, View, env::use_env};
+use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
+
+use crate::{ViewExt, background::Material, prelude::FullScreenOverlayManager};
 
 /// Represents a window in the UI.
 #[derive(Debug)]
@@ -38,6 +58,11 @@ pub struct Window {
     ///
     /// Notice that it may not be supported on all platforms.
     pub style: WindowStyle,
+    /// The background style of the window.
+    ///
+    /// Use this to create transparent or frosted glass windows.
+    /// Notice that it may not be supported on all platforms.
+    pub background: WindowBackground,
 }
 
 /// The state of a window.
@@ -66,6 +91,49 @@ pub enum WindowStyle {
     ///
     /// On macOS, this corresponds to `NSWindow.StyleMask.fullSizeContentView`.
     FullSizeContentView,
+}
+
+/// The background style of a window.
+///
+/// Allows creating transparent, colored, or frosted glass windows.
+///
+/// # Platform Support
+///
+/// - **macOS**: Full support for all background types including materials (vibrancy).
+/// - **iOS**: Transparent and color backgrounds supported. Materials require `UIVisualEffectView`.
+/// - **Android**: Transparent windows supported via `Window.setBackgroundDrawable()`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+/// use waterui::window::{Window, WindowBackground};
+///
+/// // Fully transparent window
+/// Window::new("Overlay", content)
+///     .background(WindowBackground::Transparent);
+///
+/// // Semi-transparent colored window
+/// Window::new("Tinted", content)
+///     .background(WindowBackground::Color(Color::black().with_opacity(0.8)));
+///
+/// // Frosted glass effect (macOS vibrancy)
+/// Window::new("Frosted", content)
+///     .background(WindowBackground::Material(Material::Regular));
+/// ```
+#[derive(Debug, Clone, Default)]
+pub enum WindowBackground {
+    /// Opaque system default background.
+    #[default]
+    Opaque,
+    /// Fully transparent window (no background).
+    Transparent,
+    /// Solid color background (can be semi-transparent via alpha).
+    Color(Color),
+    /// Material blur effect behind the window.
+    ///
+    /// On macOS, this uses `NSVisualEffectView` for vibrancy.
+    Material(Material),
 }
 
 /// Manages the display of windows.
@@ -100,15 +168,18 @@ impl Window {
     #[must_use]
     pub fn new(title: impl IntoComputed<Str>, content: impl View) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
+        let (manager, overlay_view) = FullScreenOverlayManager::new();
+
         Self {
             title: title.into_computed(),
             closable: true,
             resizable: true,
             frame: Binding::container(default_frame),
-            content: AnyView::new(content),
+            content: AnyView::new(zstack((content, overlay_view)).with(manager)),
             state: Binding::default(),
             toolbar: None,
             style: WindowStyle::default(),
+            background: WindowBackground::default(),
         }
     }
 
@@ -130,6 +201,30 @@ impl Window {
     #[must_use]
     pub const fn style(mut self, style: WindowStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Set the background style of the window.
+    ///
+    /// Use this to create transparent, tinted, or frosted glass windows.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::window::{Window, WindowBackground};
+    ///
+    /// // Transparent overlay window
+    /// Window::new("Overlay", content)
+    ///     .background(WindowBackground::Transparent);
+    ///
+    /// // Frosted glass window
+    /// Window::new("Frosted", content)
+    ///     .background(WindowBackground::Material(Material::Regular));
+    /// ```
+    #[must_use]
+    pub fn background(mut self, background: WindowBackground) -> Self {
+        self.background = background;
         self
     }
 
