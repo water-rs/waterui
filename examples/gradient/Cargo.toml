@@ -1,0 +1,21 @@
+[package]
+name = "gradient-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Gradient example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "gradient"]
+categories = ["gui"]
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui = { workspace = true, features = ["graphics"] }
+waterui-ffi.workspace = true
+waterui-graphics.workspace = true
+waterui-color.workspace = true
