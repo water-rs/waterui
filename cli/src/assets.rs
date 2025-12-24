@@ -26,16 +26,17 @@ use crate::project::Project;
 /// ```
 const FONT_REGISTRY: &[(&str, &str)] = &[
     // Font Awesome 7 Free desktop fonts (OTF)
+    // Names must match the actual font family names in the OTF files
     (
-        "FontAwesome7Free-Solid",
+        "Font Awesome 7 Free Solid",
         "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
     ),
     (
-        "FontAwesome7Free-Regular",
+        "Font Awesome 7 Free",
         "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
     ),
     (
-        "FontAwesome7Free-Brands",
+        "Font Awesome 7 Brands",
         "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
     ),
     // Popular fonts
@@ -356,11 +357,80 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
             Ok::<_, eyre::Report>(())
         })
         .await?;
+
+        // For Font Awesome archives, also copy icons.json to the fontawesome cache
+        copy_fontawesome_icons_json(&extract_dir).await.ok();
     }
 
     // Find a font file (.ttf or .otf)
     let font_file = find_font_file(&extract_dir, name).await?;
     Ok(font_file)
+}
+
+/// Copies Font Awesome icons.json to the fontawesome cache directory.
+///
+/// This is needed by the fontawesome7 crate's build.rs to generate icon definitions.
+async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
+    // Look for metadata/icons.json in the extracted archive
+    let icons_json = find_file_recursive(extract_dir, "icons.json").await?;
+
+    // Determine version from parent directory name (e.g., "fontawesome-free-7.1.0-desktop")
+    let version = extract_fontawesome_version(extract_dir);
+
+    // Copy to fontawesome cache directory
+    let fontawesome_cache = dirs::home_dir()
+        .ok_or_eyre("Could not determine home directory")?
+        .join(".water")
+        .join("cache")
+        .join("fontawesome");
+
+    fs::create_dir_all(&fontawesome_cache).await?;
+
+    let dest = fontawesome_cache.join(format!("fontawesome-{version}-icons.json"));
+    fs::copy(&icons_json, &dest).await?;
+
+    debug!("Copied icons.json to {}", dest.display());
+    Ok(())
+}
+
+/// Recursively finds a file by name in a directory.
+async fn find_file_recursive(dir: &Path, filename: &str) -> eyre::Result<PathBuf> {
+    let mut entries = fs::read_dir(dir).await?;
+
+    while let Some(entry) = entries.next().await {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            if let Ok(found) = Box::pin(find_file_recursive(&path, filename)).await {
+                return Ok(found);
+            }
+        } else if path.file_name().is_some_and(|n| n == filename) {
+            return Ok(path);
+        }
+    }
+
+    eyre::bail!("File '{}' not found in {}", filename, dir.display())
+}
+
+/// Extracts Font Awesome version from directory structure.
+fn extract_fontawesome_version(extract_dir: &Path) -> String {
+    // Try to find version from directory names like "fontawesome-free-7.1.0-desktop"
+    if let Ok(entries) = std::fs::read_dir(extract_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("fontawesome-") {
+                // Extract version: "fontawesome-free-7.1.0-desktop" -> "7.1.0"
+                let parts: Vec<&str> = name.split('-').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if part.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        return parts[i..].join("-").split('-').next().unwrap_or("7.1.0").to_string();
+                    }
+                }
+            }
+        }
+    }
+    "7.1.0".to_string() // Default fallback
 }
 
 /// Recursively finds a font file in a directory.
@@ -372,8 +442,9 @@ async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
     let mut candidates = Vec::new();
     let name_lower = name.to_lowercase();
 
-    // Extract style keywords for Font Awesome-style names (e.g., "FontAwesome7Free-Solid" -> "solid")
-    let style_keyword = extract_style_keyword(&name_lower);
+    // Extract style keywords for Font Awesome-style names (e.g., "Font Awesome 7 Free Solid" -> "solid")
+    // If no style found, default to "regular" for matching
+    let style_keyword = extract_style_keyword(&name_lower).unwrap_or_else(|| "regular".to_string());
 
     while let Some(entry) = entries.next().await {
         let entry = entry?;
@@ -393,15 +464,13 @@ async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
                     .to_string_lossy()
                     .to_lowercase();
 
-                // Prefer files matching the name directly
-                if file_name.contains(&name_lower) || file_name.contains(&name_lower.replace(' ', ""))
-                {
-                    return Ok(path);
-                }
-
-                // Match by style keyword (e.g., "fa-solid-900" or "Font Awesome 7 Free-Solid" matches "solid")
-                if let Some(ref keyword) = style_keyword {
-                    if file_name.contains(keyword) {
+                // Match by style keyword (e.g., "solid" matches "Font Awesome 7 Free-Solid-900")
+                // This is more precise than just matching the base name which could hit multiple files
+                if file_name.contains(&style_keyword) {
+                    // Also verify the base name matches to avoid false positives
+                    let name_parts: Vec<&str> = name_lower.split_whitespace().collect();
+                    let matches_base = name_parts.iter().take(3).all(|part| file_name.contains(part));
+                    if matches_base {
                         return Ok(path);
                     }
                 }

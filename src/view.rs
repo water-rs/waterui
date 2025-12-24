@@ -33,12 +33,12 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
-    background::ForegroundColor,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
     filter,
     gesture::{Gesture, GestureObserver, TapGesture},
     metadata::{context_menu::ContextMenu, secure::Secure},
+    theme,
     view_ext::OnChange,
 };
 use crate::{
@@ -141,12 +141,27 @@ pub trait ViewExt: View + Sized {
         BackgroundView::new(self, background)
     }
 
-    /// Sets the foreground color of this view.
+    /// Sets the foreground color for this view and all its descendants.
+    ///
+    /// This injects the color into the environment as the `Foreground` color token,
+    /// which affects all text and icons in the subtree that don't have an explicit color set.
     ///
     /// # Arguments
     /// * `color` - The foreground color to apply
-    fn foreground(self, color: impl IntoComputed<Color>) -> Metadata<ForegroundColor> {
-        Metadata::new(self, ForegroundColor::new(color))
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // All text in this VStack will be red
+    /// vstack((
+    ///     text!("Hello"),
+    ///     text!("World"),
+    /// )).foreground(Color::red());
+    /// ```
+    fn foreground(self, color: impl Into<Color>) -> impl View {
+        self.install(theme::ForegroundOverride::new(color))
     }
 
     /// Adds an overlay to this view.
