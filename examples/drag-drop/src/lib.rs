@@ -1,121 +1,166 @@
-//! Drag and Drop Example - Demonstrates WaterUI's native drag and drop capabilities
+//! Drag and Drop Example - Demonstrates WaterUI's drag and drop system
 //!
-//! This example showcases:
+//! This example shows:
 //! - Making views draggable with `.draggable()`
-//! - Creating drop destinations with `.drop_destination()`
-//! - Handling drop events with data extraction
+//! - Creating drop zones with `.drop_destination_with_events()`
+//! - Visual feedback when dragging over drop zone
+//! - Spring animations on successful drop
 
+use core::time::Duration;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::drag_drop::DragData;
-use waterui::prelude::font::{Headline, Title};
+use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::reactive::Binding;
+use waterui::task::{sleep, spawn_local};
 use waterui_core::extract::Use;
 
-/// A draggable colored card
-fn draggable_card(label: &'static str, color: Color, data: DragData) -> impl View {
-    text(label)
+/// A draggable fruit card
+fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
+    hstack((text(emoji).size(28.0), text(label).size(16.0)))
+        .spacing(8.0)
         .padding()
-        .width(120.0)
-        .height(60.0)
-        .background(color.with_opacity(0.8))
-        .draggable(data)
+        .background(color.with_opacity(0.9))
+        .draggable(DragData::text(format!("{} {}", emoji, label)))
 }
 
-/// Drop zone that shows what was dropped
-fn drop_zone(dropped_text: Binding<String>) -> impl View {
+/// Animated basket that collects dropped items
+fn fruit_basket(
+    is_hovering: Binding<bool>,
+    collected: Binding<Vec<String>>,
+    bounce: Binding<f32>,
+    wiggle: Binding<f32>,
+) -> impl View {
+    // Scale up when hovering
+    let hover_scale = is_hovering
+        .clone()
+        .map(|h| if h { 1.08_f32 } else { 1.0 })
+        .with(Animation::spring(400.0, 15.0));
+
+    // Glow effect when hovering
+    let hover_opacity = is_hovering
+        .clone()
+        .map(|h| if h { 1.0_f32 } else { 0.7 })
+        .with(Animation::ease_out(Duration::from_millis(150)));
+
+    // Bounce animation on drop
+    let drop_bounce = bounce.clone().with(Animation::spring(500.0, 8.0));
+
+    // Wiggle rotation on drop
+    let drop_wiggle = wiggle.clone().with(Animation::spring(600.0, 10.0));
+
+    // Display collected items
+    let items_display = collected.clone().map(|items| {
+        if items.is_empty() {
+            "🧺 Empty basket".to_string()
+        } else {
+            items.join(" ")
+        }
+    });
+
+    let count_display = collected.clone().map(|items| {
+        if items.is_empty() {
+            "Drop fruits here!".to_string()
+        } else {
+            format!("{} fruit{} collected", items.len(), if items.len() == 1 { "" } else { "s" })
+        }
+    });
+
+    let is_h = is_hovering.clone();
+    let coll = collected.clone();
+    let b = bounce.clone();
+    let w = wiggle.clone();
+
     vstack((
-        text("Drop Zone").font(Title),
-        {
-            let dropped_text = dropped_text.clone();
-            text(dropped_text.clone())
-                .padding()
-                .width(250.0)
-                .height(100.0)
-                .background(Color::srgb_hex("#E0E0E0").with_opacity(0.3))
-                .drop_destination(move |Use(data): Use<DragData>| {
-                    let display_text = match &data {
-                        DragData::Text(s) => format!("Text: {}", s),
-                        DragData::Url(u) => format!("URL: {}", u),
-                        _ => "Unknown data type".to_string(),
-                    };
-                    dropped_text.set(display_text);
-                })
+        text(items_display).size(32.0),
+        text(count_display).size(14.0),
+    ))
+    .spacing(12.0)
+    .padding_with(EdgeInsets::all(24.0))
+    .min_width(300.0)
+    .min_height(150.0)
+    .background(Color::srgb_hex("#10B981").with_opacity(0.2))
+    .scale(hover_scale.zip(drop_bounce).map(|(a, b)| a * b))
+    .rotation(drop_wiggle)
+    .opacity(hover_opacity)
+    .border(Color::srgb_hex("#10B981"), 3.0)
+    .drop_destination_with_events(
+        // On drop - add to collection with bounce animation
+        move |Use(data): Use<DragData>| {
+            let item = data.as_str().to_string();
+            let mut items = coll.get();
+            if !items.contains(&item) {
+                items.push(item);
+                coll.set(items);
+            }
+
+            // Trigger bounce + wiggle
+            b.set(1.2);
+            w.set(5.0);
+
+            let b2 = b.clone();
+            let w2 = w.clone();
+            spawn_local(async move {
+                sleep(Duration::from_millis(100)).await;
+                b2.set(1.0);
+                w2.set(-3.0);
+                sleep(Duration::from_millis(100)).await;
+                w2.set(0.0);
+            });
         },
-        "Drag items above and drop here",
-    ))
-    .spacing(8.0)
-}
-
-/// Section with draggable text items
-fn draggable_text_section() -> impl View {
-    vstack((
-        text("Text Items").font(Title),
-        "Drag these items to the drop zone",
-        hstack((
-            draggable_card(
-                "Hello",
-                Color::srgb_hex("#2196F3"),
-                DragData::text("Hello, World!"),
-            ),
-            draggable_card(
-                "WaterUI",
-                Color::srgb_hex("#9C27B0"),
-                DragData::text("Welcome to WaterUI!"),
-            ),
-            draggable_card(
-                "Rust 🦀",
-                Color::srgb_hex("#FF9800"),
-                DragData::text("Built with Rust"),
-            ),
-        ))
-        .spacing(12.0),
-    ))
-    .spacing(8.0)
-    .padding()
-}
-
-/// Section with draggable URL items
-fn draggable_url_section() -> impl View {
-    vstack((
-        text("URL Items").font(Title),
-        "Drag URLs to the drop zone",
-        hstack((
-            draggable_card(
-                "GitHub",
-                Color::srgb_hex("#333333"),
-                DragData::url("https://github.com"),
-            ),
-            draggable_card(
-                "Rust Lang",
-                Color::srgb_hex("#DEA584"),
-                DragData::url("https://rust-lang.org"),
-            ),
-        ))
-        .spacing(12.0),
-    ))
-    .spacing(8.0)
-    .padding()
+        // On enter
+        {
+            let h = is_h.clone();
+            move || h.set(true)
+        },
+        // On exit
+        {
+            let h = is_h.clone();
+            move || h.set(false)
+        },
+    )
 }
 
 #[hot_reload]
 fn main() -> impl View {
-    let dropped_text = Binding::container(String::from("Drop something here..."));
+    let is_hovering = Binding::bool(false);
+    let collected: Binding<Vec<String>> = Binding::container(Vec::new());
+    let bounce = Binding::container(1.0_f32);
+    let wiggle = Binding::container(0.0_f32);
 
     scroll(
         vstack((
-            // Header
-            text("WaterUI Drag & Drop").font(Headline),
-            "Native drag and drop for Apple and Android",
+            text("Fruit Basket").font(Title),
+            "Drag fruits into the basket!",
             Divider,
-            spacer(),
-            // Draggable sections
-            draggable_text_section(),
-            Divider,
-            draggable_url_section(),
-            Divider,
-            // Drop zone
-            drop_zone(dropped_text),
+            // Fruits to drag
+            vstack((
+                text("Drag these fruits").size(14.0),
+                hstack((
+                    fruit_card("🍎", "Apple", Color::srgb_hex("#EF4444")),
+                    fruit_card("🍊", "Orange", Color::srgb_hex("#F97316")),
+                ))
+                .spacing(12.0),
+                hstack((
+                    fruit_card("🍋", "Lemon", Color::srgb_hex("#EAB308")),
+                    fruit_card("🍇", "Grape", Color::srgb_hex("#8B5CF6")),
+                ))
+                .spacing(12.0),
+                hstack((
+                    fruit_card("🍓", "Strawberry", Color::srgb_hex("#EC4899")),
+                    fruit_card("🥝", "Kiwi", Color::srgb_hex("#22C55E")),
+                ))
+                .spacing(12.0),
+            ))
+            .spacing(12.0)
+            .padding(),
+            spacer().height(32.0),
+            // Drop basket
+            fruit_basket(is_hovering, collected.clone(), bounce, wiggle),
+            spacer().height(16.0),
+            // Reset button
+            button("Clear Basket").action_with(collected.clone(), |c| c.set(Vec::new())),
             spacer(),
         ))
         .padding(),

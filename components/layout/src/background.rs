@@ -20,9 +20,7 @@ use core::fmt;
 use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
-use crate::{
-    Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
-};
+use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
 ///
@@ -33,56 +31,39 @@ pub struct BackgroundLayout;
 
 impl Layout for BackgroundLayout {
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        // Stretch axis should come from content (index 1), not be fixed
+        StretchAxis::None
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        // Size is driven by the content child (index 1).
+        // Size is driven entirely by the content child (index 1).
+        // Background just fills whatever size content needs.
         // children[0] = background, children[1] = content
-        let content_size = children
+        children
             .get(1)
-            .map_or(Size::zero(), |c| c.size_that_fits(proposal));
-
-        let content_width = if content_size.width.is_finite() && content_size.width > 0.0 {
-            content_size.width
-        } else {
-            proposal.width.unwrap_or(0.0)
-        };
-
-        let content_height = if content_size.height.is_finite() && content_size.height > 0.0 {
-            content_size.height
-        } else {
-            proposal.height.unwrap_or(0.0)
-        };
-
-        let width = proposal.width.unwrap_or(content_width);
-        let height = proposal.height.unwrap_or(content_height);
-
-        Size::new(width.max(0.0), height.max(0.0))
+            .expect("BackgroundLayout requires a content child at index 1")
+            .size_that_fits(proposal)
     }
 
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
-        if children.is_empty() {
-            return vec![];
-        }
+        assert!(
+            children.len() >= 2,
+            "BackgroundLayout requires at least 2 children: background and content"
+        );
 
         let mut placements = Vec::with_capacity(children.len());
 
         // Background (index 0) fills the entire bounds
-        if children.first().is_some() {
-            placements.push(Rect::new(
-                bounds.origin(),
-                Size::new(bounds.width(), bounds.height()),
-            ));
-        }
+        placements.push(Rect::new(
+            bounds.origin(),
+            Size::new(bounds.width(), bounds.height()),
+        ));
 
         // Content (index 1) also fills the bounds
-        if children.get(1).is_some() {
-            placements.push(Rect::new(
-                bounds.origin(),
-                Size::new(bounds.width(), bounds.height()),
-            ));
-        }
+        placements.push(Rect::new(
+            bounds.origin(),
+            Size::new(bounds.width(), bounds.height()),
+        ));
 
         placements
     }
@@ -101,7 +82,10 @@ impl<Content, Bg> BackgroundView<Content, Bg> {
     /// Creates a new background view with the provided content and background.
     #[must_use]
     pub const fn new(content: Content, background: Bg) -> Self {
-        Self { content, background }
+        Self {
+            content,
+            background,
+        }
     }
 }
 
@@ -124,7 +108,10 @@ where
 
 /// Convenience constructor for creating a [`BackgroundView`].
 #[must_use]
-pub const fn background<Content, Bg>(content: Content, background: Bg) -> BackgroundView<Content, Bg> {
+pub const fn background<Content, Bg>(
+    content: Content,
+    background: Bg,
+) -> BackgroundView<Content, Bg> {
     BackgroundView::new(content, background)
 }
 
