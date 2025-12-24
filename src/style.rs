@@ -5,7 +5,7 @@
 //! ```
 //! use waterui::prelude::*;
 //! use waterui::style;
-//! use waterui_color::Color;
+//! use waterui_graphics::color::Color;
 //!
 //! fn shadow_example() {
 //!     let shadow = style::Shadow {
@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::metadata::MetadataKey;
 
 /// Represents a shadow effect that can be applied to UI elements.

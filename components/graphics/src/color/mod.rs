@@ -669,13 +669,8 @@ color_const!(BlueGrey, "Blue grey color.");
 
 // View implementation for Color
 //
-// On wgpu-enabled platforms, Color renders as a filled Rect using a custom renderer.
-// On other platforms (like native mobile), Color remains a raw view handled by the backend.
+// Color renders as a filled Rect using a GPU renderer.
 
-#[cfg(not(feature = "wgpu"))]
-waterui_core::raw_view!(Color, waterui_core::layout::StretchAxis::Both);
-
-#[cfg(feature = "wgpu")]
 impl View for Color {
     fn body(self, env: &Environment) -> impl View {
         // FIXME: Signal handling needs clarification. Using default.
@@ -685,12 +680,10 @@ impl View for Color {
     }
 }
 
-#[cfg(feature = "wgpu")]
 struct SolidColorRenderer {
     inner: crate::gradient_renderer::GradientRenderer,
 }
 
-#[cfg(feature = "wgpu")]
 impl SolidColorRenderer {
     fn new(color: ResolvedColor) -> Self {
         use crate::gradient_renderer::{GradientConfig, GradientRenderer};
@@ -706,7 +699,6 @@ impl SolidColorRenderer {
     }
 }
 
-#[cfg(feature = "wgpu")]
 impl crate::GpuRenderer for SolidColorRenderer {
     fn setup(&mut self, ctx: &crate::GpuContext) {
         self.inner.setup(ctx);
@@ -738,7 +730,7 @@ pub fn linear_to_srgb(c: f32) -> f32 {
 
 // Conversion matrix from P3 to sRGB
 // https://www.w3.org/TR/css-color-4/#color-conversion-code
-fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
+pub(crate) fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
     [
         1.224_940_1_f32.mul_add(p3[0], -0.224_940_1 * p3[1]),
         (-0.042_030_1_f32).mul_add(p3[0], 1.042_030_1 * p3[1]),
@@ -751,7 +743,7 @@ fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
 
 // Conversion matrix from sRGB to P3 (inverse of p3_to_linear_srgb)
 // https://www.w3.org/TR/css-color-4/#color-conversion-code
-fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
+pub(crate) fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
     [
         0.822_461_9_f32.mul_add(srgb[0], 0.177_538_1 * srgb[1]),
         0.033_194_2_f32.mul_add(srgb[0], 0.966_805_8 * srgb[1]),
@@ -824,7 +816,7 @@ fn normalize_hue(mut hue: f32) -> f32 {
     clippy::many_single_char_names,
     clippy::suboptimal_flops
 )]
-fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [f32; 3] {
+pub(crate) fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [f32; 3] {
     let hue_radians = hue_degrees.to_radians();
     let (sin_hue, cos_hue) = hue_radians.sin_cos();
     let a = chroma * cos_hue;

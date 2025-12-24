@@ -32,7 +32,8 @@ impl IntoRust for WuiResolvedColor {
     }
 }
 
-ffi_view!(Color, *mut WuiColor, color);
+// Note: ffi_view! not used here because Color is a composite view (has body()) when wgpu is enabled.
+// Native backends render Color through the normal View body path, not as a NativeView.
 
 ffi_computed!(ResolvedColor, WuiResolvedColor);
 ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
@@ -61,7 +62,7 @@ impl Resolvable for LinearResolvedColor {
 /// This function returns an owned pointer that must be dropped with
 /// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_graphics::color_from_linear_rgba_headroom(
+pub unsafe extern "C" fn waterui_color_from_linear_rgba_headroom(
     red: f32,
     green: f32,
     blue: f32,
@@ -85,13 +86,13 @@ pub unsafe extern "C" fn waterui_graphics::color_from_linear_rgba_headroom(
 /// This function returns an owned pointer that must be dropped with
 /// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_graphics::color_from_srgba(
+pub unsafe extern "C" fn waterui_color_from_srgba(
     red: f32,
     green: f32,
     blue: f32,
     alpha: f32,
 ) -> *mut WuiColor {
-    unsafe { waterui_graphics::color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
+    unsafe { waterui_color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
 }
 
 /// Resolves a color in the given environment.
