@@ -13,7 +13,7 @@ pub use slider::Slider;
 pub mod text_field;
 pub use text_field::{TextField, field};
 pub mod toggle;
-pub use toggle::{Toggle, toggle};
+pub use toggle::{Toggle, ToggleStyle, toggle};
 
 pub mod stepper;
 pub use stepper::{Stepper, stepper};
