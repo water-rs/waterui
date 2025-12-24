@@ -1,14 +1,22 @@
 //! Build script for waterui-icons-fontawesome7
 //!
-//! Parses icons.json metadata to generate icon definitions with both
-//! SVG path data and webfont codepoints.
+//! Downloads icons.json from Font Awesome release and generates icon definitions
+//! with both SVG path data and webfont codepoints.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+/// Font Awesome version to download
+const FA_VERSION: &str = "7.1.0";
+
+/// Download URL for the desktop release (contains icons.json with SVG paths)
+const FA_DESKTOP_URL: &str =
+    "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip";
 
 /// Icon metadata from icons.json
 #[derive(Debug, Deserialize)]
@@ -35,20 +43,17 @@ struct SvgData {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=icons.json");
-    println!("cargo:rerun-if-changed=icons");
+    // Only re-run if build.rs changes (downloaded data is cached)
+    println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = env::var("OUT_DIR").unwrap();
-    let icons_json_path = Path::new("icons.json");
 
-    // Parse icons.json if it exists
-    let icons: HashMap<String, IconData> = if icons_json_path.exists() {
-        let json_content = fs::read_to_string(icons_json_path).expect("Failed to read icons.json");
-        serde_json::from_str(&json_content).expect("Failed to parse icons.json")
-    } else {
-        // Fall back to empty map if icons.json doesn't exist
-        HashMap::new()
-    };
+    // Get icons.json content (download if needed)
+    let icons_json = get_icons_json();
+
+    // Parse icons.json
+    let icons: HashMap<String, IconData> =
+        serde_json::from_str(&icons_json).expect("Failed to parse icons.json");
 
     // Generate each style module
     for style in &["brands", "regular", "solid"] {
@@ -150,6 +155,60 @@ fn main() {
         file.write_all(output.as_bytes())
             .expect("Failed to write output file");
     }
+}
+
+/// Get icons.json content, downloading from Font Awesome release if not cached.
+fn get_icons_json() -> String {
+    let cache_dir = get_cache_dir();
+    let cache_file = cache_dir.join(format!("fontawesome-{}-icons.json", FA_VERSION));
+
+    // Return cached version if exists
+    if cache_file.exists() {
+        return fs::read_to_string(&cache_file).expect("Failed to read cached icons.json");
+    }
+
+    // Download the desktop release zip
+    eprintln!("Downloading Font Awesome {} icons metadata...", FA_VERSION);
+
+    let response = ureq::get(FA_DESKTOP_URL)
+        .call()
+        .expect("Failed to download Font Awesome release");
+
+    let mut zip_data = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut zip_data)
+        .expect("Failed to read response body");
+
+    // Extract icons.json from the zip
+    let cursor = std::io::Cursor::new(zip_data);
+    let mut archive = zip::ZipArchive::new(cursor).expect("Failed to open zip archive");
+
+    let icons_json_path = format!("fontawesome-free-{}-desktop/metadata/icons.json", FA_VERSION);
+    let mut icons_file = archive
+        .by_name(&icons_json_path)
+        .expect("icons.json not found in archive");
+
+    let mut icons_json = String::new();
+    icons_file
+        .read_to_string(&mut icons_json)
+        .expect("Failed to read icons.json");
+
+    // Cache for future builds
+    fs::create_dir_all(&cache_dir).ok();
+    fs::write(&cache_file, &icons_json).ok();
+
+    eprintln!("Downloaded and cached icons.json ({} bytes)", icons_json.len());
+    icons_json
+}
+
+/// Get cache directory for downloaded assets.
+fn get_cache_dir() -> PathBuf {
+    dirs::home_dir()
+        .expect("Could not determine home directory")
+        .join(".water")
+        .join("cache")
+        .join("fontawesome")
 }
 
 /// Convert kebab-case to SCREAMING_SNAKE_CASE.
