@@ -91,7 +91,7 @@ impl Canvas {
     ///
     /// ```ignore
     /// Canvas::new(|ctx| {
-    ///     ctx.set_fill_style(waterui_color::Srgb::new_u8(242, 140, 168));
+    ///     ctx.set_fill_style(crate::color::Srgb::new_u8(242, 140, 168));
     ///     ctx.fill_circle(Point::new(50.0, 50.0), 25.0);
     /// })
     /// ```
@@ -472,7 +472,7 @@ impl DrawingContext<'_> {
     }
 
     /// Sets the shadow color.
-    pub fn set_shadow_color(&mut self, color: impl Into<waterui_color::ResolvedColor>) {
+    pub fn set_shadow_color(&mut self, color: impl Into<crate::color::ResolvedColor>) {
         self.current_state.shadow_color = color.into();
     }
 
@@ -510,8 +510,8 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
-    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 0.0, 0.0));
-    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 1.0));
+    /// gradient.add_color_stop(0.0, crate::color::Srgb::new(1.0, 0.0, 0.0));
+    /// gradient.add_color_stop(1.0, crate::color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
@@ -537,8 +537,8 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
-    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 1.0, 1.0));
-    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 0.0));
+    /// gradient.add_color_stop(0.0, crate::color::Srgb::new(1.0, 1.0, 1.0));
+    /// gradient.add_color_stop(1.0, crate::color::Srgb::new(0.0, 0.0, 0.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]
@@ -564,9 +564,9 @@ impl DrawingContext<'_> {
     ///
     /// ```ignore
     /// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
-    /// gradient.add_color_stop(0.0, waterui_color::Srgb::new(1.0, 0.0, 0.0));
-    /// gradient.add_color_stop(0.5, waterui_color::Srgb::new(0.0, 1.0, 0.0));
-    /// gradient.add_color_stop(1.0, waterui_color::Srgb::new(0.0, 0.0, 1.0));
+    /// gradient.add_color_stop(0.0, crate::color::Srgb::new(1.0, 0.0, 0.0));
+    /// gradient.add_color_stop(0.5, crate::color::Srgb::new(0.0, 1.0, 0.0));
+    /// gradient.add_color_stop(1.0, crate::color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
     /// ```
     #[must_use]

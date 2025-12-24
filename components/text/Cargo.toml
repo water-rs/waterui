@@ -12,8 +12,8 @@ categories = ["gui", "text-processing"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-color.workspace = true
-nami.workspace = true
+waterui-graphics.workspace = true
+waterui-str.workspace = true
 time.workspace = true
 syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"] }
 two-face = "0.4"

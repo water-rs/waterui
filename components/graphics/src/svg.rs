@@ -21,7 +21,7 @@
 //! Svg::new(svg_content).render()
 //! ```
 
-use waterui_color::Color;
+use crate::color::Color;
 use waterui_core::raw_view;
 use waterui_str::Str;
 

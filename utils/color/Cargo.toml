@@ -12,10 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-nami.workspace = true
-waterui-core.workspace = true
-pastey.workspace = true
-[features]
+waterui-graphics = { workspace = true }
 
 
 [lints]

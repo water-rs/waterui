@@ -8,7 +8,7 @@ use alloc::{string::String, vec, vec::Vec};
 use core::ops::AddAssign;
 use nami::impl_constant;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::{Str, View};
 
 /// A set of text attributes for rich text formatting.

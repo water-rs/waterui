@@ -19,7 +19,7 @@ nami.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 waterui-url.workspace = true
-waterui-color.workspace = true
+waterui-graphics.workspace = true
 zeroize = { version = "1.8.2", default-features = false }
 bcrypt = "0.17.1"
 regex = "1.12.2"

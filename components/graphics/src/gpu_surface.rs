@@ -211,5 +211,5 @@ impl GpuSurface {
     }
 }
 
-// Stretches in both directions by default, like SwiftUI's Color
+// Stretches in both directions by default
 raw_view!(GpuSurface, StretchAxis::Both);

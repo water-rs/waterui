@@ -3,7 +3,7 @@
 //! These conversions are internal to the graphics module and allow the Canvas API
 //! to use WaterUI's native types while rendering with vello's kurbo/peniko types.
 
-use waterui_color::ResolvedColor;
+use crate::color::ResolvedColor;
 use waterui_core::layout::{Point, Rect, Size};
 
 // Internal imports for rendering (not exposed to users)

@@ -6,7 +6,7 @@
 #![no_std]
 extern crate alloc;
 
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 
 /// Picker form component module.
 pub mod picker;
