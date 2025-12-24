@@ -1,7 +1,7 @@
 use nami::Signal;
 use waterui_core::{Environment, resolve::Resolvable};
 
-use crate::{ResolvedColor, Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
+use super::{ResolvedColor, Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 
 /// Represents a color in the Display P3 color space.
 ///

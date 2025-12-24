@@ -45,7 +45,7 @@ gdk4-macos = { version = "0.9", optional = true }
 
 [features]
 default = []
-gpu = ["waterui-graphics/wgpu", "dep:wgpu", "dep:wgpu-hal", "dep:glow", "dep:pollster", "dep:raw-window-handle", "dep:epoxy", "dep:libloading"]
+gpu = ["dep:wgpu", "dep:wgpu-hal", "dep:glow", "dep:pollster", "dep:raw-window-handle", "dep:epoxy", "dep:libloading"]
 x11 = ["gpu", "dep:gdk4-x11"]
 wayland = ["gpu", "dep:gdk4-wayland"]
 macos = ["gpu", "dep:gdk4-macos"]

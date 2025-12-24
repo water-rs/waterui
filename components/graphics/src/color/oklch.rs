@@ -1,7 +1,7 @@
 use nami::Signal;
 use waterui_core::{Environment, resolve::Resolvable};
 
-use crate::{ResolvedColor, Srgb, linear_to_srgb, oklch_to_linear_srgb};
+use super::{ResolvedColor, Srgb, linear_to_srgb, oklch_to_linear_srgb};
 
 /// Represents a color in the perceptually-uniform OKLCH color space.
 ///

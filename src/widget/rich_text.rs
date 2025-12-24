@@ -1,7 +1,7 @@
 use std::{mem, str::FromStr};
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
-use waterui_color::Blue;
+use waterui_graphics::color::Blue;
 use waterui_core::{Environment, View};
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
 use waterui_media::{Url, photo::photo as media_photo};
