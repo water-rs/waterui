@@ -34,7 +34,7 @@
 //! ```
 
 use nami::{SignalExt, constant, signal::IntoComputed};
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::Computed;
 
 /// A color stop in a gradient, consisting of a color and its position.
