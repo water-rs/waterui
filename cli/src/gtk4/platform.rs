@@ -3,11 +3,14 @@
 //! This module provides utility functions for building and packaging GTK4 apps.
 //! These functions are used by `Gtk4Backend` to implement the `Backend` trait.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, bail};
+use smol::fs;
+use tracing::info;
 
 use crate::{
+    assets,
     build::BuildOptions,
     device::Artifact,
     gtk4::backend::Gtk4Backend,
@@ -92,6 +95,10 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     let profile = if options.is_debug() { "debug" } else { "release" };
     // GTK4 uses its own target directory since it's a standalone project
     let backend_path = project.backend_path::<Gtk4Backend>();
+
+    // Copy project assets and dependency fonts
+    copy_assets_and_fonts(project, &backend_path).await?;
+
     let target_dir = backend_path.join("target").join(profile);
 
     // The binary name is the GTK4 crate name (project-gtk4)
@@ -140,4 +147,39 @@ pub const fn is_gtk4_platform(platform: TargetPlatform) -> bool {
         platform,
         TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::MacOS
     )
+}
+
+// ============================================================================
+// Asset and Font Handling
+// ============================================================================
+
+/// Copy project assets and dependency fonts to the GTK4 resources directory.
+///
+/// For GTK4, assets and fonts are placed alongside the binary in a `resources/`
+/// directory. The binary should load fonts via fontconfig or Pango at runtime.
+async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
+    let resources_dir = backend_path.join("resources");
+    fs::create_dir_all(&resources_dir).await?;
+
+    // Copy project assets
+    let assets_dest = resources_dir.join("assets");
+    assets::copy_project_assets(project, &assets_dest).await?;
+
+    // Scan and resolve dependency fonts
+    let font_declarations = assets::scan_fonts(project).await?;
+    let resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+
+    if !resolved_fonts.is_empty() {
+        // Copy fonts to resources/fonts/
+        let fonts_dest = resources_dir.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
+
+        info!("Copied {} fonts to GTK4 resources", resolved_fonts.len());
+
+        // Note: GTK4 font registration happens at runtime via fontconfig/pango.
+        // The hydrolysis backend should register fonts from the resources/fonts directory
+        // when initializing.
+    }
+
+    Ok(())
 }

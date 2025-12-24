@@ -9,11 +9,16 @@ use color_eyre::eyre::{self, bail};
 use smol::fs;
 use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 
+use tracing::{debug, info};
+
+use std::fmt::Write;
+
 use crate::{
     android::{
         backend::AndroidBackend,
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
     },
+    assets::{self, ResolvedFont},
     build::{BuildOptions, RustBuild},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
@@ -416,6 +421,10 @@ impl AndroidPlatform {
         validate_android_package_name(project.bundle_identifier())?;
 
         let backend_path = project.backend_path::<AndroidBackend>();
+
+        // Copy project assets and dependency fonts
+        copy_assets_and_fonts(project, &backend_path).await?;
+
         let gradlew = backend_path.join(if cfg!(windows) {
             "gradlew.bat"
         } else {
@@ -673,6 +682,10 @@ pub async fn package_android(
 
     let abi = platform_to_abi(platform);
     let backend_path = project.backend_path::<AndroidBackend>();
+
+    // Copy project assets and dependency fonts
+    copy_assets_and_fonts(project, &backend_path).await?;
+
     let gradlew = backend_path.join(if cfg!(windows) {
         "gradlew.bat"
     } else {
@@ -764,4 +777,81 @@ fn android_triple(platform: TargetPlatform) -> Triple {
         },
         _ => unreachable!("Not an Android platform"),
     }
+}
+
+// ============================================================================
+// Asset and Font Handling
+// ============================================================================
+
+/// Copy project assets and dependency fonts to the Android assets directory.
+async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
+    let assets_dir = backend_path.join("app/src/main/assets");
+
+    // Copy project assets
+    let project_assets_dest = assets_dir.clone();
+    assets::copy_project_assets(project, &project_assets_dest).await?;
+
+    // Scan and resolve dependency fonts
+    let font_declarations = assets::scan_fonts(project).await?;
+    let resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+
+    if !resolved_fonts.is_empty() {
+        // Copy fonts to assets/fonts/
+        let fonts_dest = assets_dir.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
+
+        // Generate WaterUIFonts.kt for font registration
+        let java_dir = backend_path.join("app/src/main/java");
+        generate_font_registration_kotlin(project, &resolved_fonts, &java_dir).await?;
+
+        info!("Copied {} fonts to Android app", resolved_fonts.len());
+    }
+
+    Ok(())
+}
+
+/// Template for WaterUIFonts.kt
+const WATERUI_FONTS_TEMPLATE: &str =
+    include_str!("../templates/android/app/src/main/java/WaterUIFonts.kt.tpl");
+
+/// Generate WaterUIFonts.kt file for registering custom fonts.
+async fn generate_font_registration_kotlin(
+    project: &Project,
+    fonts: &[ResolvedFont],
+    java_dir: &Path,
+) -> eyre::Result<()> {
+    // Get the package namespace from the project
+    let namespace = project.bundle_identifier().replace('-', "_");
+
+    // Build font entries
+    let mut font_entries = String::new();
+    for font in fonts {
+        let file_name = font
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        writeln!(
+            &mut font_entries,
+            "        fonts[\"{}\"] = Typeface.createFromAsset(context.assets, \"fonts/{}\")",
+            font.name, file_name
+        )
+        .unwrap();
+    }
+
+    // Render template
+    let content = WATERUI_FONTS_TEMPLATE
+        .replace("__ANDROID_NAMESPACE__", &namespace)
+        .replace("__FONT_ENTRIES__", font_entries.trim_end());
+
+    // Create the package directory structure
+    let package_dir = java_dir.join(namespace.replace('.', "/"));
+    fs::create_dir_all(&package_dir).await?;
+
+    let kotlin_path = package_dir.join("WaterUIFonts.kt");
+    fs::write(&kotlin_path, content).await?;
+
+    debug!("Generated {}", kotlin_path.display());
+
+    Ok(())
 }
