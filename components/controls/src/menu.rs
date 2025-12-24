@@ -1,3 +1,6 @@
+//! A menu component that displays a dropdown menu when tapped.
+//!
+
 use alloc::{rc::Rc, vec::Vec};
 use nami::{Computed, impl_constant, signal::IntoComputed};
 use waterui_core::{
