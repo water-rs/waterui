@@ -96,6 +96,8 @@ where
         }
     }
 
+    /// Sets the font.
+    #[must_use]
     pub fn font(
         self,
         font: Font,
