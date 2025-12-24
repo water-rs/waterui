@@ -123,7 +123,6 @@ waterui-text.workspace = true
 waterui-media.workspace = true
 native-executor.workspace = true
 waterui-navigation.workspace = true
-waterui-color.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview.workspace = true
@@ -136,7 +135,7 @@ pulldown-cmark = "0.13"
 waterui-macros.workspace = true
 libloading = "0.9"
 uuid = { version = "1.18.1", features = ["v4"] }
-waterui-graphics = { workspace = true, optional = true }
+waterui-graphics.workspace = true
 async-fs = "2.2.0"
 robius-open.workspace = true
 
@@ -162,8 +161,8 @@ arboard = "3.6.1"
 default = []
 std = []
 all = ["std"]
-graphics = ["dep:waterui-graphics"]  # includes canvas by default
-graphics-minimal = ["dep:waterui-graphics", "waterui-graphics/wgpu"]  # only GpuSurface, no canvas
+graphics = ["waterui-graphics/wgpu"]  # includes canvas by default if default features of graphics are enabled
+graphics-minimal = ["waterui-graphics/wgpu"]  # only GpuSurface, no canvas if configured that way
 
 
 [lints]
