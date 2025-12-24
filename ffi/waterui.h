@@ -501,12 +501,29 @@ typedef enum WuiWindowStyle {
 
 /**
  * FFI-safe representation of a material blur style.
+ *
+ * Maps to SwiftUI's Material types on Apple platforms.
  */
 typedef enum WuiMaterial {
+  /**
+   * Ultra-thin blur, most transparent.
+   */
   WuiMaterial_UltraThin = 0,
+  /**
+   * Thin blur.
+   */
   WuiMaterial_Thin = 1,
+  /**
+   * Regular blur (default).
+   */
   WuiMaterial_Regular = 2,
+  /**
+   * Thick blur.
+   */
   WuiMaterial_Thick = 3,
+  /**
+   * Ultra-thick blur, most opaque.
+   */
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
 
@@ -1215,48 +1232,6 @@ typedef struct WuiMetadata_WuiCursor {
 typedef struct WuiMetadata_WuiCursor WuiMetadataCursor;
 
 typedef struct Computed_Color WuiComputed_Color;
-
-typedef struct Computed_Str WuiComputed_Str;
-
-/**
- * FFI-safe representation of a background.
- */
-typedef enum WuiBackground_Tag {
-  /**
-   * A solid color background.
-   */
-  WuiBackground_Color,
-  /**
-   * An image background.
-   */
-  WuiBackground_Image,
-} WuiBackground_Tag;
-
-typedef struct WuiBackground_Color_Body {
-  WuiComputed_Color *color;
-} WuiBackground_Color_Body;
-
-typedef struct WuiBackground_Image_Body {
-  WuiComputed_Str *image;
-} WuiBackground_Image_Body;
-
-typedef struct WuiBackground {
-  WuiBackground_Tag tag;
-  union {
-    WuiBackground_Color_Body color;
-    WuiBackground_Image_Body image;
-  };
-} WuiBackground;
-
-typedef struct WuiMetadata_WuiBackground {
-  struct WuiAnyView *content;
-  struct WuiBackground value;
-} WuiMetadata_WuiBackground;
-
-/**
- * Type alias for Metadata<Background> FFI struct
- */
-typedef struct WuiMetadata_WuiBackground WuiMetadataBackground;
 
 /**
  * FFI-safe representation of a foreground color.
@@ -2528,6 +2503,8 @@ typedef struct WuiPhoto {
   struct WuiFn_WuiPhotoEvent on_event;
 } WuiPhoto;
 
+typedef struct Computed_Str WuiComputed_Str;
+
 typedef struct Binding_Volume WuiBinding_Volume;
 
 /**
@@ -3423,21 +3400,6 @@ struct WuiTypeId waterui_metadata_cursor_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataCursor waterui_force_as_metadata_cursor(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_metadata_background_id(void);
-
-/**
- * Force-casts an AnyView to this metadata type
- *
- * # Safety
- * The caller must ensure that `view` is a valid pointer to an `AnyView`
- * that contains a `Metadata<$ty>`.
- */
-WuiMetadataBackground waterui_force_as_metadata_background(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
