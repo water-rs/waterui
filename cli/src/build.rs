@@ -82,6 +82,12 @@ impl RustBuild {
         }
     }
 
+    /// Get the target triple for this build.
+    #[must_use]
+    pub const fn triple(&self) -> &Triple {
+        &self.triple
+    }
+
     /// Build rust library in development mode.
     ///
     /// Will produce debug symbols and less optimizations for faster builds.
@@ -148,14 +154,21 @@ impl RustBuild {
             cmd = cmd.arg("--release");
         }
 
-        let status = cmd
-            .status()
+        let output = cmd
+            .output()
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)?;
 
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let combined = if !stderr.is_empty() {
+                stderr.to_string()
+            } else {
+                stdout.to_string()
+            };
             return Err(RustBuildError::FailToBuildRustLibrary(
-                std::io::Error::other("Cargo build failed"),
+                std::io::Error::other(format!("Cargo build failed:\n{combined}")),
             ));
         }
 
