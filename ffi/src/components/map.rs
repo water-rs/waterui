@@ -156,3 +156,10 @@ impl IntoFFI for MapConfig {
 // =============================================================================
 
 ffi_view!(MapConfig, WuiMap, map);
+
+// =============================================================================
+// Computed types for watchers
+// =============================================================================
+
+crate::ffi_computed!(Region, WuiRegion, region);
+crate::ffi_computed!(Vec<Annotation>, crate::array::WuiArray<WuiAnnotation>, annotations);
