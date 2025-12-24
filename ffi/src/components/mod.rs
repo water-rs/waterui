@@ -53,4 +53,5 @@ pub mod webview;
 
 /// Map component FFI bindings
 pub mod map;
+pub use map::{WuiAnnotation, WuiCoordinate, WuiRegion};
 

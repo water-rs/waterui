@@ -28,10 +28,15 @@ struct GradientUniforms {
 }
 
 // Color stop structure
+// Note: Uses three separate f32 fields instead of vec3<f32> for padding
+// because vec3<f32> has 16-byte alignment in WGSL, which would cause
+// struct size mismatch with Rust's [f32; 3] (4-byte alignment).
 struct ColorStop {
     color: vec4<f32>,
     position: f32,
-    _padding: vec3<f32>,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 // Mesh vertex structure
