@@ -281,6 +281,11 @@ impl AndroidPlatform {
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build(&self, project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+        // Resolve fonts BEFORE cargo build - this ensures icons.json is downloaded
+        // for crates like fontawesome7 that need it during build.rs
+        let font_declarations = crate::assets::scan_fonts(project).await?;
+        let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+
         let abi = self.abi();
         let triple = self.triple();
 

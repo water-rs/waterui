@@ -76,23 +76,23 @@ fn icon_sizes_demo() -> impl View {
     .padding()
 }
 
-/// Demo: Colored icons
+/// Demo: Colored icons using IconGlyph::color()
 fn colored_icons_demo() -> impl View {
     vstack((
         text("Colored Icons").size(18.0),
         hstack((
             fa::solid::HEART
                 .with_size(32.0)
-                .foreground(Color::srgb_hex("#EF4444")),
+                .color(Color::srgb_hex("#EF4444")),
             fa::solid::STAR
                 .with_size(32.0)
-                .foreground(Color::srgb_hex("#F59E0B")),
+                .color(Color::srgb_hex("#F59E0B")),
             fa::solid::CIRCLE_CHECK
                 .with_size(32.0)
-                .foreground(Color::srgb_hex("#10B981")),
+                .color(Color::srgb_hex("#10B981")),
             fa::solid::CIRCLE_INFO
                 .with_size(32.0)
-                .foreground(Color::srgb_hex("#3B82F6")),
+                .color(Color::srgb_hex("#3B82F6")),
         ))
         .spacing(16.0),
     ))
