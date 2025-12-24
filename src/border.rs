@@ -20,7 +20,7 @@
 //! }
 //! ```
 
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::metadata::MetadataKey;
 use waterui_layout::EdgeSet;
 
