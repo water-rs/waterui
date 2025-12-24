@@ -2,7 +2,7 @@
 //!
 //! This module provides the state stack for HTML5 Canvas-style save/restore operations.
 
-use waterui_color::ResolvedColor;
+use crate::color::ResolvedColor;
 
 // Internal imports for rendering (not exposed to users)
 use vello::{kurbo, peniko};
@@ -211,8 +211,8 @@ impl Default for DrawingState {
     fn default() -> Self {
         Self {
             transform: kurbo::Affine::IDENTITY,
-            fill_style: FillStyle::Color(ResolvedColor::from_srgb(waterui_color::Srgb::BLACK)),
-            stroke_style: StrokeStyle::Color(ResolvedColor::from_srgb(waterui_color::Srgb::BLACK)),
+            fill_style: FillStyle::Color(ResolvedColor::from_srgb(crate::color::Srgb::BLACK)),
+            stroke_style: StrokeStyle::Color(ResolvedColor::from_srgb(crate::color::Srgb::BLACK)),
             line_width: 1.0,
             line_cap: LineCap::default(),
             line_join: LineJoin::default(),
@@ -223,7 +223,7 @@ impl Default for DrawingState {
             blend_mode: peniko::BlendMode::default(),
             font: FontSpec::default(),
             shadow_blur: 0.0,
-            shadow_color: ResolvedColor::from_srgb(waterui_color::Srgb::BLACK).with_opacity(0.0),
+            shadow_color: ResolvedColor::from_srgb(crate::color::Srgb::BLACK).with_opacity(0.0),
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             fill_rule: peniko::Fill::NonZero, // Default fill rule

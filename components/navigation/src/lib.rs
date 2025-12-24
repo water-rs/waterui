@@ -20,7 +20,7 @@ use nami::{
     Computed,
     collection::{Collection, List},
 };
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_controls::button;
 use waterui_core::{
     AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
