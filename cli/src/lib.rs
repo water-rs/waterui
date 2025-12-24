@@ -1,6 +1,7 @@
 //! `WaterUI` CLI library for managing cross-platform builds and development workflows.
 pub mod android;
 pub mod apple;
+pub mod assets;
 pub mod backend;
 pub mod brew;
 pub mod build;

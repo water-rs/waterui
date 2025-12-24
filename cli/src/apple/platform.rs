@@ -3,15 +3,17 @@
 //! This module provides utility functions for building and packaging Apple apps.
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fmt::Write};
 
 use color_eyre::eyre::{self, bail};
 use smol::fs;
 use target_lexicon::Architecture;
+use tracing::{debug, info};
 
 use crate::{
     apple::backend::AppleBackend,
+    assets::{self, ResolvedFont},
     build::{BuildOptions, RustBuild},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
@@ -168,6 +170,10 @@ pub async fn package_apple(
 
     validate_local_apple_backend(project).await?;
 
+    // Copy project assets and fonts
+    let app_resources_dir = project_path.join(&backend.scheme);
+    copy_assets_and_fonts(project, &app_resources_dir).await?;
+
     // Tell Xcode not to call `water build` again (we already built)
     // SAFETY: CLI runs on main thread before spawning build processes
     unsafe {
@@ -260,6 +266,67 @@ pub async fn package_apple(
     }
 
     Ok(Artifact::new(project.bundle_identifier(), app_path))
+}
+
+// ============================================================================
+// Asset and Font Handling
+// ============================================================================
+
+/// Copy project assets and dependency fonts to the app resources directory.
+async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Result<()> {
+    // Copy project assets
+    let assets_dest = dest_dir.join("assets");
+    assets::copy_project_assets(project, &assets_dest).await?;
+
+    // Scan and resolve dependency fonts
+    let font_declarations = assets::scan_fonts(project).await?;
+    let resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+
+    if !resolved_fonts.is_empty() {
+        // Copy fonts to app resources
+        let fonts_dest = dest_dir.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
+
+        // Generate WaterUIFonts.swift for font registration
+        generate_font_registration_swift(&resolved_fonts, dest_dir).await?;
+
+        info!("Copied {} fonts to Apple app", resolved_fonts.len());
+    }
+
+    Ok(())
+}
+
+/// Template for WaterUIFonts.swift
+const WATERUI_FONTS_TEMPLATE: &str = include_str!("../templates/apple/AppName/WaterUIFonts.swift.tpl");
+
+/// Generate WaterUIFonts.swift file for registering custom fonts.
+async fn generate_font_registration_swift(
+    fonts: &[ResolvedFont],
+    dest_dir: &Path,
+) -> eyre::Result<()> {
+    // Build font entries
+    let font_entries: String = fonts
+        .iter()
+        .map(|font| {
+            let file_name = font
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            format!("            (\"{}\", \"{}\"),", font.name, file_name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Render template
+    let content = WATERUI_FONTS_TEMPLATE.replace("__FONT_ENTRIES__", &font_entries);
+
+    let swift_path = dest_dir.join("WaterUIFonts.swift");
+    fs::write(&swift_path, content).await?;
+
+    debug!("Generated {}", swift_path.display());
+
+    Ok(())
 }
 
 // ============================================================================

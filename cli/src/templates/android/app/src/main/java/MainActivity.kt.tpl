@@ -124,6 +124,9 @@ class MainActivity : AppCompatActivity() {
         // Initialize MediaPickerManager for this activity
         dev.waterui.android.runtime.MediaPickerManager.initialize(this)
 
+        // Register custom fonts from dependencies
+        WaterUIFonts.register(this)
+
         setupEnvironmentFromIntent(intent)
         setupEnvironmentFromProperties()
         ensureRuntimeBootstrapped()
