@@ -159,6 +159,18 @@ impl Project {
         self.manifest.package.bundle_identifier.as_str()
     }
 
+    /// Get the assets directory path relative to project root.
+    #[must_use]
+    pub fn assets_path(&self) -> &str {
+        &self.manifest.package.assets_path
+    }
+
+    /// Get the full path to the assets directory.
+    #[must_use]
+    pub fn assets_dir(&self) -> PathBuf {
+        self.root.join(&self.manifest.package.assets_path)
+    }
+
     /// Clean build artifacts for the project using the specified backend.
     ///
     /// # Errors
@@ -374,6 +386,7 @@ impl Project {
                 package_type,
                 name: options.name.clone(),
                 bundle_identifier: options.bundle_identifier.clone(),
+                assets_path: default_assets_path(),
             },
             backends: Backends::default(),
             waterui_path: options
@@ -718,6 +731,17 @@ pub struct Package {
     pub name: String,
     /// Bundle identifier for the application (e.g., "com.example.waterdemo").
     pub bundle_identifier: String,
+    /// Path to assets directory relative to project root. Defaults to "assets".
+    #[serde(default = "default_assets_path", skip_serializing_if = "is_default_assets_path")]
+    pub assets_path: String,
+}
+
+fn default_assets_path() -> String {
+    "assets".to_string()
+}
+
+fn is_default_assets_path(path: &str) -> bool {
+    path == "assets"
 }
 
 /// Package type indicating what kind of project this is.

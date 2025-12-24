@@ -10,6 +10,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        // Register custom fonts from dependencies
+        WaterUIFonts.register()
+
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = WaterUIViewController()
         window.makeKeyAndVisible()
@@ -33,6 +36,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register custom fonts from dependencies
+        WaterUIFonts.register()
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
