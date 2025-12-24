@@ -7,7 +7,7 @@ use core::ops::{Add, AddAssign};
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::configurable;
 
 configurable!(

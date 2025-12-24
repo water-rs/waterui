@@ -475,6 +475,12 @@ pub mod color {
             }
 
             impl_constant!($name);
+
+            impl crate::View for $name {
+                fn body(self, _env: &Environment) -> impl crate::View {
+                    crate::color::Color::new(self)
+                }
+            }
         };
     }
 
