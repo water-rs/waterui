@@ -11,15 +11,15 @@ use waterui::app::App;
 use waterui::background::Material;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowBackground, WindowStyle};
+use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
 
 fn main() -> impl View {
-    // Reactive state to track which windows are shown
-    let show_standard = binding(false);
-    let show_borderless = binding(false);
-    let show_frosted = binding(false);
-    let show_transparent = binding(false);
-    let show_ultra_thin = binding(false);
+    // Reactive state to track window states
+    let standard_state = binding(WindowState::Closed);
+    let borderless_state = binding(WindowState::Closed);
+    let frosted_state = binding(WindowState::Closed);
+    let transparent_state = binding(WindowState::Closed);
+    let ultra_thin_state = binding(WindowState::Closed);
 
     vstack((
         scroll(
@@ -36,35 +36,35 @@ fn main() -> impl View {
                     window_section(
                         "Standard Titled Window",
                         "Classic window with title bar and opaque background",
-                        &show_standard,
+                        &standard_state,
                     ),
                     spacer().height(16.0),
                     // Section 2: Borderless Window
                     window_section(
                         "Borderless Window",
                         "Frameless window with colored semi-transparent background",
-                        &show_borderless,
+                        &borderless_state,
                     ),
                     spacer().height(16.0),
                     // Section 3: Frosted Glass Window
                     window_section(
                         "Frosted Glass Window",
                         "Window with material blur effect (Regular thickness)",
-                        &show_frosted,
+                        &frosted_state,
                     ),
                     spacer().height(16.0),
                     // Section 4: Transparent Window
                     window_section(
                         "Transparent Overlay",
                         "Fully transparent window with FullSizeContentView style",
-                        &show_transparent,
+                        &transparent_state,
                     ),
                     spacer().height(16.0),
                     // Section 5: Ultra-Thin Material Window
                     window_section(
                         "Ultra-Thin Material Window",
                         "Subtle frosted effect with UltraThin material",
-                        &show_ultra_thin,
+                        &ultra_thin_state,
                     ),
                 ))
                 .padding_with(EdgeInsets::all(12.0)),
@@ -76,37 +76,37 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(20.0)),
         ),
-        // Conditionally render windows
-        conditional_window(show_standard.clone(), create_standard_window),
-        conditional_window(show_borderless.clone(), create_borderless_window),
-        conditional_window(show_frosted.clone(), create_frosted_window),
-        conditional_window(show_transparent.clone(), create_transparent_window),
-        conditional_window(show_ultra_thin.clone(), create_ultra_thin_window),
+        // Conditionally render windows based on state
+        conditional_window(standard_state.clone(), |state| create_standard_window(state)),
+        conditional_window(borderless_state.clone(), |state| create_borderless_window(state)),
+        conditional_window(frosted_state.clone(), |state| create_frosted_window(state)),
+        conditional_window(transparent_state.clone(), |state| create_transparent_window(state)),
+        conditional_window(ultra_thin_state.clone(), |state| create_ultra_thin_window(state)),
     ))
 }
 
-/// Helper to conditionally render a window based on a boolean binding
-fn conditional_window(
-    show: Binding<bool>,
-    creator: fn() -> Window,
-) -> impl View {
-    watch(show, move |shown| {
-        if shown {
-            AnyView::new(creator())
+/// Helper to conditionally render a window based on state binding
+fn conditional_window<F>(state: Binding<WindowState>, creator: F) -> impl View
+where
+    F: Fn(Binding<WindowState>) -> Window + 'static,
+{
+    watch(state.clone(), move |s| {
+        if s != WindowState::Closed {
+            AnyView::new(creator(state.clone()))
         } else {
             AnyView::new(())
         }
     })
 }
 
-/// Helper function to create a window section with open and toggle buttons
+/// Helper function to create a window section with open and close buttons
 fn window_section(
     title: &'static str,
     description: &'static str,
-    show: &Binding<bool>,
+    state: &Binding<WindowState>,
 ) -> impl View {
-    let show_clone = show.clone();
-    let show_for_close = show.clone();
+    let state_open = state.clone();
+    let state_close = state.clone();
 
     vstack((
         text(title).size(20.0).bold(),
@@ -114,11 +114,11 @@ fn window_section(
         spacer().height(8.0),
         hstack((
             button("Open Window").action(move || {
-                show_clone.set(true);
+                state_open.set(WindowState::Normal);
             }),
             spacer().width(12.0),
             button("Close Window").action(move || {
-                show_for_close.set(false);
+                state_close.set(WindowState::Closed);
             }),
         )),
     ))
@@ -127,45 +127,50 @@ fn window_section(
 }
 
 /// Create a standard titled window with opaque background
-fn create_standard_window() -> Window {
+fn create_standard_window(state: Binding<WindowState>) -> Window {
     Window::new("Standard Window", window_content("Standard Titled Window", "This window uses the default Titled style with an Opaque background.\n\nFeatures:\n• Title bar with controls\n• Opaque system background\n• Resizable and closable"))
         .style(WindowStyle::Titled)
         .background(WindowBackground::Opaque)
         .resizable(true)
+        .with_state(state)
 }
 
 /// Create a borderless window with colored background
-fn create_borderless_window() -> Window {
+fn create_borderless_window(state: Binding<WindowState>) -> Window {
     let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_alpha(0.85);
 
     Window::new("Borderless Window", window_content("Borderless Window", "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)"))
         .style(WindowStyle::Borderless)
         .background(WindowBackground::Color(tinted_color))
         .resizable(true)
+        .with_state(state)
 }
 
 /// Create a frosted glass window with material blur
-fn create_frosted_window() -> Window {
+fn create_frosted_window(state: Binding<WindowState>) -> Window {
     Window::new("Frosted Glass", window_content("Frosted Glass Window", "This window uses a Regular material blur for a frosted glass effect.\n\nFeatures:\n• Titled style\n• Material blur background\n• See-through with blur effect"))
         .style(WindowStyle::Titled)
         .background(WindowBackground::Material(Material::Regular))
         .resizable(true)
+        .with_state(state)
 }
 
 /// Create a transparent overlay window
-fn create_transparent_window() -> Window {
+fn create_transparent_window(state: Binding<WindowState>) -> Window {
     Window::new("Transparent Overlay", transparent_window_content())
         .style(WindowStyle::FullSizeContentView)
         .background(WindowBackground::Transparent)
         .resizable(true)
+        .with_state(state)
 }
 
 /// Create an ultra-thin material window
-fn create_ultra_thin_window() -> Window {
+fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
     Window::new("Ultra-Thin Material", window_content("Ultra-Thin Material Window", "This window uses an UltraThin material for a subtle frosted effect.\n\nFeatures:\n• Borderless style\n• Ultra-thin blur\n• Most transparent material"))
         .style(WindowStyle::Borderless)
         .background(WindowBackground::Material(Material::UltraThin))
         .resizable(true)
+        .with_state(state)
 }
 
 /// Helper function to create window content

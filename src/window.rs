@@ -228,6 +228,36 @@ impl Window {
         self
     }
 
+    /// Set the state binding for the window.
+    ///
+    /// Use this to connect an external state binding to the window,
+    /// allowing you to track when the window is closed by the native close button.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::window::{Window, WindowState};
+    ///
+    /// let state = binding(WindowState::Normal);
+    ///
+    /// // Window with external state binding
+    /// Window::new("My Window", content)
+    ///     .with_state(state.clone());
+    ///
+    /// // Watch for close
+    /// watch(state, |s| {
+    ///     if s == WindowState::Closed {
+    ///         // Window was closed
+    ///     }
+    /// });
+    /// ```
+    #[must_use]
+    pub fn with_state(mut self, state: Binding<WindowState>) -> Self {
+        self.state = state;
+        self
+    }
+
     /// Set the title of the window.
     #[must_use]
     pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
