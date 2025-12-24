@@ -17,8 +17,9 @@ svg-render = ["wgpu", "dep:resvg", "dep:usvg", "dep:tiny-skia"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-color.workspace = true
 waterui-str.workspace = true
+nami.workspace = true
+pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1.14", optional = true }
 tracing.workspace = true

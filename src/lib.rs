@@ -86,7 +86,7 @@ pub use color::Color;
 pub use form::FormBuilder;
 #[doc(inline)]
 pub use view::ViewExt;
-pub use waterui_color as color;
+pub use waterui_graphics::color;
 pub use waterui_form as form;
 
 pub use waterui_layout as layout;
@@ -123,7 +123,6 @@ pub mod task {
 }
 
 /// Graphics primitives including GPU rendering surface.
-#[cfg(feature = "graphics")]
 pub use waterui_graphics as graphics;
 
 #[cfg(debug_assertions)]

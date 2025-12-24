@@ -14,7 +14,7 @@ categories = ["gui", "multimedia"]
 [dependencies]
 waterui-core.workspace = true
 waterui-url.workspace = true
-waterui-color.workspace = true
+waterui-graphics.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 mime = "0.3.17"

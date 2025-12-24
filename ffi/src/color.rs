@@ -3,7 +3,7 @@ use crate::{
 };
 
 use waterui::{Color, Signal};
-use waterui_color::ResolvedColor;
+use waterui_graphics::color::ResolvedColor;
 use waterui_core::{Environment, resolve::Resolvable};
 
 opaque!(WuiColor, Color);
@@ -61,7 +61,7 @@ impl Resolvable for LinearResolvedColor {
 /// This function returns an owned pointer that must be dropped with
 /// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_color_from_linear_rgba_headroom(
+pub unsafe extern "C" fn waterui_graphics::color_from_linear_rgba_headroom(
     red: f32,
     green: f32,
     blue: f32,
@@ -85,13 +85,13 @@ pub unsafe extern "C" fn waterui_color_from_linear_rgba_headroom(
 /// This function returns an owned pointer that must be dropped with
 /// `waterui_drop_color` unless it is passed to a binding setter that consumes it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_color_from_srgba(
+pub unsafe extern "C" fn waterui_graphics::color_from_srgba(
     red: f32,
     green: f32,
     blue: f32,
     alpha: f32,
 ) -> *mut WuiColor {
-    unsafe { waterui_color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
+    unsafe { waterui_graphics::color_from_linear_rgba_headroom(red, green, blue, alpha, 0.0) }
 }
 
 /// Resolves a color in the given environment.
