@@ -30,32 +30,26 @@ fn fruit_basket(
     is_hovering: Binding<bool>,
     collected: Binding<Vec<String>>,
     bounce: Binding<f32>,
-    wiggle: Binding<f32>,
 ) -> impl View {
     // Scale up when hovering
     let hover_scale = is_hovering
         .clone()
-        .map(|h| if h { 1.08_f32 } else { 1.0 })
+        .map(|h| if h { 1.05_f32 } else { 1.0 })
         .with(Animation::spring(400.0, 15.0));
 
-    // Glow effect when hovering
-    let hover_opacity = is_hovering
-        .clone()
-        .map(|h| if h { 1.0_f32 } else { 0.7 })
-        .with(Animation::ease_out(Duration::from_millis(150)));
-
     // Bounce animation on drop
-    let drop_bounce = bounce.clone().with(Animation::spring(500.0, 8.0));
+    let drop_bounce = bounce.clone().with(Animation::spring(500.0, 10.0));
 
-    // Wiggle rotation on drop
-    let drop_wiggle = wiggle.clone().with(Animation::spring(600.0, 10.0));
-
-    // Display collected items
+    // Display collected emojis only (no text)
     let items_display = collected.clone().map(|items| {
         if items.is_empty() {
-            "🧺 Empty basket".to_string()
+            "🧺".to_string()
         } else {
-            items.join(" ")
+            // Extract just the emoji from each item
+            items
+                .iter()
+                .filter_map(|s| s.chars().next())
+                .collect::<String>()
         }
     });
 
@@ -63,27 +57,24 @@ fn fruit_basket(
         if items.is_empty() {
             "Drop fruits here!".to_string()
         } else {
-            format!("{} fruit{} collected", items.len(), if items.len() == 1 { "" } else { "s" })
+            format!("{} fruit{} collected!", items.len(), if items.len() == 1 { "" } else { "s" })
         }
     });
 
     let is_h = is_hovering.clone();
     let coll = collected.clone();
     let b = bounce.clone();
-    let w = wiggle.clone();
 
     vstack((
-        text(items_display).size(32.0),
+        text(items_display).size(40.0),
         text(count_display).size(14.0),
     ))
     .spacing(12.0)
     .padding_with(EdgeInsets::all(24.0))
-    .min_width(300.0)
-    .min_height(150.0)
+    .min_width(280.0)
+    .min_height(120.0)
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
     .scale(hover_scale.zip(drop_bounce).map(|(a, b)| a * b))
-    .rotation(drop_wiggle)
-    .opacity(hover_opacity)
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination_with_events(
         // On drop - add to collection with bounce animation
@@ -94,19 +85,14 @@ fn fruit_basket(
                 items.push(item);
                 coll.set(items);
             }
-
-            // Trigger bounce + wiggle
-            b.set(1.2);
-            w.set(5.0);
-
+            // Trigger bounce - use a unique value each time to ensure animation triggers
+            let current = b.get();
+            let target = if (current - 1.2).abs() < 0.01 { 1.25 } else { 1.2 };
+            b.set(target);
             let b2 = b.clone();
-            let w2 = w.clone();
             spawn_local(async move {
-                sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(200)).await;
                 b2.set(1.0);
-                w2.set(-3.0);
-                sleep(Duration::from_millis(100)).await;
-                w2.set(0.0);
             });
         },
         // On enter
@@ -127,7 +113,6 @@ fn main() -> impl View {
     let is_hovering = Binding::bool(false);
     let collected: Binding<Vec<String>> = Binding::container(Vec::new());
     let bounce = Binding::container(1.0_f32);
-    let wiggle = Binding::container(0.0_f32);
 
     scroll(
         vstack((
@@ -157,10 +142,10 @@ fn main() -> impl View {
             .padding(),
             spacer().height(32.0),
             // Drop basket
-            fruit_basket(is_hovering, collected.clone(), bounce, wiggle),
+            fruit_basket(is_hovering, collected.clone(), bounce),
             spacer().height(16.0),
             // Reset button
-            button("Clear Basket").action_with(collected.clone(), |c| c.set(Vec::new())),
+            button("Clear Basket").action_with(&collected, |c: Binding<Vec<String>>| c.set(Vec::new())),
             spacer(),
         ))
         .padding(),
