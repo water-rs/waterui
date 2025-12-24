@@ -138,7 +138,7 @@ impl GpuFrame<'_> {
 ///     }
 /// }
 /// ```
-pub trait GpuRenderer: Send + 'static {
+pub trait GpuRenderer: 'static {
     /// Called once when GPU resources are ready.
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
@@ -153,8 +153,8 @@ pub trait GpuRenderer: Send + 'static {
 
     /// Called when the surface size changes (before render).
     ///
-    /// Override this to recreate size-dependent resources like
-    /// depth buffers or render targets.
+    /// Default implementation does nothing. Override if you need to
+    /// recreate resources when the surface size changes.
     fn resize(&mut self, _width: u32, _height: u32) {}
 }
 

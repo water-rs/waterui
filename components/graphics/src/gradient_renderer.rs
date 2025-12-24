@@ -501,17 +501,17 @@ impl GpuRenderer for GradientRenderer {
 /// A gradient view that wraps `GpuSurface` with a gradient renderer.
 ///
 /// This is the primary way to use gradients as views.
-pub struct GradientView {
+pub struct Gradient {
     inner: GpuSurface,
 }
 
-impl core::fmt::Debug for GradientView {
+impl core::fmt::Debug for Gradient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GradientView").finish_non_exhaustive()
+        f.debug_struct("Gradient").finish_non_exhaustive()
     }
 }
 
-impl GradientView {
+impl Gradient {
     /// Creates a new gradient view with the given configuration.
     #[must_use]
     pub fn new(config: GradientConfig) -> Self {
@@ -564,8 +564,356 @@ impl GradientView {
     }
 }
 
-impl View for GradientView {
+impl View for Gradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.inner
+    }
+}
+
+// ============================================================================
+// Reactive Mesh Gradient (accepts Signal parameters for animation)
+// ============================================================================
+
+use waterui_core::Signal;
+
+/// A mesh gradient that accepts reactive Signal parameters for animation.
+///
+/// Unlike the static `GradientConfig::mesh()`, this type can accept `Signal`
+/// parameters that are read each frame, enabling smooth animations.
+///
+/// # Example
+///
+/// ```ignore
+/// use waterui_graphics::MeshGradient;
+/// use waterui_core::{Binding, binding};
+/// use waterui_color::ResolvedColor;
+///
+/// // Create animated colors binding
+/// let colors: Binding<Vec<ResolvedColor>> = binding(vec![
+///     ResolvedColor::default(),
+///     // ... 9 colors for 3x3 mesh
+/// ]);
+///
+/// // Create mesh gradient with reactive colors
+/// let gradient = MeshGradient::new(3, 3, colors.clone());
+///
+/// // Animate by updating the binding
+/// colors.set(new_colors); // Gradient updates automatically!
+/// ```
+pub struct MeshGradient<C> {
+    width: u32,
+    height: u32,
+    colors: C,
+    smooths_colors: bool,
+}
+
+impl<C> core::fmt::Debug for MeshGradient<C> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MeshGradient")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("smooths_colors", &self.smooths_colors)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C> MeshGradient<C> {
+    /// Creates a new mesh gradient with the given dimensions and colors signal.
+    ///
+    /// The colors signal is read each frame to update the gradient.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, colors: C) -> Self {
+        Self {
+            width,
+            height,
+            colors,
+            smooths_colors: true,
+        }
+    }
+
+    /// Sets whether to smooth colors between mesh vertices.
+    #[must_use]
+    pub const fn smooths_colors(mut self, smooths: bool) -> Self {
+        self.smooths_colors = smooths;
+        self
+    }
+}
+
+/// Internal renderer for reactive mesh gradients.
+struct ReactiveMeshRenderer<C> {
+    width: u32,
+    height: u32,
+    colors: C,
+    smooths_colors: bool,
+    // GPU resources
+    pipeline: Option<wgpu::RenderPipeline>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    stops_buffer: Option<wgpu::Buffer>,
+    mesh_buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
+    pipeline_format: Option<wgpu::TextureFormat>,
+}
+
+impl<C> ReactiveMeshRenderer<C> {
+    fn new(width: u32, height: u32, colors: C, smooths_colors: bool) -> Self {
+        Self {
+            width,
+            height,
+            colors,
+            smooths_colors,
+            pipeline: None,
+            uniform_buffer: None,
+            stops_buffer: None,
+            mesh_buffer: None,
+            bind_group: None,
+            pipeline_format: None,
+        }
+    }
+}
+
+impl<C> GpuRenderer for ReactiveMeshRenderer<C>
+where
+    C: Signal + 'static,
+    C::Output: IntoIterator<Item = ResolvedColor>,
+{
+    fn setup(&mut self, ctx: &GpuContext) {
+        let shader_source = include_str!("shaders/gradient.wgsl");
+        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Mesh Gradient Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+
+        // Create uniform buffer
+        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Gradient Uniforms"),
+            size: core::mem::size_of::<GradientUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create color stops buffer (not used for mesh, but required by shader)
+        let stops_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Gradient Color Stops"),
+            size: (core::mem::size_of::<GpuColorStop>() * MAX_COLOR_STOPS) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create mesh vertices buffer
+        let mesh_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Gradient Vertices"),
+            size: (core::mem::size_of::<GpuMeshVertex>() * MAX_MESH_VERTICES) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Mesh Gradient Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Mesh Gradient Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: mesh_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Mesh Gradient Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Mesh Gradient Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: ctx.surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        self.pipeline = Some(pipeline);
+        self.uniform_buffer = Some(uniform_buffer);
+        self.stops_buffer = Some(stops_buffer);
+        self.mesh_buffer = Some(mesh_buffer);
+        self.bind_group = Some(bind_group);
+        self.pipeline_format = Some(ctx.surface_format);
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        // Check format match
+        if let Some(pipeline_fmt) = self.pipeline_format {
+            if pipeline_fmt != frame.format {
+                self.pipeline = None;
+                self.pipeline_format = None;
+                return;
+            }
+        }
+
+        let Some(pipeline) = &self.pipeline else { return };
+        let Some(uniform_buffer) = &self.uniform_buffer else { return };
+        let Some(stops_buffer) = &self.stops_buffer else { return };
+        let Some(mesh_buffer) = &self.mesh_buffer else { return };
+        let Some(bind_group) = &self.bind_group else { return };
+
+        // Read current colors from Signal
+        let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
+
+        // Prepare uniforms
+        let uniforms = GradientUniforms {
+            gradient_type: GradientType::Mesh as u32,
+            num_stops: 0,
+            mesh_width: self.width,
+            mesh_height: self.height,
+            start_point: [0.0, 0.0],
+            end_point: [1.0, 1.0],
+            start_value: 0.0,
+            end_value: 1.0,
+            smooths_colors: u32::from(self.smooths_colors),
+            _padding: 0,
+        };
+        frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        // Prepare empty stops (mesh gradient doesn't use stops)
+        let stops = [GpuColorStop::default(); MAX_COLOR_STOPS];
+        frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+
+        // Prepare mesh vertices from colors
+        // Generate grid positions and map colors
+        let mut vertices = [GpuMeshVertex::default(); MAX_MESH_VERTICES];
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
+            let x = (i % w) as f32 / (w - 1).max(1) as f32;
+            let y = (i / w) as f32 / (h - 1).max(1) as f32;
+            vertices[i] = GpuMeshVertex {
+                position: [x, y],
+                _padding1: [0.0; 2],
+                color: [color.red, color.green, color.blue, color.opacity],
+            };
+        }
+        frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
+
+        // Render
+        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Mesh Gradient Encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Mesh Gradient Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        frame.queue.submit(core::iter::once(encoder.finish()));
+    }
+}
+
+impl<C> MeshGradient<C>
+where
+    C: Signal + 'static,
+    C::Output: IntoIterator<Item = ResolvedColor>,
+{
+    /// Converts this mesh gradient into a `GpuSurface` for rendering.
+    #[must_use]
+    pub fn into_surface(self) -> GpuSurface {
+        GpuSurface::new(ReactiveMeshRenderer::new(
+            self.width,
+            self.height,
+            self.colors,
+            self.smooths_colors,
+        ))
+    }
+}
+
+impl<C> View for MeshGradient<C>
+where
+    C: Signal + 'static,
+    C::Output: IntoIterator<Item = ResolvedColor>,
+{
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        self.into_surface()
     }
 }

@@ -113,3 +113,5 @@ pub mod id;
 pub mod layout;
 /// Module for resolving reactive values in different environments.
 pub mod resolve;
+/// VectorArithmetic trait for types that can be linearly interpolated (animation).
+pub mod vector_arithmetic;
