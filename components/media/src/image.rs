@@ -4,7 +4,7 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use blocking::unblock;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use mime::Mime;
-use waterui_color::{Srgb, WithOpacity};
+use waterui_graphics::color::{Srgb, WithOpacity};
 
 /// Represents a loaded image.
 #[derive(Debug, Clone)]
