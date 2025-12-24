@@ -563,7 +563,6 @@ ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 // ========== Common imports for metadata FFI ==========
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
-use waterui::Color;
 
 // ========== WuiMaterial FFI ==========
 // Used for material blur effects (window backgrounds, etc.)
@@ -601,32 +600,6 @@ impl IntoFFI for Material {
     }
 }
 
-// ========== Metadata<ForegroundColor> FFI ==========
-// Used to set foreground/text color for views
-
-use waterui::background::ForegroundColor;
-
-/// FFI-safe representation of a foreground color.
-#[repr(C)]
-pub struct WuiForegroundColor {
-    /// Pointer to the computed color.
-    pub color: *mut WuiComputed<Color>,
-}
-
-impl IntoFFI for ForegroundColor {
-    type FFI = WuiForegroundColor;
-    fn into_ffi(self) -> Self::FFI {
-        WuiForegroundColor {
-            color: self.color.into_ffi(),
-        }
-    }
-}
-
-/// Type alias for Metadata<ForegroundColor> FFI struct
-pub type WuiMetadataForeground = WuiMetadata<WuiForegroundColor>;
-
-// Generate waterui_metadata_foreground_id() and waterui_force_as_metadata_foreground()
-ffi_metadata!(ForegroundColor, WuiMetadataForeground, foreground);
 
 // ========== Metadata<Shadow> FFI ==========
 // Used to apply shadow effects to views
