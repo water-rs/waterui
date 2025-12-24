@@ -560,13 +560,15 @@ pub type WuiMetadataCursor = WuiMetadata<WuiCursor>;
 // Generate waterui_metadata_cursor_id() and waterui_force_as_metadata_cursor()
 ffi_metadata!(Cursor, WuiMetadataCursor, cursor);
 
-// ========== Metadata<Background> FFI ==========
-// Used to apply background colors or images to views
-
+// ========== Common imports for metadata FFI ==========
 use crate::color::WuiColor;
 use crate::reactive::WuiComputed;
 use waterui::Color;
-use waterui::background::{Background, Material};
+
+// ========== WuiMaterial FFI ==========
+// Used for material blur effects (window backgrounds, etc.)
+
+use waterui::background::Material;
 
 /// FFI-safe representation of a material blur style.
 ///
@@ -598,41 +600,6 @@ impl IntoFFI for Material {
         }
     }
 }
-
-/// FFI-safe representation of a background.
-#[repr(C)]
-pub enum WuiBackground {
-    /// A solid color background.
-    Color { color: *mut WuiComputed<Color> },
-    /// An image background.
-    Image { image: *mut WuiComputed<Str> },
-    /// A material blur background.
-    Material { material: WuiMaterial },
-}
-
-impl IntoFFI for Background {
-    type FFI = WuiBackground;
-    fn into_ffi(self) -> Self::FFI {
-        match self {
-            Background::Color(color) => WuiBackground::Color {
-                color: color.into_ffi(),
-            },
-            Background::Image(image) => WuiBackground::Image {
-                image: image.into_ffi(),
-            },
-            Background::Material(material) => WuiBackground::Material {
-                material: material.into_ffi(),
-            },
-            Background::Shader(_) => unimplemented!("Shader backgrounds not yet supported"),
-        }
-    }
-}
-
-/// Type alias for Metadata<Background> FFI struct
-pub type WuiMetadataBackground = WuiMetadata<WuiBackground>;
-
-// Generate waterui_metadata_background_id() and waterui_force_as_metadata_background()
-ffi_metadata!(Background, WuiMetadataBackground, background);
 
 // ========== Metadata<ForegroundColor> FFI ==========
 // Used to set foreground/text color for views
