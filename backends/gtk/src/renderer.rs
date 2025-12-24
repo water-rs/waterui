@@ -25,7 +25,7 @@ use waterui_media::photo::PhotoConfig;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 use waterui_graphics::gpu_surface::GpuSurface;
 

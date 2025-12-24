@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::Widget;
 use nami::Signal;
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;

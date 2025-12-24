@@ -3,7 +3,7 @@
 //! This module provides HTML5 Canvas-style gradient builders that use
 //! WaterUI's native `ResolvedColor` type.
 
-use waterui_color::ResolvedColor;
+use crate::color::ResolvedColor;
 use waterui_core::layout::Point;
 
 // Internal imports for rendering

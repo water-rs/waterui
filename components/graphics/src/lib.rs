@@ -3,6 +3,10 @@
 
 extern crate alloc;
 
+/// Color types and conversion utilities.
+pub mod color;
+pub use color::{Color, Colorspace, ResolvedColor};
+
 /// Shape primitives for GPU-based vector graphics rendering.
 #[cfg(feature = "wgpu")]
 pub mod shape;

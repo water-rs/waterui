@@ -19,9 +19,9 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
-use waterui_color::Color;
-use waterui_core::{AnyView, Environment, View, env::use_env};
+use nami::{Binding, Computed, Signal, impl_constant, signal::IntoComputed};
+use waterui_core::{AnyView, Environment, View};
+use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
 
@@ -258,7 +258,16 @@ impl Window {
 
 impl View for Window {
     fn body(self, env: &Environment) -> impl View {
-        self.show(env);
+        // Try to show the window via WindowManager if available
+        if let Some(manager) = env.get::<WindowManager>() {
+            manager.show(self);
+        } else {
+            tracing::warn!(
+                "WindowManager not found in environment. Window '{}' cannot be shown. \
+                 Multi-window support requires the native backend to install a WindowManager.",
+                self.title.get()
+            );
+        }
         // Return an empty view as the window is managed separately
     }
 }

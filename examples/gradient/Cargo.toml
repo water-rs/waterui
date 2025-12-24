@@ -17,5 +17,5 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui = { workspace = true, features = ["graphics"] }
 waterui-ffi.workspace = true
+waterui-core.workspace = true
 waterui-graphics.workspace = true
-waterui-color.workspace = true

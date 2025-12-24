@@ -18,7 +18,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
-use waterui_color::ResolvedColor;
+use crate::color::ResolvedColor;
 use waterui_core::View;
 
 /// Maximum number of color stops supported by the shader.
@@ -586,7 +586,7 @@ use waterui_core::Signal;
 /// ```ignore
 /// use waterui_graphics::MeshGradient;
 /// use waterui_core::{Binding, binding};
-/// use waterui_color::ResolvedColor;
+/// use crate::color::ResolvedColor;
 ///
 /// // Create animated colors binding
 /// let colors: Binding<Vec<ResolvedColor>> = binding(vec![
