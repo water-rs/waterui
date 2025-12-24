@@ -161,7 +161,9 @@ waterui_ffi::export!();  // Generates FFI entry points
 
 - Rust edition 2024, minimum rustc 1.87
 - Workspace lints enforce strict clippy rules including pedantic/nursery
-- `backends/apple` and `backends/android` are git submodules
+- `backends/apple` and `backends/android` are git submodules inside the monorepo
+- Start every new feature in its own git worktree (one worktree per feature branch)
+- Worktree + submodule rules: after creating a worktree, run submodule init/update in that worktree and avoid switching submodule branches across worktrees; if you need parallel backend changes, use separate backend clones (or dedicated submodule checkouts per worktree) so submodule state does not collide between worktrees
 - The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
 - When adding new components, update: Rust view → FFI exports → regenerate header → Swift component → Android component + JNI
 

@@ -79,9 +79,6 @@ pub mod prelude {
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, ForegroundColor, Material, Shader};
 
-    // Border type
-    pub use super::border::Border;
-
     // Re-export macros
     pub use waterui_macros::hot_reload;
 }
