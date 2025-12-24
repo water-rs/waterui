@@ -17,9 +17,13 @@
 //!
 //! // With custom size
 //! HOME.with_size(32.0)
+//!
+//! // With explicit color
+//! HOME.color(Color::red())
 //! ```
 
 use waterui_core::{Environment, View};
+use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
@@ -46,6 +50,11 @@ use waterui_text::styled::StyledStr;
 /// // Use in views
 /// fn settings_view() -> impl View {
 ///     SETTINGS.with_size(24.0)
+/// }
+///
+/// // With color
+/// fn colored_icon() -> impl View {
+///     GEAR.color(Color::red())
 /// }
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +88,18 @@ impl IconGlyph {
     pub const fn with_size(self, size: f32) -> Self {
         Self { size, ..self }
     }
+
+    /// Returns a colored icon with the specified color.
+    ///
+    /// This sets an explicit color for the icon, overriding any inherited
+    /// foreground color from the environment.
+    #[must_use]
+    pub fn color(self, color: impl Into<Color>) -> ColoredIcon {
+        ColoredIcon {
+            glyph: self,
+            color: color.into(),
+        }
+    }
 }
 
 impl View for IconGlyph {
@@ -90,5 +111,43 @@ impl View for IconGlyph {
                 .size(self.size)
                 .family(self.font_family),
         )
+    }
+}
+
+/// An icon glyph with an explicit color.
+///
+/// Created by calling [`IconGlyph::color()`].
+#[derive(Debug, Clone)]
+pub struct ColoredIcon {
+    glyph: IconGlyph,
+    color: Color,
+}
+
+impl ColoredIcon {
+    /// Returns a new colored icon with the specified size.
+    #[must_use]
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.glyph.size = size;
+        self
+    }
+
+    /// Returns a new colored icon with a different color.
+    #[must_use]
+    pub fn color(mut self, color: impl Into<Color>) -> Self {
+        self.color = color.into();
+        self
+    }
+}
+
+impl View for ColoredIcon {
+    fn body(self, _env: &Environment) -> impl View {
+        let text = alloc::string::String::from(self.glyph.codepoint);
+        StyledStr::plain(text)
+            .font(
+                Font::default()
+                    .size(self.glyph.size)
+                    .family(self.glyph.font_family),
+            )
+            .foreground(self.color)
     }
 }

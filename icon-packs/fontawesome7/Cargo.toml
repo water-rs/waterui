@@ -25,8 +25,7 @@ waterui-icon = { workspace = true, optional = true }
 [build-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-ureq = "2"
-zip = "2"
+arkiv = { version = "0.7", features = ["download"] }
 dirs = "6"
 sha2 = "0.10"
 hex = "0.4"
@@ -35,14 +34,15 @@ hex = "0.4"
 workspace = true
 
 # Font asset declarations for WaterUI CLI
-# These fonts are automatically bundled with apps using this crate
+# CLI downloads fonts to ~/.water/cache/fontawesome/ before compilation.
+# Font names must match the actual font family names in the OTF files.
 [package.metadata.waterui.assets]
 
 [[package.metadata.waterui.assets.font]]
-name = "FontAwesome7Free-Solid"
+name = "Font Awesome 7 Free Solid"
 
 [[package.metadata.waterui.assets.font]]
-name = "FontAwesome7Free-Regular"
+name = "Font Awesome 7 Free"
 
 [[package.metadata.waterui.assets.font]]
-name = "FontAwesome7Free-Brands"
+name = "Font Awesome 7 Brands"

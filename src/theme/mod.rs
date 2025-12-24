@@ -585,3 +585,34 @@ pub fn install_font_signal<T: 'static>(env: &mut Environment, signal: Computed<R
 pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>) {
     env.insert(ColorSchemeSignal(signal));
 }
+
+// ============================================================================
+// ForegroundOverride - Plugin for .foreground() view modifier
+// ============================================================================
+
+use waterui_graphics::color::Color;
+
+/// A plugin that overrides the foreground color for a view subtree.
+///
+/// This is used by the `.foreground()` view modifier to inject a custom
+/// foreground color into the environment.
+#[derive(Debug)]
+pub struct ForegroundOverride {
+    color: Color,
+}
+
+impl ForegroundOverride {
+    /// Creates a new foreground override with the specified color.
+    pub fn new(color: impl Into<Color>) -> Self {
+        Self {
+            color: color.into(),
+        }
+    }
+}
+
+impl Plugin for ForegroundOverride {
+    fn install(self, env: &mut Environment) {
+        let resolved = self.color.resolve(env);
+        install_color_signal::<color::Foreground>(env, resolved);
+    }
+}

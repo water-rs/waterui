@@ -220,9 +220,12 @@ impl Text {
         self
     }
 
-    /// Sets the foreground (text) color.
+    /// Sets the text color.
+    ///
+    /// This sets an explicit color for this text, overriding any inherited
+    /// foreground color from the environment.
     #[must_use]
-    pub fn foreground(mut self, color: impl Into<Color>) -> Self {
+    pub fn color(mut self, color: impl Into<Color>) -> Self {
         let color = color.into();
         self.0.content = self
             .0

@@ -2,16 +2,28 @@
 //!
 //! Downloads icons.json from Font Awesome release and generates icon definitions
 //! with both SVG path data and webfont codepoints.
+//!
+//! # Font Management
+//!
+//! Fonts are managed by the WaterUI CLI, which downloads them to `~/.water/cache/fontawesome/fonts/`
+//! before compilation. This build script expects fonts to already be present.
+//!
+//! For docs.rs builds (detected via `DOCS_RS` env var), this script downloads fonts itself.
+//!
+//! # Environment Variables
+//!
+//! - `FONTAWESOME_ICONS_JSON`: Override with path to a local icons.json file
+//! - `FONTAWESOME_CACHE_DIR`: Override cache directory (default: ~/.water/cache/fontawesome)
+//! - `DOCS_RS`: When set, enables download mode for docs.rs builds
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Font Awesome version to download
+/// Font Awesome version
 const FA_VERSION: &str = "7.1.0";
 
 /// Download URL for the desktop release (contains icons.json with SVG paths)
@@ -43,167 +55,191 @@ struct SvgData {
 }
 
 fn main() {
-    // Only re-run if build.rs changes (downloaded data is cached)
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=FONTAWESOME_ICONS_JSON");
+    println!("cargo:rerun-if-env-changed=FONTAWESOME_CACHE_DIR");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     let out_dir = env::var("OUT_DIR").unwrap();
+    let cache_dir = get_cache_dir();
+    let is_docs_rs = env::var("DOCS_RS").is_ok();
 
-    // Get icons.json content (download if needed)
-    let icons_json = get_icons_json();
+    // Get icons.json content
+    let icons_json = match get_icons_json(&cache_dir, is_docs_rs) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("cargo:warning=Failed to get Font Awesome icons: {}", e);
+            eprintln!("cargo:warning=Building without icon definitions.");
+            // Generate empty modules
+            for style in &["brands", "regular", "solid"] {
+                let dest_path = Path::new(&out_dir).join(format!("{}.rs", style));
+                fs::write(&dest_path, "// No icons available\n")
+                    .expect("Failed to write output file");
+            }
+            return;
+        }
+    };
 
     // Parse icons.json
-    let icons: HashMap<String, IconData> =
-        serde_json::from_str(&icons_json).expect("Failed to parse icons.json");
+    let icons: HashMap<String, IconData> = serde_json::from_str(&icons_json)
+        .expect("Failed to parse icons.json");
 
     // Generate each style module
     for style in &["brands", "regular", "solid"] {
-        let dest_path = Path::new(&out_dir).join(format!("{}.rs", style));
-        let mut output = String::new();
+        generate_style_module(&out_dir, style, &icons);
+    }
+}
 
-        // Header
-        output.push_str(&format!(
-            "// Auto-generated Font Awesome 7 {} icons.\n",
-            style
-        ));
-        output.push_str("// Icons: CC BY 4.0 by Fonticons, Inc.\n");
-        output.push_str("// Do not edit manually.\n\n");
+fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, IconData>) {
+    let dest_path = Path::new(out_dir).join(format!("{}.rs", style));
+    let mut output = String::new();
 
-        // Re-export IconGlyph for webfont feature
+    // Header
+    output.push_str(&format!(
+        "// Auto-generated Font Awesome 7 {} icons.\n",
+        style
+    ));
+    output.push_str("// Icons: CC BY 4.0 by Fonticons, Inc.\n\n");
+
+    // Re-export IconGlyph for webfont feature
+    output.push_str("#[cfg(feature = \"webfont\")]\n");
+    output.push_str("pub use waterui_icon::IconGlyph;\n\n");
+
+    // Font family constant - must match the actual font family name inside the OTF files
+    // Use fc-scan to check: fc-scan font.otf | grep "family:"
+    let font_family = match style {
+        "solid" => "Font Awesome 7 Free Solid",
+        "regular" => "Font Awesome 7 Free",
+        "brands" => "Font Awesome 7 Brands",
+        _ => "Font Awesome 7 Free Solid",
+    };
+
+    output.push_str(&format!(
+        "/// Font family name for {} icons.\n",
+        style
+    ));
+    output.push_str(&format!(
+        "pub const FONT_FAMILY: &str = \"{}\";\n\n",
+        font_family
+    ));
+
+    // Collect and sort icons
+    let mut style_icons: Vec<(&String, &IconData)> = icons
+        .iter()
+        .filter(|(_, data)| data.free.contains(&style.to_string()))
+        .collect();
+    style_icons.sort_by_key(|(name, _)| *name);
+
+    for (icon_name, icon_data) in style_icons {
+        let const_name = to_const_name(icon_name);
+        let fn_name = to_fn_name(icon_name);
+        let codepoint = u32::from_str_radix(&icon_data.unicode, 16)
+            .expect("Invalid unicode codepoint");
+
+        // Webfont constant
+        output.push_str(&format!("/// `{}` icon as webfont glyph.\n", icon_name));
         output.push_str("#[cfg(feature = \"webfont\")]\n");
-        output.push_str("pub use waterui_icon::IconGlyph;\n\n");
-
-        // Font family constant for this style
-        let font_family = match *style {
-            "solid" => "FontAwesome7Free-Solid",
-            "regular" => "FontAwesome7Free-Regular",
-            "brands" => "FontAwesome7Free-Brands",
-            _ => "FontAwesome7Free-Solid",
-        };
-
         output.push_str(&format!(
-            "/// Font family name for {} icons.\n",
-            style
-        ));
-        output.push_str(&format!(
-            "pub const FONT_FAMILY: &str = \"{}\";\n\n",
-            font_family
+            "pub const {}: IconGlyph = IconGlyph::new('\\u{{{:04x}}}', FONT_FAMILY);\n",
+            const_name, codepoint
         ));
 
-        // Collect icons for this style
-        let mut style_icons: Vec<(&String, &IconData)> = icons
-            .iter()
-            .filter(|(_, data)| data.free.contains(&style.to_string()))
-            .collect();
-        style_icons.sort_by_key(|(name, _)| *name);
-
-        for (icon_name, icon_data) in style_icons {
-            let const_name = to_const_name(icon_name);
-            let fn_name = to_fn_name(icon_name);
-
-            // Parse unicode codepoint
-            let codepoint = u32::from_str_radix(&icon_data.unicode, 16)
-                .expect("Invalid unicode codepoint");
-
-            // Generate webfont constant
-            output.push_str(&format!("/// `{}` icon as webfont glyph.\n", icon_name));
-            output.push_str("#[cfg(feature = \"webfont\")]\n");
+        // SVG data if available
+        if let Some(svg_data) = icon_data.svg.get(style) {
+            output.push_str(&format!("/// SVG path for `{}`.\n", icon_name));
             output.push_str(&format!(
-                "pub const {}: IconGlyph = IconGlyph::new('\\u{{{:04x}}}', FONT_FAMILY);\n",
-                const_name, codepoint
+                "pub const {}_PATH: &str = {:?};\n",
+                const_name, svg_data.path
             ));
 
-            // Generate SVG data if available
-            if let Some(svg_data) = icon_data.svg.get(*style) {
-                // Path data constant
-                output.push_str(&format!("/// SVG path for `{}`.\n", icon_name));
-                output.push_str(&format!(
-                    "pub const {}_PATH: &str = {:?};\n",
-                    const_name, svg_data.path
-                ));
+            let width = svg_data.viewbox.get(2).copied().unwrap_or(512.0);
+            let height = svg_data.viewbox.get(3).copied().unwrap_or(512.0);
+            output.push_str(&format!(
+                "pub const {}_VIEWBOX: (f32, f32) = ({:.1}, {:.1});\n",
+                const_name, width, height
+            ));
 
-                // ViewBox dimensions (width, height from viewbox array)
-                let width = svg_data.viewbox.get(2).copied().unwrap_or(512.0);
-                let height = svg_data.viewbox.get(3).copied().unwrap_or(512.0);
-                output.push_str(&format!(
-                    "/// ViewBox dimensions for `{}`.\n",
-                    icon_name
-                ));
-                output.push_str(&format!(
-                    "pub const {}_VIEWBOX: (f32, f32) = ({:.1}, {:.1});\n",
-                    const_name, width, height
-                ));
-
-                // Function returning Svg (for svg feature)
-                output.push_str("#[cfg(feature = \"svg\")]\n");
-                output.push_str(&format!("/// `{}` icon as Svg.\n", icon_name));
-                output.push_str("#[inline]\n");
-                output.push_str(&format!(
-                    "pub fn {}() -> crate::Svg {{\n",
-                    fn_name
-                ));
-                output.push_str(&format!(
-                    "    crate::Svg::from_path({}_PATH, {}_VIEWBOX.0, {}_VIEWBOX.1)\n",
-                    const_name, const_name, const_name
-                ));
-                output.push_str("}\n");
-            }
-
-            output.push('\n');
+            output.push_str("#[cfg(feature = \"svg\")]\n");
+            output.push_str(&format!("/// `{}` icon as Svg.\n", icon_name));
+            output.push_str("#[inline]\n");
+            output.push_str(&format!(
+                "pub fn {}() -> crate::Svg {{\n    crate::Svg::from_path({}_PATH, {}_VIEWBOX.0, {}_VIEWBOX.1)\n}}\n",
+                fn_name, const_name, const_name, const_name
+            ));
         }
-
-        let mut file = fs::File::create(&dest_path).expect("Failed to create output file");
-        file.write_all(output.as_bytes())
-            .expect("Failed to write output file");
+        output.push('\n');
     }
+
+    fs::File::create(&dest_path)
+        .and_then(|mut f| f.write_all(output.as_bytes()))
+        .expect("Failed to write output file");
 }
 
-/// Get icons.json content, downloading from Font Awesome release if not cached.
-fn get_icons_json() -> String {
-    let cache_dir = get_cache_dir();
+/// Get icons.json from cache or download (docs.rs only).
+fn get_icons_json(cache_dir: &Path, is_docs_rs: bool) -> Result<String, String> {
+    // Check for local override
+    if let Ok(local_path) = env::var("FONTAWESOME_ICONS_JSON") {
+        return fs::read_to_string(&local_path)
+            .map_err(|e| format!("Failed to read {}: {}", local_path, e));
+    }
+
     let cache_file = cache_dir.join(format!("fontawesome-{}-icons.json", FA_VERSION));
 
-    // Return cached version if exists
+    // Try cached version first
     if cache_file.exists() {
-        return fs::read_to_string(&cache_file).expect("Failed to read cached icons.json");
+        return fs::read_to_string(&cache_file)
+            .map_err(|e| format!("Failed to read cache: {}", e));
     }
 
-    // Download the desktop release zip
-    eprintln!("Downloading Font Awesome {} icons metadata...", FA_VERSION);
+    // Only download on docs.rs
+    if is_docs_rs {
+        eprintln!("docs.rs build: downloading Font Awesome metadata...");
+        return download_icons_json(cache_dir, &cache_file);
+    }
 
-    let response = ureq::get(FA_DESKTOP_URL)
-        .call()
-        .expect("Failed to download Font Awesome release");
-
-    let mut zip_data = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut zip_data)
-        .expect("Failed to read response body");
-
-    // Extract icons.json from the zip
-    let cursor = std::io::Cursor::new(zip_data);
-    let mut archive = zip::ZipArchive::new(cursor).expect("Failed to open zip archive");
-
-    let icons_json_path = format!("fontawesome-free-{}-desktop/metadata/icons.json", FA_VERSION);
-    let mut icons_file = archive
-        .by_name(&icons_json_path)
-        .expect("icons.json not found in archive");
-
-    let mut icons_json = String::new();
-    icons_file
-        .read_to_string(&mut icons_json)
-        .expect("Failed to read icons.json");
-
-    // Cache for future builds
-    fs::create_dir_all(&cache_dir).ok();
-    fs::write(&cache_file, &icons_json).ok();
-
-    eprintln!("Downloaded and cached icons.json ({} bytes)", icons_json.len());
-    icons_json
+    Err(format!(
+        "Font Awesome icons not found in cache at {}. \
+         Run `water build` to download fonts, or set FONTAWESOME_ICONS_JSON.",
+        cache_file.display()
+    ))
 }
 
-/// Get cache directory for downloaded assets.
+/// Download icons.json (for docs.rs builds).
+fn download_icons_json(cache_dir: &Path, cache_file: &Path) -> Result<String, String> {
+    // Download and extract to a temp directory
+    let mut archive = arkiv::Archive::download(FA_DESKTOP_URL)
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    // Create temp directory for extraction
+    let temp_dir = cache_dir.join("temp_extract");
+    fs::create_dir_all(&temp_dir).ok();
+
+    archive.unpack(&temp_dir)
+        .map_err(|e| format!("Extract failed: {}", e))?;
+
+    // Find and read icons.json
+    let icons_json_path = temp_dir.join(format!(
+        "fontawesome-free-{}-desktop/metadata/icons.json",
+        FA_VERSION
+    ));
+
+    let content = fs::read_to_string(&icons_json_path)
+        .map_err(|e| format!("Failed to read icons.json: {}", e))?;
+
+    // Cache the content
+    fs::create_dir_all(cache_dir).ok();
+    fs::write(cache_file, &content).ok();
+
+    // Clean up temp directory
+    fs::remove_dir_all(&temp_dir).ok();
+
+    Ok(content)
+}
+
 fn get_cache_dir() -> PathBuf {
+    if let Ok(dir) = env::var("FONTAWESOME_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::home_dir()
         .expect("Could not determine home directory")
         .join(".water")
@@ -211,7 +247,6 @@ fn get_cache_dir() -> PathBuf {
         .join("fontawesome")
 }
 
-/// Convert kebab-case to SCREAMING_SNAKE_CASE.
 fn to_const_name(name: &str) -> String {
     let name = if name.chars().next().map_or(false, |c| c.is_numeric()) {
         format!("ICON_{}", name)
@@ -221,7 +256,6 @@ fn to_const_name(name: &str) -> String {
     name.replace('-', "_").to_uppercase()
 }
 
-/// Rust reserved keywords that need r# prefix.
 const RUST_KEYWORDS: &[&str] = &[
     "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
     "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
@@ -231,7 +265,6 @@ const RUST_KEYWORDS: &[&str] = &[
     "typeof", "unsized", "virtual", "yield",
 ];
 
-/// Convert kebab-case to snake_case, escaping keywords.
 fn to_fn_name(name: &str) -> String {
     let name = if name.chars().next().map_or(false, |c| c.is_numeric()) {
         format!("icon_{}", name)
@@ -239,7 +272,6 @@ fn to_fn_name(name: &str) -> String {
         name.to_string()
     };
     let snake = name.replace('-', "_");
-
     if RUST_KEYWORDS.contains(&snake.as_str()) {
         format!("r#{}", snake)
     } else {
