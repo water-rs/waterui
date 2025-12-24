@@ -33,7 +33,8 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
-    background::ForegroundColor,
+    background::{Background, ForegroundColor},
+    border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
     filter,
     gesture::{Gesture, GestureObserver, TapGesture},
@@ -448,6 +449,53 @@ pub trait ViewExt: View + Sized {
     /// Applies a shadow effect to this view.
     fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
         Metadata::new(self, shadow.into())
+    }
+
+    /// Applies a border around this view.
+    ///
+    /// Creates a border with the specified color and width on all edges
+    /// with square corners.
+    ///
+    /// For rounded corners or edge-specific borders, use [`border_with`](ViewExt::border_with)
+    /// with a configured [`Border`] instance.
+    ///
+    /// # Arguments
+    /// * `color` - The border color
+    /// * `width` - The border width in points
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Simple border on all edges
+    /// text!("Hello").border(Color::red(), 2.0);
+    /// ```
+    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border> {
+        Metadata::new(self, Border::new(color, width))
+    }
+
+    /// Applies a border with full customization.
+    ///
+    /// Use this method when you need to configure all border properties at once.
+    ///
+    /// # Arguments
+    /// * `border` - A fully configured `Border` instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    /// use waterui::border::Border;
+    ///
+    /// let border = Border::new(Color::blue(), 2.0)
+    ///     .corner_radius(12.0)
+    ///     .edges(EdgeSet::HORIZONTAL);
+    ///
+    /// text!("Custom").border_with(border);
+    /// ```
+    fn border_with(self, border: Border) -> Metadata<Border> {
+        Metadata::new(self, border)
     }
 
     /// Applies a uniform scale transform to this view around its center.
