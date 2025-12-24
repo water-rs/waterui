@@ -91,34 +91,6 @@ typedef enum WuiEvent {
   WuiEvent_HoverExit,
 } WuiEvent;
 
-/**
- * FFI-safe representation of a material blur style.
- *
- * Maps to SwiftUI's Material types on Apple platforms.
- */
-typedef enum WuiMaterial {
-  /**
-   * Ultra-thin blur, most transparent.
-   */
-  WuiMaterial_UltraThin = 0,
-  /**
-   * Thin blur.
-   */
-  WuiMaterial_Thin = 1,
-  /**
-   * Regular blur (default).
-   */
-  WuiMaterial_Regular = 2,
-  /**
-   * Thick blur.
-   */
-  WuiMaterial_Thick = 3,
-  /**
-   * Ultra-thick blur, most opaque.
-   */
-  WuiMaterial_UltraThick = 4,
-} WuiMaterial;
-
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -153,6 +125,12 @@ typedef enum WuiKeyboardType {
   WuiKeyboardType_Number,
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
+
+typedef enum WuiToggleStyle {
+  WuiToggleStyle_Automatic,
+  WuiToggleStyle_Switch,
+  WuiToggleStyle_Checkbox,
+} WuiToggleStyle;
 
 typedef enum WuiPickerStyle {
   WuiPickerStyle_Automatic,
@@ -304,6 +282,24 @@ typedef enum WuiWebViewEventType {
    */
   WuiWebViewEventType_StateChanged = 7,
 } WuiWebViewEventType;
+
+/**
+ * FFI representation of map display style.
+ */
+typedef enum WuiMapStyle {
+  /**
+   * Standard road map.
+   */
+  WuiMapStyle_Standard = 0,
+  /**
+   * Satellite imagery.
+   */
+  WuiMapStyle_Satellite = 1,
+  /**
+   * Hybrid of satellite and roads.
+   */
+  WuiMapStyle_Hybrid = 2,
+} WuiMapStyle;
 
 /**
  * FFI-safe cursor style enum.
@@ -502,6 +498,17 @@ typedef enum WuiWindowStyle {
    */
   WuiWindowStyle_FullSizeContentView = 2,
 } WuiWindowStyle;
+
+/**
+ * FFI-safe representation of a material blur style.
+ */
+typedef enum WuiMaterial {
+  WuiMaterial_UltraThin = 0,
+  WuiMaterial_Thin = 1,
+  WuiMaterial_Regular = 2,
+  WuiMaterial_Thick = 3,
+  WuiMaterial_UltraThick = 4,
+} WuiMaterial;
 
 /**
  * FFI-compatible representation of [`WindowState`].
@@ -729,6 +736,14 @@ typedef struct Computed_MenuItems Computed_MenuItems;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Region Computed_Region;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_ResolvedColor Computed_ResolvedColor;
 
 /**
@@ -754,6 +769,14 @@ typedef struct Computed_Str Computed_Str;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_StyledStr Computed_StyledStr;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_Vec_Annotation Computed_Vec_Annotation;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -831,6 +854,28 @@ typedef struct EdgeSet EdgeSet;
  * Children are free to return any size; the proposal is just a suggestion.
  */
 typedef struct ProposalSize ProposalSize;
+
+/**
+ * A point in normalized unit coordinate space (0.0 to 1.0).
+ *
+ * Unit points are used to specify gradient start/end points and centers
+ * in a resolution-independent way. The point (0.0, 0.0) is the top-left
+ * corner and (1.0, 1.0) is the bottom-right corner.
+ *
+ * # Predefined Constants
+ *
+ * Common positions are available as constants:
+ * - `UnitPoint::TOP_LEADING` - Top-left corner
+ * - `UnitPoint::TOP` - Top center
+ * - `UnitPoint::TOP_TRAILING` - Top-right corner
+ * - `UnitPoint::LEADING` - Left center
+ * - `UnitPoint::CENTER` - Center
+ * - `UnitPoint::TRAILING` - Right center
+ * - `UnitPoint::BOTTOM_LEADING` - Bottom-left corner
+ * - `UnitPoint::BOTTOM` - Bottom center
+ * - `UnitPoint::BOTTOM_TRAILING` - Bottom-right corner
+ */
+typedef struct UnitPoint UnitPoint;
 
 typedef struct WuiAction WuiAction;
 
@@ -1185,10 +1230,6 @@ typedef enum WuiBackground_Tag {
    * An image background.
    */
   WuiBackground_Image,
-  /**
-   * A material blur background.
-   */
-  WuiBackground_Material,
 } WuiBackground_Tag;
 
 typedef struct WuiBackground_Color_Body {
@@ -1199,16 +1240,11 @@ typedef struct WuiBackground_Image_Body {
   WuiComputed_Str *image;
 } WuiBackground_Image_Body;
 
-typedef struct WuiBackground_Material_Body {
-  enum WuiMaterial material;
-} WuiBackground_Material_Body;
-
 typedef struct WuiBackground {
   WuiBackground_Tag tag;
   union {
     WuiBackground_Color_Body color;
     WuiBackground_Image_Body image;
-    WuiBackground_Material_Body material;
   };
 } WuiBackground;
 
@@ -1273,6 +1309,60 @@ typedef struct WuiMetadata_WuiShadow {
  * Type alias for Metadata<Shadow> FFI struct
  */
 typedef struct WuiMetadata_WuiShadow WuiMetadataShadow;
+
+/**
+ * FFI-safe representation of edge set for safe area.
+ */
+typedef struct WuiEdgeSet {
+  /**
+   * Ignore safe area on top edge.
+   */
+  bool top;
+  /**
+   * Ignore safe area on leading edge.
+   */
+  bool leading;
+  /**
+   * Ignore safe area on bottom edge.
+   */
+  bool bottom;
+  /**
+   * Ignore safe area on trailing edge.
+   */
+  bool trailing;
+} WuiEdgeSet;
+
+/**
+ * FFI-safe representation of a border.
+ */
+typedef struct WuiBorder {
+  /**
+   * Border color (as opaque pointer - needs environment to resolve).
+   */
+  struct WuiColor *color;
+  /**
+   * Border width in points.
+   */
+  float width;
+  /**
+   * Corner radius in points (0 = square corners).
+   */
+  float corner_radius;
+  /**
+   * Which edges to draw the border on.
+   */
+  struct WuiEdgeSet edges;
+} WuiBorder;
+
+typedef struct WuiMetadata_WuiBorder {
+  struct WuiAnyView *content;
+  struct WuiBorder value;
+} WuiMetadata_WuiBorder;
+
+/**
+ * Type alias for Metadata<Border> FFI struct
+ */
+typedef struct WuiMetadata_WuiBorder WuiMetadataBorder;
 
 typedef struct Computed_f32 WuiComputed_f32;
 
@@ -1538,28 +1628,6 @@ typedef struct WuiMetadata_WuiFocused {
  * Type alias for Metadata<Focused> FFI struct
  */
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
-
-/**
- * FFI-safe representation of edge set for safe area.
- */
-typedef struct WuiEdgeSet {
-  /**
-   * Ignore safe area on top edge.
-   */
-  bool top;
-  /**
-   * Ignore safe area on leading edge.
-   */
-  bool leading;
-  /**
-   * Ignore safe area on bottom edge.
-   */
-  bool bottom;
-  /**
-   * Ignore safe area on trailing edge.
-   */
-  bool trailing;
-} WuiEdgeSet;
 
 /**
  * FFI-safe representation of IgnoreSafeArea.
@@ -2216,6 +2284,7 @@ typedef struct WuiTextField {
 typedef struct WuiToggle {
   struct WuiAnyView *label;
   WuiBinding_bool *toggle;
+  enum WuiToggleStyle style;
 } WuiToggle;
 
 /**
@@ -2891,6 +2960,44 @@ typedef struct WuiWebViewHandle {
  */
 typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
 
+typedef struct Computed_Region WuiComputed_Region;
+
+typedef struct Computed_Vec_Annotation WuiComputed_Vec_Annotation;
+
+/**
+ * FFI representation of the Map component.
+ */
+typedef struct WuiMap {
+  /**
+   * The region to display (reactive).
+   */
+  WuiComputed_Region *region;
+  /**
+   * Annotations to display (reactive).
+   */
+  WuiComputed_Vec_Annotation *annotations;
+  /**
+   * The map display style.
+   */
+  enum WuiMapStyle style;
+  /**
+   * Whether to show the user's current location.
+   */
+  bool shows_user_location;
+  /**
+   * Whether the map is interactive (pan/zoom enabled).
+   */
+  bool is_interactive;
+  /**
+   * Whether to show the compass.
+   */
+  bool shows_compass;
+  /**
+   * Whether to show the scale.
+   */
+  bool shows_scale;
+} WuiMap;
+
 /**
  * FFI-safe representation of drag data.
  */
@@ -3079,6 +3186,24 @@ typedef struct WuiApp {
    */
   struct WuiEnv *env;
 } WuiApp;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -3343,6 +3468,21 @@ struct WuiTypeId waterui_metadata_shadow_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataShadow waterui_force_as_metadata_shadow(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_border_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataBorder waterui_force_as_metadata_border(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -4850,6 +4990,19 @@ void *waterui_webview_native_handle(struct WuiWebView *webview);
  * - `create_fn` is a valid function pointer that returns a properly initialized `WuiWebViewHandle`
  */
 void waterui_env_install_webview_controller(struct WuiEnv *env, WuiCreateWebViewFn create_fn);
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiMap waterui_force_as_map(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_map_id(void);
 
 /**
  * Reads the current value from a computed

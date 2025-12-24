@@ -1,13 +1,38 @@
 use core::ptr::null_mut;
 
 use waterui::Str;
+use waterui::background::Material;
 use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
 use waterui_layout::Rect;
 
 use crate::{
-    IntoFFI, WuiAnyView, WuiMaterial, color::WuiColor,
+    IntoFFI, WuiAnyView, color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
 };
+
+/// FFI-safe representation of a material blur style.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum WuiMaterial {
+    UltraThin = 0,
+    Thin = 1,
+    Regular = 2,
+    Thick = 3,
+    UltraThick = 4,
+}
+
+impl IntoFFI for Material {
+    type FFI = WuiMaterial;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Material::UltraThin => WuiMaterial::UltraThin,
+            Material::Thin => WuiMaterial::Thin,
+            Material::Regular => WuiMaterial::Regular,
+            Material::Thick => WuiMaterial::Thick,
+            Material::UltraThick => WuiMaterial::UltraThick,
+        }
+    }
+}
 
 /// FFI-compatible representation of [`WindowStyle`].
 #[repr(C)]

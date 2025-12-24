@@ -7,6 +7,19 @@ use waterui_core::configurable;
 
 use waterui_core::{AnyView, View};
 
+/// Visual style options for toggle controls.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ToggleStyle {
+    /// The default toggle style, determined by the platform.
+    #[default]
+    Automatic,
+    /// A switch-style toggle (sliding pill).
+    Switch,
+    /// A checkbox-style toggle (square with checkmark).
+    Checkbox,
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 /// Configuration for the `Toggle` component.
@@ -15,6 +28,8 @@ pub struct ToggleConfig {
     pub label: AnyView,
     /// The binding to the toggle state.
     pub toggle: Binding<bool>,
+    /// The visual style of the toggle.
+    pub style: ToggleStyle,
 }
 
 configurable!(
@@ -67,12 +82,19 @@ impl Toggle {
         Self(ToggleConfig {
             label: AnyView::default(),
             toggle: toggle.clone(),
+            style: ToggleStyle::default(),
         })
     }
     #[must_use]
     /// Sets the label for the toggle.
     pub fn label(mut self, view: impl View) -> Self {
         self.0.label = AnyView::new(view);
+        self
+    }
+    #[must_use]
+    /// Sets the visual style of the toggle.
+    pub const fn style(mut self, style: ToggleStyle) -> Self {
+        self.0.style = style;
         self
     }
 }

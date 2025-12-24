@@ -6,6 +6,7 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 pub mod background;
+pub mod border;
 pub mod component;
 pub mod gradient;
 pub mod cursor;
@@ -58,6 +59,7 @@ pub mod prelude {
     pub use super::navigation::*;
     pub use super::layout::padding::*;
     pub use super::style::*;
+    pub use super::border::Border;
 
     pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
 
@@ -76,6 +78,9 @@ pub mod prelude {
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, ForegroundColor, Material, Shader};
+
+    // Border type
+    pub use super::border::Border;
 
     // Re-export macros
     pub use waterui_macros::hot_reload;
