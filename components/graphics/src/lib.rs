@@ -3,6 +3,10 @@
 
 extern crate alloc;
 
+/// Shape primitives for GPU-based vector graphics rendering.
+#[cfg(feature = "wgpu")]
+pub mod shape;
+
 /// SVG component for native vector graphics rendering.
 pub mod svg;
 
@@ -17,6 +21,7 @@ pub mod shader_surface;
 /// GPU-accelerated gradient rendering.
 #[cfg(feature = "wgpu")]
 pub mod gradient_renderer;
+
 
 /// SVG renderer using resvg and GpuSurface.
 #[cfg(feature = "svg-render")]
@@ -39,7 +44,11 @@ pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 pub use shader_surface::ShaderSurface;
 
 #[cfg(feature = "wgpu")]
-pub use gradient_renderer::{GradientConfig, GradientRenderer, GradientType, GradientView};
+pub use gradient_renderer::{Gradient, GradientConfig, GradientRenderer, GradientType, MeshGradient};
+
+// Re-export shape types for user convenience.
+#[cfg(feature = "wgpu")]
+pub use shape::{Circle, Ellipse, FilledShape, Line, PathCommand, Rect, Shape};
 
 /// SVG renderer using resvg.
 #[cfg(feature = "svg-render")]
