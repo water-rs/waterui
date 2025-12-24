@@ -9,7 +9,7 @@ use waterui::{
         slider::SliderConfig,
         stepper::StepperConfig,
         text_field::{KeyboardType, TextFieldConfig},
-        toggle::ToggleConfig,
+        toggle::{ToggleConfig, ToggleStyle},
     },
 };
 use waterui_core::id::Id;
@@ -35,10 +35,17 @@ into_ffi! {TextFieldConfig,
     }
 }
 
+into_ffi! {ToggleStyle, Automatic, pub enum WuiToggleStyle {
+    Automatic,
+    Switch,
+    Checkbox,
+}}
+
 into_ffi! {ToggleConfig,
     pub struct WuiToggle {
         label: *mut WuiAnyView,
         toggle: *mut WuiBinding<bool>,
+        style: WuiToggleStyle,
     }
 }
 
