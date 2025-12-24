@@ -254,6 +254,61 @@ impl ResolvedColor {
     }
 }
 
+impl Default for ResolvedColor {
+    fn default() -> Self {
+        Self {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            headroom: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl core::ops::Add for ResolvedColor {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            red: self.red + other.red,
+            green: self.green + other.green,
+            blue: self.blue + other.blue,
+            headroom: self.headroom + other.headroom,
+            opacity: self.opacity + other.opacity,
+        }
+    }
+}
+
+impl core::ops::Sub for ResolvedColor {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        Self {
+            red: self.red - other.red,
+            green: self.green - other.green,
+            blue: self.blue - other.blue,
+            headroom: self.headroom - other.headroom,
+            opacity: self.opacity - other.opacity,
+        }
+    }
+}
+
+impl core::ops::Mul<f64> for ResolvedColor {
+    type Output = Self;
+
+    fn mul(self, scalar: f64) -> Self {
+        let s = scalar as f32;
+        Self {
+            red: self.red * s,
+            green: self.green * s,
+            blue: self.blue * s,
+            headroom: self.headroom * s,
+            opacity: self.opacity * s,
+        }
+    }
+}
+
 impl From<Srgb> for ResolvedColor {
     fn from(value: Srgb) -> Self {
         value.resolve()

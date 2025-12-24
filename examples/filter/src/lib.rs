@@ -244,11 +244,7 @@ fn opacity_section(opacity: Binding<f64>) -> impl View {
     vstack((
         text("Opacity").size(20.0),
         "Adjust transparency (0 = invisible, 1 = opaque)",
-        zstack((
-            Color::srgb_hex("#EF4444").size(120.0, 80.0),
-            sample_content().opacity(animated_opacity),
-        ))
-        .min_height(100.0),
+        zstack((sample_content().opacity(animated_opacity),)).min_height(100.0),
         Slider::new(0.0..=1.0, &opacity),
         hstack((
             {

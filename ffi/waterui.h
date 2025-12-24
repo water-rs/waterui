@@ -971,6 +971,8 @@ typedef struct WuiWatcher_LivePhotoSource WuiWatcher_LivePhotoSource;
 
 typedef struct WuiWatcher_MenuItems WuiWatcher_MenuItems;
 
+typedef struct WuiWatcher_Region WuiWatcher_Region;
+
 typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
 
 typedef struct WuiWatcher_ResolvedFont WuiWatcher_ResolvedFont;
@@ -980,6 +982,8 @@ typedef struct WuiWatcher_Secure WuiWatcher_Secure;
 typedef struct WuiWatcher_Str WuiWatcher_Str;
 
 typedef struct WuiWatcher_StyledStr WuiWatcher_StyledStr;
+
+typedef struct WuiWatcher_Vec_Annotation WuiWatcher_Vec_Annotation;
 
 typedef struct WuiWatcher_Vec_PickerItem_Id WuiWatcher_Vec_PickerItem_Id;
 
@@ -2976,6 +2980,78 @@ typedef struct WuiMap {
 } WuiMap;
 
 /**
+ * FFI representation of a geographic coordinate.
+ */
+typedef struct WuiCoordinate {
+  /**
+   * Latitude in degrees (-90 to 90).
+   */
+  double latitude;
+  /**
+   * Longitude in degrees (-180 to 180).
+   */
+  double longitude;
+} WuiCoordinate;
+
+/**
+ * FFI representation of a map region.
+ */
+typedef struct WuiRegion {
+  /**
+   * The center coordinate of the region.
+   */
+  struct WuiCoordinate center;
+  /**
+   * The north-to-south span in degrees.
+   */
+  double latitude_delta;
+  /**
+   * The east-to-west span in degrees.
+   */
+  double longitude_delta;
+} WuiRegion;
+
+/**
+ * FFI representation of a map annotation (pin).
+ */
+typedef struct WuiAnnotation {
+  /**
+   * The coordinate where the annotation is placed.
+   */
+  struct WuiCoordinate coordinate;
+  /**
+   * The title text.
+   */
+  struct WuiStr title;
+  /**
+   * The subtitle text (empty string if none).
+   */
+  struct WuiStr subtitle;
+} WuiAnnotation;
+
+typedef struct WuiArraySlice_WuiAnnotation {
+  struct WuiAnnotation *head;
+  uintptr_t len;
+} WuiArraySlice_WuiAnnotation;
+
+typedef struct WuiArrayVTable_WuiAnnotation {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiAnnotation (*slice)(const void*);
+} WuiArrayVTable_WuiAnnotation;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiAnnotation {
+  NonNull data;
+  struct WuiArrayVTable_WuiAnnotation vtable;
+} WuiArray_WuiAnnotation;
+
+/**
  * FFI-safe representation of drag data.
  */
 typedef struct WuiDragData {
@@ -4965,6 +5041,86 @@ struct WuiMap waterui_force_as_map(struct WuiAnyView *view);
  * Uses TypeId in normal builds, type_name hash in hot reload builds.
  */
 struct WuiTypeId waterui_map_id(void);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiRegion waterui_read_computed_region(const WuiComputed_Region *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_region(const WuiComputed_Region *computed,
+                                                      struct WuiWatcher_Region *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_region(WuiComputed_Region *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Region *waterui_clone_computed_region(const WuiComputed_Region *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Region *waterui_new_watcher_region(void *data,
+                                                     void (*call)(void*,
+                                                                  struct WuiRegion,
+                                                                  struct WuiWatcherMetadata*),
+                                                     void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiArray_WuiAnnotation waterui_read_computed_annotations(const WuiComputed_Vec_Annotation *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_annotations(const WuiComputed_Vec_Annotation *computed,
+                                                           struct WuiWatcher_Vec_Annotation *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_annotations(WuiComputed_Vec_Annotation *computed);
+
+/**
+ * Clones a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+WuiComputed_Vec_Annotation *waterui_clone_computed_annotations(const WuiComputed_Vec_Annotation *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_Vec_Annotation *waterui_new_watcher_annotations(void *data,
+                                                                  void (*call)(void*,
+                                                                               struct WuiArray_WuiAnnotation,
+                                                                               struct WuiWatcherMetadata*),
+                                                                  void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
