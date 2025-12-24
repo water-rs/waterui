@@ -161,8 +161,6 @@ arboard = "3.6.1"
 default = []
 std = []
 all = ["std"]
-graphics = ["waterui-graphics/wgpu"]  # includes canvas by default if default features of graphics are enabled
-graphics-minimal = ["waterui-graphics/wgpu"]  # only GpuSurface, no canvas if configured that way
 
 
 [lints]

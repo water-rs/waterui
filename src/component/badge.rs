@@ -14,7 +14,7 @@
 
 use crate::ViewExt;
 use nami::{Computed, Signal, signal::IntoComputed};
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::configurable;
 use waterui_core::{AnyView, View};
 

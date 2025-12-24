@@ -27,7 +27,7 @@
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 use waterui_core::{layout::StretchAxis, metadata::MetadataKey, raw_view};
 
 // ============================================================================

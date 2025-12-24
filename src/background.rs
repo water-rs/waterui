@@ -23,7 +23,7 @@
 //! ```
 
 use nami::signal::IntoComputed;
-use waterui_color::{Color, Srgb};
+use waterui_graphics::color::{Color, Srgb};
 use waterui_core::{Computed, metadata::MetadataKey};
 use waterui_str::Str;
 

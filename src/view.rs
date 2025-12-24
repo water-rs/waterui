@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, signal::IntoComputed};
-use waterui_color::Color;
+use waterui_graphics::color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
@@ -33,7 +33,7 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
-    background::{Background, ForegroundColor},
+    background::ForegroundColor,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
     filter,
