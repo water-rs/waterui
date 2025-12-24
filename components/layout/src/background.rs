@@ -17,7 +17,7 @@
 
 use core::fmt;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use waterui_core::View;
 
 use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
