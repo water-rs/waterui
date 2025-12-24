@@ -91,8 +91,17 @@ pub(crate) async fn run_command(
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
     } else {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let output = if !stderr.is_empty() {
+            format!("\nstderr:\n{stderr}")
+        } else if !stdout.is_empty() {
+            format!("\nstdout:\n{stdout}")
+        } else {
+            String::new()
+        };
         Err(eyre::eyre!(
-            "Command {} failed with status {}",
+            "Command {} failed with status {}{output}",
             name,
             result.status
         ))
