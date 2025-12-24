@@ -697,6 +697,42 @@ pub type WuiMetadataShadow = WuiMetadata<WuiShadow>;
 // Generate waterui_metadata_shadow_id() and waterui_force_as_metadata_shadow()
 ffi_metadata!(Shadow, WuiMetadataShadow, shadow);
 
+// ========== Metadata<Border> FFI ==========
+// Used to apply border effects to views
+
+use waterui::border::Border;
+
+/// FFI-safe representation of a border.
+#[repr(C)]
+pub struct WuiBorder {
+    /// Border color (as opaque pointer - needs environment to resolve).
+    pub color: *mut WuiColor,
+    /// Border width in points.
+    pub width: f32,
+    /// Corner radius in points (0 = square corners).
+    pub corner_radius: f32,
+    /// Which edges to draw the border on.
+    pub edges: WuiEdgeSet,
+}
+
+impl IntoFFI for Border {
+    type FFI = WuiBorder;
+    fn into_ffi(self) -> Self::FFI {
+        WuiBorder {
+            color: self.color.into_ffi(),
+            width: self.width,
+            corner_radius: self.corner_radius,
+            edges: self.edges.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Border> FFI struct
+pub type WuiMetadataBorder = WuiMetadata<WuiBorder>;
+
+// Generate waterui_metadata_border_id() and waterui_force_as_metadata_border()
+ffi_metadata!(Border, WuiMetadataBorder, border);
+
 use waterui::style::{Anchor, Offset, Rotation, Scale};
 // ========== Metadata<Scale> FFI ==========
 // Used to apply scale transforms to views
