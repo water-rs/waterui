@@ -115,17 +115,15 @@ fn window_section(
         hstack((
             button("Open Window").action(move || {
                 show_clone.set(true);
-            })
-            .padding_with(EdgeInsets::symmetric(12.0, 8.0)),
+            }),
             spacer().width(12.0),
             button("Close Window").action(move || {
                 show_for_close.set(false);
-            })
-            .padding_with(EdgeInsets::symmetric(12.0, 8.0)),
+            }),
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))
-    .background(Color::srgb_f32(0.95, 0.95, 0.95))
+    .background(Color::srgb_f32(0.25, 0.27, 0.30))
 }
 
 /// Create a standard titled window with opaque background

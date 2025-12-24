@@ -1,12 +1,13 @@
 use core::ptr::null_mut;
 
 use waterui::Str;
-use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
+use waterui::window::{Window, WindowBackground, WindowManager, WindowState, WindowStyle};
 use waterui_layout::Rect;
 
 use crate::{
-    IntoFFI, WuiAnyView, WuiMaterial, color::WuiColor,
+    IntoFFI, IntoRust, WuiEnv, WuiAnyView, WuiMaterial, color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
+    ffi_binding,
 };
 
 /// FFI-compatible representation of [`WindowStyle`].
@@ -54,6 +55,47 @@ impl From<WindowState> for WuiWindowState {
             WindowState::Fullscreen => Self::Fullscreen,
         }
     }
+}
+
+impl IntoFFI for WindowState {
+    type FFI = WuiWindowState;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+impl IntoRust for WuiWindowState {
+    type Rust = WindowState;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Normal => WindowState::Normal,
+            Self::Closed => WindowState::Closed,
+            Self::Minimized => WindowState::Minimized,
+            Self::Fullscreen => WindowState::Fullscreen,
+        }
+    }
+}
+
+// Generate FFI binding functions for WindowState
+ffi_binding!(WindowState, WuiWindowState, window_state);
+
+use crate::reactive::{WuiWatcher, WuiWatcherMetadata};
+
+/// Creates a watcher for WindowState from native callbacks.
+///
+/// # Safety
+/// All function pointers must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_new_watcher_window_state(
+    data: *mut (),
+    call: unsafe extern "C" fn(*mut (), WuiWindowState, *mut WuiWatcherMetadata),
+    drop: unsafe extern "C" fn(*mut ()),
+) -> *mut WuiWatcher<WindowState> {
+    use alloc::boxed::Box;
+    let watcher = unsafe { WuiWatcher::new(data, call, drop) };
+    Box::into_raw(Box::new(watcher))
 }
 
 /// FFI-compatible representation of [`WindowBackground`].
@@ -124,4 +166,69 @@ impl IntoFFI for Window {
             background: self.background.into(),
         }
     }
+}
+
+// =============================================================================
+// WindowManager FFI - Environment Service Installation
+// =============================================================================
+
+/// Type alias for the native window show function.
+///
+/// This function is called by Rust when a `Window` view needs to be shown.
+/// The native implementation should create and display the window.
+/// Native code should use the global environment to render the window content.
+///
+/// # Parameters
+/// - `WuiWindow`: The window configuration to show
+pub type WindowShowFn = unsafe extern "C" fn(WuiWindow);
+
+/// FFI-compatible WindowManager implementation.
+struct FFIWindowManager {
+    show_fn: WindowShowFn,
+}
+
+// Safety: The function pointer is thread-safe to send as it points to static code.
+unsafe impl Send for FFIWindowManager {}
+unsafe impl Sync for FFIWindowManager {}
+
+impl FFIWindowManager {
+    fn show(&self, window: Window) {
+        let ffi_window = window.into_ffi();
+        unsafe {
+            (self.show_fn)(ffi_window);
+        }
+    }
+}
+
+/// Installs a WindowManager into the environment from a native function pointer.
+///
+/// Native backends call this during initialization to register their window
+/// management implementation. When `Window` views are rendered, the provided
+/// callback will be invoked to create and display native windows.
+///
+/// Note: Native code should use its global environment to render window content,
+/// as the environment cannot be safely passed through the callback.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `env` is a valid pointer to a `WuiEnv`
+/// - `show_fn` is a valid function pointer that can handle `WuiWindow` and create native windows
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_install_window_manager(
+    env: *mut WuiEnv,
+    show_fn: WindowShowFn,
+) {
+    if env.is_null() {
+        return;
+    }
+    let env_ref = unsafe { &mut *env };
+
+    let ffi_manager = FFIWindowManager { show_fn };
+
+    let manager = WindowManager::new(move |window| {
+        ffi_manager.show(window);
+    });
+
+    env_ref.insert(manager);
 }
