@@ -78,7 +78,7 @@ impl HotReloadRunner {
             })
             .await;
 
-        let rust_build = RustBuild::new(project.root(), triple, true);
+        let rust_build = RustBuild::new(project.root(), triple.clone(), true);
         let file_rx = watcher.receiver().clone();
         let broadcast_tx = server.broadcast_sender();
         let crate_name = project.crate_name().replace('-', "_");
@@ -91,6 +91,7 @@ impl HotReloadRunner {
             event_tx,
             watcher,
             crate_name,
+            triple,
         ));
 
         Ok(Self {
@@ -125,6 +126,17 @@ impl HotReloadRunner {
     }
 }
 
+/// Get the library extension for a target triple.
+fn lib_extension_for_triple(triple: &Triple) -> &'static str {
+    use target_lexicon::OperatingSystem;
+    match triple.operating_system {
+        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX { .. } => "dylib",
+        OperatingSystem::Windows { .. } => "dll",
+        // Linux, Android, iOS, and most others use .so for cdylib
+        _ => "so",
+    }
+}
+
 /// Main loop that handles file changes, debouncing, building, and broadcasting.
 async fn run_loop(
     rust_build: RustBuild,
@@ -133,6 +145,7 @@ async fn run_loop(
     event_tx: Sender<HotReloadEvent>,
     _watcher: FileWatcher, // Keep watcher alive
     crate_name: String,
+    triple: Triple,
 ) {
     let mut build_manager = BuildManager::new();
     let mut reported_change = false;
@@ -156,10 +169,9 @@ async fn run_loop(
                     match result {
                         Ok(lib_dir) => {
                             let lib_name = format!(
-                                "{}{}{}",
-                                std::env::consts::DLL_PREFIX,
+                                "lib{}.{}",
                                 crate_name,
-                                std::env::consts::DLL_SUFFIX
+                                lib_extension_for_triple(&triple)
                             );
                             let dylib_path = lib_dir.join(&lib_name);
 
