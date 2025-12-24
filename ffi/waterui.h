@@ -482,6 +482,28 @@ typedef enum WuiFontSlot {
 } WuiFontSlot;
 
 /**
+ * FFI-compatible representation of [`WindowState`].
+ */
+typedef enum WuiWindowState {
+  /**
+   * The window is in its normal state.
+   */
+  WuiWindowState_Normal = 0,
+  /**
+   * The window is closed.
+   */
+  WuiWindowState_Closed = 1,
+  /**
+   * The window is minimized.
+   */
+  WuiWindowState_Minimized = 2,
+  /**
+   * The window is maximized to fullscreen.
+   */
+  WuiWindowState_Fullscreen = 3,
+} WuiWindowState;
+
+/**
  * FFI-compatible representation of [`WindowStyle`].
  */
 typedef enum WuiWindowStyle {
@@ -526,28 +548,6 @@ typedef enum WuiMaterial {
    */
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
-
-/**
- * FFI-compatible representation of [`WindowState`].
- */
-typedef enum WuiWindowState {
-  /**
-   * The window is in its normal state.
-   */
-  WuiWindowState_Normal = 0,
-  /**
-   * The window is closed.
-   */
-  WuiWindowState_Closed = 1,
-  /**
-   * The window is minimized.
-   */
-  WuiWindowState_Minimized = 2,
-  /**
-   * The window is maximized to fullscreen.
-   */
-  WuiWindowState_Fullscreen = 3,
-} WuiWindowState;
 
 /**
  * Anchor point for transforms, specified as normalized coordinates.
@@ -990,6 +990,8 @@ typedef struct WuiWatcher_Vec_PickerItem_Id WuiWatcher_Vec_PickerItem_Id;
 typedef struct WuiWatcher_Vec_TableColumn WuiWatcher_Vec_TableColumn;
 
 typedef struct WuiWatcher_Video WuiWatcher_Video;
+
+typedef struct WuiWatcher_WindowState WuiWatcher_WindowState;
 
 typedef struct WuiWatcher_bool WuiWatcher_bool;
 
@@ -3115,9 +3117,9 @@ typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
-typedef struct Binding_Rect WuiBinding_Rect;
-
 typedef struct Binding_WindowState WuiBinding_WindowState;
+
+typedef struct Binding_Rect WuiBinding_Rect;
 
 /**
  * FFI-compatible representation of [`WindowBackground`].
@@ -3199,6 +3201,18 @@ typedef struct WuiWindow {
    */
   struct WuiWindowBackground background;
 } WuiWindow;
+
+/**
+ * Type alias for the native window show function.
+ *
+ * This function is called by Rust when a `Window` view needs to be shown.
+ * The native implementation should create and display the window.
+ * Native code should use the global environment to render the window content.
+ *
+ * # Parameters
+ * - `WuiWindow`: The window configuration to show
+ */
+typedef void (*WindowShowFn)(struct WuiWindow);
 
 typedef struct WuiArraySlice_WuiWindow {
   struct WuiWindow *head;
@@ -6380,6 +6394,66 @@ struct WuiWatcher_AnyViews_AnyView *waterui_new_watcher_views(void *data,
                                                                            struct WuiAnyViews*,
                                                                            struct WuiWatcherMetadata*),
                                                               void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+enum WuiWindowState waterui_read_binding_window_state(const WuiBinding_WindowState *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_window_state(WuiBinding_WindowState *binding, enum WuiWindowState value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher must be a valid callback function.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_window_state(const WuiBinding_WindowState *binding,
+                                                           struct WuiWatcher_WindowState *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_window_state(WuiBinding_WindowState *binding);
+
+/**
+ * Creates a watcher for WindowState from native callbacks.
+ *
+ * # Safety
+ * All function pointers must be valid.
+ */
+struct WuiWatcher_WindowState *waterui_new_watcher_window_state(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiWindowState,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
+ * Installs a WindowManager into the environment from a native function pointer.
+ *
+ * Native backends call this during initialization to register their window
+ * management implementation. When `Window` views are rendered, the provided
+ * callback will be invoked to create and display native windows.
+ *
+ * Note: Native code should use its global environment to render window content,
+ * as the environment cannot be safely passed through the callback.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `env` is a valid pointer to a `WuiEnv`
+ * - `show_fn` is a valid function pointer that can handle `WuiWindow` and create native windows
+ */
+void waterui_env_install_window_manager(struct WuiEnv *env, WindowShowFn show_fn);
 
 WuiEnv* waterui_init(void);
 
