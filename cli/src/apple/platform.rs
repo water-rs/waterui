@@ -31,6 +31,11 @@ pub async fn build_rust_lib(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<PathBuf> {
+    // Resolve fonts BEFORE cargo build - this ensures icons.json is downloaded
+    // for crates like fontawesome7 that need it during build.rs
+    let font_declarations = crate::assets::scan_fonts(project).await?;
+    let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+
     let triple = platform.triple();
     let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
     let lib_dir = build.build_lib(options.is_release()).await?;

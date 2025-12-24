@@ -256,28 +256,3 @@ impl From<Gradient> for Background {
     }
 }
 
-/// Represents the color of text or other foreground elements in a UI.
-#[derive(Debug)]
-pub struct ForegroundColor {
-    /// The computed color value.
-    pub color: Computed<Color>,
-}
-
-impl MetadataKey for ForegroundColor {}
-
-impl ForegroundColor {
-    /// Creates a new foreground color.
-    ///
-    /// # Arguments
-    ///
-    /// * `color` - A value that can be converted into a computed color.
-    ///
-    /// # Returns
-    ///
-    /// A new `ForegroundColor` instance with the specified color.
-    pub fn new(color: impl IntoComputed<Color>) -> Self {
-        Self {
-            color: color.into_computed(),
-        }
-    }
-}
