@@ -363,7 +363,7 @@ impl ImageRenderer {
 }
 
 impl GpuRenderer for ImageRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ImageRenderer] setup() called with format: {:?}, size: {}x{}",
             ctx.surface_format,
@@ -472,6 +472,8 @@ impl GpuRenderer for ImageRenderer {
         self.render_pipeline = Some(render_pipeline);
         self.bind_group = Some(bind_group);
         self.sampler = Some(sampler);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {

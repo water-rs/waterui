@@ -1,31 +1,15 @@
 //! SVG rendering for WaterUI.
 //!
-//! This crate provides `Svg`, a view for rendering SVG content with two backends:
+//! This crate provides `Svg`, a view for rendering SVG content using GPU-accelerated
+//! rendering via `GpuSurface`.
+//!
+//! # Backends
 //!
 //! - **CPU backend** (`cpu` feature, default): Uses resvg to rasterize SVGs
 //!   to a texture which is then blitted to the GPU. Simple and widely compatible.
 //!
 //! - **GPU backend** (`vello` feature): Uses Vello for direct GPU vector rendering.
 //!   Potentially better quality and performance, but requires a git dependency.
-//!
-//! # Rendering Modes
-//!
-//! ## Native Rendering (default)
-//!
-//! By default, `Svg` is a raw view that passes SVG data to native backends:
-//! - Apple: CAShapeLayer with CGPath
-//! - Android: VectorDrawable or android.graphics.Path
-//!
-//! ## Rust-side Rendering
-//!
-//! Use `Svg::render()` to render the SVG in Rust instead of passing to native:
-//!
-//! ```ignore
-//! // Rust-side rendering
-//! Svg::new(svg_content).render()
-//! ```
-//!
-//! The backend used depends on which feature is enabled (`cpu` or `vello`).
 
 #![allow(clippy::multiple_crate_versions)]
 
@@ -37,18 +21,19 @@ mod cpu_renderer;
 mod vello_renderer;
 mod svg_blit;
 
-use waterui_core::raw_view;
+use waterui_core::resolve::Resolvable;
+use waterui_core::Signal;
+use waterui_core::{Environment, View};
 use waterui_graphics::color::Color;
+use waterui_graphics::GpuSurface;
+use waterui_layout::frame::Frame;
 use waterui_str::Str;
 
-/// A native view for rendering SVG content.
+/// A view for rendering SVG content using GPU-accelerated rendering.
 ///
 /// The SVG data can be either:
-/// - Full SVG markup (parsed by native backend)
+/// - Full SVG markup
 /// - Path data only (d attribute from SVG path element)
-///
-/// Native backends render using platform-native vector graphics for
-/// optimal performance and quality.
 ///
 /// # Example
 ///
@@ -56,9 +41,8 @@ use waterui_str::Str;
 /// // From SVG path data (most common for icons)
 /// Svg::from_path("M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z", 24.0, 24.0)
 ///
-/// // With tint color
-/// Svg::from_path("M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z", 24.0, 24.0)
-///     .tint(Color::BLUE)
+/// // Stroke-based icons (like Lucide)
+/// Svg::from_stroke_path("M3 12h18M3 6h18M3 18h18", 24.0, 24.0)
 /// ```
 #[derive(Debug, Clone)]
 pub struct Svg {
@@ -70,6 +54,8 @@ pub struct Svg {
     pub height: Option<f32>,
     /// Optional tint color (for monochrome icons).
     pub tint: Option<Color>,
+    /// Whether to render as stroke (outline) rather than fill.
+    pub stroke: bool,
 }
 
 impl Svg {
@@ -83,19 +69,14 @@ impl Svg {
             width: None,
             height: None,
             tint: None,
+            stroke: false,
         }
     }
 
     /// Creates an SVG from path data with explicit dimensions.
     ///
-    /// This is the recommended constructor for icon SVGs where the
+    /// This is the recommended constructor for filled icon SVGs where the
     /// path data comes from the `d` attribute of an SVG path element.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_data` - The SVG path data (d attribute)
-    /// * `width` - Intrinsic width (typically from viewBox)
-    /// * `height` - Intrinsic height (typically from viewBox)
     #[must_use]
     pub fn from_path(path_data: impl Into<Str>, width: f32, height: f32) -> Self {
         Self {
@@ -103,14 +84,32 @@ impl Svg {
             width: Some(width),
             height: Some(height),
             tint: None,
+            stroke: false,
+        }
+    }
+
+    /// Creates an SVG from path data rendered as strokes (outlines).
+    ///
+    /// This is for stroke-based icon sets like Lucide where the path
+    /// represents the outline of the icon, not a filled shape.
+    ///
+    /// The stroke uses:
+    /// - `stroke-width: 2`
+    /// - `stroke-linecap: round`
+    /// - `stroke-linejoin: round`
+    /// - `fill: none`
+    #[must_use]
+    pub fn from_stroke_path(path_data: impl Into<Str>, width: f32, height: f32) -> Self {
+        Self {
+            content: path_data.into(),
+            width: Some(width),
+            height: Some(height),
+            tint: None,
+            stroke: true,
         }
     }
 
     /// Sets the tint color for the SVG.
-    ///
-    /// When set, the SVG is rendered as a solid color mask, ignoring
-    /// any fill/stroke colors in the original SVG. This is ideal for
-    /// monochrome icons.
     #[must_use]
     pub fn tint(mut self, color: impl Into<Color>) -> Self {
         self.tint = Some(color.into());
@@ -118,9 +117,6 @@ impl Svg {
     }
 
     /// Sets explicit dimensions for the SVG.
-    ///
-    /// These dimensions define the intrinsic size and aspect ratio
-    /// of the SVG content.
     #[must_use]
     pub fn size(mut self, width: f32, height: f32) -> Self {
         self.width = Some(width);
@@ -129,17 +125,23 @@ impl Svg {
     }
 
     /// Build full SVG document from path data if needed.
-    fn build_svg_content(&self) -> alloc::string::String {
+    ///
+    /// The `color` parameter specifies the fill or stroke color for the SVG.
+    fn build_svg_content(&self, color: &str) -> alloc::string::String {
         if let (Some(width), Some(height)) = (self.width, self.height) {
             let content = self.content.as_str();
             if content.trim_start().starts_with('<') {
                 // Already full SVG markup
                 self.content.to_string()
-            } else {
-                // Path data only - wrap in SVG document
+            } else if self.stroke {
+                // Stroke-based path (for outline icons like Lucide)
                 alloc::format!(
-                    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}"><path d="{}"/></svg>"#,
-                    width, height, content
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{content}"/></svg>"#
+                )
+            } else {
+                // Filled path data - wrap in SVG document
+                alloc::format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" fill="{color}"><path d="{content}"/></svg>"#
                 )
             }
         } else {
@@ -148,56 +150,59 @@ impl Svg {
         }
     }
 
-    /// Converts this SVG to a GPU-rendered view.
-    ///
-    /// Instead of passing SVG data to native backends, this creates a
-    /// `GpuSurface` that renders the SVG in Rust. The backend used depends
-    /// on which feature is enabled:
-    ///
-    /// - `cpu` feature: Uses resvg to rasterize, then blits to GPU
-    /// - `vello` feature: Uses Vello for direct GPU vector rendering
-    ///
-    /// # Note
-    ///
-    /// The `tint` modifier is not applied in Rust-side rendering.
-    /// To colorize an SVG, set fill/stroke colors in the SVG content directly.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// Svg::new(svg_content).render()
-    /// ```
+    /// Creates a GpuSurface renderer for this SVG with the given color.
     #[cfg(feature = "cpu")]
-    #[must_use]
-    pub fn render(self) -> waterui_graphics::GpuSurface {
-        let svg_content = self.build_svg_content();
-        waterui_graphics::GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content))
+    fn to_gpu_surface(&self, color: &str) -> GpuSurface {
+        let svg_content = self.build_svg_content(color);
+        GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content))
     }
 
-    /// Converts this SVG to a GPU-rendered view using Vello.
-    ///
-    /// Uses Vello for direct GPU vector rendering with potentially
-    /// better quality and performance than the CPU backend.
     #[cfg(all(feature = "vello-backend", not(feature = "cpu")))]
-    #[must_use]
-    pub fn render(self) -> waterui_graphics::GpuSurface {
-        let svg_content = self.build_svg_content();
-        waterui_graphics::GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+    fn to_gpu_surface(&self, color: &str) -> GpuSurface {
+        let svg_content = self.build_svg_content(color);
+        GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
     }
 
-    /// Renders using Vello backend explicitly.
+    /// Format a ResolvedColor as an SVG-compatible hex string.
     ///
-    /// Available when both `cpu` and `vello-backend` features are enabled.
-    #[cfg(all(feature = "cpu", feature = "vello-backend"))]
-    #[must_use]
-    pub fn render_vello(self) -> waterui_graphics::GpuSurface {
-        let svg_content = self.build_svg_content();
-        waterui_graphics::GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+    /// Converts from linear RGB to sRGB and formats as #rrggbb.
+    fn resolved_color_to_svg_hex(color: &waterui_graphics::color::ResolvedColor) -> alloc::string::String {
+        let srgb = color.to_srgb();
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let r = (srgb.red * 255.0).clamp(0.0, 255.0) as u8;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let g = (srgb.green * 255.0).clamp(0.0, 255.0) as u8;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let b = (srgb.blue * 255.0).clamp(0.0, 255.0) as u8;
+        alloc::format!("#{r:02x}{g:02x}{b:02x}")
     }
 }
 
-// Svg is content-sized by default (uses intrinsic dimensions)
-raw_view!(Svg);
+impl View for Svg {
+    fn body(self, env: &Environment) -> impl View {
+        // Get the color to use: explicit tint or default to white (for dark themes)
+        let color_hex = if let Some(tint) = &self.tint {
+            // Use explicit tint color
+            let resolved = tint.resolve(env).get();
+            Svg::resolved_color_to_svg_hex(&resolved)
+        } else {
+            // Try to get foreground color from environment, fallback to white
+            env.query::<waterui_graphics::color::ForegroundColor, waterui_graphics::color::ResolvedColor>()
+                .map(|sig| {
+                    let fg = sig.get();
+                    Svg::resolved_color_to_svg_hex(&fg)
+                })
+                .unwrap_or_else(|| "#ffffff".into())
+        };
+
+        let surface = self.to_gpu_surface(&color_hex);
+        // Apply frame with intrinsic dimensions if available
+        match (self.width, self.height) {
+            (Some(w), Some(h)) => Frame::new(surface).width(w).height(h),
+            _ => Frame::new(surface),
+        }
+    }
+}
 
 // Re-export renderers for advanced usage
 #[cfg(feature = "cpu")]

@@ -748,16 +748,14 @@ impl LyonShapeRenderer {
 }
 
 impl GpuRenderer for LyonShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!("[Shape] setup called, format: {:?}", ctx.surface_format);
 
-        // Create shader
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Shape Shader"),
-                source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.clone()),
-            });
+        // Create shader directly (no more shared context cache - compile on-demand)
+        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(SHAPE_SHADER.label),
+            source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.clone().into()),
+        });
 
         // Create uniform buffer for color
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -903,6 +901,8 @@ impl GpuRenderer for LyonShapeRenderer {
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn resize(&mut self, _width: u32, _height: u32) {
@@ -1091,11 +1091,13 @@ struct SdfUniforms {
 }                              // Total: 48 bytes
 
 impl GpuRenderer for SdfShapeRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::info!("[SDF Shape] setup called, format: {:?}, kind: {:?}", ctx.surface_format, self.kind);
+
+        // Create shader directly (no more shared context cache - compile on-demand)
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SDF Shape Shader"),
-            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.source.clone()),
+            label: Some(SDF_SHADER.label),
+            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.source.clone().into()),
         });
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1208,6 +1210,8 @@ impl GpuRenderer for SdfShapeRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {
