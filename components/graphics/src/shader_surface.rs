@@ -85,6 +85,17 @@ impl ShaderSurface {
         }
     }
 
+    /// Creates a new shader surface with a label for cache lookup.
+    ///
+    /// The label should match the path used in `include_fragment_shader!`
+    /// so the pre-warmed shader can be retrieved from cache.
+    #[must_use]
+    pub fn with_label(label: &'static str, fragment_shader: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            inner: GpuSurface::new(ShaderRenderer::with_label(label, fragment_shader.into())),
+        }
+    }
+
     /// Consumes the `ShaderSurface` and returns the inner `GpuSurface`.
     #[must_use]
     pub fn into_inner(self) -> GpuSurface {
@@ -122,12 +133,14 @@ impl waterui_core::View for ShaderSurface {
 macro_rules! shader {
     ($path:literal) => {{
         static SHADER: $crate::prewarm::PrewarmedShader = $crate::include_fragment_shader!($path);
-        $crate::shader_surface::ShaderSurface::new(SHADER.source)
+        $crate::shader_surface::ShaderSurface::with_label(SHADER.label, SHADER.source)
     }};
 }
 
 /// Internal renderer that handles all the wgpu boilerplate.
 struct ShaderRenderer {
+    /// Optional label for cache lookup (from include_fragment_shader!)
+    label: Option<&'static str>,
     fragment_source: Cow<'static, str>,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
@@ -140,6 +153,19 @@ struct ShaderRenderer {
 impl ShaderRenderer {
     fn new(fragment_source: Cow<'static, str>) -> Self {
         Self {
+            label: None,
+            fragment_source,
+            pipeline: None,
+            uniform_buffer: None,
+            bind_group: None,
+            start_time: std::time::Instant::now(),
+            pipeline_format: None,
+        }
+    }
+
+    fn with_label(label: &'static str, fragment_source: Cow<'static, str>) -> Self {
+        Self {
+            label: Some(label),
             fragment_source,
             pipeline: None,
             uniform_buffer: None,
@@ -202,19 +228,18 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 ";
 
 impl GpuRenderer for ShaderRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[ShaderSurface] setup() called with format: {:?}",
             ctx.surface_format
         );
         let full_shader = self.build_full_shader();
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("ShaderSurface Shader"),
-                source: wgpu::ShaderSource::Wgsl(full_shader.into()),
-            });
+        // Create shader directly (no more shared context cache - compile on-demand)
+        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: self.label.or(Some("ShaderSurface Shader")),
+            source: wgpu::ShaderSource::Wgsl(full_shader.into()),
+        });
 
         // Uniform buffer layout (WGSL alignment rules):
         // - time: f32 at offset 0 (4 bytes)
@@ -300,6 +325,8 @@ impl GpuRenderer for ShaderRenderer {
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
         self.start_time = std::time::Instant::now();
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {
