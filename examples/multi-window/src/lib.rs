@@ -21,7 +21,8 @@ fn main() -> impl View {
     let transparent_state = binding(WindowState::Closed);
     let ultra_thin_state = binding(WindowState::Closed);
 
-    vstack((
+    // Use zstack so the invisible window triggers don't affect scroll layout
+    zstack((
         scroll(
             vstack((
                 // Header
@@ -76,7 +77,7 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(20.0)),
         ),
-        // Conditionally render windows based on state
+        // Conditionally render windows based on state (invisible triggers)
         conditional_window(standard_state.clone(), |state| create_standard_window(state)),
         conditional_window(borderless_state.clone(), |state| create_borderless_window(state)),
         conditional_window(frosted_state.clone(), |state| create_frosted_window(state)),
