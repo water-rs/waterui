@@ -39,8 +39,10 @@
 
 mod pipeline;
 mod uniform;
+mod core_impl;
 
 pub use pipeline::FilterPipeline;
+pub use core_impl::PreparedFilter;
 
 /// GPU filter to apply to a texture.
 ///
@@ -126,3 +128,7 @@ impl Filter {
         }
     }
 }
+
+// Re-export core traits for convenience
+pub use filtrate_core::{Pipeline, RenderContext, Source};
+
