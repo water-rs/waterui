@@ -14,6 +14,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     If you have to use adb/xcodebuild/other build tools directly, please propose adding a new command to the water CLI instead.
 </important>
 
+<important>
+- Follow fast fail principle: if an unexpected case is encountered, crash early with a clear error message rather than fallback.
+- Put shader to a separate file rather than embedding as string literal. Same for large text assets.
+</important>
+
 ## Build Commands
 
 ```bash

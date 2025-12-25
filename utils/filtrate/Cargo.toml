@@ -14,3 +14,4 @@ workspace = true
 [dependencies]
 wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
+filtrate-core.workspace = true

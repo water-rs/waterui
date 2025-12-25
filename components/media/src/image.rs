@@ -21,6 +21,7 @@ use std::sync::Arc;
 use filtrate::{Filter, FilterPipeline};
 use waterui_core::{Environment, View};
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+use waterui_layout::frame::Frame;
 
 /// A GPU-accelerated image view.
 ///
@@ -218,7 +219,11 @@ impl Image {
 
 impl View for Image {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(self.renderer)
+        let width = self.renderer.width as f32;
+        let height = self.renderer.height as f32;
+        Frame::new(GpuSurface::new(self.renderer))
+            .width(width)
+            .height(height)
     }
 }
 

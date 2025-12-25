@@ -208,44 +208,13 @@ fn main() -> impl View {
             "Demonstrating filtrate GPU filters on Image and Photo",
             Divider,
 
-            // Simple test
-            text("Simple Test").size(22.0),
+            // Simple test - just one Image
+            text("Image Test").size(22.0),
             original_image_section(),
 
-            Divider,
-
-            // Image from pixel data
-            text("Image (from pixel data)").size(22.0),
-            hstack((
-                original_image_section(),
-                blur_section(),
-            )),
-            hstack((
-                brightness_section(),
-                saturation_section(),
-            )),
-            hstack((
-                grayscale_section(),
-                sepia_section(),
-            )),
-            hstack((
-                invert_section(),
-                hue_rotation_section(),
-            )),
-            hstack((
-                vignette_section(),
-                combined_filters_section(),
-            )),
-
-            Divider,
-
-            // Photo from URL
-            text("Photo (from URL)").size(22.0),
-            "Async loading with GPU filters",
-            hstack((
-                photo_section(),
-                photo_vintage_section(),
-            )),
+            // Photo test
+            text("Photo Test").size(22.0),
+            photo_section(),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
