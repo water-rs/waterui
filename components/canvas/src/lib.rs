@@ -834,7 +834,7 @@ impl CanvasRenderer {
 }
 
 impl GpuRenderer for CanvasRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         let renderer = vello::Renderer::new(
             ctx.device,
             vello::RendererOptions {
@@ -928,6 +928,8 @@ impl GpuRenderer for CanvasRenderer {
         self.blit_pipeline = Some(pipeline);
         self.blit_bind_group_layout = Some(bind_group_layout);
         self.blit_sampler = Some(sampler);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn resize(&mut self, width: u32, height: u32) {

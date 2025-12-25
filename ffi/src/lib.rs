@@ -152,7 +152,9 @@ pub unsafe fn __init() {
     #[cfg(feature = "gpu")]
     {
         waterui_graphics::shared_context::init_shared_context().ok();
-        waterui_graphics::prewarm::prewarm_all_shaders();
+        // Note: prewarm_all_shaders() removed - shader compilation now happens
+        // on-demand in GpuRenderer::setup(), naturally parallelized when multiple
+        // GpuSurfaces are initialized together.
     }
 
     init_global_executor(native_executor::NativeExecutor::new());

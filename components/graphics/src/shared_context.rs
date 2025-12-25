@@ -21,6 +21,7 @@
 //! let device = &guard.device;
 //! ```
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
@@ -67,14 +68,52 @@ pub struct SharedGpuContext {
     pub queue: Arc<wgpu::Queue>,
     /// Optional pipeline cache for shader pre-warming.
     pub pipeline_cache: Option<wgpu::PipelineCache>,
+    /// Cached shader modules keyed by label.
+    shader_cache: parking_lot::Mutex<HashMap<&'static str, Arc<wgpu::ShaderModule>>>,
 }
 
 impl std::fmt::Debug for SharedGpuContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cache_size = self.shader_cache.lock().len();
         f.debug_struct("SharedGpuContext")
             .field("adapter", &self.adapter.get_info().name)
             .field("has_pipeline_cache", &self.pipeline_cache.is_some())
+            .field("shader_cache_size", &cache_size)
             .finish_non_exhaustive()
+    }
+}
+
+impl SharedGpuContext {
+    /// Get a shader module from cache, or create and cache it.
+    ///
+    /// This method is used by the pre-warm system and renderers to get shader modules
+    /// without redundant compilation.
+    pub fn get_or_create_shader(
+        &self,
+        label: &'static str,
+        source: &str,
+    ) -> Arc<wgpu::ShaderModule> {
+        let mut cache = self.shader_cache.lock();
+
+        if let Some(module) = cache.get(label) {
+            tracing::trace!("[ShaderCache] Cache HIT: {}", label);
+            return module.clone();
+        }
+
+        tracing::trace!("[ShaderCache] Cache MISS: {} - compiling", label);
+        let module = Arc::new(self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        }));
+
+        cache.insert(label, module.clone());
+        module
+    }
+
+    /// Get shader cache statistics.
+    pub fn shader_cache_stats(&self) -> (usize, usize) {
+        let cache = self.shader_cache.lock();
+        (cache.len(), cache.len()) // (cached_count, hit would require tracking)
     }
 }
 
@@ -265,6 +304,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         device: Arc::new(device),
         queue: Arc::new(queue),
         pipeline_cache: Some(pipeline_cache),
+        shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
 }
 

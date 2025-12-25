@@ -6,8 +6,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use core::future::Future;
+use core::pin::Pin;
 
 use waterui_core::{layout::StretchAxis, raw_view};
+
+/// A boxed future for async setup operations.
+pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
 /// Picks the best surface format for a [`GpuSurface`].
 ///
@@ -120,6 +125,14 @@ impl GpuFrame<'_> {
 /// The renderer will be called with GPU resources during setup,
 /// and then called each frame to perform rendering.
 ///
+/// # Async Setup
+///
+/// The `setup` method returns a future, allowing async initialization (e.g., SVG parsing).
+/// For sync renderers, simply return `async {}` after doing sync work.
+///
+/// **Note:** The future does not require `Send` - it's created and awaited on the same thread.
+/// For heavy CPU work, use `smol::unblock` to run on a thread pool.
+///
 /// # Example
 ///
 /// ```ignore
@@ -128,9 +141,10 @@ impl GpuFrame<'_> {
 /// }
 ///
 /// impl GpuRenderer for TriangleRenderer {
-///     fn setup(&mut self, ctx: &GpuContext) {
-///         // Create pipeline, buffers, etc.
+///     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+///         // Sync work: create pipeline, buffers, etc.
 ///         self.pipeline = Some(ctx.device.create_render_pipeline(&...));
+///         async {} // Immediately ready
 ///     }
 ///
 ///     fn render(&mut self, frame: &GpuFrame) {
@@ -145,7 +159,10 @@ pub trait GpuRenderer: 'static {
     ///
     /// Use this to create pipelines, buffers, bind groups, and other
     /// GPU resources that persist across frames.
-    fn setup(&mut self, ctx: &GpuContext);
+    ///
+    /// Returns a future that completes when setup is done. For sync renderers,
+    /// return `async {}` after performing sync work.
+    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()>;
 
     /// Called each frame to render.
     ///
@@ -158,6 +175,27 @@ pub trait GpuRenderer: 'static {
     /// Default implementation does nothing. Override if you need to
     /// recreate resources when the surface size changes.
     fn resize(&mut self, _width: u32, _height: u32) {}
+}
+
+/// Private object-safe trait for type-erased GPU renderers.
+trait GpuRendererImpl: 'static {
+    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a>;
+    fn render(&mut self, frame: &GpuFrame);
+    fn resize(&mut self, width: u32, height: u32);
+}
+
+impl<T: GpuRenderer> GpuRendererImpl for T {
+    fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a> {
+        Box::pin(GpuRenderer::setup(self, ctx))
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        GpuRenderer::render(self, frame);
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        GpuRenderer::resize(self, width, height);
+    }
 }
 
 /// A raw view for high-performance GPU rendering.
@@ -183,8 +221,8 @@ pub trait GpuRenderer: 'static {
 ///     .frame(width: 400.0, height: 300.0)
 /// ```
 pub struct GpuSurface {
-    /// The renderer that handles GPU drawing.
-    pub renderer: Box<dyn GpuRenderer>,
+    /// The renderer that handles GPU drawing (type-erased).
+    renderer: Box<dyn GpuRendererImpl>,
 }
 
 impl core::fmt::Debug for GpuSurface {
@@ -210,6 +248,21 @@ impl GpuSurface {
         Self {
             renderer: Box::new(renderer),
         }
+    }
+
+    /// Calls `setup` on the renderer, returning a future that completes when ready.
+    pub fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a> {
+        self.renderer.setup(ctx)
+    }
+
+    /// Calls `render` on the renderer.
+    pub fn render(&mut self, frame: &GpuFrame) {
+        self.renderer.render(frame);
+    }
+
+    /// Calls `resize` on the renderer.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.renderer.resize(width, height);
     }
 }
 

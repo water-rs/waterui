@@ -204,7 +204,7 @@ impl SvgRenderer {
 }
 
 impl GpuRenderer for SvgRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         let shader = Self::create_shader(ctx.device);
 
         // Create sampler
@@ -292,6 +292,8 @@ impl GpuRenderer for SvgRenderer {
                 cache: None,
             });
         self.pipeline = Some(pipeline);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {

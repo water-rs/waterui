@@ -191,7 +191,7 @@ impl VelloSvgRenderer {
 }
 
 impl GpuRenderer for VelloSvgRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         // Create Vello renderer
         let renderer = vello::Renderer::new(
             ctx.device,
@@ -296,6 +296,8 @@ impl GpuRenderer for VelloSvgRenderer {
                 cache: None,
             });
         self.blit_pipeline = Some(pipeline);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {

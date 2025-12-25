@@ -252,11 +252,6 @@ impl GradientRenderer {
         GpuSurface::new(self)
     }
 
-    fn build_shader() -> &'static str {
-        // Use pre-warmed shader source
-        &GRADIENT_SHADER.source
-    }
-
     fn prepare_uniforms(&self) -> GradientUniforms {
         GradientUniforms {
             gradient_type: self.config.gradient_type as u32,
@@ -298,16 +293,16 @@ impl GradientRenderer {
 }
 
 impl GpuRenderer for GradientRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         tracing::debug!(
             "[GradientRenderer] setup() called with format: {:?}",
             ctx.surface_format
         );
 
-        let shader_source = Self::build_shader();
+        // Create shader directly (no more shared context cache - compile on-demand)
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Gradient Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            label: Some(GRADIENT_SHADER.label),
+            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
         });
 
         // Create uniform buffer
@@ -473,6 +468,8 @@ impl GpuRenderer for GradientRenderer {
         self.mesh_buffer = Some(mesh_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {
@@ -731,11 +728,11 @@ where
     C: Signal + 'static,
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
-    fn setup(&mut self, ctx: &GpuContext) {
-        // Use pre-warmed shader
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+        // Create shader directly (no more shared context cache - compile on-demand)
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Mesh Gradient Shader"),
-            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone()),
+            label: Some(GRADIENT_SHADER.label),
+            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
         });
 
         // Create uniform buffer
@@ -898,6 +895,8 @@ where
         self.mesh_buffer = Some(mesh_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {
