@@ -1,6 +1,12 @@
-//! SVG component for vector graphics rendering.
+//! SVG rendering for WaterUI.
 //!
-//! This module provides `Svg`, a view for rendering SVG content.
+//! This crate provides `Svg`, a view for rendering SVG content with two backends:
+//!
+//! - **CPU backend** (`cpu` feature, default): Uses resvg to rasterize SVGs
+//!   to a texture which is then blitted to the GPU. Simple and widely compatible.
+//!
+//! - **GPU backend** (`vello` feature): Uses Vello for direct GPU vector rendering.
+//!   Potentially better quality and performance, but requires a git dependency.
 //!
 //! # Rendering Modes
 //!
@@ -10,19 +16,29 @@
 //! - Apple: CAShapeLayer with CGPath
 //! - Android: VectorDrawable or android.graphics.Path
 //!
-//! ## Rust-side Rendering (with `svg-render` feature)
+//! ## Rust-side Rendering
 //!
-//! With the `svg-render` feature enabled, you can use `Svg::render()` to create
-//! a `GpuSurface` that renders the SVG using `resvg` in Rust. This avoids
-//! native SVG parsing issues and provides consistent rendering across platforms.
+//! Use `Svg::render()` to render the SVG in Rust instead of passing to native:
 //!
 //! ```ignore
-//! // Rust-side rendering with resvg
+//! // Rust-side rendering
 //! Svg::new(svg_content).render()
 //! ```
+//!
+//! The backend used depends on which feature is enabled (`cpu` or `vello`).
 
-use crate::color::Color;
+#![allow(clippy::multiple_crate_versions)]
+
+extern crate alloc;
+
+#[cfg(feature = "cpu")]
+mod cpu_renderer;
+#[cfg(feature = "vello-backend")]
+mod vello_renderer;
+mod svg_blit;
+
 use waterui_core::raw_view;
+use waterui_graphics::color::Color;
 use waterui_str::Str;
 
 /// A native view for rendering SVG content.
@@ -112,36 +128,9 @@ impl Svg {
         self
     }
 
-    /// Converts this SVG to a GPU-rendered view using resvg.
-    ///
-    /// Instead of passing SVG data to native backends, this creates a
-    /// `GpuSurface` that renders the SVG in Rust using resvg. This provides:
-    /// - Consistent rendering across all platforms
-    /// - No reliance on potentially buggy native SVG parsers
-    /// - Automatic re-rendering on resize for crisp display
-    ///
-    /// # Note
-    ///
-    /// The `tint` modifier is not applied in Rust-side rendering.
-    /// To colorize an SVG, set fill/stroke colors in the SVG content directly.
-    ///
-    /// # Feature
-    ///
-    /// Requires the `svg-render` feature to be enabled.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// Svg::new(svg_content).render()
-    /// ```
-    #[cfg(feature = "svg-render")]
-    #[must_use]
-    pub fn render(self) -> crate::GpuSurface {
-        use crate::{GpuSurface, SvgRenderer};
-
-        // Build full SVG document if we only have path data
-        let svg_content = if let (Some(width), Some(height)) = (self.width, self.height) {
-            // Check if content looks like path data (starts with M, m, or is just commands)
+    /// Build full SVG document from path data if needed.
+    fn build_svg_content(&self) -> alloc::string::String {
+        if let (Some(width), Some(height)) = (self.width, self.height) {
             let content = self.content.as_str();
             if content.trim_start().starts_with('<') {
                 // Already full SVG markup
@@ -156,11 +145,62 @@ impl Svg {
         } else {
             // Assume full SVG content
             self.content.to_string()
-        };
+        }
+    }
 
-        GpuSurface::new(SvgRenderer::new(&svg_content))
+    /// Converts this SVG to a GPU-rendered view.
+    ///
+    /// Instead of passing SVG data to native backends, this creates a
+    /// `GpuSurface` that renders the SVG in Rust. The backend used depends
+    /// on which feature is enabled:
+    ///
+    /// - `cpu` feature: Uses resvg to rasterize, then blits to GPU
+    /// - `vello` feature: Uses Vello for direct GPU vector rendering
+    ///
+    /// # Note
+    ///
+    /// The `tint` modifier is not applied in Rust-side rendering.
+    /// To colorize an SVG, set fill/stroke colors in the SVG content directly.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Svg::new(svg_content).render()
+    /// ```
+    #[cfg(feature = "cpu")]
+    #[must_use]
+    pub fn render(self) -> waterui_graphics::GpuSurface {
+        let svg_content = self.build_svg_content();
+        waterui_graphics::GpuSurface::new(cpu_renderer::SvgRenderer::new(&svg_content))
+    }
+
+    /// Converts this SVG to a GPU-rendered view using Vello.
+    ///
+    /// Uses Vello for direct GPU vector rendering with potentially
+    /// better quality and performance than the CPU backend.
+    #[cfg(all(feature = "vello-backend", not(feature = "cpu")))]
+    #[must_use]
+    pub fn render(self) -> waterui_graphics::GpuSurface {
+        let svg_content = self.build_svg_content();
+        waterui_graphics::GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
+    }
+
+    /// Renders using Vello backend explicitly.
+    ///
+    /// Available when both `cpu` and `vello-backend` features are enabled.
+    #[cfg(all(feature = "cpu", feature = "vello-backend"))]
+    #[must_use]
+    pub fn render_vello(self) -> waterui_graphics::GpuSurface {
+        let svg_content = self.build_svg_content();
+        waterui_graphics::GpuSurface::new(vello_renderer::VelloSvgRenderer::new(&svg_content))
     }
 }
 
 // Svg is content-sized by default (uses intrinsic dimensions)
 raw_view!(Svg);
+
+// Re-export renderers for advanced usage
+#[cfg(feature = "cpu")]
+pub use cpu_renderer::SvgRenderer;
+#[cfg(feature = "vello-backend")]
+pub use vello_renderer::VelloSvgRenderer;
