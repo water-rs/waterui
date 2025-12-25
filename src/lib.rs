@@ -8,13 +8,13 @@ mod macros;
 pub mod background;
 pub mod border;
 pub mod component;
-pub mod gradient;
 pub mod cursor;
+pub mod drag_drop;
 /// Error handling utilities for converting standard errors into renderable views.
 pub mod error;
 pub mod filter;
 pub mod gesture;
-pub mod drag_drop;
+pub mod gradient;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -41,27 +41,29 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
+    pub use super::env::Environment;
     pub use super::{
         AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt, accessibility,
         animation, app, color, component, cursor, drag_drop, entry, env, error, filter, form,
         fullscreen, gesture, gradient, id, layout, locale, media, metadata, navigation, reactive,
         shape, signal, style, task, text, webview, widget, window,
     };
-    pub use super::env::Environment;
 
     pub use super::color::*;
     pub use super::fullscreen::*;
 
+    pub use super::border::Border;
     pub use super::component::*;
-    pub use waterui_core::dynamic::{DynamicHandler, watch};
     pub use super::form::*;
+    pub use super::layout::padding::*;
     pub use super::layout::*;
     pub use super::navigation::*;
-    pub use super::layout::padding::*;
     pub use super::style::*;
-    pub use super::border::Border;
+    pub use waterui_core::dynamic::{DynamicHandler, watch};
 
-    pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color};
+    pub use super::theme::{
+        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+    };
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
@@ -86,8 +88,8 @@ pub use color::Color;
 pub use form::FormBuilder;
 #[doc(inline)]
 pub use view::ViewExt;
-pub use waterui_graphics::color;
 pub use waterui_form as form;
+pub use waterui_graphics::color;
 
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
@@ -95,9 +97,9 @@ pub use waterui_locale as locale;
 pub use waterui_macros::*;
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
+pub use waterui_svg as svg;
 pub use waterui_text as text;
 pub use waterui_webview as webview;
-pub use waterui_svg as svg;
 pub mod metadata;
 pub mod shape;
 pub mod style;

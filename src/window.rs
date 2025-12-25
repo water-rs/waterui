@@ -1,31 +1,31 @@
 //! Module defining the `Window` struct for UI windows.
 //!
-//! # Transparent and Material Windows
+//! # Window Backgrounds
 //!
-//! Windows can have transparent or blurred backgrounds for modern UI effects:
+//! Windows support solid color backgrounds. For blur effects, use `Material`:
 //!
 //! ```rust,ignore
 //! use waterui::prelude::*;
-//! use waterui::window::{Window, WindowBackground};
+//! use waterui::window::Window;
 //!
-//! // Transparent window
-//! Window::new("Transparent", content)
-//!     .background(WindowBackground::Transparent);
+//! // Semi-transparent colored window
+//! Window::new("Tinted", content)
+//!     .background(Color::black().with_alpha(0.8));
 //!
-//! // Frosted glass window (macOS vibrancy)
+//! // Frosted glass window (opaque window + material blur on content)
 //! Window::new("Frosted", content)
-//!     .background(WindowBackground::Material(Material::Regular));
+//!     .background(Material::Regular);
 //! ```
 
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, Signal, impl_constant, signal::IntoComputed};
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
 
-use crate::{ViewExt, background::Material, prelude::FullScreenOverlayManager};
+use crate::{ViewExt, background::{Material, MaterialBackground}, prelude::FullScreenOverlayManager};
 
 /// Represents a window in the UI.
 #[derive(Debug)]
@@ -93,47 +93,47 @@ pub enum WindowStyle {
     FullSizeContentView,
 }
 
-/// The background style of a window.
+/// The background style of a window (FFI level).
 ///
-/// Allows creating transparent, colored, or frosted glass windows.
+/// This only supports opaque or solid color backgrounds.
+/// For blur effects, use `Material` which wraps content with `MaterialBackground` metadata.
 ///
 /// # Platform Support
 ///
-/// - **macOS**: Full support for all background types including materials (vibrancy).
-/// - **iOS**: Transparent and color backgrounds supported. Materials require `UIVisualEffectView`.
-/// - **Android**: Transparent windows supported via `Window.setBackgroundDrawable()`.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use waterui::prelude::*;
-/// use waterui::window::{Window, WindowBackground};
-///
-/// // Fully transparent window
-/// Window::new("Overlay", content)
-///     .background(WindowBackground::Transparent);
-///
-/// // Semi-transparent colored window
-/// Window::new("Tinted", content)
-///     .background(WindowBackground::Color(Color::black().with_opacity(0.8)));
-///
-/// // Frosted glass effect (macOS vibrancy)
-/// Window::new("Frosted", content)
-///     .background(WindowBackground::Material(Material::Regular));
-/// ```
+/// - **macOS/iOS**: Supports both opaque and colored backgrounds.
+/// - **Android**: Supports colored backgrounds via `Window.setBackgroundDrawable()`.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
     /// Opaque system default background.
     #[default]
     Opaque,
-    /// Fully transparent window (no background).
-    Transparent,
     /// Solid color background (can be semi-transparent via alpha).
     Color(Color),
-    /// Material blur effect behind the window.
-    ///
-    /// On macOS, this uses `NSVisualEffectView` for vibrancy.
+}
+
+/// Input type for `Window::background()` method.
+///
+/// Allows setting window background via `Color` or `Material`.
+/// When `Material` is used, the window becomes opaque and the content
+/// is wrapped with a `MaterialBackground` metadata for native blur effects.
+#[derive(Debug)]
+pub enum WindowBackgroundInput {
+    /// A solid color background.
+    Color(Color),
+    /// A material blur effect (wraps content, window stays opaque).
     Material(Material),
+}
+
+impl From<Color> for WindowBackgroundInput {
+    fn from(color: Color) -> Self {
+        Self::Color(color)
+    }
+}
+
+impl From<Material> for WindowBackgroundInput {
+    fn from(material: Material) -> Self {
+        Self::Material(material)
+    }
 }
 
 /// Manages the display of windows.
@@ -206,25 +206,39 @@ impl Window {
 
     /// Set the background style of the window.
     ///
-    /// Use this to create transparent, tinted, or frosted glass windows.
+    /// Accepts either a `Color` for solid backgrounds or a `Material` for blur effects.
+    /// When using `Material`, the window stays opaque and the content is wrapped with
+    /// a native blur effect on supported platforms (Apple).
     ///
     /// # Examples
     ///
     /// ```rust,ignore
     /// use waterui::prelude::*;
-    /// use waterui::window::{Window, WindowBackground};
+    /// use waterui::window::Window;
     ///
-    /// // Transparent overlay window
-    /// Window::new("Overlay", content)
-    ///     .background(WindowBackground::Transparent);
+    /// // Semi-transparent colored window
+    /// Window::new("Tinted", content)
+    ///     .background(Color::black().with_alpha(0.8));
     ///
-    /// // Frosted glass window
+    /// // Frosted glass window (opaque + material blur on content)
     /// Window::new("Frosted", content)
-    ///     .background(WindowBackground::Material(Material::Regular));
+    ///     .background(Material::Regular);
     /// ```
     #[must_use]
-    pub fn background(mut self, background: WindowBackground) -> Self {
-        self.background = background;
+    pub fn background(mut self, background: impl Into<WindowBackgroundInput>) -> Self {
+        match background.into() {
+            WindowBackgroundInput::Color(color) => {
+                self.background = WindowBackground::Color(color);
+            }
+            WindowBackgroundInput::Material(material) => {
+                // Keep window opaque, wrap content with MaterialBackground metadata
+                self.background = WindowBackground::Opaque;
+                self.content = AnyView::new(IgnorableMetadata::new(
+                    self.content,
+                    MaterialBackground(material),
+                ));
+            }
+        }
         self
     }
 

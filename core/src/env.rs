@@ -183,6 +183,11 @@ impl Environment {
             .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
     }
 
+    /// Retrieves a reference to a value from the environment by its type,
+    /// inserting a new value if it does not already exist.
+    ///
+    /// The new value is created by calling the provided closure `f`.
+    #[must_use]
     pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, f: F) -> &T {
         if !self.map.contains_key(&TypeId::of::<T>()) {
             self.insert(f());

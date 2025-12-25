@@ -26,16 +26,16 @@ pub mod closure;
 pub mod color;
 pub mod components;
 pub mod cursor;
+pub mod drag_drop;
 pub mod event;
 pub mod gesture;
-pub mod drag_drop;
 mod type_id;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 pub use type_id::WuiTypeId;
 pub mod id;
-pub mod reactive;
 pub mod locale;
+pub mod reactive;
 pub mod theme;
 mod ty;
 pub mod views;
@@ -73,6 +73,7 @@ macro_rules! export {
                 $crate::IntoFFI::into_ffi(env)
             }
 
+            #[cfg(debug_assertions)]
             ::waterui::hot_reloadable_library!(app);
 
             /// Creates the application from the user's `app(env)` function.
@@ -599,7 +600,6 @@ impl IntoFFI for Material {
         }
     }
 }
-
 
 // ========== Metadata<Shadow> FFI ==========
 // Used to apply shadow effects to views
@@ -1185,11 +1185,8 @@ pub struct WuiClipShape {
 impl IntoFFI for ClipShape {
     type FFI = WuiClipShape;
     fn into_ffi(self) -> Self::FFI {
-        let commands: alloc::vec::Vec<WuiPathCommand> = self
-            .commands()
-            .iter()
-            .map(|cmd| cmd.into_ffi())
-            .collect();
+        let commands: alloc::vec::Vec<WuiPathCommand> =
+            self.commands().iter().map(|cmd| cmd.into_ffi()).collect();
         WuiClipShape {
             commands: WuiArray::new(commands),
         }
@@ -1344,4 +1341,41 @@ ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
 pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
 
 // Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
-ffi_metadata!(DropDestination, WuiMetadataDropDestination, drop_destination);
+ffi_metadata!(
+    DropDestination,
+    WuiMetadataDropDestination,
+    drop_destination
+);
+
+// ========== IgnorableMetadata<MaterialBackground> FFI ==========
+// Used to apply native blur effects on supported platforms (Apple)
+
+use waterui::background::MaterialBackground;
+
+/// FFI-safe representation of IgnorableMetadata<MaterialBackground>
+#[repr(C)]
+pub struct WuiIgnorableMetadataMaterialBackground {
+    /// The view content wrapped by this metadata
+    pub content: *mut WuiAnyView,
+    /// The material type for the blur effect
+    pub material: WuiMaterial,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<MaterialBackground> {
+    type FFI = WuiIgnorableMetadataMaterialBackground;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataMaterialBackground {
+            content: self.content.into_ffi(),
+            material: self.value.0.into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_ignorable_metadata_material_background_id() and
+// waterui_force_as_ignorable_metadata_material_background()
+ffi_ignorable_metadata!(
+    MaterialBackground,
+    WuiIgnorableMetadataMaterialBackground,
+    material_background
+);
