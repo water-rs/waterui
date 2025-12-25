@@ -23,7 +23,7 @@ use waterui_core::{
 };
 
 use waterui_layout::{
-    BackgroundView, EdgeSet, IgnoreSafeArea, Overlay,
+    EdgeSet, IgnoreSafeArea, Overlay,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -33,6 +33,7 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{self, AccessibilityLabel, AccessibilityRole},
+    background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
     filter,
@@ -124,7 +125,7 @@ pub trait ViewExt: View + Sized {
     /// fills the bounds and the content renders on top.
     ///
     /// # Arguments
-    /// * `background` - Any view to render as the background
+    /// * `background` - Any view or `Material` to render as the background
     ///
     /// # Example
     ///
@@ -134,11 +135,14 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Gradient background (when using waterui_graphics)
-    /// // text!("Hello").background(GradientView::linear(...));
+    /// // Material blur background (Apple platforms)
+    /// text!("Hello").background(Material::Regular);
+    ///
+    /// // Any view as background
+    /// text!("Hello").background(my_gradient_view);
     /// ```
-    fn background<B: View>(self, background: B) -> BackgroundView<Self, B> {
-        BackgroundView::new(self, background)
+    fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
+        background.apply_background(self)
     }
 
     /// Sets the foreground color for this view and all its descendants.

@@ -24,13 +24,62 @@
 
 use nami::signal::IntoComputed;
 use waterui_graphics::color::{Color, Srgb};
-use waterui_core::{Computed, metadata::MetadataKey};
+use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
+use waterui_layout::BackgroundView;
 use waterui_str::Str;
 
 use crate::gradient::{
     AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
     RadialGradient, UnitPoint,
 };
+
+/// A material background metadata for native blur effects.
+///
+/// This is an ignorable metadata that creates a native blur effect on supported
+/// platforms (Apple). On unsupported platforms, this metadata is silently ignored.
+///
+/// # Usage
+///
+/// Use via the `.background(Material::*)` API rather than directly:
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// content.background(Material::Regular);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialBackground(pub Material);
+
+impl MetadataKey for MaterialBackground {}
+
+/// A trait for types that can be applied as backgrounds.
+///
+/// This enables a unified `.background()` API that accepts:
+/// - `Material` - Creates a native blur effect (MaterialBackground metadata)
+/// - Any `View` - Creates a standard background view
+pub trait IntoBackground {
+    /// The output view type after applying the background.
+    type Output<Content: View>: View;
+
+    /// Apply this background to the given content view.
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content>;
+}
+
+impl IntoBackground for Material {
+    type Output<Content: View> = IgnorableMetadata<MaterialBackground>;
+
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+        IgnorableMetadata::new(AnyView::new(content), MaterialBackground(self))
+    }
+}
+
+impl<V: View> IntoBackground for V {
+    type Output<Content: View> = BackgroundView<Content, V>;
+
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+        BackgroundView::new(content, self)
+    }
+}
 
 /// Represents different kinds of backgrounds that can be applied to UI elements.
 #[derive(Debug)]
