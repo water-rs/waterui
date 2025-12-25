@@ -1,13 +1,13 @@
-//! SVG renderer using resvg and GpuSurface.
+//! CPU-based SVG renderer using resvg.
 //!
 //! This module provides `SvgRenderer`, an implementation of `GpuRenderer`
-//! that renders SVG content using the resvg library and wgpu.
+//! that rasterizes SVG content using resvg and uploads to a GPU texture.
 
 use alloc::vec::Vec;
 
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer};
 
-/// A GPU renderer for SVG content using resvg.
+/// A GPU renderer for SVG content using resvg (CPU rasterization).
 ///
 /// This renderer parses SVG content using usvg, rasterizes it with resvg,
 /// and uploads the result to a GPU texture for display.
@@ -104,12 +104,16 @@ impl SvgRenderer {
         };
 
         // Calculate transform to fit SVG in target size
+        #[allow(clippy::cast_precision_loss)]
         let scale_x = width as f32 / svg_size.width();
+        #[allow(clippy::cast_precision_loss)]
         let scale_y = height as f32 / svg_size.height();
         let scale = scale_x.min(scale_y);
 
         // Center the SVG if aspect ratios don't match
+        #[allow(clippy::cast_precision_loss)]
         let offset_x = (width as f32 - svg_size.width() * scale) / 2.0;
+        #[allow(clippy::cast_precision_loss)]
         let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
 
         let transform = resvg::tiny_skia::Transform::from_translate(offset_x, offset_y)
@@ -124,12 +128,18 @@ impl SvgRenderer {
     fn create_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
         device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SVG Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("svg_blit.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(crate::svg_blit::SHADER.into()),
         })
     }
 
     /// Creates or updates the cached texture with new pixel data.
-    fn update_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
+    fn update_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) {
         let pixels = self.rasterize(width, height);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -211,87 +221,102 @@ impl GpuRenderer for SvgRenderer {
         self.sampler = Some(sampler);
 
         // Create bind group layout
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("SVG Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("SVG Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
         self.bind_group_layout = Some(bind_group_layout.clone());
 
         // Create pipeline layout
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("SVG Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("SVG Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
         // Create render pipeline
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("SVG Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("SVG Render Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
         self.pipeline = Some(pipeline);
     }
 
     fn render(&mut self, frame: &GpuFrame) {
         // Check if we need to re-rasterize
-        if self.needs_redraw || self.current_width != frame.width || self.current_height != frame.height {
+        if self.needs_redraw
+            || self.current_width != frame.width
+            || self.current_height != frame.height
+        {
             self.update_texture(frame.device, frame.queue, frame.width, frame.height);
         }
 
         // Skip render if no pipeline or bind group
-        let Some(pipeline) = &self.pipeline else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         // Create render pass and draw the texture
-        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("SVG Encoder"),
-        });
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SVG Encoder"),
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

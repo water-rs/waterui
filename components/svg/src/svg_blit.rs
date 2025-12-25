@@ -1,3 +1,7 @@
+//! SVG Blit Shader source.
+
+/// WGSL shader for blitting SVG texture to screen.
+pub const SHADER: &str = r#"
 // SVG Blit Shader
 // Renders a full-screen quad with the SVG texture.
 
@@ -40,3 +44,4 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(svg_texture, svg_sampler, input.uv);
 }
+"#;

@@ -27,8 +27,10 @@
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
+use nami::Signal;
 use waterui_graphics::color::Color;
-use waterui_core::{layout::StretchAxis, metadata::MetadataKey, raw_view};
+use waterui_graphics::shape_renderer::{ShapeConfig, ShapeRenderer};
+use waterui_core::{metadata::MetadataKey, Environment, View};
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths
@@ -475,10 +477,42 @@ impl ClipShape {
 impl MetadataKey for ClipShape {}
 
 // ============================================================================
-// FilledShape - Shape as a View with fill color
+// FilledShape - Shape as a View with fill color (GPU-rendered)
 // ============================================================================
 
-/// A shape filled with a color, rendered as a native view.
+/// The kind of shape for GPU SDF rendering.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ShapeKind {
+    /// Rectangle with sharp corners.
+    #[default]
+    Rect,
+    /// Circle inscribed in bounds.
+    Circle,
+    /// Ellipse filling bounds.
+    Ellipse,
+    /// Rectangle with uniform corner radius.
+    RoundedRect {
+        /// Corner radius (normalized 0.0-0.5).
+        corner_radius: f32,
+    },
+    /// Rectangle with per-corner radii.
+    UnevenRoundedRect {
+        /// Top-left corner radius.
+        top_left: f32,
+        /// Top-right corner radius.
+        top_right: f32,
+        /// Bottom-left corner radius.
+        bottom_left: f32,
+        /// Bottom-right corner radius.
+        bottom_right: f32,
+    },
+    /// Capsule (pill) shape.
+    Capsule,
+    /// Custom path (falls back to path commands).
+    CustomPath,
+}
+
+/// A shape filled with a color, rendered via GPU for proper HDR support.
 ///
 /// `FilledShape` combines a shape definition with a fill color, creating a view
 /// that fills available space (like SwiftUI's Shape views).
@@ -487,6 +521,11 @@ impl MetadataKey for ClipShape {}
 ///
 /// FilledShape is a **greedy view** that expands to fill all available space in both
 /// directions, just like `Color`. Use `.frame()` to constrain its size.
+///
+/// # HDR Support
+///
+/// FilledShape uses GPU-based rendering (via wgpu) which properly supports HDR colors.
+/// Colors with headroom > 0 will render with extended dynamic range on supported displays.
 ///
 /// # Example
 ///
@@ -505,7 +544,9 @@ impl MetadataKey for ClipShape {}
 /// ```
 #[derive(Debug)]
 pub struct FilledShape {
-    /// Path commands defining the shape.
+    /// The kind of shape for SDF rendering.
+    kind: ShapeKind,
+    /// Path commands defining the shape (for clipping/fallback).
     commands: Vec<PathCommand>,
     /// Fill color for the shape.
     fill: Color,
@@ -515,6 +556,16 @@ impl FilledShape {
     /// Creates a new filled shape from a shape and color.
     pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
+            kind: ShapeKind::CustomPath,
+            commands: shape.path().into_iter().collect(),
+            fill: fill.into(),
+        }
+    }
+
+    /// Creates a filled shape with a specific shape kind.
+    fn with_kind(kind: ShapeKind, shape: impl Shape, fill: impl Into<Color>) -> Self {
+        Self {
+            kind,
             commands: shape.path().into_iter().collect(),
             fill: fill.into(),
         }
@@ -531,10 +582,50 @@ impl FilledShape {
     pub fn fill(&self) -> &Color {
         &self.fill
     }
+
+    /// Returns the shape kind.
+    #[must_use]
+    pub fn kind(&self) -> ShapeKind {
+        self.kind
+    }
 }
 
-// FilledShape is a native view that fills available space
-raw_view!(FilledShape, StretchAxis::Both);
+impl View for FilledShape {
+    fn body(self, env: &Environment) -> impl View {
+        // Resolve the color to get the actual RGBA values with headroom
+        let resolved = self.fill.resolve(env).get();
+
+        // Create the appropriate ShapeConfig based on shape kind
+        let config = match self.kind {
+            ShapeKind::Rect => ShapeConfig::rect(resolved),
+            ShapeKind::Circle => ShapeConfig::circle(resolved),
+            ShapeKind::Ellipse => ShapeConfig::ellipse(resolved),
+            ShapeKind::RoundedRect { corner_radius } => {
+                ShapeConfig::rounded_rect(resolved, corner_radius)
+            }
+            ShapeKind::UnevenRoundedRect {
+                top_left,
+                top_right,
+                bottom_left,
+                bottom_right,
+            } => ShapeConfig::uneven_rounded_rect(
+                resolved,
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            ),
+            ShapeKind::Capsule => ShapeConfig::capsule(resolved),
+            ShapeKind::CustomPath => {
+                // For custom paths, fall back to rectangle for now
+                // TODO: Implement path tessellation for custom shapes
+                ShapeConfig::rect(resolved)
+            }
+        };
+
+        ShapeRenderer::new(config)
+    }
+}
 
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes
@@ -544,6 +635,11 @@ raw_view!(FilledShape, StretchAxis::Both);
 ///
 /// This trait provides the `.fill()` method for any type that implements `Shape`.
 pub trait ShapeExt: Shape + Sized {
+    /// Returns the shape kind for GPU SDF rendering.
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::CustomPath
+    }
+
     /// Fills the shape with the specified color.
     ///
     /// Returns a `FilledShape` view that can be used in the view hierarchy.
@@ -557,9 +653,56 @@ pub trait ShapeExt: Shape + Sized {
     /// Circle.fill(Color::red())
     /// ```
     fn fill(self, color: impl Into<Color>) -> FilledShape {
-        FilledShape::new(self, color)
+        FilledShape::with_kind(self.shape_kind(), self, color)
     }
 }
 
-// Implement ShapeExt for all Shape types
-impl<S: Shape + Sized> ShapeExt for S {}
+// Implement ShapeExt for specific shapes with correct ShapeKind
+impl ShapeExt for Circle {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Circle
+    }
+}
+
+impl ShapeExt for Ellipse {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Ellipse
+    }
+}
+
+impl ShapeExt for Capsule {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Capsule
+    }
+}
+
+impl ShapeExt for Rectangle {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::Rect
+    }
+}
+
+impl ShapeExt for RoundedRectangle {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::RoundedRect {
+            corner_radius: self.corner_radius,
+        }
+    }
+}
+
+impl ShapeExt for UnevenRoundedRectangle {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::UnevenRoundedRect {
+            top_left: self.top_leading,
+            top_right: self.top_trailing,
+            bottom_left: self.bottom_leading,
+            bottom_right: self.bottom_trailing,
+        }
+    }
+}
+
+impl ShapeExt for Path {
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::CustomPath
+    }
+}
