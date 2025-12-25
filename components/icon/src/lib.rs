@@ -35,9 +35,18 @@
 //! // Or create from a name
 //! SystemIcon::new("custom.icon.name")
 //! ```
+//!
+//! ## [`Svg`] - SVG Icons (requires `svg` feature)
+//!
+//! Re-exported from `waterui-svg` for convenience.
+//! Icon packs can use this for SVG icon rendering.
 
 #![no_std]
 extern crate alloc;
+
+// Re-export Svg for icon packs (requires svg feature)
+#[cfg(feature = "svg")]
+pub use waterui_svg::Svg;
 
 mod glyph;
 pub use glyph::IconGlyph;

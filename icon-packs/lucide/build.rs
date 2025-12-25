@@ -1,0 +1,271 @@
+//! Build script for waterui-icons-lucide
+//!
+//! Downloads icon metadata from jsdelivr CDN and generates Rust code
+//! with icon definitions.
+//!
+//! # Data Sources
+//!
+//! - `icon-nodes.json`: Icon definitions with SVG element data
+//!
+//! # Environment Variables
+//!
+//! - `LUCIDE_ICON_URL`: Override URL or local file path for icon-nodes.json
+
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
+/// Lucide icons version
+const LUCIDE_VERSION: &str = "0.562.0";
+
+/// CDN URL for icon data
+const ICON_NODES_URL: &str =
+    "https://cdn.jsdelivr.net/npm/lucide-static@0.562.0/icon-nodes.json";
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=LUCIDE_ICON_URL");
+
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_path = Path::new(&out_dir);
+    let cache_file = out_path.join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
+
+    // Get URL from env or use default
+    let url = env::var("LUCIDE_ICON_URL").unwrap_or_else(|_| ICON_NODES_URL.to_string());
+
+    // Get icon nodes from cache or download
+    let icon_nodes_json = if cache_file.exists() {
+        fs::read_to_string(&cache_file).expect("Failed to read cached icon-nodes.json")
+    } else {
+        let content = fetch_content(&url).unwrap_or_else(|e| {
+            eprintln!("cargo:warning=Failed to get Lucide icons: {e}");
+            eprintln!("cargo:warning=Building without icon definitions.");
+            fs::write(out_path.join("icons.rs"), "// No icons available\n")
+                .expect("Failed to write output file");
+            std::process::exit(0);
+        });
+        fs::write(&cache_file, &content).ok();
+        content
+    };
+
+    // Parse icon nodes
+    let icons: HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>> =
+        serde_json::from_str(&icon_nodes_json).expect("Failed to parse icon-nodes.json");
+
+    // Generate icons.rs
+    generate_icons_rs(&out_dir, &icons);
+}
+
+/// Fetch content from URL or local file path
+fn fetch_content(path: &str) -> Result<String, String> {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        eprintln!("Downloading Lucide icons from {path}...");
+        ureq::get(path)
+            .call()
+            .map_err(|e| format!("Download failed: {e}"))?
+            .into_string()
+            .map_err(|e| format!("Failed to read response: {e}"))
+    } else {
+        eprintln!("Reading Lucide icons from local file: {path}");
+        fs::read_to_string(path).map_err(|e| format!("Failed to read file: {e}"))
+    }
+}
+
+/// Extract SVG path from icon elements
+fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Option<String> {
+    let mut paths = Vec::new();
+
+    for (element_type, attrs) in elements {
+        if element_type == "path" {
+            if let Some(serde_json::Value::String(d)) = attrs.get("d") {
+                paths.push(d.clone());
+            }
+        } else if element_type == "circle" {
+            if let (
+                Some(serde_json::Value::Number(cx)),
+                Some(serde_json::Value::Number(cy)),
+                Some(serde_json::Value::Number(r)),
+            ) = (attrs.get("cx"), attrs.get("cy"), attrs.get("r"))
+            {
+                let cx = cx.as_f64().unwrap_or(0.0);
+                let cy = cy.as_f64().unwrap_or(0.0);
+                let r = r.as_f64().unwrap_or(0.0);
+                // Approximate circle with four cubic Bezier curves
+                let k = 0.5522847498;
+                paths.push(format!(
+                    "M{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{} C{},{},{},{},{},{}Z",
+                    cx - r, cy,
+                    cx - r, cy - r * k, cx - r * k, cy - r, cx, cy - r,
+                    cx + r * k, cy - r, cx + r, cy - r * k, cx + r, cy,
+                    cx + r, cy + r * k, cx + r * k, cy + r, cx, cy + r,
+                    cx - r * k, cy + r, cx - r, cy + r * k, cx - r, cy
+                ));
+            }
+        } else if element_type == "rect" {
+            if let (
+                Some(serde_json::Value::Number(x)),
+                Some(serde_json::Value::Number(y)),
+                Some(serde_json::Value::Number(w)),
+                Some(serde_json::Value::Number(h)),
+            ) = (
+                attrs.get("x"),
+                attrs.get("y"),
+                attrs.get("width"),
+                attrs.get("height"),
+            ) {
+                let x = x.as_f64().unwrap_or(0.0);
+                let y = y.as_f64().unwrap_or(0.0);
+                let w = w.as_f64().unwrap_or(0.0);
+                let h = h.as_f64().unwrap_or(0.0);
+
+                let rx = attrs.get("rx").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let ry = attrs.get("ry").and_then(|v| v.as_f64()).unwrap_or(rx);
+
+                if rx > 0.0 || ry > 0.0 {
+                    paths.push(format!(
+                        "M{},{} H{} A{},{},0,0,1,{},{} V{} A{},{},0,0,1,{},{} H{} A{},{},0,0,1,{},{} V{} A{},{},0,0,1,{},{}Z",
+                        x + rx, y,
+                        x + w - rx,
+                        rx, ry, x + w, y + ry,
+                        y + h - ry,
+                        rx, ry, x + w - rx, y + h,
+                        x + rx,
+                        rx, ry, x, y + h - ry,
+                        y + ry,
+                        rx, ry, x + rx, y
+                    ));
+                } else {
+                    paths.push(format!("M{},{} H{} V{} H{} Z", x, y, x + w, y + h, x));
+                }
+            }
+        } else if element_type == "line" {
+            if let (
+                Some(serde_json::Value::Number(x1)),
+                Some(serde_json::Value::Number(y1)),
+                Some(serde_json::Value::Number(x2)),
+                Some(serde_json::Value::Number(y2)),
+            ) = (
+                attrs.get("x1"),
+                attrs.get("y1"),
+                attrs.get("x2"),
+                attrs.get("y2"),
+            ) {
+                paths.push(format!(
+                    "M{},{} L{},{}",
+                    x1.as_f64().unwrap_or(0.0),
+                    y1.as_f64().unwrap_or(0.0),
+                    x2.as_f64().unwrap_or(0.0),
+                    y2.as_f64().unwrap_or(0.0)
+                ));
+            }
+        } else if element_type == "polyline" || element_type == "polygon" {
+            if let Some(serde_json::Value::String(points)) = attrs.get("points") {
+                let coords: Vec<&str> = points.split_whitespace().collect();
+                if !coords.is_empty() {
+                    let mut path = String::new();
+                    for (i, coord) in coords.iter().enumerate() {
+                        let prefix = if i == 0 { "M" } else { "L" };
+                        path.push_str(&format!("{prefix}{coord} "));
+                    }
+                    if element_type == "polygon" {
+                        path.push('Z');
+                    }
+                    paths.push(path.trim().to_string());
+                }
+            }
+        }
+    }
+
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths.join(" "))
+    }
+}
+
+/// Generate icons.rs with all icon definitions
+fn generate_icons_rs(
+    out_dir: &str,
+    icons: &HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>>,
+) {
+    let dest_path = Path::new(out_dir).join("icons.rs");
+    let mut output = String::new();
+
+    output.push_str("// Auto-generated Lucide icon definitions.\n");
+    output.push_str("// Icons: ISC license by Lucide Contributors.\n");
+    output.push_str("// Do not edit manually.\n\n");
+
+    output.push_str("/// Font family name for Lucide webfont.\n");
+    output.push_str("#[cfg(feature = \"webfont\")]\n");
+    output.push_str("pub const FONT_FAMILY: &str = \"lucide\";\n\n");
+
+    let mut icon_names: Vec<_> = icons.keys().collect();
+    icon_names.sort();
+
+    let mut count = 0;
+    for icon_name in icon_names {
+        let elements = &icons[icon_name];
+        let Some(path) = extract_path(elements) else {
+            continue;
+        };
+
+        let const_name = to_const_name(icon_name);
+        let fn_name = to_fn_name(icon_name);
+
+        output.push_str(&format!("/// SVG path for `{icon_name}`.\n"));
+        output.push_str(&format!("pub const {const_name}_PATH: &str = {path:?};\n"));
+
+        output.push_str("#[cfg(feature = \"svg\")]\n");
+        output.push_str(&format!("/// `{icon_name}` icon as Svg.\n"));
+        output.push_str("#[inline]\n");
+        output.push_str(&format!(
+            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({const_name}_PATH, 24.0, 24.0)\n}}\n"
+        ));
+
+        output.push('\n');
+        count += 1;
+    }
+
+    eprintln!("Generated {count} icon definitions");
+
+    fs::File::create(&dest_path)
+        .and_then(|mut f| f.write_all(output.as_bytes()))
+        .expect("Failed to write icons.rs");
+}
+
+/// Convert kebab-case to SCREAMING_SNAKE_CASE
+fn to_const_name(name: &str) -> String {
+    let name = if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("ICON_{name}")
+    } else {
+        name.to_string()
+    };
+    name.replace('-', "_").to_uppercase()
+}
+
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
+    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
+    "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
+    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
+    "typeof", "unsized", "virtual", "yield",
+];
+
+/// Convert kebab-case to snake_case, escaping keywords
+fn to_fn_name(name: &str) -> String {
+    let name = if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("icon_{name}")
+    } else {
+        name.to_string()
+    };
+    let snake = name.replace('-', "_");
+
+    if RUST_KEYWORDS.contains(&snake.as_str()) {
+        format!("r#{snake}")
+    } else {
+        snake
+    }
+}
