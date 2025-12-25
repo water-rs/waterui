@@ -22,6 +22,9 @@ pub mod shared_context;
 /// Shader pre-warming functionality.
 pub mod prewarm;
 
+/// Shared shader sources.
+pub mod shaders;
+
 // Re-export key types for user convenience.
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
