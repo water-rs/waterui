@@ -1,0 +1,42 @@
+// Simple full-screen quad shader for rendering a texture
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    // Generate a full-screen quad from vertex index (0-5)
+    // Two triangles: (0,1,2) and (3,4,5)
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),  // bottom-left
+        vec2<f32>(1.0, -1.0),   // bottom-right
+        vec2<f32>(1.0, 1.0),    // top-right
+        vec2<f32>(-1.0, -1.0),  // bottom-left
+        vec2<f32>(1.0, 1.0),    // top-right
+        vec2<f32>(-1.0, 1.0),   // top-left
+    );
+
+    var uvs = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),  // bottom-left
+        vec2<f32>(1.0, 1.0),  // bottom-right
+        vec2<f32>(1.0, 0.0),  // top-right
+        vec2<f32>(0.0, 1.0),  // bottom-left
+        vec2<f32>(1.0, 0.0),  // top-right
+        vec2<f32>(0.0, 0.0),  // top-left
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.uv = uvs[vertex_index];
+    return output;
+}
+
+@group(0) @binding(0) var image_texture: texture_2d<f32>;
+@group(0) @binding(1) var image_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(image_texture, image_sampler, input.uv);
+}
