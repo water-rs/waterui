@@ -41,7 +41,7 @@
 #![no_std]
 
 #[cfg(feature = "svg")]
-pub use waterui_graphics::Svg;
+pub use waterui_svg::Svg;
 
 // Include the auto-generated icon definitions
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));

@@ -17,6 +17,7 @@ webfont = []
 
 [dependencies]
 waterui-graphics.workspace = true
+waterui-svg.workspace = true
 waterui-text = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-str.workspace = true

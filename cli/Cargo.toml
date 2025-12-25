@@ -48,9 +48,14 @@ heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 # Asset/font downloading dependencies
 dirs = "6"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
-zenwave = { workspace = true, features = ["rustls"] }
 sha2 = "0.10"                 # SHA256 hashing
 zip = "7.0"                   # ZIP archive extraction
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+zenwave = { workspace = true, features = ["native-tls"] }
+
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+zenwave = { workspace = true, features = ["rustls"] }
 
 [lints]
 workspace = true

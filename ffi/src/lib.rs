@@ -1098,7 +1098,7 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
 // ========== Metadata<ClipShape> FFI ==========
 // Used to clip views to shapes
 
-use waterui::shape::{ClipShape, FilledShape, PathCommand};
+use waterui::shape::{ClipShape, PathCommand};
 
 /// FFI-safe representation of a path command.
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
@@ -1202,36 +1202,8 @@ pub type WuiMetadataClipShape = WuiMetadata<WuiClipShape>;
 // Generate waterui_metadata_clip_shape_id() and waterui_force_as_metadata_clip_shape()
 ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
 
-// ========== FilledShape FFI ==========
-// Shapes filled with color, rendered as native views
-
-/// FFI-safe representation of a filled shape.
-/// Contains the path commands and fill color.
-#[repr(C)]
-pub struct WuiFilledShape {
-    /// Array of path commands defining the shape.
-    pub commands: WuiArray<WuiPathCommand>,
-    /// Fill color (opaque pointer to Color).
-    pub fill: *mut WuiColor,
-}
-
-impl IntoFFI for FilledShape {
-    type FFI = WuiFilledShape;
-    fn into_ffi(self) -> Self::FFI {
-        let commands: alloc::vec::Vec<WuiPathCommand> = self
-            .commands()
-            .iter()
-            .map(|cmd| cmd.into_ffi())
-            .collect();
-        WuiFilledShape {
-            commands: WuiArray::new(commands),
-            fill: self.fill().clone().into_ffi(),
-        }
-    }
-}
-
-// Generate waterui_filled_shape_id() and waterui_force_as_filled_shape()
-ffi_view!(FilledShape, WuiFilledShape, filled_shape);
+// NOTE: FilledShape is now GPU-rendered via GpuSurface, no longer needs native FFI.
+// Native backends should use the GpuSurface FFI instead.
 
 // ========== Metadata<ContextMenu> FFI ==========
 // Used to attach context menus to views

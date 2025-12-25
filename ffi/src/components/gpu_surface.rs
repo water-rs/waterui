@@ -259,11 +259,16 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
                     .copied()
                     .unwrap_or(wgpu::PresentMode::Fifo)
             };
-            let alpha_mode = surface_caps
-                .alpha_modes
-                .first()
-                .copied()
-                .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
+            // Prefer PreMultiplied alpha for transparency support, fall back to others
+            let alpha_mode = [
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::Inherit,
+                wgpu::CompositeAlphaMode::Opaque,
+            ]
+            .into_iter()
+            .find(|mode| surface_caps.alpha_modes.contains(mode))
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
 
             let mut formats_to_try = Vec::<wgpu::TextureFormat>::new();
             let preferred = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);

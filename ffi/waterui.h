@@ -1750,21 +1750,6 @@ typedef struct WuiMetadata_WuiClipShape {
  */
 typedef struct WuiMetadata_WuiClipShape WuiMetadataClipShape;
 
-/**
- * FFI-safe representation of a filled shape.
- * Contains the path commands and fill color.
- */
-typedef struct WuiFilledShape {
-  /**
-   * Array of path commands defining the shape.
-   */
-  struct WuiArray_WuiPathCommand commands;
-  /**
-   * Fill color (opaque pointer to Color).
-   */
-  struct WuiColor *fill;
-} WuiFilledShape;
-
 typedef struct Computed_MenuItems WuiComputed_MenuItems;
 
 /**
@@ -3719,19 +3704,6 @@ struct WuiTypeId waterui_metadata_clip_shape_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataClipShape waterui_force_as_metadata_clip_shape(struct WuiAnyView *view);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiFilledShape waterui_force_as_filled_shape(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_filled_shape_id(void);
 
 /**
  * # Safety
