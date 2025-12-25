@@ -17,8 +17,8 @@ use alloc::vec;
 
 use alloc::vec::Vec;
 
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
-use waterui_graphics::shared_context::{shared_context, SharedGpuContext};
+use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuSurface};
+use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
 
@@ -29,24 +29,19 @@ use crate::IntoFFI;
 /// the GPU resources, then `waterui_gpu_surface_render` each frame.
 #[repr(C)]
 pub struct WuiGpuSurface {
-    /// Opaque pointer to the boxed GpuRenderer trait object.
+    /// Opaque pointer to the boxed GpuSurface.
     /// This is consumed during init and should not be used after.
-    pub renderer: *mut c_void,
+    pub surface: *mut c_void,
 }
 
 impl IntoFFI for GpuSurface {
     type FFI = WuiGpuSurface;
 
     fn into_ffi(self) -> Self::FFI {
-        // Double-box the renderer to get a thin pointer for FFI.
-        // Box<dyn GpuRenderer> is a fat pointer (data + vtable), which can't be
-        // passed through C FFI. By boxing it again, we get Box<Box<dyn GpuRenderer>>
-        // where Box::into_raw returns a thin *mut Box<dyn GpuRenderer>.
-        let boxed_renderer: Box<Box<dyn GpuRenderer>> = Box::new(self.renderer);
-        let renderer_ptr = Box::into_raw(boxed_renderer) as *mut c_void;
-        WuiGpuSurface {
-            renderer: renderer_ptr,
-        }
+        // Box the GpuSurface for FFI transfer.
+        let boxed = Box::new(self);
+        let ptr = Box::into_raw(boxed) as *mut c_void;
+        WuiGpuSurface { surface: ptr }
     }
 }
 
@@ -60,16 +55,16 @@ ffi_view!(GpuSurface, WuiGpuSurface, gpu_surface);
 pub struct WuiGpuSurfaceState {
     /// Shared device (Arc reference from SharedGpuContext)
     device: Arc<wgpu::Device>,
-    /// Shared queue (Arc reference from SharedGpuContext)  
+    /// Shared queue (Arc reference from SharedGpuContext)
     queue: Arc<wgpu::Queue>,
     /// Optional shared pipeline cache
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// Per-view wgpu surface
-    surface: wgpu::Surface<'static>,
+    wgpu_surface: wgpu::Surface<'static>,
     /// Surface configuration
     config: wgpu::SurfaceConfiguration,
-    /// User's renderer implementation
-    renderer: Box<dyn GpuRenderer>,
+    /// User's GpuSurface (contains the renderer)
+    gpu_surface: GpuSurface,
     /// Whether setup() has been called
     initialized: bool,
     /// Current width from layout
@@ -122,15 +117,15 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
         let wui_surface = unsafe { &mut *surface };
 
-        if wui_surface.renderer.is_null() {
-            tracing::error!("[GpuSurface] init failed: renderer pointer is null");
+        if wui_surface.surface.is_null() {
+            tracing::error!("[GpuSurface] init failed: surface pointer is null");
             return core::ptr::null_mut();
         }
-        let renderer: Box<dyn GpuRenderer> =
-            unsafe { *Box::from_raw(wui_surface.renderer as *mut Box<dyn GpuRenderer>) };
+        let gpu_surface: GpuSurface =
+            unsafe { *Box::from_raw(wui_surface.surface as *mut GpuSurface) };
 
         // Null out the pointer to prevent double-free
-        wui_surface.renderer = core::ptr::null_mut();
+        wui_surface.surface = core::ptr::null_mut();
 
         // 1. Get/Init Shared Context
         // This ensures we have a valid Instance, Adapter, Device, and Queue
@@ -224,9 +219,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             device,
             queue,
             pipeline_cache,
-            surface: wgpu_surface,
+            wgpu_surface,
             config,
-            renderer,
+            gpu_surface,
             initialized: false,
             current_width: width,
             current_height: height,
@@ -283,7 +278,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             state.config.width = width;
             state.config.height = height;
 
-            if !try_configure_surface(&state.surface, &state.device, &state.config) {
+            if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
                 tracing::warn!("[GpuSurface] resize reconfigure failed ({width}x{height})");
                 return false;
             }
@@ -291,10 +286,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             state.current_height = height;
 
             // Call user's resize callback
-            state.renderer.resize(width, height);
+            state.gpu_surface.resize(width, height);
         }
 
-        // Call setup on first render
+        // Call setup on first render (await the future synchronously)
         if !state.initialized {
             let ctx = GpuContext {
                 device: &state.device,
@@ -302,22 +297,23 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 surface_format: state.config.format,
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
-            state.renderer.setup(&ctx);
+            let setup_future = state.gpu_surface.setup(&ctx);
+            pollster::block_on(setup_future);
             state.initialized = true;
         }
 
         // Get next frame texture (guard against wgpu panics so we don't abort across the FFI boundary).
         let output = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            state.surface.get_current_texture()
+            state.wgpu_surface.get_current_texture()
         })) {
             Ok(Ok(o)) => o,
             Ok(Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                 tracing::debug!("[GpuSurface] surface lost/outdated, reconfiguring");
-                if !try_configure_surface(&state.surface, &state.device, &state.config) {
+                if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
                     tracing::warn!("[GpuSurface] reconfigure failed after surface lost/outdated");
                     return false;
                 }
-                match state.surface.get_current_texture() {
+                match state.wgpu_surface.get_current_texture() {
                     Ok(o) => o,
                     Err(wgpu::SurfaceError::Timeout) => {
                         // Surface isn't ready yet (common during window move/resize); skip this frame.
@@ -363,7 +359,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         };
 
         // Call user's render callback
-        state.renderer.render(&frame);
+        state.gpu_surface.render(&frame);
 
         // Present
         output.present();
@@ -378,6 +374,86 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             false
         }
     }
+}
+
+/// Callback type for async completion notifications.
+pub type WuiGpuCallback = unsafe extern "C" fn(user_data: *mut c_void);
+
+/// Setup the GpuSurface and render the first frame, then call callback.
+///
+/// This function performs async setup (awaited synchronously via `block_on`),
+/// then renders the first frame. Native code should call this before showing
+/// the window to ensure all GpuSurfaces are ready.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to initialized state from `waterui_gpu_surface_init`
+/// * `callback` - Function to call when ready
+/// * `user_data` - Opaque pointer passed to callback
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_gpu_surface_init`
+/// - `callback` must be a valid function pointer
+/// - `user_data` must remain valid until callback is invoked
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
+    state: *mut WuiGpuSurfaceState,
+    callback: WuiGpuCallback,
+    user_data: *mut c_void,
+) {
+    if state.is_null() {
+        tracing::error!("[GpuSurface] await_ready: null state");
+        unsafe { callback(user_data) };
+        return;
+    }
+
+    let state = unsafe { &mut *state };
+
+    // Call setup if not already done
+    if !state.initialized {
+        let ctx = GpuContext {
+            device: &state.device,
+            queue: &state.queue,
+            surface_format: state.config.format,
+            pipeline_cache: state.pipeline_cache.as_ref(),
+        };
+        let setup_future = state.gpu_surface.setup(&ctx);
+        pollster::block_on(setup_future);
+        state.initialized = true;
+    }
+
+    // Render first frame
+    let output = match state.wgpu_surface.get_current_texture() {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("[GpuSurface] await_ready: failed to get texture: {e}");
+            unsafe { callback(user_data) };
+            return;
+        }
+    };
+
+    let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("GpuSurface Ready Frame"),
+        format: Some(state.config.format),
+        ..Default::default()
+    });
+
+    let frame = GpuFrame {
+        device: &state.device,
+        queue: &state.queue,
+        texture: &output.texture,
+        view,
+        format: state.config.format,
+        width: state.current_width,
+        height: state.current_height,
+    };
+
+    state.gpu_surface.render(&frame);
+    output.present();
+
+    // Call completion callback
+    unsafe { callback(user_data) };
 }
 
 /// Clean up GPU resources.
