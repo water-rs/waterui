@@ -18,3 +18,8 @@ crate-type = ["lib", "staticlib", "cdylib"]
 waterui.workspace = true
 waterui-ffi.workspace = true
 waterui-icons-fontawesome7.workspace = true
+waterui-icons-material-icon.workspace = true
+waterui-icons-lucide.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+waterui-icons-sf-symbol.workspace = true
