@@ -37,13 +37,20 @@ workspace = true
 # Font asset declarations for WaterUI CLI
 # CLI downloads fonts to ~/.water/cache/fontawesome/ before compilation.
 # Font names must match the actual font family names in the OTF files.
+# Fonts are only downloaded when the "webfont" feature is enabled.
 [package.metadata.waterui.assets]
 
 [[package.metadata.waterui.assets.font]]
 name = "Font Awesome 7 Free Solid"
+remote_path = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip"
+required-feature = "webfont"
 
 [[package.metadata.waterui.assets.font]]
 name = "Font Awesome 7 Free"
+remote_path = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip"
+required-feature = "webfont"
 
 [[package.metadata.waterui.assets.font]]
 name = "Font Awesome 7 Brands"
+remote_path = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip"
+required-feature = "webfont"
