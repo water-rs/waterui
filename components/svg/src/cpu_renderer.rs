@@ -127,8 +127,8 @@ impl SvgRenderer {
     /// Creates the blit shader module.
     fn create_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
         device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SVG Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::svg_blit::SHADER.into()),
+            label: Some(waterui_graphics::shaders::BLIT.label),
+            source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.clone().into()),
         })
     }
 
@@ -289,7 +289,7 @@ impl GpuRenderer for SvgRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
         self.pipeline = Some(pipeline);
 
