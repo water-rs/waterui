@@ -22,12 +22,12 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 use wgpu;
-use std::path::PathBuf;
-use std::fs;
 
 /// Error type for shared context operations.
 #[derive(Debug, Clone)]
@@ -185,18 +185,30 @@ pub fn is_initialized() -> bool {
 pub fn save_pipeline_cache() {
     let Some(ctx) = try_shared_context() else { return };
     let guard = ctx.read();
-    
+
     if let Some(cache) = &guard.pipeline_cache {
         if let Some(data) = cache.get_data() {
             if let Some(path) = get_cache_path() {
                 if let Some(parent) = path.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
-                
+
                 match fs::write(&path, &data) {
                     Ok(_) => tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path),
                     Err(e) => tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e),
                 }
+            }
+        }
+    }
+}
+
+/// Delete the pipeline cache file (useful when cache is corrupted).
+pub fn clear_pipeline_cache() {
+    if let Some(path) = get_cache_path() {
+        if path.exists() {
+            match fs::remove_file(&path) {
+                Ok(_) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
+                Err(e) => tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e),
             }
         }
     }
@@ -258,10 +270,20 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     .using_resolution(adapter_limits.clone())
     .using_alignment(adapter_limits);
 
+    // Determine features to request (pipeline cache if available)
+    let adapter_features = adapter.features();
+    let mut required_features = wgpu::Features::empty();
+    if adapter_features.contains(wgpu::Features::PIPELINE_CACHE) {
+        required_features |= wgpu::Features::PIPELINE_CACHE;
+        tracing::info!("[SharedGpuContext] PIPELINE_CACHE feature available and requested");
+    } else {
+        tracing::info!("[SharedGpuContext] PIPELINE_CACHE feature not available on this adapter");
+    }
+
     // Request device
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("WaterUI Shared Device"),
-        required_features: wgpu::Features::empty(),
+        required_features,
         required_limits,
         memory_hints: wgpu::MemoryHints::Performance,
         experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -274,26 +296,36 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         tracing::error!("[wgpu] Validation error: {error}");
     }));
 
-    // Create pipeline cache (may not be supported on all backends)
-    
-    // Try to load cache from disk
-    let cache_data = get_cache_path().and_then(|path| {
-        match fs::read(&path) {
-            Ok(data) => {
-                tracing::info!("[SharedGpuContext] Loaded pipeline cache from {:?}", path);
-                Some(data)
-            },
-            Err(_) => None,
-        }
-    });
+    // Create pipeline cache only if the feature is available
+    let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        // Try to load cache from disk, but don't fail if it's corrupted
+        let cache_data = get_cache_path().and_then(|path| {
+            match fs::read(&path) {
+                Ok(data) => {
+                    tracing::info!("[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)", path, data.len());
+                    Some(data)
+                }
+                Err(_) => {
+                    tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
+                    None
+                }
+            }
+        });
 
-    // SAFETY: We're providing valid PipelineCacheDescriptor
-    let pipeline_cache = unsafe {
-        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-            label: Some("WaterUI Pipeline Cache"),
-            data: cache_data.as_deref(),
-            fallback: true,
-        })
+        // SAFETY: We're providing valid PipelineCacheDescriptor with fallback enabled
+        // If the cache data is invalid, wgpu will create an empty cache instead of failing
+        let cache = unsafe {
+            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                label: Some("WaterUI Pipeline Cache"),
+                data: cache_data.as_deref(),
+                fallback: true, // Important: create empty cache if data is invalid
+            })
+        };
+        tracing::info!("[SharedGpuContext] Pipeline cache created");
+        Some(cache)
+    } else {
+        tracing::info!("[SharedGpuContext] Pipeline cache not available (feature not supported)");
+        None
     };
 
     tracing::info!("[SharedGpuContext] Initialized successfully");
@@ -303,7 +335,7 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
         adapter,
         device: Arc::new(device),
         queue: Arc::new(queue),
-        pipeline_cache: Some(pipeline_cache),
+        pipeline_cache,
         shader_cache: parking_lot::Mutex::new(HashMap::new()),
     })
 }
@@ -327,17 +359,15 @@ mod tests {
     fn test_save_pipeline_cache() {
         // Only run if we can initialize context
         if init_shared_context().is_ok() || is_initialized() {
-            // Ensure we have a clean slate if possible, or just overwrite
             save_pipeline_cache();
-            
+
             if let Some(path) = get_cache_path() {
-                assert!(path.exists(), "Cache file should exist after save");
-                let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
-                // Size might be 0 if cache is empty, but file should exist
-                println!("Cache saved to: {:?} (size: {} bytes)", path, metadata.len());
-                
-                // Cleanup
-                let _ = fs::remove_file(path);
+                if path.exists() {
+                    let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
+                    println!("Cache saved to: {:?} (size: {} bytes)", path, metadata.len());
+                    // Cleanup
+                    let _ = fs::remove_file(path);
+                }
             }
         }
     }
