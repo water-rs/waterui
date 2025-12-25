@@ -1,13 +1,13 @@
 [package]
-name = "filter-example"
+name = "image-example"
 version = "0.1.0"
 edition = "2024"
 authors = ["Lexo Liu"]
-description = "Visual filter example for WaterUI framework"
+description = "GPU-accelerated image processing example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
-keywords = ["ui", "framework", "example", "filter"]
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "image", "gpu"]
 categories = ["gui"]
 publish = false
 
@@ -17,3 +17,4 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui.workspace = true
 waterui-ffi.workspace = true
+waterui-media.workspace = true
