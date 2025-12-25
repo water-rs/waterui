@@ -1,27 +1,23 @@
-//! GPU-accelerated barcode and QR code rendering.
+//! GPU-accelerated QR code rendering.
 //!
-//! `filtrate-barcode` provides a [`Source`] implementation for generating
-//! barcodes and QR codes that integrate with the filtrate pipeline.
+//! This crate provides QR code generation and GPU rendering using compute shaders.
+//! The QR matrix is generated using `fast_qr` and rendered directly on the GPU,
+//! avoiding CPU-side pixel generation for optimal performance.
 //!
-//! # Features
+//! # Architecture
 //!
-//! - **Lazy generation**: QR code matrix computed on first render
-//! - **GPU rendering**: Compute shader generates pixel-perfect output
-//! - **Pipeline integration**: Works with `filtrate` filter chains
+//! 1. **Matrix Generation**: `fast_qr` generates the QR matrix (which modules are dark/light)
+//! 2. **GPU Upload**: Matrix data is packed into bits and uploaded to a storage buffer
+//! 3. **Compute Shader**: Renders the QR code at any resolution directly on GPU
+//! 4. **Blit**: Result is blitted to the frame
 //!
 //! # Example
 //!
 //! ```ignore
-//! use filtrate_barcode::Barcode;
-//! use filtrate::{Pipeline, Blur};
+//! use waterui_barcode::Barcode;
 //!
-//! // Create a QR code source
-//! let barcode = Barcode::qr("https://waterui.dev");
-//!
-//! // Chain with filters and render
-//! barcode
-//!     .blur(5.0)
-//!     .render(device, queue, &output);
+//! // Create a QR code view
+//! Barcode::qr("https://waterui.dev")
 //! ```
 
 #![allow(clippy::multiple_crate_versions)]
@@ -30,9 +26,6 @@ mod qr;
 mod renderer;
 mod view;
 
-pub use qr::BarcodeSource;
+pub use qr::{BarcodeSource, QrMatrix};
 pub use renderer::BarcodeRenderer;
 pub use view::Barcode;
-
-// Re-export core types
-pub use filtrate_core::{Pipeline, RenderContext, Source, SourceExt};
