@@ -97,6 +97,7 @@ pub use waterui_media as media;
 pub use waterui_navigation as navigation;
 pub use waterui_text as text;
 pub use waterui_webview as webview;
+pub use waterui_svg as svg;
 pub mod metadata;
 pub mod shape;
 pub mod style;

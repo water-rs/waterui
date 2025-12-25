@@ -80,6 +80,9 @@ waterui-media = { version = "0.2.1", path = "components/media" }
 waterui-form = { version = "0.2.1", path = "components/form" }
 waterui-controls = { version = "0.2.1", path = "components/controls"}
 waterui-graphics = { version = "0.2.1", path = "components/graphics" }
+waterui-canvas = { version = "0.1.0", path = "components/canvas" }
+waterui-shape = { version = "0.1.0", path = "components/shape" }
+waterui-svg = { version = "0.1.0", path = "components/svg" }
 waterui-ffi = { version = "0.2.1", path = "ffi" }
 waterui-layout = { version = "0.2.2", path = "components/layout" }
 waterui-navigation = { version = "0.2.1", path = "components/navigation" }
@@ -99,6 +102,8 @@ native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
+vello = { git = "https://github.com/linebender/vello", branch = "main" }
+lyon = "1.0"
 wgpu-hal = { version = "27.0", features = ["gles"] }
 glow = "0.16"
 time = "0.3"
@@ -136,6 +141,7 @@ waterui-macros.workspace = true
 libloading = "0.9"
 uuid = { version = "1.18.1", features = ["v4"] }
 waterui-graphics.workspace = true
+waterui-svg.workspace = true
 async-fs = "2.2.0"
 robius-open.workspace = true
 

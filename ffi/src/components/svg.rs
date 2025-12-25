@@ -2,7 +2,7 @@
 
 use crate::color::WuiColor;
 use crate::{IntoFFI, WuiStr};
-use waterui_graphics::Svg;
+use waterui_svg::Svg;
 
 /// FFI representation of the Svg component.
 ///

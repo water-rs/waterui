@@ -673,10 +673,8 @@ color_const!(BlueGrey, "Blue grey color.");
 
 impl View for Color {
     fn body(self, env: &Environment) -> impl View {
-        // FIXME: Signal handling needs clarification. Using default.
         let resolved = self.resolve(env).get();
-        crate::shape::Rect::new([0.0, 0.0], [1.0, 1.0])
-            .fill(SolidColorRenderer::new(resolved))
+        crate::GpuSurface::new(SolidColorRenderer::new(resolved))
     }
 }
 
