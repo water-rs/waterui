@@ -1,82 +1,118 @@
 //! Icons Example - Demonstrates WaterUI's Icon System
 //!
-//! This example showcases Font Awesome 7 webfont icons.
-//!
-//! # Font Requirements
-//!
-//! To see the icons render correctly, bundle the Font Awesome webfonts:
-//! - `fa-solid-900.ttf` → "FontAwesome7Free-Solid"
-//! - `fa-regular-400.ttf` → "FontAwesome7Free-Regular"
-//! - `fa-brands-400.ttf` → "FontAwesome7Free-Brands"
+//! This example showcases 4 icon packs:
+//! - SF Symbols (Apple platforms only, native rendering)
+//! - Material Design Icons (SVG rendering)
+//! - Font Awesome 7 (webfont rendering)
+//! - Lucide Icons (SVG rendering)
 
 use waterui::app::App;
 use waterui::prelude::*;
+
 use waterui_icons_fontawesome7 as fa;
+use waterui_icons_lucide as lucide;
+use waterui_icons_material_icon as mdi;
+#[cfg(target_vendor = "apple")]
+use waterui_icons_sf_symbol as sf;
 
-/// Demo: Solid icons
-fn solid_icons_demo() -> impl View {
+/// Demo: SF Symbols (Apple only)
+#[cfg(target_vendor = "apple")]
+fn sf_symbols_demo() -> impl View {
     vstack((
-        text("Solid Icons").size(18.0),
+        text("SF Symbols (Apple)").size(18.0),
         hstack((
-            fa::solid::HOUSE.with_size(32.0),
-            fa::solid::USER.with_size(32.0),
-            fa::solid::GEAR.with_size(32.0),
-            fa::solid::HEART.with_size(32.0),
-            fa::solid::STAR.with_size(32.0),
+            sf::HOUSE_FILL,
+            sf::PERSON_FILL,
+            sf::GEARSHAPE,
+            sf::HEART_FILL,
+            sf::STAR_FILL,
         ))
         .spacing(16.0),
     ))
     .padding()
 }
 
-/// Demo: Regular icons
-fn regular_icons_demo() -> impl View {
+/// Demo: Material Design Icons (SVG)
+fn material_icons_demo() -> impl View {
     vstack((
-        text("Regular Icons").size(18.0),
+        text("Material Design Icons").size(18.0),
         hstack((
-            fa::regular::HEART.with_size(32.0),
-            fa::regular::STAR.with_size(32.0),
-            fa::regular::BELL.with_size(32.0),
-            fa::regular::BOOKMARK.with_size(32.0),
-            fa::regular::USER.with_size(32.0),
+            mdi::home(),
+            mdi::account(),
+            mdi::cog(),
+            mdi::heart(),
+            mdi::star(),
         ))
         .spacing(16.0),
     ))
     .padding()
 }
 
-/// Demo: Brand icons
-fn brand_icons_demo() -> impl View {
+/// Demo: Lucide Icons (SVG)
+fn lucide_icons_demo() -> impl View {
     vstack((
-        text("Brand Icons").size(18.0),
+        text("Lucide Icons").size(18.0),
         hstack((
-            fa::brands::GITHUB.with_size(32.0),
-            fa::brands::TWITTER.with_size(32.0),
-            fa::brands::APPLE.with_size(32.0),
-            fa::brands::GOOGLE.with_size(32.0),
-            fa::brands::DISCORD.with_size(32.0),
+            lucide::house(),
+            lucide::user(),
+            lucide::settings(),
+            lucide::heart(),
+            lucide::star(),
         ))
         .spacing(16.0),
     ))
     .padding()
 }
 
-/// Demo: Icon sizes
-fn icon_sizes_demo() -> impl View {
+/// Demo: Font Awesome Solid icons (webfont)
+fn fa_solid_demo() -> impl View {
     vstack((
-        text("Icon Sizes").size(18.0),
+        text("Font Awesome Solid").size(18.0),
         hstack((
-            fa::solid::STAR.with_size(16.0),
+            fa::solid::HOUSE.with_size(24.0),
+            fa::solid::USER.with_size(24.0),
+            fa::solid::GEAR.with_size(24.0),
+            fa::solid::HEART.with_size(24.0),
             fa::solid::STAR.with_size(24.0),
-            fa::solid::STAR.with_size(32.0),
-            fa::solid::STAR.with_size(48.0),
         ))
         .spacing(16.0),
     ))
     .padding()
 }
 
-/// Demo: Colored icons using IconGlyph::color()
+/// Demo: Font Awesome Regular icons (webfont)
+fn fa_regular_demo() -> impl View {
+    vstack((
+        text("Font Awesome Regular").size(18.0),
+        hstack((
+            fa::regular::HEART.with_size(24.0),
+            fa::regular::STAR.with_size(24.0),
+            fa::regular::BELL.with_size(24.0),
+            fa::regular::BOOKMARK.with_size(24.0),
+            fa::regular::USER.with_size(24.0),
+        ))
+        .spacing(16.0),
+    ))
+    .padding()
+}
+
+/// Demo: Font Awesome Brand icons (webfont)
+fn fa_brands_demo() -> impl View {
+    vstack((
+        text("Font Awesome Brands").size(18.0),
+        hstack((
+            fa::brands::GITHUB.with_size(24.0),
+            fa::brands::TWITTER.with_size(24.0),
+            fa::brands::APPLE.with_size(24.0),
+            fa::brands::GOOGLE.with_size(24.0),
+            fa::brands::DISCORD.with_size(24.0),
+        ))
+        .spacing(16.0),
+    ))
+    .padding()
+}
+
+/// Demo: Colored icons
 fn colored_icons_demo() -> impl View {
     vstack((
         text("Colored Icons").size(18.0),
@@ -99,55 +135,40 @@ fn colored_icons_demo() -> impl View {
     .padding()
 }
 
-/// Demo: Navigation items
-fn navigation_demo() -> impl View {
+fn icon_demos() -> impl View {
     vstack((
-        text("Navigation").size(18.0),
-        vstack((
-            hstack((
-                fa::solid::HOUSE.with_size(24.0),
-                text("Home"),
-                spacer(),
-                fa::solid::CHEVRON_RIGHT.with_size(16.0),
-            ))
-            .spacing(12.0),
-            hstack((
-                fa::solid::USER.with_size(24.0),
-                text("Profile"),
-                spacer(),
-                fa::solid::CHEVRON_RIGHT.with_size(16.0),
-            ))
-            .spacing(12.0),
-            hstack((
-                fa::solid::GEAR.with_size(24.0),
-                text("Settings"),
-                spacer(),
-                fa::solid::CHEVRON_RIGHT.with_size(16.0),
-            ))
-            .spacing(12.0),
-        ))
-        .spacing(8.0),
+        material_icons_demo(),
+        Divider,
+        lucide_icons_demo(),
+        Divider,
+        fa_solid_demo(),
+        Divider,
+        fa_regular_demo(),
+        Divider,
+        fa_brands_demo(),
+        Divider,
+        colored_icons_demo(),
     ))
-    .padding()
+}
+
+#[cfg(target_vendor = "apple")]
+fn all_demos() -> impl View {
+    vstack((sf_symbols_demo(), Divider, icon_demos()))
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn all_demos() -> impl View {
+    icon_demos()
 }
 
 #[hot_reload]
 fn main() -> impl View {
     scroll(
         vstack((
-            text("WaterUI Icon Examples").size(28.0),
+            text("WaterUI Icon Packs").size(28.0),
+            text("4 icon packs: SF Symbols, MDI, FA7, Lucide"),
             Divider,
-            solid_icons_demo(),
-            Divider,
-            regular_icons_demo(),
-            Divider,
-            brand_icons_demo(),
-            Divider,
-            icon_sizes_demo(),
-            Divider,
-            colored_icons_demo(),
-            Divider,
-            navigation_demo(),
+            all_demos(),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )

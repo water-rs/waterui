@@ -6,9 +6,10 @@
 //! - Download remote fonts with caching
 //! - Copy assets to platform-specific locations
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use cargo_metadata::PackageId;
 use color_eyre::eyre::{self, Context, OptionExt};
 use serde::Deserialize;
 use smol::fs;
@@ -24,22 +25,12 @@ use crate::project::Project;
 /// [[package.metadata.waterui.assets.font]]
 /// name = "Inter"
 /// ```
+///
+/// Note: Icon pack fonts (Font Awesome, Material Icons, Lucide, etc.) should
+/// NOT be in this registry. They should declare their fonts in their own
+/// Cargo.toml with `remote_path` and `required-feature` fields.
 const FONT_REGISTRY: &[(&str, &str)] = &[
-    // Font Awesome 7 Free desktop fonts (OTF)
-    // Names must match the actual font family names in the OTF files
-    (
-        "Font Awesome 7 Free Solid",
-        "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
-    ),
-    (
-        "Font Awesome 7 Free",
-        "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
-    ),
-    (
-        "Font Awesome 7 Brands",
-        "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip",
-    ),
-    // Popular fonts
+    // Popular text fonts
     (
         "Inter",
         "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip",
@@ -121,12 +112,20 @@ struct FontMetadata {
     local_path: Option<String>,
     #[serde(default)]
     remote_path: Option<String>,
+    /// Optional feature that must be enabled for this font to be included.
+    /// If specified, the font will only be downloaded/bundled if this feature
+    /// is enabled for the declaring package.
+    #[serde(default, rename = "required-feature")]
+    required_feature: Option<String>,
 }
 
 /// Scans all dependencies for font declarations in their Cargo.toml metadata.
 ///
 /// Uses `cargo metadata` to find all packages and parse their
 /// `[package.metadata.waterui.assets.font]` sections.
+///
+/// Fonts with a `required-feature` field will only be included if that feature
+/// is enabled for the declaring package (checked via cargo metadata's resolved graph).
 pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>> {
     let manifest_path = project.root().join("Cargo.toml");
 
@@ -143,6 +142,24 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
     })
     .await
     .wrap_err("Failed to run cargo metadata")?;
+
+    // Build map of package_id -> enabled features from resolved graph
+    let enabled_features_map: HashMap<&PackageId, HashSet<&str>> = metadata
+        .resolve
+        .as_ref()
+        .map(|resolve| {
+            resolve
+                .nodes
+                .iter()
+                .map(|node| {
+                    (
+                        &node.id,
+                        node.features.iter().map(|f| f.as_str()).collect(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut fonts = Vec::new();
 
@@ -164,8 +181,25 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
             }
         };
 
+        // Get enabled features for this package from resolve
+        let enabled_features = enabled_features_map
+            .get(&package.id)
+            .cloned()
+            .unwrap_or_default();
+
         // Process font declarations
         for font_meta in waterui_meta.assets.font {
+            // Skip if required feature is not enabled
+            if let Some(required) = &font_meta.required_feature {
+                if !enabled_features.contains(required.as_str()) {
+                    debug!(
+                        "Skipping font '{}': feature '{}' not enabled for {}",
+                        font_meta.name, required, package.name
+                    );
+                    continue;
+                }
+            }
+
             let source = if let Some(local_path) = font_meta.local_path {
                 // Local path - resolve relative to crate root
                 let crate_root = package
@@ -578,6 +612,13 @@ mod tests {
     fn test_font_registry_has_entries() {
         assert!(!FONT_REGISTRY.is_empty());
         assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Inter"));
+        // Icon pack fonts should NOT be in the built-in registry
+        assert!(!FONT_REGISTRY
+            .iter()
+            .any(|(name, _)| name.contains("Font Awesome")));
+        assert!(!FONT_REGISTRY
+            .iter()
+            .any(|(name, _)| name.contains("Material Design")));
     }
 
     #[test]

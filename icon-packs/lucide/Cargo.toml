@@ -1,12 +1,12 @@
 [package]
-name = "waterui-icons-material-icon"
+name = "waterui-icons-lucide"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
-license = "Apache-2.0"
+license = "ISC"
 repository.workspace = true
-description = "Material Design icons for WaterUI (Pictogrammers @mdi/svg)"
-keywords = ["icons", "material", "mdi", "waterui"]
+description = "Lucide icons for WaterUI"
+keywords = ["icons", "lucide", "waterui"]
 categories = ["gui"]
 readme = "README.md"
 
@@ -19,10 +19,8 @@ webfont = []
 waterui-icon.workspace = true
 
 [build-dependencies]
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ureq = "2.12"
-regex = "1"
 
 [lints]
 workspace = true
@@ -32,6 +30,6 @@ workspace = true
 [package.metadata.waterui.assets]
 
 [[package.metadata.waterui.assets.font]]
-name = "Material Design Icons"
-remote_path = "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+name = "lucide"
+remote_path = "https://github.com/lucide-icons/lucide/releases/download/0.562.0/lucide-font-0.562.0.zip"
 required-feature = "webfont"
