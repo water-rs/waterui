@@ -31,7 +31,7 @@ fn main() -> impl View {
                 text("Interactive Counter").size(18),
                 hstack((
                     "Count: ",
-                    waterui::text!("{}", counter),
+                    text!("{}", counter),
                     spacer(),
                     stepper(&counter),
                 )),
@@ -44,9 +44,9 @@ fn main() -> impl View {
                 form(&profile),
                 hstack((
                     "Name: ",
-                    waterui::text!("{}", profile.project().name).bold(),
+                    text!("{}", profile.project().name).bold(),
                 )),
-                hstack(("Email: ", waterui::text!("{}", profile.project().email))),
+                hstack(("Email: ", text!("{}", profile.project().email))),
             )),
             spacer(),
             // Interactive controls
