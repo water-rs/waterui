@@ -20,6 +20,9 @@ use alloc::vec::Vec;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::color::ResolvedColor;
 use waterui_core::View;
+use crate::include_shader;
+
+static GRADIENT_SHADER: crate::prewarm::PrewarmedShader = include_shader!("shaders/gradient.wgsl");
 
 /// Maximum number of color stops supported by the shader.
 pub const MAX_COLOR_STOPS: usize = 16;
@@ -216,6 +219,7 @@ pub struct GradientRenderer {
     mesh_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
+    dirty: bool,
 }
 
 impl core::fmt::Debug for GradientRenderer {
@@ -238,6 +242,7 @@ impl GradientRenderer {
             mesh_buffer: None,
             bind_group: None,
             pipeline_format: None,
+            dirty: true,
         }
     }
 
@@ -248,7 +253,8 @@ impl GradientRenderer {
     }
 
     fn build_shader() -> &'static str {
-        include_str!("shaders/gradient.wgsl")
+        // Use pre-warmed shader source
+        &GRADIENT_SHADER.source
     }
 
     fn prepare_uniforms(&self) -> GradientUniforms {
@@ -418,7 +424,7 @@ impl GpuRenderer for GradientRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: ctx.pipeline_cache,
         });
 
         self.pipeline = Some(pipeline);
@@ -453,18 +459,25 @@ impl GpuRenderer for GradientRenderer {
         let Some(mesh_buffer) = &self.mesh_buffer else { return };
         let Some(bind_group) = &self.bind_group else { return };
 
-        // Update uniforms
-        let uniforms = self.prepare_uniforms();
-        frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let Some(bind_group) = &self.bind_group else { return };
+        
+        // Only update buffers if dirty
+        if self.dirty {
+            // Update uniforms
+            let uniforms = self.prepare_uniforms();
+            frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update color stops
-        let stops = self.prepare_stops();
-        frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+            // Update color stops
+            let stops = self.prepare_stops();
+            frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
 
-        // Update mesh vertices (if mesh gradient)
-        if matches!(self.config.gradient_type, GradientType::Mesh) {
-            let vertices = self.prepare_mesh_vertices();
-            frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
+            // Update mesh vertices (if mesh gradient)
+            if matches!(self.config.gradient_type, GradientType::Mesh) {
+                let vertices = self.prepare_mesh_vertices();
+                frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
+            }
+            
+            self.dirty = false;
         }
 
         // Render
@@ -652,6 +665,7 @@ struct ReactiveMeshRenderer<C> {
     mesh_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
+    last_colors: Option<Vec<ResolvedColor>>,
 }
 
 impl<C> ReactiveMeshRenderer<C> {
@@ -667,6 +681,7 @@ impl<C> ReactiveMeshRenderer<C> {
             mesh_buffer: None,
             bind_group: None,
             pipeline_format: None,
+            last_colors: None,
         }
     }
 }
@@ -677,10 +692,10 @@ where
     C::Output: IntoIterator<Item = ResolvedColor>,
 {
     fn setup(&mut self, ctx: &GpuContext) {
-        let shader_source = include_str!("shaders/gradient.wgsl");
+        // Use pre-warmed shader
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mesh Gradient Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone()),
         });
 
         // Create uniform buffer
@@ -794,7 +809,7 @@ where
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: ctx.pipeline_cache,
         });
 
         self.pipeline = Some(pipeline);
@@ -824,41 +839,54 @@ where
         // Read current colors from Signal
         let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
 
-        // Prepare uniforms
-        let uniforms = GradientUniforms {
-            gradient_type: GradientType::Mesh as u32,
-            num_stops: 0,
-            mesh_width: self.width,
-            mesh_height: self.height,
-            start_point: [0.0, 0.0],
-            end_point: [1.0, 1.0],
-            start_value: 0.0,
-            end_value: 1.0,
-            smooths_colors: u32::from(self.smooths_colors),
-            _padding: 0,
+        // Check if colors changed
+        let colors_changed = match &self.last_colors {
+            Some(last) => last.len() != colors.len() || last.iter().zip(&colors).any(|(a, b)| {
+                a.red != b.red || a.green != b.green || a.blue != b.blue || a.opacity != b.opacity
+            }),
+            None => true,
         };
-        frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // Prepare empty stops (mesh gradient doesn't use stops)
-        let stops = [GpuColorStop::default(); MAX_COLOR_STOPS];
-        frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+        if colors_changed {
+            // Update cache
+            self.last_colors = Some(colors.clone());
 
-        // Prepare mesh vertices from colors
-        // Generate grid positions and map colors
-        let mut vertices = [GpuMeshVertex::default(); MAX_MESH_VERTICES];
-        let w = self.width as usize;
-        let h = self.height as usize;
-
-        for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
-            let x = (i % w) as f32 / (w - 1).max(1) as f32;
-            let y = (i / w) as f32 / (h - 1).max(1) as f32;
-            vertices[i] = GpuMeshVertex {
-                position: [x, y],
-                _padding1: [0.0; 2],
-                color: [color.red, color.green, color.blue, color.opacity],
+            // Prepare uniforms
+            let uniforms = GradientUniforms {
+                gradient_type: GradientType::Mesh as u32,
+                num_stops: 0,
+                mesh_width: self.width,
+                mesh_height: self.height,
+                start_point: [0.0, 0.0],
+                end_point: [1.0, 1.0],
+                start_value: 0.0,
+                end_value: 1.0,
+                smooths_colors: u32::from(self.smooths_colors),
+                _padding: 0,
             };
+            frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+            // Prepare empty stops (mesh gradient doesn't use stops)
+            let stops = [GpuColorStop::default(); MAX_COLOR_STOPS];
+            frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+
+            // Prepare mesh vertices from colors
+            // Generate grid positions and map colors
+            let mut vertices = [GpuMeshVertex::default(); MAX_MESH_VERTICES];
+            let w = self.width as usize;
+            let h = self.height as usize;
+
+            for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
+                let x = (i % w) as f32 / (w - 1).max(1) as f32;
+                let y = (i / w) as f32 / (h - 1).max(1) as f32;
+                vertices[i] = GpuMeshVertex {
+                    position: [x, y],
+                    _padding1: [0.0; 2],
+                    color: [color.red, color.green, color.blue, color.opacity],
+                };
+            }
+            frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
         }
-        frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
 
         // Render
         let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
