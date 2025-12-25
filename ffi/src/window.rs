@@ -5,7 +5,7 @@ use waterui::window::{Window, WindowBackground, WindowManager, WindowState, Wind
 use waterui_layout::Rect;
 
 use crate::{
-    IntoFFI, IntoRust, WuiEnv, WuiAnyView, WuiMaterial, color::WuiColor,
+    IntoFFI, IntoRust, WuiEnv, WuiAnyView, color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
     ffi_binding,
 };
@@ -99,29 +99,24 @@ pub unsafe extern "C" fn waterui_new_watcher_window_state(
 }
 
 /// FFI-compatible representation of [`WindowBackground`].
+///
+/// Only supports Opaque and Color. Material blur effects are handled
+/// via `MaterialBackground` metadata on the window content.
 #[repr(C)]
 pub enum WuiWindowBackground {
     /// Opaque system default background.
     Opaque,
-    /// Fully transparent window (no background).
-    Transparent,
     /// Solid color background (can be semi-transparent via alpha).
     /// Native must resolve the color using the environment.
     Color { color: *mut WuiColor },
-    /// Material blur effect.
-    Material { material: WuiMaterial },
 }
 
 impl From<WindowBackground> for WuiWindowBackground {
     fn from(bg: WindowBackground) -> Self {
         match bg {
             WindowBackground::Opaque => Self::Opaque,
-            WindowBackground::Transparent => Self::Transparent,
             WindowBackground::Color(color) => Self::Color {
                 color: color.into_ffi(),
-            },
-            WindowBackground::Material(material) => Self::Material {
-                material: material.into_ffi(),
             },
         }
     }
