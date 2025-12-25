@@ -628,7 +628,7 @@ impl FlameRenderer {
 }
 
 impl GpuRenderer for FlameRenderer {
-    fn setup(&mut self, ctx: &GpuContext) {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 
@@ -913,6 +913,8 @@ impl GpuRenderer for FlameRenderer {
         self.blur_pipeline = Some(blur_pipeline);
         self.final_pipeline = Some(final_pipeline);
         self.final_format = Some(ctx.surface_format);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &GpuFrame) {

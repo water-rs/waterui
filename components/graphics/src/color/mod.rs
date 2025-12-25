@@ -707,11 +707,13 @@ impl SolidColorRenderer {
 }
 
 impl crate::GpuRenderer for SolidColorRenderer {
-    fn setup(&mut self, ctx: &crate::GpuContext) {
+    fn setup(&mut self, ctx: &crate::GpuContext) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
+
+        // Create shader directly (no more shared context cache - compile on-demand)
         let shader = device.create_shader_module(crate::wgpu::ShaderModuleDescriptor {
-            label: Some("Solid Color Shader"),
-            source: crate::wgpu::ShaderSource::Wgsl(SOLID_COLOR_SHADER.source.clone()),
+            label: Some(SOLID_COLOR_SHADER.label),
+            source: crate::wgpu::ShaderSource::Wgsl(SOLID_COLOR_SHADER.source.clone().into()),
         });
 
         let uniform_buffer = device.create_buffer(&crate::wgpu::BufferDescriptor {
@@ -822,6 +824,8 @@ impl crate::GpuRenderer for SolidColorRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
+
+        async {} // Sync renderer - immediately ready
     }
 
     fn render(&mut self, frame: &crate::GpuFrame) {

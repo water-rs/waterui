@@ -2714,36 +2714,16 @@ typedef struct WuiProgress {
  */
 typedef struct WuiGpuSurface {
   /**
-   * Opaque pointer to the boxed GpuRenderer trait object.
+   * Opaque pointer to the boxed GpuSurface.
    * This is consumed during init and should not be used after.
    */
-  void *renderer;
+  void *surface;
 } WuiGpuSurface;
 
 /**
- * FFI representation of the Svg component.
- *
- * The SVG content can be either path data (d attribute) or full SVG markup.
- * Native backends parse and render using platform-native vector graphics.
+ * Callback type for async completion notifications.
  */
-typedef struct WuiSvg {
-  /**
-   * SVG content (path data or full SVG markup).
-   */
-  struct WuiStr content;
-  /**
-   * Intrinsic width (0 means unspecified).
-   */
-  float width;
-  /**
-   * Intrinsic height (0 means unspecified).
-   */
-  float height;
-  /**
-   * Optional tint color (null means no tint, use original colors).
-   */
-  struct WuiColor *tint;
-} WuiSvg;
+typedef void (*WuiGpuCallback)(void *user_data);
 
 /**
  * FFI representation of the SystemIcon component.
@@ -4867,6 +4847,29 @@ struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surfac
 bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
 
 /**
+ * Setup the GpuSurface and render the first frame, then call callback.
+ *
+ * This function performs async setup (awaited synchronously via `block_on`),
+ * then renders the first frame. Native code should call this before showing
+ * the window to ensure all GpuSurfaces are ready.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state from `waterui_gpu_surface_init`
+ * * `callback` - Function to call when ready
+ * * `user_data` - Opaque pointer passed to callback
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_gpu_surface_init`
+ * - `callback` must be a valid function pointer
+ * - `user_data` must remain valid until callback is invoked
+ */
+void waterui_gpu_surface_await_ready(struct WuiGpuSurfaceState *state,
+                                     WuiGpuCallback callback,
+                                     void *user_data);
+
+/**
  * Clean up GPU resources.
  *
  * This function should be called when the GpuSurface view is destroyed.
@@ -4877,19 +4880,6 @@ bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width
  * and must not be used after this call.
  */
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
-struct WuiSvg waterui_force_as_svg(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_svg_id(void);
 
 /**
  * # Safety

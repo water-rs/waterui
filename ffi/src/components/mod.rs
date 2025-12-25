@@ -42,9 +42,6 @@ pub mod progress;
 /// GPU surface FFI bindings for high-performance wgpu rendering
 pub mod gpu_surface;
 
-/// SVG component FFI bindings for native vector graphics
-pub mod svg;
-
 /// SystemIcon component FFI bindings for platform-native icons
 pub mod icon;
 
