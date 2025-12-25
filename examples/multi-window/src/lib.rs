@@ -3,7 +3,7 @@
 //! This example showcases:
 //! - Creating and managing multiple windows
 //! - Different window styles (Titled, Borderless, FullSizeContentView)
-//! - Different window backgrounds (Opaque, Transparent, Color, Material)
+//! - Window backgrounds with Color and Material blur effects
 //! - Window state management and control
 //! - Reactive window handles
 
@@ -11,7 +11,7 @@ use waterui::app::App;
 use waterui::background::Material;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
+use waterui::window::{Window, WindowState, WindowStyle};
 
 fn main() -> impl View {
     // Reactive state to track window states
@@ -130,7 +130,7 @@ fn window_section(
 fn create_standard_window(state: Binding<WindowState>) -> Window {
     Window::new("Standard Window", window_content("Standard Titled Window", "This window uses the default Titled style with an Opaque background.\n\nFeatures:\n• Title bar with controls\n• Opaque system background\n• Resizable and closable"))
         .style(WindowStyle::Titled)
-        .background(WindowBackground::Opaque)
+        // Default is opaque, no need to set background
         .resizable(true)
         .with_state(state)
 }
@@ -141,7 +141,7 @@ fn create_borderless_window(state: Binding<WindowState>) -> Window {
 
     Window::new("Borderless Window", window_content("Borderless Window", "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)"))
         .style(WindowStyle::Borderless)
-        .background(WindowBackground::Color(tinted_color))
+        .background(tinted_color)
         .resizable(true)
         .with_state(state)
 }
@@ -150,16 +150,19 @@ fn create_borderless_window(state: Binding<WindowState>) -> Window {
 fn create_frosted_window(state: Binding<WindowState>) -> Window {
     Window::new("Frosted Glass", window_content("Frosted Glass Window", "This window uses a Regular material blur for a frosted glass effect.\n\nFeatures:\n• Titled style\n• Material blur background\n• See-through with blur effect"))
         .style(WindowStyle::Titled)
-        .background(WindowBackground::Material(Material::Regular))
+        .background(Material::Regular)
         .resizable(true)
         .with_state(state)
 }
 
 /// Create a transparent overlay window
 fn create_transparent_window(state: Binding<WindowState>) -> Window {
+    // Use a semi-transparent color for the overlay effect
+    let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_alpha(0.3);
+
     Window::new("Transparent Overlay", transparent_window_content())
         .style(WindowStyle::FullSizeContentView)
-        .background(WindowBackground::Transparent)
+        .background(overlay_color)
         .resizable(true)
         .with_state(state)
 }
@@ -168,7 +171,7 @@ fn create_transparent_window(state: Binding<WindowState>) -> Window {
 fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
     Window::new("Ultra-Thin Material", window_content("Ultra-Thin Material Window", "This window uses an UltraThin material for a subtle frosted effect.\n\nFeatures:\n• Borderless style\n• Ultra-thin blur\n• Most transparent material"))
         .style(WindowStyle::Borderless)
-        .background(WindowBackground::Material(Material::UltraThin))
+        .background(Material::UltraThin)
         .resizable(true)
         .with_state(state)
 }
