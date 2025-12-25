@@ -398,7 +398,10 @@ impl GpuRenderer for GradientRenderer {
             push_constant_ranges: &[],
         });
 
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Try with cache first
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let mut pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Gradient Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -426,6 +429,43 @@ impl GpuRenderer for GradientRenderer {
             multiview: None,
             cache: ctx.pipeline_cache,
         });
+
+        // Check for validation error
+        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!("[GradientRenderer] Pipeline creation with cache failed: {}", e);
+            // Retry without cache
+            pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Gradient Pipeline (No Cache)"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        } else {
+            tracing::info!("[GradientRenderer] Pipeline creation with cache SUCCESS");
+        }
 
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
@@ -783,7 +823,10 @@ where
             push_constant_ranges: &[],
         });
 
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Try with cache first
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let mut pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Mesh Gradient Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -811,6 +854,43 @@ where
             multiview: None,
             cache: ctx.pipeline_cache,
         });
+
+        // Check for validation error
+        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!("[ReactiveMeshRenderer] Pipeline creation with cache failed: {}", e);
+            // Retry without cache
+            pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Mesh Gradient Pipeline (No Cache)"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        } else {
+            tracing::info!("[ReactiveMeshRenderer] Pipeline creation with cache SUCCESS");
+        }
 
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
