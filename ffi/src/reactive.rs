@@ -197,6 +197,7 @@ macro_rules! ffi_computed {
             /// Watches for changes in a computed
             /// # Safety
             /// The computed pointer must be valid and point to a properly initialized computed object.
+            /// The watcher pointer will be consumed and freed when the returned guard is dropped.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_watch_computed_ $ident >](
                 computed: *const $crate::reactive::WuiComputed<$ty>,
@@ -204,10 +205,12 @@ macro_rules! ffi_computed {
             ) -> *mut $crate::reactive::WuiWatcherGuard {
                 use waterui::Signal;
                 unsafe {
+                    // Take ownership of the watcher - it will be dropped when the guard drops
+                    let watcher = alloc::boxed::Box::from_raw(watcher);
                     let guard = (&*computed).watch(move |ctx| {
                         let metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
-                        (*watcher).call(value, metadata);
+                        watcher.call(value, metadata);
                     });
                     $crate::IntoFFI::into_ffi(guard)
                 }
@@ -325,7 +328,7 @@ macro_rules! ffi_binding {
             /// Watches for changes in a binding
             /// # Safety
             /// The binding pointer must be valid and point to a properly initialized binding object.
-            /// The watcher must be a valid callback function.
+            /// The watcher pointer will be consumed and freed when the returned guard is dropped.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_watch_binding_ $ident >](
                 binding: *const $crate::reactive::WuiBinding<$ty>,
@@ -340,13 +343,15 @@ macro_rules! ffi_binding {
                 let is_setting_up_clone = is_setting_up.clone();
 
                 unsafe {
+                    // Take ownership of the watcher - it will be dropped when the guard drops
+                    let watcher = alloc::boxed::Box::from_raw(watcher);
                     let guard = (*binding).watch(move |ctx| {
                         if is_setting_up_clone.get() {
                             return; // Skip synchronous callback during setup
                         }
                         let metadata = ctx.metadata().clone();
                         let value = ctx.into_value();
-                        (*watcher).call(value, metadata);
+                        watcher.call(value, metadata);
                     });
                     is_setting_up.set(false);
                     guard.into_ffi()
@@ -514,7 +519,7 @@ pub unsafe extern "C" fn waterui_set_binding_secure(
 /// Watches for changes in a Secure binding
 /// # Safety
 /// The binding pointer must be valid and point to a properly initialized binding object.
-/// The watcher must be a valid callback function.
+/// The watcher pointer will be consumed and freed when the returned guard is dropped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_watch_binding_secure(
     binding: *const WuiBinding<Secure>,
@@ -529,13 +534,15 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
     let is_setting_up_clone = is_setting_up.clone();
 
     unsafe {
+        // Take ownership of the watcher - it will be dropped when the guard drops
+        let watcher = Box::from_raw(watcher);
         let guard = (*binding).watch(move |ctx| {
             if is_setting_up_clone.get() {
                 return; // Skip synchronous callback during setup
             }
             let metadata = ctx.metadata().clone();
             let value = ctx.into_value();
-            (*watcher).call(value, metadata);
+            watcher.call(value, metadata);
         });
         is_setting_up.set(false);
         guard.into_ffi()

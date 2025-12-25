@@ -282,4 +282,23 @@ mod tests {
             assert!(!guard.adapter.get_info().name.is_empty());
         }
     }
+
+    #[test]
+    fn test_save_pipeline_cache() {
+        // Only run if we can initialize context
+        if init_shared_context().is_ok() || is_initialized() {
+            // Ensure we have a clean slate if possible, or just overwrite
+            save_pipeline_cache();
+            
+            if let Some(path) = get_cache_path() {
+                assert!(path.exists(), "Cache file should exist after save");
+                let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
+                // Size might be 0 if cache is empty, but file should exist
+                println!("Cache saved to: {:?} (size: {} bytes)", path, metadata.len());
+                
+                // Cleanup
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }

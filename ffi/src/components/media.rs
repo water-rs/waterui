@@ -8,7 +8,6 @@ use nami::signal::IntoComputed;
 use waterui_media::{
     AspectRatio, Url,
     live::{LivePhotoConfig, LivePhotoSource},
-    photo::{Event as PhotoEvent, PhotoConfig},
     video::{Event as VideoEvent, VideoConfig, VideoPlayerConfig},
 };
 
@@ -34,68 +33,8 @@ impl IntoFFI for AspectRatio {
     }
 }
 
-/// FFI representation of photo events.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub enum WuiPhotoEventType {
-    Loaded = 0,
-    Error = 1,
-}
-
-/// FFI representation of a photo event.
-#[repr(C)]
-pub struct WuiPhotoEvent {
-    pub event_type: WuiPhotoEventType,
-    pub error_message: WuiStr,
-}
-
-impl IntoFFI for PhotoEvent {
-    type FFI = WuiPhotoEvent;
-    fn into_ffi(self) -> Self::FFI {
-        match self {
-            PhotoEvent::Loaded => WuiPhotoEvent {
-                event_type: WuiPhotoEventType::Loaded,
-                error_message: "".into_ffi(),
-            },
-            PhotoEvent::Error(message) => WuiPhotoEvent {
-                event_type: WuiPhotoEventType::Error,
-                error_message: waterui::Str::from(message).into_ffi(),
-            },
-        }
-    }
-}
-
-#[repr(C)]
-pub struct WuiPhoto {
-    pub source: WuiStr,
-    pub on_event: WuiFn<WuiPhotoEvent>,
-}
-
-impl IntoFFI for PhotoConfig {
-    type FFI = WuiPhoto;
-    fn into_ffi(self) -> Self::FFI {
-        // Convert the Rust closure to a WuiFn
-        // Native code will call this with WuiPhotoEvent, we convert to Rust Event and call the closure
-        let on_event_fn = WuiFn::from(move |ffi_event: WuiPhotoEvent| {
-            // Convert FFI event to Rust event
-            let rust_event = match ffi_event.event_type {
-                WuiPhotoEventType::Loaded => PhotoEvent::Loaded,
-                WuiPhotoEventType::Error => {
-                    let message_str = unsafe { ffi_event.error_message.into_rust() };
-                    PhotoEvent::Error(String::from(message_str))
-                }
-            };
-
-            // Call the user's closure
-            (self.on_event)(rust_event);
-        });
-
-        WuiPhoto {
-            source: self.source.into_ffi(),
-            on_event: on_event_fn,
-        }
-    }
-}
+// Photo is now a composite View (uses Dynamic + Image internally)
+// so it doesn't need FFI bindings - it resolves to GpuSurface which has FFI
 
 /// FFI representation of video events.
 #[repr(C)]
@@ -280,7 +219,7 @@ impl IntoFFI for waterui_media::Url {
 // FFI view bindings
 // =============================================================================
 
-ffi_view!(PhotoConfig, WuiPhoto, photo);
+// Photo no longer uses ffi_view! - it's a composite View now
 
 // Video - raw video view without controls
 ffi_view!(VideoConfig, WuiVideo, video);
