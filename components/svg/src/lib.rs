@@ -19,7 +19,6 @@ extern crate alloc;
 mod cpu_renderer;
 #[cfg(feature = "vello-backend")]
 mod vello_renderer;
-mod svg_blit;
 
 use waterui_core::resolve::Resolvable;
 use waterui_core::Signal;

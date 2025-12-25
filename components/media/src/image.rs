@@ -283,6 +283,7 @@ impl ImageRenderer {
     fn create_render_pipeline(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
         // Simple shader to render a texture to the screen
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -349,7 +350,7 @@ impl ImageRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: pipeline_cache,
         });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -448,7 +449,7 @@ impl GpuRenderer for ImageRenderer {
 
         // Create render pipeline
         let (render_pipeline, bind_group_layout, sampler) =
-            Self::create_render_pipeline(ctx.device, ctx.surface_format);
+            Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
 
         // Determine which texture to use for rendering
         let display_texture = self

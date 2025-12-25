@@ -1,6 +1,6 @@
-use waterui_core::{Environment, View};
+use crate::{BarcodeRenderer, BarcodeSource};
+use waterui_core::{Environment, Str, View};
 use waterui_graphics::GpuSurface;
-use crate::{BarcodeSource, BarcodeRenderer};
 
 /// A view that renders a barcode.
 ///
@@ -15,12 +15,12 @@ use crate::{BarcodeSource, BarcodeRenderer};
 /// ```
 #[derive(Clone, Debug)]
 pub struct Barcode {
-    content: String,
+    content: Str,
 }
 
 impl Barcode {
     /// Creates a new barcode view.
-    pub fn new(content: impl Into<String>) -> Self {
+    pub fn new(content: impl Into<Str>) -> Self {
         Self {
             content: content.into(),
         }
