@@ -15,6 +15,7 @@ categories = ["gui", "multimedia"]
 waterui-core.workspace = true
 waterui-url.workspace = true
 waterui-graphics.workspace = true
+waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
 filtrate.workspace = true

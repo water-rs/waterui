@@ -257,6 +257,7 @@ fn spawn_load_task(
                 }
             }
             Err(e) => {
+                tracing::error!("[Photo] Failed to load: {}", e);
                 if let Some(on_event) = on_event {
                     on_event(Event::Error(e));
                 }
@@ -267,16 +268,23 @@ fn spawn_load_task(
 }
 
 async fn fetch_and_decode(url: Url) -> Result<(Vec<u8>, u32, u32), String> {
-    // Fetch the image data
-    let response = zenwave::get(url.as_str())
+    // Fetch the image data using redirect-following client
+    use zenwave::{Client, Method, redirect::FollowRedirect};
+    let mut client = FollowRedirect::new(zenwave::client());
+    let response = client
+        .method(Method::GET, url.as_str())
         .await
         .map_err(|e| e.to_string())?;
 
-    let data = response.into_bytes().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()));
+    }
+
+    let data = response.into_body().into_bytes().await.map_err(|e| e.to_string())?;
 
     // Decode on a background thread to avoid blocking
     blocking::unblock(move || {
-        let img = image::load_from_memory(&data).map_err(|e| e.to_string())?;
+        let img = image::load_from_memory(&data).map_err(|e| format!("Image decode failed: {}", e))?;
 
         let (width, height) = img.dimensions();
         let rgba = img.into_rgba8();

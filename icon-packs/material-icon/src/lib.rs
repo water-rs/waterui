@@ -40,14 +40,12 @@
 
 #![no_std]
 
+// Re-export from waterui-icon
 #[cfg(feature = "svg")]
-pub use waterui_svg::Svg;
+pub use waterui_icon::Svg;
+
+#[cfg(feature = "webfont")]
+pub use waterui_icon::IconGlyph;
 
 // Include the auto-generated icon definitions
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));
-
-#[cfg(feature = "webfont")]
-mod glyph;
-
-#[cfg(feature = "webfont")]
-pub use glyph::IconGlyph;

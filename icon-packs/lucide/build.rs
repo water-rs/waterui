@@ -73,6 +73,15 @@ fn fetch_content(path: &str) -> Result<String, String> {
     }
 }
 
+/// Parse a JSON value as a number (handles both Number and String variants)
+fn parse_number(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 /// Extract SVG path from icon elements
 fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Option<String> {
     let mut paths = Vec::new();
@@ -83,15 +92,12 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                 paths.push(d.clone());
             }
         } else if element_type == "circle" {
-            if let (
-                Some(serde_json::Value::Number(cx)),
-                Some(serde_json::Value::Number(cy)),
-                Some(serde_json::Value::Number(r)),
-            ) = (attrs.get("cx"), attrs.get("cy"), attrs.get("r"))
-            {
-                let cx = cx.as_f64().unwrap_or(0.0);
-                let cy = cy.as_f64().unwrap_or(0.0);
-                let r = r.as_f64().unwrap_or(0.0);
+            // Parse cx, cy, r - can be either Number or String in JSON
+            let cx = attrs.get("cx").and_then(parse_number);
+            let cy = attrs.get("cy").and_then(parse_number);
+            let r = attrs.get("r").and_then(parse_number);
+
+            if let (Some(cx), Some(cy), Some(r)) = (cx, cy, r) {
                 // Approximate circle with four cubic Bezier curves
                 let k = 0.5522847498;
                 paths.push(format!(
@@ -104,24 +110,15 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                 ));
             }
         } else if element_type == "rect" {
-            if let (
-                Some(serde_json::Value::Number(x)),
-                Some(serde_json::Value::Number(y)),
-                Some(serde_json::Value::Number(w)),
-                Some(serde_json::Value::Number(h)),
-            ) = (
-                attrs.get("x"),
-                attrs.get("y"),
-                attrs.get("width"),
-                attrs.get("height"),
-            ) {
-                let x = x.as_f64().unwrap_or(0.0);
-                let y = y.as_f64().unwrap_or(0.0);
-                let w = w.as_f64().unwrap_or(0.0);
-                let h = h.as_f64().unwrap_or(0.0);
+            // Parse rect attributes - can be either Number or String
+            let x = attrs.get("x").and_then(parse_number).unwrap_or(0.0);
+            let y = attrs.get("y").and_then(parse_number).unwrap_or(0.0);
+            let w = attrs.get("width").and_then(parse_number);
+            let h = attrs.get("height").and_then(parse_number);
 
-                let rx = attrs.get("rx").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let ry = attrs.get("ry").and_then(|v| v.as_f64()).unwrap_or(rx);
+            if let (Some(w), Some(h)) = (w, h) {
+                let rx = attrs.get("rx").and_then(parse_number).unwrap_or(0.0);
+                let ry = attrs.get("ry").and_then(parse_number).unwrap_or(rx);
 
                 if rx > 0.0 || ry > 0.0 {
                     paths.push(format!(
@@ -141,24 +138,14 @@ fn extract_path(elements: &[(String, HashMap<String, serde_json::Value>)]) -> Op
                 }
             }
         } else if element_type == "line" {
-            if let (
-                Some(serde_json::Value::Number(x1)),
-                Some(serde_json::Value::Number(y1)),
-                Some(serde_json::Value::Number(x2)),
-                Some(serde_json::Value::Number(y2)),
-            ) = (
-                attrs.get("x1"),
-                attrs.get("y1"),
-                attrs.get("x2"),
-                attrs.get("y2"),
-            ) {
-                paths.push(format!(
-                    "M{},{} L{},{}",
-                    x1.as_f64().unwrap_or(0.0),
-                    y1.as_f64().unwrap_or(0.0),
-                    x2.as_f64().unwrap_or(0.0),
-                    y2.as_f64().unwrap_or(0.0)
-                ));
+            // Parse line attributes - can be either Number or String
+            let x1 = attrs.get("x1").and_then(parse_number);
+            let y1 = attrs.get("y1").and_then(parse_number);
+            let x2 = attrs.get("x2").and_then(parse_number);
+            let y2 = attrs.get("y2").and_then(parse_number);
+
+            if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (x1, y1, x2, y2) {
+                paths.push(format!("M{x1},{y1} L{x2},{y2}"));
             }
         } else if element_type == "polyline" || element_type == "polygon" {
             if let Some(serde_json::Value::String(points)) = attrs.get("points") {
@@ -221,7 +208,7 @@ fn generate_icons_rs(
         output.push_str(&format!("/// `{icon_name}` icon as Svg.\n"));
         output.push_str("#[inline]\n");
         output.push_str(&format!(
-            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_path({const_name}_PATH, 24.0, 24.0)\n}}\n"
+            "pub fn {fn_name}() -> crate::Svg {{\n    crate::Svg::from_stroke_path({const_name}_PATH, 24.0, 24.0)\n}}\n"
         ));
 
         output.push('\n');
