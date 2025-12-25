@@ -851,8 +851,8 @@ impl GpuRenderer for CanvasRenderer {
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Canvas Blit Shader"),
-                source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+                label: Some(waterui_graphics::shaders::BLIT.label),
+                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.clone().into()),
             });
 
         let bind_group_layout =
@@ -915,7 +915,7 @@ impl GpuRenderer for CanvasRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
 
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1059,45 +1059,3 @@ impl GpuRenderer for CanvasRenderer {
         frame.queue.submit(std::iter::once(encoder.finish()));
     }
 }
-
-/// WGSL shader for blitting from `Rgba8Unorm` to target format
-const BLIT_SHADER: &str = r"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // Full-screen triangle pair
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-    );
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-    );
-
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    output.tex_coord = tex_coords[vertex_index];
-    return output;
-}
-
-@group(0) @binding(0) var t_source: texture_2d<f32>;
-@group(0) @binding(1) var s_source: sampler;
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_source, s_source, in.tex_coord);
-}
-";

@@ -248,8 +248,8 @@ impl GpuRenderer for VelloSvgRenderer {
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Vello SVG Blit Shader"),
-                source: wgpu::ShaderSource::Wgsl(crate::svg_blit::SHADER.into()),
+                label: Some(waterui_graphics::shaders::BLIT.label),
+                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.clone().into()),
             });
 
         let pipeline_layout =
@@ -293,7 +293,7 @@ impl GpuRenderer for VelloSvgRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
         self.blit_pipeline = Some(pipeline);
 

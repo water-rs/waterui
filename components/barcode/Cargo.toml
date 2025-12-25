@@ -12,7 +12,6 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [dependencies]
-filtrate-core.workspace = true
 waterui-core.workspace = true
 waterui-graphics.workspace = true
 wgpu.workspace = true
