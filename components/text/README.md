@@ -109,9 +109,9 @@ let custom_slider = binding(0.5);
 
 // Reactive text updates automatically when bindings change
 vstack((
-    hstack(("Username: ", waterui::text!("{}", custom_name))),
-    hstack(("Count: ", waterui::text!("{}", custom_count))),
-    hstack(("Progress: ", waterui::text!("{}", custom_slider))),
+    hstack(("Username: ", text!("{}", custom_name))),
+    hstack(("Count: ", text!("{}", custom_count))),
+    hstack(("Progress: ", text!("{}", custom_slider))),
 ))
 ```
 
