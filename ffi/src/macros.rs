@@ -101,6 +101,46 @@ macro_rules! ffi_metadata {
     };
 }
 
+/// Generates FFI functions for IgnorableMetadata<T> types.
+///
+/// Similar to `ffi_metadata!`, but for `IgnorableMetadata<T>` which can be
+/// safely ignored by renderers that don't support the metadata type.
+///
+/// # Generated Functions
+/// - `waterui_ignorable_metadata_<ident>_id()` - Returns the type ID as 128-bit value
+/// - `waterui_force_as_ignorable_metadata_<ident>()` - Downcasts AnyView to the metadata type
+#[macro_export]
+macro_rules! ffi_ignorable_metadata {
+    ($ty:ty, $ffi:ty, $ident:tt) => {
+        pastey::paste! {
+            /// Returns the type ID as a 128-bit value for O(1) comparison.
+            /// Uses TypeId in normal builds, type_name hash in hot reload builds.
+            #[unsafe(no_mangle)]
+            pub extern "C" fn [<waterui_ignorable_metadata_ $ident _id>]() -> $crate::WuiTypeId {
+                // IgnorableMetadata<T> is stored directly, not wrapped in Native<T>
+                $crate::WuiTypeId::of::<waterui_core::IgnorableMetadata<$ty>>()
+            }
+
+            /// Force-casts an AnyView to this ignorable metadata type
+            ///
+            /// # Safety
+            /// The caller must ensure that `view` is a valid pointer to an `AnyView`
+            /// that contains an `IgnorableMetadata<$ty>`.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_force_as_ignorable_metadata_ $ident>](
+                view: *mut $crate::WuiAnyView
+            ) -> $ffi {
+                unsafe {
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
+                    // IgnorableMetadata<T> is stored directly, not wrapped in Native<T>
+                    let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
+                    $crate::IntoFFI::into_ffi(metadata)
+                }
+            }
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! opaque {
     ($name:ident,$ty:ty,$ident:tt) => {

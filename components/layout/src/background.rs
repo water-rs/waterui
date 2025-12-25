@@ -17,7 +17,7 @@
 
 use core::fmt;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
@@ -118,6 +118,8 @@ pub const fn background<Content, Bg>(
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
+    use waterui_core::layout::Point;
+
     use super::*;
 
     struct MockSubView {

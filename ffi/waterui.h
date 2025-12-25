@@ -91,6 +91,34 @@ typedef enum WuiEvent {
   WuiEvent_HoverExit,
 } WuiEvent;
 
+/**
+ * FFI-safe representation of a material blur style.
+ *
+ * Maps to SwiftUI's Material types on Apple platforms.
+ */
+typedef enum WuiMaterial {
+  /**
+   * Ultra-thin blur, most transparent.
+   */
+  WuiMaterial_UltraThin = 0,
+  /**
+   * Thin blur.
+   */
+  WuiMaterial_Thin = 1,
+  /**
+   * Regular blur (default).
+   */
+  WuiMaterial_Regular = 2,
+  /**
+   * Thick blur.
+   */
+  WuiMaterial_Thick = 3,
+  /**
+   * Ultra-thick blur, most opaque.
+   */
+  WuiMaterial_UltraThick = 4,
+} WuiMaterial;
+
 typedef enum WuiAxis {
   WuiAxis_Horizontal,
   WuiAxis_Vertical,
@@ -520,34 +548,6 @@ typedef enum WuiWindowStyle {
    */
   WuiWindowStyle_FullSizeContentView = 2,
 } WuiWindowStyle;
-
-/**
- * FFI-safe representation of a material blur style.
- *
- * Maps to SwiftUI's Material types on Apple platforms.
- */
-typedef enum WuiMaterial {
-  /**
-   * Ultra-thin blur, most transparent.
-   */
-  WuiMaterial_UltraThin = 0,
-  /**
-   * Thin blur.
-   */
-  WuiMaterial_Thin = 1,
-  /**
-   * Regular blur (default).
-   */
-  WuiMaterial_Regular = 2,
-  /**
-   * Thick blur.
-   */
-  WuiMaterial_Thick = 3,
-  /**
-   * Ultra-thick blur, most opaque.
-   */
-  WuiMaterial_UltraThick = 4,
-} WuiMaterial;
 
 /**
  * Anchor point for transforms, specified as normalized coordinates.
@@ -1869,6 +1869,20 @@ typedef struct WuiMetadata_WuiDropDestination {
 typedef struct WuiMetadata_WuiDropDestination WuiMetadataDropDestination;
 
 /**
+ * FFI-safe representation of IgnorableMetadata<MaterialBackground>
+ */
+typedef struct WuiIgnorableMetadataMaterialBackground {
+  /**
+   * The view content wrapped by this metadata
+   */
+  struct WuiAnyView *content;
+  /**
+   * The material type for the blur effect
+   */
+  enum WuiMaterial material;
+} WuiIgnorableMetadataMaterialBackground;
+
+/**
  * FFI-safe representation of an animation.
  *
  * cbindgen generates a tagged union with:
@@ -3088,6 +3102,9 @@ typedef struct Binding_Rect WuiBinding_Rect;
 
 /**
  * FFI-compatible representation of [`WindowBackground`].
+ *
+ * Only supports Opaque and Color. Material blur effects are handled
+ * via `MaterialBackground` metadata on the window content.
  */
 typedef enum WuiWindowBackground_Tag {
   /**
@@ -3095,33 +3112,20 @@ typedef enum WuiWindowBackground_Tag {
    */
   WuiWindowBackground_Opaque,
   /**
-   * Fully transparent window (no background).
-   */
-  WuiWindowBackground_Transparent,
-  /**
    * Solid color background (can be semi-transparent via alpha).
    * Native must resolve the color using the environment.
    */
   WuiWindowBackground_Color,
-  /**
-   * Material blur effect.
-   */
-  WuiWindowBackground_Material,
 } WuiWindowBackground_Tag;
 
 typedef struct WuiWindowBackground_Color_Body {
   struct WuiColor *color;
 } WuiWindowBackground_Color_Body;
 
-typedef struct WuiWindowBackground_Material_Body {
-  enum WuiMaterial material;
-} WuiWindowBackground_Material_Body;
-
 typedef struct WuiWindowBackground {
   WuiWindowBackground_Tag tag;
   union {
     WuiWindowBackground_Color_Body color;
-    WuiWindowBackground_Material_Body material;
   };
 } WuiWindowBackground;
 
@@ -3817,6 +3821,21 @@ struct WuiTypeId waterui_metadata_drop_destination_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataDropDestination waterui_force_as_metadata_drop_destination(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_ignorable_metadata_material_background_id(void);
+
+/**
+ * Force-casts an AnyView to this ignorable metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadata_material_background(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -5101,55 +5120,6 @@ struct WuiWatcher_CursorStyle *waterui_new_watcher_cursor_style(void *data,
                                                                 void (*drop)(void*));
 
 /**
- * Calls a LifeCycleHook handler with the given environment.
- *
- * # Safety
- *
- * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
- * * `env` must be a valid pointer to a WuiEnv.
- * * This consumes the handler - it can only be called once.
- */
-void waterui_call_lifecycle_hook(struct WuiLifeCycleHookHandler *handler, const struct WuiEnv *env);
-
-/**
- * Drops a LifeCycleHook handler without calling it.
- *
- * # Safety
- *
- * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
- */
-void waterui_drop_lifecycle_hook(struct WuiLifeCycleHookHandler *handler);
-
-/**
- * Calls an OnEvent handler with the given environment.
- * This handler can be called multiple times (repeatable).
- *
- * # Safety
- *
- * * `handler` must be a valid pointer to a WuiOnEventHandler.
- * * `env` must be a valid pointer to a WuiEnv.
- */
-void waterui_call_on_event(struct WuiOnEventHandler *handler, const struct WuiEnv *env);
-
-/**
- * Drops an OnEvent handler.
- *
- * # Safety
- *
- * * `handler` must be a valid pointer to a WuiOnEventHandler.
- */
-void waterui_drop_on_event(struct WuiOnEventHandler *handler);
-
-/**
- * Drops a WuiGesture, recursively freeing any Then variants.
- *
- * # Safety
- *
- * The gesture pointer must be valid and properly initialized.
- */
-void waterui_drop_gesture(struct WuiGesture *gesture);
-
-/**
  * Gets the current drag data value from a draggable.
  *
  * # Safety
@@ -5212,6 +5182,55 @@ void waterui_call_drop_exit_handler(const struct WuiDropDestination *dest,
  * * `dest` must be a valid pointer to a WuiDropDestination.
  */
 void waterui_drop_drop_destination(struct WuiDropDestination *dest);
+
+/**
+ * Calls a LifeCycleHook handler with the given environment.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+ * * `env` must be a valid pointer to a WuiEnv.
+ * * This consumes the handler - it can only be called once.
+ */
+void waterui_call_lifecycle_hook(struct WuiLifeCycleHookHandler *handler, const struct WuiEnv *env);
+
+/**
+ * Drops a LifeCycleHook handler without calling it.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiLifeCycleHookHandler.
+ */
+void waterui_drop_lifecycle_hook(struct WuiLifeCycleHookHandler *handler);
+
+/**
+ * Calls an OnEvent handler with the given environment.
+ * This handler can be called multiple times (repeatable).
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiOnEventHandler.
+ * * `env` must be a valid pointer to a WuiEnv.
+ */
+void waterui_call_on_event(struct WuiOnEventHandler *handler, const struct WuiEnv *env);
+
+/**
+ * Drops an OnEvent handler.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer to a WuiOnEventHandler.
+ */
+void waterui_drop_on_event(struct WuiOnEventHandler *handler);
+
+/**
+ * Drops a WuiGesture, recursively freeing any Then variants.
+ *
+ * # Safety
+ *
+ * The gesture pointer must be valid and properly initialized.
+ */
+void waterui_drop_gesture(struct WuiGesture *gesture);
 
 /**
  * Reads the current value from a binding
@@ -5282,6 +5301,39 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
                                                           struct WuiId,
                                                           struct WuiWatcherMetadata*),
                                              void (*drop)(void*));
+
+/**
+ * Installs a locale into the environment using a predefined locale enum.
+ *
+ * # Safety
+ * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
+ */
+void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
+
+/**
+ * Installs a locale into the environment using a BCP 47 locale string.
+ *
+ * This is more flexible than `waterui_env_install_locale()` as it accepts
+ * any valid BCP 47 locale identifier (e.g., "en-US", "zh-Hans-CN", "ja-JP").
+ *
+ * If the locale string is invalid, falls back to English ("en").
+ *
+ * # Safety
+ * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
+ * - `locale_str` must be a valid null-terminated C string.
+ */
+void waterui_env_install_locale_string(struct WuiEnv *env, const char *locale_str);
+
+/**
+ * Gets the current locale from the environment.
+ *
+ * Returns the locale as a WuiLocale enum. If the locale doesn't match
+ * any predefined enum value, returns `WuiLocale::EnUs` as default.
+ *
+ * # Safety
+ * - `env` must be a valid pointer.
+ */
+enum WuiLocale waterui_env_get_locale(const struct WuiEnv *env);
 
 /**
  * # Safety
@@ -5911,39 +5963,6 @@ struct WuiWatcher_Secure *waterui_new_watcher_secure(void *data,
                                                                   struct WuiStr,
                                                                   struct WuiWatcherMetadata*),
                                                      void (*drop)(void*));
-
-/**
- * Installs a locale into the environment using a predefined locale enum.
- *
- * # Safety
- * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
- */
-void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
-
-/**
- * Installs a locale into the environment using a BCP 47 locale string.
- *
- * This is more flexible than `waterui_env_install_locale()` as it accepts
- * any valid BCP 47 locale identifier (e.g., "en-US", "zh-Hans-CN", "ja-JP").
- *
- * If the locale string is invalid, falls back to English ("en").
- *
- * # Safety
- * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
- * - `locale_str` must be a valid null-terminated C string.
- */
-void waterui_env_install_locale_string(struct WuiEnv *env, const char *locale_str);
-
-/**
- * Gets the current locale from the environment.
- *
- * Returns the locale as a WuiLocale enum. If the locale doesn't match
- * any predefined enum value, returns `WuiLocale::EnUs` as default.
- *
- * # Safety
- * - `env` must be a valid pointer.
- */
-enum WuiLocale waterui_env_get_locale(const struct WuiEnv *env);
 
 /**
  * Reads the current value from a computed
