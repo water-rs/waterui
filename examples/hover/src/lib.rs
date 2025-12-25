@@ -46,14 +46,8 @@ fn hover_events_section(hover_count: Binding<i32>, is_hovered: Binding<bool>) ->
             .on_hover_exit(move || {
                 is_hovered_exit.set(false);
             }),
-        hstack((
-            "Hover events: ",
-            waterui::text!("Count: {hover_count_display}"),
-        )),
-        hstack((
-            "Currently hovered: ",
-            waterui::text!("Status: {is_hovered_display}"),
-        )),
+        hstack(("Hover events: ", text!("Count: {hover_count_display}"))),
+        hstack(("Currently hovered: ", text!("Status: {is_hovered_display}"))),
     ))
     .padding()
 }
@@ -139,7 +133,7 @@ fn reactive_cursor_section(is_dragging: Binding<bool>) -> impl View {
             .on_hover_exit(move || {
                 is_dragging_exit.set(false);
             }),
-        hstack(("State: ", waterui::text!("Dragging: {is_dragging_display}"))),
+        hstack(("State: ", text!("Dragging: {is_dragging_display}"))),
         "(Hover to simulate drag state change)",
     ))
     .padding()
