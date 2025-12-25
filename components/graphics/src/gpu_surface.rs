@@ -49,6 +49,8 @@ pub struct GpuContext<'a> {
     pub queue: &'a wgpu::Queue,
     /// The texture format of the surface.
     pub surface_format: wgpu::TextureFormat,
+    /// Optional pipeline cache for faster pipeline creation.
+    pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
 }
 
 impl core::fmt::Debug for GpuContext<'_> {
