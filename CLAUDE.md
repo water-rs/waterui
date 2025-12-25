@@ -17,6 +17,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 <important>
 - Follow fast fail principle: if an unexpected case is encountered, crash early with a clear error message rather than fallback.
 - Put shader to a separate file rather than embedding as string literal. Same for large text assets.
+- Always render on GPU rather than CPU
+- You are not allowed to revert files or hide problems. If you find a bug, fix it properly rather than working around it.
+- Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For intance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
 </important>
 
 ## Build Commands
