@@ -545,7 +545,21 @@ impl FilledShape {
 impl View for FilledShape {
     fn body(self, env: &Environment) -> impl View {
         let resolved = self.fill.resolve(env).get();
-        GpuSurface::new(LyonShapeRenderer::new(self.kind, self.commands, resolved))
+        // Use SDF renderer for simple shapes (perfect anti-aliasing)
+        // Fall back to Lyon tessellation for custom paths and Ellipse (due to SDF instability)
+        match self.kind {
+            ShapeKind::Rect | ShapeKind::Circle | ShapeKind::RoundedRect { .. } | ShapeKind::Capsule => {
+                GpuSurface::new(SdfShapeRenderer::new(self.kind, resolved))
+            }
+            _ => {
+                // Custom paths and Ellipse use Lyon
+                GpuSurface::new(LyonShapeRenderer::new(
+                    self.kind,
+                    self.commands,
+                    resolved,
+                ))
+            }
+        }
     }
 }
 
@@ -742,7 +756,7 @@ impl GpuRenderer for LyonShapeRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Shape Shader"),
-                source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.clone()),
             });
 
         // Create uniform buffer for color
@@ -786,7 +800,10 @@ impl GpuRenderer for LyonShapeRenderer {
                 push_constant_ranges: &[],
             });
 
-        let pipeline = ctx
+        // Try to Create Pipeline with cache first
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let mut pipeline = ctx
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Shape Pipeline"),
@@ -827,8 +844,61 @@ impl GpuRenderer for LyonShapeRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
+
+        // Check for validation error
+        let error = waterui_graphics::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!("[Shape] Pipeline creation with cache failed: {}", e);
+            // Retry without cache
+            pipeline = ctx
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Shape Pipeline (No Cache)"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<ShapeVertex>() as wgpu::BufferAddress,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x2,
+                            }],
+                        }],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: ctx.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        unclipped_depth: false,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+        } else {
+            tracing::info!("[Shape] Pipeline creation with cache SUCCESS");
+        }
+
 
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
@@ -974,35 +1044,250 @@ impl GpuRenderer for LyonShapeRenderer {
 }
 
 /// WGSL shader for HDR shape rendering
-const SHAPE_SHADER: &str = r"
-struct Uniforms {
-    color: vec4<f32>,
-    size: vec2<f32>,
-    _padding: vec2<f32>,
+static SHAPE_SHADER: waterui_graphics::prewarm::PrewarmedShader = waterui_graphics::include_shader!("shaders/shape.wgsl");
+// ============================================================================
+// SdfShapeRenderer - SDF-based GPU rendering for simple shapes (Anti-aliased)
+// ============================================================================
+
+/// GPU renderer for shapes using Signed Distance Fields (SDF).
+struct SdfShapeRenderer {
+    kind: ShapeKind,
+    fill_color: waterui_graphics::ResolvedColor,
+    pipeline: Option<wgpu::RenderPipeline>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
+    pipeline_format: Option<wgpu::TextureFormat>,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
+impl core::fmt::Debug for SdfShapeRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SdfShapeRenderer")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
 }
 
-@vertex
-fn vs_main(@location(0) position: vec2<f32>) -> VertexOutput {
-    var out: VertexOutput;
-    // Convert from pixel coordinates to clip space (-1 to 1)
-    let x = (position.x / uniforms.size.x) * 2.0 - 1.0;
-    let y = 1.0 - (position.y / uniforms.size.y) * 2.0;
-    out.position = vec4<f32>(x, y, 0.0, 1.0);
-    return out;
+impl SdfShapeRenderer {
+    fn new(kind: ShapeKind, fill_color: waterui_graphics::ResolvedColor) -> Self {
+        Self {
+            kind,
+            fill_color,
+            pipeline: None,
+            uniform_buffer: None,
+            bind_group: None,
+            pipeline_format: None,
+        }
+    }
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Output HDR color directly (values > 1.0 are preserved)
-    return uniforms.color;
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct SdfUniforms {
+    color: [f32; 4],           // 16 bytes, offset 0
+    shape_type: u32,           // 4 bytes, offset 16
+    _pad1: u32,                // 4 bytes, offset 20 (padding for vec2 alignment)
+    dimensions: [f32; 2],      // 8 bytes, offset 24
+    radii: [f32; 4],           // 16 bytes, offset 32
+}                              // Total: 48 bytes
+
+impl GpuRenderer for SdfShapeRenderer {
+    fn setup(&mut self, ctx: &GpuContext) {
+        tracing::info!("[SDF Shape] setup called, format: {:?}, kind: {:?}", ctx.surface_format, self.kind);
+        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF Shape Shader"),
+            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.source.clone()),
+        });
+
+        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SDF Shape Uniforms"),
+            size: core::mem::size_of::<SdfUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("SDF Shape Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SDF Shape Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("SDF Shape Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Try to Create Pipeline with cache first
+        ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        
+        let mut pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("SDF Shape Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: ctx.surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: ctx.pipeline_cache,
+        });
+
+        // Check for validation error
+        let error = waterui_graphics::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!("[SDF Shape] Pipeline creation with cache failed: {}", e);
+            // Retry without cache
+             pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("SDF Shape Pipeline (No Cache)"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        } else {
+             tracing::info!("[SDF Shape] Pipeline creation with cache SUCCESS");
+        }
+
+
+        self.pipeline = Some(pipeline);
+        self.uniform_buffer = Some(uniform_buffer);
+        self.bind_group = Some(bind_group);
+        self.pipeline_format = Some(ctx.surface_format);
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+         if let Some(target_fmt) = self.pipeline_format {
+            if target_fmt != frame.format {
+                tracing::warn!("[SDF Shape] format mismatch: {:?} vs {:?}", target_fmt, frame.format);
+                return;
+            }
+        }
+
+        let Some(pipeline) = &self.pipeline else { 
+            tracing::warn!("[SDF Shape] no pipeline");
+            return; 
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else { 
+            tracing::warn!("[SDF Shape] no uniform buffer");
+            return; 
+        };
+        let Some(bind_group) = &self.bind_group else { 
+            tracing::warn!("[SDF Shape] no bind group");
+            return; 
+        };
+
+        tracing::info!("[SDF Shape] render: size={}x{}, kind={:?}", frame.width, frame.height, self.kind);
+
+        let (shape_type, radii) = match self.kind {
+            ShapeKind::Rect => (0, [0.0; 4]),
+            ShapeKind::Circle => (1, [0.0; 4]),
+            ShapeKind::Ellipse => (2, [0.0; 4]),
+            ShapeKind::RoundedRect { corner_radius } => (3, [corner_radius; 4]),
+            ShapeKind::UnevenRoundedRect { top_left, top_right, bottom_right, bottom_left } => {
+                (3, [top_left, top_right, bottom_right, bottom_left])
+            },
+            ShapeKind::Capsule => (4, [0.0; 4]),
+            _ => (0, [0.0; 4]),
+        };
+
+        // Update uniforms
+        let [r, g, b] = self.fill_color.linear_with_headroom();
+        let uniforms = SdfUniforms {
+            color: [r, g, b, self.fill_color.opacity],
+            shape_type,
+            _pad1: 0,
+            dimensions: [frame.width as f32, frame.height as f32],
+            radii,
+        };
+        frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("SDF Shape Encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SDF Shape Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        frame.queue.submit(core::iter::once(encoder.finish()));
+    }
 }
-";
+
+// WGSL Shader for SDF
+static SDF_SHADER: waterui_graphics::prewarm::PrewarmedShader = waterui_graphics::include_shader!("shaders/sdf.wgsl");
 
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes
@@ -1010,6 +1295,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Extension trait for filling shapes with color.
 pub trait ShapeExt: Shape + Sized {
+
     /// Returns the shape kind for GPU rendering optimization.
     fn shape_kind(&self) -> ShapeKind {
         ShapeKind::CustomPath

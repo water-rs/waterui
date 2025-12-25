@@ -678,32 +678,197 @@ impl View for Color {
     }
 }
 
+static SOLID_COLOR_SHADER: crate::prewarm::PrewarmedShader = crate::include_shader!("../shaders/solid_color.wgsl");
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, crate::bytemuck::Pod, crate::bytemuck::Zeroable)]
+struct SolidColorUniforms {
+    color: [f32; 4],
+}
+
 struct SolidColorRenderer {
-    inner: crate::gradient_renderer::GradientRenderer,
+    color: ResolvedColor,
+    pipeline: Option<crate::wgpu::RenderPipeline>,
+    uniform_buffer: Option<crate::wgpu::Buffer>,
+    bind_group: Option<crate::wgpu::BindGroup>,
+    pipeline_format: Option<crate::wgpu::TextureFormat>,
 }
 
 impl SolidColorRenderer {
     fn new(color: ResolvedColor) -> Self {
-        use crate::gradient_renderer::{GradientConfig, GradientRenderer};
-        // Create a linear gradient with the same color at both ends
-        let config = GradientConfig::linear(
-            alloc::vec![(0.0, color), (1.0, color)],
-            [0.0, 0.0],
-            [0.0, 1.0],
-        );
         Self {
-            inner: GradientRenderer::new(config),
+            color,
+            pipeline: None,
+            uniform_buffer: None,
+            bind_group: None,
+            pipeline_format: None,
         }
     }
 }
 
 impl crate::GpuRenderer for SolidColorRenderer {
     fn setup(&mut self, ctx: &crate::GpuContext) {
-        self.inner.setup(ctx);
+        let device = &ctx.device;
+        let shader = device.create_shader_module(crate::wgpu::ShaderModuleDescriptor {
+            label: Some("Solid Color Shader"),
+            source: crate::wgpu::ShaderSource::Wgsl(SOLID_COLOR_SHADER.source.clone()),
+        });
+
+        let uniform_buffer = device.create_buffer(&crate::wgpu::BufferDescriptor {
+            label: Some("Solid Color Uniforms"),
+            size: core::mem::size_of::<SolidColorUniforms>() as u64,
+            usage: crate::wgpu::BufferUsages::UNIFORM | crate::wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
+            label: Some("Solid Color Bind Group Layout"),
+            entries: &[crate::wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: crate::wgpu::ShaderStages::FRAGMENT,
+                ty: crate::wgpu::BindingType::Buffer {
+                    ty: crate::wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&crate::wgpu::BindGroupDescriptor {
+            label: Some("Solid Color Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[crate::wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
+            label: Some("Solid Color Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Try with cache first
+        device.push_error_scope(crate::wgpu::ErrorFilter::Validation);
+
+        let mut pipeline = device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
+            label: Some("Solid Color Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: crate::wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(crate::wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(crate::wgpu::ColorTargetState {
+                    format: ctx.surface_format,
+                    blend: Some(crate::wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: crate::wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: crate::wgpu::PrimitiveState {
+                topology: crate::wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: crate::wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: ctx.pipeline_cache,
+        });
+
+        // Check for validation error
+        let error = crate::pollster::block_on(device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!("[Solid Color] Pipeline creation with cache failed: {}", e);
+            // Retry without cache
+            pipeline = device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
+                label: Some("Solid Color Pipeline (No Cache)"),
+                layout: Some(&pipeline_layout),
+                vertex: crate::wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(crate::wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(crate::wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(crate::wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: crate::wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: crate::wgpu::PrimitiveState {
+                    topology: crate::wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: crate::wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        }
+
+
+        self.pipeline = Some(pipeline);
+        self.uniform_buffer = Some(uniform_buffer);
+        self.bind_group = Some(bind_group);
+        self.pipeline_format = Some(ctx.surface_format);
     }
 
     fn render(&mut self, frame: &crate::GpuFrame) {
-        self.inner.render(frame);
+         if let Some(target_fmt) = self.pipeline_format {
+            if target_fmt != frame.format {
+                return;
+            }
+        }
+
+        let Some(pipeline) = &self.pipeline else { return };
+        let Some(uniform_buffer) = &self.uniform_buffer else { return };
+        let Some(bind_group) = &self.bind_group else { return };
+
+        // Update uniforms
+        let [r, g, b] = self.color.linear_with_headroom();
+        let uniforms = SolidColorUniforms {
+            color: [r, g, b, self.color.opacity],
+        };
+        frame.queue.write_buffer(uniform_buffer, 0, crate::bytemuck::bytes_of(&uniforms));
+
+        let mut encoder = frame.device.create_command_encoder(&crate::wgpu::CommandEncoderDescriptor {
+            label: Some("Solid Color Encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&crate::wgpu::RenderPassDescriptor {
+                label: Some("Solid Color Render Pass"),
+                color_attachments: &[Some(crate::wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: crate::wgpu::Operations {
+                        load: crate::wgpu::LoadOp::Clear(crate::wgpu::Color::TRANSPARENT),
+                        store: crate::wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        frame.queue.submit(core::iter::once(encoder.finish()));
     }
 }
 
