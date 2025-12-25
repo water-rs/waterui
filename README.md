@@ -111,7 +111,7 @@ fn counter() -> impl View {
     let count = Binding::int(0);
 
     vstack((
-        waterui::text!("Count: {}", count),
+        text!("Count: {}", count),
         button("Increment")
             .action({
                 let count = count.clone();
@@ -180,8 +180,8 @@ fn settings_view() -> impl View {
         text("Settings").size(24.0),
         form(&settings),
         Divider,
-        waterui::text!("Dark mode: {}", settings.project().dark_mode),
-        waterui::text!("Volume: {:.0}%", settings.project().volume.map(|v| v * 100.0)),
+        text!("Dark mode: {}", settings.project().dark_mode),
+        text!("Volume: {:.0}%", settings.project().volume.map(|v| v * 100.0)),
     ))
     .padding()
 }
@@ -198,7 +198,7 @@ fn gestures() -> impl View {
     let tap_count = Binding::int(0);
 
     vstack((
-        waterui::text!("Taps: {}", tap_count),
+        text!("Taps: {}", tap_count),
         text("Tap Me")
             .padding()
             .background(Color::srgb_hex("#2196F3").with_opacity(0.3))

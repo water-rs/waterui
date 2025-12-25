@@ -109,3 +109,16 @@ pub unsafe extern "C" fn waterui_renderer_view_render_cpu(
     callback(RendererSurface::Cpu(surface));
     true
 }
+
+/// Manually triggers saving of the GPU pipeline cache to disk.
+///
+/// This should be called by the host application during shutdown or backgrounding
+/// to ensure that compiled shaders are persisted for the next run.
+///
+/// # Safety
+/// This function is safe to call from any thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn waterui_save_gpu_cache() {
+    #[cfg(feature = "gpu")]
+    waterui_graphics::shared_context::save_pipeline_cache();
+}

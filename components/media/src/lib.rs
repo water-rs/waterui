@@ -78,10 +78,14 @@ pub mod media_picker;
 /// for video playback with reactive controls.
 pub mod video;
 pub use {
+    image::Image,
     live::LivePhoto,
     photo::Photo,
     video::{AspectRatio, Video, VideoConfig, VideoPlayer, VideoPlayerConfig},
 };
+
+/// Re-export filtrate's Filter enum for GPU-accelerated image filters.
+pub use filtrate::Filter;
 
 /// URL types for working with media resources
 pub mod url;

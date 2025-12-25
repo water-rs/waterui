@@ -206,14 +206,6 @@ typedef enum WuiTabPosition {
   WuiTabPosition_Bottom = 1,
 } WuiTabPosition;
 
-/**
- * FFI representation of photo events.
- */
-typedef enum WuiPhotoEventType {
-  WuiPhotoEventType_Loaded = 0,
-  WuiPhotoEventType_Error = 1,
-} WuiPhotoEventType;
-
 typedef enum WuiAspectRatio {
   WuiAspectRatio_Fit = 0,
   WuiAspectRatio_Fill = 1,
@@ -921,9 +913,8 @@ typedef struct WuiFont WuiFont;
 /**
  * Opaque state held by the native backend after initialization.
  *
- * This struct owns all wgpu resources and the user's renderer.
- * It is created by `waterui_gpu_surface_init` and destroyed by
- * `waterui_gpu_surface_drop`.
+ * Uses shared device/queue from `SharedGpuContext` for efficiency.
+ * Only the Surface is created per-view.
  */
 typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
 
@@ -2463,31 +2454,6 @@ typedef struct WuiNavigationController {
   void (*drop)(void*);
 } WuiNavigationController;
 
-/**
- * FFI representation of a photo event.
- */
-typedef struct WuiPhotoEvent {
-  enum WuiPhotoEventType event_type;
-  struct WuiStr error_message;
-} WuiPhotoEvent;
-
-/**
- * A C-compatible function wrapper that can be called multiple times.
- *
- * This structure wraps a Rust `Fn` closure to allow it to be passed across
- * the FFI boundary while maintaining proper memory management.
- */
-typedef struct WuiFn_WuiPhotoEvent {
-  void *data;
-  void (*call)(const void*, struct WuiPhotoEvent);
-  void (*drop)(void*);
-} WuiFn_WuiPhotoEvent;
-
-typedef struct WuiPhoto {
-  struct WuiStr source;
-  struct WuiFn_WuiPhotoEvent on_event;
-} WuiPhoto;
-
 typedef struct Computed_Str WuiComputed_Str;
 
 typedef struct Binding_Volume WuiBinding_Volume;
@@ -3750,6 +3716,7 @@ struct WuiArray_WuiMenuItem waterui_read_computed_menu_items(const WuiComputed_M
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_menu_items(const WuiComputed_MenuItems *computed,
                                                           struct WuiWatcher_MenuItems *watcher);
@@ -3915,6 +3882,7 @@ struct WuiResolvedColor waterui_read_computed_resolved_color(const WuiComputed_R
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const WuiComputed_ResolvedColor *computed,
                                                               struct WuiWatcher_ResolvedColor *watcher);
@@ -3973,7 +3941,7 @@ void waterui_set_binding_color(WuiBinding_Color *binding, struct WuiColor *value
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_color(const WuiBinding_Color *binding,
                                                     struct WuiWatcher_Color *watcher);
@@ -3996,6 +3964,7 @@ struct WuiColor *waterui_read_computed_color(const WuiComputed_Color *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_color(const WuiComputed_Color *computed,
                                                      struct WuiWatcher_Color *watcher);
@@ -4194,6 +4163,7 @@ struct WuiStyledStr waterui_read_computed_styled_str(const WuiComputed_StyledStr
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_styled_str(const WuiComputed_StyledStr *computed,
                                                           struct WuiWatcher_StyledStr *watcher);
@@ -4241,7 +4211,7 @@ void waterui_set_binding_font(WuiBinding_Font *binding, struct WuiFont *value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_font(const WuiBinding_Font *binding,
                                                    struct WuiWatcher_Font *watcher);
@@ -4264,6 +4234,7 @@ struct WuiFont *waterui_read_computed_font(const WuiComputed_Font *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_font(const WuiComputed_Font *computed,
                                                     struct WuiWatcher_Font *watcher);
@@ -4317,6 +4288,7 @@ struct WuiResolvedFont waterui_read_computed_resolved_font(const WuiComputed_Res
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_resolved_font(const WuiComputed_ResolvedFont *computed,
                                                              struct WuiWatcher_ResolvedFont *watcher);
@@ -4604,19 +4576,6 @@ void waterui_navigation_pop(const struct WuiEnv *env);
  * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
  * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
  */
-struct WuiPhoto waterui_force_as_photo(struct WuiAnyView *view);
-
-/**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Uses TypeId in normal builds, type_name hash in hot reload builds.
- */
-struct WuiTypeId waterui_photo_id(void);
-
-/**
- * # Safety
- * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
- * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
- */
 struct WuiVideo waterui_force_as_video(struct WuiAnyView *view);
 
 /**
@@ -4662,6 +4621,7 @@ struct WuiComputedVideo waterui_read_computed_video(const WuiComputed_Video *com
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_video(const WuiComputed_Video *computed,
                                                      struct WuiWatcher_Video *watcher);
@@ -4727,6 +4687,12 @@ struct WuiDynamic *waterui_force_as_dynamic(struct WuiAnyView *view);
  */
 struct WuiTypeId waterui_dynamic_id(void);
 
+/**
+ * Connects a watcher to a dynamic view.
+ * # Safety
+ * - The dynamic pointer must be valid.
+ * - The watcher pointer will be consumed and freed when the Dynamic is dropped.
+ */
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyView *watcher);
 
 /**
@@ -4766,6 +4732,7 @@ struct WuiArray_WuiTableColumn waterui_read_computed_table_cols(const WuiCompute
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_table_cols(const WuiComputed_Vec_TableColumn *computed,
                                                           struct WuiWatcher_Vec_TableColumn *watcher);
@@ -5010,6 +4977,7 @@ struct WuiRegion waterui_read_computed_region(const WuiComputed_Region *computed
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_region(const WuiComputed_Region *computed,
                                                       struct WuiWatcher_Region *watcher);
@@ -5050,6 +5018,7 @@ struct WuiArray_WuiAnnotation waterui_read_computed_annotations(const WuiCompute
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_annotations(const WuiComputed_Vec_Annotation *computed,
                                                            struct WuiWatcher_Vec_Annotation *watcher);
@@ -5090,6 +5059,7 @@ enum WuiCursorStyle waterui_read_computed_cursor_style(const WuiComputed_CursorS
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_cursor_style(const WuiComputed_CursorStyle *computed,
                                                             struct WuiWatcher_CursorStyle *watcher);
@@ -5250,7 +5220,7 @@ void waterui_set_binding_id(WuiBinding_Id *binding, struct WuiId value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_id(const WuiBinding_Id *binding,
                                                  struct WuiWatcher_Id *watcher);
@@ -5273,6 +5243,7 @@ struct WuiId waterui_read_computed_id(const WuiComputed_Id *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_id(const WuiComputed_Id *computed,
                                                   struct WuiWatcher_Id *watcher);
@@ -5365,7 +5336,7 @@ void waterui_set_binding_str(WuiBinding_Str *binding, struct WuiStr value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_str(const WuiBinding_Str *binding,
                                                   struct WuiWatcher_Str *watcher);
@@ -5388,6 +5359,7 @@ struct WuiStr waterui_read_computed_str(const WuiComputed_Str *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_str(const WuiComputed_Str *computed,
                                                    struct WuiWatcher_Str *watcher);
@@ -5435,7 +5407,7 @@ void waterui_set_binding_any_view(WuiBinding_AnyView *binding, struct WuiAnyView
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_any_view(const WuiBinding_AnyView *binding,
                                                        struct WuiWatcher_AnyView *watcher);
@@ -5458,6 +5430,7 @@ struct WuiAnyView *waterui_read_computed_any_view(const WuiComputed_AnyView *com
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_any_view(const WuiComputed_AnyView *computed,
                                                         struct WuiWatcher_AnyView *watcher);
@@ -5505,7 +5478,7 @@ void waterui_set_binding_i32(WuiBinding_i32 *binding, int32_t value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_i32(const WuiBinding_i32 *binding,
                                                   struct WuiWatcher_i32 *watcher);
@@ -5528,6 +5501,7 @@ int32_t waterui_read_computed_i32(const WuiComputed_i32 *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_i32(const WuiComputed_i32 *computed,
                                                    struct WuiWatcher_i32 *watcher);
@@ -5575,7 +5549,7 @@ void waterui_set_binding_bool(WuiBinding_bool *binding, bool value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_bool(const WuiBinding_bool *binding,
                                                    struct WuiWatcher_bool *watcher);
@@ -5598,6 +5572,7 @@ bool waterui_read_computed_bool(const WuiComputed_bool *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_bool(const WuiComputed_bool *computed,
                                                     struct WuiWatcher_bool *watcher);
@@ -5645,7 +5620,7 @@ void waterui_set_binding_f32(WuiBinding_f32 *binding, float value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_f32(const WuiBinding_f32 *binding,
                                                   struct WuiWatcher_f32 *watcher);
@@ -5668,6 +5643,7 @@ float waterui_read_computed_f32(const WuiComputed_f32 *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_f32(const WuiComputed_f32 *computed,
                                                    struct WuiWatcher_f32 *watcher);
@@ -5713,7 +5689,7 @@ void waterui_set_binding_f64(WuiBinding_f64 *binding, double value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_f64(const WuiBinding_f64 *binding,
                                                   struct WuiWatcher_f64 *watcher);
@@ -5736,6 +5712,7 @@ double waterui_read_computed_f64(const WuiComputed_f64 *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_f64(const WuiComputed_f64 *computed,
                                                    struct WuiWatcher_f64 *watcher);
@@ -5783,7 +5760,7 @@ void waterui_set_binding_date(WuiBinding_Date *binding, struct WuiDate value);
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_date(const WuiBinding_Date *binding,
                                                    struct WuiWatcher_Date *watcher);
@@ -5806,6 +5783,7 @@ struct WuiDate waterui_read_computed_date(const WuiComputed_Date *computed);
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_date(const WuiComputed_Date *computed,
                                                     struct WuiWatcher_Date *watcher);
@@ -5846,6 +5824,7 @@ struct WuiArray_WuiPickerItem waterui_read_computed_picker_items(const WuiComput
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_picker_items(const WuiComputed_Vec_PickerItem_Id *computed,
                                                             struct WuiWatcher_Vec_PickerItem_Id *watcher);
@@ -5886,6 +5865,7 @@ struct WuiLivePhotoSource waterui_read_computed_live_photo_source(const WuiCompu
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_live_photo_source(const WuiComputed_LivePhotoSource *computed,
                                                                  struct WuiWatcher_LivePhotoSource *watcher);
@@ -5941,7 +5921,7 @@ void waterui_set_binding_secure(WuiBinding_Secure *binding, struct WuiStr value)
  * Watches for changes in a Secure binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_secure(const WuiBinding_Secure *binding,
                                                      struct WuiWatcher_Secure *watcher);
@@ -5975,6 +5955,7 @@ enum WuiColorScheme waterui_read_computed_color_scheme(const WuiComputed_ColorSc
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_color_scheme(const WuiComputed_ColorScheme *computed,
                                                             struct WuiWatcher_ColorScheme *watcher);
@@ -6309,6 +6290,7 @@ struct WuiAnyViews *waterui_read_computed_views(const WuiComputed_AnyViews_AnyVi
  * Watches for changes in a computed
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_computed_views(const WuiComputed_AnyViews_AnyView *computed,
                                                      struct WuiWatcher_AnyViews_AnyView *watcher);
@@ -6356,7 +6338,7 @@ void waterui_set_binding_window_state(WuiBinding_WindowState *binding, enum WuiW
  * Watches for changes in a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
- * The watcher must be a valid callback function.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
 struct WuiWatcherGuard *waterui_watch_binding_window_state(const WuiBinding_WindowState *binding,
                                                            struct WuiWatcher_WindowState *watcher);
