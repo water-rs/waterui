@@ -68,7 +68,7 @@
 #![no_std]
 
 #[cfg(feature = "svg")]
-pub use waterui_graphics::Svg;
+pub use waterui_svg::Svg;
 
 #[cfg(feature = "webfont")]
 pub use waterui_icon::IconGlyph;
