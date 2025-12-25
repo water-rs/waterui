@@ -141,6 +141,7 @@ waterui-macros.workspace = true
 libloading = "0.9"
 uuid = { version = "1.18.1", features = ["v4"] }
 waterui-graphics.workspace = true
+waterui-shape.workspace = true
 waterui-svg.workspace = true
 async-fs = "2.2.0"
 robius-open.workspace = true
