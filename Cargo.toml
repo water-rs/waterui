@@ -96,6 +96,7 @@ waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
 waterkit-location = { git = "https://github.com/water-rs/kit", package = "waterkit-location" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
+filtrate = { version = "0.1.0", path = "utils/filtrate" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }

@@ -16,12 +16,22 @@ pub mod shader_surface;
 /// GPU-accelerated gradient rendering.
 pub mod gradient_renderer;
 
+/// Shared GPU context for efficient multi-view rendering.
+pub mod shared_context;
+
+/// Shader pre-warming functionality.
+pub mod prewarm;
+
 // Re-export key types for user convenience.
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 pub use shader_surface::ShaderSurface;
 
 pub use gradient_renderer::{Gradient, GradientConfig, GradientRenderer, GradientType, MeshGradient};
+
+// Re-export dependencies used by macros
+pub use inventory;
+pub use rayon;
 
 // Re-export wgpu and bytemuck for users to access GPU types directly.
 pub use wgpu;

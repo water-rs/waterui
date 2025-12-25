@@ -148,6 +148,13 @@ pub unsafe fn __init() {
             .init();
     }
 
+    // Initialize shared GPU context (if GPU feature enabled)
+    #[cfg(feature = "gpu")]
+    {
+        waterui_graphics::shared_context::init_shared_context().ok();
+        waterui_graphics::prewarm::prewarm_all_shaders();
+    }
+
     init_global_executor(native_executor::NativeExecutor::new());
     init_local_executor(native_executor::NativeExecutor::new());
 }
@@ -1094,6 +1101,8 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
         }
     }
 }
+
+
 
 // ========== Metadata<ClipShape> FFI ==========
 // Used to clip views to shapes

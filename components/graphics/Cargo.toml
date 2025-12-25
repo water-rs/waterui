@@ -22,6 +22,11 @@ wgpu.workspace = true
 bytemuck = "1.14"
 tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+parking_lot = "0.12"
+pollster = "0.4"
+inventory = "0.3"
+dirs = "5.0"
+rayon = "1.8"
 
 [lints]
 workspace = true
