@@ -38,3 +38,5 @@ pub use wgpu;
 
 /// Re-export bytemuck for safe byte conversions in GPU programming.
 pub use bytemuck;
+
+pub use pollster;
