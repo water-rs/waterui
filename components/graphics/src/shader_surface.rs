@@ -120,9 +120,10 @@ impl waterui_core::View for ShaderSurface {
 /// ```
 #[macro_export]
 macro_rules! shader {
-    ($path:literal) => {
-        $crate::shader_surface::ShaderSurface::new(include_str!($path))
-    };
+    ($path:literal) => {{
+        static SHADER: $crate::prewarm::PrewarmedShader = $crate::include_fragment_shader!($path);
+        $crate::shader_surface::ShaderSurface::new(SHADER.source)
+    }};
 }
 
 /// Internal renderer that handles all the wgpu boilerplate.
@@ -150,7 +151,16 @@ impl ShaderRenderer {
 
     fn build_full_shader(&self) -> String {
         // Prepend the uniform struct and vertex shader to user's fragment shader
-        let prelude = r"
+        let mut full = String::with_capacity(PRELUDE.len() + self.fragment_source.len());
+        full.push_str(PRELUDE);
+        full.push_str(&self.fragment_source);
+        full
+    }
+}
+
+/// Standard prelude for ShaderSurface shaders.
+/// Includes Uniforms, VertexOutput, and default vertex shader.
+pub const PRELUDE: &str = r"
 // === ShaderSurface Prelude (auto-generated) ===
 
 struct Uniforms {
@@ -190,12 +200,6 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // === User Fragment Shader ===
 
 ";
-        let mut full = String::with_capacity(prelude.len() + self.fragment_source.len());
-        full.push_str(prelude);
-        full.push_str(&self.fragment_source);
-        full
-    }
-}
 
 impl GpuRenderer for ShaderRenderer {
     fn setup(&mut self, ctx: &GpuContext) {
@@ -288,7 +292,7 @@ impl GpuRenderer for ShaderRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
 
         self.pipeline = Some(pipeline);
