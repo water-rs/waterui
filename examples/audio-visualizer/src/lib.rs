@@ -390,42 +390,37 @@ fn init_audio() -> AudioState {
     let state = AudioState::new();
     let state_clone = state.clone();
 
-    // Spawn microphone capture task
-    waterui::task::spawn_local(async move {
-        // Build and start recorder
+    // Spawn microphone capture thread (dedicated thread for robustness)
+    std::thread::spawn(move || {
+        // recorder disabled for debugging
+        /*
         let mut recorder = match AudioRecorderBuilder::new().build() {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Failed to create AudioRecorder: {:?}", e);
+                waterui::log::error!("Failed to create AudioRecorder: {:?}", e);
                 return;
             }
         };
-
-        if let Err(e) = recorder.start().await {
-            eprintln!("Failed to start recording: {:?}", e);
+        // Use pollster to run async start in this thread
+        if let Err(e) = pollster::block_on(recorder.start()) {
+            waterui::log::error!("Failed to start recording: {:?}", e);
             return;
         }
+        */
+        
+        waterui::log::info!("Fake Audio Loop Running (Blue Sine Wave)");
 
-        let mut write_pos: usize = 0;
-
+        let mut t = 0.0f32;
         loop {
-            match recorder.read().await {
-                Ok(buffer) => {
-                    let samples = buffer.samples();
-                    // Lock-free write if possible, or use Mutex
-                    if let Ok(mut lock) = state_clone.samples.try_lock() {
-                        for &s in samples {
-                            lock[write_pos] = s;
-                            write_pos = (write_pos + 1) % SAMPLES_COUNT;
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Audio read error: {:?}", e);
-                    // Minimal delay on error to avoid hot loop
-                    waterui::task::sleep(Duration::from_millis(100)).await;
+            // DEBUG: Generate fake sine wave
+            t += 0.05;
+            if let Ok(mut lock) = state_clone.samples.lock() {
+                for i in 0..SAMPLES_COUNT {
+                    let val = (t * 5.0 + (i as f32) * 0.1).sin() * 0.5;
+                    lock[i] = val;
                 }
             }
+            std::thread::sleep(Duration::from_millis(16));
         }
     });
     let sys = AudioSystem {
