@@ -120,6 +120,7 @@ impl Backend for AndroidBackend {
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: Some(backend_relative_path),
             android_permissions,
+            ios_permissions: Vec::new(),
         };
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)

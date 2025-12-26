@@ -143,6 +143,12 @@ impl Backend for AppleBackend {
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_project_path: Some(backend_relative_path),
             android_permissions: Vec::new(),
+            ios_permissions: manifest
+                .permissions
+                .iter()
+                .filter(|(_, entry)| entry.is_enabled())
+                .map(|(name, entry)| (name.clone(), entry.description().to_string()))
+                .collect(),
         };
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
