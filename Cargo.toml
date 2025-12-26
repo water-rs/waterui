@@ -100,6 +100,7 @@ waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
 waterui-barcode = { version = "0.1.0", path = "components/barcode" }
+waterui-particle = { version = "0.1.0", path = "components/particle" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
@@ -147,6 +148,7 @@ uuid = { version = "1.18.1", features = ["v4"] }
 waterui-graphics.workspace = true
 waterui-shape.workspace = true
 waterui-svg.workspace = true
+
 async-fs = "2.2.0"
 robius-open.workspace = true
 

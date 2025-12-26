@@ -754,7 +754,7 @@ impl GpuRenderer for LyonShapeRenderer {
         // Create shader directly (no more shared context cache - compile on-demand)
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(SHAPE_SHADER.label),
-            source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.clone().into()),
+            source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.into()),
         });
 
         // Create uniform buffer for color

@@ -1,42 +1,58 @@
-//! Core traits for GPU filter pipelines.
+//! Core traits for GPU filter pipelines with automatic shader fusion.
 //!
 //! `filtrate-core` provides the foundational abstractions for building
-//! lazy, zero-copy, fuseable GPU pipelines using wgpu.
+//! lazy, zero-copy, fuseable GPU filter pipelines using wgpu.
 //!
-//! # Key Types
+//! # Key Features
 //!
-//! - [`RenderContext`]: Shared context for recording commands without submission.
-//! - [`Source`]: Trait for lazy texture sources that encode generation commands.
-//! - [`Filter`]: Trait for filters that encode processing commands.
-//! - [`Pipeline`]: Builder for chaining sources and filters with lazy execution.
+//! - **Pure Data Filters**: Filters hold no GPU state - they're just recipes
+//! - **Automatic Fusion**: Consecutive color-only filters fuse into single GPU pass
+//! - **Zero-Allocation Params**: Nested tuples avoid heap allocation for parameters
+//! - **Animation Support**: Uses nami's `Signal` trait for reactive filter parameters
 //!
 //! # Example
 //!
 //! ```ignore
-//! use filtrate_core::Pipeline;
-//! use filtrate_barcode::Barcode;
-//! use filtrate::{Blur, Saturation};
+//! use filtrate_core::{Filter, FilterExt};
+//! use filtrate_core::filters::{Grayscale, Invert, Blur, Brightness};
 //!
-//! // Chaining builds a lazy Pipeline - nothing executes yet
-//! let pipeline = Barcode::new("https://waterui.dev")
-//!     .blur(5.0)
-//!     .saturate(1.5);
+//! // Create a filter chain - type encodes fusion potential
+//! let chain = Grayscale(1.0)
+//!     .then(Invert)           // Fuses with Grayscale (both color-only)
+//!     .then(Blur(5.0))        // Separate pass (spatial filter)
+//!     .then(Brightness(0.2)); // After spatial, starts new potential fusion group
 //!
-//! // render() triggers fused execution (single queue.submit)
-//! pipeline.render(device, queue, &output);
+//! // Type: Chain<Chain<Chain<Grayscale, Invert>, Blur>, Brightness>
+//! // The pipeline compiler analyzes this to create optimal GPU passes
+//! ```
+//!
+//! # Shader Fusion
+//!
+//! Filters with `COLOR_ONLY = true` (per-pixel operations) can be combined
+//! into a single GPU pass. The [`Chain`] type preserves this information:
+//!
+//! ```ignore
+//! // These all fuse: Grayscale → Invert → Brightness → Contrast
+//! type AllColorOnly = Chain<Chain<Chain<Grayscale, Invert>, Brightness>, Contrast>;
+//! assert!(AllColorOnly::COLOR_ONLY); // true - can be one pass
+//!
+//! // Blur breaks fusion: everything after needs separate handling
+//! type WithBlur = Chain<AllColorOnly, Blur>;
+//! assert!(!WithBlur::COLOR_ONLY); // false - needs multiple passes
 //! ```
 
 #![allow(clippy::multiple_crate_versions)]
 
-mod context;
 mod filter;
-mod pipeline;
-mod source;
+mod fragments;
+mod params;
 
-pub use context::RenderContext;
-pub use filter::Filter;
-pub use pipeline::{Pipeline, SourceExt};
-pub use source::Source;
+pub mod filters;
 
-// Re-export wgpu for convenience
+pub use filter::{Chain, Filter, FilterExt};
+pub use fragments::FragmentList;
+pub use params::ParamArray;
+
+// Re-export dependencies for convenience
+pub use nami;
 pub use wgpu;
