@@ -367,6 +367,7 @@ impl Project {
             waterui_path: options.waterui_path.clone(),
             backend_project_path: None, // Root files don't need this
             android_permissions: Vec::new(),
+            ios_permissions: Vec::new(),
         };
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
@@ -650,6 +651,12 @@ impl PermissionEntry {
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enable
+    }
+
+    /// Get the description of why this permission is needed.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
     }
 }
 
