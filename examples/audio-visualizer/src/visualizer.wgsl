@@ -1,5 +1,6 @@
 // Audio Visualizer Shader - Practical/Functional Design
 // Supports 4 modes: Waveform, Spectrum, Spectrogram, Phase
+// Supports dynamic theming via uniforms
 
 const SAMPLES_COUNT: u32 = 1024u;
 const FREQ_BINS: u32 = 512u;
@@ -8,7 +9,22 @@ const PI: f32 = 3.14159265359;
 struct Uniforms {
     resolution: vec2<f32>,
     time: f32,
-    mode: u32,  // 0=Waveform, 1=Spectrum, 2=Spectrogram, 3=Phase
+    mode: u32,
+    // Theme Bundle
+    bg_color: vec3<f32>,
+    _pad0: f32,
+    primary_color: vec3<f32>,
+    _pad1: f32,
+    secondary_color: vec3<f32>,
+    _pad2: f32,
+    grid_color: vec3<f32>,
+    _pad3: f32,
+    line_width: f32,
+    grid_opacity: f32,
+    fill_opacity: f32,
+    mirror_y: f32,
+    render_style: f32,
+    sensitivity: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -68,8 +84,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let mode = uniforms.mode;
 
-    // Background
-    let bg = vec3<f32>(0.08, 0.08, 0.1);
+    // Background from theme
+    let bg = uniforms.bg_color;
     var color = bg;
 
     if (mode == 0u) {
@@ -94,24 +110,60 @@ fn draw_waveform(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     let x_idx = u32(uv.x * f32(SAMPLES_COUNT - 1u));
     let sample = audio_samples[x_idx];
     
-    // Map sample [-1, 1] to screen [0.1, 0.9]
-    let y_pos = 0.5 + sample * 0.4;
-    let dist = abs(uv.y - y_pos);
-    
-    // Grid lines
     var color = bg;
+    let grid_color = uniforms.grid_color;
+    let grid_alpha = uniforms.grid_opacity;
+    let is_bar = uniforms.render_style > 0.5;
+    let is_mirrored = uniforms.mirror_y > 0.5;
+
+    // Grid lines
     if (abs(uv.y - 0.5) < 0.002) {
-        color = vec3<f32>(0.2, 0.2, 0.25); // Center line
+        color = mix(color, grid_color, grid_alpha); 
     }
-    if (abs(uv.y - 0.25) < 0.001 || abs(uv.y - 0.75) < 0.001) {
-        color = vec3<f32>(0.15, 0.15, 0.18); // ±50% lines
+    if (!is_mirrored) {
+        if (abs(uv.y - 0.25) < 0.001 || abs(uv.y - 0.75) < 0.001) {
+            color = mix(color, grid_color, grid_alpha * 0.7); 
+        }
     }
-    
-    // Waveform line
-    let line_width = 2.5 / uniforms.resolution.y;
-    if (dist < line_width) {
-        let intensity = 1.0 - dist / line_width;
-        color = mix(color, vec3<f32>(0.2, 0.8, 0.4), intensity);
+
+    if (is_bar) {
+        // Bar Style (Voice Memo)
+        let center_y = 0.5;
+        let scale = 0.4 * uniforms.sensitivity;
+        var height = abs(sample) * scale;
+        
+        // Ensure minimal height for silence
+        height = max(height, 0.002);
+
+        var in_bar = false;
+        if (is_mirrored) {
+            // Symmetric around center
+            in_bar = abs(uv.y - center_y) < height;
+        } else {
+            // Up from center (unidirectional) or just raw waveform as bar?
+            // "Bar" usually implies zero-baseline.
+            if (sample >= 0.0) {
+                in_bar = uv.y >= center_y && uv.y <= center_y + height;
+            } else {
+                in_bar = uv.y <= center_y && uv.y >= center_y - height;
+            }
+        }
+        
+        if (in_bar) {
+             color = mix(bg, uniforms.primary_color, uniforms.fill_opacity);
+        }
+
+    } else {
+        // Line Style (Oscilloscope)
+        // Map sample [-1, 1] to screen [0.1, 0.9] with sensitivity
+        let y_pos = 0.5 + sample * 0.4 * uniforms.sensitivity;
+        let dist = abs(uv.y - y_pos);
+        
+        let line_width = uniforms.line_width / uniforms.resolution.y;
+        if (dist < line_width) {
+            let intensity = 1.0 - dist / line_width;
+            color = mix(color, uniforms.primary_color, intensity * uniforms.fill_opacity);
+        }
     }
     
     return color;
@@ -138,14 +190,17 @@ fn draw_spectrum(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     let bar_end_x = bar_x + bar_width;
     
     if (uv.x > bar_x && uv.x < bar_end_x && uv.y < height) {
-        // Color gradient: green -> yellow -> red
-        let hue = (1.0 - uv.y) * 0.33; // 0.33 = green, 0 = red
-        color = hsv_to_rgb(vec3<f32>(hue, 0.9, 0.9));
+        let t = uv.y / height; // 0 at bottom, 1 at top
+        // Gradient from primary to secondary color
+        let bar_color = mix(uniforms.primary_color, uniforms.secondary_color, t);
+        color = mix(bg, bar_color, uniforms.fill_opacity);
     }
     
     // Grid
+    let grid_color = uniforms.grid_color;
+    let grid_alpha = uniforms.grid_opacity;
     if (abs(uv.y - 0.25) < 0.001 || abs(uv.y - 0.5) < 0.001 || abs(uv.y - 0.75) < 0.001) {
-        color = max(color, vec3<f32>(0.15, 0.15, 0.18));
+        color = mix(color, grid_color, grid_alpha * 0.7);
     }
     
     return color;
@@ -157,8 +212,14 @@ fn draw_spectrogram(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     let freq_idx = u32(uv.y * f32(FREQ_BINS - 1u));
     let intensity = frequency_data[freq_idx];
     
-    // Heat map: black -> blue -> cyan -> green -> yellow -> red -> white
-    let color = heat_map(intensity);
+    // Heat map based on primary/secondary colors
+    // Low intensity = bg, Mid = Primary, High = Secondary
+    var color = bg;
+    if (intensity < 0.5) {
+        color = mix(bg, uniforms.primary_color, intensity * 2.0);
+    } else {
+        color = mix(uniforms.primary_color, uniforms.secondary_color, (intensity - 0.5) * 2.0);
+    }
     
     return color;
 }
@@ -166,21 +227,24 @@ fn draw_spectrogram(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
 // --- Phase: Lissajous / Stereo correlation ---
 fn draw_phase(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     var color = bg;
+    let grid_color = uniforms.grid_color;
+    let grid_alpha = uniforms.grid_opacity;
     
     // Draw circle outline
     let center = vec2<f32>(0.5, 0.5);
     let radius = 0.4;
     let dist_to_center = length(uv - center);
+
     if (abs(dist_to_center - radius) < 0.003) {
-        color = vec3<f32>(0.2, 0.2, 0.25);
+        color = mix(color, grid_color, grid_alpha);
     }
     if (abs(dist_to_center - radius * 0.5) < 0.002) {
-        color = vec3<f32>(0.15, 0.15, 0.18);
+        color = mix(color, grid_color, grid_alpha * 0.7);
     }
     
     // Cross lines
     if (abs(uv.x - 0.5) < 0.001 || abs(uv.y - 0.5) < 0.001) {
-        color = vec3<f32>(0.2, 0.2, 0.25);
+        color = mix(color, grid_color, grid_alpha);
     }
     
     // Plot samples as points (treating pairs as L/R)
@@ -192,37 +256,9 @@ fn draw_phase(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
         
         let d = length(uv - vec2<f32>(px, py));
         if (d < 0.003) {
-            color = vec3<f32>(0.2, 0.9, 0.5);
+            color = uniforms.primary_color;
         }
     }
     
     return color;
-}
-
-// --- Helpers ---
-fn hsv_to_rgb(hsv: vec3<f32>) -> vec3<f32> {
-    let h = hsv.x * 6.0;
-    let s = hsv.y;
-    let v = hsv.z;
-    let i = floor(h);
-    let f = h - i;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - s * f);
-    let t = v * (1.0 - s * (1.0 - f));
-    
-    if (i < 1.0) { return vec3<f32>(v, t, p); }
-    if (i < 2.0) { return vec3<f32>(q, v, p); }
-    if (i < 3.0) { return vec3<f32>(p, v, t); }
-    if (i < 4.0) { return vec3<f32>(p, q, v); }
-    if (i < 5.0) { return vec3<f32>(t, p, v); }
-    return vec3<f32>(v, p, q);
-}
-
-fn heat_map(t: f32) -> vec3<f32> {
-    // Black -> Blue -> Cyan -> Green -> Yellow -> Red
-    if (t < 0.2) { return mix(vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 0.5), t / 0.2); }
-    if (t < 0.4) { return mix(vec3<f32>(0.0, 0.0, 0.5), vec3<f32>(0.0, 0.5, 0.5), (t - 0.2) / 0.2); }
-    if (t < 0.6) { return mix(vec3<f32>(0.0, 0.5, 0.5), vec3<f32>(0.0, 0.8, 0.0), (t - 0.4) / 0.2); }
-    if (t < 0.8) { return mix(vec3<f32>(0.0, 0.8, 0.0), vec3<f32>(1.0, 1.0, 0.0), (t - 0.6) / 0.2); }
-    return mix(vec3<f32>(1.0, 1.0, 0.0), vec3<f32>(1.0, 0.2, 0.0), (t - 0.8) / 0.2);
 }
