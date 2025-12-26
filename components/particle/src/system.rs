@@ -1,0 +1,197 @@
+//! ParticleSystem View with ergonomic API.
+
+use crate::{
+    config::{BlendMode, ParticleConfig},
+    renderer::{ParticleRenderer, ResolvedParticleConfig},
+    EmitterShape,
+};
+use core::ops::Range;
+use waterui_core::Signal;
+use waterui_core::{Environment, View};
+use waterui_graphics::{color::Color, GpuSurface};
+
+/// High-performance GPU particle system.
+///
+/// Use the flat modifier-chain API to configure the particle system,
+/// then use it as a View in your UI hierarchy.
+#[derive(Clone, Debug)]
+pub struct ParticleSystem {
+    max_particles: u32,
+    pub(crate) config: ParticleConfig,
+}
+
+impl ParticleSystem {
+    /// Create a new particle system with a maximum particle count.
+    #[must_use]
+    pub fn new(max_particles: u32) -> Self {
+        Self {
+            max_particles,
+            config: ParticleConfig::default(),
+        }
+    }
+
+    // --- Flat Modifier API ---
+
+    /// Set emission rate (particles per second).
+    #[must_use]
+    pub fn rate(mut self, rate: f32) -> Self {
+        self.config.emitter.rate = rate;
+        self
+    }
+
+    /// Set emitter as a single point.
+    #[must_use]
+    pub fn emit_from_point(mut self) -> Self {
+        self.config.emitter.shape = EmitterShape::Point;
+        self
+    }
+
+    /// Set emitter as a rectangle.
+    #[must_use]
+    pub fn emit_from_rect(mut self, width: f32, height: f32) -> Self {
+        self.config.emitter.shape = EmitterShape::Rect { width, height };
+        self
+    }
+
+    /// Set emitter position (normalized coordinates 0.0-1.0).
+    #[must_use]
+    pub fn at(mut self, x: f32, y: f32) -> Self {
+        self.config.emitter.position = [x, y];
+        self
+    }
+
+    /// Set particle lifespan range.
+    #[must_use]
+    pub fn life(mut self, range: Range<f32>) -> Self {
+        self.config.particle.life = range;
+        self
+    }
+
+    /// Set particle speed range.
+    #[must_use]
+    pub fn speed(mut self, range: Range<f32>) -> Self {
+        self.config.particle.speed = range;
+        self
+    }
+
+    /// Set particle emission angle range (in radians).
+    #[must_use]
+    pub fn angle(mut self, range: Range<f32>) -> Self {
+        self.config.particle.angle = range;
+        self
+    }
+
+    /// Set particle size range.
+    #[must_use]
+    pub fn size(mut self, range: Range<f32>) -> Self {
+        self.config.particle.size = range;
+        self
+    }
+
+    /// Set particle start and end colors.
+    #[must_use]
+    pub fn color(mut self, start: Color, end: Color) -> Self {
+        self.config.particle.color_start = start;
+        self.config.particle.color_end = end;
+        self
+    }
+
+    /// Enable motion blur (stretch particles based on velocity).
+    #[must_use]
+    pub fn stretch_with_velocity(mut self) -> Self {
+        self.config.particle.stretch_with_velocity = true;
+        self
+    }
+
+    /// Set gravity vector.
+    #[must_use]
+    pub fn gravity(mut self, x: f32, y: f32) -> Self {
+        self.config.environment.gravity = [x, y];
+        self
+    }
+
+    /// Set wind vector.
+    #[must_use]
+    pub fn wind(mut self, x: f32, y: f32) -> Self {
+        self.config.environment.wind = [x, y];
+        self
+    }
+
+    /// Set additive blending mode.
+    #[must_use]
+    pub fn additive(mut self) -> Self {
+        self.config.blend_mode = BlendMode::Additive;
+        self
+    }
+    /// Set edge softness (0.0=hard, 1.0=soft).
+    #[must_use]
+    pub fn softness(mut self, value: f32) -> Self {
+        self.config.particle.softness = value;
+        self
+    }
+
+    /// Set turbulence strength.
+    #[must_use]
+    pub fn turbulence(mut self, value: f32) -> Self {
+        self.config.environment.turbulence = value;
+        self
+    }
+
+    /// Set emitter as a circle.
+    #[must_use]
+    pub fn emit_from_circle(mut self, radius: f32) -> Self {
+        self.config.emitter.shape = EmitterShape::Circle { radius };
+        self
+    }
+
+    /// Set particle shape.
+    #[must_use]
+    pub fn shape(mut self, shape: crate::config::ParticleShape) -> Self {
+        self.config.particle.shape = shape;
+        self
+    }
+}
+
+impl View for ParticleSystem {
+    fn body(self, env: &Environment) -> impl View {
+        // Resolve colors using the Environment
+        let color_start = self.config.particle.color_start.resolve(env).get();
+        let color_end = self.config.particle.color_end.resolve(env).get();
+
+        // Build resolved config for the renderer
+        let resolved = ResolvedParticleConfig {
+            max_particles: self.max_particles,
+            emitter_pos: self.config.emitter.position,
+            emitter_shape: self.config.emitter.shape,
+            emit_rate: self.config.emitter.rate,
+            gravity: self.config.environment.gravity,
+            wind: self.config.environment.wind,
+            turbulence: self.config.environment.turbulence,
+            life_range: [
+                self.config.particle.life.start,
+                self.config.particle.life.end,
+            ],
+            speed_range: [
+                self.config.particle.speed.start,
+                self.config.particle.speed.end,
+            ],
+            angle_range: [
+                self.config.particle.angle.start,
+                self.config.particle.angle.end,
+            ],
+            size_range: [
+                self.config.particle.size.start,
+                self.config.particle.size.end,
+            ],
+            color_start,
+            color_end,
+            stretch_with_velocity: self.config.particle.stretch_with_velocity,
+            blend_mode: self.config.blend_mode,
+            softness: self.config.particle.softness,
+            shape: self.config.particle.shape,
+        };
+
+        // Return a GpuSurface wrapping the renderer
+        GpuSurface::new(ParticleRenderer::new(resolved))
+    }
+}

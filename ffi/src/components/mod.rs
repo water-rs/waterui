@@ -52,3 +52,9 @@ pub mod webview;
 pub mod map;
 pub use map::{WuiAnnotation, WuiCoordinate, WuiRegion};
 
+/// ViewEffect component FFI bindings for GPU effect rendering
+pub mod view_effect;
+
+/// AppliedFilter metadata FFI bindings for GPU filter rendering
+pub mod applied_filter;
+

@@ -106,15 +106,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // --- Waveform: Time-domain oscilloscope ---
+fn get_interpolated_sample(t: f32) -> f32 {
+    let idx_f = t * f32(SAMPLES_COUNT - 1u);
+    let i = u32(idx_f);
+    let f = fract(idx_f);
+    let s0 = audio_samples[i];
+    let s1 = audio_samples[min(i + 1u, SAMPLES_COUNT - 1u)];
+    return mix(s0, s1, f);
+}
+
+// --- Waveform: Time-domain oscilloscope ---
 fn draw_waveform(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
-    let x_idx = u32(uv.x * f32(SAMPLES_COUNT - 1u));
-    let sample = audio_samples[x_idx];
-    
     var color = bg;
     let grid_color = uniforms.grid_color;
     let grid_alpha = uniforms.grid_opacity;
     let is_bar = uniforms.render_style > 0.5;
     let is_mirrored = uniforms.mirror_y > 0.5;
+    
+    // Scale amplitude
+    let scale = 0.4 * uniforms.sensitivity;
 
     // Grid lines
     if (abs(uv.y - 0.5) < 0.002) {
@@ -128,21 +138,30 @@ fn draw_waveform(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
 
     if (is_bar) {
         // Bar Style (Voice Memo)
-        let center_y = 0.5;
-        let scale = 0.4 * uniforms.sensitivity;
-        var height = abs(sample) * scale;
+        // Use nearest neighbor for bars to keep them crisp, or interpolate for smooth envelope?
+        // Voice memos usually use discrete bars.
+        let num_bars = 100.0;
+        let bar_width = 1.0 / num_bars;
+        let bar_center_x = (floor(uv.x * num_bars) + 0.5) / num_bars;
         
+        let raw_sample = get_interpolated_sample(bar_center_x); 
+        let sample_mag = abs(raw_sample);
+        var height = sample_mag * scale;
         // Ensure minimal height for silence
-        height = max(height, 0.002);
+        height = max(height, 0.004);
 
+        let center_y = 0.5;
         var in_bar = false;
+        
+        // Anti-aliased width
+        let dist_x = abs(uv.x - bar_center_x);
+        let bar_mask_x = smoothstep(bar_width * 0.45, bar_width * 0.4, dist_x);
+
         if (is_mirrored) {
-            // Symmetric around center
-            in_bar = abs(uv.y - center_y) < height;
+            let dist_y = abs(uv.y - center_y);
+            in_bar = dist_y < height;
         } else {
-            // Up from center (unidirectional) or just raw waveform as bar?
-            // "Bar" usually implies zero-baseline.
-            if (sample >= 0.0) {
+             if (raw_sample >= 0.0) {
                 in_bar = uv.y >= center_y && uv.y <= center_y + height;
             } else {
                 in_bar = uv.y <= center_y && uv.y >= center_y - height;
@@ -150,19 +169,29 @@ fn draw_waveform(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
         }
         
         if (in_bar) {
-             color = mix(bg, uniforms.primary_color, uniforms.fill_opacity);
+             let alpha = bar_mask_x * uniforms.fill_opacity;
+             color = mix(color, uniforms.primary_color, alpha);
         }
 
     } else {
-        // Line Style (Oscilloscope)
-        // Map sample [-1, 1] to screen [0.1, 0.9] with sensitivity
-        let y_pos = 0.5 + sample * 0.4 * uniforms.sensitivity;
-        let dist = abs(uv.y - y_pos);
+        // Line Style (Oscilloscope) with GLOW
+        let sample = get_interpolated_sample(uv.x);
+        let y_pos = 0.5 + sample * scale;
         
-        let line_width = uniforms.line_width / uniforms.resolution.y;
-        if (dist < line_width) {
-            let intensity = 1.0 - dist / line_width;
-            color = mix(color, uniforms.primary_color, intensity * uniforms.fill_opacity);
+        let dist = abs(uv.y - y_pos);
+        let line_width = max(uniforms.line_width, 1.0) / uniforms.resolution.y;
+
+        // Core Line
+        let core_intensity = smoothstep(line_width, line_width * 0.5, dist);
+        
+        // Glow (Cyber effect)
+        let glow_width = line_width * 4.0;
+        let glow_intensity = exp(-dist / glow_width) * 0.6; // Exponential falloff
+        
+        // Additive blendingish behavior for glow
+        let final_alpha = max(core_intensity, glow_intensity) * uniforms.fill_opacity;
+        if (final_alpha > 0.01) {
+            color = mix(color, uniforms.primary_color + uniforms.secondary_color * 0.5, final_alpha);
         }
     }
     
@@ -172,28 +201,34 @@ fn draw_waveform(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
 // --- Spectrum: Frequency bars ---
 fn draw_spectrum(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     let num_bars: u32 = 64u;
-    let bar_idx = u32(uv.x * f32(num_bars));
+    let total_bars = f32(num_bars);
+    let bar_idx = u32(uv.x * total_bars);
     
     // Average frequency bins for this bar
     let bins_per_bar = FREQ_BINS / num_bars;
     var sum: f32 = 0.0;
+    // Simple average
+    let start_bin = bar_idx * bins_per_bar;
     for (var i: u32 = 0u; i < bins_per_bar; i = i + 1u) {
-        sum += frequency_data[bar_idx * bins_per_bar + i];
+        sum += frequency_data[start_bin + i];
     }
     let height = sum / f32(bins_per_bar);
     
     var color = bg;
     
     // Bar
-    let bar_width = 0.8 / f32(num_bars);
-    let bar_x = (f32(bar_idx) + 0.1) / f32(num_bars);
-    let bar_end_x = bar_x + bar_width;
+    let bar_center_x = (f32(bar_idx) + 0.5) / total_bars;
+    let bar_width = 1.0 / total_bars;
     
-    if (uv.x > bar_x && uv.x < bar_end_x && uv.y < height) {
+    // X-axis smoothing
+    let dist_x = abs(uv.x - bar_center_x);
+    let alpha_x = smoothstep(bar_width * 0.45, bar_width * 0.4, dist_x);
+    
+    if (uv.y < height && alpha_x > 0.0) {
         let t = uv.y / height; // 0 at bottom, 1 at top
         // Gradient from primary to secondary color
         let bar_color = mix(uniforms.primary_color, uniforms.secondary_color, t);
-        color = mix(bg, bar_color, uniforms.fill_opacity);
+        color = mix(bg, bar_color, uniforms.fill_opacity * alpha_x);
     }
     
     // Grid

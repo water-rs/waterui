@@ -1,0 +1,385 @@
+//! GPU renderer for particle simulation and visualization.
+
+use crate::{
+    config::{BlendMode, ParticleShape},
+    gpu::{GpuParticle, Uniforms},
+    shaders::{COMPUTE_SHADER, RENDER_SHADER},
+    EmitterShape,
+};
+use std::borrow::Cow;
+use waterui_graphics::{
+    bytemuck,
+    color::ResolvedColor,
+    gpu_surface::{GpuContext, GpuFrame, GpuRenderer},
+    wgpu,
+};
+
+/// Resolved particle configuration ready for GPU.
+#[derive(Clone, Debug)]
+pub struct ResolvedParticleConfig {
+    pub max_particles: u32,
+    pub emitter_pos: [f32; 2],
+    pub emitter_shape: EmitterShape,
+    pub emit_rate: f32,
+    pub gravity: [f32; 2],
+    pub wind: [f32; 2],
+    pub turbulence: f32,
+    pub life_range: [f32; 2],
+    pub speed_range: [f32; 2],
+    pub angle_range: [f32; 2],
+    pub size_range: [f32; 2],
+    pub color_start: ResolvedColor,
+    pub color_end: ResolvedColor,
+    pub stretch_with_velocity: bool,
+    pub blend_mode: BlendMode,
+    pub softness: f32,
+    pub shape: ParticleShape,
+}
+
+/// GPU renderer for particle systems.
+pub struct ParticleRenderer {
+    config: ResolvedParticleConfig,
+
+    // GPU Resources
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    render_pipeline: Option<wgpu::RenderPipeline>,
+    particle_buffer: Option<wgpu::Buffer>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    compute_bind_group: Option<wgpu::BindGroup>,
+    render_bind_group: Option<wgpu::BindGroup>,
+
+    start_time: std::time::Instant,
+    last_frame_time: std::time::Instant,
+}
+
+impl ParticleRenderer {
+    /// Create a new particle renderer with resolved configuration.
+    pub fn new(config: ResolvedParticleConfig) -> Self {
+        Self {
+            config,
+            compute_pipeline: None,
+            render_pipeline: None,
+            particle_buffer: None,
+            uniform_buffer: None,
+            compute_bind_group: None,
+            render_bind_group: None,
+            start_time: std::time::Instant::now(),
+            last_frame_time: std::time::Instant::now(),
+        }
+    }
+
+    fn update_uniforms(&mut self, queue: &wgpu::Queue) {
+        if let Some(buffer) = &self.uniform_buffer {
+            let now = std::time::Instant::now();
+            let time = now.duration_since(self.start_time).as_secs_f32();
+            let dt = now.duration_since(self.last_frame_time).as_secs_f32().min(0.1);
+            self.last_frame_time = now;
+
+            let seed = fastrand::u32(..);
+
+            let (emitter_w, emitter_h) = match self.config.emitter_shape {
+                EmitterShape::Rect { width, height } => (width, height),
+                EmitterShape::Circle { radius } => (radius, 0.0),
+                EmitterShape::Point => (0.0, 0.0),
+            };
+
+            let shape_val = match self.config.shape {
+                ParticleShape::Circle => 0,
+                ParticleShape::Rect => 1,
+            };
+
+            let uniforms = Uniforms {
+                time,
+                dt,
+                seed,
+                max_particles: self.config.max_particles,
+                gravity: self.config.gravity,
+                wind: self.config.wind,
+                emitter_pos: self.config.emitter_pos,
+                emitter_size: [emitter_w, emitter_h],
+                emit_rate: self.config.emit_rate,
+                turbulence: self.config.turbulence,
+                stretch_factor: if self.config.stretch_with_velocity { 1.0 } else { 0.0 },
+                softness: self.config.softness,
+                life_range: self.config.life_range,
+                speed_range: self.config.speed_range,
+                angle_range: self.config.angle_range,
+                size_range: self.config.size_range,
+                color_start: [
+                    self.config.color_start.red,
+                    self.config.color_start.green,
+                    self.config.color_start.blue,
+                    self.config.color_start.opacity,
+                ],
+                color_end: [
+                    self.config.color_end.red,
+                    self.config.color_end.green,
+                    self.config.color_end.blue,
+                    self.config.color_end.opacity,
+                ],
+                shape: shape_val,
+                _pad: [0; 3],
+            };
+
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniforms));
+        }
+    }
+}
+
+impl GpuRenderer for ParticleRenderer {
+    fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+        let device = ctx.device;
+
+        // 1. Create Buffers
+        let particle_size = std::mem::size_of::<GpuParticle>() as u64;
+        let buffer_size = particle_size * u64::from(self.config.max_particles);
+
+        let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle Uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // 2. Compute Pipeline
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Particle Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPUTE_SHADER)),
+        });
+
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Particle Compute BGL"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Particle Compute PL"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Particle Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Particle Compute BG"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: particle_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // 3. Render Pipeline
+        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Particle Render Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RENDER_SHADER)),
+        });
+
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Particle Render BGL"),
+                entries: &[
+                    // Binding 0: Uniforms
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 1: Particles
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Particle Render PL"),
+                bind_group_layouts: &[&render_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let blend = match self.config.blend_mode {
+            BlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
+            BlendMode::Additive => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+        };
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Particle Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &render_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &render_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: ctx.surface_format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: ctx.pipeline_cache,
+        });
+
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Particle Render BG"),
+            layout: &render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: particle_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Store resources
+        self.particle_buffer = Some(particle_buffer);
+        self.uniform_buffer = Some(uniform_buffer);
+        self.compute_pipeline = Some(compute_pipeline);
+        self.render_pipeline = Some(render_pipeline);
+        self.compute_bind_group = Some(compute_bind_group);
+        self.render_bind_group = Some(render_bind_group);
+
+        self.start_time = std::time::Instant::now();
+        self.last_frame_time = std::time::Instant::now();
+
+        async {}
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        self.update_uniforms(frame.queue);
+
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Particle Encoder"),
+            });
+
+        // Compute Pass
+        if let (Some(pipeline), Some(bind_group)) =
+            (&self.compute_pipeline, &self.compute_bind_group)
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Particle Compute Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(pipeline);
+            cpass.set_bind_group(0, bind_group, &[]);
+
+            let workgroup_size = 64;
+            let count = (self.config.max_particles + workgroup_size - 1) / workgroup_size;
+            cpass.dispatch_workgroups(count, 1, 1);
+        }
+
+        // Render Pass
+        if let (Some(pipeline), Some(bind_group)) =
+            (&self.render_pipeline, &self.render_bind_group)
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Particle Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            rpass.set_pipeline(pipeline);
+            rpass.set_bind_group(0, bind_group, &[]);
+            rpass.draw(0..6, 0..self.config.max_particles);
+        }
+
+        frame.queue.submit(std::iter::once(encoder.finish()));
+    }
+}
