@@ -107,8 +107,13 @@ impl Layout for HStackLayout {
             0.0
         };
 
-        // First pass: measure children with unspecified width to get intrinsic sizes
-        let intrinsic_proposal = ProposalSize::new(None, proposal.height);
+        // First pass: measure children. If min size query (width=0), use 0 width proposal to get min sizes.
+        let is_min_size_query = proposal.width == Some(0.0);
+        let intrinsic_proposal = if is_min_size_query {
+            ProposalSize::new(Some(0.0), proposal.height)
+        } else {
+            ProposalSize::new(None, proposal.height)
+        };
         let mut measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
@@ -131,6 +136,16 @@ impl Layout for HStackLayout {
 
         let intrinsic_width_all: f32 =
             measurements.iter().map(|m| m.size.width).sum::<f32>() + total_spacing;
+
+        if is_min_size_query {
+            let max_height = measurements
+                .iter()
+                .filter(|m| !m.stretches_cross_axis())
+                .map(|m| m.size.height)
+                .max_by(f32::total_cmp)
+                .unwrap_or(0.0);
+            return Size::new(intrinsic_width_all, max_height);
+        }
 
         // Intrinsic width used when the parent doesn't constrain width.
         // In unconstrained context, even "stretching" children should be measured at their
@@ -681,5 +696,43 @@ mod tests {
         assert!((rects[0].width() - 4.0).abs() < f32::EPSILON);
         assert!((rects[1].width() - 36.0).abs() < f32::EPSILON);
         assert!((rects[1].height() - 40.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_hstack_min_size_query_correctly_sums_children() {
+        // When ProposalSize::ZERO is used (min size query), ALL children's widths
+        // should be summed to ensure window minimum width calculation is correct.
+        // Previous bug: if spacer (stretch) existed, it would return 0 width for min size query.
+        let layout = HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut label = MockSubView {
+            size: Size::new(50.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            stretch_axis: StretchAxis::Both,
+        };
+        let mut button = MockSubView {
+            size: Size::new(80.0, 44.0),
+            stretch_axis: StretchAxis::None,
+        };
+
+        let children: Vec<&dyn SubView> = vec![&mut label, &mut spacer, &mut button];
+
+        // With ZERO proposal (min size query)
+        let min_size = layout.size_that_fits(ProposalSize::ZERO, &children);
+        
+        // Width: 50 + 10 + 0 + 10 + 80 = 150
+        assert!((min_size.width - 150.0).abs() < f32::EPSILON, 
+            "Min size query should return sum of child min widths (150.0), got {}", min_size.width);
+            
+        // Verify regular behavior (Unspecified) still works
+        let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+        // Should also be 150 because spacer has 0 intrinsic width
+        assert!((intrinsic_size.width - 150.0).abs() < f32::EPSILON);
     }
 }
