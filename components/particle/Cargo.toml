@@ -1,0 +1,22 @@
+[package]
+name = "waterui-particle"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "High-performance GPU particle system for WaterUI"
+keywords = ["particle", "gpu", "wgpu", "waterui", "effects"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+wgpu.workspace = true
+bytemuck = { version = "1.14", features = ["derive"] }
+tracing.workspace = true
+fastrand = "2.0"
+
+[lints]
+workspace = true

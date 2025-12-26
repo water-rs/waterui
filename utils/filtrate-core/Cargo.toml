@@ -13,3 +13,4 @@ workspace = true
 
 [dependencies]
 wgpu.workspace = true
+nami.workspace = true

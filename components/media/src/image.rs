@@ -1,8 +1,7 @@
 //! GPU-accelerated Image view using wgpu.
 //!
-//! This module provides [`Image`], a View that displays images on the GPU
-//! with hardware-accelerated filters. Images are stored as GPU textures,
-//! and filters are applied entirely on the GPU using the `filtrate` crate.
+//! This module provides [`Image`], a View that displays images on the GPU.
+//! Images are stored as GPU textures and rendered directly.
 //!
 //! # Example
 //!
@@ -11,14 +10,8 @@
 //!
 //! // Create an image from RGBA pixel data
 //! Image::new(rgba_pixels, 800, 600)
-//!     .blur(5.0)
-//!     .brightness(0.1)
-//!     .saturation(1.2)
 //! ```
 
-use std::sync::Arc;
-
-use filtrate::{Filter, FilterPipeline};
 use waterui_core::{Environment, View};
 use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use waterui_layout::frame::Frame;
@@ -27,7 +20,7 @@ use waterui_layout::frame::Frame;
 ///
 /// `Image` stores pixel data that will be uploaded to a GPU texture when the
 /// view is set up. The pixel data is consumed during setup and not retained
-/// in memory. Filters are applied on the GPU via compute shaders.
+/// in memory.
 ///
 /// # Memory Model
 ///
@@ -45,9 +38,7 @@ use waterui_layout::frame::Frame;
 /// // RGBA pixel data (4 bytes per pixel)
 /// let pixels: Vec<u8> = vec![255, 0, 0, 255]; // 1x1 red pixel
 ///
-/// let image = Image::new(pixels, 1, 1)
-///     .blur(2.0)
-///     .brightness(0.1);
+/// let image = Image::new(pixels, 1, 1);
 /// ```
 #[derive(Debug)]
 pub struct Image {
@@ -80,122 +71,6 @@ impl Image {
         Self {
             renderer: ImageRenderer::new(pixels, width, height),
         }
-    }
-
-    /// Apply a gaussian blur filter.
-    ///
-    /// # Arguments
-    ///
-    /// * `radius` - Blur radius in pixels (higher = more blur)
-    #[must_use]
-    pub fn blur(mut self, radius: f32) -> Self {
-        self.renderer.filters.push(Filter::Blur { radius });
-        self
-    }
-
-    /// Adjust brightness.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - Brightness adjustment (-1.0 = black, 0.0 = unchanged, 1.0 = white)
-    #[must_use]
-    pub fn brightness(mut self, amount: f32) -> Self {
-        self.renderer.filters.push(Filter::Brightness { amount });
-        self
-    }
-
-    /// Adjust color saturation.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - Saturation multiplier (0.0 = grayscale, 1.0 = unchanged, >1.0 = more saturated)
-    #[must_use]
-    pub fn saturation(mut self, amount: f32) -> Self {
-        self.renderer.filters.push(Filter::Saturation { amount });
-        self
-    }
-
-    /// Adjust contrast.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - Contrast multiplier (0.0 = gray, 1.0 = unchanged, >1.0 = more contrast)
-    #[must_use]
-    pub fn contrast(mut self, amount: f32) -> Self {
-        self.renderer.filters.push(Filter::Contrast { amount });
-        self
-    }
-
-    /// Convert to grayscale.
-    ///
-    /// # Arguments
-    ///
-    /// * `intensity` - Mix factor (0.0 = original, 1.0 = full grayscale)
-    #[must_use]
-    pub fn grayscale(mut self, intensity: f32) -> Self {
-        self.renderer.filters.push(Filter::Grayscale { intensity });
-        self
-    }
-
-    /// Rotate hue around the color wheel.
-    ///
-    /// # Arguments
-    ///
-    /// * `angle` - Rotation angle in degrees (0-360)
-    #[must_use]
-    pub fn hue_rotate(mut self, angle: f32) -> Self {
-        self.renderer.filters.push(Filter::HueRotation { angle });
-        self
-    }
-
-    /// Invert all colors.
-    #[must_use]
-    pub fn invert(mut self) -> Self {
-        self.renderer.filters.push(Filter::Invert);
-        self
-    }
-
-    /// Apply sepia tone effect.
-    ///
-    /// # Arguments
-    ///
-    /// * `intensity` - Sepia intensity (0.0 = original, 1.0 = full sepia)
-    #[must_use]
-    pub fn sepia(mut self, intensity: f32) -> Self {
-        self.renderer.filters.push(Filter::Sepia { intensity });
-        self
-    }
-
-    /// Add vignette effect (darkened corners).
-    ///
-    /// # Arguments
-    ///
-    /// * `radius` - Inner radius where vignette starts (0.0-1.0)
-    /// * `softness` - How soft the vignette edge is (0.0-1.0)
-    #[must_use]
-    pub fn vignette(mut self, radius: f32, softness: f32) -> Self {
-        self.renderer
-            .filters
-            .push(Filter::Vignette { radius, softness });
-        self
-    }
-
-    /// Sharpen image details.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - Sharpening strength (0.0 = unchanged, 1.0 = normal, >1.0 = more sharp)
-    #[must_use]
-    pub fn sharpen(mut self, amount: f32) -> Self {
-        self.renderer.filters.push(Filter::Sharpen { amount });
-        self
-    }
-
-    /// Apply a custom filter.
-    #[must_use]
-    pub fn filter(mut self, filter: Filter) -> Self {
-        self.renderer.filters.push(filter);
-        self
     }
 
     /// Get the image dimensions (width, height).
@@ -237,20 +112,12 @@ struct ImageRenderer {
     height: u32,
     /// GPU texture (created during setup)
     texture: Option<wgpu::Texture>,
-    /// Filter pipeline (created during setup)
-    filter_pipeline: Option<FilterPipeline>,
     /// Render pipeline for displaying to screen
     render_pipeline: Option<wgpu::RenderPipeline>,
     /// Bind group for rendering
     bind_group: Option<wgpu::BindGroup>,
     /// Sampler for texture sampling
     sampler: Option<wgpu::Sampler>,
-    /// Filters to apply
-    filters: Vec<Filter>,
-    /// Filtered texture (output of filter pipeline)
-    filtered_texture: Option<wgpu::Texture>,
-    /// Flag indicating filters have been applied
-    filters_applied: bool,
 }
 
 impl core::fmt::Debug for ImageRenderer {
@@ -258,7 +125,6 @@ impl core::fmt::Debug for ImageRenderer {
         f.debug_struct("ImageRenderer")
             .field("width", &self.width)
             .field("height", &self.height)
-            .field("filters", &self.filters)
             .finish_non_exhaustive()
     }
 }
@@ -270,13 +136,9 @@ impl ImageRenderer {
             width,
             height,
             texture: None,
-            filter_pipeline: None,
             render_pipeline: None,
             bind_group: None,
             sampler: None,
-            filters: Vec::new(),
-            filtered_texture: None,
-            filters_applied: false,
         }
     }
 
@@ -391,8 +253,7 @@ impl GpuRenderer for ImageRenderer {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::STORAGE_BINDING,
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
 
@@ -420,45 +281,12 @@ impl GpuRenderer for ImageRenderer {
             // pixels dropped here - NOT stored
         }
 
-        // Create filter pipeline
-        self.filter_pipeline = Some(FilterPipeline::new(
-            Arc::new(ctx.device.clone()),
-            Arc::new(ctx.queue.clone()),
-        ));
-
-        // Create filtered texture for filter output
-        if !self.filters.is_empty() {
-            self.filtered_texture = Some(ctx.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Image filtered texture"),
-                size: wgpu::Extent3d {
-                    width: self.width,
-                    height: self.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }));
-        }
-
         // Create render pipeline
         let (render_pipeline, bind_group_layout, sampler) =
             Self::create_render_pipeline(ctx.device, ctx.surface_format, ctx.pipeline_cache);
 
-        // Determine which texture to use for rendering
-        let display_texture = self
-            .filtered_texture
-            .as_ref()
-            .or(self.texture.as_ref())
-            .expect("Texture should be created");
-
-        let texture_view = display_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture = self.texture.as_ref().expect("Texture should be created");
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Image bind group"),
@@ -490,40 +318,6 @@ impl GpuRenderer for ImageRenderer {
             frame.height,
             self.render_pipeline.is_some()
         );
-
-        // Apply filters once if not already applied
-        if !self.filters_applied && !self.filters.is_empty() {
-            if let (Some(pipeline), Some(src), Some(dst)) = (
-                &self.filter_pipeline,
-                &self.texture,
-                &self.filtered_texture,
-            ) {
-                pipeline.apply(src, dst, &self.filters);
-                self.filters_applied = true;
-
-                // Recreate bind group with filtered texture
-                if let (Some(render_pipeline), Some(sampler)) =
-                    (&self.render_pipeline, &self.sampler)
-                {
-                    let texture_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
-                    let bind_group_layout = render_pipeline.get_bind_group_layout(0);
-                    self.bind_group = Some(frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Image bind group (filtered)"),
-                        layout: &bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&texture_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(sampler),
-                            },
-                        ],
-                    }));
-                }
-            }
-        }
 
         // Render to screen
         let Some(render_pipeline) = &self.render_pipeline else {

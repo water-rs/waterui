@@ -322,6 +322,29 @@ typedef enum WuiMapStyle {
 } WuiMapStyle;
 
 /**
+ * Input texture type for ViewEffect.
+ */
+typedef enum WuiInputType {
+  /**
+   * wgpu texture pointer (from GpuSurface child - zero copy optimization)
+   */
+  WuiInputType_WgpuTexture,
+  /**
+   * MTLTexture handle (Apple - zero copy)
+   * The native side should create the MTLTexture from IOSurface
+   */
+  WuiInputType_MetalTexture,
+  /**
+   * AHardwareBuffer handle (Android - zero copy)
+   */
+  WuiInputType_AHardwareBuffer,
+  /**
+   * Raw pixel data (fallback with copy)
+   */
+  WuiInputType_PixelData,
+} WuiInputType;
+
+/**
  * FFI-safe cursor style enum.
  */
 typedef enum WuiCursorStyle {
@@ -892,6 +915,11 @@ typedef struct WuiAnyView WuiAnyView;
 
 typedef struct WuiAnyViews WuiAnyViews;
 
+/**
+ * Opaque state held by the native backend after initialization.
+ */
+typedef struct WuiAppliedFilterState WuiAppliedFilterState;
+
 typedef struct WuiColor WuiColor;
 
 /**
@@ -937,6 +965,11 @@ typedef struct WuiOnEventHandler WuiOnEventHandler;
 typedef struct WuiSharedAction WuiSharedAction;
 
 typedef struct WuiTabContent WuiTabContent;
+
+/**
+ * Opaque state held by the native backend after initialization.
+ */
+typedef struct WuiViewEffectState WuiViewEffectState;
 
 typedef struct WuiWatcherGuard WuiWatcherGuard;
 
@@ -2977,6 +3010,102 @@ typedef struct WuiArray_WuiAnnotation {
   NonNull data;
   struct WuiArrayVTable_WuiAnnotation vtable;
 } WuiArray_WuiAnnotation;
+
+/**
+ * FFI representation of output size.
+ */
+typedef enum WuiOutputSize_Tag {
+  /**
+   * Match the input view's size.
+   */
+  WuiOutputSize_MatchInput,
+  /**
+   * Fixed pixel dimensions.
+   */
+  WuiOutputSize_Fixed,
+  /**
+   * Scale factor relative to input.
+   */
+  WuiOutputSize_Scale,
+} WuiOutputSize_Tag;
+
+typedef struct WuiOutputSize_Fixed_Body {
+  uint32_t width;
+  uint32_t height;
+} WuiOutputSize_Fixed_Body;
+
+typedef struct WuiOutputSize_Scale_Body {
+  float factor;
+} WuiOutputSize_Scale_Body;
+
+typedef struct WuiOutputSize {
+  WuiOutputSize_Tag tag;
+  union {
+    WuiOutputSize_Fixed_Body fixed;
+    WuiOutputSize_Scale_Body scale;
+  };
+} WuiOutputSize;
+
+/**
+ * FFI representation of a ViewEffect view.
+ *
+ * This struct is passed to the native backend when rendering the view tree.
+ * The native backend should:
+ * 1. Create capture and output layers
+ * 2. Call `waterui_view_effect_init` to initialize GPU resources
+ * 3. Render the child view to the capture layer
+ * 4. Call `waterui_view_effect_render` each frame
+ */
+typedef struct WuiViewEffect {
+  /**
+   * The child view to capture (pointer to WuiAnyView).
+   */
+  struct WuiAnyView *content;
+  /**
+   * Opaque pointer to the boxed effect renderer.
+   * This is consumed during init and should not be used after.
+   */
+  void *effect;
+  /**
+   * Output size configuration.
+   */
+  struct WuiOutputSize output_size;
+} WuiViewEffect;
+
+/**
+ * FFI representation of a Metadata<AppliedFilter>.
+ */
+typedef struct WuiAppliedFilter {
+  /**
+   * The child view to capture (pointer to WuiAnyView).
+   */
+  struct WuiAnyView *content;
+  /**
+   * Opaque pointer to the boxed AppliedFilter.
+   * This is consumed during init and should not be used after.
+   */
+  void *filter;
+} WuiAppliedFilter;
+
+/**
+ * Callback type for async completion notifications.
+ */
+typedef void (*WuiCallback)(void *user_data);
+
+/**
+ * Result of a filter render operation.
+ */
+typedef struct WuiAppliedFilterRenderResult {
+  /**
+   * Whether rendering succeeded.
+   */
+  bool success;
+  /**
+   * Whether another frame is needed (animation in progress).
+   * Only valid if `success` is true.
+   */
+  bool needs_redraw;
+} WuiAppliedFilterRenderResult;
 
 /**
  * FFI-safe representation of drag data.
@@ -5037,6 +5166,275 @@ struct WuiWatcher_Vec_Annotation *waterui_new_watcher_annotations(void *data,
                                                                                struct WuiArray_WuiAnnotation,
                                                                                struct WuiWatcherMetadata*),
                                                                   void (*drop)(void*));
+
+/**
+ * # Safety
+ * This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
+ * The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
+ */
+struct WuiViewEffect waterui_force_as_view_effect(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_view_effect_id(void);
+
+/**
+ * Initialize a ViewEffect with native layers.
+ *
+ * This function creates wgpu resources for the effect rendering pipeline.
+ *
+ * # Arguments
+ *
+ * * `effect` - Pointer to the WuiViewEffect FFI struct (consumed)
+ * * `output_layer` - Platform-specific layer for effect output:
+ *   - Apple: `CAMetalLayer*`
+ *   - Android: `ANativeWindow*`
+ * * `input_width` - Width of the captured view in pixels
+ * * `input_height` - Height of the captured view in pixels
+ *
+ * # Returns
+ *
+ * Opaque pointer to the initialized state, or null on failure.
+ *
+ * # Safety
+ *
+ * - `effect` must be a valid pointer obtained from `waterui_force_as_view_effect`
+ * - `output_layer` must be a valid platform-specific layer pointer
+ * - The layer must remain valid for the lifetime of the returned state
+ */
+struct WuiViewEffectState *waterui_view_effect_init(struct WuiViewEffect *effect,
+                                                    void *output_layer,
+                                                    uint32_t input_width,
+                                                    uint32_t input_height);
+
+/**
+ * Provide input texture from child view.
+ *
+ * Call this each frame before `waterui_view_effect_render` to provide
+ * the captured child view's texture.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state
+ * * `input_type` - Type of input being provided
+ * * `input_handle` - Platform-specific handle:
+ *   - `WgpuTexture`: Pointer to `wgpu::Texture`
+ *   - `IOSurface`: `IOSurfaceRef` (Apple)
+ *   - `AHardwareBuffer`: `AHardwareBuffer*` (Android)
+ *   - `PixelData`: Pointer to pixel data
+ * * `width` - Input width in pixels
+ * * `height` - Input height in pixels
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_view_effect_init`
+ * - `input_handle` must be valid for the specified `input_type`
+ */
+bool waterui_view_effect_set_input(struct WuiViewEffectState *state,
+                                   enum WuiInputType input_type,
+                                   void *input_handle,
+                                   uint32_t width,
+                                   uint32_t height);
+
+/**
+ * Render the effect.
+ *
+ * This function applies the effect to the captured input and renders to the output.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state
+ *
+ * # Returns
+ *
+ * `true` if rendering succeeded, `false` on error.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_view_effect_init`.
+ */
+bool waterui_view_effect_render(struct WuiViewEffectState *state);
+
+/**
+ * Get a pointer to the capture texture for the child view to render into.
+ *
+ * The native backend should render the child view to this texture, then call
+ * `waterui_view_effect_render` to apply the effect.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state
+ *
+ * # Returns
+ *
+ * Pointer to the capture wgpu::Texture, or null if not available.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_view_effect_init`.
+ */
+const void *waterui_view_effect_get_capture_texture(struct WuiViewEffectState *state);
+
+/**
+ * Clean up ViewEffect resources.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_view_effect_init`,
+ * and must not be used after this call.
+ */
+void waterui_view_effect_drop(struct WuiViewEffectState *state);
+
+/**
+ * Check if the child view content is a GpuSurface.
+ *
+ * Returns `true` if the child is a GpuSurface, enabling the zero-copy optimization
+ * where we can directly sample the GpuSurface's texture.
+ *
+ * # Safety
+ *
+ * `effect` must be a valid pointer.
+ */
+bool waterui_view_effect_child_is_gpu_surface(const struct WuiViewEffect *effect);
+
+/**
+ * Set input from an AHardwareBuffer (Android-specific zero-copy path).
+ *
+ * This function is called from JNI with a HardwareBuffer object.
+ * The JNI layer extracts the AHardwareBuffer pointer and passes it here.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized ViewEffect state
+ * * `ahb_ptr` - Pointer to AHardwareBuffer (from AHardwareBuffer_fromHardwareBuffer)
+ * * `width` - Width in pixels
+ * * `height` - Height in pixels
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_view_effect_init`
+ * - `ahb_ptr` must be a valid AHardwareBuffer pointer
+ */
+bool waterui_view_effect_set_input_ahardwarebuffer(struct WuiViewEffectState *state,
+                                                   void *ahb_ptr,
+                                                   uint32_t width,
+                                                   uint32_t height);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_applied_filter_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+struct WuiAppliedFilter waterui_force_as_metadata_applied_filter(struct WuiAnyView *view);
+
+/**
+ * Initialize an AppliedFilter with native layers.
+ *
+ * This function creates wgpu resources for the filter rendering pipeline.
+ *
+ * # Arguments
+ *
+ * * `filter_ffi` - Pointer to the WuiAppliedFilter FFI struct (consumed)
+ * * `output_layer` - Platform-specific layer for filter output:
+ *   - Apple: `CAMetalLayer*`
+ *   - Android: `ANativeWindow*`
+ * * `input_width` - Width of the captured view in pixels
+ * * `input_height` - Height of the captured view in pixels
+ *
+ * # Returns
+ *
+ * Opaque pointer to the initialized state, or null on failure.
+ *
+ * # Safety
+ *
+ * - `filter_ffi` must be a valid pointer obtained from `waterui_force_as_metadata_applied_filter`
+ * - `output_layer` must be a valid platform-specific layer pointer
+ * - The layer must remain valid for the lifetime of the returned state
+ */
+struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilter *filter_ffi,
+                                                          void *output_layer,
+                                                          uint32_t input_width,
+                                                          uint32_t input_height);
+
+/**
+ * Setup the filter synchronously, call callback when ready.
+ *
+ * This function runs setup to completion using `pollster::block_on`
+ * and calls the callback when setup completes.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state from `waterui_applied_filter_init`
+ * * `callback` - Function to call when setup is complete
+ * * `user_data` - Opaque pointer passed to callback
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_applied_filter_init`
+ * - `callback` must be a valid function pointer
+ * - `user_data` must remain valid until callback is invoked
+ */
+void waterui_applied_filter_setup(struct WuiAppliedFilterState *state,
+                                  WuiCallback callback,
+                                  void *user_data);
+
+/**
+ * Render the filter.
+ *
+ * This function applies the filter to the captured input and renders to the output.
+ * Pass current width/height - resources are recreated if size changed.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state
+ * * `width` - Current width in pixels
+ * * `height` - Current height in pixels
+ *
+ * # Returns
+ *
+ * A `WuiAppliedFilterRenderResult` with:
+ * - `success`: whether rendering succeeded
+ * - `needs_redraw`: whether another frame is needed (for animations)
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_applied_filter_init`
+ * - `waterui_applied_filter_setup` must have completed (callback was called)
+ */
+struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppliedFilterState *state,
+                                                                  uint32_t width,
+                                                                  uint32_t height);
+
+/**
+ * Get a pointer to the capture texture.
+ *
+ * The native backend should render the child view to this texture.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_init`.
+ */
+const void *waterui_applied_filter_get_capture_texture(struct WuiAppliedFilterState *state);
+
+/**
+ * Clean up AppliedFilter resources.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_init`,
+ * and must not be used after this call.
+ */
+void waterui_applied_filter_drop(struct WuiAppliedFilterState *state);
 
 /**
  * Reads the current value from a computed

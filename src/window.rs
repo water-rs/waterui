@@ -300,21 +300,6 @@ impl Window {
     }
 }
 
-impl View for Window {
-    fn body(self, env: &Environment) -> impl View {
-        // Try to show the window via WindowManager if available
-        if let Some(manager) = env.get::<WindowManager>() {
-            manager.show(self);
-        } else {
-            tracing::warn!(
-                "WindowManager not found in environment. Window '{}' cannot be shown. \
-                 Multi-window support requires the native backend to install a WindowManager.",
-                self.title.get()
-            );
-        }
-        // Return an empty view as the window is managed separately
-    }
-}
 
 /// A handle to control a window after it has been shown.
 #[derive(Debug, Clone)]

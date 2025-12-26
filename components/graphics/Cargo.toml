@@ -17,6 +17,7 @@ default = []
 waterui-core.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
+filtrate-core.workspace = true
 pastey.workspace = true
 wgpu.workspace = true
 bytemuck = "1.14"
