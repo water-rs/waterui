@@ -108,7 +108,7 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
 lyon = "1.0"
-wgpu-hal = { version = "27.0", features = ["gles"] }
+wgpu-hal = { version = "27.0", features = ["gles", "metal"] }
 glow = "0.16"
 time = "0.3"
 tiny-skia = "0.11"

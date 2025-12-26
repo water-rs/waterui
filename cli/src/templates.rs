@@ -55,6 +55,8 @@ pub struct TemplateContext {
     pub backend_project_path: Option<PathBuf>,
     /// Android permissions to include in the manifest (e.g., "internet", "camera")
     pub android_permissions: Vec<String>,
+    /// iOS permissions to include in Info.plist (e.g., "microphone", "camera")
+    pub ios_permissions: Vec<(String, String)>,
 }
 
 impl TemplateContext {
@@ -95,7 +97,7 @@ impl TemplateContext {
                 "__SWIFT_PACKAGE_REFERENCE_SECTION__",
                 &self.swift_package_reference_section(),
             )
-            .replace("__IOS_PERMISSION_KEYS__", "")
+            .replace("__IOS_PERMISSION_KEYS__", &self.ios_permissions_plist())
             .replace("__ANDROID_PERMISSIONS__", &self.android_permissions_xml())
             .replace(
                 "__PROJECT_ROOT_RELATIVE_PATH__",
@@ -165,6 +167,33 @@ impl TemplateContext {
             .map_or(1, |p| p.components().count());
 
         (0..depth).map(|_| "..").collect::<Vec<_>>().join("/")
+    }
+
+    /// Generate iOS Info.plist permission keys for Xcode build settings.
+    fn ios_permissions_plist(&self) -> String {
+        if self.ios_permissions.is_empty() {
+            return String::new();
+        }
+
+        self.ios_permissions
+            .iter()
+            .filter_map(|(perm, desc)| {
+                let plist_key = match perm.to_lowercase().as_str() {
+                    "microphone" => "INFOPLIST_KEY_NSMicrophoneUsageDescription",
+                    "camera" => "INFOPLIST_KEY_NSCameraUsageDescription",
+                    "location" => "INFOPLIST_KEY_NSLocationWhenInUseUsageDescription",
+                    "photo_library" => "INFOPLIST_KEY_NSPhotoLibraryUsageDescription",
+                    "contacts" => "INFOPLIST_KEY_NSContactsUsageDescription",
+                    "calendars" => "INFOPLIST_KEY_NSCalendarsUsageDescription",
+                    "bluetooth" => "INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription",
+                    _ => return None, // Unknown permission, skip
+                };
+                // Escape double quotes in description
+                let escaped_desc = desc.replace('"', "\\\"");
+                Some(format!("                                {plist_key} = \"{escaped_desc}\";"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Generate Android permission XML entries for the manifest.
@@ -271,6 +300,7 @@ mod tests {
             waterui_path,
             backend_project_path,
             android_permissions: Vec::new(),
+            ios_permissions: Vec::new(),
         }
     }
 
