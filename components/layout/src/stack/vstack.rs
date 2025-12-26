@@ -92,18 +92,24 @@ impl Layout for VStackLayout {
             intrinsic_height
         };
 
-        // Width: max of children that don't stretch on cross axis (horizontally)
-        // (cross-axis stretching children don't contribute to intrinsic width)
+        // Width: when proposal.width is zero (min size query), include ALL children's widths
+        // to ensure container can't shrink below any child's minimum.
+        // Otherwise, exclude cross-axis stretching children from intrinsic width calculation.
+        let is_min_size_query = proposal.width == Some(0.0);
         let max_width = measurements
             .iter()
-            .filter(|m| !m.stretches_cross_axis())
+            .filter(|m| is_min_size_query || !m.stretches_cross_axis())
             .map(|m| m.size.width)
             .max_by(f32::total_cmp)
             .unwrap_or(0.0);
 
         // VStack stretches horizontally (cross-axis), so use proposed width when available
-        // This ensures VStack fills available width for proper child centering
-        let final_width = proposal.width.unwrap_or(max_width);
+        // (unless it's a min-size query where we want the minimum required width)
+        let final_width = if is_min_size_query {
+            max_width
+        } else {
+            proposal.width.unwrap_or(max_width)
+        };
 
         Size::new(final_width, final_height)
     }
@@ -448,5 +454,43 @@ mod tests {
         // Height: all children contribute (text_field doesn't stretch vertically)
         // = 20 + 10 + 40 + 10 + 44 = 124
         assert!((size.height - 124.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_vstack_min_size_query_includes_all_children() {
+        // When ProposalSize::ZERO is used (min size query), ALL children's widths
+        // should be included, even stretching ones. This is essential for window min size.
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Center,
+            spacing: 10.0,
+        };
+
+        let mut label = MockSubView {
+            size: Size::new(50.0, 20.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut toggle = MockSubView {
+            size: Size::new(200.0, 40.0), // Toggle with label has larger min width
+            stretch_axis: StretchAxis::Horizontal, // but it stretches horizontally
+        };
+        let mut button = MockSubView {
+            size: Size::new(80.0, 44.0),
+            stretch_axis: StretchAxis::None,
+        };
+
+        let children: Vec<&dyn SubView> = vec![&mut label, &mut toggle, &mut button];
+
+        // With ZERO proposal (min size query), toggle's width SHOULD be included
+        let min_size = layout.size_that_fits(ProposalSize::ZERO, &children);
+        // Width: max of ALL children = max(50, 200, 80) = 200
+        assert!((min_size.width - 200.0).abs() < f32::EPSILON, 
+            "Min size query should include stretching children's widths, got {}", min_size.width);
+        
+        // Verify existing behavior: UNSPECIFIED excludes stretching children
+        let children2: Vec<&dyn SubView> = vec![&mut label, &mut toggle, &mut button];
+        let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children2);
+        // Width: max of non-stretching children = max(50, 80) = 80
+        assert!((intrinsic_size.width - 80.0).abs() < f32::EPSILON,
+            "Unspecified proposal should exclude stretching children's widths, got {}", intrinsic_size.width);
     }
 }
