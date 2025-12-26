@@ -25,12 +25,25 @@ pub mod prewarm;
 /// Shared shader sources.
 pub mod shaders;
 
+/// GPU effect rendering for captured view content.
+pub mod view_effect;
+
+/// Filter-based view effects using the Filter trait system.
+pub mod filter_view;
+
 // Re-export key types for user convenience.
 pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 
 pub use shader_surface::ShaderSurface;
 
 pub use gradient_renderer::{Gradient, GradientConfig, GradientRenderer, GradientType, MeshGradient};
+
+pub use view_effect::{EffectContext, EffectInput, EffectOutput, EffectRenderer, OutputSize, ViewEffect};
+
+pub use filter_view::{
+    AppliedFilter, FilterAdapter, FilterContext, FilterInput, FilterOutput, FilterViewExt,
+    FilteredView, GpuFilter,
+};
 
 // Re-export dependencies used by macros
 pub use inventory;

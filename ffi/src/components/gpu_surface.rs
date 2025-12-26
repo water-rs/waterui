@@ -475,7 +475,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState
 
 /// Create a wgpu Surface from a platform-specific layer pointer.
 #[cfg(target_os = "macos")]
-fn create_surface_from_layer(
+pub(crate) fn create_surface_from_layer(
     instance: &wgpu::Instance,
     layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
@@ -489,7 +489,7 @@ fn create_surface_from_layer(
 }
 
 #[cfg(target_os = "ios")]
-fn create_surface_from_layer(
+pub(crate) fn create_surface_from_layer(
     instance: &wgpu::Instance,
     layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
@@ -502,7 +502,7 @@ fn create_surface_from_layer(
 }
 
 #[cfg(target_os = "android")]
-fn create_surface_from_layer(
+pub(crate) fn create_surface_from_layer(
     instance: &wgpu::Instance,
     layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
@@ -526,7 +526,7 @@ fn create_surface_from_layer(
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-fn create_surface_from_layer(
+pub(crate) fn create_surface_from_layer(
     _instance: &wgpu::Instance,
     _layer: *mut c_void,
 ) -> Option<wgpu::Surface<'static>> {
