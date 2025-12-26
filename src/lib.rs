@@ -49,6 +49,9 @@ pub mod prelude {
         shape, signal, style, task, text, webview, widget, window,
     };
 
+    // Filter extension trait for GPU filters
+    pub use super::graphics::FilterViewExt;
+
     pub use super::color::*;
     pub use super::fullscreen::*;
 

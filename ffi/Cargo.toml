@@ -42,9 +42,14 @@ raw-window-handle = "0.6"
 tracing-android = "0.2"
 ndk-context = "0.1.1"
 jni = "0.21.1"
+ndk = "0.9"
+ash = "0.38"
+wgpu-hal = { workspace = true, features = ["vulkan"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
+metal = "0.32"
+wgpu-hal = { workspace = true, features = ["metal"] }
 
 
 [[bin]]
