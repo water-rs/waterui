@@ -57,8 +57,8 @@ impl Coordinate {
     #[must_use]
     pub fn from_location(location: &Location) -> Self {
         Self {
-            latitude: location.latitude,
-            longitude: location.longitude,
+            latitude: location.latitude(),
+            longitude: location.longitude(),
         }
     }
 }
