@@ -19,13 +19,13 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, Signal, impl_constant, signal::IntoComputed};
+use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
 use waterui_core::{AnyView, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
 
-use crate::{ViewExt, background::{Material, MaterialBackground}, prelude::FullScreenOverlayManager};
+use crate::{ViewExt, background::{Material, MaterialBackground}, prelude::FullScreenOverlayManager, snackbar::SnackbarManager};
 
 /// Represents a window in the UI.
 #[derive(Debug)]
@@ -168,14 +168,19 @@ impl Window {
     #[must_use]
     pub fn new(title: impl IntoComputed<Str>, content: impl View) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
-        let (manager, overlay_view) = FullScreenOverlayManager::new();
+        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
+        let (snackbar_manager, snackbar_view) = SnackbarManager::new();
 
         Self {
             title: title.into_computed(),
             closable: true,
             resizable: true,
             frame: Binding::container(default_frame),
-            content: AnyView::new(zstack((content, overlay_view)).with(manager)),
+            content: AnyView::new(
+                zstack((content, overlay_view, snackbar_view))
+                    .with(overlay_manager)
+                    .with(snackbar_manager),
+            ),
             state: Binding::default(),
             toolbar: None,
             style: WindowStyle::default(),
