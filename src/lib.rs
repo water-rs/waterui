@@ -15,6 +15,7 @@ pub mod error;
 pub mod filter;
 pub mod gesture;
 pub mod gradient;
+pub mod interaction;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -54,6 +55,7 @@ pub mod prelude {
 
     pub use super::color::*;
     pub use super::fullscreen::*;
+    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
     pub use super::border::Border;
     pub use super::component::*;
@@ -140,6 +142,7 @@ pub use entry::entry;
 
 pub mod app;
 pub mod fullscreen;
+pub mod snackbar;
 pub mod window;
 
 pub use tracing as log;
