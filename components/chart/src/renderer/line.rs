@@ -1,0 +1,474 @@
+//! Line chart GPU renderer.
+//!
+//! Renders line charts using instanced rendering where each segment is a quad.
+//! Supports animation interpolation between data states and area fills.
+
+use alloc::vec::Vec;
+use core::future::Future;
+
+use encase::ShaderType;
+use waterui_core::layout::Point;
+use waterui_graphics::color::Srgb;
+use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+
+use crate::animation::ChartAnimation;
+use crate::data::{DataBounds, DataPoint};
+use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
+use crate::renderer::base::{
+    create_storage_buffer, create_uniform_buffer, shader_with_common,
+    write_storage_buffer, write_uniform_buffer, ChartUniforms,
+};
+use crate::renderer::ChartRenderer;
+
+/// GPU-accelerated line chart renderer.
+///
+/// Uses instanced rendering to draw line segments efficiently.
+/// Supports smooth animation between data states via double-buffering.
+pub struct LineChartRenderer {
+    // Data
+    data: Vec<DataPoint>,
+    bounds: DataBounds,
+    line_color: [f32; 4],
+    line_width: f32,
+    show_fill: bool,
+    fill_opacity: f32,
+
+    // GPU resources (initialized on setup)
+    pipeline: Option<wgpu::RenderPipeline>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    current_buffer: Option<wgpu::Buffer>,
+    previous_buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
+
+    // Animation state
+    animation: ChartAnimation,
+    needs_redraw: bool,
+
+    // Zoom/pan state for interactive navigation
+    zoom_pan: ZoomPanState,
+}
+
+impl Default for LineChartRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LineChartRenderer {
+    /// Creates a new line chart renderer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            bounds: DataBounds::default(),
+            line_color: [0.231, 0.510, 0.965, 1.0], // Blue #3B82F6
+            line_width: 2.0,
+            show_fill: false,
+            fill_opacity: 0.3,
+            pipeline: None,
+            uniform_buffer: None,
+            current_buffer: None,
+            previous_buffer: None,
+            bind_group: None,
+            animation: ChartAnimation::default(),
+            needs_redraw: false,
+            zoom_pan: ZoomPanState::new(),
+        }
+    }
+
+    /// Resets zoom and pan to default state.
+    pub fn reset_zoom_pan(&mut self) {
+        self.zoom_pan.reset();
+    }
+
+    /// Returns the current zoom scale.
+    #[must_use]
+    pub fn zoom_scale(&self) -> f32 {
+        self.zoom_pan.scale
+    }
+
+    /// Sets the line color from sRGB values.
+    pub fn set_color(&mut self, color: Srgb) {
+        self.line_color = [color.red, color.green, color.blue, 1.0];
+    }
+
+    /// Sets the line width in pixels.
+    pub fn set_line_width(&mut self, width: f32) {
+        self.line_width = width;
+    }
+
+    /// Enables area fill below the line.
+    pub fn set_fill(&mut self, show: bool, opacity: f32) {
+        self.show_fill = show;
+        self.fill_opacity = opacity;
+    }
+
+    /// Sets the data directly (for initial setup before GPU is ready).
+    pub fn set_data(&mut self, data: Vec<DataPoint>) {
+        self.bounds = DataBounds::from_points(&data);
+        self.data = data;
+    }
+
+    fn create_pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+        };
+        let shader_source = shader_with_common(include_str!("../shaders/line.wgsl"));
+        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Line Chart Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Line Chart Bind Group Layout"),
+                    entries: &[
+                        // Uniforms
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Current data
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Previous data (for animation)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Line Chart Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        ctx.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Line Chart Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: ctx.pipeline_cache,
+            })
+    }
+}
+
+impl GpuRenderer for LineChartRenderer {
+    fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+        // Create pipeline
+        self.pipeline = Some(Self::create_pipeline(ctx));
+
+        // Create uniform buffer with line-specific uniforms
+        let uniforms = LineUniforms::default();
+        self.uniform_buffer = Some(create_uniform_buffer(ctx, "Line Chart Uniforms", &uniforms));
+
+        // Create data buffers with initial capacity
+        let initial_capacity = self.data.len().max(64);
+        let initial_data: Vec<GpuLinePoint> = self
+            .data
+            .iter()
+            .map(|p| GpuLinePoint { x: p.x, y: p.y })
+            .collect();
+
+        self.current_buffer = Some(if initial_data.is_empty() {
+            create_storage_buffer(
+                ctx,
+                "Line Chart Current Data",
+                &vec![GpuLinePoint::default(); initial_capacity],
+            )
+        } else {
+            create_storage_buffer(ctx, "Line Chart Current Data", &initial_data)
+        });
+
+        self.previous_buffer = Some(if initial_data.is_empty() {
+            create_storage_buffer(
+                ctx,
+                "Line Chart Previous Data",
+                &vec![GpuLinePoint::default(); initial_capacity],
+            )
+        } else {
+            create_storage_buffer(ctx, "Line Chart Previous Data", &initial_data)
+        });
+
+        // Create bind group
+        let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
+        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Line Chart Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.current_buffer.as_ref().unwrap().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.previous_buffer.as_ref().unwrap().as_entire_binding(),
+                },
+            ],
+        }));
+
+        async {}
+    }
+
+    fn render(&mut self, frame: &GpuFrame) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
+
+        if self.data.len() < 2 {
+            // Need at least 2 points to draw a line - clear to transparent
+            let mut encoder = frame
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Line Chart Clear Encoder"),
+                });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Line Chart Clear Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &frame.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+            }
+            frame.queue.submit([encoder.finish()]);
+            return;
+        }
+
+        // Update zoom/pan state from gesture input
+        self.zoom_pan.update(&frame.gesture, frame.width as f32, frame.height as f32);
+
+        // Transform bounds based on zoom/pan state
+        let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
+
+        // Update uniforms with transformed bounds
+        let uniforms = LineUniforms {
+            chart: ChartUniforms {
+                viewport: glam::Vec4::new(
+                    frame.width as f32,
+                    frame.height as f32,
+                    1.0 / frame.width as f32,
+                    1.0 / frame.height as f32,
+                ),
+                bounds: glam::Vec4::new(
+                    visible_bounds.min_x,
+                    visible_bounds.max_x,
+                    visible_bounds.min_y,
+                    visible_bounds.max_y,
+                ),
+                animation: glam::Vec4::new(
+                    self.animation.time,
+                    self.animation.progress,
+                    self.animation.easing as f32,
+                    if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                ),
+                pointer: if let Some((x, y)) = frame.pointer_normalized() {
+                    glam::Vec4::new(x, y, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                } else {
+                    glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                },
+            },
+            line_color: glam::Vec4::from_array(self.line_color),
+            line_width: self.line_width,
+            show_fill: if self.show_fill { 1.0 } else { 0.0 },
+            fill_opacity: self.fill_opacity,
+            point_count: self.data.len() as f32,
+        };
+        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+
+        // Render line segments
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Line Chart Encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Line Chart Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                ..Default::default()
+            });
+
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            // 6 vertices per segment (2 triangles), one segment per pair of adjacent points
+            let segment_count = (self.data.len() - 1) as u32;
+            pass.draw(0..6, 0..segment_count);
+        }
+
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+impl ChartRenderer for LineChartRenderer {
+    type Data = Vec<DataPoint>;
+    type DataValue = DataPoint;
+
+    fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+        // Swap buffers for animation
+        core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
+
+        // Update data
+        self.data = data.clone();
+        self.bounds = DataBounds::from_points(&self.data).with_padding(0.1);
+
+        // Upload to GPU
+        if let Some(buffer) = &self.current_buffer {
+            let gpu_data: Vec<GpuLinePoint> = data
+                .iter()
+                .map(|p| GpuLinePoint { x: p.x, y: p.y })
+                .collect();
+            write_storage_buffer(queue, buffer, &gpu_data);
+        }
+
+        self.needs_redraw = true;
+    }
+
+    fn set_animation(&mut self, animation: &ChartAnimation) {
+        self.animation = *animation;
+        self.needs_redraw = animation.progress < 1.0;
+    }
+
+    fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<DataPoint>> {
+        if self.data.len() < 2 {
+            return None;
+        }
+
+        // Convert screen point to chart coordinates
+        let chart_x = (point.x - viewport.x) / viewport.width;
+        let chart_y = 1.0 - (point.y - viewport.y) / viewport.height;
+
+        if chart_x < 0.0 || chart_x > 1.0 || chart_y < 0.0 || chart_y > 1.0 {
+            return None;
+        }
+
+        // Find closest point on the line
+        let hit_radius = 10.0 / viewport.width.min(viewport.height); // 10px hit area
+        let mut closest_idx = None;
+        let mut closest_dist = f32::MAX;
+
+        for (i, data_point) in self.data.iter().enumerate() {
+            let normalized_x = (data_point.x - self.bounds.min_x) / (self.bounds.max_x - self.bounds.min_x);
+            let normalized_y = (data_point.y - self.bounds.min_y) / (self.bounds.max_y - self.bounds.min_y);
+
+            let dx = chart_x - normalized_x;
+            let dy = chart_y - normalized_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            if dist < closest_dist && dist < hit_radius {
+                closest_dist = dist;
+                closest_idx = Some(i);
+            }
+        }
+
+        closest_idx.map(|i| HitResult {
+            series: 0,
+            index: i,
+            value: self.data[i],
+            screen_position: point,
+        })
+    }
+
+    fn data_bounds(&self) -> DataBounds {
+        self.bounds
+    }
+
+    fn data_count(&self) -> usize {
+        self.data.len()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
+}
+
+/// GPU-friendly line point.
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, ShaderType)]
+struct GpuLinePoint {
+    x: f32,
+    y: f32,
+}
+
+/// Line chart specific uniforms.
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, ShaderType)]
+struct LineUniforms {
+    chart: ChartUniforms,
+    line_color: glam::Vec4,
+    line_width: f32,
+    show_fill: f32,
+    fill_opacity: f32,
+    point_count: f32,
+}
