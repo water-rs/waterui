@@ -567,11 +567,22 @@ impl View for FilledShape {
 // LyonShapeRenderer - Lyon tessellation + HDR GPU rendering
 // ============================================================================
 
-/// Vertex for shape rendering.
+/// Vertex attribute struct for shape rendering.
+/// Uses bytemuck because it's used as vertex attributes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShapeVertex {
     position: [f32; 2],
+}
+
+/// Uniform buffer struct for shape rendering.
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Clone, Copy, Debug, Default, encase::ShaderType)]
+struct ShapeUniforms {
+    /// Fill color in linear RGB with HDR headroom.
+    color: glam::Vec4,
+    /// Size of the shape (width, height).
+    size: glam::Vec2,
 }
 
 /// GPU renderer for shapes using Lyon tessellation.
@@ -757,10 +768,11 @@ impl GpuRenderer for LyonShapeRenderer {
             source: wgpu::ShaderSource::Wgsl(SHAPE_SHADER.source.into()),
         });
 
-        // Create uniform buffer for color
+        // Create uniform buffer for color using encase size calculation
+        let uniform_size = <ShapeUniforms as encase::ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shape Uniform Buffer"),
-            size: 32, // vec4<f32> color + vec2<f32> size + padding
+            size: uniform_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -798,6 +810,12 @@ impl GpuRenderer for LyonShapeRenderer {
                 push_constant_ranges: &[],
             });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         // Try to Create Pipeline with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -825,7 +843,7 @@ impl GpuRenderer for LyonShapeRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -874,7 +892,7 @@ impl GpuRenderer for LyonShapeRenderer {
                         entry_point: Some("fs_main"),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: ctx.surface_format,
-                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            blend,
                             write_mask: wgpu::ColorWrites::ALL,
                         })],
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -987,7 +1005,7 @@ impl GpuRenderer for LyonShapeRenderer {
 
         tracing::warn!("[Shape] drawing {} indices", self.num_indices);
 
-        // Update uniforms with HDR color
+        // Update uniforms with HDR color using encase
         let [r, g, b] = self.fill_color.linear_with_headroom();
         let opacity = self.fill_color.opacity;
         tracing::warn!(
@@ -995,19 +1013,15 @@ impl GpuRenderer for LyonShapeRenderer {
             r, g, b, opacity, frame.width, frame.height
         );
         #[allow(clippy::cast_precision_loss)]
-        let uniforms = [
-            r,
-            g,
-            b,
-            opacity,
-            frame.width as f32,
-            frame.height as f32,
-            0.0,
-            0.0,
-        ];
+        let uniforms = ShapeUniforms {
+            color: glam::Vec4::new(r, g, b, opacity),
+            size: glam::Vec2::new(frame.width as f32, frame.height as f32),
+        };
+        let mut uniform_data = encase::UniformBuffer::new(alloc::vec::Vec::new());
+        uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
         frame
             .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
+            .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
         let mut encoder = frame
             .device
@@ -1136,6 +1150,12 @@ impl GpuRenderer for SdfShapeRenderer {
             push_constant_ranges: &[],
         });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         // Try to Create Pipeline with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         
@@ -1153,7 +1173,7 @@ impl GpuRenderer for SdfShapeRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -1187,7 +1207,7 @@ impl GpuRenderer for SdfShapeRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),

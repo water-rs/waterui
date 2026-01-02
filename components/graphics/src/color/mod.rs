@@ -680,10 +680,11 @@ impl View for Color {
 
 static SOLID_COLOR_SHADER: crate::prewarm::PrewarmedShader = crate::include_shader!("../shaders/solid_color.wgsl");
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, crate::bytemuck::Pod, crate::bytemuck::Zeroable)]
+/// Uniform buffer layout for solid color rendering.
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, encase::ShaderType)]
 struct SolidColorUniforms {
-    color: [f32; 4],
+    color: glam::Vec4,
 }
 
 struct SolidColorRenderer {
@@ -716,9 +717,10 @@ impl crate::GpuRenderer for SolidColorRenderer {
             source: crate::wgpu::ShaderSource::Wgsl(SOLID_COLOR_SHADER.source.clone().into()),
         });
 
+        let uniform_size = <SolidColorUniforms as encase::ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = device.create_buffer(&crate::wgpu::BufferDescriptor {
             label: Some("Solid Color Uniforms"),
-            size: core::mem::size_of::<SolidColorUniforms>() as u64,
+            size: uniform_size,
             usage: crate::wgpu::BufferUsages::UNIFORM | crate::wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -752,6 +754,12 @@ impl crate::GpuRenderer for SolidColorRenderer {
             push_constant_ranges: &[],
         });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(crate::wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         // Try with cache first
         device.push_error_scope(crate::wgpu::ErrorFilter::Validation);
 
@@ -769,7 +777,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(crate::wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend: Some(crate::wgpu::BlendState::ALPHA_BLENDING),
+                    blend,
                     write_mask: crate::wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
@@ -803,7 +811,7 @@ impl crate::GpuRenderer for SolidColorRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(crate::wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(crate::wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: crate::wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
@@ -839,12 +847,14 @@ impl crate::GpuRenderer for SolidColorRenderer {
         let Some(uniform_buffer) = &self.uniform_buffer else { return };
         let Some(bind_group) = &self.bind_group else { return };
 
-        // Update uniforms
+        // Update uniforms using encase
         let [r, g, b] = self.color.linear_with_headroom();
         let uniforms = SolidColorUniforms {
-            color: [r, g, b, self.color.opacity],
+            color: glam::Vec4::new(r, g, b, self.color.opacity),
         };
-        frame.queue.write_buffer(uniform_buffer, 0, crate::bytemuck::bytes_of(&uniforms));
+        let mut uniform_data = encase::UniformBuffer::new(alloc::vec::Vec::new());
+        uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+        frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
         let mut encoder = frame.device.create_command_encoder(&crate::wgpu::CommandEncoderDescriptor {
             label: Some("Solid Color Encoder"),

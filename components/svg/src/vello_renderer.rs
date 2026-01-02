@@ -260,6 +260,12 @@ impl GpuRenderer for VelloSvgRenderer {
                     push_constant_ranges: &[],
                 });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         let pipeline = ctx
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -276,7 +282,7 @@ impl GpuRenderer for VelloSvgRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
