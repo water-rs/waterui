@@ -1,0 +1,20 @@
+[package]
+name = "snackbar-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Snackbar example for WaterUI framework"
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ui", "framework", "example", "snackbar"]
+categories = ["gui"]
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+waterui.workspace = true
+waterui-ffi.workspace = true
+waterui-icon.workspace = true
