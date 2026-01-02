@@ -106,13 +106,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // --- Waveform: Time-domain oscilloscope ---
+// Cubic Hermite Spline Interpolation for smoother curves
 fn get_interpolated_sample(t: f32) -> f32 {
     let idx_f = t * f32(SAMPLES_COUNT - 1u);
     let i = u32(idx_f);
     let f = fract(idx_f);
-    let s0 = audio_samples[i];
-    let s1 = audio_samples[min(i + 1u, SAMPLES_COUNT - 1u)];
-    return mix(s0, s1, f);
+    
+    // Get 4 samples for cubic interpolation
+    let i0 = select(i - 1u, 0u, i == 0u);
+    let i1 = i;
+    let i2 = min(i + 1u, SAMPLES_COUNT - 1u);
+    let i3 = min(i + 2u, SAMPLES_COUNT - 1u);
+    
+    let s0 = audio_samples[i0];
+    let s1 = audio_samples[i1];
+    let s2 = audio_samples[i2];
+    let s3 = audio_samples[i3];
+    
+    // Catmull-Rom spline (tension = 0.5)
+    let t2 = f * f;
+    let t3 = t2 * f;
+    
+    let a = -0.5 * s0 + 1.5 * s1 - 1.5 * s2 + 0.5 * s3;
+    let b = s0 - 2.5 * s1 + 2.0 * s2 - 0.5 * s3;
+    let c = -0.5 * s0 + 0.5 * s2;
+    let d = s1;
+    
+    return a * t3 + b * t2 + c * f + d;
 }
 
 // --- Waveform: Time-domain oscilloscope ---
@@ -212,7 +232,7 @@ fn draw_spectrum(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     for (var i: u32 = 0u; i < bins_per_bar; i = i + 1u) {
         sum += frequency_data[start_bin + i];
     }
-    let height = sum / f32(bins_per_bar);
+    let height = (sum / f32(bins_per_bar)) * uniforms.sensitivity;
     
     var color = bg;
     
@@ -245,7 +265,7 @@ fn draw_spectrum(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
 fn draw_spectrogram(uv: vec2<f32>, bg: vec3<f32>) -> vec3<f32> {
     // Y = frequency, X = time (but we only have current frame, so show vertical spectrum)
     let freq_idx = u32(uv.y * f32(FREQ_BINS - 1u));
-    let intensity = frequency_data[freq_idx];
+    let intensity = clamp(frequency_data[freq_idx] * uniforms.sensitivity, 0.0, 1.0);
     
     // Heat map based on primary/secondary colors
     // Low intensity = bg, Mid = Primary, High = Secondary

@@ -11,14 +11,4 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui.workspace = true
 waterui-ffi.workspace = true
-wgpu.workspace = true
-bytemuck = { version = "1.16", features = ["derive"] }
-rand = "0.8"
-waterkit-audio = { git = "https://github.com/water-rs/kit" }
-rodio = "0.19.0"
-log = "0.4"
-pollster = "0.3"
-
-# Direct dependncy bypassing waterui to ensure clean build if needed
-# waterui-graphics.workspace = true 
-# waterui-core.workspace = true
+waterui-visualizer = { path = "../../components/visualizer" }
