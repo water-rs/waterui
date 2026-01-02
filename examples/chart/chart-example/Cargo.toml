@@ -1,0 +1,20 @@
+[package]
+name = "chart_example"
+version = "0.1.0"
+edition = "2024"
+authors = ["lexoliu"]
+
+[lib]
+crate-type = [
+    "staticlib",
+    "cdylib",
+    "rlib",
+]
+
+[dependencies.waterui]
+path = "../."
+
+[dependencies.waterui-ffi]
+path = ".././ffi"
+
+[workspace]
