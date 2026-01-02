@@ -5,6 +5,17 @@ use std::path::{Path, PathBuf};
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 
+/// Get the dynamic library extension for a target triple.
+#[must_use]
+pub fn lib_extension_for_triple(triple: &Triple) -> &'static str {
+    match triple.operating_system {
+        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX { .. } => "dylib",
+        OperatingSystem::Windows { .. } => "dll",
+        // Linux, Android, iOS, and most others use .so for cdylib
+        _ => "so",
+    }
+}
+
 use crate::utils::{command, run_command};
 
 /// Represents a Rust build for a specific target triple.
@@ -121,6 +132,38 @@ impl RustBuild {
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<PathBuf, RustBuildError> {
         self.build_inner(release).await
+    }
+
+    /// Build a dynamic library (cdylib) and return the full path to the dylib file.
+    ///
+    /// This is a convenience method that builds the library and computes the full
+    /// path to the resulting dylib file based on the crate name and target triple.
+    ///
+    /// # Errors
+    /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
+    /// - `RustBuildError::FailToBuildRustLibrary`: If the library was not found after building.
+    pub async fn build_dylib(
+        &self,
+        crate_name: &str,
+        release: bool,
+    ) -> Result<PathBuf, RustBuildError> {
+        let lib_dir = self.build_inner(release).await?;
+
+        let lib_name = crate_name.replace('-', "_");
+        let ext = lib_extension_for_triple(&self.triple);
+        let dylib_path = lib_dir.join(format!("lib{lib_name}.{ext}"));
+
+        if !dylib_path.exists() {
+            return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Dylib not found at {}. Ensure Cargo.toml has crate-type = [\"cdylib\"]",
+                    dylib_path.display()
+                ),
+            )));
+        }
+
+        Ok(dylib_path)
     }
 
     /// Return target directory path

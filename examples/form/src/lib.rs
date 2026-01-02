@@ -8,6 +8,7 @@
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
+use waterui::preview;
 use waterui::text::font::FontWeight;
 use waterui::text::font::ResolvedFont;
 
@@ -157,3 +158,18 @@ pub fn app(mut env: Environment) -> App {
 }
 
 waterui_ffi::export!();
+
+// Preview function for testing the preview system
+#[preview]
+fn sample_card() -> impl View {
+    vstack((
+        text("Sample Card").title(),
+        "This is a preview test",
+        Divider,
+        hstack((
+            text("Status:").bold(),
+            text("Active"),
+        )),
+    ))
+    .padding_with(EdgeInsets::all(16.0))
+}
