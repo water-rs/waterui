@@ -137,6 +137,11 @@
 
 use core::time::Duration;
 
+use crate::easing::{EasingCurve, Interpolatable};
+
+/// Default spring animation duration (used for timing calculations).
+const DEFAULT_SPRING_DURATION: Duration = Duration::from_millis(600);
+
 /// An enumeration representing different types of animations
 ///
 /// This enum provides various animation types for UI elements or graphics:
@@ -144,6 +149,7 @@ use core::time::Duration;
 /// - `EaseIn`: Starts slow and accelerates
 /// - `EaseOut`: Starts fast and decelerates
 /// - `EaseInOut`: Starts and ends slowly with acceleration in the middle
+/// - `CubicBezier`: Custom bezier curve with control points
 /// - `Spring`: Physics-based movement with configurable stiffness and damping
 ///
 /// Each animation type (except Spring) takes a Duration parameter that specifies
@@ -162,6 +168,19 @@ pub enum Animation {
     EaseOut(Duration),
     /// Ease-in-out animation that starts and ends slowly with acceleration in the middle
     EaseInOut(Duration),
+    /// Custom cubic bezier animation with control points (x1, y1, x2, y2)
+    CubicBezier {
+        /// Animation duration
+        duration: Duration,
+        /// First control point X (0.0 to 1.0)
+        x1: f32,
+        /// First control point Y
+        y1: f32,
+        /// Second control point X (0.0 to 1.0)
+        x2: f32,
+        /// Second control point Y
+        y2: f32,
+    },
     /// Spring animation with physics-based movement
     Spring {
         /// Stiffness of the spring (higher values create faster animations)
@@ -256,6 +275,115 @@ impl Animation {
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
         Self::Spring { stiffness, damping }
+    }
+
+    /// Creates a new custom cubic bezier animation
+    ///
+    /// Control points define the shape of the easing curve.
+    /// Standard curves can be created with these control points:
+    /// - Linear: (0.0, 0.0, 1.0, 1.0)
+    /// - Ease-in: (0.42, 0.0, 1.0, 1.0)
+    /// - Ease-out: (0.0, 0.0, 0.58, 1.0)
+    /// - Ease-in-out: (0.42, 0.0, 0.58, 1.0)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// // Custom bounce-like curve
+    /// let animation = Animation::bezier(Duration::from_millis(400), 0.25, 0.1, 0.25, 1.0);
+    /// ```
+    pub fn bezier(duration: impl Into<Duration>, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self::CubicBezier {
+            duration: duration.into(),
+            x1,
+            y1,
+            x2,
+            y2,
+        }
+    }
+
+    /// Get the underlying easing curve for this animation.
+    ///
+    /// This allows using the unified easing system for interpolation.
+    #[must_use]
+    pub fn curve(&self) -> EasingCurve {
+        match self {
+            Self::Default => EasingCurve::EASE_IN_OUT,
+            Self::Linear(_) => EasingCurve::LINEAR,
+            Self::EaseIn(_) => EasingCurve::EASE_IN,
+            Self::EaseOut(_) => EasingCurve::EASE_OUT,
+            Self::EaseInOut(_) => EasingCurve::EASE_IN_OUT,
+            Self::CubicBezier { x1, y1, x2, y2, .. } => EasingCurve::bezier(*x1, *y1, *x2, *y2),
+            Self::Spring { stiffness, damping } => EasingCurve::spring(*stiffness, *damping),
+        }
+    }
+
+    /// Get the total duration of this animation.
+    ///
+    /// For spring animations, returns a default duration (600ms) since spring
+    /// duration depends on the physics parameters.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        match self {
+            Self::Default => Duration::from_millis(250),
+            Self::Linear(d)
+            | Self::EaseIn(d)
+            | Self::EaseOut(d)
+            | Self::EaseInOut(d)
+            | Self::CubicBezier { duration: d, .. } => *d,
+            Self::Spring { .. } => DEFAULT_SPRING_DURATION,
+        }
+    }
+
+    /// Get the eased progress for the given elapsed time.
+    ///
+    /// Returns a value typically between 0.0 and 1.0, though spring animations
+    /// may temporarily overshoot (return values > 1.0 or < 0.0).
+    ///
+    /// # Arguments
+    ///
+    /// * `elapsed` - Time elapsed since animation started
+    #[must_use]
+    pub fn progress(&self, elapsed: Duration) -> f32 {
+        let duration = self.duration();
+        if duration.is_zero() {
+            return 1.0;
+        }
+
+        let t = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+        self.curve().ease(t)
+    }
+
+    /// Interpolate between two values based on elapsed time.
+    ///
+    /// Uses the animation's easing curve to calculate the current value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_core::animation::Animation;
+    /// use core::time::Duration;
+    ///
+    /// let anim = Animation::ease_in_out(Duration::from_millis(300));
+    /// let elapsed = Duration::from_millis(150); // halfway through
+    ///
+    /// let value = anim.interpolate(0.0_f32, 100.0_f32, elapsed);
+    /// // value is approximately 50.0, but eased
+    /// ```
+    pub fn interpolate<T: Interpolatable>(&self, from: T, to: T, elapsed: Duration) -> T {
+        let progress = self.progress(elapsed);
+        from.lerp(&to, progress)
+    }
+
+    /// Returns true if the animation is complete.
+    ///
+    /// An animation is complete when the elapsed time equals or exceeds its duration.
+    #[must_use]
+    pub fn is_complete(&self, elapsed: Duration) -> bool {
+        elapsed >= self.duration()
     }
 }
 

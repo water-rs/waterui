@@ -36,6 +36,23 @@ pub enum WuiAnimation {
         /// Duration in milliseconds
         duration_ms: u64,
     },
+    /// Custom cubic bezier animation with control points
+    ///
+    /// Native backends can use these control points with:
+    /// - Apple: `CAMediaTimingFunction(controlPoints:)`
+    /// - Android: `PathInterpolator(x1, y1, x2, y2)`
+    CubicBezier {
+        /// Duration in milliseconds
+        duration_ms: u64,
+        /// First control point X (0.0 to 1.0)
+        x1: f32,
+        /// First control point Y
+        y1: f32,
+        /// Second control point X (0.0 to 1.0)
+        x2: f32,
+        /// Second control point Y
+        y2: f32,
+    },
     /// Spring animation with physics-based movement
     Spring {
         /// Stiffness of the spring (higher = faster)
@@ -62,6 +79,19 @@ impl IntoFFI for Animation {
             },
             Animation::EaseInOut(d) => WuiAnimation::EaseInOut {
                 duration_ms: d.as_millis() as u64,
+            },
+            Animation::CubicBezier {
+                duration,
+                x1,
+                y1,
+                x2,
+                y2,
+            } => WuiAnimation::CubicBezier {
+                duration_ms: duration.as_millis() as u64,
+                x1,
+                y1,
+                x2,
+                y2,
             },
             Animation::Spring { stiffness, damping } => WuiAnimation::Spring { stiffness, damping },
         }
