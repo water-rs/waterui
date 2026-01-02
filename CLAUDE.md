@@ -16,13 +16,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 <important>
 - Follow fast fail principle: if an unexpected case is encountered, crash early with a clear error message rather than fallback.
+- Utilize rust's type system to enforce invariants at compile time rather than runtime checks.
+- Use struct,trait and genetic abstractions rather than enum and type-erasure when possible.
 - Put shader to a separate file rather than embedding as string literal. Same for large text assets.
+- Do not write duplicated code. If you find yourself copying and pasting code, consider refactoring it into a shared function or module.
 - Always render on GPU rather than CPU
 - You are not allowed to revert or restore files or hide problems. If you find a bug, fix it properly rather than working around it.
 - Do not leave legacy code for fallback. If a feature is deprecated, remove all related code.
 - No simplify, no stub, no fallback, no patch.
 - Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For intance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
 - Do not clean cache blindly
+- Import third-party crates instead of writing your own implementation. Less code is better.
 </important>
 
 ## Build Commands
@@ -157,8 +161,8 @@ pub trait View: 'static {
 ### Application Entry Point Pattern
 
 ```rust
-pub fn init() -> Environment {
-    Environment::new()
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
 
 pub fn main() -> impl View {

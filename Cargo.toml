@@ -38,6 +38,7 @@ keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
 [workspace.package]
+version = "0.2.1"
 edition = "2024"
 authors = ["Lexo Liu"]
 rust-version = "1.87"
@@ -101,12 +102,14 @@ filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
 waterui-barcode = { version = "0.1.0", path = "components/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/particle" }
+waterui-chart = { version = "0.1.0", path = "components/chart" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui = { version = "0.2.1", path = "." }
 native-executor = { version = "0.7.0" }
 waterui-macros = { version = "0.2.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 wgpu = "27.0.1"
+encase = { version = "0.10", features = ["glam"] }
 vello = { git = "https://github.com/linebender/vello", branch = "main" }
 lyon = "1.0"
 wgpu-hal = { version = "27.0", features = ["gles", "metal"] }
@@ -122,6 +125,7 @@ gtk4 = "0.9"
 gdk4 = "0.9"
 glib = "0.20"
 cairo-rs = { version = "0.20", features = ["v1_18"] }
+pollster = "0.4"
 
 
 [dependencies]
@@ -146,6 +150,7 @@ waterui-macros.workspace = true
 libloading = "0.9"
 uuid = { version = "1.18.1", features = ["v4"] }
 waterui-graphics.workspace = true
+waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-svg.workspace = true
 
