@@ -9,7 +9,7 @@ use target_lexicon::Triple;
 
 use super::file_watcher::FileWatcher;
 use super::hot_reload::{BroadcastMessage, BuildManager, DEFAULT_PORT, HotReloadServer};
-use crate::build::RustBuild;
+use crate::build::{RustBuild, lib_extension_for_triple};
 use crate::project::Project;
 
 /// Events emitted by the hot reload runner.
@@ -123,17 +123,6 @@ impl HotReloadRunner {
     #[must_use]
     pub fn into_server(self) -> HotReloadServer {
         self.server
-    }
-}
-
-/// Get the library extension for a target triple.
-fn lib_extension_for_triple(triple: &Triple) -> &'static str {
-    use target_lexicon::OperatingSystem;
-    match triple.operating_system {
-        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX { .. } => "dylib",
-        OperatingSystem::Windows { .. } => "dll",
-        // Linux, Android, iOS, and most others use .so for cdylib
-        _ => "so",
     }
 }
 
