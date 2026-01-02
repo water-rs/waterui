@@ -77,6 +77,84 @@ impl GpuContext<'_> {
     }
 }
 
+/// Pointer/cursor state for GPU surfaces.
+///
+/// Provides information about the current pointer position and press state,
+/// enabling GPU renderers to implement hover effects, hit detection, and
+/// interactive feedback directly in shaders.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PointerState {
+    /// Current pointer position in surface-local coordinates (pixels).
+    /// `None` if the pointer is not over this surface.
+    pub position: Option<waterui_core::layout::Point>,
+    /// Position where the current hit (press/touch) started.
+    /// `None` if not currently pressed. Use `hit.is_some()` to check press state.
+    pub hit: Option<waterui_core::layout::Point>,
+}
+
+impl PointerState {
+    /// Returns the normalized position (0.0 to 1.0) within the given dimensions.
+    /// Returns `None` if there is no active pointer position.
+    #[must_use]
+    pub fn normalized(&self, width: u32, height: u32) -> Option<(f32, f32)> {
+        self.position.map(|p| {
+            (p.x / width as f32, p.y / height as f32)
+        })
+    }
+
+    /// Returns `true` if the pointer is hovering over this surface.
+    #[must_use]
+    pub const fn is_hovering(&self) -> bool {
+        self.position.is_some()
+    }
+}
+
+/// Gesture state for interactive GPU surfaces.
+///
+/// Tracks multi-touch gestures like pinch-to-zoom, pan/drag, and double-tap.
+/// Native backends update this state based on platform gesture recognizers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GestureState {
+    /// Cumulative pinch scale factor (1.0 = no scaling).
+    /// Updated continuously during pinch gestures.
+    pub pinch_scale: f32,
+    /// Center point of the pinch gesture in surface-local pixels.
+    /// `None` if no pinch gesture is active.
+    pub pinch_center: Option<waterui_core::layout::Point>,
+    /// Pan/drag offset in pixels since gesture began.
+    pub pan_offset: waterui_core::layout::Point,
+    /// Whether a double-tap was detected this frame.
+    pub double_tap: bool,
+    /// Whether a gesture is currently in progress.
+    pub active: bool,
+}
+
+impl GestureState {
+    /// Creates a new gesture state with default values (no active gesture).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            pinch_scale: 1.0,
+            pinch_center: None,
+            pan_offset: waterui_core::layout::Point::new(0.0, 0.0),
+            double_tap: false,
+            active: false,
+        }
+    }
+
+    /// Returns `true` if a pinch gesture is active.
+    #[must_use]
+    pub const fn is_pinching(&self) -> bool {
+        self.pinch_center.is_some()
+    }
+
+    /// Returns `true` if the user is panning.
+    #[must_use]
+    pub fn is_panning(&self) -> bool {
+        self.active && (self.pan_offset.x != 0.0 || self.pan_offset.y != 0.0)
+    }
+}
+
 /// Frame data provided during each render call.
 ///
 /// Contains references to the GPU resources and the current frame's texture,
@@ -96,6 +174,17 @@ pub struct GpuFrame<'a> {
     pub width: u32,
     /// Current height in pixels (from layout system).
     pub height: u32,
+    /// Pointer/cursor state for this frame.
+    ///
+    /// Use this to implement hover effects, hit detection, and interactive
+    /// feedback in your renderer. The position is in surface-local pixel
+    /// coordinates.
+    pub pointer: PointerState,
+    /// Gesture state for this frame.
+    ///
+    /// Use this to implement zoom/pan interactions. The native backend
+    /// updates this based on platform gesture recognizers.
+    pub gesture: GestureState,
 }
 
 impl core::fmt::Debug for GpuFrame<'_> {
@@ -104,6 +193,8 @@ impl core::fmt::Debug for GpuFrame<'_> {
             .field("format", &self.format)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("pointer", &self.pointer)
+            .field("gesture", &self.gesture)
             .finish_non_exhaustive()
     }
 }
@@ -116,6 +207,19 @@ impl GpuFrame<'_> {
             self.format,
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
         )
+    }
+
+    /// Returns the normalized pointer position (0.0 to 1.0).
+    /// Returns `None` if the pointer is not over this surface.
+    #[must_use]
+    pub fn pointer_normalized(&self) -> Option<(f32, f32)> {
+        self.pointer.normalized(self.width, self.height)
+    }
+
+    /// Returns `true` if the pointer is hovering over this surface.
+    #[must_use]
+    pub const fn is_hovering(&self) -> bool {
+        self.pointer.is_hovering()
     }
 }
 
