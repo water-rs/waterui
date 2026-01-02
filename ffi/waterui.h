@@ -1906,6 +1906,28 @@ typedef struct WuiIgnorableMetadataMaterialBackground {
   enum WuiMaterial material;
 } WuiIgnorableMetadataMaterialBackground;
 
+typedef struct Computed_bool WuiComputed_bool;
+
+/**
+ * FFI-safe representation of Hittable metadata.
+ */
+typedef struct WuiHittable {
+  /**
+   * Whether hit testing is enabled (reactive).
+   */
+  WuiComputed_bool *enabled;
+} WuiHittable;
+
+typedef struct WuiMetadata_WuiHittable {
+  struct WuiAnyView *content;
+  struct WuiHittable value;
+} WuiMetadata_WuiHittable;
+
+/**
+ * Type alias for Metadata<Hittable> FFI struct
+ */
+typedef struct WuiMetadata_WuiHittable WuiMetadataHittable;
+
 /**
  * FFI-safe representation of an animation.
  *
@@ -1940,6 +1962,14 @@ typedef enum WuiAnimation_Tag {
    */
   WuiAnimation_EaseInOut,
   /**
+   * Custom cubic bezier animation with control points
+   *
+   * Native backends can use these control points with:
+   * - Apple: `CAMediaTimingFunction(controlPoints:)`
+   * - Android: `PathInterpolator(x1, y1, x2, y2)`
+   */
+  WuiAnimation_CubicBezier,
+  /**
    * Spring animation with physics-based movement
    */
   WuiAnimation_Spring,
@@ -1973,6 +2003,29 @@ typedef struct WuiAnimation_EaseInOut_Body {
   uint64_t duration_ms;
 } WuiAnimation_EaseInOut_Body;
 
+typedef struct WuiAnimation_CubicBezier_Body {
+  /**
+   * Duration in milliseconds
+   */
+  uint64_t duration_ms;
+  /**
+   * First control point X (0.0 to 1.0)
+   */
+  float x1;
+  /**
+   * First control point Y
+   */
+  float y1;
+  /**
+   * Second control point X (0.0 to 1.0)
+   */
+  float x2;
+  /**
+   * Second control point Y
+   */
+  float y2;
+} WuiAnimation_CubicBezier_Body;
+
 typedef struct WuiAnimation_Spring_Body {
   /**
    * Stiffness of the spring (higher = faster)
@@ -1991,6 +2044,7 @@ typedef struct WuiAnimation {
     WuiAnimation_EaseIn_Body ease_in;
     WuiAnimation_EaseOut_Body ease_out;
     WuiAnimation_EaseInOut_Body ease_in_out;
+    WuiAnimation_CubicBezier_Body cubic_bezier;
     WuiAnimation_Spring_Body spring;
   };
 } WuiAnimation;
@@ -2385,10 +2439,8 @@ typedef struct WuiDatePicker {
   enum WuiDatePickerType ty;
 } WuiDatePicker;
 
-typedef struct Computed_bool WuiComputed_bool;
-
 typedef struct WuiBar {
-  struct WuiText title;
+  struct WuiAnyView *title;
   WuiComputed_Color *color;
   WuiComputed_bool *hidden;
   enum WuiNavigationTitleDisplayMode display_mode;
@@ -2759,6 +2811,80 @@ typedef struct WuiGpuSurface {
 typedef void (*WuiGpuCallback)(void *user_data);
 
 /**
+ * FFI-safe pointer state for passing from native.
+ *
+ * Native backends should update this before each render call to provide
+ * current pointer/cursor information to the GPU renderer.
+ */
+typedef struct WuiPointerState {
+  /**
+   * Whether the pointer is currently over this surface.
+   */
+  bool has_position;
+  /**
+   * X coordinate in surface-local pixels.
+   */
+  float x;
+  /**
+   * Y coordinate in surface-local pixels.
+   */
+  float y;
+  /**
+   * Whether there's an active hit (press/touch in progress).
+   */
+  bool has_hit;
+  /**
+   * X coordinate where hit started.
+   */
+  float hit_x;
+  /**
+   * Y coordinate where hit started.
+   */
+  float hit_y;
+} WuiPointerState;
+
+/**
+ * FFI-safe gesture state for zoom/pan interactions.
+ *
+ * Native backends should update this when pinch, pan, or double-tap
+ * gestures are detected to enable interactive chart zoom/pan.
+ */
+typedef struct WuiGestureState {
+  /**
+   * Whether a gesture is currently active.
+   */
+  bool active;
+  /**
+   * Cumulative pinch scale factor (1.0 = no scaling).
+   */
+  float pinch_scale;
+  /**
+   * Whether a pinch center is present.
+   */
+  bool has_pinch_center;
+  /**
+   * X coordinate of pinch center in surface-local pixels.
+   */
+  float pinch_center_x;
+  /**
+   * Y coordinate of pinch center in surface-local pixels.
+   */
+  float pinch_center_y;
+  /**
+   * Pan offset X in pixels since gesture began.
+   */
+  float pan_offset_x;
+  /**
+   * Pan offset Y in pixels since gesture began.
+   */
+  float pan_offset_y;
+  /**
+   * Whether a double-tap was detected this frame.
+   */
+  bool double_tap;
+} WuiGestureState;
+
+/**
  * FFI representation of the SystemIcon component.
  *
  * Native backends render this as platform-native icons:
@@ -3106,6 +3232,42 @@ typedef struct WuiAppliedFilterRenderResult {
    */
   bool needs_redraw;
 } WuiAppliedFilterRenderResult;
+
+/**
+ * Callback for returning rendered RGBA data to Rust.
+ */
+typedef struct ViewRenderCallback {
+  /**
+   * Opaque data pointer passed to the callback.
+   */
+  void *data;
+  /**
+   * Callback function.
+   * - `data`: The opaque data pointer
+   * - `rgba_ptr`: Pointer to RGBA pixel data (4 bytes per pixel)
+   * - `rgba_len`: Length of the RGBA data in bytes
+   * - `width`: Rendered width in pixels
+   * - `height`: Rendered height in pixels
+   */
+  void (*call)(void *data,
+               const uint8_t *rgba_ptr,
+               uintptr_t rgba_len,
+               uint32_t width,
+               uint32_t height);
+} ViewRenderCallback;
+
+/**
+ * Type alias for the native view render function.
+ *
+ * Native implements this function to render a view to RGBA pixels:
+ * 1. Create an offscreen rendering context at the given size
+ * 2. Render the `AnyView` hierarchy (native widgets + GPU surfaces)
+ * 3. Capture the final composited result to RGBA pixels
+ * 4. Call the callback with the pixel data
+ *
+ * The view pointer is an `AnyView` that native should render.
+ */
+typedef void (*ViewRenderFn)(void *view, struct WuiSize size, struct ViewRenderCallback callback);
 
 /**
  * FFI-safe representation of drag data.
@@ -3912,6 +4074,21 @@ struct WuiTypeId waterui_ignorable_metadata_material_background_id(void);
  * that contains an `IgnorableMetadata<$ty>`.
  */
 struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadata_material_background(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Uses TypeId in normal builds, type_name hash in hot reload builds.
+ */
+struct WuiTypeId waterui_metadata_hittable_id(void);
+
+/**
+ * Force-casts an AnyView to this metadata type
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataHittable waterui_force_as_metadata_hittable(struct WuiAnyView *view);
 
 /**
  * # Safety
@@ -4976,6 +5153,44 @@ struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surfac
 bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
 
 /**
+ * Render a single frame into an external texture.
+ *
+ * This is used for GPU-based view captures (e.g., filter pipelines) so a
+ * GpuSurface can render directly into a provided texture.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+ * * `texture` - Pointer to a `wgpu::Texture` to render into
+ * * `width` - Target width in pixels
+ * * `height` - Target height in pixels
+ *
+ * # Returns
+ *
+ * `true` if rendering succeeded, `false` on error.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`.
+ * `texture` must be a valid pointer to a `wgpu::Texture` with RENDER_ATTACHMENT usage.
+ */
+bool waterui_gpu_surface_render_to_texture(struct WuiGpuSurfaceState *state,
+                                           void *texture,
+                                           uint32_t width,
+                                           uint32_t height);
+
+/**
+ * Render a single frame into an external Metal texture (Apple only).
+ *
+ * # Safety
+ * `state` must be valid, `texture` must point to a `MTLTexture`.
+ */
+bool waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *state,
+                                                 void *texture,
+                                                 uint32_t width,
+                                                 uint32_t height);
+
+/**
  * Setup the GpuSurface and render the first frame, then call callback.
  *
  * This function performs async setup (awaited synchronously via `block_on`),
@@ -5009,6 +5224,44 @@ void waterui_gpu_surface_await_ready(struct WuiGpuSurfaceState *state,
  * and must not be used after this call.
  */
 void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
+
+/**
+ * Update the pointer/cursor state for a GpuSurface.
+ *
+ * Native backends should call this before each render to update pointer state.
+ * This enables GPU renderers to implement hover effects, hit detection, and
+ * interactive feedback.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+ * * `pointer` - Current pointer state
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`.
+ */
+void waterui_gpu_surface_set_pointer(struct WuiGpuSurfaceState *state,
+                                     struct WuiPointerState pointer);
+
+/**
+ * Update the gesture state for a GpuSurface.
+ *
+ * Native backends should call this when pinch/pan/double-tap gestures are
+ * detected. This enables GPU renderers (like charts) to implement zoom/pan
+ * interactions.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+ * * `gesture` - Current gesture state
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`.
+ */
+void waterui_gpu_surface_set_gesture(struct WuiGpuSurfaceState *state,
+                                     struct WuiGestureState gesture);
 
 /**
  * # Safety
@@ -5416,6 +5669,49 @@ struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppl
                                                                   uint32_t height);
 
 /**
+ * Provide input texture from child view.
+ *
+ * Call this each frame before `waterui_applied_filter_render` to provide
+ * the captured child view's texture.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to initialized state
+ * * `input_type` - Type of input being provided
+ * * `input_handle` - Platform-specific handle:
+ *   - `WgpuTexture`: Pointer to `wgpu::Texture`
+ *   - `MetalTexture`: `MTLTexture*` (Apple)
+ *   - `AHardwareBuffer`: `AHardwareBuffer*` (Android)
+ *   - `PixelData`: Pointer to pixel data
+ * * `width` - Input width in pixels
+ * * `height` - Input height in pixels
+ *
+ * # Safety
+ *
+ * - `state` must be a valid pointer from `waterui_applied_filter_init`
+ * - `input_handle` must be valid for the specified `input_type`
+ */
+bool waterui_applied_filter_set_input(struct WuiAppliedFilterState *state,
+                                      enum WuiInputType input_type,
+                                      void *input_handle,
+                                      uint32_t width,
+                                      uint32_t height);
+
+/**
+ * Prepare the capture texture for rendering.
+ *
+ * Ensures the capture texture matches the requested dimensions and returns
+ * a pointer to the underlying wgpu texture for zero-copy rendering paths.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_init`.
+ */
+const void *waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
+                                                   uint32_t width,
+                                                   uint32_t height);
+
+/**
  * Get a pointer to the capture texture.
  *
  * The native backend should render the child view to this texture.
@@ -5427,6 +5723,18 @@ struct WuiAppliedFilterRenderResult waterui_applied_filter_render(struct WuiAppl
 const void *waterui_applied_filter_get_capture_texture(struct WuiAppliedFilterState *state);
 
 /**
+ * Get a pointer to the Metal texture backing the capture texture (Apple only).
+ *
+ * This exposes the underlying MTLTexture so native code can render directly
+ * into the wgpu capture texture without extra copies.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_init`.
+ */
+void *waterui_applied_filter_get_capture_metal_texture(struct WuiAppliedFilterState *state);
+
+/**
  * Clean up AppliedFilter resources.
  *
  * # Safety
@@ -5435,6 +5743,21 @@ const void *waterui_applied_filter_get_capture_texture(struct WuiAppliedFilterSt
  * and must not be used after this call.
  */
 void waterui_applied_filter_drop(struct WuiAppliedFilterState *state);
+
+/**
+ * Installs a `ViewRenderer` into the environment from a native function pointer.
+ *
+ * Native backends call this during initialization to register their view
+ * rendering implementation. The renderer is used to capture views as RGBA
+ * pixels for the preview system.
+ *
+ * # Safety
+ *
+ * The caller must ensure that:
+ * - `env` is a valid pointer to a `WuiEnv`
+ * - `render_fn` is a valid function pointer to the native view renderer
+ */
+void waterui_env_install_view_renderer(struct WuiEnv *env, ViewRenderFn render_fn);
 
 /**
  * Reads the current value from a computed
