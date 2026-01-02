@@ -115,42 +115,56 @@ fn firework() -> impl View {
 
 // Manual unroll for stability
 fn confetti_view() -> impl View {
-    let size = 0.008..0.012; // Slightly smaller squares
+    let size = 0.015..0.025; // Larger since they're thin rectangles now
     let shape = ParticleShape::Rect;
+    let spin = -8.0..8.0; // Random tumbling speed (rad/s)
     
     zstack((
-        // Red
-        ParticleSystem::new(800)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(40.0)
-            .life(5.0..8.0).speed(0.1..0.3).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.08).turbulence(0.3)
-            .color(Color::from(Srgb::new(1.0, 0.2, 0.2)), Color::from(Srgb::new(1.0, 0.2, 0.2)).with_alpha(0.0))
+        // Pink
+        ParticleSystem::new(600)
+            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
+            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
+            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.3)
+            .color(Color::from(Srgb::new(1.0, 0.5, 0.7)), Color::from(Srgb::new(1.0, 0.5, 0.7)).with_alpha(0.0))
             .shape(shape)
-            .softness(0.0),
-        // Green
-        ParticleSystem::new(800)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(40.0)
-            .life(5.0..8.0).speed(0.1..0.3).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.08).turbulence(0.4)
-            .color(Color::from(Srgb::new(0.2, 1.0, 0.2)), Color::from(Srgb::new(0.2, 1.0, 0.2)).with_alpha(0.0))
+            .spin(spin.clone())
+            .softness(0.4),
+        // Mint Green
+        ParticleSystem::new(600)
+            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
+            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
+            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.35)
+            .color(Color::from(Srgb::new(0.5, 0.9, 0.7)), Color::from(Srgb::new(0.5, 0.9, 0.7)).with_alpha(0.0))
             .shape(shape)
-            .softness(0.0),
-        // Blue
-        ParticleSystem::new(800)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(40.0)
-            .life(5.0..8.0).speed(0.1..0.3).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.08).turbulence(0.5)
-            .color(Color::from(Srgb::new(0.2, 0.4, 1.0)), Color::from(Srgb::new(0.2, 0.4, 1.0)).with_alpha(0.0))
+            .spin(spin.clone())
+            .softness(0.4),
+        // Sky Blue
+        ParticleSystem::new(600)
+            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
+            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
+            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.4)
+            .color(Color::from(Srgb::new(0.5, 0.8, 1.0)), Color::from(Srgb::new(0.5, 0.8, 1.0)).with_alpha(0.0))
             .shape(shape)
-            .softness(0.0),
-        // Gold
-        ParticleSystem::new(800)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(40.0)
-            .life(5.0..8.0).speed(0.1..0.3).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.08).turbulence(0.6)
-            .color(Color::from(Srgb::new(1.0, 0.8, 0.0)), Color::from(Srgb::new(1.0, 0.8, 0.0)).with_alpha(0.0))
+            .spin(spin.clone())
+            .softness(0.4),
+        // Lavender
+        ParticleSystem::new(600)
+            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
+            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
+            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.45)
+            .color(Color::from(Srgb::new(0.8, 0.6, 1.0)), Color::from(Srgb::new(0.8, 0.6, 1.0)).with_alpha(0.0))
             .shape(shape)
-            .softness(0.0),
+            .spin(spin.clone())
+            .softness(0.4),
+        // Yellow
+        ParticleSystem::new(600)
+            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
+            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
+            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.5)
+            .color(Color::from(Srgb::new(1.0, 0.9, 0.4)), Color::from(Srgb::new(1.0, 0.9, 0.4)).with_alpha(0.0))
+            .shape(shape)
+            .spin(spin.clone())
+            .softness(0.4),
     ))
 }
 
