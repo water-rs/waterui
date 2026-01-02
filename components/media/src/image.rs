@@ -147,6 +147,14 @@ impl ImageRenderer {
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
+        let blend = if matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        ) {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
         // Simple shader to render a texture to the screen
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Image render shader"),
@@ -195,7 +203,7 @@ impl ImageRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
