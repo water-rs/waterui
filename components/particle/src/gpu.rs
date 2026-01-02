@@ -1,46 +1,34 @@
 //! GPU buffer structs with correct alignment for wgpu.
+//!
+//! Uses encase for automatic WGSL-compatible alignment.
 
-use bytemuck::{Pod, Zeroable};
+use encase::ShaderType;
 
 /// GPU representation of a single particle.
-/// Must be 16-byte aligned for storage buffers.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct GpuParticle {
     /// Position in normalized coordinates [0, 1].
-    pub pos: [f32; 2],
+    pub pos: glam::Vec2,
     /// Velocity.
-    pub vel: [f32; 2],
+    pub vel: glam::Vec2,
     /// Current life remaining.
     pub life: f32,
     /// Maximum life (for interpolation ratio).
     pub max_life: f32,
     /// Particle size.
     pub size: f32,
-    /// Padding for 16-byte alignment.
-    pub _pad: f32,
+    /// Current rotation (radians).
+    pub rotation: f32,
+    /// Rotation speed (radians/sec).
+    pub rot_speed: f32,
     /// Color in Linear sRGB.
-    pub color: [f32; 4],
-}
-
-impl Default for GpuParticle {
-    fn default() -> Self {
-        Self {
-            pos: [0.0, 0.0],
-            vel: [0.0, 0.0],
-            life: 0.0,
-            max_life: 1.0,
-            size: 0.01,
-            _pad: 0.0,
-            color: [1.0, 1.0, 1.0, 1.0],
-        }
-    }
+    pub color: glam::Vec4,
 }
 
 /// GPU uniforms for compute and render shaders.
-/// 64 bytes, 16-byte aligned.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Clone, Copy, Debug, ShaderType)]
 pub struct Uniforms {
     /// Elapsed time in seconds.
     pub time: f32,
@@ -51,13 +39,13 @@ pub struct Uniforms {
     /// Maximum particle count.
     pub max_particles: u32,
     /// Gravity vector.
-    pub gravity: [f32; 2],
+    pub gravity: glam::Vec2,
     /// Wind vector.
-    pub wind: [f32; 2],
+    pub wind: glam::Vec2,
     /// Emitter position.
-    pub emitter_pos: [f32; 2],
+    pub emitter_pos: glam::Vec2,
     /// Emitter size (width, height for rect; radius, 0 for circle).
-    pub emitter_size: [f32; 2],
+    pub emitter_size: glam::Vec2,
     /// Emission rate (particles per second).
     pub emit_rate: f32,
     /// Turbulence factor.
@@ -68,24 +56,28 @@ pub struct Uniforms {
     pub softness: f32,
 
     /// Life range (min, max).
-    pub life_range: [f32; 2],
+    pub life_range: glam::Vec2,
     /// Speed range (min, max).
-    pub speed_range: [f32; 2],
-    
+    pub speed_range: glam::Vec2,
+
     /// Angle range (min, max) in radians.
-    pub angle_range: [f32; 2],
+    pub angle_range: glam::Vec2,
     /// Size range (min, max).
-    pub size_range: [f32; 2],
+    pub size_range: glam::Vec2,
+    /// Spin speed range (min, max) in radians/sec.
+    pub spin_range: glam::Vec2,
 
     /// Start color.
-    pub color_start: [f32; 4],
+    pub color_start: glam::Vec4,
     /// End color.
-    pub color_end: [f32; 4],
+    pub color_end: glam::Vec4,
 
     /// Particle shape (0=Circle, 1=Rect).
     pub shape: u32,
-    /// Padding.
-    pub _pad: [u32; 3],
+    /// Viewport width in pixels.
+    pub viewport_width: u32,
+    /// Viewport height in pixels.
+    pub viewport_height: u32,
 }
 
 impl Default for Uniforms {
@@ -95,20 +87,24 @@ impl Default for Uniforms {
             dt: 1.0 / 60.0,
             seed: 0,
             max_particles: 1000,
-            gravity: [0.0, 0.0],
-            wind: [0.0, 0.0],
-            emitter_pos: [0.5, 0.5],
-            emitter_size: [0.0, 0.0],
+            gravity: glam::Vec2::ZERO,
+            wind: glam::Vec2::ZERO,
+            emitter_pos: glam::Vec2::new(0.5, 0.5),
+            emitter_size: glam::Vec2::ZERO,
             emit_rate: 100.0,
             turbulence: 0.0,
             stretch_factor: 0.0,
             softness: 0.5,
-            life_range: [1.0, 1.0],
-            speed_range: [1.0, 1.0],
-            angle_range: [0.0, 0.0],
-            size_range: [0.01, 0.01],
-            color_start: [1.0, 1.0, 1.0, 1.0],
-            color_end: [1.0, 1.0, 1.0, 1.0],
+            life_range: glam::Vec2::new(1.0, 1.0),
+            speed_range: glam::Vec2::new(1.0, 1.0),
+            angle_range: glam::Vec2::ZERO,
+            size_range: glam::Vec2::new(0.01, 0.01),
+            spin_range: glam::Vec2::ZERO,
+            color_start: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+            color_end: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+            shape: 0,
+            viewport_width: 0,
+            viewport_height: 0,
         }
     }
 }

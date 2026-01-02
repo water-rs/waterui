@@ -26,7 +26,11 @@ impl ParticleSystem {
     pub fn new(max_particles: u32) -> Self {
         Self {
             max_particles,
-            config: ParticleConfig::default(),
+            config: {
+                let mut c = ParticleConfig::default();
+                c.particle.spin = 0.0..0.0;
+                c
+            },
         }
     }
 
@@ -150,6 +154,12 @@ impl ParticleSystem {
         self.config.particle.shape = shape;
         self
     }
+
+    /// Set initial particle spin speed (radians/sec).
+    pub fn spin(mut self, range: Range<f32>) -> Self {
+        self.config.particle.spin = range;
+        self
+    }
 }
 
 impl View for ParticleSystem {
@@ -182,6 +192,10 @@ impl View for ParticleSystem {
             size_range: [
                 self.config.particle.size.start,
                 self.config.particle.size.end,
+            ],
+            spin_range: [
+                self.config.particle.spin.start,
+                self.config.particle.spin.end,
             ],
             color_start,
             color_end,
