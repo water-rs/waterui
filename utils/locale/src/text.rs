@@ -100,11 +100,12 @@ where
     #[must_use]
     pub fn font(
         self,
-        font: Font,
+        font: impl Into<Font>,
     ) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
     where
         T: Clone + 'static,
     {
+        let font = font.into();
         let prev_transform = self.transform;
         LocalizedText {
             text_fn: self.text_fn,

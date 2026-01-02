@@ -225,6 +225,14 @@ impl Running {
             drop(value);
         }));
     }
+
+    /// Detach the running instance, preventing the app from being killed on drop.
+    ///
+    /// This is useful for long-running apps like the preview daemon that should
+    /// stay running after the CLI command completes.
+    pub fn detach(&mut self) {
+        self.on_drop.clear();
+    }
 }
 
 impl Stream for Running {

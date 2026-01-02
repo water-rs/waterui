@@ -27,6 +27,7 @@ mod embedded {
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
+    pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
@@ -103,6 +104,8 @@ impl TemplateContext {
                 "__PROJECT_ROOT_RELATIVE_PATH__",
                 &self.project_root_relative_path(),
             )
+            // Font entries are populated during packaging, not creation - use empty default
+            .replace("__FONT_ENTRIES__", "")
     }
 
     /// Transform a path by replacing "`AppName`" with the actual app name.
@@ -706,6 +709,139 @@ pub mod root {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let cargo_path = base_dir.join("Cargo.toml");
+        fs::write(&cargo_path, toml_string).await?;
+
+        Ok(())
+    }
+}
+
+/// Preview app templates.
+pub mod preview {
+    use crate::templates::{WATERUI_FFI_VERSION, WATERUI_VERSION};
+
+    use super::{Path, TemplateContext, embedded, fs, io, normalize_path_for_config, scaffold_dir};
+
+    const WATERUI_PREVIEW_VERSION: &str = "0.1";
+
+    /// Write preview app templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        // Generate Cargo.toml programmatically
+        generate_cargo_toml(base_dir, ctx).await?;
+
+        // Scaffold remaining template files (lib.rs)
+        scaffold_dir(&embedded::PREVIEW, base_dir, ctx).await
+    }
+
+    /// Generate preview app Cargo.toml programmatically.
+    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        use serde::Serialize;
+        use std::collections::BTreeMap;
+
+        #[derive(Serialize)]
+        struct CargoManifest {
+            package: PackageSection,
+            lib: LibSection,
+            dependencies: BTreeMap<String, DependencyValue>,
+            workspace: WorkspaceSection,
+        }
+
+        #[derive(Serialize)]
+        struct PackageSection {
+            name: String,
+            version: String,
+            edition: String,
+        }
+
+        #[derive(Serialize)]
+        struct LibSection {
+            #[serde(rename = "crate-type")]
+            crate_type: Vec<String>,
+        }
+
+        #[derive(Serialize)]
+        struct WorkspaceSection {}
+
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        enum DependencyValue {
+            Simple(String),
+            Detailed(DependencyDetail),
+        }
+
+        #[derive(Serialize)]
+        struct DependencyDetail {
+            path: String,
+        }
+
+        let mut dependencies = BTreeMap::new();
+
+        if let Some(waterui_path) = &ctx.waterui_path {
+            // Local path dependencies
+            dependencies.insert(
+                "waterui".to_string(),
+                DependencyValue::Detailed(DependencyDetail {
+                    path: normalize_path_for_config(waterui_path),
+                }),
+            );
+
+            let ffi_path = waterui_path.join("ffi");
+            dependencies.insert(
+                "waterui-ffi".to_string(),
+                DependencyValue::Detailed(DependencyDetail {
+                    path: normalize_path_for_config(&ffi_path),
+                }),
+            );
+
+            let preview_path = waterui_path.join("components").join("preview");
+            dependencies.insert(
+                "waterui-preview".to_string(),
+                DependencyValue::Detailed(DependencyDetail {
+                    path: normalize_path_for_config(&preview_path),
+                }),
+            );
+        } else {
+            // Registry dependencies
+            dependencies.insert(
+                "waterui".to_string(),
+                DependencyValue::Simple(WATERUI_VERSION.to_string()),
+            );
+            dependencies.insert(
+                "waterui-ffi".to_string(),
+                DependencyValue::Simple(WATERUI_FFI_VERSION.to_string()),
+            );
+            dependencies.insert(
+                "waterui-preview".to_string(),
+                DependencyValue::Simple(WATERUI_PREVIEW_VERSION.to_string()),
+            );
+        }
+
+        let manifest = CargoManifest {
+            package: PackageSection {
+                name: ctx.crate_name.clone(),
+                version: "0.1.0".to_string(),
+                edition: "2024".to_string(),
+            },
+            lib: LibSection {
+                crate_type: vec![
+                    "staticlib".to_string(),
+                    "cdylib".to_string(),
+                    "rlib".to_string(),
+                ],
+            },
+            dependencies,
+            workspace: WorkspaceSection {},
+        };
+
+        // Serialize to TOML
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let cargo_path = base_dir.join("Cargo.toml");
+        fs::create_dir_all(base_dir).await?;
         fs::write(&cargo_path, toml_string).await?;
 
         Ok(())
