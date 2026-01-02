@@ -65,5 +65,11 @@ pub use background::{BackgroundLayout, BackgroundView, background};
 pub use overlay::{Overlay, OverlayLayout, overlay};
 pub use safe_area::{EdgeSet, IgnoreSafeArea};
 
+pub mod absolute;
+pub use absolute::{
+    Absolute, AbsoluteLayout, PositionExt, PositionTarget, PositionedChild, PositionedLayout,
+    UnitPoint, absolute,
+};
+
 #[cfg(test)]
 mod tests;
