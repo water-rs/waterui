@@ -1,0 +1,37 @@
+[package]
+name = "waterui-preview"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Preview view component for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui-core = { path = "../../core" }
+waterui-graphics = { path = "../graphics" }
+waterui-layout = { path = "../layout" }
+tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+thiserror.workspace = true
+
+# Async runtime
+async-io = "2.6"
+executor-core.workspace = true
+futures-lite = "2.6"
+
+# Dynamic library loading
+libloading = "0.8"
+
+# PNG encoding
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true
