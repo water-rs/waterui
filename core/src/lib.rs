@@ -106,6 +106,9 @@ pub mod plugin;
 pub use anyhow::Error;
 pub mod animation;
 pub use animation::AnimationExt;
+/// Unified easing system for animations.
+pub mod easing;
+pub use easing::{EasingCurve, Interpolatable};
 pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 pub use waterui_str::Str;
@@ -115,3 +118,6 @@ pub mod layout;
 pub mod resolve;
 /// VectorArithmetic trait for types that can be linearly interpolated (animation).
 pub mod vector_arithmetic;
+/// View renderer for capturing views to pixel data.
+pub mod view_renderer;
+pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
