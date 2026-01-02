@@ -12,12 +12,19 @@
 use core::ffi::c_void;
 use std::sync::Arc;
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
 
-use alloc::vec::Vec;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use {
+    metal::foreign_types::ForeignTypeRef,
+    metal::MTLTextureType,
+    wgpu_hal::api::Metal as MetalApi,
+    wgpu_hal::Api,
+};
 
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuSurface};
+use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
@@ -71,6 +78,10 @@ pub struct WuiGpuSurfaceState {
     current_width: u32,
     /// Current height from layout
     current_height: u32,
+    /// Current pointer/cursor state
+    pointer_state: PointerState,
+    /// Current gesture state (pinch, pan, double-tap)
+    gesture_state: GestureState,
 }
 
 /// Initialize a GpuSurface with a native layer.
@@ -225,6 +236,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             initialized: false,
             current_width: width,
             current_height: height,
+            pointer_state: PointerState::default(),
+            gesture_state: GestureState::default(),
         });
 
         Box::into_raw(state)
@@ -356,6 +369,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             format: state.config.format,
             width,
             height,
+            pointer: state.pointer_state,
+            gesture: state.gesture_state,
         };
 
         // Call user's render callback
@@ -374,6 +389,237 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
             false
         }
     }
+}
+
+/// Render a single frame into an external texture.
+///
+/// This is used for GPU-based view captures (e.g., filter pipelines) so a
+/// GpuSurface can render directly into a provided texture.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+/// * `texture` - Pointer to a `wgpu::Texture` to render into
+/// * `width` - Target width in pixels
+/// * `height` - Target height in pixels
+///
+/// # Returns
+///
+/// `true` if rendering succeeded, `false` on error.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+/// `texture` must be a valid pointer to a `wgpu::Texture` with RENDER_ATTACHMENT usage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
+    state: *mut WuiGpuSurfaceState,
+    texture: *mut core::ffi::c_void,
+    width: u32,
+    height: u32,
+) -> bool {
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() || texture.is_null() || width == 0 || height == 0 {
+            return false;
+        }
+
+        let state = unsafe { &mut *state };
+        let texture = unsafe { &*(texture as *const wgpu::Texture) };
+
+        if !texture.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
+            tracing::error!("[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage");
+            return false;
+        }
+
+        let target_format = texture.format();
+
+        if width != state.current_width || height != state.current_height {
+            state.current_width = width;
+            state.current_height = height;
+            state.config.width = width;
+            state.config.height = height;
+            state.gpu_surface.resize(width, height);
+        }
+
+        if !state.initialized || state.config.format != target_format {
+            // Reconfigure the surface format to match the external target.
+            state.config.format = target_format;
+            let ctx = GpuContext {
+                device: &state.device,
+                queue: &state.queue,
+                surface_format: target_format,
+                pipeline_cache: state.pipeline_cache.as_ref(),
+            };
+            let setup_future = state.gpu_surface.setup(&ctx);
+            pollster::block_on(setup_future);
+            state.initialized = true;
+        }
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("GpuSurface External Frame View"),
+            format: Some(target_format),
+            ..Default::default()
+        });
+
+        let frame = GpuFrame {
+            device: &state.device,
+            queue: &state.queue,
+            texture,
+            view,
+            format: target_format,
+            width,
+            height,
+            pointer: state.pointer_state,
+            gesture: state.gesture_state,
+        };
+
+        state.gpu_surface.render(&frame);
+        // Ensure external renderers see completed writes before returning.
+        let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
+        true
+    }));
+
+    match render_result {
+        Ok(ok) => ok,
+        Err(_) => {
+            tracing::error!("[GpuSurface] render_to_texture panicked");
+            false
+        }
+    }
+}
+
+/// Render a single frame into an external Metal texture (Apple only).
+///
+/// # Safety
+/// `state` must be valid, `texture` must point to a `MTLTexture`.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
+    state: *mut WuiGpuSurfaceState,
+    texture: *mut core::ffi::c_void,
+    width: u32,
+    height: u32,
+) -> bool {
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if state.is_null() || texture.is_null() || width == 0 || height == 0 {
+            return false;
+        }
+
+        let state = unsafe { &mut *state };
+        let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(texture.cast()) };
+        let metal_texture = metal_texture_ref.to_owned();
+
+        let target_format = match metal_texture.pixel_format() {
+            metal::MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+            metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+            metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+            other => {
+                tracing::error!(
+                    "[GpuSurface] render_to_metal_texture: unsupported format {:?}",
+                    other
+                );
+                return false;
+            }
+        };
+
+        let hal_texture = unsafe {
+            <MetalApi as Api>::Device::texture_from_raw(
+                metal_texture.clone(),
+                target_format,
+                MTLTextureType::D2,
+                1,
+                1,
+                wgpu_hal::CopyExtent {
+                    width,
+                    height,
+                    depth: 1,
+                },
+            )
+        };
+
+        let texture_desc = wgpu::TextureDescriptor {
+            label: Some("GpuSurface Imported Metal Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: target_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+
+        let wgpu_texture = unsafe {
+            state
+                .device
+                .create_texture_from_hal::<MetalApi>(hal_texture, &texture_desc)
+        };
+
+        if width != state.current_width || height != state.current_height {
+            state.current_width = width;
+            state.current_height = height;
+            state.config.width = width;
+            state.config.height = height;
+            state.gpu_surface.resize(width, height);
+        }
+
+        if !state.initialized || state.config.format != target_format {
+            state.config.format = target_format;
+            let ctx = GpuContext {
+                device: &state.device,
+                queue: &state.queue,
+                surface_format: target_format,
+                pipeline_cache: state.pipeline_cache.as_ref(),
+            };
+            let setup_future = state.gpu_surface.setup(&ctx);
+            pollster::block_on(setup_future);
+            state.initialized = true;
+        }
+
+        let view = wgpu_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("GpuSurface Metal Frame View"),
+            format: Some(target_format),
+            ..Default::default()
+        });
+
+        let frame = GpuFrame {
+            device: &state.device,
+            queue: &state.queue,
+            texture: &wgpu_texture,
+            view,
+            format: target_format,
+            width,
+            height,
+            pointer: state.pointer_state,
+            gesture: state.gesture_state,
+        };
+
+        state.gpu_surface.render(&frame);
+        let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
+        true
+    }));
+
+    match render_result {
+        Ok(ok) => ok,
+        Err(_) => {
+            tracing::error!("[GpuSurface] render_to_metal_texture panicked");
+            false
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
+    _state: *mut WuiGpuSurfaceState,
+    _texture: *mut core::ffi::c_void,
+    _width: u32,
+    _height: u32,
+) -> bool {
+    false
 }
 
 /// Callback type for async completion notifications.
@@ -447,6 +693,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
         format: state.config.format,
         width: state.current_width,
         height: state.current_height,
+        pointer: state.pointer_state,
+        gesture: state.gesture_state,
     };
 
     state.gpu_surface.render(&frame);
@@ -471,6 +719,130 @@ pub unsafe extern "C" fn waterui_gpu_surface_drop(state: *mut WuiGpuSurfaceState
             let _ = Box::from_raw(state);
         }
     }
+}
+
+/// FFI-safe pointer state for passing from native.
+///
+/// Native backends should update this before each render call to provide
+/// current pointer/cursor information to the GPU renderer.
+#[repr(C)]
+pub struct WuiPointerState {
+    /// Whether the pointer is currently over this surface.
+    pub has_position: bool,
+    /// X coordinate in surface-local pixels.
+    pub x: f32,
+    /// Y coordinate in surface-local pixels.
+    pub y: f32,
+    /// Whether there's an active hit (press/touch in progress).
+    pub has_hit: bool,
+    /// X coordinate where hit started.
+    pub hit_x: f32,
+    /// Y coordinate where hit started.
+    pub hit_y: f32,
+}
+
+/// Update the pointer/cursor state for a GpuSurface.
+///
+/// Native backends should call this before each render to update pointer state.
+/// This enables GPU renderers to implement hover effects, hit detection, and
+/// interactive feedback.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+/// * `pointer` - Current pointer state
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_set_pointer(
+    state: *mut WuiGpuSurfaceState,
+    pointer: WuiPointerState,
+) {
+    if state.is_null() {
+        return;
+    }
+
+    let state = unsafe { &mut *state };
+
+    state.pointer_state = PointerState {
+        position: if pointer.has_position {
+            Some(waterui_core::layout::Point::new(pointer.x, pointer.y))
+        } else {
+            None
+        },
+        hit: if pointer.has_hit {
+            Some(waterui_core::layout::Point::new(pointer.hit_x, pointer.hit_y))
+        } else {
+            None
+        },
+    };
+}
+
+/// FFI-safe gesture state for zoom/pan interactions.
+///
+/// Native backends should update this when pinch, pan, or double-tap
+/// gestures are detected to enable interactive chart zoom/pan.
+#[repr(C)]
+pub struct WuiGestureState {
+    /// Whether a gesture is currently active.
+    pub active: bool,
+    /// Cumulative pinch scale factor (1.0 = no scaling).
+    pub pinch_scale: f32,
+    /// Whether a pinch center is present.
+    pub has_pinch_center: bool,
+    /// X coordinate of pinch center in surface-local pixels.
+    pub pinch_center_x: f32,
+    /// Y coordinate of pinch center in surface-local pixels.
+    pub pinch_center_y: f32,
+    /// Pan offset X in pixels since gesture began.
+    pub pan_offset_x: f32,
+    /// Pan offset Y in pixels since gesture began.
+    pub pan_offset_y: f32,
+    /// Whether a double-tap was detected this frame.
+    pub double_tap: bool,
+}
+
+/// Update the gesture state for a GpuSurface.
+///
+/// Native backends should call this when pinch/pan/double-tap gestures are
+/// detected. This enables GPU renderers (like charts) to implement zoom/pan
+/// interactions.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+/// * `gesture` - Current gesture state
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_gpu_surface_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_set_gesture(
+    state: *mut WuiGpuSurfaceState,
+    gesture: WuiGestureState,
+) {
+    if state.is_null() {
+        return;
+    }
+
+    let state = unsafe { &mut *state };
+
+    state.gesture_state = GestureState {
+        pinch_scale: gesture.pinch_scale,
+        pinch_center: if gesture.has_pinch_center {
+            Some(waterui_core::layout::Point::new(
+                gesture.pinch_center_x,
+                gesture.pinch_center_y,
+            ))
+        } else {
+            None
+        },
+        pan_offset: waterui_core::layout::Point::new(gesture.pan_offset_x, gesture.pan_offset_y),
+        double_tap: gesture.double_tap,
+        active: gesture.active,
+    };
 }
 
 /// Create a wgpu Surface from a platform-specific layer pointer.

@@ -883,6 +883,12 @@ impl GpuRenderer for CanvasRenderer {
                 push_constant_ranges: &[],
             });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::REPLACE)
+        };
+
         let pipeline = ctx
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -899,7 +905,7 @@ impl GpuRenderer for CanvasRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::REPLACE),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
