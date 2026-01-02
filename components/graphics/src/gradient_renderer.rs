@@ -17,6 +17,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::color::ResolvedColor;
 use waterui_core::View;
@@ -46,32 +47,28 @@ pub enum GradientType {
 }
 
 /// A resolved color stop ready for GPU upload.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, ShaderType)]
 pub struct GpuColorStop {
     /// RGBA color in linear space.
-    pub color: [f32; 4],
+    pub color: glam::Vec4,
     /// Position along the gradient (0.0 to 1.0).
     pub position: f32,
-    /// Padding for alignment.
-    pub _padding: [f32; 3],
 }
 
 /// A resolved mesh vertex ready for GPU upload.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, ShaderType)]
 pub struct GpuMeshVertex {
     /// Position in unit coordinates (0.0 to 1.0).
-    pub position: [f32; 2],
-    /// Padding for alignment.
-    pub _padding1: [f32; 2],
+    pub position: glam::Vec2,
     /// RGBA color in linear space.
-    pub color: [f32; 4],
+    pub color: glam::Vec4,
 }
 
 /// Uniform buffer layout for gradient parameters.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+/// Uses encase for automatic WGSL-compatible alignment.
+#[derive(Debug, Clone, Copy, Default, ShaderType)]
 pub struct GradientUniforms {
     /// Gradient type (0=linear, 1=radial, 2=angular, 3=mesh).
     pub gradient_type: u32,
@@ -82,17 +79,15 @@ pub struct GradientUniforms {
     /// Mesh grid height (for mesh gradients).
     pub mesh_height: u32,
     /// Start point for linear gradient, center for radial/angular.
-    pub start_point: [f32; 2],
+    pub start_point: glam::Vec2,
     /// End point for linear gradient.
-    pub end_point: [f32; 2],
+    pub end_point: glam::Vec2,
     /// Start radius for radial, start angle for angular.
     pub start_value: f32,
     /// End radius for radial, end angle for angular.
     pub end_value: f32,
     /// Whether to smooth colors (for mesh gradients).
     pub smooths_colors: u32,
-    /// Padding for alignment.
-    pub _padding: u32,
 }
 
 /// Configuration for creating a gradient renderer.
@@ -258,35 +253,40 @@ impl GradientRenderer {
             num_stops: self.config.stops.len().min(MAX_COLOR_STOPS) as u32,
             mesh_width: self.config.mesh_size.0,
             mesh_height: self.config.mesh_size.1,
-            start_point: self.config.start_point,
-            end_point: self.config.end_point,
+            start_point: glam::Vec2::from_array(self.config.start_point),
+            end_point: glam::Vec2::from_array(self.config.end_point),
             start_value: self.config.start_value,
             end_value: self.config.end_value,
             smooths_colors: u32::from(self.config.smooths_colors),
-            _padding: 0,
         }
     }
 
-    fn prepare_stops(&self) -> [GpuColorStop; MAX_COLOR_STOPS] {
-        let mut stops = [GpuColorStop::default(); MAX_COLOR_STOPS];
-        for (i, (position, color)) in self.config.stops.iter().take(MAX_COLOR_STOPS).enumerate() {
-            stops[i] = GpuColorStop {
-                color: [color.red, color.green, color.blue, color.opacity],
+    fn prepare_stops(&self) -> Vec<GpuColorStop> {
+        let mut stops = Vec::with_capacity(MAX_COLOR_STOPS);
+        for (position, color) in self.config.stops.iter().take(MAX_COLOR_STOPS) {
+            stops.push(GpuColorStop {
+                color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
                 position: *position,
-                _padding: [0.0; 3],
-            };
+            });
+        }
+        // Pad to MAX_COLOR_STOPS
+        while stops.len() < MAX_COLOR_STOPS {
+            stops.push(GpuColorStop::default());
         }
         stops
     }
 
-    fn prepare_mesh_vertices(&self) -> [GpuMeshVertex; MAX_MESH_VERTICES] {
-        let mut vertices = [GpuMeshVertex::default(); MAX_MESH_VERTICES];
-        for (i, (position, color)) in self.config.mesh_vertices.iter().take(MAX_MESH_VERTICES).enumerate() {
-            vertices[i] = GpuMeshVertex {
-                position: *position,
-                _padding1: [0.0; 2],
-                color: [color.red, color.green, color.blue, color.opacity],
-            };
+    fn prepare_mesh_vertices(&self) -> Vec<GpuMeshVertex> {
+        let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
+        for (position, color) in self.config.mesh_vertices.iter().take(MAX_MESH_VERTICES) {
+            vertices.push(GpuMeshVertex {
+                position: glam::Vec2::from_array(*position),
+                color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
+            });
+        }
+        // Pad to MAX_MESH_VERTICES
+        while vertices.len() < MAX_MESH_VERTICES {
+            vertices.push(GpuMeshVertex::default());
         }
         vertices
     }
@@ -305,26 +305,29 @@ impl GpuRenderer for GradientRenderer {
             source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
         });
 
-        // Create uniform buffer
+        // Create uniform buffer using encase size calculation
+        let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Gradient Uniforms"),
-            size: core::mem::size_of::<GradientUniforms>() as u64,
+            size: uniform_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Create color stops buffer
+        // Create color stops buffer using encase size calculation
+        let stop_size = <GpuColorStop as ShaderSize>::SHADER_SIZE.get() as u64;
         let stops_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Gradient Color Stops"),
-            size: (core::mem::size_of::<GpuColorStop>() * MAX_COLOR_STOPS) as u64,
+            size: stop_size * MAX_COLOR_STOPS as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Create mesh vertices buffer
+        // Create mesh vertices buffer using encase size calculation
+        let vertex_size = <GpuMeshVertex as ShaderSize>::SHADER_SIZE.get() as u64;
         let mesh_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Gradient Mesh Vertices"),
-            size: (core::mem::size_of::<GpuMeshVertex>() * MAX_MESH_VERTICES) as u64,
+            size: vertex_size * MAX_MESH_VERTICES as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -393,6 +396,12 @@ impl GpuRenderer for GradientRenderer {
             push_constant_ranges: &[],
         });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         // Try with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -405,16 +414,16 @@ impl GpuRenderer for GradientRenderer {
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
@@ -444,7 +453,7 @@ impl GpuRenderer for GradientRenderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -496,24 +505,28 @@ impl GpuRenderer for GradientRenderer {
         let Some(mesh_buffer) = &self.mesh_buffer else { return };
         let Some(bind_group) = &self.bind_group else { return };
 
-        let Some(bind_group) = &self.bind_group else { return };
-        
         // Only update buffers if dirty
         if self.dirty {
-            // Update uniforms
+            // Update uniforms using encase
             let uniforms = self.prepare_uniforms();
-            frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+            let mut uniform_data = UniformBuffer::new(Vec::new());
+            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+            frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
-            // Update color stops
+            // Update color stops using encase
             let stops = self.prepare_stops();
-            frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+            let mut storage_data = StorageBuffer::new(Vec::new());
+            storage_data.write(&stops).expect("Failed to write storage buffer");
+            frame.queue.write_buffer(stops_buffer, 0, storage_data.as_ref());
 
             // Update mesh vertices (if mesh gradient)
             if matches!(self.config.gradient_type, GradientType::Mesh) {
                 let vertices = self.prepare_mesh_vertices();
-                frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
+                let mut mesh_data = StorageBuffer::new(Vec::new());
+                mesh_data.write(&vertices).expect("Failed to write storage buffer");
+                frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
             }
-            
+
             self.dirty = false;
         }
 
@@ -735,26 +748,29 @@ where
             source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
         });
 
-        // Create uniform buffer
+        // Create uniform buffer using encase size calculation
+        let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mesh Gradient Uniforms"),
-            size: core::mem::size_of::<GradientUniforms>() as u64,
+            size: uniform_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         // Create color stops buffer (not used for mesh, but required by shader)
+        let stop_size = <GpuColorStop as ShaderSize>::SHADER_SIZE.get() as u64;
         let stops_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mesh Gradient Color Stops"),
-            size: (core::mem::size_of::<GpuColorStop>() * MAX_COLOR_STOPS) as u64,
+            size: stop_size * MAX_COLOR_STOPS as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Create mesh vertices buffer
+        // Create mesh vertices buffer using encase size calculation
+        let vertex_size = <GpuMeshVertex as ShaderSize>::SHADER_SIZE.get() as u64;
         let mesh_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Mesh Gradient Vertices"),
-            size: (core::mem::size_of::<GpuMeshVertex>() * MAX_MESH_VERTICES) as u64,
+            size: vertex_size * MAX_MESH_VERTICES as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -820,6 +836,12 @@ where
             push_constant_ranges: &[],
         });
 
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        };
+
         // Try with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -837,7 +859,7 @@ where
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -871,7 +893,7 @@ where
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -930,41 +952,49 @@ where
             // Update cache
             self.last_colors = Some(colors.clone());
 
-            // Prepare uniforms
+            // Prepare uniforms using encase
             let uniforms = GradientUniforms {
                 gradient_type: GradientType::Mesh as u32,
                 num_stops: 0,
                 mesh_width: self.width,
                 mesh_height: self.height,
-                start_point: [0.0, 0.0],
-                end_point: [1.0, 1.0],
+                start_point: glam::Vec2::new(0.0, 0.0),
+                end_point: glam::Vec2::new(1.0, 1.0),
                 start_value: 0.0,
                 end_value: 1.0,
                 smooths_colors: u32::from(self.smooths_colors),
-                _padding: 0,
             };
-            frame.queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+            let mut uniform_data = UniformBuffer::new(Vec::new());
+            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+            frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
             // Prepare empty stops (mesh gradient doesn't use stops)
-            let stops = [GpuColorStop::default(); MAX_COLOR_STOPS];
-            frame.queue.write_buffer(stops_buffer, 0, bytemuck::cast_slice(&stops));
+            let stops: Vec<GpuColorStop> = (0..MAX_COLOR_STOPS).map(|_| GpuColorStop::default()).collect();
+            let mut stops_data = StorageBuffer::new(Vec::new());
+            stops_data.write(&stops).expect("Failed to write storage buffer");
+            frame.queue.write_buffer(stops_buffer, 0, stops_data.as_ref());
 
             // Prepare mesh vertices from colors
             // Generate grid positions and map colors
-            let mut vertices = [GpuMeshVertex::default(); MAX_MESH_VERTICES];
+            let mut vertices = Vec::with_capacity(MAX_MESH_VERTICES);
             let w = self.width as usize;
             let h = self.height as usize;
 
             for (i, color) in colors.iter().take(MAX_MESH_VERTICES).enumerate() {
                 let x = (i % w) as f32 / (w - 1).max(1) as f32;
                 let y = (i / w) as f32 / (h - 1).max(1) as f32;
-                vertices[i] = GpuMeshVertex {
-                    position: [x, y],
-                    _padding1: [0.0; 2],
-                    color: [color.red, color.green, color.blue, color.opacity],
-                };
+                vertices.push(GpuMeshVertex {
+                    position: glam::Vec2::new(x, y),
+                    color: glam::Vec4::new(color.red, color.green, color.blue, color.opacity),
+                });
             }
-            frame.queue.write_buffer(mesh_buffer, 0, bytemuck::cast_slice(&vertices));
+            // Pad to MAX_MESH_VERTICES
+            while vertices.len() < MAX_MESH_VERTICES {
+                vertices.push(GpuMeshVertex::default());
+            }
+            let mut mesh_data = StorageBuffer::new(Vec::new());
+            mesh_data.write(&vertices).expect("Failed to write storage buffer");
+            frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
         }
 
         // Render
