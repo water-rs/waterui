@@ -78,5 +78,28 @@ pub struct Tabs {
     pub position: TabPosition,
 }
 
+impl Tabs {
+    /// Creates a new Tabs component with the given selection binding and tabs.
+    ///
+    /// # Arguments
+    ///
+    /// * `selection` - Binding to the currently selected tab identifier
+    /// * `tabs` - Collection of tabs to display
+    pub fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
+        Self {
+            selection,
+            tabs,
+            position: TabPosition::default(),
+        }
+    }
+
+    /// Sets the position of the tab bar.
+    #[must_use]
+    pub fn position(mut self, position: TabPosition) -> Self {
+        self.position = position;
+        self
+    }
+}
+
 // Make Tabs a raw view that stretches to fill available space
 raw_view!(Tabs, StretchAxis::Both);
