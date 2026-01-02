@@ -315,7 +315,8 @@ impl StyledStr {
 
     /// Sets the font for all chunks.
     #[must_use]
-    pub fn font(self, font: Font) -> Self {
+    pub fn font(self, font: impl Into<Font>) -> Self {
+        let font = font.into();
         self.apply_style(|s| s.font = font.clone())
     }
 
