@@ -62,6 +62,7 @@ pub(crate) struct ParticleProps {
     pub speed: Range<f32>,
     pub angle: Range<f32>,
     pub size: Range<f32>,
+    pub spin: Range<f32>, // Rotation speed in rad/s
     /// Color at start of particle life (user-provided Color, resolved later).
     pub color_start: Color,
     /// Color at end of particle life (user-provided Color, resolved later).
@@ -84,6 +85,7 @@ impl Default for ParticleProps {
             stretch_with_velocity: false,
             softness: 0.5,
             shape: ParticleShape::Circle,
+            spin: 0.0..0.0,
         }
     }
 }
