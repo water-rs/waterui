@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 use executor_core::spawn_local;
-use nami::{Binding, Signal, signal::IntoComputed};
+use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_graphics::color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -36,13 +36,15 @@ use crate::{
     background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
+    filter::Opacity,
     gesture::{Gesture, GestureObserver, TapGesture},
+    interaction::Hittable,
     metadata::{context_menu::ContextMenu, secure::Secure},
     theme,
     view_ext::OnChange,
 };
 use crate::{
-    component::{Text, badge::Badge, focus::Focused},
+    component::{badge::Badge, focus::Focused},
     prelude::Shadow,
     shape::{ClipShape, Shape},
     style::{Anchor, Offset, Rotation, Scale},
@@ -68,8 +70,8 @@ pub trait ViewExt: View + Sized {
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments
-    /// * `title` - The title for the navigation view
-    fn title(self, title: impl Into<Text>) -> NavigationView {
+    /// * `title` - The title for the navigation view (any View)
+    fn title(self, title: impl View) -> NavigationView {
         NavigationView::new(title, self)
     }
 
@@ -816,6 +818,68 @@ pub trait ViewExt: View + Sized {
                 .on_enter(on_enter)
                 .on_exit(on_exit),
         )
+    }
+
+    /// Controls whether this view responds to hit testing (touch/click events).
+    ///
+    /// When `enabled` is false, touch events pass through the view to views behind it.
+    /// This modifier does NOT affect the visual appearance of the view.
+    ///
+    /// # Arguments
+    /// * `enabled` - Whether hit testing is enabled (can be reactive)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Make a view transparent to touch events
+    /// text("Click through me")
+    ///     .hittable(false);
+    ///
+    /// // Reactive hit testing control
+    /// let can_interact = binding(true);
+    /// Button::new("Click me", || {})
+    ///     .hittable(can_interact);
+    /// ```
+    fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable> {
+        Metadata::new(self, Hittable::new(enabled))
+    }
+
+    /// Disables this view - grays it out and blocks all interactions.
+    ///
+    /// This is a convenience modifier that composes `opacity(0.5)` + `hittable(false)`.
+    /// When disabled, the view becomes semi-transparent and ignores all touch events.
+    ///
+    /// # Arguments
+    /// * `is_disabled` - Whether the view is disabled (can be reactive)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::prelude::*;
+    ///
+    /// // Disable a button
+    /// Button::new("Submit", || {})
+    ///     .disabled(true);
+    ///
+    /// // Reactive disable based on form validity
+    /// let is_submitting = binding(false);
+    /// vstack((
+    ///     TextField::new("Name", name),
+    ///     Button::new("Submit", || {}),
+    /// )).disabled(is_submitting);
+    /// ```
+    fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
+        let is_disabled = is_disabled.into_computed();
+
+        // Compose: opacity + hit testing
+        // opacity: 0.5 when disabled, 1.0 when enabled
+        // hittable: false when disabled, true when enabled
+        let opacity_value = is_disabled.clone().map(|d| if d { 0.5 } else { 1.0 });
+        let hittable_value = is_disabled.map(|d| !d);
+
+        Metadata::new(self, Opacity::new(opacity_value)).hittable(hittable_value)
     }
 }
 
