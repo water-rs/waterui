@@ -137,6 +137,7 @@ mod linux_impl {
                 format: self.format,
                 width: self.width,
                 height: self.height,
+                pointer: waterui_graphics::gpu_surface::PointerState::default(),
             };
 
             // User's render callback - renders directly to GTK's FBO
