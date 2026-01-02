@@ -58,3 +58,6 @@ pub mod view_effect;
 /// AppliedFilter metadata FFI bindings for GPU filter rendering
 pub mod applied_filter;
 
+/// ViewRenderer FFI bindings for capturing views to PNG
+pub mod view_renderer;
+
