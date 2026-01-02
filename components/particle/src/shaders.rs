@@ -2,16 +2,20 @@
 
 /// Compute shader for particle simulation.
 pub const COMPUTE_SHADER: &str = r#"
+// Particle struct layout matches encase-generated layout
 struct Particle {
     pos: vec2<f32>,
     vel: vec2<f32>,
     life: f32,
     max_life: f32,
     size: f32,
-    _pad: f32,
+    rotation: f32,
+    rot_speed: f32,
+    // encase automatically adds padding before vec4
     color: vec4<f32>,
 }
 
+// Uniforms struct layout matches encase-generated layout
 struct Uniforms {
     time: f32,
     dt: f32,
@@ -29,10 +33,13 @@ struct Uniforms {
     speed_range: vec2<f32>,
     angle_range: vec2<f32>,
     size_range: vec2<f32>,
+    spin_range: vec2<f32>,
+    // encase automatically adds padding before vec4
     color_start: vec4<f32>,
     color_end: vec4<f32>,
     shape: u32,
-    _pad: vec3<u32>,
+    viewport_width: u32,
+    viewport_height: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -79,14 +86,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Update position
         p.pos += p.vel * uniforms.dt;
         
+        // Update rotation
+        p.rotation += p.rot_speed * uniforms.dt;
+        
         // Decrease life
         p.life -= uniforms.dt;
     } else {
-        // Dead particle: maybe respawn
+        // Dead particle: maybe respawn (simple constant rate logic)
         let spawn_chance = uniforms.emit_rate * uniforms.dt / f32(uniforms.max_particles);
-        
-        // Always spawn until we hit steady state? No, random chance is correct for uniform rate.
-        // But to fill initial buffer faster, logic might differ. For now standard.
         
         if (rand(&seed) < spawn_chance) {
             // Respawn at emitter
@@ -105,8 +112,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             p.max_life = p.life;
             p.size = mix_f32(uniforms.size_range.x, uniforms.size_range.y, rand(&seed));
             
-            // Color is calculated in render shader usually, but we can store per-particle color data if we wanted.
-            // For now, we just zero it or store something useful.
+            // Rotation
+            p.rotation = rand(&seed) * 6.28318; // Random initial rotation 0..2PI
+            p.rot_speed = mix_f32(uniforms.spin_range.x, uniforms.spin_range.y, rand(&seed));
+
             p.color = vec4<f32>(1.0); 
         }
     }
@@ -117,16 +126,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 /// Render shader for particle visualization.
 pub const RENDER_SHADER: &str = r#"
+// Particle struct layout matches encase-generated layout
 struct Particle {
     pos: vec2<f32>,
     vel: vec2<f32>,
     life: f32,
     max_life: f32,
     size: f32,
-    _pad: f32,
+    rotation: f32,
+    rot_speed: f32,
+    // encase automatically adds padding before vec4
     color: vec4<f32>,
 }
 
+// Uniforms struct layout matches encase-generated layout
 struct Uniforms {
     time: f32,
     dt: f32,
@@ -144,10 +157,24 @@ struct Uniforms {
     speed_range: vec2<f32>,
     angle_range: vec2<f32>,
     size_range: vec2<f32>,
+    spin_range: vec2<f32>,
+    // encase automatically adds padding before vec4
     color_start: vec4<f32>,
     color_end: vec4<f32>,
     shape: u32,
-    _pad: vec3<u32>,
+    viewport_width: u32,
+    viewport_height: u32,
+}
+
+// Helper functions (duplicated from Compute Shader)
+fn pcg_hash(input: u32) -> u32 {
+    let state = input * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn mix_f32(a: f32, b: f32, t: f32) -> f32 {
+    return a * (1.0 - t) + b * t;
 }
 
 struct VertexOutput {
@@ -185,8 +212,39 @@ fn vs_main(
         return out;
     }
     
-    let quad_pos = QUAD_VERTICES[vertex_index];
+    var quad_pos = QUAD_VERTICES[vertex_index];
     var world_pos = vec2<f32>(0.0);
+    
+    // For Rect shape, make thin rectangles (paper-like confetti)
+    // shape: 0=Circle, 1=Rect
+    if (uniforms.shape == 1u) {
+        // Tumble effect (Pseudo-3D rotation)
+        // Hash ONLY instance_index for stable per-particle properties
+        // DO NOT use uniforms.seed here - it changes every frame!
+        let tumble_seed = pcg_hash(instance_index * 12345u);
+        let tumble_speed = mix_f32(1.0, 3.0, f32(tumble_seed % 100u) / 100.0);
+        let tumble_phase = f32(pcg_hash(instance_index * 54321u) % 628u) / 100.0;
+        
+        let tumble = cos(uniforms.time * tumble_speed + tumble_phase);
+        // Map [-1, 1] to width scale 0..1, but we want it to look like flipping
+        // Projected width is |cos(angle)|
+        let width_scale = abs(tumble);
+        
+        // Base thin aspect ratio (0.4) * tumbling scale
+        // Avoid disappearing completely by adding small min width or just let it flip
+        quad_pos.x = quad_pos.x * 0.4 * width_scale;
+    }
+    
+    // Apply Rotation
+    let c = cos(p.rotation);
+    let s = sin(p.rotation);
+    // Standard 2D rotation matrix:
+    // [ c -s ]
+    // [ s  c ]
+    let rotated_pos = vec2<f32>(
+        quad_pos.x * c - quad_pos.y * s,
+        quad_pos.x * s + quad_pos.y * c
+    );
     
     // Velocity Stretching
     if (uniforms.stretch_factor > 0.0) {
@@ -195,24 +253,38 @@ fn vs_main(
             let dir = p.vel / speed;
             let perp = vec2<f32>(-dir.y, dir.x);
             
-            // Stretch along directory based on speed
+            // Stretch along velocity direction
             let stretch_amount = 1.0 + speed * uniforms.stretch_factor * 10.0;
             
-            // Width is perp, Length is dir
-            // quad.x controls width, quad.y controls length
             let width = p.size;
-            let length = p.size * stretch_amount;
+            let length_val = p.size * stretch_amount;
             
-            world_pos = p.pos + (perp * quad_pos.x * width) + (dir * quad_pos.y * length);
+            world_pos = p.pos + (perp * quad_pos.x * width) + (dir * quad_pos.y * length_val);
         } else {
-            world_pos = p.pos + quad_pos * p.size;
+             world_pos = p.pos + rotated_pos * p.size;
         }
     } else {
-        world_pos = p.pos + quad_pos * p.size;
+        world_pos = p.pos + rotated_pos * p.size;
     }
     
     // Convert from [0,1] to clip space [-1,1]
-    let clip_pos = world_pos * 2.0 - 1.0;
+    var clip_pos = world_pos * 2.0 - 1.0;
+    
+    // Aspect ratio correction: particles should be square regardless of viewport
+    let vp_width = f32(uniforms.viewport_width);
+    let vp_height = f32(uniforms.viewport_height);
+    if (vp_width > 0.0 && vp_height > 0.0) {
+        let aspect = vp_width / vp_height;
+        if (aspect > 1.0) {
+            // Wide viewport: scale Y to make particles appear square
+            // Actually we need to scale X down relative to Y
+            clip_pos.x = clip_pos.x / aspect;
+        } else {
+            // Tall viewport: scale X up relative to Y  
+            clip_pos.y = clip_pos.y * aspect;
+        }
+    }
+    
     out.position = vec4<f32>(clip_pos.x, -clip_pos.y, 0.0, 1.0);
     
     out.uv = (quad_pos + 1.0) * 0.5;
@@ -235,9 +307,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var dist = 0.0;
 
     if (uniforms.shape == 1u) {
-        // Rect/Box SDF
-        // uv is 0..1, center is 0.5
-        // distance to edge of 0.5 box
+        // Rect/Box SDF for thin rectangle (0.3:1 aspect)
+        // UV goes 0..1, we need to scale the x threshold
+        // The quad is 0.3 wide, 1.0 tall, so in UV space the half-widths are:
+        // x: 0.15 (because 0.3/2 = 0.15, mapped to 0.5 in UV)
+        // y: 0.5
+        // To get proper SDF, we compare:
+        // d.x should hit edge at 0.5 (full UV range visible)
+        // d.y should hit edge at 0.5
+        // Since we scaled the quad but UV is still 0..1, the SDF is still a box:
         let d = abs(in.uv - center);
         dist = max(d.x, d.y);
     } else {

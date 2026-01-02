@@ -6,9 +6,9 @@ use crate::{
     shaders::{COMPUTE_SHADER, RENDER_SHADER},
     EmitterShape,
 };
+use encase::{ShaderSize, UniformBuffer};
 use std::borrow::Cow;
 use waterui_graphics::{
-    bytemuck,
     color::ResolvedColor,
     gpu_surface::{GpuContext, GpuFrame, GpuRenderer},
     wgpu,
@@ -28,6 +28,7 @@ pub struct ResolvedParticleConfig {
     pub speed_range: [f32; 2],
     pub angle_range: [f32; 2],
     pub size_range: [f32; 2],
+    pub spin_range: [f32; 2],
     pub color_start: ResolvedColor,
     pub color_end: ResolvedColor,
     pub stretch_with_velocity: bool,
@@ -68,7 +69,7 @@ impl ParticleRenderer {
         }
     }
 
-    fn update_uniforms(&mut self, queue: &wgpu::Queue) {
+    fn update_uniforms(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
         if let Some(buffer) = &self.uniform_buffer {
             let now = std::time::Instant::now();
             let time = now.duration_since(self.start_time).as_secs_f32();
@@ -93,35 +94,40 @@ impl ParticleRenderer {
                 dt,
                 seed,
                 max_particles: self.config.max_particles,
-                gravity: self.config.gravity,
-                wind: self.config.wind,
-                emitter_pos: self.config.emitter_pos,
-                emitter_size: [emitter_w, emitter_h],
+                gravity: glam::Vec2::from_array(self.config.gravity),
+                wind: glam::Vec2::from_array(self.config.wind),
+                emitter_pos: glam::Vec2::from_array(self.config.emitter_pos),
+                emitter_size: glam::Vec2::new(emitter_w, emitter_h),
                 emit_rate: self.config.emit_rate,
                 turbulence: self.config.turbulence,
                 stretch_factor: if self.config.stretch_with_velocity { 1.0 } else { 0.0 },
                 softness: self.config.softness,
-                life_range: self.config.life_range,
-                speed_range: self.config.speed_range,
-                angle_range: self.config.angle_range,
-                size_range: self.config.size_range,
-                color_start: [
+                life_range: glam::Vec2::from_array(self.config.life_range),
+                speed_range: glam::Vec2::from_array(self.config.speed_range),
+                angle_range: glam::Vec2::from_array(self.config.angle_range),
+                size_range: glam::Vec2::from_array(self.config.size_range),
+                spin_range: glam::Vec2::from_array(self.config.spin_range),
+                color_start: glam::Vec4::new(
                     self.config.color_start.red,
                     self.config.color_start.green,
                     self.config.color_start.blue,
                     self.config.color_start.opacity,
-                ],
-                color_end: [
+                ),
+                color_end: glam::Vec4::new(
                     self.config.color_end.red,
                     self.config.color_end.green,
                     self.config.color_end.blue,
                     self.config.color_end.opacity,
-                ],
+                ),
                 shape: shape_val,
-                _pad: [0; 3],
+                viewport_width: width,
+                viewport_height: height,
             };
 
-            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniforms));
+            // Use encase for uniform buffer write
+            let mut uniform_data = UniformBuffer::new(Vec::new());
+            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+            queue.write_buffer(buffer, 0, uniform_data.as_ref());
         }
     }
 }
@@ -130,8 +136,8 @@ impl GpuRenderer for ParticleRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         let device = ctx.device;
 
-        // 1. Create Buffers
-        let particle_size = std::mem::size_of::<GpuParticle>() as u64;
+        // 1. Create Buffers using encase size calculation
+        let particle_size = <GpuParticle as ShaderSize>::SHADER_SIZE.get() as u64;
         let buffer_size = particle_size * u64::from(self.config.max_particles);
 
         let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -143,9 +149,10 @@ impl GpuRenderer for ParticleRenderer {
             mapped_at_creation: false,
         });
 
+        let uniform_size = <Uniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particle Uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
+            size: uniform_size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -256,20 +263,24 @@ impl GpuRenderer for ParticleRenderer {
                 push_constant_ranges: &[],
             });
 
-        let blend = match self.config.blend_mode {
-            BlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
-            BlendMode::Additive => wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
+        let blend = if ctx.is_hdr() {
+            None
+        } else {
+            Some(match self.config.blend_mode {
+                BlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
+                BlendMode::Additive => wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
                 },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            },
+            })
         };
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -286,7 +297,7 @@ impl GpuRenderer for ParticleRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.surface_format,
-                    blend: Some(blend),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -331,7 +342,7 @@ impl GpuRenderer for ParticleRenderer {
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-        self.update_uniforms(frame.queue);
+        self.update_uniforms(frame.queue, frame.width, frame.height);
 
         let mut encoder = frame
             .device
