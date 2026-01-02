@@ -32,7 +32,7 @@ pub mod view_effect;
 pub mod filter_view;
 
 // Re-export key types for user convenience.
-pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
+pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, PointerState};
 
 pub use shader_surface::ShaderSurface;
 
