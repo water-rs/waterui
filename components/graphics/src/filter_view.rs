@@ -30,6 +30,7 @@ use filtrate_core::{Chain, Filter, FragmentList, ParamArray};
 use nami::signal::IntoSignal;
 use nami::Signal;
 use waterui_core::animation::Animation;
+use waterui_core::easing::EasingCurve;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, Metadata, View};
 
@@ -367,6 +368,13 @@ impl ParamAnimation {
                 self.current_value = value;
                 (value, complete)
             }
+            Animation::CubicBezier { duration, .. } => {
+                // Use the unified easing system for custom bezier curves
+                let (value, complete) =
+                    self.interpolate_with_curve(elapsed, *duration, self.animation.curve());
+                self.current_value = value;
+                (value, complete)
+            }
             Animation::Spring { stiffness, damping } => {
                 let (value, complete) = self.update_spring(*stiffness, *damping);
                 self.current_value = value;
@@ -391,6 +399,27 @@ impl ParamAnimation {
             (self.target_value, true)
         } else {
             let eased_t = easing(t);
+            let value = self.start_value + (self.target_value - self.start_value) * eased_t;
+            (value, false)
+        }
+    }
+
+    /// Interpolate using an EasingCurve (unified easing system).
+    fn interpolate_with_curve(
+        &self,
+        elapsed: Duration,
+        duration: Duration,
+        curve: EasingCurve,
+    ) -> (f32, bool) {
+        if duration.is_zero() {
+            return (self.target_value, true);
+        }
+
+        let t = elapsed.as_secs_f32() / duration.as_secs_f32();
+        if t >= 1.0 {
+            (self.target_value, true)
+        } else {
+            let eased_t = curve.ease(t);
             let value = self.start_value + (self.target_value - self.start_value) * eased_t;
             (value, false)
         }
@@ -618,9 +647,9 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         self.sampler = Some(sampler);
@@ -630,10 +659,8 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
             self.setup_fragment_pipeline(ctx);
         } else {
             self.setup_compute_pipeline(ctx);
-            // Spatial filters need blit pipeline for HDR output
-            if is_hdr_format(ctx.output_format) {
-                self.setup_blit_pipeline(ctx);
-            }
+            // Spatial filters always blit from the intermediate texture.
+            self.setup_blit_pipeline(ctx);
         }
 
         // Initialize current values from filter
@@ -653,10 +680,8 @@ impl<F: Filter> GpuFilter for FilterAdapter<F> {
     fn render(&mut self, input: &FilterInput, output: &FilterOutput) -> bool {
         if F::COLOR_ONLY {
             self.render_fragment(input, output)
-        } else if is_hdr_format(output.format) {
-            self.render_compute_with_blit(input, output)
         } else {
-            self.render_compute(input, output)
+            self.render_compute_with_blit(input, output)
         }
     }
 }
@@ -700,7 +725,7 @@ impl<F: Filter> FilterAdapter<F> {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -709,7 +734,7 @@ impl<F: Filter> FilterAdapter<F> {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -745,7 +770,7 @@ impl<F: Filter> FilterAdapter<F> {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.output_format, // Native HDR support!
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -789,7 +814,7 @@ impl<F: Filter> FilterAdapter<F> {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -852,7 +877,7 @@ impl<F: Filter> FilterAdapter<F> {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -861,7 +886,7 @@ impl<F: Filter> FilterAdapter<F> {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
@@ -887,7 +912,7 @@ impl<F: Filter> FilterAdapter<F> {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.output_format, // HDR format
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),

@@ -15,13 +15,23 @@
 use core::ffi::c_void;
 use std::sync::Arc;
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
+
+// Platform-specific imports for Metal HAL texture import
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use {
+    metal::foreign_types::ForeignType,
+    metal::MTLTextureType,
+    wgpu_hal::api::Metal as MetalApi,
+};
 
 use waterui_graphics::filter_view::{AppliedFilter, FilterContext, FilterInput, FilterOutput};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::{IntoFFI, WuiAnyView};
+use super::view_effect::WuiInputType;
 
 /// Callback type for async completion notifications.
 pub type WuiCallback = unsafe extern "C" fn(user_data: *mut c_void);
@@ -72,6 +82,11 @@ pub struct WuiAppliedFilterState {
     capture_texture: Option<wgpu::Texture>,
     /// Imported texture from external source (IOSurface/AHardwareBuffer)
     imported_texture: Option<wgpu::Texture>,
+    /// Format of the imported texture (if any)
+    imported_format: Option<wgpu::TextureFormat>,
+    /// Retained Metal texture when using the Metal import path (keeps it alive for wgpu)
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    imported_metal_texture: Option<metal::Texture>,
     /// Capture texture format
     capture_format: wgpu::TextureFormat,
     /// The filter
@@ -84,6 +99,57 @@ pub struct WuiAppliedFilterState {
     /// Current output dimensions
     output_width: u32,
     output_height: u32,
+}
+
+fn ensure_dimensions(
+    state: &mut WuiAppliedFilterState,
+    width: u32,
+    height: u32,
+) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+
+    let needs_resize = width != state.input_width || height != state.input_height;
+
+    if needs_resize {
+        state.input_width = width;
+        state.input_height = height;
+        state.output_width = width;
+        state.output_height = height;
+        state.output_config.width = width;
+        state.output_config.height = height;
+    }
+
+    if needs_resize || state.capture_texture.is_none() {
+        state.capture_texture = Some(state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("AppliedFilter Capture Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: state.capture_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        }));
+    }
+
+    if needs_resize
+        && !try_configure_surface(&state.output_surface, &state.device, &state.output_config)
+    {
+        tracing::warn!(
+            "[AppliedFilter] resize reconfigure failed ({width}x{height})"
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Initialize an AppliedFilter with native layers.
@@ -219,8 +285,33 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             return core::ptr::null_mut();
         }
 
-        // Create capture texture
-        let capture_format = format;
+        // Create capture texture. Prefer the output format so GpuSurface capture
+        // can render into it without format mismatches (common on SDR displays).
+        let required = wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST;
+        let capture_format = if adapter
+            .get_texture_format_features(format)
+            .allowed_usages
+            .contains(required)
+        {
+            format
+        } else {
+            let hdr = wgpu::TextureFormat::Rgba16Float;
+            let features = adapter.get_texture_format_features(hdr);
+            if features.allowed_usages.contains(required) {
+                hdr
+            } else {
+                format
+            }
+        };
+        if capture_format != format {
+            tracing::info!(
+                "[AppliedFilter] Using capture format {:?} (output {:?})",
+                capture_format,
+                format
+            );
+        }
         let capture_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("AppliedFilter Capture Texture"),
             size: wgpu::Extent3d {
@@ -246,6 +337,9 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             output_config,
             capture_texture: Some(capture_texture),
             imported_texture: None,
+            imported_format: None,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            imported_metal_texture: None,
             capture_format,
             filter,
             initialized: false,
@@ -374,38 +468,8 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
         }
 
-        // Handle resize if needed
-        if width != state.input_width || height != state.input_height {
-            state.input_width = width;
-            state.input_height = height;
-            state.output_width = width;
-            state.output_height = height;
-            state.output_config.width = width;
-            state.output_config.height = height;
-
-            // Recreate capture texture
-            state.capture_texture = Some(state.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("AppliedFilter Capture Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: state.capture_format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }));
-
-            // Reconfigure output surface
-            if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-                tracing::warn!("[AppliedFilter] resize reconfigure failed ({width}x{height})");
-                return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
-            }
+        if !ensure_dimensions(state, width, height) {
+            return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
         }
 
         // Get output texture
@@ -440,6 +504,12 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
         };
 
+        let input_format = if state.imported_texture.is_some() {
+            state.imported_format.unwrap_or(state.capture_format)
+        } else {
+            state.capture_format
+        };
+
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("AppliedFilter Input View"),
             ..Default::default()
@@ -457,7 +527,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             queue: &state.queue,
             texture: input_texture,
             view: input_view,
-            format: state.capture_format,
+            format: input_format,
             width: state.input_width,
             height: state.input_height,
         };
@@ -490,6 +560,239 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     }
 }
 
+/// Provide input texture from child view.
+///
+/// Call this each frame before `waterui_applied_filter_render` to provide
+/// the captured child view's texture.
+///
+/// # Arguments
+///
+/// * `state` - Pointer to initialized state
+/// * `input_type` - Type of input being provided
+/// * `input_handle` - Platform-specific handle:
+///   - `WgpuTexture`: Pointer to `wgpu::Texture`
+///   - `MetalTexture`: `MTLTexture*` (Apple)
+///   - `AHardwareBuffer`: `AHardwareBuffer*` (Android)
+///   - `PixelData`: Pointer to pixel data
+/// * `width` - Input width in pixels
+/// * `height` - Input height in pixels
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_applied_filter_init`
+/// - `input_handle` must be valid for the specified `input_type`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_set_input(
+    state: *mut WuiAppliedFilterState,
+    input_type: WuiInputType,
+    input_handle: *mut c_void,
+    width: u32,
+    height: u32,
+) -> bool {
+    if state.is_null() || input_handle.is_null() || width == 0 || height == 0 {
+        return false;
+    }
+
+    let state = unsafe { &mut *state };
+
+    if !ensure_dimensions(state, width, height) {
+        return false;
+    }
+
+    match input_type {
+        WuiInputType::WgpuTexture => {
+            state.imported_texture = None;
+            state.imported_format = None;
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                state.imported_metal_texture = None;
+            }
+            true
+        }
+        WuiInputType::MetalTexture => {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                import_metal_texture(state, input_handle, width, height)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            {
+                tracing::error!("[AppliedFilter] MetalTexture not supported on this platform");
+                false
+            }
+        }
+        WuiInputType::AHardwareBuffer => {
+            #[cfg(target_os = "android")]
+            {
+                tracing::error!("[AppliedFilter] AHardwareBuffer import not implemented yet");
+                false
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                tracing::error!("[AppliedFilter] AHardwareBuffer not supported on this platform");
+                false
+            }
+        }
+        WuiInputType::PixelData => {
+            let Some(ref capture_texture) = state.capture_texture else {
+                return false;
+            };
+
+            let bytes_per_row = width * 4;
+            let data = unsafe {
+                core::slice::from_raw_parts(
+                    input_handle as *const u8,
+                    (bytes_per_row * height) as usize,
+                )
+            };
+
+            state.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: capture_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            state.imported_texture = None;
+            state.imported_format = None;
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                state.imported_metal_texture = None;
+            }
+            true
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn import_metal_texture(
+    state: &mut WuiAppliedFilterState,
+    mtl_texture_ptr: *mut c_void,
+    width: u32,
+    height: u32,
+) -> bool {
+    use metal::foreign_types::ForeignTypeRef;
+    use wgpu_hal::Api;
+
+    if mtl_texture_ptr.is_null() {
+        tracing::error!("[AppliedFilter] MTLTexture pointer is null");
+        return false;
+    }
+
+    let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(mtl_texture_ptr.cast()) };
+    let metal_texture = metal_texture_ref.to_owned();
+    let wgpu_format = match metal_texture.pixel_format() {
+        metal::MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        metal::MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+        metal::MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+        other => {
+            tracing::error!(
+                "[AppliedFilter] Unsupported Metal texture format {:?}",
+                other
+            );
+            return false;
+        }
+    };
+
+    tracing::debug!(
+        "[AppliedFilter] Importing Metal texture: {}x{} {:?}",
+        width,
+        height,
+        metal_texture.pixel_format()
+    );
+
+    let hal_texture = unsafe {
+        <MetalApi as Api>::Device::texture_from_raw(
+            metal_texture.clone(),
+            wgpu_format,
+            MTLTextureType::D2,
+            1,
+            1,
+            wgpu_hal::CopyExtent {
+                width,
+                height,
+                depth: 1,
+            },
+        )
+    };
+
+    let texture_desc = wgpu::TextureDescriptor {
+        label: Some("AppliedFilter Imported Metal Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu_format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+
+    let wgpu_texture = unsafe {
+        state
+            .device
+            .create_texture_from_hal::<MetalApi>(hal_texture, &texture_desc)
+    };
+
+    state.imported_texture = Some(wgpu_texture);
+    state.imported_format = Some(wgpu_format);
+    state.imported_metal_texture = Some(metal_texture);
+    state.input_width = width;
+    state.input_height = height;
+
+    true
+}
+
+/// Prepare the capture texture for rendering.
+///
+/// Ensures the capture texture matches the requested dimensions and returns
+/// a pointer to the underlying wgpu texture for zero-copy rendering paths.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_init`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
+    state: *mut WuiAppliedFilterState,
+    width: u32,
+    height: u32,
+) -> *const c_void {
+    if state.is_null() {
+        return core::ptr::null();
+    }
+
+    let state = unsafe { &mut *state };
+
+    if !ensure_dimensions(state, width, height) {
+        return core::ptr::null();
+    }
+
+    state.imported_texture = None;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        state.imported_metal_texture = None;
+    }
+
+    match &state.capture_texture {
+        Some(texture) => texture as *const wgpu::Texture as *const c_void,
+        None => core::ptr::null(),
+    }
+}
+
 /// Get a pointer to the capture texture.
 ///
 /// The native backend should render the child view to this texture.
@@ -511,6 +814,45 @@ pub unsafe extern "C" fn waterui_applied_filter_get_capture_texture(
         Some(texture) => texture as *const wgpu::Texture as *const c_void,
         None => core::ptr::null(),
     }
+}
+
+/// Get a pointer to the Metal texture backing the capture texture (Apple only).
+///
+/// This exposes the underlying MTLTexture so native code can render directly
+/// into the wgpu capture texture without extra copies.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_init`.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
+    state: *mut WuiAppliedFilterState,
+) -> *mut c_void {
+    if state.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    let state = unsafe { &*state };
+    let Some(texture) = state.capture_texture.as_ref() else {
+        return core::ptr::null_mut();
+    };
+
+    let Some(hal_texture) = (unsafe { texture.as_hal::<MetalApi>() }) else {
+        tracing::error!("[AppliedFilter] capture texture is not a Metal texture");
+        return core::ptr::null_mut();
+    };
+
+    let raw = unsafe { hal_texture.raw_handle() };
+    raw.as_ptr().cast::<c_void>()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_get_capture_metal_texture(
+    _state: *mut WuiAppliedFilterState,
+) -> *mut c_void {
+    core::ptr::null_mut()
 }
 
 /// Clean up AppliedFilter resources.
