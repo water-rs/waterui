@@ -1390,3 +1390,30 @@ ffi_ignorable_metadata!(
     WuiIgnorableMetadataMaterialBackground,
     material_background
 );
+
+// ========== Metadata<Hittable> FFI ==========
+// Controls whether a view responds to hit testing (touch/click events)
+
+use waterui::interaction::Hittable;
+
+/// FFI-safe representation of Hittable metadata.
+#[repr(C)]
+pub struct WuiHittable {
+    /// Whether hit testing is enabled (reactive).
+    pub enabled: *mut WuiComputed<bool>,
+}
+
+impl IntoFFI for Hittable {
+    type FFI = WuiHittable;
+    fn into_ffi(self) -> Self::FFI {
+        WuiHittable {
+            enabled: self.enabled.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for Metadata<Hittable> FFI struct
+pub type WuiMetadataHittable = WuiMetadata<WuiHittable>;
+
+// Generate waterui_metadata_hittable_id() and waterui_force_as_metadata_hittable()
+ffi_metadata!(Hittable, WuiMetadataHittable, hittable);

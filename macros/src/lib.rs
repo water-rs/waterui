@@ -806,6 +806,161 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
 /// - The function must return `impl View`
 /// - Hot reload must be enabled via environment variables (set by `water run`)
 /// - For development, build with `RUSTFLAGS="--cfg waterui_hot_reload_lib"`
+///
+/// Attribute macro for enabling view preview functionality.
+///
+/// This macro marks a function as previewable, generating a C-exported symbol that
+/// the preview system can load to render the view without running the full app.
+///
+/// # Example
+///
+/// ```ignore
+/// use waterui::prelude::*;
+///
+/// // Simple function with no arguments
+/// #[preview]
+/// fn sidebar() -> impl View {
+///     vstack((
+///         text("Sidebar"),
+///         text("Content"),
+///     ))
+/// }
+///
+/// // Function with arguments - provide defaults in the macro
+/// #[preview(count = 5, name = "John")]
+/// fn user_card(count: i32, name: &str) -> impl View {
+///     text(format!("{name}: {count}"))
+/// }
+/// ```
+///
+/// # How It Works
+///
+/// The macro generates a C-exported symbol with the naming pattern:
+/// `waterui_preview_<module_path_with_underscores>`
+///
+/// For example, `my_crate::dashboard::card` becomes `waterui_preview_my_crate_dashboard_card`.
+///
+/// This symbol can be loaded by the preview daemon to render the view.
+///
+/// # Symbol Naming
+///
+/// The symbol name is derived from the full module path:
+/// - `::` is replaced with `_`
+/// - Prefix: `waterui_preview_`
+///
+/// This allows even private functions to be previewable since the symbol is always public.
+#[proc_macro_attribute]
+pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let args = parse_macro_input!(args with Punctuated::<PreviewArg, Token![,]>::parse_terminated);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_attrs = &input_fn.attrs;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+    let fn_name_str = fn_name.to_string();
+
+    // Parse function parameters and collect default values from macro args
+    let params: Vec<_> = input_fn
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg
+                && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
+            {
+                return Some((pat_ident.ident.clone(), pat_type.ty.clone()));
+            }
+            None
+        })
+        .collect();
+
+    // Build a map of parameter defaults from the macro arguments
+    let defaults: std::collections::HashMap<String, Expr> = args
+        .iter()
+        .map(|arg| (arg.name.to_string(), arg.value.clone()))
+        .collect();
+
+    // Check that all parameters have defaults if the function has arguments
+    if !params.is_empty() {
+        for (param_name, _) in &params {
+            if !defaults.contains_key(&param_name.to_string()) {
+                return syn::Error::new_spanned(
+                    param_name,
+                    format!(
+                        "Function parameter `{param_name}` needs a default value in #[preview({param_name} = ...)]"
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+    }
+
+    // Generate the call expression with defaults
+    let call_args: Vec<_> = params
+        .iter()
+        .map(|(name, _)| {
+            defaults
+                .get(&name.to_string())
+                .cloned()
+                .expect("checked above")
+        })
+        .collect();
+
+    let call_expr = if params.is_empty() {
+        quote! { #fn_name() }
+    } else {
+        quote! { #fn_name(#(#call_args),*) }
+    };
+
+    // Generate the export function name using just the function name
+    // The full path will be embedded as a const string for the daemon to match
+    let export_fn_name = syn::Ident::new(&format!("waterui_preview_{fn_name_str}"), fn_name.span());
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis #fn_sig #fn_block
+
+        // Generate C export symbol for preview
+        // Symbol name: waterui_preview_<fn_name>
+        // The full module path is embedded as a const for matching
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #export_fn_name() -> *mut () {
+            // Store the full path for the preview system to discover
+            #[used]
+            #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__wui_preview"))]
+            #[cfg_attr(target_os = "ios", unsafe(link_section = "__DATA,__wui_preview"))]
+            #[cfg_attr(target_os = "linux", unsafe(link_section = ".wui_preview"))]
+            #[cfg_attr(target_os = "android", unsafe(link_section = ".wui_preview"))]
+            #[cfg_attr(windows, unsafe(link_section = ".wuiprv"))]
+            static PREVIEW_PATH: &str = concat!(module_path!(), "::", #fn_name_str);
+
+            let view = #call_expr;
+            Box::into_raw(Box::new(::waterui::AnyView::new(view))).cast()
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// A single argument in the preview macro like `name = "value"`
+struct PreviewArg {
+    name: syn::Ident,
+    value: Expr,
+}
+
+impl Parse for PreviewArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: Expr = input.parse()?;
+        Ok(Self { name, value })
+    }
+}
+
 #[proc_macro_attribute]
 pub fn hot_reload(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(input as ItemFn);

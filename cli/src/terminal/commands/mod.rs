@@ -7,4 +7,5 @@ pub mod device;
 pub mod devices;
 pub mod doctor;
 pub mod package;
+pub mod preview;
 pub mod run;
