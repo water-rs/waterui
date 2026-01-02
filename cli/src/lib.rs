@@ -12,6 +12,7 @@ pub mod diff;
 pub mod gesture;
 pub mod gtk4;
 pub mod platform;
+pub mod preview;
 pub mod project;
 pub mod templates;
 pub mod toolchain;
