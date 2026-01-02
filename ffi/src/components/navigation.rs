@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 
 use crate::array::WuiArray;
 use crate::closure::WuiFn;
-use crate::components::text::WuiText;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui::Color;
@@ -49,7 +48,7 @@ impl IntoFFI for NavigationTitleDisplayMode {
 
 into_ffi! {Bar,
     pub struct WuiBar {
-        title: WuiText,
+        title: *mut WuiAnyView,
         color: *mut WuiComputed<Color>,
         hidden: *mut WuiComputed<bool>,
         display_mode: WuiNavigationTitleDisplayMode,
