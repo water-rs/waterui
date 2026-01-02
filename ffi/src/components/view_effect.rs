@@ -14,6 +14,7 @@
 use core::ffi::c_void;
 use std::sync::Arc;
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec;
 
@@ -137,6 +138,9 @@ pub struct WuiViewEffectState {
     /// Imported texture from external source (IOSurface/AHardwareBuffer)
     /// This replaces capture_texture when using zero-copy import
     imported_texture: Option<wgpu::Texture>,
+    /// Retained Metal texture when using the Metal import path (keeps it alive for wgpu)
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    imported_metal_texture: Option<metal::Texture>,
     /// Capture texture format
     capture_format: wgpu::TextureFormat,
     /// The effect renderer wrapper
@@ -313,6 +317,8 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             output_config,
             capture_texture: Some(capture_texture),
             imported_texture: None,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            imported_metal_texture: None,
             capture_format,
             effect_wrapper,
             initialized: false,
@@ -429,6 +435,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             // The input_handle is a pointer to the wgpu::Texture
             // We'll use this directly in render() instead of the capture texture
             // For now, we just validate it's not null
+            state.imported_texture = None;
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                state.imported_metal_texture = None;
+            }
             true
         }
         WuiInputType::MetalTexture => {
@@ -489,6 +500,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
                     depth_or_array_layers: 1,
                 },
             );
+            state.imported_texture = None;
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                state.imported_metal_texture = None;
+            }
             true
         }
     }
@@ -518,12 +534,18 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 
         let state = unsafe { &mut *state };
 
+        let input_format = if state.imported_texture.is_some() {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            state.capture_format
+        };
+
         // Call setup on first render
         if !state.initialized {
             let ctx = EffectContext {
                 device: &state.device,
                 queue: &state.queue,
-                input_format: state.capture_format,
+                input_format,
                 output_format: state.output_config.format,
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
@@ -578,7 +600,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
             queue: &state.queue,
             texture: input_texture,
             view: input_view,
-            format: state.capture_format,
+            format: input_format,
             width: state.input_width,
             height: state.input_height,
         };
@@ -747,7 +769,7 @@ fn import_metal_texture(
     width: u32,
     height: u32,
 ) -> bool {
-    use metal::foreign_types::ForeignType;
+    use metal::foreign_types::ForeignTypeRef;
     use wgpu_hal::Api;
 
     if mtl_texture_ptr.is_null() {
@@ -758,11 +780,8 @@ fn import_metal_texture(
     // Create a metal::Texture from the raw MTLTexture pointer
     // The native side passes us an MTLTexture (id<MTLTexture>)
     // which is a raw pointer in Objective-C
-    let metal_texture = unsafe {
-        // Cast void pointer to the raw MTLTexture pointer type
-        // MTLTexture is an opaque type, *mut MTLTexture is what from_ptr expects
-        metal::Texture::from_ptr(mtl_texture_ptr.cast())
-    };
+    let metal_texture_ref = unsafe { metal::TextureRef::from_ptr(mtl_texture_ptr.cast()) };
+    let metal_texture = metal_texture_ref.to_owned();
 
     tracing::debug!(
         "[ViewEffect] Importing Metal texture: {}x{} {:?}",
@@ -772,7 +791,7 @@ fn import_metal_texture(
     // Create HAL texture from the Metal texture
     let hal_texture = unsafe {
         <MetalApi as Api>::Device::texture_from_raw(
-            metal_texture,
+            metal_texture.clone(),
             wgpu::TextureFormat::Rgba16Float,
             MTLTextureType::D2,
             1, // array_layers
@@ -808,6 +827,7 @@ fn import_metal_texture(
 
     // Store the imported texture
     state.imported_texture = Some(wgpu_texture);
+    state.imported_metal_texture = Some(metal_texture);
     state.input_width = width;
     state.input_height = height;
 
