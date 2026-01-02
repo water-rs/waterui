@@ -26,7 +26,6 @@ use waterui_core::{
     AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
     impl_extractor, layout::StretchAxis, raw_view,
 };
-use waterui_text::Text;
 
 /// A view that combines a navigation bar with content.
 ///
@@ -113,8 +112,8 @@ pub enum NavigationTitleDisplayMode {
 /// its title, color, and visibility.
 #[derive(Debug, Default)]
 pub struct Bar {
-    /// The title text displayed in the navigation bar
-    pub title: Text,
+    /// The title view displayed in the navigation bar
+    pub title: AnyView,
     /// The background color of the navigation bar
     pub color: Computed<Color>,
     /// Whether the navigation bar is hidden
@@ -336,11 +335,11 @@ impl NavigationView {
     ///
     /// # Arguments
     ///
-    /// * `title` - The title to display in the navigation bar
+    /// * `title` - The title to display in the navigation bar (can be any View)
     /// * `content` - The content view to display
-    pub fn new(title: impl Into<Text>, content: impl View) -> Self {
+    pub fn new(title: impl View, content: impl View) -> Self {
         let bar = Bar {
-            title: title.into(),
+            title: AnyView::new(title),
             ..Default::default()
         };
 
@@ -386,8 +385,8 @@ impl NavigationView {
 ///
 /// # Arguments
 ///
-/// * `title` - The title to display in the navigation bar
+/// * `title` - The title to display in the navigation bar (any View)
 /// * `view` - The content view to display
-pub fn navigation(title: impl Into<Text>, view: impl View) -> NavigationView {
+pub fn navigation(title: impl View, view: impl View) -> NavigationView {
     NavigationView::new(title, view)
 }
