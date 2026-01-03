@@ -15,6 +15,10 @@ pub mod shader_surface;
 
 /// GPU-accelerated gradient rendering.
 pub mod gradient_renderer;
+/// GPU-animated mesh gradient.
+pub mod animated_mesh_gradient;
+/// GPU-animated flowing gradient.
+pub mod flowing_gradient;
 
 /// Shared GPU context for efficient multi-view rendering.
 pub mod shared_context;
@@ -37,6 +41,8 @@ pub use gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, PointerStat
 pub use shader_surface::ShaderSurface;
 
 pub use gradient_renderer::{Gradient, GradientConfig, GradientRenderer, GradientType, MeshGradient};
+pub use animated_mesh_gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig, ANIMATED_MESH_PALETTE_LEN};
+pub use flowing_gradient::FlowingGradient;
 
 pub use view_effect::{EffectContext, EffectInput, EffectOutput, EffectRenderer, OutputSize, ViewEffect};
 

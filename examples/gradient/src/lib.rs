@@ -2,15 +2,17 @@
 //!
 //! This example showcases GPU-rendered gradients:
 //! - Animated fluid mesh gradient background (time-based, automatic)
+//! - GPU flowing shader gradient (fully GPU-animated)
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
 use waterui::app::App;
+use waterui::preview;
 use waterui::prelude::*;
 use waterui::task::{sleep, spawn_local};
-use waterui_color::ResolvedColor;
-use waterui_graphics::{Gradient, GradientConfig, GradientRenderer, MeshGradient, Rect};
+use waterui::shape::{Circle, RoundedRectangle};
+use waterui_graphics::{AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor};
 
 use core::time::Duration;
 
@@ -123,58 +125,91 @@ fn animated_background_section() -> impl View {
     .padding()
 }
 
+/// Demo: GPU flowing gradient (fully shader animated, no CPU updates)
+fn gpu_animated_mesh_gradient_section() -> impl View {
+    let gradient = AnimatedMeshGradient::new(animated_mesh_config());
+
+    vstack((
+        text("GPU Animated Mesh Gradient").size(20.0),
+        "Speed + palette configured at creation time",
+        zstack((
+            gradient.size(300.0, 200.0),
+            vstack((
+                text("Mesh Gradient")
+                    .size(24.0)
+                    .foreground(Color::srgb(255, 255, 255)),
+                text("No per-frame CPU updates")
+                    .foreground(Color::srgb(200, 220, 255)),
+            ))
+            .padding(),
+        ))
+        .size(300.0, 200.0),
+    ))
+    .spacing(12.0)
+    .padding()
+}
+
+fn animated_mesh_config() -> AnimatedMeshGradientConfig {
+    AnimatedMeshGradientConfig::aqua_bloom()
+}
+
+#[preview]
+fn animated_mesh_gradient_preview() -> impl View {
+    AnimatedMeshGradient::new(animated_mesh_config()).size(640.0, 360.0)
+}
+
 /// Demo: Shape filled with gradient
 fn shape_fill_section() -> impl View {
     vstack((
         text("Shape + Gradient Fill").size(20.0),
-        "Shapes can be filled with any GpuRenderer (gradients, colors, etc.)",
+        "Gradients clipped to shapes on the GPU",
         hstack((
-            // Rect filled with linear gradient
+            // Linear gradient clipped to rounded rectangle
             vstack((
-                Rect::new([0.0, 0.0], [1.0, 1.0])
-                    .fill(GradientRenderer::new(GradientConfig::linear(
-                        vec![
-                            (0.0, color(1.0, 0.3, 0.5)),
-                            (1.0, color(0.3, 0.5, 1.0)),
-                        ],
-                        [0.0, 0.0],
-                        [1.0, 1.0],
-                    )))
-                    .size(100.0, 100.0),
-                "Linear Fill",
+                Gradient::linear(
+                    vec![
+                        (0.0, color(1.0, 0.3, 0.5)),
+                        (1.0, color(0.3, 0.5, 1.0)),
+                    ],
+                    [0.0, 0.0],
+                    [1.0, 1.0],
+                )
+                .size(100.0, 100.0)
+                .clip(RoundedRectangle::new(0.18)),
+                "Linear + Rounded",
             )),
-            // Rect filled with radial gradient
+            // Radial gradient clipped to circle
             vstack((
-                Rect::new([0.0, 0.0], [1.0, 1.0])
-                    .fill(GradientRenderer::new(GradientConfig::radial(
-                        vec![
-                            (0.0, color(1.0, 1.0, 0.8)),
-                            (0.5, color(1.0, 0.6, 0.2)),
-                            (1.0, color(0.6, 0.2, 0.1)),
-                        ],
-                        [0.5, 0.5],
-                        0.0,
-                        0.7,
-                    )))
-                    .size(100.0, 100.0),
-                "Radial Fill",
+                Gradient::radial(
+                    vec![
+                        (0.0, color(1.0, 1.0, 0.8)),
+                        (0.5, color(1.0, 0.6, 0.2)),
+                        (1.0, color(0.6, 0.2, 0.1)),
+                    ],
+                    [0.5, 0.5],
+                    0.0,
+                    0.7,
+                )
+                .size(100.0, 100.0)
+                .clip(Circle),
+                "Radial + Circle",
             )),
-            // Rect filled with mesh gradient
+            // Mesh gradient clipped to rounded rectangle
             vstack((
-                Rect::new([0.0, 0.0], [1.0, 1.0])
-                    .fill(GradientRenderer::new(GradientConfig::mesh(
-                        2,
-                        2,
-                        vec![
-                            ([0.0, 0.0], color(0.0, 0.8, 0.4)),
-                            ([1.0, 0.0], color(0.0, 0.4, 0.8)),
-                            ([0.0, 1.0], color(0.8, 0.4, 0.0)),
-                            ([1.0, 1.0], color(0.8, 0.0, 0.4)),
-                        ],
-                        true,
-                    )))
-                    .size(100.0, 100.0),
-                "Mesh Fill",
+                Gradient::mesh(
+                    2,
+                    2,
+                    vec![
+                        ([0.0, 0.0], color(0.0, 0.8, 0.4)),
+                        ([1.0, 0.0], color(0.0, 0.4, 0.8)),
+                        ([0.0, 1.0], color(0.8, 0.4, 0.0)),
+                        ([1.0, 1.0], color(0.8, 0.0, 0.4)),
+                    ],
+                    true,
+                )
+                .size(100.0, 100.0)
+                .clip(RoundedRectangle::new(0.22)),
+                "Mesh + Rounded",
             )),
         ))
         .spacing(16.0),
@@ -433,6 +468,9 @@ fn main() -> impl View {
             // Animated mesh gradient background
             animated_background_section(),
             Divider,
+            // GPU flowing shader gradient
+            gpu_animated_mesh_gradient_section(),
+            Divider,
             // Shape + gradient fill
             shape_fill_section(),
             Divider,
@@ -442,11 +480,13 @@ fn main() -> impl View {
             // Radial gradients
             radial_gradient_section(),
             Divider,
-            // Mesh gradients
-            mesh_gradient_section(),
-            Divider,
-            // HDR gradients
-            hdr_gradient_section(),
+            vstack((
+                // Mesh gradients
+                mesh_gradient_section(),
+                Divider,
+                // HDR gradients
+                hdr_gradient_section(),
+            )),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
