@@ -17,7 +17,7 @@ use waterui_text::{
     text,
 };
 
-use crate::{SignalExt, ViewExt};
+use crate::{AnimationExt, SignalExt, ViewExt};
 
 /// Copies text to the system clipboard.
 fn copy_to_clipboard(text: &str) {

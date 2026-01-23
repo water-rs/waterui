@@ -7,8 +7,9 @@
 
 use waterui::app::App;
 use waterui::component::list::{List, ListItem};
+use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
-use waterui::{AnyView, Identifiable};
+use waterui::Identifiable;
 
 #[derive(Clone)]
 struct Contact {
@@ -71,12 +72,8 @@ fn main() -> impl View {
     List::for_each(contacts, |contact| {
         ListItem::new(
             vstack((
-                text(contact.name)
-                    .font(font::Subheadline)
-                    .foreground(theme_color::Foreground),
-                text(contact.role)
-                    .font(font::Caption)
-                    .foreground(theme_color::MutedForeground),
+                text(contact.name).sub_headline().foreground(Foreground),
+                text(contact.role).caption().foreground(MutedForeground),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
         )

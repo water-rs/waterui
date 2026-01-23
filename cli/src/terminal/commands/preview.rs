@@ -61,14 +61,24 @@ pub struct Args {
 /// # Errors
 /// Returns an error if preview fails.
 pub async fn run(args: Args) -> Result<()> {
-    let symbol = function_path_to_symbol(&args.function_path);
-    header!("Preview: {}", symbol);
-
     // Parse frame size
     let (width, height) = parse_frame(&args.frame)?;
 
     // Canonicalize project path
     let project_path = args.path.canonicalize()?;
+
+    // Get crate name from Cargo.toml
+    let cargo_toml = project_path.join("Cargo.toml");
+    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
+    let cargo: toml::Table = cargo_content.parse()?;
+    let crate_name = cargo
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))?;
+
+    let symbol = function_path_to_symbol(crate_name, &args.function_path);
+    header!("Preview: {}", symbol);
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
@@ -77,29 +87,37 @@ pub async fn run(args: Args) -> Result<()> {
         s.finish_and_clear();
     }
 
-    // Build dylib
-    let spinner = shell::spinner("Building project...");
-    let dylib_data = session.build_dylib(&project_path).await?;
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
+    let result = async {
+        // Build dylib
+        let spinner = shell::spinner("Building project...");
+        let dylib_data = session.build_dylib(&project_path).await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
 
-    // Render preview
-    let spinner = shell::spinner("Rendering view...");
-    let png_data = session.render(&dylib_data, &symbol, width, height)?;
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
+        // Render preview
+        let spinner = shell::spinner("Rendering view...");
+        let png_data = session.render(&dylib_data, &symbol, width, height)?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
 
-    // Save output
-    if png_data.is_empty() {
-        error!("Preview returned empty PNG data");
-        bail!("Preview returned empty PNG data");
-    }
+        // Save output
+        if png_data.is_empty() {
+            error!("Preview returned empty PNG data");
+            bail!("Preview returned empty PNG data");
+        }
 
-    smol::fs::write(&args.output, &png_data).await?;
-    success!("Preview saved to {}", args.output.display());
-    Ok(())
+        smol::fs::write(&args.output, &png_data).await?;
+        success!("Preview saved to {}", args.output.display());
+        Ok(())
+    }
+    .await;
+
+    // Shut down preview app if this session launched it.
+    let _ = session.shutdown();
+
+    result
 }
 
 /// Parse frame size from "WIDTHxHEIGHT" string.

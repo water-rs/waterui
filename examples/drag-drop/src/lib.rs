@@ -14,7 +14,6 @@ use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
-use waterui_core::extract::Use;
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
@@ -34,30 +33,32 @@ fn fruit_basket(
     // Scale up when hovering
     let hover_scale = is_hovering
         .clone()
-        .map(|h| if h { 1.05_f32 } else { 1.0 })
+        .select(1.05 as f32, 1.0)
         .with(Animation::spring(400.0, 15.0));
 
     // Bounce animation on drop
     let drop_bounce = bounce.clone().with(Animation::spring(500.0, 10.0));
 
+    // Combined scale for uniform scaling
+    let combined_scale = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);
+
     // Display collected emojis only (no text)
-    let items_display = collected.clone().map(|items| {
-        if items.is_empty() {
+    let emojis_display = collected.clone().map(|list| {
+        if list.is_empty() {
             "🧺".to_string()
         } else {
             // Extract just the emoji from each item
-            items
-                .iter()
+            list.iter()
                 .filter_map(|s| s.chars().next())
                 .collect::<String>()
         }
     });
 
-    let count_display = collected.clone().map(|items| {
-        if items.is_empty() {
+    let count_display = collected.clone().map(|list| {
+        if list.is_empty() {
             "Drop fruits here!".to_string()
         } else {
-            format!("{} fruit{} collected!", items.len(), if items.len() == 1 { "" } else { "s" })
+            format!("{} fruit{} collected!", list.len(), if list.len() == 1 { "" } else { "s" })
         }
     });
 
@@ -66,7 +67,7 @@ fn fruit_basket(
     let b = bounce.clone();
 
     vstack((
-        text(items_display).size(40.0),
+        text(emojis_display).size(40.0),
         text(count_display).size(14.0),
     ))
     .spacing(12.0)
@@ -74,16 +75,16 @@ fn fruit_basket(
     .min_width(280.0)
     .min_height(120.0)
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
-    .scale(hover_scale.zip(drop_bounce).map(|(a, b)| a * b))
+    .scale(combined_scale.clone(), combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination_with_events(
         // On drop - add to collection with bounce animation
-        move |Use(data): Use<DragData>| {
-            let item = data.as_str().to_string();
-            let mut items = coll.get();
-            if !items.contains(&item) {
-                items.push(item);
-                coll.set(items);
+        move |data: DragData| {
+            let dropped_item = data.as_str().to_string();
+            let mut current_items = coll.get();
+            if !current_items.iter().any(|x| x == &dropped_item) {
+                current_items.push(dropped_item);
+                coll.set(current_items);
             }
             // Trigger bounce - use a unique value each time to ensure animation triggers
             let current = b.get();
@@ -145,7 +146,9 @@ fn main() -> impl View {
             fruit_basket(is_hovering, collected.clone(), bounce),
             spacer().height(16.0),
             // Reset button
-            button("Clear Basket").action_with(&collected, |c: Binding<Vec<String>>| c.set(Vec::new())),
+            button("Clear Basket")
+                .with_state(&collected)
+                .action(|c| c.set(Vec::new())),
             spacer(),
         ))
         .padding(),

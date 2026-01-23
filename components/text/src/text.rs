@@ -77,9 +77,10 @@ where
     type Output = Self;
     fn add(self, rhs: T) -> Self::Output {
         let rhs = rhs.into();
+        let rhs_content = rhs.0.content;
         self.0
             .content
-            .zip(rhs.0.content)
+            .zip(&rhs_content)
             .map(|(a, b)| a + b)
             .computed()
             .into()
@@ -92,13 +93,8 @@ where
 {
     fn add_assign(&mut self, rhs: T) {
         let rhs = rhs.into();
-        self.0.content = self
-            .0
-            .content
-            .clone()
-            .zip(rhs.0.content)
-            .map(|(a, b)| a + b)
-            .computed();
+        let rhs_content = rhs.0.content;
+        self.0.content = self.0.content.zip(&rhs_content).map(|(a, b)| a + b).computed();
     }
 }
 
@@ -173,7 +169,7 @@ impl Text {
         self.0.content = self
             .0
             .content
-            .zip(font)
+            .zip(&font)
             .map(|(content, font)| content.font(font))
             .computed();
         self
@@ -188,7 +184,7 @@ impl Text {
         self.0.content = self
             .0
             .content
-            .zip(size)
+            .zip(&size)
             .map(|(content, size)| content.size(size))
             .computed();
         self
@@ -201,7 +197,7 @@ impl Text {
         self.0.content = self
             .0
             .content
-            .zip(weight)
+            .zip(&weight)
             .map(|(content, weight)| content.weight(weight))
             .computed();
         self
@@ -214,7 +210,7 @@ impl Text {
         self.0.content = self
             .0
             .content
-            .zip(underline)
+            .zip(&underline)
             .map(|(content, underline)| content.underline(underline))
             .computed();
         self
@@ -256,10 +252,11 @@ impl Text {
     /// Sets the italic style.
     #[must_use]
     pub fn italic(mut self, is_italic: impl Signal<Output = bool>) -> Self {
+        let is_italic = is_italic;
         self.0.content = self
             .0
             .content
-            .zip(is_italic)
+            .zip(&is_italic)
             .map(|(content, is_italic)| content.italic(is_italic))
             .computed();
         self
