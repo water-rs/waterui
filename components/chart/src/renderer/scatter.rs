@@ -17,10 +17,12 @@ use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, shader_with_common,
-    write_storage_buffer, write_uniform_buffer, ChartUniforms,
+    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
 };
 use crate::renderer::ChartRenderer;
+
+const PLOT_PADDING: f32 = 0.1;
 
 // ============================================================================
 // Spatial Index for O(1) Hit Detection
@@ -148,6 +150,7 @@ pub struct ScatterChartRenderer {
     current_buffer: Option<wgpu::Buffer>,
     previous_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    msaa_target: Option<MsaaTarget>,
 
     // Animation state
     animation: ChartAnimation,
@@ -183,6 +186,7 @@ impl ScatterChartRenderer {
             current_buffer: None,
             previous_buffer: None,
             bind_group: None,
+            msaa_target: None,
             animation: ChartAnimation::new(),
             needs_redraw: true,
             zoom_pan: ZoomPanState::new(),
@@ -306,7 +310,7 @@ impl ScatterChartRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(ctx.surface_format),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -445,7 +449,11 @@ impl GpuRenderer for ScatterChartRenderer {
                 if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
-                glam::Vec4::new(x, y, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, self.point_radius)
+                if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
+                    glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, self.point_radius)
+                } else {
+                    glam::Vec4::new(-1.0, -1.0, 0.0, self.point_radius)
+                }
             } else {
                 glam::Vec4::new(-1.0, -1.0, 0.0, self.point_radius)
             },
@@ -460,11 +468,20 @@ impl GpuRenderer for ScatterChartRenderer {
             });
 
         {
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+            );
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Scatter Chart Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -492,6 +509,9 @@ impl ChartRenderer for ScatterChartRenderer {
     type DataValue = DataPoint;
 
     fn update_data(&mut self, data: &Self::Data, queue: &wgpu::Queue) {
+        // Swap buffers for animation interpolation
+        core::mem::swap(&mut self.current_buffer, &mut self.previous_buffer);
+
         self.data = data.clone();
         self.bounds = DataBounds::from_points(&self.data);
         self.spatial_index.rebuild(&self.data, &self.bounds);
@@ -521,11 +541,20 @@ impl ChartRenderer for ScatterChartRenderer {
             return None;
         }
 
-        // Convert to data coordinates
-        let (data_x, data_y) = viewport.screen_to_data(point, &self.bounds)?;
+        let (chart_x, chart_y) = super::chart_coords_from_viewport(viewport, point, PLOT_PADDING)?;
+        let chart_y = 1.0 - chart_y;
+
+        let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
+        if visible_bounds.width() <= 0.0 || visible_bounds.height() <= 0.0 {
+            return None;
+        }
+
+        let data_x = visible_bounds.min_x + chart_x * visible_bounds.width();
+        let data_y = visible_bounds.min_y + chart_y * visible_bounds.height();
 
         // Find nearest point within radius using spatial index (O(1) average case)
-        let radius_data = self.point_radius * 2.0 * self.bounds.width() / viewport.width;
+        let denom = (1.0 - 2.0 * PLOT_PADDING).max(0.001);
+        let radius_data = self.point_radius * 2.0 * visible_bounds.width() / (viewport.width * denom);
 
         self.spatial_index
             .find_nearest(data_x, data_y, radius_data, &self.data)

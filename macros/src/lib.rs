@@ -539,7 +539,9 @@ pub fn s(input: TokenStream) -> TokenStream {
                 quote! {
                     {
                         use waterui::reactive::{SignalExt, zip::zip};
-                        SignalExt::map(zip(#arg1.clone(), #arg2.clone()), |(arg1, arg2)| {
+                        let __arg1 = #arg1.clone();
+                        let __arg2 = #arg2.clone();
+                        SignalExt::map(zip(__arg1, &__arg2), |(arg1, arg2)| {
                             waterui::reactive::__format!(#format_str, arg1, arg2)
                         })
                     }
@@ -553,8 +555,12 @@ pub fn s(input: TokenStream) -> TokenStream {
                 quote! {
                     {
                         use ::waterui::reactive::{SignalExt, zip::zip};
+                        let __arg1 = #arg1.clone();
+                        let __arg2 = #arg2.clone();
+                        let __arg3 = #arg3.clone();
+                        let __inner = zip(__arg1, &__arg2);
                         SignalExt::map(
-                            zip(zip(#arg1.clone(), #arg2.clone()), #arg3.clone()),
+                            zip(__inner, &__arg3),
                             |((arg1, arg2), arg3)| waterui::reactive::__format!(#format_str, arg1, arg2, arg3)
                         )
                     }
@@ -569,11 +575,14 @@ pub fn s(input: TokenStream) -> TokenStream {
                 quote! {
                     {
                         use ::waterui::reactive::{SignalExt, zip::zip};
+                        let __arg1 = #arg1.clone();
+                        let __arg2 = #arg2.clone();
+                        let __arg3 = #arg3.clone();
+                        let __arg4 = #arg4.clone();
+                        let __inner1 = zip(__arg1, &__arg2);
+                        let __inner2 = zip(__arg3, &__arg4);
                         SignalExt::map(
-                            zip(
-                                zip(#arg1.clone(), #arg2.clone()),
-                                zip(#arg3.clone(), #arg4.clone())
-                            ),
+                            zip(__inner1, &__inner2),
                             |((arg1, arg2), (arg3, arg4))| waterui::reactive::__format!(#format_str, arg1, arg2, arg3, arg4)
                         )
                     }
@@ -635,7 +644,8 @@ pub fn s(input: TokenStream) -> TokenStream {
             quote! {
                 {
                     use ::waterui::reactive::SignalExt;
-                    SignalExt::map(#var.clone(), |#var| {
+                    let __var = #var.clone();
+                    SignalExt::map(&__var, |#var| {
                         waterui::reactive::__format!(#format_str)
                     })
                 }
@@ -648,7 +658,10 @@ pub fn s(input: TokenStream) -> TokenStream {
             quote! {
                 {
                     use ::waterui::reactive::{SignalExt, zip::zip};
-                    SignalExt::map(zip(#var1.clone(), #var2.clone()), |(#var1, #var2)| {
+                    let __var1 = #var1.clone();
+                    let __var2 = #var2.clone();
+                    let __zipped = zip(__var1, &__var2);
+                    SignalExt::map(&__zipped, |(#var1, #var2)| {
                         waterui::reactive::__format!(#format_str)
                     })
                 }
@@ -662,8 +675,13 @@ pub fn s(input: TokenStream) -> TokenStream {
             quote! {
                 {
                     use ::waterui::reactive::{SignalExt, zip::zip};
+                    let __var1 = #var1.clone();
+                    let __var2 = #var2.clone();
+                    let __var3 = #var3.clone();
+                    let __inner = zip(__var1, &__var2);
+                    let __zipped = zip(__inner, &__var3);
                     SignalExt::map(
-                        zip(zip(#var1.clone(), #var2.clone()), #var3.clone()),
+                        &__zipped,
                         |((#var1, #var2), #var3)| {
                             ::waterui::reactive::__format!(#format_str)
                         }
@@ -680,11 +698,15 @@ pub fn s(input: TokenStream) -> TokenStream {
             quote! {
                 {
                     use ::waterui::reactive::{SignalExt, zip::zip};
+                    let __var1 = #var1.clone();
+                    let __var2 = #var2.clone();
+                    let __var3 = #var3.clone();
+                    let __var4 = #var4.clone();
+                    let __inner1 = zip(__var1, &__var2);
+                    let __inner2 = zip(__var3, &__var4);
+                    let __zipped = zip(__inner1, &__inner2);
                     SignalExt::map(
-                        zip(
-                            zip(#var1.clone(), #var2.clone()),
-                            zip(#var3.clone(), #var4.clone())
-                        ),
+                        &__zipped,
                         |((#var1, #var2), (#var3, #var4))| {
                             ::waterui::reactive::__format!(#format_str)
                         }
@@ -915,32 +937,19 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
         quote! { #fn_name(#(#call_args),*) }
     };
 
-    // Generate the export function name using just the function name
-    // The full path will be embedded as a const string for the daemon to match
-    let export_fn_name = syn::Ident::new(&format!("waterui_preview_{fn_name_str}"), fn_name.span());
-
+    // Generate the export function - we use a helper macro to construct the symbol name
+    // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
-        // Symbol name: waterui_preview_<fn_name>
-        // The full module path is embedded as a const for matching
-        #[doc(hidden)]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #export_fn_name() -> *mut () {
-            // Store the full path for the preview system to discover
-            #[used]
-            #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__wui_preview"))]
-            #[cfg_attr(target_os = "ios", unsafe(link_section = "__DATA,__wui_preview"))]
-            #[cfg_attr(target_os = "linux", unsafe(link_section = ".wui_preview"))]
-            #[cfg_attr(target_os = "android", unsafe(link_section = ".wui_preview"))]
-            #[cfg_attr(windows, unsafe(link_section = ".wuiprv"))]
-            static PREVIEW_PATH: &str = concat!(module_path!(), "::", #fn_name_str);
-
+        // Symbol name: waterui_preview_<crate_name>_<fn_name>
+        // Uses a helper that expands CARGO_PKG_NAME at compile time
+        ::waterui::__export_preview!(#fn_name_str, {
             let view = #call_expr;
             Box::into_raw(Box::new(::waterui::AnyView::new(view))).cast()
-        }
+        });
     };
 
     TokenStream::from(expanded)

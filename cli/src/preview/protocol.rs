@@ -78,7 +78,7 @@ impl std::str::FromStr for PreviewPlatform {
 }
 
 // ============================================================================
-// Daemon → Preview App protocol (TCP, ports 2006+)
+// Daemon → Preview App protocol (TCP, ports 2106+)
 // These types match waterui-preview/src/protocol.rs exactly for serde compat
 // ============================================================================
 
@@ -165,17 +165,16 @@ pub type AppResponse = Result<AppOutput, AppError>;
 
 /// Convert a function path to a symbol name.
 ///
-/// Example: `my_crate::dashboard::card` -> `waterui_preview_card`
-///
-/// Note: We only use the function name (last component) since proc macros
-/// can't access the full module path at compile time.
+/// Example: `test_preview` with crate `together-app` -> `waterui_preview_together_app_test_preview`
 #[must_use]
-pub fn function_path_to_symbol(function_path: &str) -> String {
+pub fn function_path_to_symbol(crate_name: &str, function_path: &str) -> String {
     let fn_name = function_path
         .rsplit("::")
         .next()
         .unwrap_or(function_path);
-    format!("waterui_preview_{fn_name}")
+    // Replace dashes with underscores (Cargo uses dashes, Rust uses underscores)
+    let crate_name = crate_name.replace('-', "_");
+    format!("waterui_preview_{crate_name}_{fn_name}")
 }
 
 #[cfg(test)]
@@ -185,16 +184,12 @@ mod tests {
     #[test]
     fn test_function_path_to_symbol() {
         assert_eq!(
-            function_path_to_symbol("sidebar"),
-            "waterui_preview_sidebar"
+            function_path_to_symbol("my_crate", "sidebar"),
+            "waterui_preview_my_crate_sidebar"
         );
         assert_eq!(
-            function_path_to_symbol("my_crate::sidebar"),
-            "waterui_preview_sidebar"
-        );
-        assert_eq!(
-            function_path_to_symbol("my_crate::dashboard::card"),
-            "waterui_preview_card"
+            function_path_to_symbol("together-app", "test_preview"),
+            "waterui_preview_together_app_test_preview"
         );
     }
 }

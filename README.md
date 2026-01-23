@@ -147,7 +147,7 @@ WaterUI provides a fluent API for styling and layout through the `ViewExt` trait
 
 ```rust
 use waterui::prelude::*;
-use waterui_color::Color;
+use waterui::color::Color;
 
 text("Styled Text")
     .size(18.0)
