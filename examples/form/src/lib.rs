@@ -7,8 +7,8 @@
 //! - Manual form control composition
 use waterui::app::App;
 use waterui::prelude::*;
-use waterui::reactive::binding;
 use waterui::preview;
+use waterui::reactive::binding;
 use waterui::text::font::FontWeight;
 use waterui::text::font::ResolvedFont;
 
@@ -106,31 +106,31 @@ fn main(settings: &Binding<AppSettings>) -> impl View {
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
                 TextField::new(&custom_name)
-                    .label(text("Username"))
+                    .label("Username")
                     .prompt("Enter your username"),
                 // Toggle with label
-                Toggle::new(&custom_enabled).label(text("Enable Feature")),
+                Toggle::new(&custom_enabled).label("Enable Feature"),
                 // Stepper with custom range
                 Stepper::new(&custom_count)
-                    .label(text("Item Count"))
+                    .label("Item Count")
                     .range(0..=100)
                     .step(5),
                 // Slider with label
-                Slider::new(0.0..=1.0, &custom_slider).label(text("Progress")),
+                Slider::new(0.0..=1.0, &custom_slider).label("Progress"),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,
                 text("Manual Controls Preview:").bold(),
-                hstack(("Username: ", text!("{custom_name}"))),
-                hstack(("Feature Enabled: ", text!("{custom_enabled}"))),
-                hstack(("Count: ", text!("{custom_count}"))),
-                hstack(("Progress: ", text!("{custom_slider}"))),
+                text!("Username: {custom_name}"),
+                text!("Feature Enabled: {custom_enabled}"),
+                text!("Count: {custom_count}"),
+                text!("Progress: {custom_slider}"),
             )),
             spacer(),
             Divider,
             "Built with WaterUI Form Components",
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding(),
     )
 }
 
@@ -166,10 +166,7 @@ fn sample_card() -> impl View {
         text("Sample Card").title(),
         "This is a preview test",
         Divider,
-        hstack((
-            text("Status:").bold(),
-            text("Active"),
-        )),
+        hstack((text("Status:").bold(), text("Active"))),
     ))
     .padding_with(EdgeInsets::all(16.0))
 }

@@ -16,19 +16,20 @@
 //! text("Drag me!")
 //!     .draggable(DragData::text("Hello, World!"));
 //!
-//! // Create a drop destination
+//! // Create a drop destination that receives the dropped data
 //! text("Drop here")
 //!     .drop_destination(|data: DragData| {
 //!         println!("Received: {:?}", data);
 //!     });
 //! ```
 
-use alloc::{boxed::Box, string::String};
+use alloc::string::String;
 use core::fmt;
 use nami::Computed;
 use nami::signal::IntoComputed;
 use waterui_core::{
-    handler::{BoxHandler, HandlerFn, into_handler},
+    Environment,
+    handler::{BoxHandler, Handler, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -85,6 +86,29 @@ impl DragData {
 // Implement IntoSignal/IntoComputed so DragData can be passed directly to .draggable()
 nami::impl_constant!(DragData);
 
+// ============================================================================
+// Drop Handler with DragData extraction
+// ============================================================================
+
+/// A handler wrapper that extracts `DragData` from the environment and passes it to a closure.
+///
+/// This is used internally by `DropDestination` to provide the dropped data to the callback.
+struct DropHandler<F>(F);
+
+impl<F: FnMut(DragData) + 'static> Handler<()> for DropHandler<F> {
+    fn handle(&mut self, env: &Environment) {
+        // Extract DragData from the environment (inserted by FFI layer)
+        if let Some(data) = env.get::<DragData>() {
+            (self.0)(data.clone());
+        }
+    }
+}
+
+/// Creates a boxed handler that extracts `DragData` from the environment.
+fn boxed_drop_handler<F: FnMut(DragData) + 'static>(f: F) -> BoxHandler<()> {
+    Box::new(DropHandler(f))
+}
+
 /// Metadata that makes a view draggable.
 ///
 /// When attached to a view, the view becomes a drag source. Users can initiate
@@ -121,16 +145,16 @@ impl Draggable {
 /// When attached to a view, the view can receive dropped content. The `on_drop`
 /// handler is called when compatible data is dropped onto the view.
 ///
-/// The handler can extract the dropped data using `Use<DragData>`:
+/// # Example
 ///
 /// ```rust,ignore
-/// .drop_destination(|Use(data): Use<DragData>| {
+/// .drop_destination(|data: DragData| {
 ///     println!("Received: {:?}", data);
 /// })
 /// ```
 pub struct DropDestination {
     /// Callback invoked when data is dropped onto this view.
-    /// The handler extracts `DragData` from the environment using `Use<DragData>`.
+    /// The handler receives `DragData` extracted from the environment.
     pub on_drop: BoxHandler<()>,
     /// Optional callback when a drag enters the view bounds.
     pub on_enter: Option<BoxHandler<()>>,
@@ -147,13 +171,18 @@ impl fmt::Debug for DropDestination {
 impl MetadataKey for DropDestination {}
 
 impl DropDestination {
-    /// Creates a drop destination with only an `on_drop` handler.
-    pub fn new<P>(on_drop: impl HandlerFn<P, ()> + 'static) -> Self
-    where
-        P: 'static,
-    {
+    /// Creates a drop destination with an `on_drop` handler that receives the dropped data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// DropDestination::new(|data: DragData| {
+    ///     println!("Dropped: {:?}", data);
+    /// })
+    /// ```
+    pub fn new(on_drop: impl FnMut(DragData) + 'static) -> Self {
         Self {
-            on_drop: Box::new(into_handler(on_drop)),
+            on_drop: boxed_drop_handler(on_drop),
             on_enter: None,
             on_exit: None,
         }
@@ -161,21 +190,15 @@ impl DropDestination {
 
     /// Adds a callback for when a drag enters the view bounds.
     #[must_use]
-    pub fn on_enter<P>(mut self, handler: impl HandlerFn<P, ()> + 'static) -> Self
-    where
-        P: 'static,
-    {
-        self.on_enter = Some(Box::new(into_handler(handler)));
+    pub fn on_enter(mut self, handler: impl FnMut() + 'static) -> Self {
+        self.on_enter = Some(boxed_action(handler));
         self
     }
 
     /// Adds a callback for when a drag exits the view bounds.
     #[must_use]
-    pub fn on_exit<P>(mut self, handler: impl HandlerFn<P, ()> + 'static) -> Self
-    where
-        P: 'static,
-    {
-        self.on_exit = Some(Box::new(into_handler(handler)));
+    pub fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
+        self.on_exit = Some(boxed_action(handler));
         self
     }
 }

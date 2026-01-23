@@ -89,10 +89,14 @@ where
     S: Signal<Output = R::Data> + Clone + 'static,
 {
     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+        // Seed initial data before setup so buffers are sized correctly.
+        let initial = self.signal.get();
+        self.inner.update_data(&initial, ctx.queue);
+
         // Set up the inner renderer
         let setup_future = self.inner.setup(ctx);
 
-        // Mark that we need to load initial data
+        // Mark that we need to load initial data (in case it changed)
         if let Ok(mut pending) = self.pending_update.lock() {
             *pending = true;
         }

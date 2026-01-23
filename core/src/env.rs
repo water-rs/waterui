@@ -65,7 +65,7 @@ impl MetadataKey for Environment {}
 use crate::{
     View,
     components::Metadata,
-    handler::{HandlerFnOnce, HandlerOnce, IntoHandlerOnce},
+    extract::Extractor,
     metadata::MetadataKey,
     plugin::Plugin,
     view::{Hook, ViewConfiguration},
@@ -194,6 +194,17 @@ impl Environment {
         }
         self.get::<T>().unwrap()
     }
+
+    /// Extracts a value from the environment using the `Extractor` trait.
+    ///
+    /// This is a convenience method for extracting values that implement `Extractor`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if extraction fails (e.g., value not found).
+    pub fn extract<T: Extractor>(&self) -> Result<T, anyhow::Error> {
+        T::extract(self)
+    }
 }
 
 /// A view that provides access to the environment.
@@ -201,42 +212,58 @@ impl Environment {
 /// `UseEnv` allows child views to access values stored in the environment
 /// through a handler function.
 #[derive(Debug, Clone)]
-pub struct UseEnv<V, H> {
-    handler: H,
-    _marker: PhantomData<V>,
+pub struct UseEnv<F> {
+    handler: F,
 }
 
-impl<V, H> UseEnv<V, H> {
+impl<F> UseEnv<F> {
     /// Creates a new `UseEnv` with the provided handler.
     #[must_use]
-    pub const fn new(handler: H) -> Self {
-        Self {
-            handler,
-            _marker: PhantomData,
-        }
+    pub const fn new(handler: F) -> Self {
+        Self { handler }
     }
 }
 
 /// Creates a view that can access the environment.
 ///
-/// This function takes a closure that receives a reference to the environment
-/// and returns a view. It's a convenience wrapper around `UseEnv`.
+/// This function takes a closure that receives a value extracted from the environment
+/// and returns a view. The closure parameter type must implement `Extractor`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use waterui_core::env::use_env;
+///
+/// // Extract a specific type from environment
+/// let view = use_env(|theme: Theme| {
+///     text!("Current theme: {}", theme.name())
+/// });
+///
+/// // Extract multiple types using a tuple
+/// let view = use_env(|(nav, db): (NavigationController, Database)| {
+///     // ...
+/// });
+/// ```
 #[must_use]
-pub const fn use_env<P, V, F>(f: F) -> UseEnv<V, IntoHandlerOnce<F, P, V>>
+pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
 where
+    E: Extractor,
     V: View,
-    F: HandlerFnOnce<P, V>,
+    F: FnOnce(E) -> V + 'static,
 {
-    UseEnv::new(IntoHandlerOnce::new(f))
+    UseEnv::new(move |env: &Environment| {
+        let extracted = E::extract(env).expect("failed to extract value from environment");
+        f(extracted)
+    })
 }
 
-impl<V, H> View for UseEnv<V, H>
+impl<V, F> View for UseEnv<F>
 where
     V: View,
-    H: HandlerOnce<V>,
+    F: FnOnce(&Environment) -> V + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        self.handler.handle(env)
+        (self.handler)(env)
     }
 }
 

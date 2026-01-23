@@ -323,10 +323,12 @@ where
             "NavigationLink used outside of a navigation context"
         );
 
-        button(self.label).action(move |receiver: NavigationController| {
-            let content = (self.content).build();
-            receiver.push(content);
-        })
+        button(self.label)
+            .extract::<NavigationController>()
+            .action(move |receiver| {
+                let content = (self.content).build();
+                receiver.push(content);
+            })
     }
 }
 

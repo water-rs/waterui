@@ -90,16 +90,18 @@ impl_debug!(FilePickerController);
 
 impl<Label: View> View for FilePicker<Label> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        Button::new(self.label).action_async(move |controller: Option<FilePickerController>| {
-            let value = self.value.clone();
-            async move {
-                let Some(controller) = controller else {
-                    return;
-                };
-                let urls = controller.present(self.import, self.num).await;
-                value.set(urls);
-            }
-        })
+        Button::new(self.label)
+            .extract::<Option<FilePickerController>>()
+            .action_async(move |controller| {
+                let value = self.value.clone();
+                async move {
+                    let Some(controller) = controller else {
+                        return;
+                    };
+                    let urls = controller.present(self.import, self.num).await;
+                    value.set(urls);
+                }
+            })
     }
 }
 

@@ -14,10 +14,12 @@ use crate::animation::ChartAnimation;
 use crate::data::{BubblePoint, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, shader_with_common,
-    write_storage_buffer, write_uniform_buffer,
+    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
 };
 use crate::renderer::ChartRenderer;
+
+const PLOT_PADDING: f32 = 0.1;
 
 /// GPU-accelerated bubble chart renderer.
 ///
@@ -40,6 +42,7 @@ pub struct BubbleRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     point_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    msaa_target: Option<MsaaTarget>,
 
     // Animation state
     animation: ChartAnimation,
@@ -71,6 +74,7 @@ impl BubbleRenderer {
             uniform_buffer: None,
             point_buffer: None,
             bind_group: None,
+            msaa_target: None,
             animation: ChartAnimation::default(),
             needs_redraw: false,
             zoom_pan: ZoomPanState::new(),
@@ -189,7 +193,7 @@ impl BubbleRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(ctx.surface_format),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -349,11 +353,20 @@ impl GpuRenderer for BubbleRenderer {
             });
 
         {
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+            );
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Bubble Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -402,19 +415,17 @@ impl ChartRenderer for BubbleRenderer {
             return None;
         }
 
-        let padding = 0.1;
-        let chart_x = (point.x - viewport.x) / viewport.width;
-        let chart_y = (point.y - viewport.y) / viewport.height;
+        let (chart_x, chart_y) = super::chart_coords_from_viewport(viewport, point, PLOT_PADDING)?;
+        let chart_y = 1.0 - chart_y;
 
-        if chart_x < 0.0 || chart_x > 1.0 || chart_y < 0.0 || chart_y > 1.0 {
+        let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
+        if visible_bounds.width() <= 0.0 || visible_bounds.height() <= 0.0 {
             return None;
         }
 
         // Convert to data coordinates
-        let data_x = self.bounds.min_x
-            + (chart_x - padding) / (1.0 - 2.0 * padding) * self.bounds.width();
-        let data_y = self.bounds.min_y
-            + (chart_y - padding) / (1.0 - 2.0 * padding) * self.bounds.height();
+        let data_x = visible_bounds.min_x + chart_x * visible_bounds.width();
+        let data_y = visible_bounds.min_y + chart_y * visible_bounds.height();
 
         // Find closest point within radius
         let mut closest_idx = None;
@@ -426,7 +437,8 @@ impl ChartRenderer for BubbleRenderer {
             let dist = (dx * dx + dy * dy).sqrt();
 
             // Check if within bubble radius (approximate)
-            let radius_data = self.max_radius * self.bounds.width() / viewport.width;
+            let denom = (1.0 - 2.0 * PLOT_PADDING).max(0.001);
+            let radius_data = self.max_radius * visible_bounds.width() / (viewport.width * denom);
             if dist < radius_data && dist < closest_dist {
                 closest_dist = dist;
                 closest_idx = Some(i);

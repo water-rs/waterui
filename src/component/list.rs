@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use nami::collection::Collection;
 use nami::{Computed, Signal};
 
-use crate::reactive_ext::SignalExt;
+use nami::SignalExt;
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{

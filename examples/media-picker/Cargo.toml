@@ -17,3 +17,4 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 waterui.workspace = true
 waterui-ffi.workspace = true
+tracing.workspace = true

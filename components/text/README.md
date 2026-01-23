@@ -73,7 +73,7 @@ The `StyledStr::from_markdown()` function parses markdown into styled text, supp
 
 ```rust
 use waterui_text::{text, font::{FontWeight, Body}};
-use waterui_color::Color;
+use waterui::color::Color;
 
 // Simple text
 text("Plain text")
@@ -109,9 +109,9 @@ let custom_slider = binding(0.5);
 
 // Reactive text updates automatically when bindings change
 vstack((
-    hstack(("Username: ", text!("{}", custom_name))),
-    hstack(("Count: ", text!("{}", custom_count))),
-    hstack(("Progress: ", text!("{}", custom_slider))),
+    text!("Username: {name}", name = custom_name),
+    text!("Count: {count}", count = custom_count),
+    text!("Progress: {value}", value = custom_slider),
 ))
 ```
 
@@ -147,7 +147,7 @@ let formatted = Text::format(date, formatter);
 ```rust
 use waterui_text::styled::{StyledStr, Style};
 use waterui_text::font::{Font, FontWeight, Title};
-use waterui_color::Color;
+use waterui::color::Color;
 
 // Build styled text from chunks
 let mut styled = StyledStr::empty();
@@ -231,7 +231,7 @@ Key dependencies that shape the API:
 
 - **waterui-core** - Provides `View` trait, `Environment`, and reactive primitives
 - **nami** - Fine-grained reactivity system (`Binding`, `Computed`, `Signal`)
-- **waterui-color** - Color types for text and background styling
+- **waterui-graphics** - Color types for text and background styling
 - **pulldown-cmark** - Markdown parsing engine
 - **syntect** - Syntax highlighting for code blocks
 - **two-face** - Extended syntax definitions including Swift
