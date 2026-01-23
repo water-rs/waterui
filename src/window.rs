@@ -305,6 +305,16 @@ impl Window {
     }
 }
 
+// Implement View for Window to allow reactive window display.
+// When a Window is rendered as a View, it shows itself via WindowManager.
+impl View for Window {
+    fn body(self, env: &Environment) -> impl View {
+        self.show(env);
+        // Return empty view - the window is shown separately
+        ()
+    }
+}
+
 
 /// A handle to control a window after it has been shown.
 #[derive(Debug, Clone)]

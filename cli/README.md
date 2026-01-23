@@ -50,6 +50,36 @@ cd my-experiment
 water run --platform ios
 ```
 
+### Preview Views
+
+Preview individual view functions without running the full app:
+
+```bash
+# Preview a view function and save as PNG
+water preview my_view --platform macos --path ./app --output preview.png
+
+# With custom frame size
+water preview dashboard --platform macos --frame 800x600 --output dashboard.png
+```
+
+Mark functions with `#[preview]` to make them previewable:
+
+```rust
+use waterui::prelude::*;
+
+#[preview]
+fn my_card() -> impl View {
+    vstack((
+        text!("Hello Preview!"),
+        text!("This renders instantly"),
+    ))
+    .padding()
+    .background(Color::srgb(100, 150, 200))
+}
+```
+
+The preview system generates symbols with the format `waterui_preview_{crate_name}_{fn_name}` to avoid conflicts between crates.
+
 ## Core Concepts
 
 ### Platform Abstraction

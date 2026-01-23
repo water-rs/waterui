@@ -6,6 +6,9 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 use futures::{FutureExt, StreamExt};
 
+#[cfg(target_os = "macos")]
+use time::OffsetDateTime;
+
 use crate::shell::{self, display_output};
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
@@ -32,6 +35,70 @@ use waterui_cli::{
     project::Project,
     toolchain::{Toolchain, cmake::Cmake},
 };
+
+#[cfg(target_os = "macos")]
+use waterui_cli::debug;
+#[cfg(target_os = "macos")]
+use waterui_cli::project::PackageType;
+
+#[cfg(target_os = "macos")]
+struct CrashReportContext {
+    started_at: OffsetDateTime,
+    bundle_id: String,
+    process_name: String,
+}
+
+#[cfg(target_os = "macos")]
+impl CrashReportContext {
+    fn new(project: &Project, platform: TargetPlatform, backend: TargetBackend) -> Option<Self> {
+        if platform != TargetPlatform::Macos || backend != TargetBackend::Apple {
+            return None;
+        }
+
+        let process_name = match project.manifest().package.package_type {
+            PackageType::Playground => "WaterUIApp".to_string(),
+            PackageType::App => {
+                // Match Apple backend naming: convert crate name to UpperCamel for app name.
+                project
+                    .crate_name()
+                    .split('-')
+                    .map(|s| {
+                        let mut chars = s.chars();
+                        chars.next().map_or_else(String::new, |first| {
+                            first.to_uppercase().chain(chars).collect()
+                        })
+                    })
+                    .collect::<String>()
+            }
+        };
+
+        Some(Self {
+            started_at: OffsetDateTime::now_utc(),
+            bundle_id: project.bundle_identifier().to_string(),
+            process_name,
+        })
+    }
+
+    fn refresh_start(&mut self) {
+        self.started_at = OffsetDateTime::now_utc();
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn find_latest_ips_report(
+    ctx: &CrashReportContext,
+) -> Option<debug::CrashReport> {
+    let device_identifier = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into());
+    debug::find_macos_ips_crash_report_since(
+        "macOS",
+        &device_identifier,
+        &ctx.bundle_id,
+        &ctx.process_name,
+        None,
+        ctx.started_at,
+    )
+    .await
+}
 
 /// Target platform for running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -224,6 +291,10 @@ pub async fn run(args: Args) -> Result<()> {
     let log_level = args.logs.map(LogLevel::from);
     let hot_reload = !args.no_hot_reload;
     let native_logs = args.native_logs;
+
+    #[cfg(target_os = "macos")]
+    let mut crash_ctx = CrashReportContext::new(&project, args.platform, backend);
+
     let (running, hot_reload_runner) = display_output(build_and_run(
         &project,
         args.platform,
@@ -265,20 +336,60 @@ pub async fn run(args: Args) -> Result<()> {
         // Wait for next event with a short timeout so we can check hot reload events periodically
         let timeout = smol::Timer::after(std::time::Duration::from_millis(100));
         let device_event = running.next();
-
+        let mut pending_event: Option<Option<DeviceEvent>> = None;
         futures::select! {
             _ = FutureExt::fuse(timeout) => {
                 // Timeout - loop back to check hot reload events
             }
             dev_event = FutureExt::fuse(device_event) => {
-                if handle_device_event(dev_event, backend_log_name) {
-                    break;
+                pending_event = Some(dev_event);
+            }
+        }
+
+        if let Some(mut event) = pending_event {
+            #[cfg(target_os = "macos")]
+            if let Some(DeviceEvent::Started) = event.as_ref() {
+                if let Some(ref mut ctx) = crash_ctx {
+                    ctx.refresh_start();
                 }
+            }
+
+            #[cfg(target_os = "macos")]
+            if let Some(ref ctx) = crash_ctx {
+                event = augment_event_with_crash_report(event, ctx).await;
+            }
+
+            if handle_device_event(event, backend_log_name) {
+                break;
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn augment_event_with_crash_report(
+    event: Option<DeviceEvent>,
+    ctx: &CrashReportContext,
+) -> Option<DeviceEvent> {
+    match event {
+        Some(DeviceEvent::Exited) => {
+            if let Some(report) = find_latest_ips_report(ctx).await {
+                return Some(DeviceEvent::Crashed(report.to_string()));
+            }
+            Some(DeviceEvent::Exited)
+        }
+        Some(DeviceEvent::Crashed(mut msg)) => {
+            if !msg.contains("Crash report:") {
+                if let Some(report) = find_latest_ips_report(ctx).await {
+                    msg.push_str(&format!("\n\nCrash report: {}", report.log_path().display()));
+                }
+            }
+            Some(DeviceEvent::Crashed(msg))
+        }
+        other => other,
+    }
 }
 
 /// Build, package, and run on device.

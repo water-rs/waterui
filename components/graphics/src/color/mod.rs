@@ -27,8 +27,7 @@ pub use srgb::Srgb;
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
 use waterui_core::{
-    Environment,
-    View,
+    Environment, View,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -89,6 +88,15 @@ impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
 pub struct WithOpacity<T> {
     color: T,
     opacity: f32,
+}
+
+impl<T> View for WithOpacity<T>
+where
+    T: Resolvable<Resolved = ResolvedColor> + 'static,
+{
+    fn body(self, _env: &Environment) -> impl View {
+        Color::new(self)
+    }
 }
 
 impl<T> WithOpacity<T> {
@@ -209,7 +217,11 @@ impl ResolvedColor {
     #[must_use]
     pub fn to_srgb_with_headroom(&self) -> Srgb {
         let [red, green, blue] = self.linear_with_headroom();
-        Srgb::new(linear_to_srgb(red), linear_to_srgb(green), linear_to_srgb(blue))
+        Srgb::new(
+            linear_to_srgb(red),
+            linear_to_srgb(green),
+            linear_to_srgb(blue),
+        )
     }
 
     /// Creates a resolved color from an OKLCH color with the provided metadata.
@@ -498,12 +510,6 @@ impl Color {
         self.map_resolved(move |resolved| resolved.with_opacity(clamped))
     }
 
-    /// Alias for [`with_opacity`].
-    #[must_use]
-    pub fn with_alpha(self, opacity: f32) -> Self {
-        self.with_opacity(opacity)
-    }
-
     /// Creates a new color with extended headroom for HDR content.
     ///
     /// # Arguments
@@ -580,10 +586,9 @@ impl Resolvable for Mix {
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let factor = self.factor;
-        self.first
-            .resolve(env)
-            .zip(self.second.resolve(env))
-            .map(move |(a, b)| a.lerp(b, factor))
+        let first = self.first.resolve(env);
+        let second = self.second.resolve(env);
+        first.zip(&second).map(move |(a, b)| a.lerp(b, factor))
     }
 }
 
@@ -613,12 +618,35 @@ impl Resolvable for BackgroundColor {
     }
 }
 
+/// Implements `View` for a color type, allowing it to be used directly as a background.
+macro_rules! impl_color_view {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl View for $ty {
+                fn body(self, _env: &Environment) -> impl View {
+                    Color::new(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_color_view!(Srgb, P3, Oklch);
+
 macro_rules! color_const {
     ($name:ident,$doc:expr) => {
         paste! {
             #[derive(Debug, Clone, Copy)]
             #[doc=$doc]
             pub struct $name;
+
+            impl $name {
+                /// Creates this color with the specified opacity applied.
+                #[must_use]
+                pub const fn with_opacity(self, opacity: f32) -> WithOpacity<Self> {
+                    WithOpacity::new(self, opacity)
+                }
+            }
 
             impl Resolvable for $name {
                 type Resolved = ResolvedColor;
@@ -674,11 +702,18 @@ color_const!(BlueGrey, "Blue grey color.");
 impl View for Color {
     fn body(self, env: &Environment) -> impl View {
         let resolved = self.resolve(env).get();
-        crate::GpuSurface::new(SolidColorRenderer::new(resolved))
+        resolved
     }
 }
 
-static SOLID_COLOR_SHADER: crate::prewarm::PrewarmedShader = crate::include_shader!("../shaders/solid_color.wgsl");
+impl View for ResolvedColor {
+    fn body(self, _env: &Environment) -> impl View {
+        crate::GpuSurface::new(SolidColorRenderer::new(self))
+    }
+}
+
+static SOLID_COLOR_SHADER: crate::prewarm::PrewarmedShader =
+    crate::include_shader!("../shaders/solid_color.wgsl");
 
 /// Uniform buffer layout for solid color rendering.
 /// Uses encase for automatic WGSL-compatible alignment.
@@ -725,19 +760,20 @@ impl crate::GpuRenderer for SolidColorRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
-            label: Some("Solid Color Bind Group Layout"),
-            entries: &[crate::wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: crate::wgpu::ShaderStages::FRAGMENT,
-                ty: crate::wgpu::BindingType::Buffer {
-                    ty: crate::wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let bind_group_layout =
+            device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
+                label: Some("Solid Color Bind Group Layout"),
+                entries: &[crate::wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: crate::wgpu::ShaderStages::FRAGMENT,
+                    ty: crate::wgpu::BindingType::Buffer {
+                        ty: crate::wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
         let bind_group = device.create_bind_group(&crate::wgpu::BindGroupDescriptor {
             label: Some("Solid Color Bind Group"),
@@ -748,11 +784,12 @@ impl crate::GpuRenderer for SolidColorRenderer {
             }],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
-            label: Some("Solid Color Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout =
+            device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
+                label: Some("Solid Color Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None
@@ -827,7 +864,6 @@ impl crate::GpuRenderer for SolidColorRenderer {
             });
         }
 
-
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
@@ -837,15 +873,21 @@ impl crate::GpuRenderer for SolidColorRenderer {
     }
 
     fn render(&mut self, frame: &crate::GpuFrame) {
-         if let Some(target_fmt) = self.pipeline_format {
+        if let Some(target_fmt) = self.pipeline_format {
             if target_fmt != frame.format {
                 return;
             }
         }
 
-        let Some(pipeline) = &self.pipeline else { return };
-        let Some(uniform_buffer) = &self.uniform_buffer else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         // Update uniforms using encase
         let [r, g, b] = self.color.linear_with_headroom();
@@ -853,12 +895,19 @@ impl crate::GpuRenderer for SolidColorRenderer {
             color: glam::Vec4::new(r, g, b, self.color.opacity),
         };
         let mut uniform_data = encase::UniformBuffer::new(alloc::vec::Vec::new());
-        uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
-        frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+        uniform_data
+            .write(&uniforms)
+            .expect("Failed to write uniform buffer");
+        frame
+            .queue
+            .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
-        let mut encoder = frame.device.create_command_encoder(&crate::wgpu::CommandEncoderDescriptor {
-            label: Some("Solid Color Encoder"),
-        });
+        let mut encoder =
+            frame
+                .device
+                .create_command_encoder(&crate::wgpu::CommandEncoderDescriptor {
+                    label: Some("Solid Color Encoder"),
+                });
 
         {
             let mut render_pass = encoder.begin_render_pass(&crate::wgpu::RenderPassDescriptor {

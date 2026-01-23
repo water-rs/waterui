@@ -57,7 +57,7 @@ fn original_image_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Original Image").size(18.0),
+        text("Original Image").headline(),
         "No filters applied",
         Image::new(pixels, 200, 150),
     ))
@@ -69,9 +69,9 @@ fn blur_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Blur Filter").size(18.0),
+        text("Blur Filter").headline(),
         "Gaussian blur (radius: 3.0)",
-        Image::new(pixels, 200, 150).blur(3.0),
+        Image::new(pixels, 200, 150).blur(3.0_f32),
     ))
     .padding()
 }
@@ -81,9 +81,9 @@ fn brightness_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Brightness Filter").size(18.0),
+        text("Brightness Filter").headline(),
         "Increased brightness (+0.3)",
-        Image::new(pixels, 200, 150).brightness(0.3),
+        Image::new(pixels, 200, 150).brightness(0.3_f32),
     ))
     .padding()
 }
@@ -93,9 +93,9 @@ fn saturation_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Saturation Filter").size(18.0),
+        text("Saturation Filter").headline(),
         "Increased saturation (1.5x)",
-        Image::new(pixels, 200, 150).saturation(1.5),
+        Image::new(pixels, 200, 150).saturation(1.5_f32),
     ))
     .padding()
 }
@@ -105,9 +105,9 @@ fn grayscale_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Grayscale Filter").size(18.0),
+        text("Grayscale Filter").headline(),
         "Full grayscale conversion",
-        Image::new(pixels, 200, 150).grayscale(1.0),
+        Image::new(pixels, 200, 150).grayscale(1.0_f32),
     ))
     .padding()
 }
@@ -117,9 +117,9 @@ fn sepia_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Sepia Filter").size(18.0),
+        text("Sepia Filter").headline(),
         "Vintage sepia tone",
-        Image::new(pixels, 200, 150).sepia(1.0),
+        Image::new(pixels, 200, 150).sepia(1.0_f32),
     ))
     .padding()
 }
@@ -129,7 +129,7 @@ fn invert_section() -> impl View {
     let pixels = generate_checkerboard(200, 150, 20);
 
     vstack((
-        text("Invert Filter").size(18.0),
+        text("Invert Filter").headline(),
         "Inverted colors",
         Image::new(pixels, 200, 150).invert(),
     ))
@@ -141,9 +141,9 @@ fn hue_rotation_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Hue Rotation").size(18.0),
+        text("Hue Rotation").headline(),
         "Colors rotated 180 degrees",
-        Image::new(pixels, 200, 150).hue_rotate(180.0),
+        Image::new(pixels, 200, 150).hue_rotation(180.0_f32),
     ))
     .padding()
 }
@@ -153,9 +153,9 @@ fn vignette_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Vignette Filter").size(18.0),
+        text("Vignette Filter").headline(),
         "Darkened corners",
-        Image::new(pixels, 200, 150).vignette(0.5, 0.5),
+        Image::new(pixels, 200, 150).vignette(0.5_f32, 0.5_f32),
     ))
     .padding()
 }
@@ -165,12 +165,12 @@ fn combined_filters_section() -> impl View {
     let pixels = generate_test_pattern(200, 150);
 
     vstack((
-        text("Combined Filters").size(18.0),
+        text("Combined Filters").headline(),
         "Blur + Saturation + Vignette",
         Image::new(pixels, 200, 150)
-            .blur(2.0)
-            .saturation(1.3)
-            .vignette(0.6, 0.4),
+            .blur(2.0_f32)
+            .saturation(1.3_f32)
+            .vignette(0.6_f32, 0.4_f32),
     ))
     .padding()
 }
@@ -178,10 +178,10 @@ fn combined_filters_section() -> impl View {
 /// Section showing Photo loading from URL
 fn photo_section() -> impl View {
     vstack((
-        text("Photo from URL").size(18.0),
+        text("Photo from URL").headline(),
         "Async loading with blur filter",
         Photo::new("https://picsum.photos/200/150")
-            .blur(2.0),
+            .blur(2.0_f32),
     ))
     .padding()
 }
@@ -189,12 +189,12 @@ fn photo_section() -> impl View {
 /// Section showing Photo with vintage filter preset
 fn photo_vintage_section() -> impl View {
     vstack((
-        text("Photo - Vintage Style").size(18.0),
+        text("Photo - Vintage Style").headline(),
         "Sepia + Vignette + Contrast",
         Photo::new("https://picsum.photos/200/151")
-            .sepia(0.7)
-            .contrast(1.2)
-            .vignette(0.5, 0.5),
+            .sepia(0.7_f32)
+            .contrast(1.2_f32)
+            .vignette(0.5_f32, 0.5_f32),
     ))
     .padding()
 }
@@ -204,19 +204,19 @@ fn main() -> impl View {
     scroll(
         vstack((
             // Header
-            text("GPU Image Processing").size(28.0),
+            text("GPU Image Processing").title(),
             "Demonstrating filtrate GPU filters on Image and Photo",
             Divider,
 
             // Simple test - just one Image
-            text("Image Test").size(22.0),
+            text("Image Test").headline(),
             original_image_section(),
 
             // Photo test
-            text("Photo Test").size(22.0),
+            text("Photo Test").headline(),
             photo_section(),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding(),
     )
 }
 
