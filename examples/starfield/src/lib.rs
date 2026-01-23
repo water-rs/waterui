@@ -11,11 +11,11 @@ use waterui::prelude::*;
 
 fn main() -> impl View {
     vstack((
-        text("Flame Animation").size(24),
-        text("GPU-rendered procedural fire").size(14),
+        text!("Flame Animation").title(),
+        text!("GPU-rendered procedural fire").headline(),
         // Just one line to load and render a shader!
         shader!("starfield.wgsl").size(400.0, 500.0),
-        text("Rendered at 120fps").size(12),
+        text!("Rendered at 120fps"),
     ))
     .padding()
 }

@@ -13,8 +13,8 @@ use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, RadarData};
 use crate::interaction::{ChartViewport, HitResult};
 use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, shader_with_common,
-    write_storage_buffer, write_uniform_buffer,
+    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
 };
 use crate::renderer::ChartRenderer;
 
@@ -36,6 +36,7 @@ pub struct RadarRenderer {
     value_buffer: Option<wgpu::Buffer>,
     color_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    msaa_target: Option<MsaaTarget>,
 
     // Animation state
     animation: ChartAnimation,
@@ -63,6 +64,7 @@ impl RadarRenderer {
             value_buffer: None,
             color_buffer: None,
             bind_group: None,
+            msaa_target: None,
             animation: ChartAnimation::default(),
             needs_redraw: false,
         }
@@ -175,7 +177,7 @@ impl RadarRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(ctx.surface_format),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -339,11 +341,20 @@ impl GpuRenderer for RadarRenderer {
             });
 
         {
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+            );
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Radar Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,

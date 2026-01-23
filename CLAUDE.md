@@ -67,7 +67,29 @@ water run --platform android
 
 # Create a playground for quick experimentation
 water create --playground --name my-playground
+
+# Preview a view function (renders to PNG without running full app)
+water preview my_view --platform macos --path ./app --output preview.png
 ```
+
+## Preview System
+
+The `#[preview]` macro enables instant view rendering without running the full app:
+
+```rust
+#[preview]
+fn my_card() -> impl View {
+    text!("Hello Preview!")
+}
+```
+
+Symbol format: `waterui_preview_{crate_name}_{fn_name}` (crate name included to avoid conflicts).
+
+The preview system:
+1. Builds the project as a dylib
+2. Launches a preview app that loads the dylib
+3. Renders the view to PNG via native rendering pipeline
+4. Supports macOS, iOS Simulator, and Android
 
 ## Architecture Overview
 
@@ -204,3 +226,4 @@ The hot reload system uses a WebSocket-based architecture:
 - All command functions return `Result<(), eyre::Report>` for rich error context
 - Custom error enums use `thiserror` derive macro
 - Shell provides `success!()`, `error!()`, `warn!()`, `note!()` macros for user feedback
+

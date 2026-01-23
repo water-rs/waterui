@@ -159,12 +159,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let rows = u32(uniforms.grid.x);
     let cols = u32(uniforms.grid.y);
 
-    // Add cell border (subtle grid lines)
+    // Add cell border (subtle grid lines) with AA
     let border_width = 0.02;
-    let in_border = in.cell_uv.x < border_width || in.cell_uv.x > (1.0 - border_width) ||
-                    in.cell_uv.y < border_width || in.cell_uv.y > (1.0 - border_width);
-    if in_border {
-        color = vec4<f32>(color.rgb * 0.7, color.a);
+    let edge_dist = min(min(in.cell_uv.x, 1.0 - in.cell_uv.x), min(in.cell_uv.y, 1.0 - in.cell_uv.y));
+    let border_alpha = sdf_coverage(edge_dist - border_width);
+    if border_alpha > 0.001 {
+        let border_color = vec4<f32>(color.rgb * 0.7, color.a);
+        color = mix(color, border_color, border_alpha);
     }
 
     // Hover highlight

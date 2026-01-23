@@ -26,8 +26,8 @@ fn main() -> impl View {
         scroll(
             vstack((
                 // Header
-                text("Multi-Window Gallery").size(32.0).bold(),
-                text("Explore different window styles and backgrounds"),
+                text("Multi-Window Gallery").title().bold(),
+                text("Explore different window styles and backgrounds").body(),
                 spacer().height(20.0),
                 Divider,
                 spacer().height(20.0),
@@ -72,7 +72,7 @@ fn main() -> impl View {
                 spacer(),
                 Divider,
                 spacer().height(12.0),
-                text("Built with WaterUI Multi-Window Support").size(12.0),
+                text("Built with WaterUI Multi-Window Support").caption(),
                 spacer().height(12.0),
             ))
             .padding_with(EdgeInsets::all(20.0)),
@@ -106,21 +106,18 @@ fn window_section(
     description: &'static str,
     state: &Binding<WindowState>,
 ) -> impl View {
-    let state_open = state.clone();
-    let state_close = state.clone();
-
     vstack((
-        text(title).size(20.0).bold(),
-        text(description),
+        text(title).headline().bold(),
+        text(description).body(),
         spacer().height(8.0),
         hstack((
-            button("Open Window").action(move || {
-                state_open.set(WindowState::Normal);
-            }),
+            button("Open Window")
+                .with_state(state)
+                .action(|s| s.set(WindowState::Normal)),
             spacer().width(12.0),
-            button("Close Window").action(move || {
-                state_close.set(WindowState::Closed);
-            }),
+            button("Close Window")
+                .with_state(state)
+                .action(|s| s.set(WindowState::Closed)),
         )),
     ))
     .padding_with(EdgeInsets::all(16.0))
@@ -138,7 +135,7 @@ fn create_standard_window(state: Binding<WindowState>) -> Window {
 
 /// Create a borderless window with colored background
 fn create_borderless_window(state: Binding<WindowState>) -> Window {
-    let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_alpha(0.85);
+    let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
 
     Window::new("Borderless Window", window_content("Borderless Window", "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)"))
         .style(WindowStyle::Borderless)
@@ -159,7 +156,7 @@ fn create_frosted_window(state: Binding<WindowState>) -> Window {
 /// Create a transparent overlay window
 fn create_transparent_window(state: Binding<WindowState>) -> Window {
     // Use a semi-transparent color for the overlay effect
-    let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_alpha(0.3);
+    let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.3);
 
     Window::new("Transparent Overlay", transparent_window_content())
         .style(WindowStyle::FullSizeContentView)
@@ -180,9 +177,9 @@ fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
 /// Helper function to create window content
 fn window_content(title: &'static str, description: &'static str) -> impl View {
     vstack((
-        text(title).size(24.0).bold(),
+        text(title).title().bold(),
         spacer().height(16.0),
-        text(description).size(14.0),
+        text(description).body(),
         spacer().height(24.0),
         Divider,
         spacer().height(16.0),
@@ -194,19 +191,19 @@ fn window_content(title: &'static str, description: &'static str) -> impl View {
 /// Content for transparent window with colored boxes
 fn transparent_window_content() -> impl View {
     vstack((
-        text("Transparent Overlay").size(24.0).bold(),
+        text("Transparent Overlay").title().bold(),
         spacer().height(16.0),
         text("This window has a fully transparent background with FullSizeContentView style.")
-            .size(14.0),
-        text("Content extends into the title bar area on macOS.").size(14.0),
+            .body(),
+        text("Content extends into the title bar area on macOS.").body(),
         spacer().height(24.0),
         // Show some colored boxes to demonstrate transparency
         hstack((
-            colored_box(Color::srgb_f32(1.0, 0.3, 0.3).with_alpha(0.8), "Red"),
+            colored_box(Color::srgb_f32(1.0, 0.3, 0.3).with_opacity(0.8), "Red"),
             spacer().width(12.0),
-            colored_box(Color::srgb_f32(0.3, 1.0, 0.3).with_alpha(0.8), "Green"),
+            colored_box(Color::srgb_f32(0.3, 1.0, 0.3).with_opacity(0.8), "Green"),
             spacer().width(12.0),
-            colored_box(Color::srgb_f32(0.3, 0.3, 1.0).with_alpha(0.8), "Blue"),
+            colored_box(Color::srgb_f32(0.3, 0.3, 1.0).with_opacity(0.8), "Blue"),
         )),
     ))
     .padding_with(EdgeInsets::all(24.0))
@@ -216,7 +213,7 @@ fn transparent_window_content() -> impl View {
 fn colored_box(color: Color, label: &'static str) -> impl View {
     vstack((
         spacer(),
-        text(label).bold().size(16.0),
+        text(label).bold().body(),
         spacer(),
     ))
     .padding_with(EdgeInsets::all(32.0))
@@ -226,7 +223,7 @@ fn colored_box(color: Color, label: &'static str) -> impl View {
 /// Showcase all material types
 fn material_showcase() -> impl View {
     vstack((
-        text("Material Types").size(18.0).bold(),
+        text("Material Types").sub_headline().bold(),
         spacer().height(12.0),
         material_item("UltraThin", "Most transparent, subtle blur"),
         material_item("Thin", "Light transparency with slight blur"),
@@ -239,8 +236,8 @@ fn material_showcase() -> impl View {
 /// Helper to display a material type description
 fn material_item(name: &'static str, description: &'static str) -> impl View {
     hstack((
-        text(name).bold().size(14.0).width(100.0),
-        text(description).size(12.0),
+        text(name).bold().body().width(100.0),
+        text(description).caption(),
     ))
     .padding_with(EdgeInsets::symmetric(4.0, 0.0))
 }

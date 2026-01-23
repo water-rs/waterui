@@ -69,12 +69,13 @@ struct RegistrationForm {
 fn registration_view() -> impl View {
     let registration = RegistrationForm::binding();
 
+    let proj = registration.project();
     vstack((
         form(&registration),
         // Live preview using projected bindings
-        hstack(("Name: ", text!("{}", registration.project().full_name))),
-        hstack(("Email: ", text!("{}", registration.project().email))),
-        hstack(("Age: ", text!("{}", registration.project().age))),
+        text!("Name: {full_name}", full_name = proj.full_name),
+        text!("Email: {email}", email = proj.email),
+        text!("Age: {age}", age = proj.age),
     ))
 }
 ```

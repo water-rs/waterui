@@ -16,8 +16,43 @@
 //! }
 //! ```
 
-use waterui_graphics::color::Color;
+use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_core::metadata::MetadataKey;
+use waterui_graphics::color::Color;
+
+pub trait IntoSignalF32 {
+    type SignalF32: Signal<Output = f32>;
+    fn into_signal_f32(self) -> Self::SignalF32;
+}
+
+impl<S> IntoSignalF32 for S
+where
+    S: Signal,
+    S::Output: IntoF32,
+{
+    type SignalF32 = Computed<f32>;
+    fn into_signal_f32(self) -> Self::SignalF32 {
+        self.map(|v| v.into_f32()).into_computed()
+    }
+}
+
+trait IntoF32 {
+    fn into_f32(self) -> f32;
+}
+
+macro_rules! impl_into_f32 {
+    ($($t:ty),*) => {
+        $(
+            impl IntoF32 for $t {
+                fn into_f32(self) -> f32 {
+                    self as f32
+                }
+            }
+        )*
+    };
+}
+
+impl_into_f32!(f32, f64, i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
@@ -142,9 +177,6 @@ impl<T> Vector<T> {
 // Transform Components (Scale, Rotation, Offset)
 // ============================================================================
 
-use nami::Computed;
-use nami::signal::IntoComputed;
-
 /// Anchor point for transforms, specified as normalized coordinates.
 /// (0.0, 0.0) = top-left, (0.5, 0.5) = center, (1.0, 1.0) = bottom-right
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -219,8 +251,8 @@ impl MetadataKey for Scale {}
 impl Scale {
     /// Creates a uniform scale transform from center.
     #[must_use]
-    pub fn uniform(factor: impl IntoComputed<f32>) -> Self {
-        let factor = factor.into_computed();
+    pub fn uniform(factor: impl IntoSignalF32) -> Self {
+        let factor = Computed::new(factor.into_signal_f32());
         Self {
             x: factor.clone(),
             y: factor,
@@ -230,8 +262,8 @@ impl Scale {
 
     /// Creates a uniform scale transform from a specific anchor point.
     #[must_use]
-    pub fn uniform_from(factor: impl IntoComputed<f32>, anchor: Anchor) -> Self {
-        let factor = factor.into_computed();
+    pub fn uniform_from(factor: impl IntoSignalF32, anchor: Anchor) -> Self {
+        let factor = Computed::new(factor.into_signal_f32());
         Self {
             x: factor.clone(),
             y: factor,
@@ -241,20 +273,20 @@ impl Scale {
 
     /// Creates a non-uniform scale transform from center.
     #[must_use]
-    pub fn xy(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+    pub fn xy(x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
         Self {
-            x: x.into_computed(),
-            y: y.into_computed(),
+            x: Computed::new(x.into_signal_f32()),
+            y: Computed::new(y.into_signal_f32()),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a non-uniform scale transform from a specific anchor point.
     #[must_use]
-    pub fn xy_from(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>, anchor: Anchor) -> Self {
+    pub fn xy_from(x: impl IntoSignalF32, y: impl IntoSignalF32, anchor: Anchor) -> Self {
         Self {
-            x: x.into_computed(),
-            y: y.into_computed(),
+            x: Computed::new(x.into_signal_f32()),
+            y: Computed::new(y.into_signal_f32()),
             anchor,
         }
     }
@@ -297,18 +329,18 @@ impl MetadataKey for Rotation {}
 impl Rotation {
     /// Creates a rotation transform around center.
     #[must_use]
-    pub fn degrees(angle: impl IntoComputed<f32>) -> Self {
+    pub fn degrees(angle: impl IntoSignalF32) -> Self {
         Self {
-            angle: angle.into_computed(),
+            angle: Computed::new(angle.into_signal_f32()),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a rotation transform around a specific anchor point.
     #[must_use]
-    pub fn degrees_from(angle: impl IntoComputed<f32>, anchor: Anchor) -> Self {
+    pub fn degrees_from(angle: impl IntoSignalF32, anchor: Anchor) -> Self {
         Self {
-            angle: angle.into_computed(),
+            angle: Computed::new(angle.into_signal_f32()),
             anchor,
         }
     }
@@ -348,10 +380,10 @@ impl MetadataKey for Offset {}
 impl Offset {
     /// Creates an offset transform.
     #[must_use]
-    pub fn new(x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Self {
+    pub fn new(x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
         Self {
-            x: x.into_computed(),
-            y: y.into_computed(),
+            x: Computed::new(x.into_signal_f32()),
+            y: Computed::new(y.into_signal_f32()),
         }
     }
 }

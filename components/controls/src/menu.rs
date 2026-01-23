@@ -1,11 +1,11 @@
 //! A menu component that displays a dropdown menu when tapped.
 //!
 
-use alloc::{rc::Rc, vec::Vec};
+use alloc::vec::Vec;
 use nami::{Computed, impl_constant, signal::IntoComputed};
 use waterui_core::{
     AnyView, View,
-    handler::{HandlerFn, SharedHandler, into_handler},
+    handler::{SharedHandler, shared_action},
     layout::StretchAxis,
     raw_view,
 };
@@ -79,10 +79,10 @@ impl_constant!(MenuItem);
 
 impl MenuItem {
     /// Creates a new menu item with the given label and action.
-    pub fn new<P: 'static>(label: impl Into<Text>, action: impl HandlerFn<P, ()>) -> Self {
+    pub fn new(label: impl Into<Text>, action: impl FnMut() + 'static) -> Self {
         Self {
             label: label.into(),
-            action: Rc::new(into_handler(action)),
+            action: shared_action(action),
         }
     }
 }

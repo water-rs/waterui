@@ -149,6 +149,7 @@ impl Backend for AppleBackend {
                 .filter(|(_, entry)| entry.is_enabled())
                 .map(|(name, entry)| (name.clone(), entry.description().to_string()))
                 .collect(),
+            accessory: manifest.package.accessory,
         };
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)

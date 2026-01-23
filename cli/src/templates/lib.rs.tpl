@@ -39,15 +39,15 @@ fn main() -> impl View {
             )),
             spacer(),
             // User profile form
-            vstack((
-                text("User Profile").size(18.0f32),
-                form(&profile),
-                hstack((
-                    "Name: ",
-                    text!("{}", profile.project().name).bold(),
-                )),
-                hstack(("Email: ", text!("{}", profile.project().email))),
-            )),
+            {
+                let proj = profile.project();
+                vstack((
+                    text("User Profile").size(18.0f32),
+                    form(&profile),
+                    text!("Name: {name}", name = proj.name).bold(),
+                    text!("Email: {email}", email = proj.email),
+                ))
+            },
             spacer(),
             // Interactive controls
             vstack((

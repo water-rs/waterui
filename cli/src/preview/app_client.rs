@@ -12,7 +12,8 @@ use color_eyre::eyre::{Context, Result, bail};
 use super::protocol::{AppRequest, AppResponse, DylibSource, Size};
 
 /// Starting port for preview app TCP server.
-const PORT_START: u16 = 2006;
+/// Keep this distinct from the hot reload port range (2006+).
+const PORT_START: u16 = 2106;
 /// Number of ports to try.
 const PORT_RANGE: u16 = 50;
 
@@ -27,7 +28,7 @@ pub struct PreviewAppClient {
 impl PreviewAppClient {
     /// Try to connect to a running preview app.
     ///
-    /// Scans ports 2006-2055 for a listening preview app.
+    /// Scans ports 2106-2155 for a listening preview app.
     ///
     /// # Errors
     /// Returns an error if no preview app is found.
@@ -133,6 +134,8 @@ impl PreviewAppClient {
     /// Returns an error if the shutdown request fails.
     pub fn shutdown(&mut self) -> Result<()> {
         self.send_request(&AppRequest::Shutdown)?;
+        // Read and discard response to allow graceful shutdown.
+        let _ = self.recv_response();
         Ok(())
     }
 }
