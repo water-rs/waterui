@@ -331,7 +331,7 @@ ffi_view!(RatingConfig, WuiRating, rating);
 
 ```rust
 // Generate FFI for a custom type in reactive state
-use waterui_color::Color;
+use waterui::color::Color;
 
 ffi_reactive!(Color, *mut WuiColor, color);
 // Now Binding<Color> and Computed<Color> can cross FFI

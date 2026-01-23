@@ -68,14 +68,13 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 [workspace.dependencies]
 executor-core = { version = "0.7.0", features = ["std"]}
 futures = "0.3"
-nami = { version = "0.9.0" }
-nami-core = { version = "0.3.0" }
+nami = { version = "0.10.1", path = "../nami" }
+nami-core = { version = "0.3.2", path = "../nami/core" }
 tracing = "0.1.41"
 thiserror = "2.0.17"
 waterui-core = { version = "0.2.0", path = "core" }
 waterui-str = { version = "0.2.1", path = "utils/str" }
 waterui-url = { version = "0.2.1", path = "utils/url" }
-waterui-color = { version = "0.2.2", path = "utils/color" }
 waterui-text = { version = "0.2.2", path = "components/text" }
 waterui-media = { version = "0.2.1", path = "components/media" }
 waterui-form = { version = "0.2.1", path = "components/form" }
@@ -156,6 +155,7 @@ waterui-svg.workspace = true
 
 async-fs = "2.2.0"
 robius-open.workspace = true
+pastey.workspace = true
 
 
 

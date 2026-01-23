@@ -286,17 +286,23 @@ fn build_signal_map(idents: &[Ident], body: TokenStream2) -> TokenStream2 {
         1 => {
             let ident = &idents[0];
             quote! {
-                ::waterui::reactive::SignalExt::map(#ident.clone(), move |#ident| {
-                    #body
-                })
+                {
+                    let __signal = #ident.clone();
+                    ::waterui::reactive::SignalExt::map(&__signal, move |#ident| {
+                        #body
+                    })
+                }
             }
         }
         _ => {
             let (zip_expr, pattern) = build_zip_expr_and_pattern(idents);
             quote! {
-                ::waterui::reactive::SignalExt::map(#zip_expr, move |#pattern| {
-                    #body
-                })
+                {
+                    let __zipped = #zip_expr;
+                    ::waterui::reactive::SignalExt::map(&__zipped, move |#pattern| {
+                        #body
+                    })
+                }
             }
         }
     }

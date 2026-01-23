@@ -84,9 +84,9 @@ fn get_edge_table(case_idx: u32) -> vec4<u32> {
         case 5u: { return vec4<u32>(2u, 0u, 1u, (2u << 16u) | 3u); }
         case 10u: { return vec4<u32>(2u, 0u, 3u, (1u << 16u) | 2u); }
         // Three corners (complement of single corner)
-        case 7u: { return vec4<u32>(1u, 1u, 2u, 0u); }
-        case 11u: { return vec4<u32>(1u, 0u, 1u, 0u); }
-        case 13u: { return vec4<u32>(1u, 2u, 3u, 0u); }
+        case 7u: { return vec4<u32>(1u, 2u, 3u, 0u); }
+        case 11u: { return vec4<u32>(1u, 1u, 2u, 0u); }
+        case 13u: { return vec4<u32>(1u, 0u, 1u, 0u); }
         case 14u: { return vec4<u32>(1u, 0u, 3u, 0u); }
         default: { return vec4<u32>(0u, 0u, 0u, 0u); }
     }
@@ -96,19 +96,23 @@ fn get_edge_table(case_idx: u32) -> vec4<u32> {
 fn interpolate_edge(edge: u32, v0: f32, v1: f32, v2: f32, v3: f32, threshold: f32, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32) -> vec2<f32> {
     switch edge {
         case 0u: { // Bottom edge (v0 to v1)
-            let t = (threshold - v0) / (v1 - v0);
+            let denom = v1 - v0;
+            let t = select(0.5, (threshold - v0) / denom, abs(denom) > 1e-6);
             return vec2<f32>(cell_x + t * cell_w, cell_y);
         }
         case 1u: { // Right edge (v1 to v2)
-            let t = (threshold - v1) / (v2 - v1);
+            let denom = v2 - v1;
+            let t = select(0.5, (threshold - v1) / denom, abs(denom) > 1e-6);
             return vec2<f32>(cell_x + cell_w, cell_y + t * cell_h);
         }
         case 2u: { // Top edge (v2 to v3)
-            let t = (threshold - v3) / (v2 - v3);
+            let denom = v2 - v3;
+            let t = select(0.5, (threshold - v3) / denom, abs(denom) > 1e-6);
             return vec2<f32>(cell_x + t * cell_w, cell_y + cell_h);
         }
         case 3u: { // Left edge (v3 to v0)
-            let t = (threshold - v0) / (v3 - v0);
+            let denom = v3 - v0;
+            let t = select(0.5, (threshold - v0) / denom, abs(denom) > 1e-6);
             return vec2<f32>(cell_x, cell_y + t * cell_h);
         }
         default: { return vec2<f32>(0.0); }
@@ -133,7 +137,10 @@ fn vs_main(
     let cell_idx = instance_index % cells_per_level;
 
     if level_idx >= num_levels || cells_per_level == 0u {
-        out.position = vec4<f32>(0.0);
+        out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        out.color = vec4<f32>(0.0);
+        out.line_uv = vec2<f32>(0.0);
+        out.level_idx = 0u;
         return out;
     }
 
@@ -172,7 +179,10 @@ fn vs_main(
     let local_vertex = vertex_index % 6u;
 
     if segment_idx >= num_segments {
-        out.position = vec4<f32>(0.0);
+        out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        out.color = vec4<f32>(0.0);
+        out.line_uv = vec2<f32>(0.0);
+        out.level_idx = level_idx;
         return out;
     }
 
@@ -194,13 +204,25 @@ fn vs_main(
     }
 
     // Interpolate line endpoints
-    let p0 = interpolate_edge(edge_start, v0, v1, v2, v3, threshold, cell_x, cell_y, cell_w, cell_h);
-    let p1 = interpolate_edge(edge_end, v0, v1, v2, v3, threshold, cell_x, cell_y, cell_w, cell_h);
+    var p0 = interpolate_edge(edge_start, v0, v1, v2, v3, threshold, cell_x, cell_y, cell_w, cell_h);
+    var p1 = interpolate_edge(edge_end, v0, v1, v2, v3, threshold, cell_x, cell_y, cell_w, cell_h);
 
-    // Calculate line direction and perpendicular
-    let line_dir = normalize(p1 - p0);
-    let line_perp = vec2<f32>(-line_dir.y, line_dir.x);
+    // Calculate line direction and perpendicular (skip zero-length segments)
+    let line_delta = p1 - p0;
+    if length(line_delta) < 1e-6 {
+        out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        out.color = vec4<f32>(0.0);
+        out.line_uv = vec2<f32>(0.0);
+        out.level_idx = level_idx;
+        return out;
+    }
+    let line_dir = normalize(line_delta);
+    // Slightly extend segments to avoid visible gaps between adjacent cells
     let half_width = line_width * 0.5 / max(uniforms.viewport.x, uniforms.viewport.y);
+    let overlap = max(half_width * 2.0, min(cell_w, cell_h) * 0.05);
+    p0 = p0 - line_dir * overlap;
+    p1 = p1 + line_dir * overlap;
+    let line_perp = vec2<f32>(-line_dir.y, line_dir.x);
 
     // Generate quad vertices for anti-aliased line
     var offset: vec2<f32>;
@@ -254,10 +276,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Anti-aliased line rendering
     // uv.y goes from 0 (edge) to 0.5 (center) to 1 (edge)
     let dist_from_center = abs(in.line_uv.y - 0.5) * 2.0;
-
-    // Smooth edge falloff for anti-aliasing
-    let edge_width = 0.1;
-    let alpha = 1.0 - smoothstep(1.0 - edge_width, 1.0, dist_from_center);
+    let edge_dist = dist_from_center - 1.0;
+    let alpha = sdf_coverage(edge_dist);
 
     let color = in.color;
     let final_color = vec4<f32>(color.rgb * alpha, alpha);

@@ -2,7 +2,7 @@
 //!
 //! This module provides infrastructure for the `water preview` command:
 //!
-//! - [`app_client`]: TCP client for communicating with preview app (ports 2006+)
+//! - [`app_client`]: TCP client for communicating with preview app (ports 2106+)
 //! - [`protocol`]: Message definitions for preview app communication
 //! - [`watcher`]: File change detection for build caching
 //! - [`launcher`]: Preview app lifecycle management

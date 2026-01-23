@@ -11,9 +11,12 @@ use nami::Signal;
 use waterui_core::dynamic::watch;
 use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Color;
+use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
-use waterui_layout::{PositionExt, StretchAxis, UnitPoint, absolute};
+use waterui_layout::{
+    absolute, Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint,
+};
 use waterui_text::text;
 
 use crate::axis::{AxisConfig, Tick};
@@ -26,6 +29,7 @@ struct AxisPadding {
     bottom: f32,
     top: f32,
     right: f32,
+    plot: f32,
 }
 
 impl Default for AxisPadding {
@@ -35,6 +39,7 @@ impl Default for AxisPadding {
             bottom: 30.0,
             top: 10.0,
             right: 10.0,
+            plot: 0.1,
         }
     }
 }
@@ -118,6 +123,13 @@ impl<C> ChartAxes<C> {
         self.padding.right = right;
         self
     }
+
+    /// Sets inner plot padding as a fraction of the plot area.
+    #[must_use]
+    pub fn plot_padding(mut self, padding: f32) -> Self {
+        self.padding.plot = padding;
+        self
+    }
 }
 
 impl<C: View + 'static> View for ChartAxes<C> {
@@ -160,6 +172,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
             padding_right: padding.right,
             padding_top: padding.top,
             padding_bottom: padding.bottom,
+            plot_padding: padding.plot,
         }));
 
         // Padded chart
@@ -172,6 +185,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
             padding_offset: padding.left - 5.0,
             padding_start: padding.top,
             padding_end: padding.bottom,
+            plot_padding: padding.plot,
         }));
 
         // X-axis tick labels (positioned below chart)
@@ -181,6 +195,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
             padding_offset: padding.bottom - 5.0,
             padding_start: padding.left,
             padding_end: padding.right,
+            plot_padding: padding.plot,
         }));
 
         // Y-axis title label (positioned at top-left)
@@ -219,37 +234,36 @@ struct GridLines {
     padding_right: f32,
     padding_top: f32,
     padding_bottom: f32,
+    plot_padding: f32,
 }
 
 impl View for GridLines {
     fn body(self, _env: &Environment) -> impl View {
-        let mut lines: Vec<AnyView> = Vec::new();
+        let y_positions: Vec<f32> = self.y_ticks.iter().map(|tick| tick.position()).collect();
+        let x_positions: Vec<f32> = self.x_ticks.iter().map(|tick| tick.position()).collect();
 
-        // Horizontal grid lines (from Y-axis ticks)
-        for tick in &self.y_ticks {
-            lines.push(AnyView::new(GridLine {
-                is_horizontal: true,
-                position: tick.position(),
-                padding_start: self.padding_left,
-                padding_end: self.padding_right,
-                padding_cross_start: self.padding_top,
-                padding_cross_end: self.padding_bottom,
-            }));
+        let mut lines: Vec<AnyView> = Vec::with_capacity(y_positions.len() + x_positions.len());
+
+        for _ in &y_positions {
+            lines.push(AnyView::new(Frame::new(grid_color())));
         }
 
-        // Vertical grid lines (from X-axis ticks)
-        for tick in &self.x_ticks {
-            lines.push(AnyView::new(GridLine {
-                is_horizontal: false,
-                position: tick.position(),
-                padding_start: self.padding_top,
-                padding_end: self.padding_bottom,
-                padding_cross_start: self.padding_left,
-                padding_cross_end: self.padding_right,
-            }));
+        for _ in &x_positions {
+            lines.push(AnyView::new(Frame::new(grid_color())));
         }
 
-        absolute(lines)
+        FixedContainer::new(
+            GridLinesLayout {
+                y_positions,
+                x_positions,
+                padding_left: self.padding_left,
+                padding_right: self.padding_right,
+                padding_top: self.padding_top,
+                padding_bottom: self.padding_bottom,
+                plot_padding: self.plot_padding,
+            },
+            lines,
+        )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -257,47 +271,73 @@ impl View for GridLines {
     }
 }
 
-/// A single grid line.
-struct GridLine {
-    is_horizontal: bool,
-    position: f32,
-    padding_start: f32,
-    padding_end: f32,
-    padding_cross_start: f32,
-    padding_cross_end: f32,
+/// Layout for grid lines using actual bounds.
+#[derive(Debug, Clone)]
+struct GridLinesLayout {
+    y_positions: Vec<f32>,
+    x_positions: Vec<f32>,
+    padding_left: f32,
+    padding_right: f32,
+    padding_top: f32,
+    padding_bottom: f32,
+    plot_padding: f32,
+}
+
+impl Layout for GridLinesLayout {
+    fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+        Size::new(
+            proposal.width.unwrap_or(f32::INFINITY),
+            proposal.height.unwrap_or(f32::INFINITY),
+        )
+    }
+
+    fn place(&self, bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
+        let chart_left = bounds.x() + self.padding_left;
+        let chart_right = bounds.x() + bounds.width() - self.padding_right;
+        let chart_top = bounds.y() + self.padding_top;
+        let chart_bottom = bounds.y() + bounds.height() - self.padding_bottom;
+
+        let mut chart_width = (chart_right - chart_left).max(0.0);
+        let mut chart_height = (chart_bottom - chart_top).max(0.0);
+        let plot_padding = self.plot_padding.clamp(0.0, 0.45);
+        let plot_pad_x = chart_width * plot_padding;
+        let plot_pad_y = chart_height * plot_padding;
+        let chart_left = chart_left + plot_pad_x;
+        let chart_top = chart_top + plot_pad_y;
+        chart_width = (chart_width - plot_pad_x * 2.0).max(0.0);
+        chart_height = (chart_height - plot_pad_y * 2.0).max(0.0);
+
+        let mut rects = Vec::with_capacity(self.y_positions.len() + self.x_positions.len());
+
+        for pos in &self.y_positions {
+            let clamped = pos.clamp(0.0, 1.0);
+            let y = chart_top + (1.0 - clamped) * chart_height;
+            rects.push(Rect::new(
+                Point::new(chart_left, y - 0.5),
+                Size::new(chart_width, 1.0),
+            ));
+        }
+
+        for pos in &self.x_positions {
+            let clamped = pos.clamp(0.0, 1.0);
+            let x = chart_left + clamped * chart_width;
+            rects.push(Rect::new(
+                Point::new(x - 0.5, chart_top),
+                Size::new(1.0, chart_height),
+            ));
+        }
+
+        rects
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 /// Grid line color - light gray with low opacity.
 fn grid_color() -> Color {
     Color::srgb_f32(0.5, 0.5, 0.5).with_opacity(0.3)
-}
-
-impl View for GridLine {
-    fn body(self, _env: &Environment) -> impl View {
-        if self.is_horizontal {
-            // Horizontal line: full width, 1pt tall, positioned by Y
-            let y_pos = map_position_y(self.position, self.padding_cross_start, self.padding_cross_end);
-            Frame::new(grid_color())
-                .height(1.0)
-                .position_in_offset(
-                    UnitPoint::LEADING,
-                    UnitPoint::new(0.0, y_pos),
-                    self.padding_start,
-                    0.0_f32,
-                )
-        } else {
-            // Vertical line: 1pt wide, full height, positioned by X
-            let x_pos = map_position_x(self.position, self.padding_cross_start, self.padding_cross_end);
-            Frame::new(grid_color())
-                .width(1.0)
-                .position_in_offset(
-                    UnitPoint::TOP,
-                    UnitPoint::new(x_pos, 0.0),
-                    0.0_f32,
-                    self.padding_start,
-                )
-        }
-    }
 }
 
 /// Internal view for rendering axis labels.
@@ -307,43 +347,30 @@ struct AxisLabels {
     padding_offset: f32,
     padding_start: f32,
     padding_end: f32,
+    plot_padding: f32,
 }
 
 impl View for AxisLabels {
     fn body(self, _env: &Environment) -> impl View {
-        // Create positioned text labels for each tick
-        // Using a tuple of up to 10 labels (practical limit for most charts)
-        let labels: Vec<_> = self
+        let positions: Vec<f32> = self.ticks.iter().map(|tick| tick.position()).collect();
+
+        let labels: Vec<AnyView> = self
             .ticks
             .into_iter()
-            .map(|tick| {
-                if self.is_vertical {
-                    // Y-axis: labels positioned vertically along left edge
-                    // Position is 0 at bottom, 1 at top
-                    // We invert because screen Y goes down
-                    AxisLabel {
-                        label: tick.label().into(),
-                        is_vertical: true,
-                        position: tick.position(),
-                        offset: self.padding_offset,
-                        padding_start: self.padding_start,
-                        padding_end: self.padding_end,
-                    }
-                } else {
-                    // X-axis: labels positioned horizontally along bottom edge
-                    AxisLabel {
-                        label: tick.label().into(),
-                        is_vertical: false,
-                        position: tick.position(),
-                        offset: self.padding_offset,
-                        padding_start: self.padding_start,
-                        padding_end: self.padding_end,
-                    }
-                }
-            })
+            .map(|tick| AnyView::new(text(tick.label().to_string()).size(11.0)))
             .collect();
 
-        AxisLabelCollection { labels }
+        FixedContainer::new(
+            AxisLabelsLayout {
+                positions,
+                is_vertical: self.is_vertical,
+                padding_start: self.padding_start,
+                padding_end: self.padding_end,
+                offset: self.padding_offset,
+                plot_padding: self.plot_padding,
+            },
+            labels,
+        )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -351,111 +378,78 @@ impl View for AxisLabels {
     }
 }
 
-/// Collection of axis labels that renders as multiple positioned children.
-struct AxisLabelCollection {
-    labels: Vec<AxisLabel>,
-}
-
-impl View for AxisLabelCollection {
-    fn body(self, _env: &Environment) -> impl View {
-        // Convert labels to AnyView for TupleViews compatibility
-        let views: Vec<AnyView> = self
-            .labels
-            .into_iter()
-            .map(|label| AnyView::new(label))
-            .collect();
-
-        absolute(views)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-}
-
-/// Single axis label with positioning.
-struct AxisLabel {
-    label: alloc::string::String,
+/// Layout for axis labels using actual bounds.
+#[derive(Debug, Clone)]
+struct AxisLabelsLayout {
+    positions: Vec<f32>,
     is_vertical: bool,
-    position: f32,
-    offset: f32,
     padding_start: f32,
     padding_end: f32,
+    offset: f32,
+    plot_padding: f32,
 }
 
-impl View for AxisLabel {
-    fn body(self, _env: &Environment) -> impl View {
-        if self.is_vertical {
-            // Y-axis label: anchor at trailing (right) edge, position vertically
-            // The chart area spans from padding_start to (1 - padding_end_ratio)
-            // We need to map tick position [0,1] to this range
-            // Since we're in an absolute container that fills the parent,
-            // we use position_in_offset to set fractional Y position
-
-            text(self.label).size(11.0).position_in_offset(
-                UnitPoint::TRAILING,
-                // Position at the fractional Y, accounting for padding
-                // We use a workaround: position relative to left edge with X offset
-                UnitPoint::new(0.0, map_position_y(self.position, self.padding_start, self.padding_end)),
-                self.offset,
-                0.0_f32,
-            )
-        } else {
-            // X-axis label: anchor at top, position horizontally
-            text(self.label).size(11.0).position_in_offset(
-                UnitPoint::TOP,
-                UnitPoint::new(
-                    map_position_x(self.position, self.padding_start, self.padding_end),
-                    1.0,
-                ),
-                0.0_f32,
-                -self.offset,
-            )
-        }
+impl Layout for AxisLabelsLayout {
+    fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+        Size::new(
+            proposal.width.unwrap_or(f32::INFINITY),
+            proposal.height.unwrap_or(f32::INFINITY),
+        )
     }
-}
 
-/// Maps a normalized position [0,1] to account for padding.
-///
-/// For Y-axis: 0 = bottom, 1 = top (inverted for screen coordinates)
-fn map_position_y(position: f32, padding_top: f32, padding_bottom: f32) -> f32 {
-    // In a 100pt tall container with 10pt top and 30pt bottom padding:
-    // - Chart area is 60pt (from y=10 to y=70)
-    // - Position 0 (bottom of chart) = y=70 (70/100 = 0.7 in unit coords)
-    // - Position 1 (top of chart) = y=10 (10/100 = 0.1 in unit coords)
-    //
-    // We need to output fractional coordinates [0, 1] in screen space.
-    // Since we don't know the actual height, we use relative math.
-    //
-    // Let's use a simpler approach: assume standard container size
-    // and accept that this is approximate. For better precision,
-    // the user can adjust padding.
-    //
-    // chart_top_frac = padding_top / container_height
-    // chart_bottom_frac = (container_height - padding_bottom) / container_height
-    //
-    // We don't know container_height, so we estimate based on typical chart size (300pt)
-    const ESTIMATED_HEIGHT: f32 = 300.0;
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let mut rects = Vec::with_capacity(children.len());
 
-    let top_frac = padding_top / ESTIMATED_HEIGHT;
-    let bottom_frac = (ESTIMATED_HEIGHT - padding_bottom) / ESTIMATED_HEIGHT;
-    let chart_range = bottom_frac - top_frac;
+        if self.is_vertical {
+            let chart_top = bounds.y() + self.padding_start;
+            let chart_bottom = bounds.y() + bounds.height() - self.padding_end;
+            let mut chart_height = (chart_bottom - chart_top).max(0.0);
+            let plot_pad = chart_height * self.plot_padding.clamp(0.0, 0.45);
+            let chart_top = chart_top + plot_pad;
+            chart_height = (chart_height - plot_pad * 2.0).max(0.0);
 
-    // Invert position (0 = bottom = high Y, 1 = top = low Y)
-    top_frac + (1.0 - position) * chart_range
-}
+            for (idx, child) in children.iter().enumerate() {
+                let pos = self
+                    .positions
+                    .as_slice()
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0);
+                let size = child.size_that_fits(ProposalSize::UNSPECIFIED);
+                let x = bounds.x() + self.offset - size.width;
+                let y = chart_top + (1.0 - pos) * chart_height - size.height * 0.5;
+                rects.push(Rect::new(Point::new(x, y), size));
+            }
+        } else {
+            let chart_left = bounds.x() + self.padding_start;
+            let chart_right = bounds.x() + bounds.width() - self.padding_end;
+            let mut chart_width = (chart_right - chart_left).max(0.0);
+            let plot_pad = chart_width * self.plot_padding.clamp(0.0, 0.45);
+            let chart_left = chart_left + plot_pad;
+            chart_width = (chart_width - plot_pad * 2.0).max(0.0);
+            let y = bounds.y() + bounds.height() - self.offset;
 
-/// Maps a normalized position [0,1] to account for padding.
-///
-/// For X-axis: 0 = left, 1 = right
-fn map_position_x(position: f32, padding_left: f32, padding_right: f32) -> f32 {
-    const ESTIMATED_WIDTH: f32 = 400.0;
+            for (idx, child) in children.iter().enumerate() {
+                let pos = self
+                    .positions
+                    .as_slice()
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0);
+                let size = child.size_that_fits(ProposalSize::UNSPECIFIED);
+                let x = chart_left + pos * chart_width - size.width * 0.5;
+                rects.push(Rect::new(Point::new(x, y), size));
+            }
+        }
 
-    let left_frac = padding_left / ESTIMATED_WIDTH;
-    let right_frac = (ESTIMATED_WIDTH - padding_right) / ESTIMATED_WIDTH;
-    let chart_range = right_frac - left_frac;
+        rects
+    }
 
-    left_frac + position * chart_range
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 /// A chart wrapped with reactive axis labels.
@@ -539,6 +533,13 @@ impl<C, B> ChartAxesReactive<C, B> {
         self.padding.right = right;
         self
     }
+
+    /// Sets inner plot padding as a fraction of the plot area.
+    #[must_use]
+    pub fn plot_padding(mut self, padding: f32) -> Self {
+        self.padding.plot = padding;
+        self
+    }
 }
 
 impl<C, B> View for ChartAxesReactive<C, B>
@@ -587,6 +588,7 @@ where
                 padding_right: padding.right,
                 padding_top: padding.top,
                 padding_bottom: padding.bottom,
+                plot_padding: padding.plot,
             }));
 
             // Y-axis tick labels
@@ -596,6 +598,7 @@ where
                 padding_offset: padding.left - 5.0,
                 padding_start: padding.top,
                 padding_end: padding.bottom,
+                plot_padding: padding.plot,
             }));
 
             // X-axis tick labels
@@ -605,6 +608,7 @@ where
                 padding_offset: padding.bottom - 5.0,
                 padding_start: padding.left,
                 padding_end: padding.right,
+                plot_padding: padding.plot,
             }));
 
             // Y-axis title label

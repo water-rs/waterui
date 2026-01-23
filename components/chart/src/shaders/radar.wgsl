@@ -30,12 +30,9 @@ struct VertexOutput {
     @location(2) @interpolate(flat) element_type: u32,
 }
 
-const PI: f32 = 3.14159265359;
-const TWO_PI: f32 = 6.28318530718;
-
 // Get angle for axis index (starting from top, going clockwise)
 fn axis_angle(axis: u32, axis_count: u32) -> f32 {
-    return -PI / 2.0 + TWO_PI * f32(axis) / f32(axis_count);
+    return -PI / 2.0 + TAU * f32(axis) / f32(axis_count);
 }
 
 // Convert polar to cartesian

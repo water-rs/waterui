@@ -5,7 +5,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
+use async_io::Timer;
+use futures_lite::future;
 use waterui_core::view_renderer::{RenderSize, ViewRenderer};
 use waterui_core::{Environment, View};
 
@@ -204,7 +207,20 @@ async fn handle_render(
 
     // Render the view to RGBA asynchronously on main thread
     let render_size = RenderSize::new(frame.width, frame.height);
-    let result = renderer.render(view, render_size).await;
+    let timeout_ms = std::env::var("WATERUI_PREVIEW_RENDER_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30_000);
+
+    let render_future = async { Ok(renderer.render(view, render_size).await) };
+    let timeout_future = async {
+        Timer::after(Duration::from_millis(timeout_ms)).await;
+        Err(PreviewError::RenderFailed(format!(
+            "Render timed out after {timeout_ms}ms"
+        )))
+    };
+
+    let result = future::race(render_future, timeout_future).await?;
 
     // Convert RGBA to PNG
     let png_data = result.to_png();

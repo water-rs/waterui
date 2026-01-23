@@ -2,7 +2,11 @@
 
 use nami::{Computed, SignalExt};
 use waterui_core::{Environment, View, dynamic::watch};
-use waterui_text::{Text, font::Font, styled::StyledStr};
+use waterui_text::{
+    Text,
+    font::{Body, Font, Headline, Title},
+    styled::StyledStr,
+};
 
 use crate::locale::{Locale, locales};
 
@@ -113,6 +117,31 @@ where
         }
     }
 }
+
+macro_rules! impl_font {
+    ($doc:expr,$name:ident,$font:expr) => {
+        impl<F, T> LocalizedText<F, T>
+        where
+            F: Fn(&Locale) -> Text,
+            T: Fn(StyledStr) -> StyledStr,
+        {
+            #[doc = $doc]
+            #[must_use]
+            pub fn $name(
+                self,
+            ) -> LocalizedText<F, impl Fn(StyledStr) -> StyledStr + Clone + 'static>
+            where
+                T: Clone + 'static,
+            {
+                LocalizedText::font(self, $font)
+            }
+        }
+    };
+}
+
+impl_font!("Set font to title.", title, Title);
+impl_font!("Set font to headline.", headline, Headline);
+impl_font!("Set font to body.", body, Body);
 
 impl<F, T> View for LocalizedText<F, T>
 where

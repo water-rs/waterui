@@ -71,12 +71,13 @@ fn vs_main(
     }
 
     // Calculate bar dimensions
-    let bar_count = f32(data_count);
+    let bar_count = max(f32(data_count), 1.0);
     let bar_width = 0.8 / bar_count;
-    let gap = 0.2 / (bar_count + 1.0);
+    let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
 
-    // Calculate bar position (centered)
-    let bar_center_x = gap + (bar_width + gap) * f32(instance_index) + bar_width * 0.5;
+    // Calculate bar position from data X (aligned to axis ticks)
+    let normalized_x = (x - uniforms.bounds.x) / x_range;
+    let bar_center_x = clamp(normalized_x, 0.0, 1.0);
 
     // Normalize Y to [0, 1] based on data bounds
     let y_range = uniforms.bounds.w - uniforms.bounds.z;
@@ -140,13 +141,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Check if this bar is being hovered
     if uniforms.pointer.x >= 0.0 {
-        let data_count = f32(arrayLength(&current_data));
+        let data_count = max(f32(arrayLength(&current_data)), 1.0);
         let bar_width = 0.8 / data_count;
-        let gap = 0.2 / (data_count + 1.0);
-        let bar_center_x = gap + (bar_width + gap) * in.bar_index + bar_width * 0.5;
-
-        let padding = 0.1;
-        let pointer_x = uniforms.pointer.x * (1.0 - 2.0 * padding) + padding;
+        let x_range = max(uniforms.bounds.y - uniforms.bounds.x, 1e-6);
+        let pointer_x = uniforms.pointer.x;
+        let bar_center_x = clamp((current_data[u32(in.bar_index)].x - uniforms.bounds.x) / x_range, 0.0, 1.0);
 
         let bar_left = bar_center_x - bar_width * 0.5;
         let bar_right = bar_center_x + bar_width * 0.5;

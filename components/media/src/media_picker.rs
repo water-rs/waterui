@@ -116,7 +116,7 @@ where
     /// # Example
     ///
     /// ```rust,ignore
-    /// MediaPicker::new(&selection).label(text("Choose Photo"));
+    /// MediaPicker::new(&selection).label("Choose Photo");
     /// ```
     #[must_use]
     pub fn label<NewLabel: View>(self, label: NewLabel) -> MediaPicker<NewLabel> {
@@ -153,18 +153,20 @@ where
         let selection = self.selection.clone();
         let filter = self.filter.clone();
 
-        button(self.label).action(move |manager: Use<MediaPickerManager>| {
-            let sel = selection.clone();
-            manager.present(filter.get(), {
-                let manager = manager.0.clone();
-                Box::new(move |selected| {
-                    sel.set(Some(Selected {
-                        id: selected,
-                        manager: manager.clone(),
-                    }));
-                })
-            });
-        })
+        button(self.label)
+            .extract::<Use<MediaPickerManager>>()
+            .action(move |manager| {
+                let sel = selection.clone();
+                manager.present(filter.get(), {
+                    let manager = manager.0.clone();
+                    Box::new(move |selected| {
+                        sel.set(Some(Selected {
+                            id: selected,
+                            manager: manager.clone(),
+                        }));
+                    })
+                });
+            })
     }
 }
 

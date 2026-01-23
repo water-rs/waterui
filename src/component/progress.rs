@@ -148,11 +148,12 @@ impl Progress {
     ///
     /// * `value` - The progress value between 0.0 and 1.0.
     pub fn new(value: impl IntoComputed<f64>) -> Self {
-        let value = value.into_signal();
+        let value = value.into_signal().computed();
+        let value_for_label = value.clone();
         Self(ProgressConfig {
             label: text!("Please wait...").anyview(),
-            value_label: text!("{value:.2} %").anyview(),
-            value: value.computed(),
+            value_label: text!("{value_for_label:.2} %").anyview(),
+            value,
             style: ProgressStyle::Linear,
         })
     }
@@ -164,10 +165,8 @@ impl Progress {
     /// * `total` - The total value against which progress is measured.
     pub fn total(mut self, total: impl IntoComputed<f64>) -> ProgressWithTotal {
         let total = total.into_signal();
-        self.0.value = total
-            .zip(self.0.value)
-            .flatten_map(|total, value| value / total)
-            .computed();
+        let value = self.0.value;
+        self.0.value = total.zip(&value).map(|(t, v)| v / t).computed();
 
         ProgressWithTotal(self)
     }

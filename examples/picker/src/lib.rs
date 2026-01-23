@@ -8,6 +8,7 @@
 
 use time::{Date, Month};
 use waterui::app::App;
+use waterui::color::Srgb;
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
 use waterui::form::picker::file::FilePicker;
@@ -16,6 +17,11 @@ use waterui::media::Url;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::RoundedRectangle;
+
+// Color constants for picker defaults
+const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
+const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");
+const PICKER_RED: Srgb = Srgb::from_hex("#E61A66");
 
 /// Fruit options for picker demos
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -51,9 +57,9 @@ fn main() -> impl View {
     let datetime = binding(Date::from_calendar_date(2025, Month::June, 15).unwrap());
 
     // ColorPicker bindings
-    let basic_color = binding(Color::srgb_f32(0.2, 0.5, 0.8));
-    let alpha_color = binding(Color::srgb_f32(1.0, 0.3, 0.5).with_alpha(0.8));
-    let hdr_color = binding(Color::srgb_f32(0.9, 0.1, 0.4));
+    let basic_color = binding(Color::from(PICKER_BLUE));
+    let alpha_color = binding(Color::from(PICKER_PINK).with_opacity(0.8));
+    let hdr_color = binding(Color::from(PICKER_RED));
 
     // FilePicker binding
     let selected_files = binding(Vec::new());
@@ -68,63 +74,61 @@ fn main() -> impl View {
         vstack((
             // Header section
             vstack((
-                text("Picker Gallery").size(28.0),
-                "Demonstrating WaterUI's picker components",
+                text("Picker Gallery").title(),
+                text("Demonstrating WaterUI's picker components").body(),
             )),
             Divider,
             // Section 0: Picker Styles
             vstack((
-                text("Picker Styles").size(20.0),
-                "Choose from different picker presentation styles",
+                text("Picker Styles").headline(),
+                text("Choose from different picker presentation styles").body(),
                 spacer(),
                 text("Automatic (default)").bold(),
                 Picker::new(picker_items.clone(), &automatic_selection),
                 picker_selection_text(&automatic_selection),
                 spacer(),
                 text("Menu Style").bold(),
-                Picker::new(picker_items.clone(), &menu_selection)
-                    .style(PickerStyle::Menu),
+                Picker::new(picker_items.clone(), &menu_selection).style(PickerStyle::Menu),
                 picker_selection_text(&menu_selection),
                 spacer(),
                 text("Radio Style").bold(),
-                Picker::new(picker_items.clone(), &radio_selection)
-                    .style(PickerStyle::Radio),
+                Picker::new(picker_items.clone(), &radio_selection).style(PickerStyle::Radio),
                 picker_selection_text(&radio_selection),
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
             // Section 1: DatePicker
             vstack((
-                text("DatePicker").size(20.0),
-                "Select dates and times with platform-native pickers",
+                text("DatePicker").headline(),
+                text("Select dates and times with platform-native pickers").body(),
                 spacer(),
                 DatePicker::new(&date)
-                    .label(text("Date Only"))
+                    .label("Date Only")
                     .ty(DatePickerType::Date),
-                hstack(("Selected date: ", text!("{date}"))),
+                text!("Selected date: {date}"),
                 spacer(),
                 DatePicker::new(&datetime)
-                    .label(text("Date & Time"))
+                    .label("Date & Time")
                     .ty(DatePickerType::DateHourAndMinute),
-                hstack(("Selected datetime: ", text!("{datetime}"))),
+                text!("Selected datetime: {datetime}"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
             Divider,
             // Section 2: ColorPicker
             vstack((
-                text("ColorPicker").size(20.0),
-                "Select colors with optional alpha and HDR support",
+                text("ColorPicker").headline(),
+                text("Select colors with optional alpha and HDR support").body(),
                 spacer(),
-                ColorPicker::new(&basic_color).label(text("Basic Color")),
+                ColorPicker::new(&basic_color).label("Basic Color"),
                 color_preview(&basic_color, "Basic"),
                 spacer(),
                 ColorPicker::new(&alpha_color)
-                    .label(text("With Alpha"))
+                    .label("With Alpha")
                     .support_alpha(true),
                 color_preview(&alpha_color, "Alpha"),
                 spacer(),
                 ColorPicker::new(&hdr_color)
-                    .label(text("HDR Color"))
+                    .label("HDR Color")
                     .support_hdr(true),
                 color_preview(&hdr_color, "HDR"),
             ))
@@ -132,8 +136,8 @@ fn main() -> impl View {
             Divider,
             // Section 3: FilePicker
             vstack((
-                text("FilePicker").size(20.0),
-                "Select files from the device",
+                text("FilePicker").headline(),
+                text("Select files from the device").body(),
                 spacer(),
                 FilePicker::open(&selected_files).num(5),
                 spacer(),
@@ -142,7 +146,7 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             // Footer
-            vstack((Divider, "Built with WaterUI Picker Components")),
+            vstack((Divider, text("Built with WaterUI Picker Components").caption())),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
@@ -159,15 +163,19 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
 
 /// Helper view to display a color preview
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
-    use waterui::color::ReactiveColor;
     use waterui::shape::{Rectangle, ShapeExt};
     hstack((
         text(label).bold(),
-        ": ",
-        Rectangle
-            .fill(ReactiveColor::new(color.clone()))
-            .size(64.0, 32.0)
-            .clip(RoundedRectangle::new(0.1)),
+        text(": "),
+        color
+            .clone()
+            .map(|c| {
+                Rectangle
+                    .fill(c)
+                    .size(64.0, 32.0)
+                    .clip(RoundedRectangle::new(0.1))
+            })
+            .computed(),
     ))
 }
 

@@ -77,3 +77,22 @@ impl<T: 'static + Clone> Extractor for Use<T> {
         )
     }
 }
+
+// Tuple extractors for combining multiple extractions
+macro_rules! impl_tuple_extractor {
+    ($($T:ident),+) => {
+        impl<$($T: Extractor),+> Extractor for ($($T,)+) {
+            fn extract(env: &Environment) -> Result<Self, Error> {
+                Ok(($($T::extract(env)?,)+))
+            }
+        }
+    };
+}
+
+impl_tuple_extractor!(A, B);
+impl_tuple_extractor!(A, B, C);
+impl_tuple_extractor!(A, B, C, D);
+impl_tuple_extractor!(A, B, C, D, E);
+impl_tuple_extractor!(A, B, C, D, E, F);
+impl_tuple_extractor!(A, B, C, D, E, F, G);
+impl_tuple_extractor!(A, B, C, D, E, F, G, H);

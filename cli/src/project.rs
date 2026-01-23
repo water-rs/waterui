@@ -33,6 +33,21 @@ impl Project {
         device: D,
         hot_reload: bool,
     ) -> Result<Running, FailToRun> {
+        self.run_with_options(backend, platform, device, RunOptions::new(), hot_reload)
+            .await
+    }
+
+    /// Run the `WaterUI` project with explicit run options.
+    ///
+    /// This allows callers (like preview) to inject extra environment variables.
+    pub async fn run_with_options<B: Backend, D: Device>(
+        &self,
+        backend: &B,
+        platform: TargetPlatform,
+        device: D,
+        mut run_options: RunOptions,
+        hot_reload: bool,
+    ) -> Result<Running, FailToRun> {
         use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
 
         // Build rust library for the target platform
@@ -46,9 +61,6 @@ impl Project {
             .package(self, platform, PackageOptions::new(false, true))
             .await
             .map_err(FailToRun::Package)?;
-
-        // Set up run options with hot reload environment variables if enabled
-        let mut run_options = RunOptions::new();
 
         let server = if hot_reload {
             // Start the hot reload server
@@ -368,6 +380,7 @@ impl Project {
             backend_project_path: None, // Root files don't need this
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
+            accessory: false,
         };
 
         // Scaffold root files (Cargo.toml, src/lib.rs, .gitignore)
@@ -388,6 +401,7 @@ impl Project {
                 name: options.name.clone(),
                 bundle_identifier: options.bundle_identifier.clone(),
                 assets_path: default_assets_path(),
+                accessory: false,
             },
             backends: Backends::default(),
             waterui_path: options
@@ -741,6 +755,9 @@ pub struct Package {
     /// Path to assets directory relative to project root. Defaults to "assets".
     #[serde(default = "default_assets_path", skip_serializing_if = "is_default_assets_path")]
     pub assets_path: String,
+    /// Whether to build as an accessory (headless) app on macOS.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub accessory: bool,
 }
 
 fn default_assets_path() -> String {
@@ -749,6 +766,10 @@ fn default_assets_path() -> String {
 
 fn is_default_assets_path(path: &str) -> bool {
     path == "assets"
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Package type indicating what kind of project this is.

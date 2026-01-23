@@ -275,7 +275,7 @@ Use `ColorPicker` for platform-native color selection:
 ```rust
 use waterui::prelude::*;
 use waterui_form::picker::ColorPicker;
-use waterui_color::Color;
+use waterui::color::Color;
 
 fn theme_editor() -> impl View {
     let primary_color = Binding::new(Color::rgb(0.0, 0.5, 1.0));
@@ -389,7 +389,7 @@ None. The crate works out-of-the-box with no feature flags.
 - **`waterui-controls`** - Base components (`TextField`, `Toggle`, `Stepper`, `Slider`, `Button`)
 - **`waterui-layout`** - Layout primitives (`VStack`, `HStack`, `ZStack`)
 - **`waterui-text`** - Text rendering components
-- **`waterui-color`** - Color type used by `ColorPicker`
+- **`waterui-graphics`** - Color type used by `ColorPicker`
 
 ### External Dependencies
 

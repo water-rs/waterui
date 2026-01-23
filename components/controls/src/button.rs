@@ -2,32 +2,230 @@
 //!
 //! This module provides a Button component that allows users to trigger actions
 //! when clicked.
+//!
 //! ![Button](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/button.svg)
 //!
+//! # Overview
+//!
+//! Buttons support three patterns for handling click actions:
+//!
+//! 1. **Simple actions** - No parameters, just execute code
+//! 2. **State-based actions** - Capture state at button creation time
+//! 3. **Environment extraction** - Extract values from the environment at click time
 //!
 //! # Examples
+//!
+//! ## Simple Action
+//!
+//! The simplest form takes a closure with no parameters:
 //!
 //! ```rust,ignore
 //! use waterui::prelude::*;
 //!
-//! let button = button("Click me").action(|| {
+//! button("Click me").action(|| {
 //!     println!("Button clicked!");
 //! });
-//!
-//! // Button with link style
-//! let link_button = button("Visit website")
-//!     .style(ButtonStyle::Link)
-//!     .action(|| { /* open URL */ });
 //! ```
 //!
-//! Tip: `action` receives a `HandlerFn`, it can extract value from environment and pass it to the action.
-//! To learn more about `HandlerFn`, see the [`HandlerFn`] documentation.
+//! ## State-Based Action
+//!
+//! Use `.with_state()` to capture values at button creation time. The state is
+//! cloned when the button is created, not when clicked. Chain multiple
+//! `.with_state()` calls to capture multiple values:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//!
+//! let counter: Binding<i32> = binding(0);
+//!
+//! // Single state value
+//! button("Increment")
+//!     .with_state(&counter)
+//!     .action(|count| {
+//!         count.set(count.get() + 1);
+//!     });
+//!
+//! // Multiple state values (received as nested tuple)
+//! button("Go")
+//!     .with_state(&webview)
+//!     .with_state(&address)
+//!     .action(|(wv, addr)| {
+//!         wv.go_to(addr.get().as_str());
+//!     });
+//! ```
+//!
+//! ## Environment Extraction
+//!
+//! Use `.extract::<T>()` to extract values from the environment at click time.
+//! The type parameter explicitly specifies what to extract, avoiding type
+//! inference issues:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//!
+//! // Extract a single value
+//! button("Apply Theme")
+//!     .extract::<Theme>()
+//!     .action(|theme| {
+//!         apply_theme(theme);
+//!     });
+//!
+//! // Chain multiple extractions
+//! button("Save")
+//!     .extract::<DatabaseConnection>()
+//!     .extract::<CurrentUser>()
+//!     .action(|(db, user)| {
+//!         db.save_user_preferences(user);
+//!     });
+//! ```
+//!
+//! ## Combined State and Extraction
+//!
+//! You can combine both patterns. State comes first in the tuple, followed by
+//! extracted values:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//!
+//! button("Submit")
+//!     .with_state(&form_data)
+//!     .extract::<ApiClient>()
+//!     .action(|(data, client)| {
+//!         client.submit(data.get());
+//!     });
+//! ```
+//!
+//! ## Async Actions
+//!
+//! All patterns support async variants with `action_async`:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//!
+//! button("Fetch Data")
+//!     .with_state(&result_binding)
+//!     .action_async(|result| async move {
+//!         let data = fetch_from_server().await;
+//!         result.set(data);
+//!     });
+//! ```
+//!
+//! ## Button Styles
+//!
+//! Use `.style()` or convenience methods to change the button's visual appearance:
+//!
+//! ```rust,ignore
+//! use waterui::prelude::*;
+//!
+//! // Using style method
+//! button("Primary Action")
+//!     .style(ButtonStyle::BorderedProminent)
+//!     .action(|| { /* ... */ });
+//!
+//! // Using convenience methods
+//! button("Learn More")
+//!     .link()
+//!     .action(|| { /* ... */ });
+//!
+//! button("Secondary")
+//!     .bordered()
+//!     .action(|| { /* ... */ });
+//!
+//! button("Subtle")
+//!     .plain()
+//!     .action(|| { /* ... */ });
+//! ```
 
 use core::fmt::Debug;
+
+// ============================================================================
+// Macros for reducing boilerplate
+// ============================================================================
+
+/// Generates a handler struct that implements `Handler<()>`.
+macro_rules! define_handler {
+    (
+        $(#[$attr:meta])*
+        $vis:vis struct $name:ident<$($gen:ident),+> {
+            $($field:ident: $field_ty:ty),* $(,)?
+        }
+        where [$($bounds:tt)*]
+        handle($self:ident, $env:ident) $body:block
+    ) => {
+        $(#[$attr])*
+        #[derive(Debug)]
+        $vis struct $name<$($gen),+> {
+            $($field: $field_ty,)*
+        }
+
+        impl<$($gen),+> Handler<()> for $name<$($gen),+>
+        where
+            $($bounds)*
+        {
+            fn handle(&mut $self, $env: &Environment) $body
+        }
+    };
+}
+
+/// Implements style convenience methods for a button builder type.
+macro_rules! impl_style_methods {
+    ($($gen:ident $(: $bound:path)?),*) => {
+        /// Sets the button style to plain (no background or border).
+        /// Suitable for low-emphasis actions or toolbar buttons.
+        #[must_use]
+        pub const fn plain(self) -> Self {
+            self.style(ButtonStyle::Plain)
+        }
+
+        /// Sets the button style to link (hyperlink appearance).
+        /// Used for URL navigation and text-based links.
+        #[must_use]
+        pub const fn link(self) -> Self {
+            self.style(ButtonStyle::Link)
+        }
+
+        /// Sets the button style to borderless.
+        /// Similar to plain but with more interactive feedback.
+        #[must_use]
+        pub const fn borderless(self) -> Self {
+            self.style(ButtonStyle::Borderless)
+        }
+
+        /// Sets the button style to bordered.
+        /// Suitable for secondary actions.
+        #[must_use]
+        pub const fn bordered(self) -> Self {
+            self.style(ButtonStyle::Bordered)
+        }
+
+        /// Sets the button style to bordered prominent.
+        /// Use for primary actions that should stand out.
+        #[must_use]
+        pub const fn bordered_prominent(self) -> Self {
+            self.style(ButtonStyle::BorderedProminent)
+        }
+    };
+}
 
 /// Visual style options for buttons.
 ///
 /// Different button styles provide different visual emphasis and behavior.
+/// The actual rendering depends on the platform's native UI toolkit.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// // Primary action with prominent styling
+/// button("Submit").style(ButtonStyle::BorderedProminent);
+///
+/// // Secondary action with subtle styling
+/// button("Cancel").style(ButtonStyle::Plain);
+///
+/// // Navigation link
+/// button("Learn More").style(ButtonStyle::Link);
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ButtonStyle {
@@ -36,7 +234,7 @@ pub enum ButtonStyle {
     #[default]
     Automatic,
     /// A plain text button without any background or border.
-    /// Suitable for low-emphasis actions.
+    /// Suitable for low-emphasis actions or toolbar buttons.
     Plain,
     /// A button styled as a hyperlink, typically with underlined blue text.
     /// Used for URL navigation and text-based links.
@@ -44,49 +242,123 @@ pub enum ButtonStyle {
     /// A button without a visible border, but may show hover/press effects.
     /// Similar to Plain but with more interactive feedback.
     Borderless,
-    /// A prominent button style for primary actions.
-    /// Typically rendered with a filled background color.
+    /// A button with a subtle border or background.
+    /// Suitable for secondary actions.
     Bordered,
-    /// A prominent button with visible border.
-    /// Similar to Bordered but with more prominent styling.
+    /// A prominent button with filled background color.
+    /// Use for primary actions that should stand out.
     BorderedProminent,
 }
 
 use alloc::boxed::Box;
+use core::marker::PhantomData;
 use executor_core::spawn_local;
-use waterui_core::handler::{
-    BoxHandler, Handler, HandlerFn, HandlerFnWithState, IntoHandler, IntoHandlerWithState,
-    into_handler, into_handler_with_state,
-};
+use waterui_core::extract::Extractor;
+use waterui_core::handler::{BoxHandler, Handler};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{Environment, Native, NativeView, impl_debug};
 
 use waterui_core::AnyView;
 use waterui_core::View;
 
+// ============================================================================
+// Handler implementations for different action patterns
+// ============================================================================
+
+define_handler! {
+    /// A handler that wraps a simple closure with no parameters.
+    ///
+    /// Used internally by [`Button::action`] when no state or extraction is needed.
+    pub struct SimpleHandler<F> {
+        action: F,
+    }
+    where [F: FnMut() + 'static]
+    handle(self, _env) {
+        (self.action)();
+    }
+}
+
+define_handler! {
+    /// A handler that captures state at creation time and passes it to the action.
+    ///
+    /// Used internally by [`ButtonBuilder::action`]. The state is cloned each time
+    /// the button is clicked.
+    pub struct StateHandler<F, S> {
+        action: F,
+        state: S,
+    }
+    where [F: FnMut(S) + 'static, S: Clone + 'static]
+    handle(self, _env) {
+        (self.action)(self.state.clone());
+    }
+}
+
+define_handler! {
+    /// A handler that extracts a value from the environment and passes it to the action.
+    ///
+    /// Used internally by [`ButtonExtractBuilder::action`]. The extraction happens
+    /// each time the button is clicked.
+    pub struct ExtractHandler<F, E> {
+        action: F,
+        _extract: PhantomData<E>,
+    }
+    where [F: FnMut(E) + 'static, E: Extractor]
+    handle(self, env) {
+        let extracted = E::extract(env).expect("failed to extract value from environment");
+        (self.action)(extracted);
+    }
+}
+
+define_handler! {
+    /// A handler that combines captured state with environment extraction.
+    ///
+    /// Used internally by [`ButtonStateExtractBuilder::action`]. State is cloned
+    /// and extraction happens each time the button is clicked.
+    pub struct StateExtractHandler<F, S, E> {
+        action: F,
+        state: S,
+        _extract: PhantomData<E>,
+    }
+    where [F: FnMut((S, E)) + 'static, S: Clone + 'static, E: Extractor]
+    handle(self, env) {
+        let extracted = E::extract(env).expect("failed to extract value from environment");
+        (self.action)((self.state.clone(), extracted));
+    }
+}
+
+define_handler! {
+    /// A handler that receives the full environment reference.
+    ///
+    /// Used internally for async patterns that need environment access.
+    pub struct EnvHandler<F> {
+        action: F,
+    }
+    where [F: FnMut(&Environment) + 'static]
+    handle(self, env) {
+        (self.action)(env);
+    }
+}
+
+// ============================================================================
+// Button configuration and view implementation
+// ============================================================================
+
 /// Configuration for a button component.
 ///
-/// Use the `Button` struct's methods to customize these properties.
+/// This struct contains all the data needed to render a button on native platforms.
+/// It is produced by [`ConfigurableView::config`] and consumed by the native backend.
 ///
 /// # Layout Behavior
 ///
 /// Buttons size themselves to fit their label content and never stretch to fill
 /// extra space. In a stack, they take only the space they need.
-///
-// ═══════════════════════════════════════════════════════════════════════════
-// INTERNAL: Layout Contract for Backend Implementers
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Size: Determined by label content + platform padding.
-//
-// ═══════════════════════════════════════════════════════════════════════════
 #[non_exhaustive]
 pub struct ButtonConfig {
-    /// The label displayed on the button
+    /// The label displayed on the button.
     pub label: AnyView,
-    /// The action to execute when the button is clicked
+    /// The action to execute when the button is clicked.
     pub action: BoxHandler<()>,
-    /// The visual style of the button
+    /// The visual style of the button.
     pub style: ButtonStyle,
 }
 
@@ -141,7 +413,20 @@ where
     }
 }
 
-/// A button component that can be configured with a label and an action.
+// ============================================================================
+// Button struct
+// ============================================================================
+
+/// A button component that triggers an action when clicked.
+///
+/// Create buttons using the [`button`] convenience function or [`Button::new`].
+/// Configure the action using one of these patterns:
+///
+/// - [`action`](Button::action) - Simple closure with no parameters
+/// - [`with_state`](Button::with_state) - Capture state, then call action
+/// - [`extract`](Button::extract) - Extract from environment, then call action
+///
+/// See the [module documentation](self) for detailed examples.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Button<Label, Action> {
     label: Label,
@@ -152,14 +437,90 @@ pub struct Button<Label, Action> {
 impl<Label: View> Button<Label, ()> {
     /// Creates a new button with the specified label.
     ///
+    /// The button has no action by default. Use [`action`](Self::action),
+    /// [`with_state`](Self::with_state), or [`extract`](Self::extract) to
+    /// configure what happens when the button is clicked.
+    ///
     /// # Arguments
     ///
     /// * `label` - The text or view to display on the button
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let btn = Button::new("Click me").action(|| println!("Clicked!"));
+    /// ```
     pub const fn new(label: Label) -> Self {
         Self {
             label,
             action: (),
             style: ButtonStyle::Automatic,
+        }
+    }
+
+    /// Starts building a button with captured state.
+    ///
+    /// The state value is cloned immediately when this method is called.
+    /// Chain multiple `with_state` calls to capture multiple values - they
+    /// accumulate as nested tuples: `(first, second)`, then `((first, second), third)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the value to capture (will be cloned)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Single state
+    /// button("Increment")
+    ///     .with_state(&counter)
+    ///     .action(|count| count.set(count.get() + 1));
+    ///
+    /// // Multiple states
+    /// button("Navigate")
+    ///     .with_state(&webview)
+    ///     .with_state(&url)
+    ///     .action(|(wv, url)| wv.go_to(url.get().as_str()));
+    /// ```
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ButtonBuilder<Label, T> {
+        ButtonBuilder {
+            label: self.label,
+            state: state.clone(),
+            style: self.style,
+        }
+    }
+
+    /// Starts building a button with environment extraction.
+    ///
+    /// The type parameter `E` specifies what to extract from the environment
+    /// when the button is clicked. This provides explicit type information,
+    /// avoiding type inference issues.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `E` - The type to extract, must implement [`Extractor`]
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Extract navigation controller
+    /// button("Go Back")
+    ///     .extract::<NavigationController>()
+    ///     .action(|nav| nav.pop());
+    ///
+    /// // Chain multiple extractions
+    /// button("Save")
+    ///     .extract::<Database>()
+    ///     .extract::<CurrentUser>()
+    ///     .action(|(db, user)| db.save(user));
+    /// ```
+    #[must_use]
+    pub fn extract<E: Extractor>(self) -> ButtonExtractBuilder<Label, E> {
+        ButtonExtractBuilder {
+            label: self.label,
+            style: self.style,
+            _extract: PhantomData,
         }
     }
 }
@@ -169,105 +530,491 @@ impl<Label: View, Action> Button<Label, Action> {
     ///
     /// # Arguments
     ///
-    /// * `style` - The button style to apply
+    /// * `style` - The [`ButtonStyle`] to apply
     ///
-    /// # Returns
+    /// # Example
     ///
-    /// The modified button with the style set
+    /// ```rust,ignore
+    /// button("Submit")
+    ///     .style(ButtonStyle::BorderedProminent)
+    ///     .action(|| submit_form());
+    /// ```
     #[must_use]
     pub const fn style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
 
+    impl_style_methods!(Label: View, Action);
+
     /// Sets the action to be performed when the button is clicked.
+    ///
+    /// This is the simplest action form - a closure that takes no parameters.
+    /// Use this when the action doesn't need any external state or
+    /// environment values.
     ///
     /// # Arguments
     ///
-    /// * `action` - The callback function to execute when button is clicked
+    /// * `action` - A closure to execute when clicked
     ///
-    /// # Returns
+    /// # Example
     ///
-    /// The modified button with the action set
+    /// ```rust,ignore
+    /// button("Click me").action(|| {
+    ///     println!("Button was clicked!");
+    /// });
+    /// ```
     #[must_use]
-    pub fn action<H, P>(self, action: H) -> Button<Label, IntoHandler<H, P, ()>>
+    pub fn action<F>(self, action: F) -> Button<Label, SimpleHandler<F>>
     where
-        H: HandlerFn<P, ()>,
-        P: 'static,
+        F: FnMut() + 'static,
     {
         Button {
             label: self.label,
-            action: into_handler(action),
+            action: SimpleHandler { action },
             style: self.style,
         }
     }
 
-    /// Sets the asynchronous action to be performed when the button is clicked.
-    pub fn action_async<H, Fut, P>(self, mut action: H) -> impl View
-    where
-        H: HandlerFn<P, Fut> + 'static,
-        Fut: Future<Output = ()> + 'static,
-        P: 'static,
-    {
-        self.action(move |env: Environment| {
-            let fut = action.handle_inner(&env);
-            spawn_local(fut).detach();
-        })
-    }
-
-    /// Sets the asynchronous action to be performed when the button is clicked, with access to a state.
-    pub fn action_with_async<H, Fut, P, S>(self, state: &S, mut action: H) -> impl View
-    where
-        H: HandlerFnWithState<P, Fut, S> + 'static,
-        Fut: Future<Output = ()> + 'static,
-        S: 'static + Clone,
-        P: 'static,
-    {
-        let state = state.clone();
-        self.action(move |env: Environment| {
-            let fut = action.handle_inner(state.clone(), &env);
-            spawn_local(fut).detach();
-        })
-    }
-
-    /// Sets the action to be performed when the button is clicked, with access to a state.
+    /// Sets an asynchronous action to be performed when the button is clicked.
+    ///
+    /// The future is spawned on the local executor and detached. Use this
+    /// for actions that need to perform async operations like network requests.
     ///
     /// # Arguments
     ///
-    /// * `state` - A reference to the state that the action can access.
-    /// * `action` - The callback function to execute when the button is clicked.
+    /// * `action` - A closure that returns a future
     ///
-    /// # Returns
+    /// # Example
     ///
-    /// The modified button with the action and state set.
-    #[must_use]
-    pub fn action_with<H, P, S>(
-        self,
-        state: &S,
-        action: H,
-    ) -> Button<Label, IntoHandlerWithState<H, P, (), S>>
+    /// ```rust,ignore
+    /// button("Fetch").action_async(|| async {
+    ///     let data = api::fetch_data().await;
+    ///     process(data);
+    /// });
+    /// ```
+    pub fn action_async<F, Fut>(self, mut action: F) -> impl View
     where
-        H: HandlerFnWithState<P, (), S>,
-        S: 'static + Clone,
-        P: 'static,
+        F: FnMut() -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        self.action(move || {
+            let fut = action();
+            spawn_local(fut).detach();
+        })
+    }
+}
+
+// ============================================================================
+// ButtonBuilder - for buttons with state
+// ============================================================================
+
+/// A builder for creating buttons with captured state.
+///
+/// Created by calling [`Button::with_state`]. Chain multiple `with_state` calls
+/// to accumulate state, then call [`action`](Self::action) to finalize.
+///
+/// # State Accumulation
+///
+/// Each `with_state` call wraps the previous state in a tuple:
+/// - First call: `S`
+/// - Second call: `(S, T)`
+/// - Third call: `((S, T), U)`
+///
+/// # Example
+///
+/// ```rust,ignore
+/// button("Update")
+///     .with_state(&binding1)
+///     .with_state(&binding2)
+///     .action(|(b1, b2)| {
+///         b1.set(b2.get());
+///     });
+/// ```
+#[derive(Debug, Clone)]
+pub struct ButtonBuilder<Label, State> {
+    label: Label,
+    state: State,
+    style: ButtonStyle,
+}
+
+impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
+    /// Adds another state value to the builder.
+    ///
+    /// The state accumulates as nested tuples: `(previous, new)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the value to capture (will be cloned)
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ButtonBuilder<Label, (S, T)> {
+        ButtonBuilder {
+            label: self.label,
+            state: (self.state, state.clone()),
+            style: self.style,
+        }
+    }
+
+    /// Adds environment extraction to the button.
+    ///
+    /// After calling this, the action will receive a tuple of `(state, extracted)`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `E` - The type to extract from the environment
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// button("Submit")
+    ///     .with_state(&form_data)
+    ///     .extract::<ApiClient>()
+    ///     .action(|(data, client)| {
+    ///         client.submit(data.get());
+    ///     });
+    /// ```
+    #[must_use]
+    pub fn extract<E: Extractor>(self) -> ButtonStateExtractBuilder<Label, S, E> {
+        ButtonStateExtractBuilder {
+            label: self.label,
+            state: self.state,
+            style: self.style,
+            _extract: PhantomData,
+        }
+    }
+
+    /// Sets the visual style of the button.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    impl_style_methods!(Label: View, S: Clone);
+
+    /// Sets the action to be performed when the button is clicked.
+    ///
+    /// The action receives the accumulated state as its argument. The state
+    /// is cloned each time the button is clicked.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives the captured state
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// button("Toggle")
+    ///     .with_state(&is_enabled)
+    ///     .action(|enabled| enabled.set(!enabled.get()));
+    /// ```
+    #[must_use]
+    pub fn action<F>(self, action: F) -> Button<Label, StateHandler<F, S>>
+    where
+        F: FnMut(S) + 'static,
     {
         Button {
             label: self.label,
-            action: into_handler_with_state(action, state.clone()),
+            action: StateHandler {
+                action,
+                state: self.state,
+            },
+            style: self.style,
+        }
+    }
+
+    /// Sets an asynchronous action with access to captured state.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives state and returns a future
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// button("Save")
+    ///     .with_state(&data)
+    ///     .action_async(|data| async move {
+    ///         api::save(data.get()).await;
+    ///     });
+    /// ```
+    pub fn action_async<F, Fut>(self, mut action: F) -> impl View
+    where
+        F: FnMut(S) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let state = self.state;
+        Button {
+            label: self.label,
+            action: (),
+            style: self.style,
+        }
+        .action(move || {
+            let fut = action(state.clone());
+            spawn_local(fut).detach();
+        })
+    }
+}
+
+// ============================================================================
+// ButtonExtractBuilder - for buttons with extraction only
+// ============================================================================
+
+/// A builder for creating buttons that extract values from the environment.
+///
+/// Created by calling [`Button::extract`]. The extraction type is specified
+/// explicitly, providing clear type information.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// button("Navigate")
+///     .extract::<NavigationController>()
+///     .action(|nav| nav.push(DetailView::new()));
+/// ```
+#[derive(Debug, Clone)]
+pub struct ButtonExtractBuilder<Label, Extract> {
+    label: Label,
+    style: ButtonStyle,
+    _extract: PhantomData<Extract>,
+}
+
+impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
+    /// Chains another extraction type.
+    ///
+    /// The extracted values accumulate as nested tuples: `(first, second)`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `E2` - The additional type to extract
+    #[must_use]
+    pub fn extract<E2: Extractor>(self) -> ButtonExtractBuilder<Label, (E, E2)> {
+        ButtonExtractBuilder {
+            label: self.label,
+            style: self.style,
+            _extract: PhantomData,
+        }
+    }
+
+    /// Adds state to the button.
+    ///
+    /// State will come first in the tuple, followed by extracted values:
+    /// `(state, extracted)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the value to capture
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> ButtonStateExtractBuilder<Label, T, E> {
+        ButtonStateExtractBuilder {
+            label: self.label,
+            state: state.clone(),
+            style: self.style,
+            _extract: PhantomData,
+        }
+    }
+
+    /// Sets the visual style of the button.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    impl_style_methods!(Label: View, E: Extractor);
+
+    /// Sets the action to be performed when the button is clicked.
+    ///
+    /// The action receives the extracted value as its argument. Extraction
+    /// happens each time the button is clicked.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives the extracted value
+    #[must_use]
+    pub fn action<F>(self, action: F) -> Button<Label, ExtractHandler<F, E>>
+    where
+        F: FnMut(E) + 'static,
+    {
+        Button {
+            label: self.label,
+            action: ExtractHandler {
+                action,
+                _extract: PhantomData,
+            },
+            style: self.style,
+        }
+    }
+
+    /// Sets an asynchronous action with environment extraction.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives extracted value and returns a future
+    pub fn action_async<F, Fut>(
+        self,
+        mut action: F,
+    ) -> Button<Label, EnvHandler<impl FnMut(&Environment)>>
+    where
+        F: FnMut(E) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        Button {
+            label: self.label,
+            action: EnvHandler {
+                action: move |env: &Environment| {
+                    let extracted =
+                        E::extract(env).expect("failed to extract value from environment");
+                    let fut = action(extracted);
+                    spawn_local(fut).detach();
+                },
+            },
             style: self.style,
         }
     }
 }
 
-/// Convenience function to create a new button with the specified label.
+// ============================================================================
+// ButtonStateExtractBuilder - for buttons with both state and extraction
+// ============================================================================
+
+/// A builder for creating buttons with both captured state and environment extraction.
+///
+/// Created by calling [`ButtonBuilder::extract`] or [`ButtonExtractBuilder::with_state`].
+/// The action receives a tuple of `(state, extracted)`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// button("Submit Form")
+///     .with_state(&form_data)
+///     .extract::<ApiClient>()
+///     .action(|(data, client)| {
+///         client.submit(data.get());
+///     });
+/// ```
+#[derive(Debug, Clone)]
+pub struct ButtonStateExtractBuilder<Label, State, Extract> {
+    label: Label,
+    state: State,
+    style: ButtonStyle,
+    _extract: PhantomData<Extract>,
+}
+
+impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<Label, S, E> {
+    /// Adds another state value.
+    ///
+    /// State values accumulate as nested tuples.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> ButtonStateExtractBuilder<Label, (S, T), E> {
+        ButtonStateExtractBuilder {
+            label: self.label,
+            state: (self.state, state.clone()),
+            style: self.style,
+            _extract: PhantomData,
+        }
+    }
+
+    /// Chains another extraction type.
+    ///
+    /// Extracted values accumulate as nested tuples after the state.
+    #[must_use]
+    pub fn extract<E2: Extractor>(self) -> ButtonStateExtractBuilder<Label, S, (E, E2)> {
+        ButtonStateExtractBuilder {
+            label: self.label,
+            state: self.state,
+            style: self.style,
+            _extract: PhantomData,
+        }
+    }
+
+    /// Sets the visual style of the button.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    impl_style_methods!(Label: View, S: Clone, E: Extractor);
+
+    /// Sets the action to be performed when the button is clicked.
+    ///
+    /// The action receives a tuple of `(state, extracted)`. State is cloned
+    /// and extraction happens each time the button is clicked.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives `(state, extracted)`
+    #[must_use]
+    pub fn action<F>(self, action: F) -> Button<Label, StateExtractHandler<F, S, E>>
+    where
+        F: FnMut((S, E)) + 'static,
+    {
+        Button {
+            label: self.label,
+            action: StateExtractHandler {
+                action,
+                state: self.state,
+                _extract: PhantomData,
+            },
+            style: self.style,
+        }
+    }
+
+    /// Sets an asynchronous action with both state and extraction.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - A closure that receives `(state, extracted)` and returns a future
+    pub fn action_async<F, Fut>(
+        self,
+        mut action: F,
+    ) -> Button<Label, EnvHandler<impl FnMut(&Environment)>>
+    where
+        F: FnMut((S, E)) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let state = self.state;
+        Button {
+            label: self.label,
+            action: EnvHandler {
+                action: move |env: &Environment| {
+                    let extracted =
+                        E::extract(env).expect("failed to extract value from environment");
+                    let fut = action((state.clone(), extracted));
+                    spawn_local(fut).detach();
+                },
+            },
+            style: self.style,
+        }
+    }
+}
+
+// ============================================================================
+// Convenience function
+// ============================================================================
+
+/// Creates a new button with the specified label.
+///
+/// This is a convenience function equivalent to [`Button::new`].
 ///
 /// # Arguments
 ///
 /// * `label` - The text or view to display on the button
 ///
-/// # Returns
+/// # Example
 ///
-/// A new button instance
+/// ```rust,ignore
+/// use waterui::prelude::*;
+///
+/// button("Click me").action(|| println!("Clicked!"));
+/// ```
 pub const fn button<Label: View>(label: Label) -> Button<Label, ()> {
     Button::new(label)
 }

@@ -30,7 +30,6 @@
 //! );
 //! ```
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -40,7 +39,7 @@ use executor_core::spawn_local;
 use nami::Binding;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::handler::{BoxHandler, Handler, HandlerFn, into_handler};
+use waterui_core::handler::{BoxHandler, Handler, boxed_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, AnimationExt, View};
 use waterui_icon::SystemIcon;
@@ -174,14 +173,10 @@ impl Snackbar {
     /// * `label` - The text to display on the action button
     /// * `handler` - The callback to execute when the action is pressed
     #[must_use]
-    pub fn action<H, P>(mut self, label: impl Into<Str>, handler: H) -> Self
-    where
-        H: HandlerFn<P, ()> + 'static,
-        P: 'static,
-    {
+    pub fn action(mut self, label: impl Into<Str>, handler: impl FnMut() + 'static) -> Self {
         self.action = Some(SnackbarAction {
             label: label.into(),
-            handler: Box::new(into_handler(handler)),
+            handler: boxed_action(handler),
         });
         self
     }

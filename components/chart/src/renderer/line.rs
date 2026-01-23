@@ -15,10 +15,12 @@ use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, shader_with_common,
-    write_storage_buffer, write_uniform_buffer, ChartUniforms,
+    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
 };
 use crate::renderer::ChartRenderer;
+
+const PLOT_PADDING: f32 = 0.1;
 
 /// GPU-accelerated line chart renderer.
 ///
@@ -39,6 +41,7 @@ pub struct LineChartRenderer {
     current_buffer: Option<wgpu::Buffer>,
     previous_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    msaa_target: Option<MsaaTarget>,
 
     // Animation state
     animation: ChartAnimation,
@@ -70,6 +73,7 @@ impl LineChartRenderer {
             current_buffer: None,
             previous_buffer: None,
             bind_group: None,
+            msaa_target: None,
             animation: ChartAnimation::default(),
             needs_redraw: false,
             zoom_pan: ZoomPanState::new(),
@@ -195,7 +199,7 @@ impl LineChartRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(ctx.surface_format),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -325,7 +329,11 @@ impl GpuRenderer for LineChartRenderer {
                     if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
                 ),
                 pointer: if let Some((x, y)) = frame.pointer_normalized() {
-                    glam::Vec4::new(x, y, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                    if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
+                        glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                    } else {
+                        glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                    }
                 } else {
                     glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
                 },
@@ -346,11 +354,20 @@ impl GpuRenderer for LineChartRenderer {
             });
 
         {
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+            );
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Line Chart Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -405,22 +422,25 @@ impl ChartRenderer for LineChartRenderer {
             return None;
         }
 
-        // Convert screen point to chart coordinates
-        let chart_x = (point.x - viewport.x) / viewport.width;
-        let chart_y = 1.0 - (point.y - viewport.y) / viewport.height;
+        let (chart_x, chart_y) = super::chart_coords_from_viewport(viewport, point, PLOT_PADDING)?;
+        let chart_y = 1.0 - chart_y;
 
-        if chart_x < 0.0 || chart_x > 1.0 || chart_y < 0.0 || chart_y > 1.0 {
+        let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
+        if visible_bounds.width() <= 0.0 || visible_bounds.height() <= 0.0 {
             return None;
         }
 
         // Find closest point on the line
-        let hit_radius = 10.0 / viewport.width.min(viewport.height); // 10px hit area
+        let denom = (1.0 - 2.0 * PLOT_PADDING).max(0.001);
+        let hit_radius = 10.0 / (viewport.width.min(viewport.height) * denom); // 10px hit area
         let mut closest_idx = None;
         let mut closest_dist = f32::MAX;
 
         for (i, data_point) in self.data.iter().enumerate() {
-            let normalized_x = (data_point.x - self.bounds.min_x) / (self.bounds.max_x - self.bounds.min_x);
-            let normalized_y = (data_point.y - self.bounds.min_y) / (self.bounds.max_y - self.bounds.min_y);
+            let normalized_x =
+                (data_point.x - visible_bounds.min_x) / (visible_bounds.max_x - visible_bounds.min_x);
+            let normalized_y =
+                (data_point.y - visible_bounds.min_y) / (visible_bounds.max_y - visible_bounds.min_y);
 
             let dx = chart_x - normalized_x;
             let dy = chart_y - normalized_y;

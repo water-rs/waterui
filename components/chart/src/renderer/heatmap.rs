@@ -13,10 +13,12 @@ use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, HeatmapData};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
 use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, shader_with_common,
-    write_storage_buffer, write_uniform_buffer,
+    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
 };
 use crate::renderer::ChartRenderer;
+
+const PLOT_PADDING: f32 = 0.05;
 
 /// GPU-accelerated heatmap renderer.
 ///
@@ -31,6 +33,7 @@ pub struct HeatmapRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     value_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
+    msaa_target: Option<MsaaTarget>,
 
     // Animation state
     animation: ChartAnimation,
@@ -57,6 +60,7 @@ impl HeatmapRenderer {
             uniform_buffer: None,
             value_buffer: None,
             bind_group: None,
+            msaa_target: None,
             animation: ChartAnimation::default(),
             needs_redraw: false,
             zoom_pan: ZoomPanState::new(),
@@ -155,7 +159,7 @@ impl HeatmapRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(ctx.surface_format),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -262,7 +266,27 @@ impl GpuRenderer for HeatmapRenderer {
                 if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
-                glam::Vec4::new(x, y, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
+                    let zoomed_y = 1.0 - py;
+                    let zoomed_x = px;
+                    let scale = self.zoom_pan.scale.max(0.001);
+                    let unzoomed_x = (zoomed_x - 0.5 - self.zoom_pan.offset.x) / scale + 0.5;
+                    let unzoomed_y = (zoomed_y - 0.5 - self.zoom_pan.offset.y) / scale + 0.5;
+                    if (0.0..=1.0).contains(&unzoomed_x) && (0.0..=1.0).contains(&unzoomed_y) {
+                        let padded_x = PLOT_PADDING + unzoomed_x * (1.0 - 2.0 * PLOT_PADDING);
+                        let padded_y = PLOT_PADDING + unzoomed_y * (1.0 - 2.0 * PLOT_PADDING);
+                        glam::Vec4::new(
+                            padded_x,
+                            padded_y,
+                            if frame.pointer.hit.is_some() { 1.0 } else { 0.0 },
+                            0.0,
+                        )
+                    } else {
+                        glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                    }
+                } else {
+                    glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
+                }
             } else {
                 glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
             },
@@ -278,11 +302,20 @@ impl GpuRenderer for HeatmapRenderer {
             });
 
         {
+            let (color_view, resolve_target) = msaa_attachment(
+                &mut self.msaa_target,
+                frame.device,
+                frame.format,
+                frame.width,
+                frame.height,
+                &frame.view,
+            );
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Heatmap Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -342,17 +375,20 @@ impl ChartRenderer for HeatmapRenderer {
             return None;
         }
 
-        // Convert screen point to chart coordinates
-        let chart_x = (point.x - viewport.x) / viewport.width;
-        let chart_y = (point.y - viewport.y) / viewport.height;
+        let (chart_x, chart_y) = super::chart_coords_from_viewport(viewport, point, PLOT_PADDING)?;
+        let chart_y = 1.0 - chart_y;
 
-        if chart_x < 0.0 || chart_x > 1.0 || chart_y < 0.0 || chart_y > 1.0 {
+        let scale = self.zoom_pan.scale.max(0.001);
+        let unzoomed_x = (chart_x - 0.5 - self.zoom_pan.offset.x) / scale + 0.5;
+        let unzoomed_y = (chart_y - 0.5 - self.zoom_pan.offset.y) / scale + 0.5;
+
+        if !(0.0..=1.0).contains(&unzoomed_x) || !(0.0..=1.0).contains(&unzoomed_y) {
             return None;
         }
 
         // Calculate cell indices
-        let col = (chart_x * self.data.cols as f32) as u32;
-        let row = (chart_y * self.data.rows as f32) as u32;
+        let col = (unzoomed_x * self.data.cols as f32) as u32;
+        let row = (unzoomed_y * self.data.rows as f32) as u32;
 
         if row < self.data.rows && col < self.data.cols {
             let value = self.data.get(row, col).unwrap_or(0.0);

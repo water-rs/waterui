@@ -98,10 +98,10 @@ pub fn login_form() -> impl View {
     stack::vstack((
         text("Login").size(24.0).bold(),
         TextField::new(&username)
-            .label(text("Username"))
+            .label("Username")
             .prompt("Enter username"),
         TextField::new(&password)
-            .label(text("Password"))
+            .label("Password")
             .prompt("Enter password")
             .secure(true),
     ))

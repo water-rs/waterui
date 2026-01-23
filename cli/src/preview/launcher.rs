@@ -4,6 +4,7 @@
 //! establishing TCP connection.
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Result, bail};
@@ -14,9 +15,12 @@ use super::protocol::PreviewPlatform;
 use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
-use crate::device::{Device, DeviceEvent, Local, Running};
+use crate::device::{Device, DeviceEvent, Local, Running, RunOptions};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
+
+const PREVIEW_APP_VERSION: &str = env!("WATERUI_CLI_COMMIT");
+const PREVIEW_METADATA_FILE: &str = ".waterui-preview-version";
 
 /// A preview session that manages the preview app and TCP connection.
 #[derive(Debug)]
@@ -31,6 +35,10 @@ pub struct PreviewSession {
     dylib_path: Option<PathBuf>,
     /// Whether we've sent the dylib to the app.
     dylib_sent: bool,
+    /// Running instance for apps launched by this session.
+    running: Option<Pin<Box<Running>>>,
+    /// Whether this session owns the app lifecycle.
+    owns_app: bool,
 }
 
 impl PreviewSession {
@@ -79,6 +87,16 @@ impl PreviewSession {
 
         self.client.render(dylib_data, needs_reload, symbol, width, height)
     }
+
+    /// Shutdown the preview app if this session launched it.
+    pub fn shutdown(&mut self) -> Result<()> {
+        let _ = self.client.shutdown();
+        if self.owns_app {
+            // Dropping `running` will terminate the app if still alive.
+            self.running.take();
+        }
+        Ok(())
+    }
 }
 
 /// Launch a preview session for the given platform.
@@ -100,17 +118,16 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             platform,
             dylib_path: None,
             dylib_sent: false,
+            running: None,
+            owns_app: false,
         });
     }
 
     eprintln!("[preview] No preview app running, launching...");
 
-    // Ensure the preview support app exists
+    // Ensure the preview support app exists and is up to date
     let preview_app_path = preview_support_path();
-    if !preview_app_path.join("Cargo.toml").exists() {
-        eprintln!("[preview] Scaffolding preview app at {}", preview_app_path.display());
-        scaffold_preview_app(&preview_app_path).await?;
-    }
+    ensure_preview_support_app(&preview_app_path).await?;
 
     // Open the preview app project
     let project = Project::open(&preview_app_path)
@@ -126,8 +143,9 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             let device = Local;
             device.launch().await?;
             eprintln!("[preview] Building and running preview app on macOS...");
+            let run_options = RunOptions::new();
             project
-                .run(backend, TargetPlatform::MacOS, device, false)
+                .run_with_options(backend, TargetPlatform::MacOS, device, run_options, false)
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
         }
@@ -149,8 +167,9 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
 
             simulator.launch().await?;
             eprintln!("[preview] Building and running preview app on iOS Simulator...");
+            let run_options = RunOptions::new();
             project
-                .run(backend, TargetPlatform::IOSSimulator, simulator, false)
+                .run_with_options(backend, TargetPlatform::IOSSimulator, simulator, run_options, false)
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
         }
@@ -170,8 +189,9 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             if let Some(device) = devices.into_iter().next() {
                 device.launch().await?;
                 eprintln!("[preview] Building and running preview app on Android device...");
+                let run_options = RunOptions::new();
                 project
-                    .run(backend, TargetPlatform::Android, device, false)
+                    .run_with_options(backend, TargetPlatform::Android, device, run_options, false)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             } else {
@@ -185,8 +205,9 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
                 let emulator = crate::android::device::AndroidEmulator::new(avd_name);
                 emulator.launch().await?;
                 eprintln!("[preview] Building and running preview app on Android emulator...");
+                let run_options = RunOptions::new();
                 project
-                    .run(backend, TargetPlatform::Android, emulator, false)
+                    .run_with_options(backend, TargetPlatform::Android, emulator, run_options, false)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             }
@@ -199,12 +220,14 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
     let result = wait_for_connection_or_crash(running, platform).await;
 
     match result {
-        ConnectionResult::Connected { client } => Ok(PreviewSession {
+        ConnectionResult::Connected { client, running } => Ok(PreviewSession {
             client,
             watcher: ProjectWatcher::new(),
             platform,
             dylib_path: None,
             dylib_sent: false,
+            running: Some(running),
+            owns_app: true,
         }),
         ConnectionResult::Crashed(message) => {
             bail!("Preview app crashed:\n{message}")
@@ -221,7 +244,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
                  Possible causes:\n\
                  - The app may have crashed during initialization\n\
                  - The TCP server failed to start\n\
-                 - Port 2006-2055 may be blocked\n\n\
+                 - Port 2106-2155 may be blocked\n\n\
                  Try running with WATERUI_CRASH_DEBUG=1 for more details."
             )
         }
@@ -231,7 +254,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
 /// Result of waiting for TCP connection.
 enum ConnectionResult {
     /// Successfully connected to preview app.
-    Connected { client: PreviewAppClient },
+    Connected { client: PreviewAppClient, running: Pin<Box<Running>> },
     /// App crashed with error message.
     Crashed(String),
     /// App exited without crash.
@@ -255,7 +278,9 @@ async fn wait_for_connection_or_crash(
 
     for i in 0..MAX_ATTEMPTS {
         // Check for app events (crash, exit) - non-blocking
-        while let Some(event) = futures_lite::future::poll_once(running.as_mut().next()).await.flatten() {
+        while let Some(event) =
+            futures_lite::future::poll_once(running.as_mut().next()).await.flatten()
+        {
             match event {
                 DeviceEvent::Crashed(message) => {
                     eprintln!("[preview] App crashed after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
@@ -278,17 +303,16 @@ async fn wait_for_connection_or_crash(
         // Try to connect to TCP
         if let Ok(client) = PreviewAppClient::connect() {
             eprintln!("[preview] Connected to preview app after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
-            // Forget the Running so the preview app stays alive after session ends.
-            // This prevents the drop handler from killing the app process.
-            std::mem::forget(running);
-            return ConnectionResult::Connected { client };
+            return ConnectionResult::Connected { client, running };
         }
 
         smol::Timer::after(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
 
     // One final check for crash events before giving up
-    while let Some(event) = futures_lite::future::poll_once(running.as_mut().next()).await.flatten() {
+    while let Some(event) =
+        futures_lite::future::poll_once(running.as_mut().next()).await.flatten()
+    {
         match event {
             DeviceEvent::Crashed(message) => {
                 return ConnectionResult::Crashed(message);
@@ -311,10 +335,39 @@ fn preview_support_path() -> PathBuf {
         .join("preview_support")
 }
 
+/// Ensure the preview support app exists and matches the current CLI version.
+async fn ensure_preview_support_app(path: &PathBuf) -> Result<()> {
+    let metadata_path = path.join(PREVIEW_METADATA_FILE);
+    let cargo_path = path.join("Cargo.toml");
+
+    let mut needs_scaffold = !cargo_path.exists();
+    if !needs_scaffold {
+        let stored_version = smol::fs::read_to_string(&metadata_path)
+            .await
+            .unwrap_or_default();
+        if stored_version.trim() != PREVIEW_APP_VERSION {
+            needs_scaffold = true;
+        }
+    }
+
+    if needs_scaffold {
+        if path.exists() {
+            smol::fs::remove_dir_all(path).await?;
+        }
+        eprintln!("[preview] Scaffolding preview app at {}", path.display());
+        scaffold_preview_app(path).await?;
+        smol::fs::write(&metadata_path, PREVIEW_APP_VERSION).await?;
+    } else if !metadata_path.exists() {
+        smol::fs::write(&metadata_path, PREVIEW_APP_VERSION).await?;
+    }
+
+    Ok(())
+}
+
 /// Scaffold the preview support app as a normal playground project.
 async fn scaffold_preview_app(path: &PathBuf) -> Result<()> {
-    use crate::project::CreateOptions;
-    use cargo_toml::{Dependency, DependencyDetail, Manifest};
+    use crate::project::{CreateOptions, Manifest as WaterManifest};
+    use cargo_toml::{Dependency, DependencyDetail, Manifest as CargoManifest};
 
     let waterui_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
 
@@ -331,10 +384,15 @@ async fn scaffold_preview_app(path: &PathBuf) -> Result<()> {
         .await
         .map_err(|e| color_eyre::eyre::eyre!("Failed to create preview app: {e}"))?;
 
+    // Mark the preview app as accessory/headless.
+    let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
+    manifest.package.accessory = true;
+    manifest.save(project.root()).await?;
+
     // Add waterui-preview dependency to Cargo.toml
     let cargo_path = project.root().join("Cargo.toml");
     let cargo_content = smol::fs::read_to_string(&cargo_path).await?;
-    let mut manifest: Manifest = toml::from_str(&cargo_content)?;
+    let mut manifest: CargoManifest = toml::from_str(&cargo_content)?;
 
     let preview_path = waterui_path.join("components/preview");
     manifest.dependencies.insert(

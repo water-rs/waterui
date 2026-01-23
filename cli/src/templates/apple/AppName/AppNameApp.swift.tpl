@@ -27,18 +27,32 @@ import WaterUI
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
+    private var headlessContext: WuiRootContext?
+    private let isAccessory: Bool = __IS_ACCESSORY__
 
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.mainMenu = WaterUIMainMenu.create()
+        if delegate.isAccessory {
+            app.setActivationPolicy(.prohibited)
+        } else {
+            app.mainMenu = WaterUIMainMenu.create()
+        }
         app.run()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register custom fonts from dependencies
         WaterUIFonts.register()
+
+        if isAccessory {
+            let context = WuiRootContext()
+            // Force view construction so Preview::body runs and TCP server starts.
+            _ = context.rootView
+            headlessContext = context
+            return
+        }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

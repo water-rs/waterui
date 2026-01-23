@@ -10,6 +10,7 @@ use waterui::app::App;
 use waterui::component::Dynamic;
 use waterui::media::Media;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+use waterui::prelude::theme_color::{Accent, MutedForeground, Surface};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::task::spawn_local;
@@ -34,7 +35,7 @@ fn main() -> impl View {
     vstack((
         // Title
         text("Media Picker Demo")
-            .size(28.0)
+            .title()
             .bold()
             .padding_with(16.0),
         // Picker buttons row
@@ -101,11 +102,11 @@ fn picker_button(
                     // Load the selected media asynchronously
                     spawn_local(async move {
                         let media = selected.load().await;
-                        log::debug!("Loaded media: {:?}", media);
+                        tracing::debug!("Loaded media: {:?}", media);
                         match validate_media_result(&media, &expected_filter) {
                             Ok(()) => state.set(DisplayState::Loaded(media)),
                             Err(message) => {
-                                log::error!("{message}");
+                                tracing::error!("{message}");
                                 state.set(DisplayState::Error(message));
                             }
                         }
@@ -121,18 +122,18 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
     Dynamic::watch(display_state, move |state| match state {
         DisplayState::Empty => vstack((
             text("No media selected")
-                .size(18.0)
-                .foreground(theme_color::MutedForeground),
+                .sub_headline()
+                .foreground(MutedForeground),
             text("Tap a button above to select media")
-                .size(14.0)
-                .foreground(theme_color::MutedForeground),
+                .body()
+                .foreground(MutedForeground),
         ))
         .spacing(8.0)
         .anyview(),
 
         DisplayState::Loading => vstack((
             loading(),
-            text("Loading media...").foreground(theme_color::MutedForeground),
+            text("Loading media...").body().foreground(MutedForeground),
         ))
         .spacing(12.0)
         .anyview(),
@@ -141,12 +142,12 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
 
         DisplayState::Error(message) => vstack((
             text("Error")
-                .size(18.0)
+                .sub_headline()
                 .bold()
-                .foreground(theme_color::Accent),
+                .foreground(Accent),
             text(message)
-                .size(14.0)
-                .foreground(theme_color::MutedForeground),
+                .body()
+                .foreground(MutedForeground),
         ))
         .spacing(8.0)
         .padding_with(16.0)
@@ -158,29 +159,29 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
 fn media_view(media: Media) -> AnyView {
     match media {
         Media::Image(url) => {
-            log::debug!("Displaying image from: {}", url);
+            tracing::debug!("Displaying image from: {}", url);
             vstack((
                 Photo::new(url.clone()).on_event(move |event| {
-                    log::debug!("Photo event: {:?}", event);
+                    tracing::debug!("Photo event: {:?}", event);
                 }),
                 text("Image")
-                    .size(14.0)
-                    .foreground(theme_color::MutedForeground)
+                    .body()
+                    .foreground(MutedForeground)
                     .padding_with(8.0),
             ))
             .anyview()
         }
         Media::Video(url) => {
-            log::debug!("Displaying video from: {}", url);
+            tracing::debug!("Displaying video from: {}", url);
             video_view(url)
         }
         Media::LivePhoto(source) => {
-            log::debug!("Displaying live photo");
+            tracing::debug!("Displaying live photo");
             vstack((
                 live_photo_view(source),
                 text("Live Photo")
-                    .size(14.0)
-                    .foreground(theme_color::MutedForeground)
+                    .body()
+                    .foreground(MutedForeground)
                     .padding_with(8.0),
             ))
             .anyview()
@@ -194,8 +195,8 @@ fn video_view(url: Url) -> AnyView {
             .show_controls(true)
             .aspect_ratio(AspectRatio::Fit),
         text("Video")
-            .size(14.0)
-            .foreground(theme_color::MutedForeground)
+            .body()
+            .foreground(MutedForeground)
             .padding_with(8.0),
     ))
     .anyview()
@@ -206,7 +207,8 @@ fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {
     let image_url = source.image.clone();
     let video_url = source.video.clone();
 
-    Dynamic::watch(is_playing.clone(), move |playing| {
+    let is_playing_for_watch = is_playing.clone();
+    Dynamic::watch(is_playing_for_watch, move |playing| {
         if playing {
             Video::new(video_url.clone())
                 .loops(false)
@@ -222,18 +224,14 @@ fn live_photo_view(source: waterui::media::live::LivePhotoSource) -> AnyView {
                 .anyview()
         } else {
             Photo::new(image_url.clone())
-                .on_tap({
-                    let is_playing = is_playing.clone();
-                    move || is_playing.set(true)
-                })
+                .with_state(&is_playing)
+                .on_tap(|p| p.set(true))
                 .overlay(
                     button(text("Play"))
-                        .action({
-                            let is_playing = is_playing.clone();
-                            move || is_playing.set(true)
-                        })
+                        .with_state(&is_playing)
+                        .action(|p| p.set(true))
                         .padding_with(10.0)
-                        .background(Color::from(theme_color::Surface)),
+                        .background(Color::from(Surface)),
                 )
                 .anyview()
         }

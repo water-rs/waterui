@@ -152,8 +152,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let value_range = uniforms.value_range;
     let normalized_value = (value - value_range.x) / (value_range.y - value_range.x);
 
-    // Get color from color scale (assuming 5 stops for viridis-like)
-    let color = sample_color_scale(normalized_value, 5u);
+    // Get color from color scale
+    let stop_count = arrayLength(&color_stops);
+    let color = sample_color_scale(normalized_value, stop_count);
 
     var output: VertexOutput;
     output.position = vec4<f32>(ndc, 0.0, 1.0);
@@ -205,7 +206,8 @@ fn fs_stroke(input: StrokeVertexOutput) -> @location(0) vec4<f32> {
     let stroke_width = uniforms.value_range.z;
 
     // Anti-aliased stroke
-    let alpha = 1.0 - smoothstep(stroke_width - 1.0, stroke_width, abs(input.edge_dist));
+    let edge_dist = abs(input.edge_dist) - stroke_width * 0.5;
+    let alpha = sdf_coverage(edge_dist);
 
     return vec4<f32>(stroke_color.rgb, stroke_color.a * alpha);
 }

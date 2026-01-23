@@ -58,6 +58,8 @@ pub struct TemplateContext {
     pub android_permissions: Vec<String>,
     /// iOS permissions to include in Info.plist (e.g., "microphone", "camera")
     pub ios_permissions: Vec<(String, String)>,
+    /// Whether to build as an accessory (headless) app on macOS.
+    pub accessory: bool,
 }
 
 impl TemplateContext {
@@ -103,6 +105,11 @@ impl TemplateContext {
             .replace(
                 "__PROJECT_ROOT_RELATIVE_PATH__",
                 &self.project_root_relative_path(),
+            )
+            .replace("__IS_ACCESSORY__", if self.accessory { "true" } else { "false" })
+            .replace(
+                "__MACOS_LSUIELEMENT__",
+                if self.accessory { "YES" } else { "NO" },
             )
             // Font entries are populated during packaging, not creation - use empty default
             .replace("__FONT_ENTRIES__", "")
@@ -304,6 +311,7 @@ mod tests {
             backend_project_path,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
+            accessory: false,
         }
     }
 
