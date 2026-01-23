@@ -9,18 +9,18 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use crate::style::IntoSignalF32;
 use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
-use waterui_graphics::color::Color;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
-    handler::{HandlerFn, HandlerFnOnce},
     metadata::MetadataKey,
     plugin::Plugin,
 };
+use waterui_graphics::{FilterViewExt, color::Color};
 
 use waterui_layout::{
     EdgeSet, IgnoreSafeArea, Overlay,
@@ -60,6 +60,18 @@ pub trait ViewExt: View + Sized {
     /// * `metadata` - The metadata to attach
     fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
         Metadata::new(self, metadata)
+    }
+
+    /// Sets the visibility of this view.
+    ///
+    /// # Arguments
+    /// * `visible` - A reactive boolean indicating whether the view should be visible
+    fn visable(self, visible: impl IntoComputed<bool>) -> impl View {
+        self.opacity(
+            visible
+                .into_computed()
+                .map(|visable| if visable { 1.0 } else { 0.0 }),
+        )
     }
 
     /// Associates  a value with this view in the environment.
@@ -194,10 +206,10 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `lifecycle` - The lifecycle event to listen for
     /// * `handler` - The action to execute when the event occurs (called once)
-    fn lifecycle<H: 'static>(
+    fn lifecycle(
         self,
         lifecycle: LifeCycle,
-        handler: impl HandlerFnOnce<H, ()> + 'static,
+        handler: impl FnOnce() + 'static,
     ) -> Metadata<LifeCycleHook> {
         Metadata::new(self, LifeCycleHook::new(lifecycle, handler))
     }
@@ -210,10 +222,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
-    fn on_disappear<H: 'static>(
-        self,
-        handler: impl HandlerFnOnce<H, ()> + 'static,
-    ) -> Metadata<LifeCycleHook> {
+    fn on_disappear(self, handler: impl FnOnce() + 'static) -> Metadata<LifeCycleHook> {
         self.lifecycle(LifeCycle::Disappear, handler)
     }
 
@@ -240,10 +249,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view appears
-    fn on_appear<H: 'static>(
-        self,
-        handler: impl HandlerFnOnce<H, ()> + 'static,
-    ) -> Metadata<LifeCycleHook> {
+    fn on_appear(self, handler: impl FnOnce() + 'static) -> Metadata<LifeCycleHook> {
         self.lifecycle(LifeCycle::Appear, handler)
     }
 
@@ -254,11 +260,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `event` - The event to listen for
     /// * `handler` - The action to execute when the event occurs (can be called multiple times)
-    fn event<H: 'static>(
-        self,
-        event: Event,
-        handler: impl HandlerFn<H, ()> + 'static,
-    ) -> Metadata<OnEvent> {
+    fn event(self, event: Event, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
         Metadata::new(self, OnEvent::new(event, handler))
     }
 
@@ -269,10 +271,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
-    fn on_hover_enter<H: 'static>(
-        self,
-        handler: impl HandlerFn<H, ()> + 'static,
-    ) -> Metadata<OnEvent> {
+    fn on_hover_enter(self, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
         self.event(Event::HoverEnter, handler)
     }
 
@@ -283,10 +282,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover ends
-    fn on_hover_exit<H: 'static>(
-        self,
-        handler: impl HandlerFn<H, ()> + 'static,
-    ) -> Metadata<OnEvent> {
+    fn on_hover_exit(self, handler: impl FnMut() + 'static) -> Metadata<OnEvent> {
         self.event(Event::HoverExit, handler)
     }
 
@@ -439,10 +435,10 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture<P: 'static>(
+    fn gesture(
         self,
         gesture: impl Into<Gesture>,
-        action: impl HandlerFn<P, ()> + 'static,
+        action: impl FnMut() + 'static,
     ) -> Metadata<GestureObserver> {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
@@ -459,10 +455,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Click me").on_tap(|| println!("Clicked!"));
     /// ```
-    fn on_tap<P: 'static>(
-        self,
-        action: impl HandlerFn<P, ()> + 'static,
-    ) -> Metadata<GestureObserver> {
+    fn on_tap(self, action: impl FnMut() + 'static) -> Metadata<GestureObserver> {
         self.gesture(TapGesture::new(), action)
     }
 
@@ -530,27 +523,26 @@ pub trait ViewExt: View + Sized {
     /// ```rust,ignore
     /// use waterui::prelude::*;
     ///
-    /// // Scale a view to 150%
-    /// Color::red()
-    ///     .width(100.0)
-    ///     .height(100.0)
-    ///     .scale(1.5);
+    /// // Scale uniformly to 150%
+    /// view.scale(1.5, 1.5);
+    ///
+    /// // Scale X only (stretch horizontally)
+    /// view.scale(2.0, 1.0);
     ///
     /// // Animate scale
-    /// let factor = binding(1.0_f32).animated();
-    /// Color::blue()
-    ///     .width(80.0)
-    ///     .height(80.0)
-    ///     .scale(factor);
+    /// let x = binding(1.0).animated();
+    /// let y = binding(1.0).animated();
+    /// view.scale(x, y);
     /// ```
-    fn scale(self, factor: impl IntoComputed<f32>) -> Metadata<Scale> {
-        Metadata::new(self, Scale::uniform(factor))
+    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
+        Metadata::new(self, Scale::xy(x, y))
     }
 
-    /// Applies a uniform scale transform to this view around a specific anchor point.
+    /// Applies a scale transform around a specific anchor point.
     ///
     /// # Arguments
-    /// * `factor` - The scale factor
+    /// * `x` - The horizontal scale factor
+    /// * `y` - The vertical scale factor
     /// * `anchor` - The anchor point for the scale (e.g., `Anchor::TOP_LEFT`)
     ///
     /// # Example
@@ -560,10 +552,10 @@ pub trait ViewExt: View + Sized {
     /// use waterui::style::Anchor;
     ///
     /// // Scale from top-left corner
-    /// view.scale_from(0.5, Anchor::TOP_LEFT);
+    /// view.scale_from(0.5, 0.5, Anchor::TOP_LEFT);
     /// ```
-    fn scale_from(self, factor: impl IntoComputed<f32>, anchor: Anchor) -> Metadata<Scale> {
-        Metadata::new(self, Scale::uniform_from(factor, anchor))
+    fn scale_from(self, x: impl IntoSignalF32, y: impl IntoSignalF32, anchor: Anchor) -> Metadata<Scale> {
+        Metadata::new(self, Scale::xy_from(x, y, anchor))
     }
 
     /// Applies a rotation transform to this view around its center.
@@ -582,10 +574,10 @@ pub trait ViewExt: View + Sized {
     /// view.rotation(45.0);
     ///
     /// // Animate rotation
-    /// let angle = binding(0.0_f32).animated();
+    /// let angle = binding(0.0).animated();
     /// view.rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoComputed<f32>) -> Metadata<Rotation> {
+    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees(degrees))
     }
 
@@ -604,7 +596,7 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// view.rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(self, degrees: impl IntoComputed<f32>, anchor: Anchor) -> Metadata<Rotation> {
+    fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
     }
 
@@ -625,10 +617,10 @@ pub trait ViewExt: View + Sized {
     /// view.offset(10.0, 20.0);
     ///
     /// // Animate offset
-    /// let x = binding(0.0_f32).animated();
+    /// let x = binding(0.0).animated();
     /// view.offset(x, 0.0);
     /// ```
-    fn offset(self, x: impl IntoComputed<f32>, y: impl IntoComputed<f32>) -> Metadata<Offset> {
+    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
         Metadata::new(self, Offset::new(x, y))
     }
 
@@ -774,11 +766,10 @@ pub trait ViewExt: View + Sized {
 
     /// Makes this view a drop destination for dragged content.
     ///
-    /// When compatible data is dropped onto this view, the handler is called
-    /// with the dropped data.
+    /// When compatible data is dropped onto this view, the handler receives the `DragData`.
     ///
     /// # Arguments
-    /// * `on_drop` - Handler called when data is dropped (receives `DragData`)
+    /// * `on_drop` - Handler called with the dropped data
     ///
     /// # Example
     ///
@@ -788,12 +779,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Drop here")
     ///     .drop_destination(|data: DragData| {
-    ///         println!("Received: {}", data.as_str());
+    ///         println!("Received: {:?}", data);
     ///     });
     /// ```
-    fn drop_destination<P: 'static>(
+    fn drop_destination(
         self,
-        on_drop: impl HandlerFn<P, ()> + 'static,
+        on_drop: impl FnMut(DragData) + 'static,
     ) -> Metadata<DropDestination> {
         Metadata::new(self, DropDestination::new(on_drop))
     }
@@ -803,14 +794,14 @@ pub trait ViewExt: View + Sized {
     /// Provides full control over drag events including enter/exit feedback.
     ///
     /// # Arguments
-    /// * `on_drop` - Handler called when data is dropped
+    /// * `on_drop` - Handler called with the dropped data
     /// * `on_enter` - Handler called when drag enters view bounds
     /// * `on_exit` - Handler called when drag exits view bounds
-    fn drop_destination_with_events<P1: 'static, P2: 'static, P3: 'static>(
+    fn drop_destination_with_events(
         self,
-        on_drop: impl HandlerFn<P1, ()> + 'static,
-        on_enter: impl HandlerFn<P2, ()> + 'static,
-        on_exit: impl HandlerFn<P3, ()> + 'static,
+        on_drop: impl FnMut(DragData) + 'static,
+        on_enter: impl FnMut() + 'static,
+        on_exit: impl FnMut() + 'static,
     ) -> Metadata<DropDestination> {
         Metadata::new(
             self,
@@ -881,6 +872,207 @@ pub trait ViewExt: View + Sized {
 
         Metadata::new(self, Opacity::new(opacity_value)).hittable(hittable_value)
     }
+
+    /// Starts building a view with captured state for event handlers.
+    ///
+    /// The state value is cloned when this method is called. Chain multiple
+    /// `with_state` calls to capture multiple values - they accumulate as
+    /// nested tuples: `(first, second)`, then `((first, second), third)`.
+    ///
+    /// After capturing state, use event handlers like `on_hover_enter`,
+    /// `on_tap`, etc. which will receive the accumulated state.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// text("Hover Me!")
+    ///     .with_state(&hover_count)
+    ///     .with_state(&is_hovered)
+    ///     .on_hover_enter(|(count, hovered)| {
+    ///         *count.get_mut() += 1;
+    ///         hovered.set(true);
+    ///     })
+    ///     .on_hover_exit(|(_, hovered)| {
+    ///         hovered.set(false);
+    ///     })
+    /// ```
+    fn with_state<T: Clone + 'static>(self, state: &T) -> StatefulView<Self, T> {
+        StatefulView {
+            view: self,
+            state: state.clone(),
+        }
+    }
 }
 
 impl<V: View + Sized> ViewExt for V {}
+
+// ============================================================================
+// StatefulView - View wrapper with accumulated state for event handlers
+// ============================================================================
+
+/// A view wrapper that accumulates state for event handlers.
+///
+/// Created by calling [`ViewExt::with_state`]. Chain multiple `with_state`
+/// calls to accumulate state as nested tuples, then use event handlers
+/// like `on_hover_enter` which receive the accumulated state.
+///
+/// # State Accumulation
+///
+/// Each `with_state` call wraps the previous state in a tuple:
+/// - First call: `S`
+/// - Second call: `(S, T)`
+/// - Third call: `((S, T), U)`
+///
+/// # Example
+///
+/// ```rust,ignore
+/// text("Hover Me!")
+///     .padding()
+///     .background(color)
+///     // State accumulation starts here
+///     .with_state(&hover_count)
+///     .with_state(&is_hovered)
+///     // Handlers receive accumulated state
+///     .on_hover_enter(|(count, hovered)| {
+///         *count.get_mut() += 1;
+///         hovered.set(true);
+///     })
+///     .on_hover_exit(|(_, hovered)| {
+///         hovered.set(false);
+///     })
+/// ```
+#[derive(Debug, Clone)]
+pub struct StatefulView<V, S> {
+    view: V,
+    state: S,
+}
+
+impl<V: View, S: 'static> View for StatefulView<V, S> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.view
+    }
+}
+
+impl<V: View, S: Clone + 'static> StatefulView<V, S> {
+    /// Adds another state value to the builder.
+    ///
+    /// The state accumulates as nested tuples: `(previous, new)`.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> StatefulView<V, (S, T)> {
+        StatefulView {
+            view: self.view,
+            state: (self.state, state.clone()),
+        }
+    }
+
+    /// Adds a handler that triggers when the cursor enters this view's bounds.
+    ///
+    /// The handler receives the accumulated state.
+    #[must_use]
+    pub fn on_hover_enter(
+        self,
+        mut handler: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<OnEvent>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                OnEvent::new(Event::HoverEnter, move || {
+                    handler(state_for_handler.clone())
+                }),
+            ),
+            state,
+        }
+    }
+
+    /// Adds a handler that triggers when the cursor exits this view's bounds.
+    ///
+    /// The handler receives the accumulated state.
+    #[must_use]
+    pub fn on_hover_exit(
+        self,
+        mut handler: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<OnEvent>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                OnEvent::new(Event::HoverExit, move || handler(state_for_handler.clone())),
+            ),
+            state,
+        }
+    }
+
+    /// Adds a handler that triggers when the view appears.
+    ///
+    /// The handler receives the accumulated state (moved, not cloned).
+    #[must_use]
+    pub fn on_appear(
+        self,
+        handler: impl FnOnce(S) + 'static,
+    ) -> StatefulView<Metadata<LifeCycleHook>, ()> {
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                LifeCycleHook::new(LifeCycle::Appear, move || handler(state_for_handler)),
+            ),
+            state: (),
+        }
+    }
+
+    /// Adds a handler that triggers when the view disappears.
+    ///
+    /// The handler receives the accumulated state (moved, not cloned).
+    #[must_use]
+    pub fn on_disappear(
+        self,
+        handler: impl FnOnce(S) + 'static,
+    ) -> StatefulView<Metadata<LifeCycleHook>, ()> {
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                LifeCycleHook::new(LifeCycle::Disappear, move || handler(state_for_handler)),
+            ),
+            state: (),
+        }
+    }
+
+    /// Adds a tap gesture recognizer that receives the accumulated state.
+    #[must_use]
+    pub fn on_tap(
+        self,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(TapGesture::new(), move || action(state_for_handler.clone())),
+            ),
+            state,
+        }
+    }
+
+    /// Observes a gesture with the accumulated state.
+    #[must_use]
+    pub fn gesture(
+        self,
+        gesture: impl Into<Gesture>,
+        mut action: impl FnMut(S) + 'static,
+    ) -> StatefulView<Metadata<GestureObserver>, S> {
+        let state = self.state.clone();
+        let state_for_handler = self.state;
+        StatefulView {
+            view: Metadata::new(
+                self.view,
+                GestureObserver::new(gesture, move || action(state_for_handler.clone())),
+            ),
+            state,
+        }
+    }
+}

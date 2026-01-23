@@ -5,10 +5,9 @@
 //! - [`OnEvent`] - Repeatable handlers for interaction events (hover enter/exit)
 
 use crate::{
-    handler::{BoxHandler, BoxHandlerOnce, HandlerFn, HandlerFnOnce, into_handler, into_handler_once},
+    handler::{BoxHandler, BoxHandlerOnce, boxed_action, boxed_action_once},
     metadata::MetadataKey,
 };
-use alloc::boxed::Box;
 
 /// Lifecycle events that occur once per view attachment/detachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,10 +39,10 @@ impl LifeCycleHook {
     /// * `lifecycle` - The lifecycle event to listen for.
     /// * `handler` - The action to execute when the event occurs (called once).
     #[must_use]
-    pub fn new<H: 'static>(lifecycle: LifeCycle, handler: impl HandlerFnOnce<H, ()> + 'static) -> Self {
+    pub fn new(lifecycle: LifeCycle, handler: impl FnOnce() + 'static) -> Self {
         Self {
             lifecycle,
-            handler: Box::new(into_handler_once(handler)),
+            handler: boxed_action_once(handler),
         }
     }
 
@@ -96,10 +95,10 @@ impl OnEvent {
     /// * `event` - The event to listen for.
     /// * `handler` - The action to execute when the event occurs (can be called multiple times).
     #[must_use]
-    pub fn new<H: 'static>(event: Event, handler: impl HandlerFn<H, ()> + 'static) -> Self {
+    pub fn new(event: Event, handler: impl FnMut() + 'static) -> Self {
         Self {
             event,
-            handler: Box::new(into_handler(handler)),
+            handler: boxed_action(handler),
         }
     }
 

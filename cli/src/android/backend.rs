@@ -121,6 +121,7 @@ impl Backend for AndroidBackend {
             backend_project_path: Some(backend_relative_path),
             android_permissions,
             ios_permissions: Vec::new(),
+            accessory: manifest.package.accessory,
         };
 
         templates::android::scaffold(&project.backend_path::<Self>(), &ctx)

@@ -109,7 +109,7 @@ fn main() -> Result<()> {
         let command = std::pin::pin!(command);
         let cancel = std::pin::pin!(ctrl_c_future);
 
-        match future::select(command, cancel).await {
+        let result = match future::select(command, cancel).await {
             Either::Left((result, _)) => {
                 // Command completed - check if it failed due to cancellation
                 if is_cancelled() {
@@ -124,6 +124,11 @@ fn main() -> Result<()> {
                 // The command future is dropped here, triggering cleanup
                 Ok(())
             }
-        }
+        };
+
+        // Clear progress bars to ensure clean exit
+        shell::clear();
+
+        result
     })
 }

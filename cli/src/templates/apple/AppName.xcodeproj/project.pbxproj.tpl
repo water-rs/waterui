@@ -306,6 +306,7 @@ __SWIFT_PACKAGE_REFERENCE_ENTRY__
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = __MACOS_LSUIELEMENT__;
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
@@ -361,6 +362,7 @@ __IOS_PERMISSION_KEYS__
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = __MACOS_LSUIELEMENT__;
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;

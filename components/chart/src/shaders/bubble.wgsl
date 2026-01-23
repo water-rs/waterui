@@ -33,8 +33,8 @@ struct VertexOutput {
     @location(2) @interpolate(flat) point_index: u32,
 }
 
-// Convert data coordinates to NDC
-fn data_to_ndc(x: f32, y: f32) -> vec2<f32> {
+// Convert data coordinates to padded NDC
+fn data_to_padded_ndc(x: f32, y: f32) -> vec2<f32> {
     let padding = 0.1;
     let norm_x = (x - uniforms.bounds.x) / (uniforms.bounds.y - uniforms.bounds.x);
     let norm_y = (y - uniforms.bounds.z) / (uniforms.bounds.w - uniforms.bounds.z);
@@ -69,7 +69,7 @@ fn vs_main(
     let anim_scale = select(1.0, eased_progress, uniforms.animation.w > 0.5);
 
     // Get center position in NDC
-    let center = data_to_ndc(point.x, point.y);
+    let center = data_to_padded_ndc(point.x, point.y);
 
     // Calculate radius in NDC space
     let radius_pixels = size_to_radius(point.size) * anim_scale;
@@ -114,14 +114,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let centered_uv = in.uv * 2.0 - 1.0;
     let dist = length(centered_uv);
 
-    // Discard pixels outside circle
-    if dist > 1.0 {
+    // Anti-aliased edge using SDF + fwidth
+    let edge_dist = dist - 1.0;
+    let alpha = sdf_coverage(edge_dist);
+    if alpha < 0.001 {
         discard;
     }
-
-    // Anti-aliased edge
-    let edge_width = 0.05;
-    let alpha = 1.0 - smoothstep(1.0 - edge_width, 1.0, dist);
 
     var color = in.color;
     color.a *= alpha;

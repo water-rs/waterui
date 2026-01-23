@@ -9,155 +9,140 @@
 
 use waterui::app::App;
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
+use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::Binding;
 
+const TAP_COLOR: Srgb = Srgb::from_hex("#2196F3");
+const DOUBLE_TAP_COLOR: Srgb = Srgb::from_hex("#4CAF50");
+const LONG_PRESS_COLOR: Srgb = Srgb::from_hex("#FF9800");
+const DRAG_COLOR: Srgb = Srgb::from_hex("#9C27B0");
+const CHAINED_COLOR: Srgb = Srgb::from_hex("#F44336");
+const ON_TAP_COLOR: Srgb = Srgb::from_hex("#00BCD4");
+
 /// Section displaying tap gesture demos
-fn tap_section(tap_count: Binding<i32>) -> impl View {
+fn tap_section(tap_count: &Binding<i32>) -> impl View {
     vstack((
-        text("Tap Gesture").size(20.0),
+        text("Tap Gesture").headline(),
         "Tap the box below to increment the counter",
-        {
-            let tap_count = tap_count.clone();
-            text("Tap Me!")
-                .padding()
-                .background(Color::srgb_hex("#2196F3").with_opacity(0.3))
-                .gesture(TapGesture::new(), move || {
-                    tap_count.set(tap_count.get() + 1);
-                })
-        },
-        hstack(("Tap count: ", text!("{tap_count}"))),
+        text!("Tap count: {count}", count = tap_count.clone()),
+        text("Tap Me!")
+            .padding()
+            .background(TAP_COLOR.with_opacity(0.3))
+            .with_state(tap_count)
+            .gesture(TapGesture::new(), |c| *c.get_mut() += 1),
     ))
     .padding()
 }
 
 /// Section displaying double-tap gesture demo
-fn double_tap_section(double_tap_count: Binding<i32>) -> impl View {
+fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
     vstack((
-        text("Double Tap Gesture").size(20.0),
+        text("Double Tap Gesture").headline(),
         "Double-tap the box to increment",
-        {
-            let double_tap_count = double_tap_count.clone();
-            text("Double Tap Me!")
-                .padding()
-                .background(Color::srgb_hex("#4CAF50").with_opacity(0.3))
-                .gesture(TapGesture::repeat(2), move || {
-                    double_tap_count.set(double_tap_count.get() + 1);
-                })
-        },
-        hstack(("Double tap count: ", text!("{double_tap_count}"))),
+        text!("Double tap count: {count}", count = double_tap_count.clone()),
+        text("Double Tap Me!")
+            .padding()
+            .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
+            .with_state(double_tap_count)
+            .gesture(TapGesture::repeat(2), |c| *c.get_mut() += 1),
     ))
     .padding()
 }
 
 /// Section displaying long press gesture demo
-fn long_press_section(long_press_count: Binding<i32>) -> impl View {
+fn long_press_section(long_press_count: &Binding<i32>) -> impl View {
     vstack((
-        text("Long Press Gesture").size(20.0),
+        text("Long Press Gesture").headline(),
         "Press and hold for 500ms",
-        {
-            let long_press_count = long_press_count.clone();
-            text("Long Press Me!")
-                .padding()
-                .background(Color::srgb_hex("#FF9800").with_opacity(0.3))
-                .gesture(LongPressGesture::new(500), move || {
-                    long_press_count.set(long_press_count.get() + 1);
-                })
-        },
-        hstack(("Long press count: ", text!("{long_press_count}"))),
+        text!("Long press count: {count}", count = long_press_count.clone()),
+        text("Long Press Me!")
+            .padding()
+            .background(LONG_PRESS_COLOR.with_opacity(0.3))
+            .with_state(long_press_count)
+            .gesture(LongPressGesture::new(500), |c| *c.get_mut() += 1),
     ))
     .padding()
 }
 
 /// Section displaying drag gesture demo
-fn drag_section(drag_count: Binding<i32>) -> impl View {
+fn drag_section(drag_count: &Binding<i32>) -> impl View {
     vstack((
-        text("Drag Gesture").size(20.0),
+        text("Drag Gesture").headline(),
         "Drag within the box (min 5pt)",
-        {
-            let drag_count = drag_count.clone();
-            text("Drag Here")
-                .padding()
-                .width(200.0)
-                .height(100.0)
-                .background(Color::srgb_hex("#9C27B0").with_opacity(0.3))
-                .gesture(DragGesture::new(5.0), move || {
-                    drag_count.set(drag_count.get() + 1);
-                })
-        },
-        hstack(("Drag events: ", text!("{drag_count}"))),
+        text!("Drag events: {count}", count = drag_count.clone()),
+        text("Drag Here")
+            .padding()
+            .width(200.0)
+            .height(100.0)
+            .background(DRAG_COLOR.with_opacity(0.3))
+            .with_state(drag_count)
+            .gesture(DragGesture::new(5.0), |c| *c.get_mut() += 1),
     ))
     .padding()
 }
 
 /// Section displaying chained gesture demo
-fn chained_section(chained_status: Binding<String>) -> impl View {
+fn chained_section(chained_status: &Binding<&'static str>) -> impl View {
+    let chained_status_display = chained_status.clone();
     vstack((
-        text("Chained Gesture").size(20.0),
+        text("Chained Gesture").headline(),
         "Tap first, then long press to complete",
-        {
-            let chained_status = chained_status.clone();
-            text("Tap then Long Press")
-                .padding()
-                .background(Color::srgb_hex("#F44336").with_opacity(0.3))
-                .gesture(
-                    TapGesture::new().then(LongPressGesture::new(300).into()),
-                    move || {
-                        chained_status.set("Chained gesture completed!".to_string());
-                    },
-                )
-        },
-        text!("{chained_status}"),
+        text!("{chained_status_display}"),
+        text("Tap then Long Press")
+            .padding()
+            .background(CHAINED_COLOR.with_opacity(0.3))
+            .with_state(chained_status)
+            .gesture(
+                TapGesture::new().then(LongPressGesture::new(300).into()),
+                |s| s.set("Chained gesture completed!"),
+            ),
     ))
     .padding()
 }
 
 /// Section demonstrating on_tap shorthand
-fn on_tap_section(tap_count: Binding<i32>) -> impl View {
+fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     vstack((
-        text("on_tap Shorthand").size(20.0),
+        text("on_tap Shorthand").headline(),
         "Convenient method for simple tap handlers",
-        {
-            let tap_count = tap_count.clone();
-            text("Simple Tap")
-                .padding()
-                .background(Color::srgb_hex("#00BCD4").with_opacity(0.3))
-                .on_tap(move || {
-                    tap_count.set(tap_count.get() + 1);
-                })
-        },
         "This uses the same counter as Section 1",
+        text("Simple Tap")
+            .padding()
+            .background(ON_TAP_COLOR.with_opacity(0.3))
+            .with_state(tap_count)
+            .on_tap(|c| *c.get_mut() += 1),
     ))
     .padding()
 }
 
 #[hot_reload]
 fn main() -> impl View {
-    let tap_count = Binding::int(0);
-    let double_tap_count = Binding::int(0);
-    let long_press_count = Binding::int(0);
-    let drag_count = Binding::int(0);
-    let chained_status = Binding::container(String::from("Waiting for tap..."));
+    let tap_count = Binding::i32(0);
+    let double_tap_count = Binding::i32(0);
+    let long_press_count = Binding::i32(0);
+    let drag_count = Binding::i32(0);
+    let chained_status = Binding::container("Waiting for tap...");
 
     scroll(
         vstack((
             // Header
-            text("WaterUI Gesture Examples").size(28.0),
+            text("WaterUI Gesture Examples").title(),
             "Demonstrating gesture recognition and handling",
             Divider,
             spacer(),
             // Gesture sections
-            tap_section(tap_count.clone()),
+            tap_section(&tap_count),
             Divider,
-            double_tap_section(double_tap_count),
+            double_tap_section(&double_tap_count),
             Divider,
-            long_press_section(long_press_count),
+            long_press_section(&long_press_count),
             Divider,
-            drag_section(drag_count),
+            drag_section(&drag_count),
             Divider,
-            chained_section(chained_status),
+            chained_section(&chained_status),
             Divider,
-            on_tap_section(tap_count),
+            on_tap_section(&tap_count),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )

@@ -10,11 +10,10 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::widget::condition::when;
 
 fn main() -> impl View {
     // Sample video URLs (Big Buck Bunny - open source test videos)
-    let sample_videos: [(&str, &str); 3] = [
+    let sample_videos = [
         (
             "Big Buck Bunny",
             "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
@@ -30,7 +29,7 @@ fn main() -> impl View {
     ];
 
     // Track which video is selected
-    let selected_index = binding(0usize);
+    let selected_index = Binding::usize(0);
 
     // Track buffering state
     let is_buffering = binding(false);
@@ -41,32 +40,22 @@ fn main() -> impl View {
         Url::parse(url_str).expect("Invalid video URL")
     });
 
+    // Buffering overlay
+    let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
+        .spacing(12.0)
+        .background(Srgb::BLACK.with_opacity(0.8))
+        .visable(is_buffering.clone());
+
     // Video player - immersive full screen with Fill aspect ratio
     // VideoPlayer now takes a Url directly (not a Video data source)
     let player = VideoPlayer::new(video_url)
         .show_controls(true)
         .aspect_ratio(AspectRatio::Fill)
-        .on_event({
-            let is_buffering = is_buffering.clone();
-            move |event| match event {
-                video::Event::Buffering => is_buffering.set(true),
-                video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
-                video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
-            }
+        .on_event(move |event| match event {
+            video::Event::Buffering => is_buffering.set(true),
+            video::Event::BufferingEnded | video::Event::ReadyToPlay => is_buffering.set(false),
+            video::Event::Ended | video::Event::Error { .. } => is_buffering.set(false),
         });
-
-    // Buffering overlay
-    let buffering_overlay = when(is_buffering, || {
-        zstack((
-            spacer().background(Color::from(Srgb::BLACK).with_opacity(0.5)),
-            "Hi!!!!!!",
-            vstack((
-                loading(),
-                text("Buffering...").foreground(Color::from(Srgb::WHITE)),
-            ))
-            .spacing(12.0),
-        ))
-    });
 
     // Video with buffering overlay
     let video_layer = overlay(player, buffering_overlay);
@@ -79,10 +68,10 @@ fn main() -> impl View {
         // Bottom panel
         vstack((
             // Current video title
-            Text::display(title_signal)
-                .size(28.0)
+            text!("{title_signal}")
+                .title()
                 .bold()
-                .foreground(Color::from(Srgb::WHITE)),
+                .foreground(Srgb::WHITE),
             spacer_min(20.0),
             // Video selector pills
             hstack((
@@ -93,7 +82,7 @@ fn main() -> impl View {
             .spacing(12.0),
         ))
         .padding_with(EdgeInsets::new(60.0, 32.0, 32.0, 32.0))
-        .background(Color::from(Srgb::BLACK).with_opacity(0.6)),
+        .background(Srgb::BLACK.with_opacity(0.6)),
     ));
 
     // Stack everything
@@ -111,14 +100,14 @@ fn pill_button(label: &'static str, index: usize, selected: &Binding<usize>) -> 
 
     Dynamic::watch(is_selected, move |active| {
         let bg = if active {
-            Color::from(Srgb::WHITE).with_opacity(0.35)
+            Srgb::WHITE.with_opacity(0.35)
         } else {
-            Color::from(Srgb::WHITE).with_opacity(0.15)
+            Srgb::WHITE.with_opacity(0.15)
         };
 
-        let selected_clone = selected_for_action.clone();
-        button(text(label).foreground(Color::from(Srgb::WHITE)))
-            .action(move || selected_clone.set(index))
+        button(text(label).foreground(Srgb::WHITE))
+            .with_state(&selected_for_action)
+            .action(move |s| s.set(index))
             .background(bg)
     })
 }

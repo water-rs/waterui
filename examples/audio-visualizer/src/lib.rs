@@ -1,37 +1,91 @@
+//! Audio Visualizer Example - Real-time waveform visualization
+//!
+//! This example demonstrates:
+//! - `Waveform` component for real-time audio visualization
+//! - GPU-accelerated rendering using microphone input
+//! - Theme switching between cyber, recorder, and oscilloscope styles
+//! - Interactive sensitivity control
+//!
+//! The visualizer captures audio from the device microphone and renders
+//! a stylized waveform display with customizable visual effects.
+
+use waterui::app::App;
+use waterui::color::Srgb;
 use waterui::prelude::*;
+use waterui::reactive::binding;
 use waterui_visualizer::{Waveform, WaveformTheme};
 
-#[view]
-fn main_view() -> impl View {
-    VStack {
-        // Overlay Title and Controls
-        ZStack {
-            Waveform::new()
-                .theme(WaveformTheme::cyber())
-                .sensitivity(1.2)
-                .glow(0.8)
-                .expand()
+fn main() -> impl View {
+    // State for theme (directly as Binding<WaveformTheme>)
+    let theme = binding(WaveformTheme::cyber());
 
-            VStack {
-                Text::new("WaterUI Visualizer")
-                    .font_size(24.0)
-                    .color(Color::WHITE)
-                    .font_weight(FontWeight::Bold)
-                    .padding(20.0)
+    // State for theme index (for the label display)
+    let theme_index = Binding::usize(0);
 
-                Spacer()
-                
-                Text::new("Waveform Mode")
-                    .font_size(14.0)
-                    .color(Color::WHITE.with_alpha(0.5))
-                    .padding_bottom(20.0)
-            }
-        }
-    }
-    .background(Color::BLACK)
+    // State for sensitivity
+    let sensitivity = Binding::f64(1.2);
+
+    // Waveform visualizer with reactive bindings
+    let waveform = Waveform::new()
+        .theme(theme.clone())
+        .sensitivity(sensitivity.clone());
+
+    // Mode text from theme index
+    let mode_text = theme_index.clone().map(|idx| match idx {
+        0 => "Waveform Mode: Cyber",
+        1 => "Waveform Mode: Recorder",
+        2 => "Waveform Mode: Oscilloscope",
+        _ => "Waveform Mode",
+    });
+
+    // Controls overlay at bottom
+    let controls_overlay = vstack((
+        spacer(),
+        // Bottom control panel
+        vstack((
+            text("WaterUI Audio Visualizer").bold(),
+            spacer_min(16.0),
+            text("Theme"),
+            hstack((
+                button("Cyber")
+                    .with_state(&theme)
+                    .with_state(&theme_index)
+                    .action(|(t, i)| {
+                        t.set(WaveformTheme::cyber());
+                        i.set(0);
+                    }),
+                button("Recorder")
+                    .with_state(&theme)
+                    .with_state(&theme_index)
+                    .action(|(t, i)| {
+                        t.set(WaveformTheme::recorder());
+                        i.set(1);
+                    }),
+                button("Oscilloscope")
+                    .with_state(&theme)
+                    .with_state(&theme_index)
+                    .action(|(t, i)| {
+                        t.set(WaveformTheme::oscilloscope());
+                        i.set(2);
+                    }),
+            ))
+            .spacing(12.0),
+            spacer_min(16.0),
+            text("Sensitivity"),
+            Slider::new(0.5..=3.0, &sensitivity),
+            spacer_min(8.0),
+            text(mode_text),
+        ))
+        .padding_with(EdgeInsets::all(24.0))
+        .background(Srgb::BLACK.with_opacity(0.7)),
+    ));
+
+    // Stack waveform with controls overlay
+    zstack((waveform, controls_overlay)).ignore_safe_area(EdgeSet::ALL)
 }
 
-#[waterui::main]
-fn main() {
-    waterui::run(main_view)
+pub fn app(env: Environment) -> App {
+    App::new(main, env)
 }
+
+waterui_ffi::export!();

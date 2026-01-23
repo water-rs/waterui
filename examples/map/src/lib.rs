@@ -25,31 +25,23 @@ fn main_view() -> impl View {
         .shows_scale(true);
 
     let controls = vstack((
-        text("Map Example")
-            .font(font::Title)
-            .foreground(theme_color::Foreground),
+        text("Map Example").title(),
         hstack((
-            button("Zoom In").action({
-                let region = region.clone();
-                move || {
-                    let current = region.get();
-                    region.set(Region::new(
-                        current.center,
-                        current.latitude_delta * 0.5,
-                        current.longitude_delta * 0.5,
-                    ));
-                }
+            button("Zoom In").with_state(&region).action(|r| {
+                let current = r.get();
+                r.set(Region::new(
+                    current.center,
+                    current.latitude_delta * 0.5,
+                    current.longitude_delta * 0.5,
+                ));
             }),
-            button("Zoom Out").action({
-                let region = region.clone();
-                move || {
-                    let current = region.get();
-                    region.set(Region::new(
-                        current.center,
-                        current.latitude_delta * 2.0,
-                        current.longitude_delta * 2.0,
-                    ));
-                }
+            button("Zoom Out").with_state(&region).action(|r| {
+                let current = r.get();
+                r.set(Region::new(
+                    current.center,
+                    current.latitude_delta * 2.0,
+                    current.longitude_delta * 2.0,
+                ));
             }),
         ))
         .spacing(8.0),

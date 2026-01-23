@@ -51,7 +51,7 @@
 //! [`overlay`]: crate::prelude::overlay
 
 use waterui_core::{
-    handler::{BoxHandler, HandlerFn, into_handler},
+    handler::{BoxHandler, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -323,13 +323,10 @@ impl MetadataKey for GestureObserver {}
 
 impl GestureObserver {
     /// Creates a new gesture observer that executes the given action when the gesture is recognized.
-    pub fn new<P>(gesture: impl Into<Gesture>, action: impl HandlerFn<P, ()> + 'static) -> Self
-    where
-        P: 'static,
-    {
+    pub fn new(gesture: impl Into<Gesture>, action: impl FnMut() + 'static) -> Self {
         Self {
             gesture: gesture.into(),
-            action: Box::new(into_handler(action)),
+            action: boxed_action(action),
         }
     }
 }

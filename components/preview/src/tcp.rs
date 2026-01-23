@@ -16,7 +16,8 @@ use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use crate::protocol::{PreviewRequest, PreviewResponse};
 
 /// Starting port for preview daemon.
-const PORT_START: u16 = 2006;
+/// Keep this distinct from the hot reload port range (2006+).
+const PORT_START: u16 = 2106;
 /// Number of ports to try before giving up.
 const PORT_RANGE: u16 = 50;
 
@@ -139,6 +140,8 @@ async fn handle_connection(
 
     tracing::debug!("Received request: {request:?}");
 
+    let should_shutdown = matches!(request, PreviewRequest::Shutdown);
+
     // Handle request using the provided async handler
     let response = handler(request).await;
 
@@ -153,6 +156,11 @@ async fn handle_connection(
     stream.flush().await?;
 
     tracing::debug!("Sent response");
+
+    if should_shutdown {
+        tracing::info!("Shutdown requested, exiting preview app");
+        std::process::exit(0);
+    }
 
     Ok(())
 }

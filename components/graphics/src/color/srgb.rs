@@ -22,6 +22,10 @@ pub struct Srgb {
     /// Blue component (0.0 to 1.0)
     pub blue: f32,
 }
+/// Standard black color
+pub const BLACK: Srgb = Srgb::BLACK;
+/// Standard white color
+pub const WHITE: Srgb = Srgb::WHITE;
 
 impl Srgb {
     pub(crate) const RED: Self = Self::from_hex("#F44336");

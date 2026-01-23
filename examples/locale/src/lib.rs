@@ -22,7 +22,6 @@ use waterui::prelude::*;
 use waterui::reactive::{Computed, SignalExt};
 use waterui_locale::format::date::{DateStyle, SimpleDate, format_date};
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
-use waterui_locale::text;
 use waterui_locale::{Locale, LocalizedDisplay, locales};
 
 /// Available locales for the picker
@@ -45,19 +44,19 @@ fn available_locales() -> Vec<PickerItem<&'static str>> {
 /// Convert locale code to Locale
 fn locale_from_code(code: &str) -> Locale {
     match code {
-        "en" => locales::EN.clone(),
-        "en-US" => locales::EN_US.clone(),
-        "en-GB" => locales::EN_GB.clone(),
-        "zh" => locales::ZH_CN.clone(),
-        "zh-TW" => locales::ZH_TW.clone(),
-        "zh-HK" => locales::ZH_HK.clone(),
-        "ja" => locales::JA.clone(),
-        "ko" => locales::KO.clone(),
-        "de" => locales::DE.clone(),
-        "fr" => locales::FR.clone(),
-        "es" => locales::ES.clone(),
-        "ru" => locales::RU.clone(),
-        _ => locales::EN_US.clone(),
+        "en" => locales::EN,
+        "en-US" => locales::EN_US,
+        "en-GB" => locales::EN_GB,
+        "zh" => locales::ZH_CN,
+        "zh-TW" => locales::ZH_TW,
+        "zh-HK" => locales::ZH_HK,
+        "ja" => locales::JA,
+        "ko" => locales::KO,
+        "de" => locales::DE,
+        "fr" => locales::FR,
+        "es" => locales::ES,
+        "ru" => locales::RU,
+        _ => locales::EN_US,
     }
 }
 

@@ -675,6 +675,13 @@ pub fn spinner(message: impl Into<String>) -> Option<ProgressBar> {
     get().spinner(message)
 }
 
+/// Clear all progress bars and release resources.
+///
+/// Call this before exiting to ensure progress bars don't block exit.
+pub fn clear() {
+    get().multi_progress.clear().ok();
+}
+
 /// Check if running in an interactive terminal.
 pub fn is_interactive() -> bool {
     get().is_terminal() && !get().is_json()

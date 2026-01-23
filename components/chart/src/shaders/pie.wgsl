@@ -40,9 +40,6 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
 }
 
-const PI: f32 = 3.14159265359;
-const TAU: f32 = 6.28318530718;
-
 // Normalize angle to [0, TAU)
 fn normalize_angle(a: f32) -> f32 {
     var angle = a;
@@ -114,6 +111,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let outer_radius = 0.9;
     let inner_radius = uniforms.config.x * outer_radius;
 
+    // Anti-aliasing width in normalized units
+    let edge_width = min(uniforms.viewport.z, uniforms.viewport.w) * 1.5;
+
     // Hovered slice index
     let hovered_slice = i32(uniforms.pointer.w);
 
@@ -152,8 +152,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let angular_dist = min(angle_from_start, angle_to_end) * adjusted_dist;
             let combined_dist = max(radial_dist, -angular_dist);
 
-            // Anti-aliased coverage using fwidth
-            let aa = sdf_coverage(combined_dist);
+            // Anti-aliased coverage
+            let aa = sdf_fill(combined_dist, edge_width);
 
             if aa > 0.001 {
                 // Brighten hovered slice
@@ -182,8 +182,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Combined SDF
         let combined_dist = max(radial_dist, -angular_dist);
 
-        // Anti-aliased coverage using fwidth for resolution-independent AA
-        let aa = sdf_coverage(combined_dist);
+        // Anti-aliased coverage
+        let aa = sdf_fill(combined_dist, edge_width);
 
         if aa > 0.001 {
             let color = slice.color;

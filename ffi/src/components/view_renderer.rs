@@ -8,6 +8,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 use waterui_core::AnyView;
@@ -62,7 +63,8 @@ impl CustomViewRenderer for FFIViewRenderer {
         size: RenderSize,
     ) -> Pin<Box<dyn Future<Output = RenderResult> + 'static>> {
         let render_fn = self.render_fn;
-        let view_ptr = Box::into_raw(Box::new(view)).cast::<()>();
+        let view_ptr = Box::into_raw(Box::new(view));
+        let view_ptr_void = view_ptr.cast::<()>();
         let wui_size = WuiSize {
             width: size.width,
             height: size.height,
@@ -72,9 +74,18 @@ impl CustomViewRenderer for FFIViewRenderer {
             // Use a oneshot channel pattern for async callback
             let (tx, rx) = async_channel::bounded::<RenderResult>(1);
 
-            // Create callback that sends result through channel
-            let tx_box: Box<async_channel::Sender<RenderResult>> = Box::new(tx);
-            let callback_data = Box::into_raw(tx_box).cast::<()>();
+            struct CallbackData {
+                sender: async_channel::Sender<RenderResult>,
+                finished: AtomicBool,
+            }
+
+            // Create callback data that owns the sender.
+            // The view pointer is consumed by native (waterui_view_body) and must not be dropped here.
+            let callback_data = Box::new(CallbackData {
+                sender: tx,
+                finished: AtomicBool::new(false),
+            });
+            let callback_data = Box::into_raw(callback_data).cast::<()>();
 
             unsafe extern "C" fn render_trampoline(
                 data: *mut (),
@@ -83,7 +94,12 @@ impl CustomViewRenderer for FFIViewRenderer {
                 width: u32,
                 height: u32,
             ) {
-                let tx = unsafe { Box::from_raw(data.cast::<async_channel::Sender<RenderResult>>()) };
+                let data = unsafe { &*data.cast::<CallbackData>() };
+
+                // Ignore duplicate callbacks to avoid double-free.
+                if data.finished.swap(true, Ordering::AcqRel) {
+                    return;
+                }
 
                 // Copy the RGBA data (native owns the original buffer)
                 let rgba_data = if rgba_ptr.is_null() || rgba_len == 0 {
@@ -99,7 +115,7 @@ impl CustomViewRenderer for FFIViewRenderer {
                 };
 
                 // Send result (ignore error if receiver dropped)
-                let _ = tx.try_send(result);
+                let _ = data.sender.try_send(result);
             }
 
             let callback = ViewRenderCallback {
@@ -109,15 +125,22 @@ impl CustomViewRenderer for FFIViewRenderer {
 
             // Call native render function
             unsafe {
-                (render_fn)(view_ptr, wui_size, callback);
+                (render_fn)(view_ptr_void, wui_size, callback);
             }
 
             // Wait for result
-            rx.recv().await.unwrap_or_else(|_| RenderResult {
+            let result = rx.recv().await.unwrap_or_else(|_| RenderResult {
                 rgba_data: Vec::new(),
                 width: 0,
                 height: 0,
-            })
+            });
+
+            // Free callback data after the callback completes.
+            unsafe {
+                drop(Box::from_raw(callback_data.cast::<CallbackData>()));
+            }
+
+            result
         })
     }
 }

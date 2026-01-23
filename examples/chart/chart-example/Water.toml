@@ -1,6 +1,0 @@
-waterui_path = "../."
-
-[package]
-type = "playground"
-name = "chart-example"
-bundle_identifier = "com.example.chart_example"

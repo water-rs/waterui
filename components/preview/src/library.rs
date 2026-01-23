@@ -3,7 +3,8 @@
 //! Handles loading dylibs received from the daemon and resolving preview symbols.
 
 use std::ffi::CString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use waterui_core::AnyView;
 
@@ -11,6 +12,7 @@ use waterui_core::AnyView;
 #[derive(Debug)]
 pub struct PreviewLibrary {
     lib: libloading::Library,
+    temp_path: Option<PathBuf>,
 }
 
 impl PreviewLibrary {
@@ -23,7 +25,10 @@ impl PreviewLibrary {
     /// Returns an error if the library cannot be loaded.
     pub unsafe fn load(path: &Path) -> Result<Self, libloading::Error> {
         let lib = unsafe { libloading::Library::new(path)? };
-        Ok(Self { lib })
+        Ok(Self {
+            lib,
+            temp_path: None,
+        })
     }
 
     /// Load a library from bytes by writing to a temp file.
@@ -37,12 +42,19 @@ impl PreviewLibrary {
     pub unsafe fn load_from_bytes(data: &[u8]) -> Result<Self, LoadError> {
         use std::io::Write;
 
-        let path = std::env::temp_dir().join("waterui_preview.dylib");
+        let path = unique_temp_path();
 
         let mut file = std::fs::File::create(&path).map_err(LoadError::Io)?;
         file.write_all(data).map_err(LoadError::Io)?;
 
-        unsafe { Self::load(&path).map_err(LoadError::Library) }
+        #[cfg(target_os = "macos")]
+        codesign_dylib(&path)?;
+
+        let lib = unsafe { libloading::Library::new(&path).map_err(LoadError::Library)? };
+        Ok(Self {
+            lib,
+            temp_path: Some(path),
+        })
     }
 
     /// Check if the library has a symbol.
@@ -76,6 +88,47 @@ impl PreviewLibrary {
     }
 }
 
+impl Drop for PreviewLibrary {
+    fn drop(&mut self) {
+        if let Some(path) = self.temp_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unique_temp_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("waterui_preview_{pid}_{nanos}.dylib"))
+}
+
+#[cfg(target_os = "macos")]
+fn codesign_dylib(path: &Path) -> Result<(), LoadError> {
+    let output = std::process::Command::new("codesign")
+        .arg("--force")
+        .arg("--sign")
+        .arg("-")
+        .arg("--timestamp=none")
+        .arg(path)
+        .output()
+        .map_err(LoadError::Io)?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(LoadError::CodeSign(if stderr.is_empty() {
+            "codesign failed".to_string()
+        } else {
+            stderr
+        }))
+    }
+}
+
 /// Errors that can occur when loading a library.
 #[derive(Debug)]
 pub enum LoadError {
@@ -83,6 +136,8 @@ pub enum LoadError {
     Io(std::io::Error),
     /// Library loading error.
     Library(libloading::Error),
+    /// Codesign error on macOS.
+    CodeSign(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -90,6 +145,7 @@ impl std::fmt::Display for LoadError {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Library(e) => write!(f, "Library error: {e}"),
+            Self::CodeSign(e) => write!(f, "Codesign error: {e}"),
         }
     }
 }

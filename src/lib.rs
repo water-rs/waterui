@@ -44,11 +44,13 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     pub use super::env::Environment;
     pub use super::{
-        AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt, accessibility,
-        animation, app, color, component, cursor, drag_drop, entry, env, error, filter, form,
-        fullscreen, gesture, gradient, id, layout, locale, media, metadata, navigation, reactive,
-        shape, signal, style, task, text, webview, widget, window,
+        AnyView, AnimationExt, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
+        accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
+        filter, form, fullscreen, gesture, gradient, id, layout, locale, media, metadata,
+        navigation, reactive, shape, signal, style, task, text, webview, widget, window,
     };
+
+    pub use crate::include_markdown;
 
     // Filter extension trait for GPU filters
     pub use super::graphics::FilterViewExt;
@@ -122,7 +124,8 @@ pub(crate) mod view_ext;
 pub use nami as reactive;
 #[doc(inline)]
 pub use reactive::{Binding, Computed, Signal, signal};
-pub use reactive_ext::SignalExt;
+pub use nami::SignalExt;
+pub use reactive_ext::AnimationExt;
 
 /// Task management utilities and async support.
 pub mod task {
@@ -146,3 +149,23 @@ pub mod snackbar;
 pub mod window;
 
 pub use tracing as log;
+
+/// Internal helper macro for generating preview export symbols.
+///
+/// Symbol format: `waterui_preview_{crate_name}_{fn_name}`
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_preview {
+    ($fn_name:expr, $body:block) => {
+        $crate::pastey::paste! {
+            #[doc(hidden)]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
+                $body
+            }
+        }
+    };
+}
+
+#[doc(hidden)]
+pub use pastey;

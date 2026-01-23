@@ -137,6 +137,36 @@ pub trait ChartRenderer: GpuRenderer {
     }
 }
 
+fn unpad_normalized(value: f32, padding: f32) -> Option<f32> {
+    let denom = 1.0 - 2.0 * padding;
+    if denom <= 0.0 {
+        return None;
+    }
+    let unpadded = (value - padding) / denom;
+    if (0.0..=1.0).contains(&unpadded) {
+        Some(unpadded)
+    } else {
+        None
+    }
+}
+
+fn unpad_normalized_point(x: f32, y: f32, padding: f32) -> Option<(f32, f32)> {
+    let x = unpad_normalized(x, padding)?;
+    let y = unpad_normalized(y, padding)?;
+    Some((x, y))
+}
+
+fn chart_coords_from_viewport(
+    viewport: &ChartViewport,
+    point: Point,
+    padding: f32,
+) -> Option<(f32, f32)> {
+    let (norm_x, norm_y) = viewport.screen_to_normalized(point)?;
+    let x = unpad_normalized(norm_x, padding)?;
+    let y = unpad_normalized(norm_y, padding)?;
+    Some((x, y))
+}
+
 /// Base GPU utilities shared across chart renderers.
 pub mod base {
     extern crate alloc;
@@ -145,6 +175,101 @@ pub mod base {
     use alloc::string::String;
     use encase::{ShaderType, StorageBuffer, UniformBuffer};
     use waterui_graphics::{GpuContext, wgpu};
+
+    /// Max MSAA sample count for chart renderers.
+    pub const MSAA_MAX_SAMPLES: u32 = 4;
+
+    /// MSAA render target for resolving into the surface view.
+    #[derive(Debug)]
+    pub struct MsaaTarget {
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    }
+
+    impl MsaaTarget {
+        fn new(
+            device: &wgpu::Device,
+            format: wgpu::TextureFormat,
+            width: u32,
+            height: u32,
+            sample_count: u32,
+        ) -> Self {
+            let width = width.max(1);
+            let height = height.max(1);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("chart_msaa_target"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            Self { texture, view, width, height, format, sample_count }
+        }
+    }
+
+    /// Chooses an MSAA sample count for the given format.
+    #[must_use]
+    pub fn msaa_sample_count(format: wgpu::TextureFormat) -> u32 {
+        // HDR formats are not guaranteed to support MSAA on all backends.
+        if matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        ) {
+            return 1;
+        }
+        MSAA_MAX_SAMPLES
+    }
+
+    /// Returns the color attachment view and optional resolve target for MSAA.
+    #[must_use]
+    pub fn msaa_attachment<'a>(
+        target: &'a mut Option<MsaaTarget>,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        resolve: &'a wgpu::TextureView,
+    ) -> (&'a wgpu::TextureView, Option<&'a wgpu::TextureView>) {
+        let sample_count = msaa_sample_count(format);
+        if sample_count <= 1 {
+            return (resolve, None);
+        }
+
+        let needs_rebuild = target.as_ref().map_or(true, |msaa| {
+            msaa.width != width
+                || msaa.height != height
+                || msaa.format != format
+                || msaa.sample_count != sample_count
+        });
+        if needs_rebuild {
+            *target = Some(MsaaTarget::new(device, format, width, height, sample_count));
+        }
+
+        let view = &target.as_ref().expect("MSAA target missing").view;
+        (view, Some(resolve))
+    }
+
+    /// Multisample state for chart pipelines.
+    #[must_use]
+    pub fn multisample_state(format: wgpu::TextureFormat) -> wgpu::MultisampleState {
+        wgpu::MultisampleState {
+            count: msaa_sample_count(format),
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        }
+    }
 
     /// Common WGSL shader utilities (SDF, easing, color).
     /// Prepended to all chart shaders at compile time.

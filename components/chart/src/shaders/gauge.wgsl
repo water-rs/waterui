@@ -33,9 +33,6 @@ struct VertexOutput {
 
 // Note: Easing functions provided by common.wgsl (prepended at compile time)
 
-const PI: f32 = 3.14159265359;
-const TWO_PI: f32 = 6.28318530718;
-
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var out: VertexOutput;
@@ -81,13 +78,13 @@ fn angle_in_range(angle: f32, start: f32, end: f32) -> bool {
     // Handle the case where the arc crosses the -PI/PI boundary
     if s > e {
         if a < 0.0 {
-            a += TWO_PI;
+            a += TAU;
         }
         if e < 0.0 {
-            e += TWO_PI;
+            e += TAU;
         }
         if s < 0.0 {
-            s += TWO_PI;
+            s += TAU;
         }
     }
 
@@ -129,7 +126,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Normalize angle for range check
     var check_angle = angle;
     if check_angle < start_angle && start_angle > end_angle {
-        check_angle += TWO_PI;
+        check_angle += TAU;
     }
 
     var color = vec4<f32>(0.0);
@@ -169,10 +166,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 color = uniforms.background_color;
             }
 
-            // Anti-aliasing at edges
-            let edge_softness = 0.005;
-            let inner_aa = smoothstep(inner_radius - edge_softness, inner_radius + edge_softness, dist);
-            let outer_aa = smoothstep(outer_radius + edge_softness, outer_radius - edge_softness, dist);
+            // Anti-aliasing at arc edges using SDF + fwidth
+            let inner_aa = sdf_coverage(inner_radius - dist);
+            let outer_aa = sdf_coverage(dist - outer_radius);
             color.a *= inner_aa * outer_aa;
         }
     }
@@ -194,17 +190,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Check if within needle bounds
         let center_radius = inner_radius * 0.3;
         if along_needle > center_radius && along_needle < needle_length && perp_dist < needle_width * 0.5 {
-            // Needle body
-            let needle_aa = smoothstep(needle_width * 0.5, needle_width * 0.5 - 0.003, perp_dist);
-            let tip_fade = smoothstep(needle_length, needle_length - 0.02, along_needle);
-            let needle_alpha = needle_aa * tip_fade;
+            // Needle body with fwidth-based AA
+            let needle_aa = sdf_coverage(perp_dist - needle_width * 0.5);
+            let tip_aa = sdf_coverage(along_needle - needle_length);
+            let base_aa = sdf_coverage(center_radius - along_needle);
+            let needle_alpha = needle_aa * tip_aa * base_aa;
 
             color = mix(color, uniforms.needle_color, needle_alpha);
         }
 
         // Center cap
         if dist < center_radius {
-            let cap_aa = smoothstep(center_radius, center_radius - 0.005, dist);
+            let cap_aa = sdf_coverage(dist - center_radius);
             color = mix(color, uniforms.needle_color, cap_aa);
         }
     }

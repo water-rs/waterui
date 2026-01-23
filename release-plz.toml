@@ -49,10 +49,6 @@ name = "waterui-str"
 git_tag_name = "str-v{{ version }}"
 
 [[package]]
-name = "waterui-color"
-git_tag_name = "color-v{{ version }}"
-
-[[package]]
 name = "waterui-url"
 git_tag_name = "url-v{{ version }}"
 
