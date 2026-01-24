@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use nami::{Computed, impl_constant, signal::IntoComputed};
 use waterui_core::{
     AnyView, View,
-    handler::{SharedHandler, shared_action},
+    handler::{SharedAction, shared_action},
     layout::StretchAxis,
     raw_view,
 };
@@ -72,7 +72,7 @@ pub struct MenuItem {
     /// The label for the menu item.
     pub label: Text,
     /// The action to perform when the menu item is selected.
-    pub action: SharedHandler<()>,
+    pub action: SharedAction<()>,
 }
 
 impl_constant!(MenuItem);

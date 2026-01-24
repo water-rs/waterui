@@ -29,7 +29,7 @@ use nami::Computed;
 use nami::signal::IntoComputed;
 use waterui_core::{
     Environment,
-    handler::{BoxHandler, Handler, boxed_action},
+    handler::{BoxedAction, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -90,23 +90,14 @@ nami::impl_constant!(DragData);
 // Drop Handler with DragData extraction
 // ============================================================================
 
-/// A handler wrapper that extracts `DragData` from the environment and passes it to a closure.
-///
-/// This is used internally by `DropDestination` to provide the dropped data to the callback.
-struct DropHandler<F>(F);
-
-impl<F: FnMut(DragData) + 'static> Handler<()> for DropHandler<F> {
-    fn handle(&mut self, env: &Environment) {
+/// Creates a boxed handler that extracts `DragData` from the environment.
+fn boxed_drop_handler<F: FnMut(DragData) + 'static>(mut f: F) -> BoxedAction<()> {
+    Box::new(move |env: &Environment| {
         // Extract DragData from the environment (inserted by FFI layer)
         if let Some(data) = env.get::<DragData>() {
-            (self.0)(data.clone());
+            f(data.clone());
         }
-    }
-}
-
-/// Creates a boxed handler that extracts `DragData` from the environment.
-fn boxed_drop_handler<F: FnMut(DragData) + 'static>(f: F) -> BoxHandler<()> {
-    Box::new(DropHandler(f))
+    })
 }
 
 /// Metadata that makes a view draggable.
@@ -155,11 +146,11 @@ impl Draggable {
 pub struct DropDestination {
     /// Callback invoked when data is dropped onto this view.
     /// The handler receives `DragData` extracted from the environment.
-    pub on_drop: BoxHandler<()>,
+    pub on_drop: BoxedAction<()>,
     /// Optional callback when a drag enters the view bounds.
-    pub on_enter: Option<BoxHandler<()>>,
+    pub on_enter: Option<BoxedAction<()>>,
     /// Optional callback when a drag exits the view bounds.
-    pub on_exit: Option<BoxHandler<()>>,
+    pub on_exit: Option<BoxedAction<()>>,
 }
 
 impl fmt::Debug for DropDestination {

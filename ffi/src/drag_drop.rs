@@ -170,7 +170,7 @@ pub unsafe extern "C" fn waterui_call_drop_handler(
 
         // Get the handler and call it
         let drop_handler = &mut *(*dest).handler;
-        drop_handler.0.on_drop.handle(&env_with_data);
+        (drop_handler.0.on_drop)(&env_with_data);
     }
 }
 
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn waterui_call_drop_enter_handler(
         }
         let drop_handler = &mut *(*dest).handler;
         if let Some(ref mut on_enter) = drop_handler.0.on_enter {
-            on_enter.handle(&*env);
+            (on_enter)(&*env);
         }
     }
 }
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn waterui_call_drop_exit_handler(
         }
         let drop_handler = &mut *(*dest).handler;
         if let Some(ref mut on_exit) = drop_handler.0.on_exit {
-            on_exit.handle(&*env);
+            (on_exit)(&*env);
         }
     }
 }

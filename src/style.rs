@@ -233,7 +233,7 @@ impl Default for Anchor {
 /// view.scale_from(1.5, Anchor::TOP_LEFT)
 ///
 /// // Animate scale
-/// let factor = Binding::container(1.0_f32).with(Animation::spring(300.0, 15.0));
+/// let factor = Binding::container(1.0).with(Animation::spring(300.0, 15.0));
 /// view.scale(factor)
 /// ```
 #[derive(Debug)]
@@ -313,7 +313,7 @@ impl Scale {
 /// view.rotation_from(45.0, Anchor::TOP_LEFT)
 ///
 /// // Animate rotation
-/// let angle = Binding::container(0.0_f32).with(Animation::spring(300.0, 15.0));
+/// let angle = Binding::container(0.0).with(Animation::spring(300.0, 15.0));
 /// view.rotation(angle)
 /// ```
 #[derive(Debug)]
@@ -364,7 +364,7 @@ impl Rotation {
 /// view.offset(10.0, 20.0)
 ///
 /// // Animate offset
-/// let x = Binding::container(0.0_f32).with(Animation::spring(300.0, 15.0));
+/// let x = Binding::container(0.0).with(Animation::spring(300.0, 15.0));
 /// view.offset(x, 0.0)
 /// ```
 #[derive(Debug)]

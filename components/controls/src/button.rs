@@ -137,39 +137,23 @@
 //! ```
 
 use core::fmt::Debug;
+use core::future::Future;
+use core::marker::PhantomData;
+
+use alloc::boxed::Box;
+use executor_core::spawn_local;
+use waterui_core::extract::Extractor;
+use waterui_core::handler::BoxedAction;
+use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 
 // ============================================================================
 // Macros for reducing boilerplate
 // ============================================================================
 
-/// Generates a handler struct that implements `Handler<()>`.
-macro_rules! define_handler {
-    (
-        $(#[$attr:meta])*
-        $vis:vis struct $name:ident<$($gen:ident),+> {
-            $($field:ident: $field_ty:ty),* $(,)?
-        }
-        where [$($bounds:tt)*]
-        handle($self:ident, $env:ident) $body:block
-    ) => {
-        $(#[$attr])*
-        #[derive(Debug)]
-        $vis struct $name<$($gen),+> {
-            $($field: $field_ty,)*
-        }
-
-        impl<$($gen),+> Handler<()> for $name<$($gen),+>
-        where
-            $($bounds)*
-        {
-            fn handle(&mut $self, $env: &Environment) $body
-        }
-    };
-}
-
 /// Implements style convenience methods for a button builder type.
 macro_rules! impl_style_methods {
-    ($($gen:ident $(: $bound:path)?),*) => {
+    () => {
         /// Sets the button style to plain (no background or border).
         /// Suitable for low-emphasis actions or toolbar buttons.
         #[must_use]
@@ -206,6 +190,10 @@ macro_rules! impl_style_methods {
         }
     };
 }
+
+// ============================================================================
+// ButtonStyle
+// ============================================================================
 
 /// Visual style options for buttons.
 ///
@@ -250,95 +238,6 @@ pub enum ButtonStyle {
     BorderedProminent,
 }
 
-use alloc::boxed::Box;
-use core::marker::PhantomData;
-use executor_core::spawn_local;
-use waterui_core::extract::Extractor;
-use waterui_core::handler::{BoxHandler, Handler};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{Environment, Native, NativeView, impl_debug};
-
-use waterui_core::AnyView;
-use waterui_core::View;
-
-// ============================================================================
-// Handler implementations for different action patterns
-// ============================================================================
-
-define_handler! {
-    /// A handler that wraps a simple closure with no parameters.
-    ///
-    /// Used internally by [`Button::action`] when no state or extraction is needed.
-    pub struct SimpleHandler<F> {
-        action: F,
-    }
-    where [F: FnMut() + 'static]
-    handle(self, _env) {
-        (self.action)();
-    }
-}
-
-define_handler! {
-    /// A handler that captures state at creation time and passes it to the action.
-    ///
-    /// Used internally by [`ButtonBuilder::action`]. The state is cloned each time
-    /// the button is clicked.
-    pub struct StateHandler<F, S> {
-        action: F,
-        state: S,
-    }
-    where [F: FnMut(S) + 'static, S: Clone + 'static]
-    handle(self, _env) {
-        (self.action)(self.state.clone());
-    }
-}
-
-define_handler! {
-    /// A handler that extracts a value from the environment and passes it to the action.
-    ///
-    /// Used internally by [`ButtonExtractBuilder::action`]. The extraction happens
-    /// each time the button is clicked.
-    pub struct ExtractHandler<F, E> {
-        action: F,
-        _extract: PhantomData<E>,
-    }
-    where [F: FnMut(E) + 'static, E: Extractor]
-    handle(self, env) {
-        let extracted = E::extract(env).expect("failed to extract value from environment");
-        (self.action)(extracted);
-    }
-}
-
-define_handler! {
-    /// A handler that combines captured state with environment extraction.
-    ///
-    /// Used internally by [`ButtonStateExtractBuilder::action`]. State is cloned
-    /// and extraction happens each time the button is clicked.
-    pub struct StateExtractHandler<F, S, E> {
-        action: F,
-        state: S,
-        _extract: PhantomData<E>,
-    }
-    where [F: FnMut((S, E)) + 'static, S: Clone + 'static, E: Extractor]
-    handle(self, env) {
-        let extracted = E::extract(env).expect("failed to extract value from environment");
-        (self.action)((self.state.clone(), extracted));
-    }
-}
-
-define_handler! {
-    /// A handler that receives the full environment reference.
-    ///
-    /// Used internally for async patterns that need environment access.
-    pub struct EnvHandler<F> {
-        action: F,
-    }
-    where [F: FnMut(&Environment) + 'static]
-    handle(self, env) {
-        (self.action)(env);
-    }
-}
-
 // ============================================================================
 // Button configuration and view implementation
 // ============================================================================
@@ -357,7 +256,7 @@ pub struct ButtonConfig {
     /// The label displayed on the button.
     pub label: AnyView,
     /// The action to execute when the button is clicked.
-    pub action: BoxHandler<()>,
+    pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
 }
@@ -369,7 +268,7 @@ impl NativeView for ButtonConfig {}
 impl<Label, Action> View for Button<Label, Action>
 where
     Label: View,
-    Action: Handler<()>,
+    Action: FnMut(&Environment) + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         let config = self.config();
@@ -386,7 +285,7 @@ where
 }
 
 impl ViewConfiguration for ButtonConfig {
-    type View = Button<AnyView, BoxHandler<()>>;
+    type View = Button<AnyView, BoxedAction<()>>;
 
     fn render(self) -> Self::View {
         Button {
@@ -400,7 +299,7 @@ impl ViewConfiguration for ButtonConfig {
 impl<Label, Action> ConfigurableView for Button<Label, Action>
 where
     Label: View,
-    Action: Handler<()>,
+    Action: FnMut(&Environment) + 'static,
 {
     type Config = ButtonConfig;
 
@@ -427,14 +326,32 @@ where
 /// - [`extract`](Button::extract) - Extract from environment, then call action
 ///
 /// See the [module documentation](self) for detailed examples.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Button<Label, Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
 }
 
-impl<Label: View> Button<Label, ()> {
+impl<Label: Debug, Action> Debug for Button<Label, Action> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Button")
+            .field("label", &self.label)
+            .field("style", &self.style)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Label: Clone, Action: Clone> Clone for Button<Label, Action> {
+    fn clone(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            action: self.action.clone(),
+            style: self.style,
+        }
+    }
+}
+
+impl<Label: View> Button<Label, fn(&Environment)> {
     /// Creates a new button with the specified label.
     ///
     /// The button has no action by default. Use [`action`](Self::action),
@@ -453,7 +370,7 @@ impl<Label: View> Button<Label, ()> {
     pub const fn new(label: Label) -> Self {
         Self {
             label,
-            action: (),
+            action: noop,
             style: ButtonStyle::Automatic,
         }
     }
@@ -545,7 +462,7 @@ impl<Label: View, Action> Button<Label, Action> {
         self
     }
 
-    impl_style_methods!(Label: View, Action);
+    impl_style_methods!();
 
     /// Sets the action to be performed when the button is clicked.
     ///
@@ -565,13 +482,13 @@ impl<Label: View, Action> Button<Label, Action> {
     /// });
     /// ```
     #[must_use]
-    pub fn action<F>(self, action: F) -> Button<Label, SimpleHandler<F>>
+    pub fn action<F>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut() + 'static,
     {
         Button {
             label: self.label,
-            action: SimpleHandler { action },
+            action: move |_env: &Environment| action(),
             style: self.style,
         }
     }
@@ -593,17 +510,19 @@ impl<Label: View, Action> Button<Label, Action> {
     ///     process(data);
     /// });
     /// ```
-    pub fn action_async<F, Fut>(self, mut action: F) -> impl View
+    pub fn action_async<F, Fut>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut() -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         self.action(move || {
-            let fut = action();
-            spawn_local(fut).detach();
+            spawn_local(action()).detach();
         })
     }
 }
+
+/// No-op action for buttons without a configured action.
+fn noop(_env: &Environment) {}
 
 // ============================================================================
 // ButtonBuilder - for buttons with state
@@ -690,7 +609,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
         self
     }
 
-    impl_style_methods!(Label: View, S: Clone);
+    impl_style_methods!();
 
     /// Sets the action to be performed when the button is clicked.
     ///
@@ -709,16 +628,14 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
     ///     .action(|enabled| enabled.set(!enabled.get()));
     /// ```
     #[must_use]
-    pub fn action<F>(self, action: F) -> Button<Label, StateHandler<F, S>>
+    pub fn action<F>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut(S) + 'static,
     {
+        let state = self.state;
         Button {
             label: self.label,
-            action: StateHandler {
-                action,
-                state: self.state,
-            },
+            action: move |_env: &Environment| action(state.clone()),
             style: self.style,
         }
     }
@@ -738,7 +655,7 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
     ///         api::save(data.get()).await;
     ///     });
     /// ```
-    pub fn action_async<F, Fut>(self, mut action: F) -> impl View
+    pub fn action_async<F, Fut>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut(S) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -746,13 +663,11 @@ impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
         let state = self.state;
         Button {
             label: self.label,
-            action: (),
+            action: move |_env: &Environment| {
+                spawn_local(action(state.clone())).detach();
+            },
             style: self.style,
         }
-        .action(move || {
-            let fut = action(state.clone());
-            spawn_local(fut).detach();
-        })
     }
 }
 
@@ -824,7 +739,7 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
         self
     }
 
-    impl_style_methods!(Label: View, E: Extractor);
+    impl_style_methods!();
 
     /// Sets the action to be performed when the button is clicked.
     ///
@@ -835,15 +750,15 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
     ///
     /// * `action` - A closure that receives the extracted value
     #[must_use]
-    pub fn action<F>(self, action: F) -> Button<Label, ExtractHandler<F, E>>
+    pub fn action<F>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut(E) + 'static,
     {
         Button {
             label: self.label,
-            action: ExtractHandler {
-                action,
-                _extract: PhantomData,
+            action: move |env: &Environment| {
+                let extracted = E::extract(env).expect("failed to extract value from environment");
+                action(extracted);
             },
             style: self.style,
         }
@@ -854,23 +769,16 @@ impl<Label: View, E: Extractor> ButtonExtractBuilder<Label, E> {
     /// # Arguments
     ///
     /// * `action` - A closure that receives extracted value and returns a future
-    pub fn action_async<F, Fut>(
-        self,
-        mut action: F,
-    ) -> Button<Label, EnvHandler<impl FnMut(&Environment)>>
+    pub fn action_async<F, Fut>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut(E) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         Button {
             label: self.label,
-            action: EnvHandler {
-                action: move |env: &Environment| {
-                    let extracted =
-                        E::extract(env).expect("failed to extract value from environment");
-                    let fut = action(extracted);
-                    spawn_local(fut).detach();
-                },
+            action: move |env: &Environment| {
+                let extracted = E::extract(env).expect("failed to extract value from environment");
+                spawn_local(action(extracted)).detach();
             },
             style: self.style,
         }
@@ -941,7 +849,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
         self
     }
 
-    impl_style_methods!(Label: View, S: Clone, E: Extractor);
+    impl_style_methods!();
 
     /// Sets the action to be performed when the button is clicked.
     ///
@@ -952,16 +860,16 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
     ///
     /// * `action` - A closure that receives `(state, extracted)`
     #[must_use]
-    pub fn action<F>(self, action: F) -> Button<Label, StateExtractHandler<F, S, E>>
+    pub fn action<F>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut((S, E)) + 'static,
     {
+        let state = self.state;
         Button {
             label: self.label,
-            action: StateExtractHandler {
-                action,
-                state: self.state,
-                _extract: PhantomData,
+            action: move |env: &Environment| {
+                let extracted = E::extract(env).expect("failed to extract value from environment");
+                action((state.clone(), extracted));
             },
             style: self.style,
         }
@@ -972,10 +880,7 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
     /// # Arguments
     ///
     /// * `action` - A closure that receives `(state, extracted)` and returns a future
-    pub fn action_async<F, Fut>(
-        self,
-        mut action: F,
-    ) -> Button<Label, EnvHandler<impl FnMut(&Environment)>>
+    pub fn action_async<F, Fut>(self, mut action: F) -> Button<Label, impl FnMut(&Environment)>
     where
         F: FnMut((S, E)) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -983,13 +888,9 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
         let state = self.state;
         Button {
             label: self.label,
-            action: EnvHandler {
-                action: move |env: &Environment| {
-                    let extracted =
-                        E::extract(env).expect("failed to extract value from environment");
-                    let fut = action((state.clone(), extracted));
-                    spawn_local(fut).detach();
-                },
+            action: move |env: &Environment| {
+                let extracted = E::extract(env).expect("failed to extract value from environment");
+                spawn_local(action((state.clone(), extracted))).detach();
             },
             style: self.style,
         }
@@ -1015,6 +916,6 @@ impl<Label: View, S: Clone + 'static, E: Extractor> ButtonStateExtractBuilder<La
 ///
 /// button("Click me").action(|| println!("Clicked!"));
 /// ```
-pub const fn button<Label: View>(label: Label) -> Button<Label, ()> {
+pub const fn button<Label: View>(label: Label) -> Button<Label, fn(&Environment)> {
     Button::new(label)
 }
