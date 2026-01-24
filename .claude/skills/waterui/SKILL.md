@@ -37,7 +37,19 @@ fn card(title: &str) -> impl View {
 vstack((card("Hello"), card("World")))
 ```
 
-Conditional: `condition.then(|| view)` or `Option<impl View>`
+Conditional rendering:
+```rust
+// Show or hide (Option<impl View> is a View)
+is_new.map(|b| b.then(|| badge("New")))
+
+// Binary choice (if-else)
+when(is_logged_in, || dashboard()).otherwise(|| login_form())
+
+// Multi-branch (if-elif-else)
+when(state.equal_to(0), || "Loading")
+    .or(state.equal_to(1), || "Ready")
+    .otherwise(|| "Error")
+```
 
 ## State
 
@@ -107,6 +119,9 @@ zstack((background, content))
 scroll(content)
 spacer()                    // flexible space
 spacer().height(16.0)       // fixed space
+
+// From iterator - use .collect() for dynamic layouts
+let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
 ```
 
 ## Colors
@@ -171,11 +186,63 @@ let scale = active.select(1.2_f32, 1.0).with(Animation::spring(300.0, 15.0));
 // List rendering
 List::for_each(&items, |item| item_view(item))
 
+// Static layout from slice/array via FromIterator
+fn tab_buttons(tabs: &[Tab], selected: &Binding<Tab>) -> HStack<(Vec<AnyView>,)> {
+    tabs.iter()
+        .map(|&tab| button(tab.label()).with_state(selected).action(move |s| s.set(tab)))
+        .collect()
+}
+
+// Conditional views - prefer when().otherwise() over match
+when(is_dark, || dark_theme()).otherwise(|| light_theme())
+when(!is_loading, || content()).otherwise(|| spinner())
+
+// Multi-branch conditionals
+when(state.equal_to(0), || loading_view())
+    .or(state.equal_to(1), || ready_view())
+    .or(state.equal_to(2), || error_view())
+    .otherwise(|| unknown_view())
+
+// For many branches or complex matching, use match + .anyview()
+fn render(mode: Mode) -> AnyView {
+    match mode {
+        Mode::A => view_a().anyview(),
+        Mode::B => view_b().anyview(),
+        Mode::C => view_c().anyview(),
+    }
+}
+
 // Form from struct
 #[derive(FormBuilder)]
 struct Settings { name: String, volume: f64 }
 form(&settings_binding)
 ```
+
+## Extension Traits
+
+WaterUI uses `*Ext` traits. When unsure, search `trait.*Ext` in codebase.
+
+**SignalExt** (from nami, works on `Binding`/`Computed`):
+```rust
+// Core
+.map(|v| ...), .zip(&other), .computed(), .cached(), .distinct(), .with(metadata)
+
+// Bool → Signal<bool>
+.not(), .select(if_true, if_false), .then_some(value)
+
+// Comparison → Signal<bool>
+.equal_to(v), .gt(v), .lt(v), .ge(v), .le(v), .condition(|v| ...)
+
+// Option<T>
+.is_some(), .is_none(), .unwrap_or(default), .map_some(|v| ...)
+
+// String
+.is_empty(), .contains("pattern")
+```
+
+**ViewExt**: `.anyview()`, `.visible()`, `.padding()`, `.background()`, etc.
+
+**AnimationExt**: `.animated()`, `.with(Animation::spring(...))`
 
 ## Gotchas
 

@@ -12,87 +12,125 @@ use waterui_chart::{
     LineChart, PieChart, RadarChart, RadarData, RadarSeries, ScatterChart,
 };
 
+/// Chart types available in this demo.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+enum ChartMode {
+    // Basic charts
+    #[default]
+    Bar,
+    Line,
+    Pie,
+    Scatter,
+    // Financial charts
+    Candlestick,
+    Depth,
+    // Grid-based charts
+    Heatmap,
+    Contour,
+    // Multi-series charts
+    Radar,
+    Bubble,
+    Area,
+    // Single-value charts
+    Gauge,
+    // Stress tests (GPU performance demos)
+    StressScatter10K,
+    StressLine1K,
+    StressHeatmap10K,
+}
+
+impl ChartMode {
+    const BASIC: &[Self] = &[
+        Self::Bar,
+        Self::Line,
+        Self::Pie,
+        Self::Scatter,
+        Self::Candlestick,
+        Self::Depth,
+        Self::Heatmap,
+        Self::Contour,
+        Self::Radar,
+        Self::Bubble,
+        Self::Area,
+        Self::Gauge,
+    ];
+
+    const STRESS: &[Self] = &[Self::StressScatter10K, Self::StressLine1K, Self::StressHeatmap10K];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Bar => "Bar",
+            Self::Line => "Line",
+            Self::Pie => "Pie",
+            Self::Scatter => "Scatter",
+            Self::Candlestick => "Candle",
+            Self::Depth => "Depth",
+            Self::Heatmap => "Heatmap",
+            Self::Contour => "Contour",
+            Self::Radar => "Radar",
+            Self::Bubble => "Bubble",
+            Self::Area => "Area",
+            Self::Gauge => "Gauge",
+            Self::StressScatter10K => "10K Scatter",
+            Self::StressLine1K => "1K Line",
+            Self::StressHeatmap10K => "100x100 Heat",
+        }
+    }
+
+    fn render(self) -> AnyView {
+        match self {
+            Self::Bar => bar_chart_preview().anyview(),
+            Self::Line => line_chart_preview().anyview(),
+            Self::Pie => pie_chart_preview().anyview(),
+            Self::Scatter => scatter_chart_preview().anyview(),
+            Self::Candlestick => candlestick_chart_preview().anyview(),
+            Self::Depth => depth_chart_preview().anyview(),
+            Self::Heatmap => heatmap_chart_preview().anyview(),
+            Self::Contour => contour_chart_preview().anyview(),
+            Self::Radar => radar_chart_preview().anyview(),
+            Self::Bubble => bubble_chart_preview().anyview(),
+            Self::Area => area_chart_preview().anyview(),
+            Self::Gauge => gauge_chart_preview().anyview(),
+            Self::StressScatter10K => scatter_stress_preview().anyview(),
+            Self::StressLine1K => line_stress_preview().anyview(),
+            Self::StressHeatmap10K => heatmap_stress_preview().anyview(),
+        }
+    }
+}
+
+fn mode_buttons(modes: &[ChartMode], mode: &Binding<ChartMode>) -> HStack<(Vec<AnyView>,)> {
+    modes
+        .iter()
+        .map(|&target| {
+            button(target.label())
+                .with_state(mode)
+                .action(move |m: Binding<ChartMode>| m.set(target))
+        })
+        .collect()
+}
+
 /// Main View - demonstrates different chart types
 #[hot_reload]
 fn main() -> impl View {
-    let mode = binding(0_i32);
+    let mode = binding(ChartMode::default());
 
     zstack((
-        // Background
         Color::srgb_hex("#1a1a2e"),
-        // Content
         vstack((
             text("Charts Demo")
                 .title()
                 .bold()
                 .foreground(Srgb::WHITE),
-            // Mode selector buttons
-            // Chart type buttons
-            hstack((
-                Button::new(text("Bar"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(0)),
-                Button::new(text("Line"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(1)),
-                Button::new(text("Pie"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(2)),
-                Button::new(text("Scatter"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(3)),
-                Button::new(text("Candle"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(4)),
-                Button::new(text("Depth"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(5)),
-                Button::new(text("Heatmap"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(6)),
-                Button::new(text("Contour"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(10)),
-                Button::new(text("Radar"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(11)),
-                Button::new(text("Bubble"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(12)),
-                Button::new(text("Area"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(13)),
-                Button::new(text("Gauge"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(14)),
-            ))
-            .spacing(10.0),
+            mode_buttons(ChartMode::BASIC, &mode),
             // GPU stress test buttons (data loads that choke Swift Charts)
-            hstack((
-                Button::new(text("10K Scatter"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(7)),
-                Button::new(text("1K Line"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(8)),
-                Button::new(text("100x100 Heat"))
-                    .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(9)),
-            ))
-            .spacing(10.0),
+            mode_buttons(ChartMode::STRESS, &mode),
             spacer(),
-            // Chart display
-            watch(mode.clone(), |m| chart_view(m)),
+            watch(mode.clone(), ChartMode::render),
             spacer(),
         ))
         .padding_with(EdgeInsets::all(20.0)),
     ))
-}
-
-fn chart_view(mode: i32) -> AnyView {
-    match mode {
-        0 => AnyView::new(bar_chart_preview()),
-        1 => AnyView::new(line_chart_preview()),
-        2 => AnyView::new(pie_chart_preview()),
-        3 => AnyView::new(scatter_chart_preview()),
-        4 => AnyView::new(candlestick_chart_preview()),
-        5 => AnyView::new(depth_chart_preview()),
-        6 => AnyView::new(heatmap_chart_preview()),
-        7 => AnyView::new(scatter_stress_preview()),
-        8 => AnyView::new(line_stress_preview()),
-        9 => AnyView::new(heatmap_stress_preview()),
-        10 => AnyView::new(contour_chart_preview()),
-        11 => AnyView::new(radar_chart_preview()),
-        12 => AnyView::new(bubble_chart_preview()),
-        13 => AnyView::new(area_chart_preview()),
-        14 => AnyView::new(gauge_chart_preview()),
-        _ => AnyView::new(()),
-    }
 }
 
 #[preview]

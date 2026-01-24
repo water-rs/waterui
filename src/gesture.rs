@@ -51,7 +51,7 @@
 //! [`overlay`]: crate::prelude::overlay
 
 use waterui_core::{
-    handler::{BoxHandler, boxed_action},
+    handler::{BoxedAction, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -310,13 +310,20 @@ impl_gesture! {
 }
 
 /// Observes a gesture and executes an action when the gesture is recognized.
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct GestureObserver {
     /// The gesture to observe.
     pub gesture: Gesture,
     /// The action to execute when the gesture is recognized.
-    pub action: BoxHandler<()>,
+    pub action: BoxedAction<()>,
+}
+
+impl core::fmt::Debug for GestureObserver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GestureObserver")
+            .field("gesture", &self.gesture)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MetadataKey for GestureObserver {}
