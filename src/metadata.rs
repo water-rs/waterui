@@ -26,8 +26,8 @@ pub mod context_menu {
     ///
     /// text!("Right-click me")
     ///     .context_menu(vec![
-    ///         MenuItem::new("Copy", || println!("Copy")),
-    ///         MenuItem::new("Paste", || println!("Paste")),
+    ///         MenuItem::new("Copy").action(|| println!("Copy")),
+    ///         MenuItem::new("Paste").action(|| println!("Paste")),
     ///     ])
     /// ```
     #[derive(Debug)]
