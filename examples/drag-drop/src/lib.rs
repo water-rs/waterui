@@ -33,7 +33,7 @@ fn fruit_basket(
     // Scale up when hovering
     let hover_scale = is_hovering
         .clone()
-        .select(1.05 as f32, 1.0)
+        .select(1.05, 1.0)
         .with(Animation::spring(400.0, 15.0));
 
     // Bounce animation on drop
@@ -113,7 +113,7 @@ fn fruit_basket(
 fn main() -> impl View {
     let is_hovering = Binding::bool(false);
     let collected: Binding<Vec<String>> = Binding::container(Vec::new());
-    let bounce = Binding::container(1.0_f32);
+    let bounce = Binding::f32(1.0);
 
     scroll(
         vstack((

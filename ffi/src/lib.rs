@@ -1217,14 +1217,10 @@ ffi_metadata!(ClipShape, WuiMetadataClipShape, clip_shape);
 // Used to attach context menus to views
 
 use crate::components::text::WuiText;
-use core::cell::RefCell;
 use waterui::metadata::context_menu::{ContextMenu, MenuItem};
-use waterui_core::handler::{Handler, SharedHandler};
+use waterui_core::handler::SharedAction;
 
-/// Wrapper around SharedHandler that provides interior mutability for FFI.
-pub struct SharedActionWrapper(RefCell<SharedHandler<()>>);
-
-opaque!(WuiSharedAction, SharedActionWrapper, shared_action);
+opaque!(WuiSharedAction, SharedAction<()>, shared_action);
 
 /// Call a shared action with the given environment.
 ///
@@ -1237,25 +1233,7 @@ pub unsafe extern "C" fn waterui_call_shared_action(
     env: *const WuiEnv,
 ) {
     unsafe {
-        // WuiSharedAction wraps SharedActionWrapper which wraps RefCell<SharedHandler>
-        // Access: (*action).0 -> SharedActionWrapper, .0 -> RefCell<SharedHandler>
-        let wrapper = &(*action).0;
-        let shared = wrapper.0.borrow().clone();
-
-        // Use a wrapper struct that implements Handler and calls through to the Rc
-        struct SharedHandlerCaller(SharedHandler<()>);
-        impl Handler<()> for SharedHandlerCaller {
-            fn handle(&mut self, env: &waterui_core::Environment) {
-                // The shared handler's inner value is typically a closure that doesn't
-                // actually need mutation, so we can safely cast to get &mut
-                // This is safe because the underlying closures use Fn, not FnMut with state
-                let ptr = alloc::rc::Rc::as_ptr(&self.0) as *mut dyn Handler<()>;
-                unsafe { (*ptr).handle(env) };
-            }
-        }
-
-        let mut caller = SharedHandlerCaller(shared);
-        caller.handle(&*env);
+        (*action).0.call(&*env);
     }
 }
 
@@ -1273,10 +1251,9 @@ ffi_safe!(WuiMenuItem);
 impl IntoFFI for MenuItem {
     type FFI = WuiMenuItem;
     fn into_ffi(self) -> Self::FFI {
-        let wrapper = SharedActionWrapper(RefCell::new(self.action));
         WuiMenuItem {
             label: self.label.into_ffi(),
-            action: wrapper.into_ffi(),
+            action: self.action.into_ffi(),
         }
     }
 }

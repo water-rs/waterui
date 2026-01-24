@@ -5,7 +5,7 @@
 //! - [`OnEvent`] - Repeatable handlers for interaction events (hover enter/exit)
 
 use crate::{
-    handler::{BoxHandler, BoxHandlerOnce, boxed_action, boxed_action_once},
+    handler::{BoxedAction, BoxedActionOnce, boxed_action, boxed_action_once},
     metadata::MetadataKey,
 };
 
@@ -23,10 +23,9 @@ pub enum LifeCycle {
 ///
 /// This handler is consumed after being called once, suitable for lifecycle events
 /// that only fire once per view attachment.
-#[derive(Debug)]
 pub struct LifeCycleHook {
     lifecycle: LifeCycle,
-    handler: BoxHandlerOnce<()>,
+    handler: BoxedActionOnce<()>,
 }
 
 impl MetadataKey for LifeCycleHook {}
@@ -54,14 +53,22 @@ impl LifeCycleHook {
 
     /// Consumes the hook and returns the boxed handler.
     #[must_use]
-    pub fn into_handler(self) -> BoxHandlerOnce<()> {
+    pub fn into_handler(self) -> BoxedActionOnce<()> {
         self.handler
     }
 
     /// Handles the lifecycle event by invoking the stored handler.
     /// This consumes the hook since the handler is one-time.
     pub fn handle(self, env: &crate::Environment) {
-        self.handler.call_box(env);
+        (self.handler)(env);
+    }
+}
+
+impl core::fmt::Debug for LifeCycleHook {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LifeCycleHook")
+            .field("lifecycle", &self.lifecycle)
+            .finish_non_exhaustive()
     }
 }
 
@@ -79,10 +86,9 @@ pub enum Event {
 ///
 /// This handler can be called multiple times, suitable for events like
 /// hover enter/exit that may occur repeatedly during user interaction.
-#[derive(Debug)]
 pub struct OnEvent {
     event: Event,
-    handler: BoxHandler<()>,
+    handler: BoxedAction<()>,
 }
 
 impl MetadataKey for OnEvent {}
@@ -110,6 +116,14 @@ impl OnEvent {
 
     /// Handles the event by invoking the stored handler.
     pub fn handle(&mut self, env: &crate::Environment) {
-        self.handler.handle(env);
+        (self.handler)(env);
+    }
+}
+
+impl core::fmt::Debug for OnEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OnEvent")
+            .field("event", &self.event)
+            .finish_non_exhaustive()
     }
 }

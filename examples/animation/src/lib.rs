@@ -400,12 +400,12 @@ fn main() -> impl View {
     let combined_rotation = Binding::container(0.0);
 
     // State for other demo sections
-    let progress_value = Binding::container(0.3_f64);
-    let spring_value = Binding::container(0.2_f64);
-    let bar_scale = Binding::container(0.7_f32);
+    let progress_value = Binding::f64(0.3);
+    let spring_value = Binding::f64(0.2);
+    let bar_scale = Binding::f32(0.7);
     let toggle_state = Binding::bool(false);
     let staggered_expanded = Binding::bool(true);
-    let size_value = Binding::container(50.0_f64);
+    let size_value = Binding::f64(50.0);
 
     scroll(
         vstack((

@@ -1,14 +1,14 @@
 //! ParticleSystem View with ergonomic API.
 
 use crate::{
+    EmitterShape,
     config::{BlendMode, ParticleConfig},
     renderer::{ParticleRenderer, ResolvedParticleConfig},
-    EmitterShape,
 };
 use core::ops::Range;
 use waterui_core::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::{color::Color, GpuSurface};
+use waterui_graphics::{GpuSurface, color::Color};
 
 /// High-performance GPU particle system.
 ///
@@ -94,9 +94,9 @@ impl ParticleSystem {
 
     /// Set particle start and end colors.
     #[must_use]
-    pub fn color(mut self, start: Color, end: Color) -> Self {
-        self.config.particle.color_start = start;
-        self.config.particle.color_end = end;
+    pub fn color(mut self, start: impl Into<Color>, end: impl Into<Color>) -> Self {
+        self.config.particle.color_start = start.into();
+        self.config.particle.color_end = end.into();
         self
     }
 
