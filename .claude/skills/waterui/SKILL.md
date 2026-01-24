@@ -174,6 +174,28 @@ water preview my_view            # preview #[preview] function
 water run --logs debug           # with debug output
 ```
 
+## Preview System
+
+Use the `#[preview]` macro to enable instant view previews:
+
+```rust
+#[preview]
+fn my_card() -> impl View {
+    text!("Hello Preview!")
+}
+```
+
+**For visual verification, use the `waterui-preview` subagent** via the Task tool:
+
+```
+Task(subagent_type="waterui-preview", prompt="<function_name> --platform macos --path <crate_path>\nExpect: <visual description>")
+```
+
+The preview agent will:
+1. Run `water preview` to render the view
+2. Evaluate the result against expectations
+3. Report back with ✓ MATCHES or ✗ DIFFERS
+
 ## Common Patterns
 
 ```rust

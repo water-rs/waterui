@@ -22,8 +22,8 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use nami::{Computed, Signal, signal::IntoComputed};
-use waterui_core::{View, view::TupleViews};
+use nami::{Computed, Signal};
+use waterui_core::{IntoComputedF32, View, view::TupleViews};
 
 use crate::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -250,8 +250,8 @@ pub trait PositionExt: View + Sized {
     /// ```
     fn position(
         self,
-        x: impl IntoComputed<f32>,
-        y: impl IntoComputed<f32>,
+        x: impl IntoComputedF32,
+        y: impl IntoComputedF32,
     ) -> PositionedChild<Self> {
         self.position_anchor(UnitPoint::CENTER, x, y)
     }
@@ -266,15 +266,15 @@ pub trait PositionExt: View + Sized {
     fn position_anchor(
         self,
         anchor: UnitPoint,
-        x: impl IntoComputed<f32>,
-        y: impl IntoComputed<f32>,
+        x: impl IntoComputedF32,
+        y: impl IntoComputedF32,
     ) -> PositionedChild<Self> {
         PositionedChild {
             layout: PositionedLayout {
                 anchor,
                 target: PositionTarget::Absolute {
-                    x: x.into_computed(),
-                    y: y.into_computed(),
+                    x: x.into_computed_f32(),
+                    y: y.into_computed_f32(),
                 },
             },
             content: self,
@@ -309,8 +309,8 @@ pub trait PositionExt: View + Sized {
                 anchor,
                 target: PositionTarget::Fractional {
                     unit: position,
-                    offset_x: 0.0_f32.into_computed(),
-                    offset_y: 0.0_f32.into_computed(),
+                    offset_x: 0.0_f32.into_computed_f32(),
+                    offset_y: 0.0_f32.into_computed_f32(),
                 },
             },
             content: self,
@@ -335,16 +335,16 @@ pub trait PositionExt: View + Sized {
         self,
         anchor: UnitPoint,
         position: UnitPoint,
-        offset_x: impl IntoComputed<f32>,
-        offset_y: impl IntoComputed<f32>,
+        offset_x: impl IntoComputedF32,
+        offset_y: impl IntoComputedF32,
     ) -> PositionedChild<Self> {
         PositionedChild {
             layout: PositionedLayout {
                 anchor,
                 target: PositionTarget::Fractional {
                     unit: position,
-                    offset_x: offset_x.into_computed(),
-                    offset_y: offset_y.into_computed(),
+                    offset_x: offset_x.into_computed_f32(),
+                    offset_y: offset_y.into_computed_f32(),
                 },
             },
             content: self,
@@ -485,8 +485,8 @@ mod tests {
         let layout = PositionedLayout {
             anchor: UnitPoint::CENTER,
             target: PositionTarget::Absolute {
-                x: 100.0_f32.into_computed(),
-                y: 50.0_f32.into_computed(),
+                x: 100.0_f32.into_computed_f32(),
+                y: 50.0_f32.into_computed_f32(),
             },
         };
 
@@ -509,8 +509,8 @@ mod tests {
             anchor: UnitPoint::CENTER,
             target: PositionTarget::Fractional {
                 unit: UnitPoint::CENTER,
-                offset_x: 0.0_f32.into_computed(),
-                offset_y: 0.0_f32.into_computed(),
+                offset_x: 0.0_f32.into_computed_f32(),
+                offset_y: 0.0_f32.into_computed_f32(),
             },
         };
 
@@ -534,8 +534,8 @@ mod tests {
             anchor: UnitPoint::BOTTOM_TRAILING,
             target: PositionTarget::Fractional {
                 unit: UnitPoint::BOTTOM_TRAILING,
-                offset_x: (-16.0).into_computed(),
-                offset_y: (-16.0).into_computed(),
+                offset_x: (-16.0).into_computed_f32(),
+                offset_y: (-16.0).into_computed_f32(),
             },
         };
 
