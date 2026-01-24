@@ -415,9 +415,9 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
                     let #name_ident = ::waterui::reactive::__alloc::borrow::ToOwned::to_owned(#expr);
                 });
             } else {
-                // Auto-capture from scope, clone the value
+                // Auto-capture from scope, use ToOwned to handle both &T and T
                 captures.push(quote! {
-                    let #name_ident = ::core::clone::Clone::clone(&#name_ident);
+                    let #name_ident = ::waterui::reactive::__alloc::borrow::ToOwned::to_owned(#name_ident);
                 });
             }
         }
