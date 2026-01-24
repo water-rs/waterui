@@ -95,6 +95,84 @@ pub fn shared_action_with_env<T: 'static, F: FnMut(&Environment) -> T + 'static>
 }
 
 // ============================================================================
+// State Accumulation Macro
+// ============================================================================
+
+/// Implements the `with_state` chaining method for stateful builder types.
+///
+/// This macro generates an impl block that adds `.with_state()` to accumulate
+/// state as nested tuples: `S` becomes `(S, T)`.
+///
+/// Use this for builders that already have state (like `MyBuilder<S>` where S
+/// is the state type). For the initial state transition (from no-state to
+/// has-state), implement that manually on the non-generic builder type.
+///
+/// # Usage
+///
+/// ```ignore
+/// // A builder that accumulates state
+/// pub struct MyStatefulBuilder<State> {
+///     label: Label,
+///     state: State,
+/// }
+///
+/// // Generate with_state for chaining: S -> (S, T)
+/// impl_stateful_builder!(MyStatefulBuilder; state; label);
+///
+/// // Manually implement action methods
+/// impl<S: Clone + 'static> MyStatefulBuilder<S> {
+///     pub fn action(self, f: impl FnMut(S)) -> MyAction {
+///         let state = self.state;
+///         MyAction::new(move || f(state.clone()))
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_stateful_builder {
+    // No generic parameters before State
+    ($builder:ident; $state_field:ident; $($field:ident),* $(,)?) => {
+        impl<__S: Clone + 'static> $builder<__S> {
+            /// Adds another state value, accumulating as nested tuples.
+            #[must_use]
+            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<(__S, __T)> {
+                $builder {
+                    $($field: self.$field,)*
+                    $state_field: (self.$state_field, state.clone()),
+                }
+            }
+        }
+    };
+
+    // Single generic parameter before State
+    ($builder:ident < $g1:ident >; $state_field:ident; $($field:ident),* $(,)?) => {
+        impl<$g1, __S: Clone + 'static> $builder<$g1, __S> {
+            /// Adds another state value, accumulating as nested tuples.
+            #[must_use]
+            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<$g1, (__S, __T)> {
+                $builder {
+                    $($field: self.$field,)*
+                    $state_field: (self.$state_field, state.clone()),
+                }
+            }
+        }
+    };
+
+    // Two generic parameters before State
+    ($builder:ident < $g1:ident, $g2:ident >; $state_field:ident; $($field:ident),* $(,)?) => {
+        impl<$g1, $g2, __S: Clone + 'static> $builder<$g1, $g2, __S> {
+            /// Adds another state value, accumulating as nested tuples.
+            #[must_use]
+            pub fn with_state<__T: Clone + 'static>(self, state: &__T) -> $builder<$g1, $g2, (__S, __T)> {
+                $builder {
+                    $($field: self.$field,)*
+                    $state_field: (self.$state_field, state.clone()),
+                }
+            }
+        }
+    };
+}
+
+// ============================================================================
 // ViewBuilder
 // ============================================================================
 

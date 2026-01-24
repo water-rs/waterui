@@ -28,10 +28,11 @@ fn main(env: &Environment) -> impl View {
                     m.show(
                         Snackbar::new("Item moved to trash")
                             .icon(SystemIcon::TRASH)
-                            .action("Undo", || {
+                            .duration(Duration::from_secs(5))
+                            .action("Undo")
+                            .handler(|| {
                                 waterui::log::info!("Undo clicked!");
-                            })
-                            .duration(Duration::from_secs(5)),
+                            }),
                     );
                 }),
             button("Top Position").with_state(&manager).action(|m| {

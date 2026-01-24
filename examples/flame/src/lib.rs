@@ -3,7 +3,9 @@ use std::time::Instant;
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
 use waterui::prelude::*;
+use waterui::preview;
 
+#[preview]
 fn main() -> impl View {
     vstack((
         text("Cinematic HDR Flame (GpuSurface)").size(24),

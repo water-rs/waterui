@@ -3,10 +3,7 @@
 //! This example showcases:
 //! - `Menu` component - A button-like dropdown menu
 //! - `ContextMenu` modifier - Long-press context menus
-//! - Menu items with actions
-//!
-//! Note: MenuItem currently requires manual cloning for stateful actions.
-//! This is an API limitation - a future enhancement could add `MenuItem::action_with()`.
+//! - Menu items with `.with_state()` for clean state capture
 
 use waterui::app::App;
 use waterui::color::Srgb;
@@ -24,40 +21,33 @@ const WHITE: Srgb = Srgb::from_hex("#FFFFFF");
 
 /// Section demonstrating the Menu component
 fn menu_section(selected: &Binding<String>) -> impl View {
-    let selected_display = selected.clone();
-    let selected_for_menu = selected.clone();
     vstack((
         text("Menu Component").sub_headline(),
         text("Tap the menu button to see options")
             .body()
             .foreground(MutedForeground),
         spacer().height(12.0),
-        {
-            Menu::new(
-                hstack((
-                    text("Choose an Option"),
-                    text(" ▼").foreground(MutedForeground),
-                )),
-                vec![
-                    MenuItem::new("Option A", {
-                        let s = selected_for_menu.clone();
-                        move || s.set("Option A".to_string())
-                    }),
-                    MenuItem::new("Option B", {
-                        let s = selected_for_menu.clone();
-                        move || s.set("Option B".to_string())
-                    }),
-                    MenuItem::new("Option C", {
-                        let s = selected_for_menu.clone();
-                        move || s.set("Option C".to_string())
-                    }),
-                ],
-            )
-        },
+        Menu::new(
+            hstack((
+                text("Choose an Option"),
+                text(" ▼").foreground(MutedForeground),
+            )),
+            vec![
+                MenuItem::new("Option A")
+                    .with_state(selected)
+                    .action(|s| s.set("Option A".to_string())),
+                MenuItem::new("Option B")
+                    .with_state(selected)
+                    .action(|s| s.set("Option B".to_string())),
+                MenuItem::new("Option C")
+                    .with_state(selected)
+                    .action(|s| s.set("Option C".to_string())),
+            ],
+        ),
         spacer().height(12.0),
         hstack((
             text("Selected: ").caption().foreground(MutedForeground),
-            text!("{selected_display}").body(),
+            text!("{selected}").body(),
         )),
     ))
     .padding()
@@ -65,91 +55,72 @@ fn menu_section(selected: &Binding<String>) -> impl View {
 
 /// Section demonstrating the Menu with styled label
 fn styled_menu_section(action_log: &Binding<String>) -> impl View {
-    let action_display = action_log.clone();
-    let action_for_menu = action_log.clone();
     vstack((
         text("Styled Menu").sub_headline(),
         text("Menu with custom styled label")
             .body()
             .foreground(MutedForeground),
         spacer().height(12.0),
-        {
-            Menu::new(
-                hstack((
-                    text("Actions").bold().foreground(BLUE),
-                    spacer().width(8.0),
-                    text("▼").caption(),
-                ))
-                .padding_with(EdgeInsets::symmetric(8.0, 12.0))
-                .background(LIGHT_BLUE),
-                vec![
-                    MenuItem::new("Edit", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Edit action triggered".to_string())
-                    }),
-                    MenuItem::new("Duplicate", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Duplicate action triggered".to_string())
-                    }),
-                    MenuItem::new("Delete", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Delete action triggered".to_string())
-                    }),
-                ],
-            )
-        },
+        Menu::new(
+            hstack((
+                text("Actions").bold().foreground(BLUE),
+                spacer().width(8.0),
+                text("▼").caption(),
+            ))
+            .padding_with(EdgeInsets::symmetric(8.0, 12.0))
+            .background(LIGHT_BLUE),
+            vec![
+                MenuItem::new("Edit")
+                    .with_state(action_log)
+                    .action(|a| a.set("Edit action triggered".to_string())),
+                MenuItem::new("Duplicate")
+                    .with_state(action_log)
+                    .action(|a| a.set("Duplicate action triggered".to_string())),
+                MenuItem::new("Delete")
+                    .with_state(action_log)
+                    .action(|a| a.set("Delete action triggered".to_string())),
+            ],
+        ),
         spacer().height(12.0),
-        text!("{action_display}").font(font::Caption).foreground(MutedForeground),
+        text!("{action_log}").font(font::Caption).foreground(MutedForeground),
     ))
     .padding()
 }
 
 /// Section demonstrating the ContextMenu modifier
 fn context_menu_section(context_action: &Binding<String>) -> impl View {
-    let action_display = context_action.clone();
-    let action_for_menu = context_action.clone();
     vstack((
         text("Context Menu").sub_headline(),
         text("Long press the box below to see context menu")
             .body()
             .foreground(MutedForeground),
         spacer().height(12.0),
-        {
-            text("Long Press Me")
-                .padding_with(EdgeInsets::all(24.0))
-                .background(ORANGE_BG)
-                .foreground(ORANGE_FG)
-                .context_menu(vec![
-                    MenuItem::new("Copy", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Copied!".to_string())
-                    }),
-                    MenuItem::new("Cut", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Cut!".to_string())
-                    }),
-                    MenuItem::new("Paste", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Pasted!".to_string())
-                    }),
-                    MenuItem::new("Select All", {
-                        let a = action_for_menu.clone();
-                        move || a.set("Selected all!".to_string())
-                    }),
-                ])
-        },
+        text("Long Press Me")
+            .padding_with(EdgeInsets::all(24.0))
+            .background(ORANGE_BG)
+            .foreground(ORANGE_FG)
+            .context_menu(vec![
+                MenuItem::new("Copy")
+                    .with_state(context_action)
+                    .action(|a| a.set("Copied!".to_string())),
+                MenuItem::new("Cut")
+                    .with_state(context_action)
+                    .action(|a| a.set("Cut!".to_string())),
+                MenuItem::new("Paste")
+                    .with_state(context_action)
+                    .action(|a| a.set("Pasted!".to_string())),
+                MenuItem::new("Select All")
+                    .with_state(context_action)
+                    .action(|a| a.set("Selected all!".to_string())),
+            ]),
         spacer().height(12.0),
-        text!("{action_display}").font(font::Caption).foreground(MutedForeground),
+        text!("{context_action}").font(font::Caption).foreground(MutedForeground),
     ))
     .padding()
 }
 
 /// Section demonstrating context menu on different views
 fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
-    let action_display = view_action.clone();
-    let action_red = view_action.clone();
-    let action_green = view_action.clone();
-    let action_blue = view_action.clone();
     vstack((
         text("Context Menu on Views").sub_headline(),
         text("Long press any colored box")
@@ -157,59 +128,47 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
             .foreground(MutedForeground),
         spacer().height(12.0),
         hstack((
-            {
-                text("Red")
-                    .foreground(WHITE)
-                    .padding()
-                    .background(RED)
-                    .context_menu(vec![
-                        MenuItem::new("Red Action 1", {
-                            let a = action_red.clone();
-                            move || a.set("Red Action 1".to_string())
-                        }),
-                        MenuItem::new("Red Action 2", {
-                            let a = action_red.clone();
-                            move || a.set("Red Action 2".to_string())
-                        }),
-                    ])
-            },
+            text("Red")
+                .foreground(WHITE)
+                .padding()
+                .background(RED)
+                .context_menu(vec![
+                    MenuItem::new("Red Action 1")
+                        .with_state(view_action)
+                        .action(|a| a.set("Red Action 1".to_string())),
+                    MenuItem::new("Red Action 2")
+                        .with_state(view_action)
+                        .action(|a| a.set("Red Action 2".to_string())),
+                ]),
             spacer().width(12.0),
-            {
-                text("Green")
-                    .foreground(WHITE)
-                    .padding()
-                    .background(GREEN)
-                    .context_menu(vec![
-                        MenuItem::new("Green Action 1", {
-                            let a = action_green.clone();
-                            move || a.set("Green Action 1".to_string())
-                        }),
-                        MenuItem::new("Green Action 2", {
-                            let a = action_green.clone();
-                            move || a.set("Green Action 2".to_string())
-                        }),
-                    ])
-            },
+            text("Green")
+                .foreground(WHITE)
+                .padding()
+                .background(GREEN)
+                .context_menu(vec![
+                    MenuItem::new("Green Action 1")
+                        .with_state(view_action)
+                        .action(|a| a.set("Green Action 1".to_string())),
+                    MenuItem::new("Green Action 2")
+                        .with_state(view_action)
+                        .action(|a| a.set("Green Action 2".to_string())),
+                ]),
             spacer().width(12.0),
-            {
-                text("Blue")
-                    .foreground(WHITE)
-                    .padding()
-                    .background(BLUE)
-                    .context_menu(vec![
-                        MenuItem::new("Blue Action 1", {
-                            let a = action_blue.clone();
-                            move || a.set("Blue Action 1".to_string())
-                        }),
-                        MenuItem::new("Blue Action 2", {
-                            let a = action_blue.clone();
-                            move || a.set("Blue Action 2".to_string())
-                        }),
-                    ])
-            },
+            text("Blue")
+                .foreground(WHITE)
+                .padding()
+                .background(BLUE)
+                .context_menu(vec![
+                    MenuItem::new("Blue Action 1")
+                        .with_state(view_action)
+                        .action(|a| a.set("Blue Action 1".to_string())),
+                    MenuItem::new("Blue Action 2")
+                        .with_state(view_action)
+                        .action(|a| a.set("Blue Action 2".to_string())),
+                ]),
         )),
         spacer().height(12.0),
-        text!("{action_display}").font(font::Caption).foreground(MutedForeground),
+        text!("{view_action}").font(font::Caption).foreground(MutedForeground),
     ))
     .padding()
 }

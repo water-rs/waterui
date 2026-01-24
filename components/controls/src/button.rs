@@ -557,23 +557,10 @@ pub struct ButtonBuilder<Label, State> {
     style: ButtonStyle,
 }
 
-impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
-    /// Adds another state value to the builder.
-    ///
-    /// The state accumulates as nested tuples: `(previous, new)`.
-    ///
-    /// # Arguments
-    ///
-    /// * `state` - A reference to the value to capture (will be cloned)
-    #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ButtonBuilder<Label, (S, T)> {
-        ButtonBuilder {
-            label: self.label,
-            state: (self.state, state.clone()),
-            style: self.style,
-        }
-    }
+// Generate with_state for state chaining: S -> (S, T)
+waterui_core::impl_stateful_builder!(ButtonBuilder<Label>; state; label, style);
 
+impl<Label: View, S: Clone + 'static> ButtonBuilder<Label, S> {
     /// Adds environment extraction to the button.
     ///
     /// After calling this, the action will receive a tuple of `(state, extracted)`.
