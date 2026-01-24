@@ -53,7 +53,7 @@ view
 ### Animated Filters
 
 ```rust
-let blur_radius = Binding::container(0.0_f32);
+let blur_radius = Binding::f32(0.0);
 
 // Apply animation curve to the binding
 let animated_blur = blur_radius
