@@ -534,8 +534,8 @@ mod tests {
             anchor: UnitPoint::BOTTOM_TRAILING,
             target: PositionTarget::Fractional {
                 unit: UnitPoint::BOTTOM_TRAILING,
-                offset_x: (-16.0_f32).into_computed(),
-                offset_y: (-16.0_f32).into_computed(),
+                offset_x: (-16.0).into_computed(),
+                offset_y: (-16.0).into_computed(),
             },
         };
 
