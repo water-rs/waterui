@@ -156,7 +156,7 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
             )
             .opacity(
                 is_dragging_opacity
-                    .select(0.8 as f32, 1.0)
+                    .select(0.8, 1.0)
                     .with(Animation::default()),
             )
             .with_state(is_dragging)

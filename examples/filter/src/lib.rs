@@ -251,18 +251,18 @@ fn combined_section(
 #[hot_reload]
 fn main() -> impl View {
     // State for individual filter sections (using f64 for Slider compatibility)
-    let blur_radius = Binding::container(0.0_f64);
-    let brightness = Binding::container(0.0_f64);
-    let saturation = Binding::container(1.0_f64);
-    let contrast = Binding::container(1.0_f64);
-    let hue = Binding::container(0.0_f64);
-    let grayscale = Binding::container(0.0_f64);
-    let opacity = Binding::container(1.0_f64);
+    let blur_radius = Binding::f64(0.0);
+    let brightness = Binding::f64(0.0);
+    let saturation = Binding::f64(1.0);
+    let contrast = Binding::f64(1.0);
+    let hue = Binding::f64(0.0);
+    let grayscale = Binding::f64(0.0);
+    let opacity = Binding::f64(1.0);
 
     // State for combined filter section
-    let combined_blur = Binding::container(0.0_f64);
-    let combined_saturation = Binding::container(1.0_f64);
-    let combined_hue = Binding::container(0.0_f64);
+    let combined_blur = Binding::f64(0.0);
+    let combined_saturation = Binding::f64(1.0);
+    let combined_hue = Binding::f64(0.0);
 
     scroll(
         vstack((

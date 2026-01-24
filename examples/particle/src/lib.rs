@@ -6,8 +6,8 @@ use core::f32::consts::PI;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::*;
-use waterui::reactive::{Binding, binding};
-use waterui_particle::{ParticleSystem, ParticleShape};
+use waterui::reactive::{binding, Binding};
+use waterui_particle::{ParticleShape, ParticleSystem};
 
 // --- Demos ---
 
@@ -67,8 +67,8 @@ fn fog() -> impl View {
         // Large generic blobs
         .size(0.1..0.25)
         .color(
-             Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.1),
-             Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.0),
+            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.1),
+            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.0),
         )
         .gravity(0.0, -0.01)
         .wind(0.02, 0.0)
@@ -118,50 +118,95 @@ fn confetti_view() -> impl View {
     let size = 0.015..0.025; // Larger since they're thin rectangles now
     let shape = ParticleShape::Rect;
     let spin = -8.0..8.0; // Random tumbling speed (rad/s)
-    
+
     zstack((
         // Pink
         ParticleSystem::new(600)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
-            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.3)
-            .color(Color::from(Srgb::new(1.0, 0.5, 0.7)), Color::from(Srgb::new(1.0, 0.5, 0.7)).with_alpha(0.0))
+            .emit_from_rect(1.5, 0.1)
+            .at(0.5, -0.1)
+            .rate(30.0)
+            .life(5.0..8.0)
+            .speed(0.08..0.25)
+            .angle(PI * 0.4..PI * 0.6)
+            .size(size.clone())
+            .gravity(0.0, 0.06)
+            .turbulence(0.3)
+            .color(
+                Color::from(Srgb::new(1.0, 0.5, 0.7)),
+                Color::from(Srgb::new(1.0, 0.5, 0.7)).with_alpha(0.0),
+            )
             .shape(shape)
             .spin(spin.clone())
             .softness(0.4),
         // Mint Green
         ParticleSystem::new(600)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
-            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.35)
-            .color(Color::from(Srgb::new(0.5, 0.9, 0.7)), Color::from(Srgb::new(0.5, 0.9, 0.7)).with_alpha(0.0))
+            .emit_from_rect(1.5, 0.1)
+            .at(0.5, -0.1)
+            .rate(30.0)
+            .life(5.0..8.0)
+            .speed(0.08..0.25)
+            .angle(PI * 0.4..PI * 0.6)
+            .size(size.clone())
+            .gravity(0.0, 0.06)
+            .turbulence(0.35)
+            .color(
+                Color::from(Srgb::new(0.5, 0.9, 0.7)),
+                Color::from(Srgb::new(0.5, 0.9, 0.7)).with_alpha(0.0),
+            )
             .shape(shape)
             .spin(spin.clone())
             .softness(0.4),
         // Sky Blue
         ParticleSystem::new(600)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
-            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.4)
-            .color(Color::from(Srgb::new(0.5, 0.8, 1.0)), Color::from(Srgb::new(0.5, 0.8, 1.0)).with_alpha(0.0))
+            .emit_from_rect(1.5, 0.1)
+            .at(0.5, -0.1)
+            .rate(30.0)
+            .life(5.0..8.0)
+            .speed(0.08..0.25)
+            .angle(PI * 0.4..PI * 0.6)
+            .size(size.clone())
+            .gravity(0.0, 0.06)
+            .turbulence(0.4)
+            .color(
+                Srgb::new(0.5, 0.8, 1.0),
+                Srgb::new(0.5, 0.8, 1.0).with_alpha(0.0),
+            )
             .shape(shape)
             .spin(spin.clone())
             .softness(0.4),
         // Lavender
         ParticleSystem::new(600)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
-            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.45)
-            .color(Color::from(Srgb::new(0.8, 0.6, 1.0)), Color::from(Srgb::new(0.8, 0.6, 1.0)).with_alpha(0.0))
+            .emit_from_rect(1.5, 0.1)
+            .at(0.5, -0.1)
+            .rate(30.0)
+            .life(5.0..8.0)
+            .speed(0.08..0.25)
+            .angle(PI * 0.4..PI * 0.6)
+            .size(size.clone())
+            .gravity(0.0, 0.06)
+            .turbulence(0.45)
+            .color(
+                Srgb::new(0.8, 0.6, 1.0),
+                Srgb::new(0.8, 0.6, 1.0).with_alpha(0.0),
+            )
             .shape(shape)
             .spin(spin.clone())
             .softness(0.4),
         // Yellow
         ParticleSystem::new(600)
-            .emit_from_rect(1.5, 0.1).at(0.5, -0.1).rate(30.0)
-            .life(5.0..8.0).speed(0.08..0.25).angle(PI*0.4..PI*0.6)
-            .size(size.clone()).gravity(0.0, 0.06).turbulence(0.5)
-            .color(Color::from(Srgb::new(1.0, 0.9, 0.4)), Color::from(Srgb::new(1.0, 0.9, 0.4)).with_alpha(0.0))
+            .emit_from_rect(1.5, 0.1)
+            .at(0.5, -0.1)
+            .rate(30.0)
+            .life(5.0..8.0)
+            .speed(0.08..0.25)
+            .angle(PI * 0.4..PI * 0.6)
+            .size(size.clone())
+            .gravity(0.0, 0.06)
+            .turbulence(0.5)
+            .color(
+                Srgb::new(1.0, 0.9, 0.4),
+                Srgb::new(1.0, 0.9, 0.4).with_alpha(0.0),
+            )
             .shape(shape)
             .spin(spin.clone())
             .softness(0.4),
@@ -179,8 +224,8 @@ fn explosion() -> impl View {
         .angle(0.0..PI * 2.0)
         .size(0.003..0.008) // Tiny blocks
         .color(
-            Color::from(Srgb::new(1.0, 0.5, 0.0)).with_alpha(1.0), // Orange
-            Color::from(Srgb::new(0.2, 0.2, 0.2)).with_alpha(1.0), // Fade to dark grey solid
+            Srgb::new(1.0, 0.5, 0.0).with_alpha(1.0), // Orange
+            Srgb::new(0.2, 0.2, 0.2).with_alpha(1.0), // Fade to dark grey solid
         )
         .gravity(0.0, 3.0) // Heavy pieces fall
         .shape(ParticleShape::Rect) // Square blocks
@@ -201,7 +246,6 @@ fn main() -> impl View {
             5 => Color::srgb_hex("#F0F4F8"),       // Confetti (Light BG)
             _ => Color::from(Srgb::BLACK),
         }),
-
         // Particle System
         watch(mode.clone(), |m| match m {
             0 => AnyView::new(rain()),
@@ -213,30 +257,45 @@ fn main() -> impl View {
             6 => AnyView::new(explosion()),
             _ => AnyView::new(rain()),
         }),
-
         // UI Overlay
         vstack((
             watch(mode.clone(), |m| {
-                 let color = if m == 5 { Color::from(Srgb::BLACK) } else { Color::from(Srgb::WHITE) };
-                 text("GPU Particle System").size(24.0).bold().foreground(color)
+                let color = if m == 5 {
+                    Color::from(Srgb::BLACK)
+                } else {
+                    Color::from(Srgb::WHITE)
+                };
+                text("GPU Particle System")
+                    .size(24.0)
+                    .bold()
+                    .foreground(color)
             }),
-            
             vstack((
                 hstack((
-                    Button::new(text("Rain")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(0)),
-                    Button::new(text("Snow")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(1)),
-                    Button::new(text("Fog")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(2)),
-                )).spacing(10.0),
+                    Button::new(text("Rain"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(0)),
+                    Button::new(text("Snow"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(1)),
+                    Button::new(text("Fog"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(2)),
+                ))
+                .spacing(10.0),
                 hstack((
-                    Button::new(text("Flame")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(3)),
-                    Button::new(text("Firework")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(4)),
-                )).spacing(10.0),
+                    Button::new(text("Flame"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(3)),
+                    Button::new(text("Firework"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(4)),
+                ))
+                .spacing(10.0),
                 hstack((
-                     Button::new(text("Confetti")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(5)),
-                     Button::new(text("Explosion")).action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(6)),
-                )).spacing(10.0),
-            )).spacing(10.0),
-            
+                    Button::new(text("Confetti"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(5)),
+                    Button::new(text("Explosion"))
+                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(6)),
+                ))
+                .spacing(10.0),
+            ))
+            .spacing(10.0),
             spacer(),
         ))
         .padding_with(EdgeInsets::all(40.0)),

@@ -79,9 +79,9 @@ fn handle_webview_event(
 fn main(webview: WebView) -> impl View {
     let address: Binding<Str> = binding("https://waterui.dev");
     let status: Binding<Str> = binding("Idle");
-    let progress_value: Binding<f64> = binding(0.0);
+    let progress_value = Binding::f64(0.0);
     let js_result: Binding<Str> = binding("");
-    let allow_redirects: Binding<bool> = binding(false);
+    let allow_redirects = Binding::bool(false);
     let system_user_agent: Binding<Str> = binding("");
     let custom_user_agent: Binding<Str> = binding("");
 
@@ -177,11 +177,15 @@ fn main(webview: WebView) -> impl View {
             text("Back:")
                 .caption()
                 .foreground(theme_color::MutedForeground),
-            text!("{can_go_back}").body().foreground(theme_color::Foreground),
+            text!("{can_go_back}")
+                .body()
+                .foreground(theme_color::Foreground),
             text("Forward:")
                 .caption()
                 .foreground(theme_color::MutedForeground),
-            text!("{can_go_forward}").body().foreground(theme_color::Foreground),
+            text!("{can_go_forward}")
+                .body()
+                .foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
         progress(progress_value.clone()).label(
@@ -193,7 +197,9 @@ fn main(webview: WebView) -> impl View {
             text("JS Result:")
                 .caption()
                 .foreground(theme_color::MutedForeground),
-            text!("{js_result}").body().foreground(theme_color::Foreground),
+            text!("{js_result}")
+                .body()
+                .foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
     ))
