@@ -71,7 +71,7 @@ fn blur_section() -> impl View {
     vstack((
         text("Blur Filter").headline(),
         "Gaussian blur (radius: 3.0)",
-        Image::new(pixels, 200, 150).blur(3.0_f32),
+        Image::new(pixels, 200, 150).blur(3.0),
     ))
     .padding()
 }
@@ -83,7 +83,7 @@ fn brightness_section() -> impl View {
     vstack((
         text("Brightness Filter").headline(),
         "Increased brightness (+0.3)",
-        Image::new(pixels, 200, 150).brightness(0.3_f32),
+        Image::new(pixels, 200, 150).brightness(0.3),
     ))
     .padding()
 }
@@ -95,7 +95,7 @@ fn saturation_section() -> impl View {
     vstack((
         text("Saturation Filter").headline(),
         "Increased saturation (1.5x)",
-        Image::new(pixels, 200, 150).saturation(1.5_f32),
+        Image::new(pixels, 200, 150).saturation(1.5),
     ))
     .padding()
 }
@@ -107,7 +107,7 @@ fn grayscale_section() -> impl View {
     vstack((
         text("Grayscale Filter").headline(),
         "Full grayscale conversion",
-        Image::new(pixels, 200, 150).grayscale(1.0_f32),
+        Image::new(pixels, 200, 150).grayscale(1.0),
     ))
     .padding()
 }
@@ -119,7 +119,7 @@ fn sepia_section() -> impl View {
     vstack((
         text("Sepia Filter").headline(),
         "Vintage sepia tone",
-        Image::new(pixels, 200, 150).sepia(1.0_f32),
+        Image::new(pixels, 200, 150).sepia(1.0),
     ))
     .padding()
 }
@@ -143,7 +143,7 @@ fn hue_rotation_section() -> impl View {
     vstack((
         text("Hue Rotation").headline(),
         "Colors rotated 180 degrees",
-        Image::new(pixels, 200, 150).hue_rotation(180.0_f32),
+        Image::new(pixels, 200, 150).hue_rotation(180.0),
     ))
     .padding()
 }
@@ -155,7 +155,7 @@ fn vignette_section() -> impl View {
     vstack((
         text("Vignette Filter").headline(),
         "Darkened corners",
-        Image::new(pixels, 200, 150).vignette(0.5_f32, 0.5_f32),
+        Image::new(pixels, 200, 150).vignette(0.5, 0.5),
     ))
     .padding()
 }
@@ -168,9 +168,9 @@ fn combined_filters_section() -> impl View {
         text("Combined Filters").headline(),
         "Blur + Saturation + Vignette",
         Image::new(pixels, 200, 150)
-            .blur(2.0_f32)
-            .saturation(1.3_f32)
-            .vignette(0.6_f32, 0.4_f32),
+            .blur(2.0)
+            .saturation(1.3)
+            .vignette(0.6, 0.4),
     ))
     .padding()
 }
@@ -181,7 +181,7 @@ fn photo_section() -> impl View {
         text("Photo from URL").headline(),
         "Async loading with blur filter",
         Photo::new("https://picsum.photos/200/150")
-            .blur(2.0_f32),
+            .blur(2.0),
     ))
     .padding()
 }
@@ -192,9 +192,9 @@ fn photo_vintage_section() -> impl View {
         text("Photo - Vintage Style").headline(),
         "Sepia + Vignette + Contrast",
         Photo::new("https://picsum.photos/200/151")
-            .sepia(0.7_f32)
-            .contrast(1.2_f32)
-            .vignette(0.5_f32, 0.5_f32),
+            .sepia(0.7)
+            .contrast(1.2)
+            .vignette(0.5, 0.5),
     ))
     .padding()
 }

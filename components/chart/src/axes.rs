@@ -204,7 +204,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
                 text(label)
                     .size(12.0)
                     .bold()
-                    .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0_f32, 2.0_f32),
+                    .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0, 2.0),
             ));
         }
 
@@ -214,7 +214,7 @@ impl<C: View + 'static> View for ChartAxes<C> {
                 text(label)
                     .size(12.0)
                     .bold()
-                    .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0_f32, -2.0_f32),
+                    .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -2.0),
             ));
         }
 
@@ -617,7 +617,7 @@ where
                     text(label.clone())
                         .size(12.0)
                         .bold()
-                        .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0_f32, 2.0_f32),
+                        .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0, 2.0),
                 ));
             }
 
@@ -627,7 +627,7 @@ where
                     text(label.clone())
                         .size(12.0)
                         .bold()
-                        .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0_f32, -2.0_f32),
+                        .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -2.0),
                 ));
             }
 
