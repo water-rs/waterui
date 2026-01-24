@@ -1,10 +1,10 @@
 use alloc::boxed::Box;
-use waterui_core::handler::BoxHandler;
+use waterui_core::handler::BoxedAction;
 use waterui_core::Environment;
 
 use crate::{IntoFFI, WuiEnv};
 
-opaque!(WuiAction, BoxHandler<()>, action);
+opaque!(WuiAction, BoxedAction<()>, action);
 
 /// Calls an action with the given environment.
 ///
@@ -15,7 +15,7 @@ opaque!(WuiAction, BoxHandler<()>, action);
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_call_action(action: *mut WuiAction, env: *const WuiEnv) {
     unsafe {
-        (*action).handle(&*env);
+        ((*action).0)(&*env);
     }
 }
 

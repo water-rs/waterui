@@ -309,7 +309,7 @@ fn build_signal_map(idents: &[Ident], body: TokenStream2) -> TokenStream2 {
 }
 
 fn build_format_signal(format_str: &LitStr, idents: &[Ident]) -> TokenStream2 {
-    let body = quote! { ::waterui::reactive::__format!(#format_str) };
+    let body = quote! { ::waterui::reactive::__alloc::format!(#format_str) };
     build_signal_map(idents, body)
 }
 
@@ -410,10 +410,12 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
             let name_ident = Ident::new(name, proc_macro2::Span::call_site());
 
             if let Some(expr) = binding_map.get(name) {
+                // Clone the expression to get an owned value (works for both &T and T)
                 captures.push(quote! {
-                    let #name_ident = #expr;
+                    let #name_ident = ::waterui::reactive::__alloc::borrow::ToOwned::to_owned(#expr);
                 });
             } else {
+                // Auto-capture from scope, clone the value
                 captures.push(quote! {
                     let #name_ident = ::core::clone::Clone::clone(&#name_ident);
                 });
@@ -525,7 +527,7 @@ fn generate_translation_arm(
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
                     ::waterui::locale::PluralCategory::Zero => {
-                        ::waterui::reactive::__format!(#format_lit)
+                        ::waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -534,7 +536,7 @@ fn generate_translation_arm(
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
                     ::waterui::locale::PluralCategory::One => {
-                        ::waterui::reactive::__format!(#format_lit)
+                        ::waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -543,7 +545,7 @@ fn generate_translation_arm(
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
                     ::waterui::locale::PluralCategory::Two => {
-                        ::waterui::reactive::__format!(#format_lit)
+                        ::waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -552,7 +554,7 @@ fn generate_translation_arm(
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
                     ::waterui::locale::PluralCategory::Few => {
-                        ::waterui::reactive::__format!(#format_lit)
+                        ::waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -561,7 +563,7 @@ fn generate_translation_arm(
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
                     ::waterui::locale::PluralCategory::Many => {
-                        ::waterui::reactive::__format!(#format_lit)
+                        ::waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -573,7 +575,7 @@ fn generate_translation_arm(
                 let category = ::waterui::locale::select_plural(&#locale_ident, #plural_ident);
                 match category {
                     #(#category_arms)*
-                    _ => ::waterui::reactive::__format!(#other_format_lit),
+                    _ => ::waterui::reactive::__alloc::format!(#other_format_lit),
                 }
             };
             let content = build_signal_map(all_idents, body);

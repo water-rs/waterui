@@ -39,7 +39,7 @@ use executor_core::spawn_local;
 use nami::Binding;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::handler::{BoxHandler, Handler, boxed_action};
+use waterui_core::handler::{SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, AnimationExt, View};
 use waterui_icon::SystemIcon;
@@ -99,7 +99,7 @@ pub struct SnackbarAction {
     /// The action button label.
     pub label: Str,
     /// The callback when action is pressed.
-    handler: BoxHandler<()>,
+    handler: SharedAction<()>,
 }
 
 impl core::fmt::Debug for SnackbarAction {
@@ -176,7 +176,7 @@ impl Snackbar {
     pub fn action(mut self, label: impl Into<Str>, handler: impl FnMut() + 'static) -> Self {
         self.action = Some(SnackbarAction {
             label: label.into(),
-            handler: boxed_action(handler),
+            handler: shared_action(handler),
         });
         self
     }
@@ -341,7 +341,7 @@ impl SnackbarManager {
         let content = self.build_content(snackbar, manager);
 
         // Animation bindings
-        let opacity = Binding::container(0.0_f32);
+        let opacity = Binding::f32(0.0);
         let offset_y = Binding::container(position.initial_offset_y());
 
         let opacity_clone = opacity.clone();
@@ -355,7 +355,7 @@ impl SnackbarManager {
                 .clip(RoundedRectangle::new(0.1))
                 .shadow(Shadow::default())
                 .opacity(opacity.animated())
-                .offset(0.0_f32, offset_y.animated()),
+                .offset(0.0, offset_y.animated()),
         )
         .alignment(position.to_alignment())
         .padding_with(EdgeInsets::all(16.0)) // Safe area inset
@@ -386,7 +386,7 @@ impl SnackbarManager {
                         .style(ButtonStyle::Borderless)
                         .action(move || {
                             // Execute action handler
-                            action.handler.handle(&waterui_core::Environment::default());
+                            action.handler.call(&waterui_core::Environment::default());
                             // Dismiss snackbar
                             manager.dismiss();
                         }),
