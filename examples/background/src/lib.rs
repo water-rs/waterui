@@ -22,14 +22,8 @@ fn hover_events_section(hover_count: &Binding<i32>, is_hovered: &Binding<bool>) 
     vstack((
         text("Hover Events").headline(),
         "Move your pointer in and out of the box",
-        hstack((
-            "Hover events: ",
-            text!("Count: {c}", c = hover_count),
-        )),
-        hstack((
-            "Currently hovered: ",
-            text!("Status: {h}", h = is_hovered),
-        )),
+        hstack(("Hover events: ", text!("Count: {hover_count}"))),
+        hstack(("Currently hovered: ", text!("Status: {is_hovered}"))),
         text("Hover Me!")
             .padding()
             .width(200.0)

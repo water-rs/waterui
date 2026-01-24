@@ -30,8 +30,10 @@ use nami::signal::IntoComputed;
 use waterui_core::{
     Environment,
     handler::{BoxedAction, boxed_action},
-    metadata::MetadataKey,
+    metadata::{Metadata, MetadataKey},
 };
+
+use crate::reactive::Binding;
 
 /// Data that can be transferred via drag and drop.
 ///
@@ -190,6 +192,92 @@ impl DropDestination {
     #[must_use]
     pub fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
         self.on_exit = Some(boxed_action(handler));
+        self
+    }
+}
+
+// ============================================================================
+// Drop Destination Extension
+// ============================================================================
+
+/// Extension trait for `Metadata<DropDestination>` to easily bind hover state.
+pub trait DropDestinationExt {
+    /// Binds the drag hover state to a `Binding<bool>`.
+    ///
+    /// This is a convenience method that automatically sets the binding to `true`
+    /// when a drag enters the view and `false` when it exits.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let is_hovering = Binding::bool(false);
+    ///
+    /// view
+    ///     .drop_destination()
+    ///     .on_drop_simple(|data| handle_drop(data))
+    ///     .drop_hover(&is_hovering)
+    /// ```
+    #[must_use]
+    fn drop_hover(self, is_hovering: &Binding<bool>) -> Self;
+
+    /// Adds a callback for when a drag enters the view bounds.
+    ///
+    /// This chains with any existing `on_enter` handler, executing both.
+    #[must_use]
+    fn on_enter(self, handler: impl FnMut() + 'static) -> Self;
+
+    /// Adds a callback for when a drag exits the view bounds.
+    ///
+    /// This chains with any existing `on_exit` handler, executing both.
+    #[must_use]
+    fn on_exit(self, handler: impl FnMut() + 'static) -> Self;
+}
+
+impl DropDestinationExt for Metadata<DropDestination> {
+    fn drop_hover(mut self, is_hovering: &Binding<bool>) -> Self {
+        let enter = is_hovering.clone();
+        let exit = is_hovering.clone();
+
+        // Chain with existing handlers if present
+        let mut prev_enter = self.value.on_enter.take();
+        let mut prev_exit = self.value.on_exit.take();
+
+        self.value.on_enter = Some(Box::new(move |env| {
+            if let Some(ref mut prev) = prev_enter {
+                prev(env);
+            }
+            enter.set(true);
+        }));
+
+        self.value.on_exit = Some(Box::new(move |env| {
+            if let Some(ref mut prev) = prev_exit {
+                prev(env);
+            }
+            exit.set(false);
+        }));
+
+        self
+    }
+
+    fn on_enter(mut self, mut handler: impl FnMut() + 'static) -> Self {
+        let mut prev = self.value.on_enter.take();
+        self.value.on_enter = Some(Box::new(move |env| {
+            if let Some(ref mut prev) = prev {
+                prev(env);
+            }
+            handler();
+        }));
+        self
+    }
+
+    fn on_exit(mut self, mut handler: impl FnMut() + 'static) -> Self {
+        let mut prev = self.value.on_exit.take();
+        self.value.on_exit = Some(Box::new(move |env| {
+            if let Some(ref mut prev) = prev {
+                prev(env);
+            }
+            handler();
+        }));
         self
     }
 }

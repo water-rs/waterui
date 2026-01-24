@@ -25,9 +25,9 @@ use waterui_text::Text;
 /// Menu::new(
 ///     text!("Options"),
 ///     [
-///         MenuItem::new("Copy", || println!("Copy")),
-///         MenuItem::new("Paste", || println!("Paste")),
-///         MenuItem::new("Delete", || println!("Delete")),
+///         MenuItem::new("Copy").action(|| println!("Copy")),
+///         MenuItem::new("Paste").action(|| println!("Paste")),
+///         MenuItem::new("Delete").action(|| println!("Delete")),
 ///     ],
 /// )
 /// ```
@@ -78,11 +78,73 @@ pub struct MenuItem {
 impl_constant!(MenuItem);
 
 impl MenuItem {
-    /// Creates a new menu item with the given label and action.
-    pub fn new(label: impl Into<Text>, action: impl FnMut() + 'static) -> Self {
-        Self {
-            label: label.into(),
+    /// Creates a menu item builder with the given label.
+    ///
+    /// Use `.action()` to set the handler, or `.with_state()` to capture state first.
+    ///
+    /// # Examples
+    ///
+    /// Simple action:
+    /// ```rust,ignore
+    /// MenuItem::new("Copy").action(|| clipboard.copy())
+    /// ```
+    ///
+    /// With state:
+    /// ```rust,ignore
+    /// MenuItem::new("Paste")
+    ///     .with_state(&clipboard)
+    ///     .action(|cb| cb.paste())
+    /// ```
+    #[must_use]
+    pub fn new(label: impl Into<Text>) -> MenuItemBuilder {
+        MenuItemBuilder { label: label.into() }
+    }
+}
+
+/// Builder for creating menu items with captured state.
+#[derive(Debug, Clone)]
+pub struct MenuItemBuilder {
+    label: Text,
+}
+
+impl MenuItemBuilder {
+    /// Sets the action for this menu item (no state).
+    #[must_use]
+    pub fn action(self, action: impl FnMut() + 'static) -> MenuItem {
+        MenuItem {
+            label: self.label,
             action: shared_action(action),
+        }
+    }
+
+    /// Adds state to capture for the action.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> MenuItemStatefulBuilder<T> {
+        MenuItemStatefulBuilder {
+            label: self.label,
+            state: state.clone(),
+        }
+    }
+}
+
+/// Builder for menu items with captured state.
+#[derive(Debug, Clone)]
+pub struct MenuItemStatefulBuilder<State> {
+    label: Text,
+    state: State,
+}
+
+// Generate with_state for state chaining: S -> (S, T)
+waterui_core::impl_stateful_builder!(MenuItemStatefulBuilder; state; label);
+
+impl<S: Clone + 'static> MenuItemStatefulBuilder<S> {
+    /// Sets the action for this menu item with captured state.
+    #[must_use]
+    pub fn action(self, mut action: impl FnMut(S) + 'static) -> MenuItem {
+        let state = self.state;
+        MenuItem {
+            label: self.label,
+            action: shared_action(move || action(state.clone())),
         }
     }
 }

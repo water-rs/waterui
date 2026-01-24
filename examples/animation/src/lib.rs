@@ -196,15 +196,9 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
 /// Demo: Animation curves comparison using visual bars
 fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
     // Same value animated with different curves - visually compare timing
-    let linear_scale = bar_scale
-        .clone()
-        .with(Animation::linear(Duration::from_millis(1000)));
-    let ease_in_scale = bar_scale
-        .clone()
-        .with(Animation::ease_in(Duration::from_millis(1000)));
-    let ease_out_scale = bar_scale
-        .clone()
-        .with(Animation::ease_out(Duration::from_millis(1000)));
+    let linear_scale = bar_scale.with(Animation::linear(Duration::from_millis(1000)));
+    let ease_in_scale = bar_scale.with(Animation::ease_in(Duration::from_millis(1000)));
+    let ease_out_scale = bar_scale.with(Animation::ease_out(Duration::from_millis(1000)));
     let spring_scale = bar_scale.with(Animation::spring(150.0, 12.0));
 
     vstack((
@@ -392,12 +386,12 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
 #[hot_reload]
 fn main() -> impl View {
     // State for transform sections
-    let scale = Binding::container(1.0);
-    let rotation = Binding::container(0.0);
-    let offset_x = Binding::container(0.0);
-    let offset_y = Binding::container(0.0);
-    let combined_scale = Binding::container(1.0);
-    let combined_rotation = Binding::container(0.0);
+    let scale = Binding::f32(1.0);
+    let rotation = Binding::f32(0.0);
+    let offset_x = Binding::f32(0.0);
+    let offset_y = Binding::f32(0.0);
+    let combined_scale = Binding::f32(1.0);
+    let combined_rotation = Binding::f32(0.0);
 
     // State for other demo sections
     let progress_value = Binding::f64(0.3);

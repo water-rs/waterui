@@ -2,8 +2,8 @@
 //!
 //! This example shows:
 //! - Making views draggable with `.draggable()`
-//! - Creating drop zones with `.drop_destination_with_events()`
-//! - Visual feedback when dragging over drop zone
+//! - Creating stateful drop zones with `.with_state().drop_destination()`
+//! - Using `.drop_hover()` for visual feedback when dragging over drop zone
 //! - Spring animations on successful drop
 
 use core::time::Duration;
@@ -30,20 +30,19 @@ fn fruit_basket(
     collected: Binding<Vec<String>>,
     bounce: Binding<f32>,
 ) -> impl View {
-    // Scale up when hovering
+    // Scale up when hovering (SignalExt methods take &self and clone internally)
     let hover_scale = is_hovering
-        .clone()
         .select(1.05, 1.0)
         .with(Animation::spring(400.0, 15.0));
 
     // Bounce animation on drop
-    let drop_bounce = bounce.clone().with(Animation::spring(500.0, 10.0));
+    let drop_bounce = bounce.with(Animation::spring(500.0, 10.0));
 
     // Combined scale for uniform scaling
     let combined_scale = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);
 
     // Display collected emojis only (no text)
-    let emojis_display = collected.clone().map(|list| {
+    let emojis_display = collected.map(|list| {
         if list.is_empty() {
             "🧺".to_string()
         } else {
@@ -54,17 +53,17 @@ fn fruit_basket(
         }
     });
 
-    let count_display = collected.clone().map(|list| {
+    let count_display = collected.map(|list| {
         if list.is_empty() {
             "Drop fruits here!".to_string()
         } else {
-            format!("{} fruit{} collected!", list.len(), if list.len() == 1 { "" } else { "s" })
+            format!(
+                "{} fruit{} collected!",
+                list.len(),
+                if list.len() == 1 { "" } else { "s" }
+            )
         }
     });
-
-    let is_h = is_hovering.clone();
-    let coll = collected.clone();
-    let b = bounce.clone();
 
     vstack((
         text(emojis_display).size(40.0),
@@ -77,36 +76,26 @@ fn fruit_basket(
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
     .scale(combined_scale.clone(), combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
-    .drop_destination_with_events(
-        // On drop - add to collection with bounce animation
-        move |data: DragData| {
-            let dropped_item = data.as_str().to_string();
-            let mut current_items = coll.get();
-            if !current_items.iter().any(|x| x == &dropped_item) {
-                current_items.push(dropped_item);
-                coll.set(current_items);
-            }
-            // Trigger bounce - use a unique value each time to ensure animation triggers
-            let current = b.get();
-            let target = if (current - 1.2).abs() < 0.01 { 1.25 } else { 1.2 };
-            b.set(target);
-            let b2 = b.clone();
-            spawn_local(async move {
-                sleep(Duration::from_millis(200)).await;
-                b2.set(1.0);
-            });
-        },
-        // On enter
-        {
-            let h = is_h.clone();
-            move || h.set(true)
-        },
-        // On exit
-        {
-            let h = is_h.clone();
-            move || h.set(false)
-        },
-    )
+    .with_state(&collected)
+    .with_state(&bounce)
+    .drop_destination(|(collected, bounce), data: DragData| {
+        // Add to collection
+        let dropped_item = data.as_str().to_string();
+        let mut current_items = collected.get();
+        if !current_items.iter().any(|x| x == &dropped_item) {
+            current_items.push(dropped_item);
+            collected.set(current_items);
+        }
+        // Trigger bounce animation
+        let current = bounce.get();
+        let target = if (current - 1.2).abs() < 0.01 { 1.25 } else { 1.2 };
+        bounce.set(target);
+        spawn_local(async move {
+            sleep(Duration::from_millis(200)).await;
+            bounce.set(1.0);
+        });
+    })
+    .drop_hover(&is_hovering)
 }
 
 #[hot_reload]

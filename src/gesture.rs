@@ -329,11 +329,92 @@ impl core::fmt::Debug for GestureObserver {
 impl MetadataKey for GestureObserver {}
 
 impl GestureObserver {
-    /// Creates a new gesture observer that executes the given action when the gesture is recognized.
-    pub fn new(gesture: impl Into<Gesture>, action: impl FnMut() + 'static) -> Self {
-        Self {
+    /// Creates a gesture observer builder for the given gesture.
+    ///
+    /// Use `.action()` to set the handler, or `.with_state()` to capture state first.
+    ///
+    /// # Examples
+    ///
+    /// Simple action:
+    /// ```rust,ignore
+    /// GestureObserver::new(TapGesture::new()).action(|| println!("Tapped!"))
+    /// ```
+    ///
+    /// With state:
+    /// ```rust,ignore
+    /// GestureObserver::new(TapGesture::repeat(2))
+    ///     .with_state(&counter)
+    ///     .action(|counter| counter.set(counter.get() + 1))
+    /// ```
+    #[must_use]
+    pub fn new(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
+        GestureObserverBuilder {
             gesture: gesture.into(),
+        }
+    }
+}
+
+// ============================================================================
+// GestureObserver Builder
+// ============================================================================
+
+/// Builder for creating gesture observers with captured state.
+#[derive(Debug)]
+pub struct GestureObserverBuilder {
+    gesture: Gesture,
+}
+
+impl GestureObserverBuilder {
+    /// Sets the action handler (no state).
+    #[must_use]
+    pub fn action(self, action: impl FnMut() + 'static) -> GestureObserver {
+        GestureObserver {
+            gesture: self.gesture,
             action: boxed_action(action),
+        }
+    }
+
+    /// Adds state to capture for the action.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> GestureObserverStatefulBuilder<T> {
+        GestureObserverStatefulBuilder {
+            gesture: self.gesture,
+            state: state.clone(),
+        }
+    }
+}
+
+/// Builder for gesture observers with captured state.
+pub struct GestureObserverStatefulBuilder<State> {
+    gesture: Gesture,
+    state: State,
+}
+
+impl<S> core::fmt::Debug for GestureObserverStatefulBuilder<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GestureObserverStatefulBuilder")
+            .field("gesture", &self.gesture)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: Clone + 'static> GestureObserverStatefulBuilder<S> {
+    /// Adds another state value, accumulating as nested tuples.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> GestureObserverStatefulBuilder<(S, T)> {
+        GestureObserverStatefulBuilder {
+            gesture: self.gesture,
+            state: (self.state, state.clone()),
+        }
+    }
+
+    /// Sets the action handler with captured state.
+    #[must_use]
+    pub fn action(self, mut action: impl FnMut(S) + 'static) -> GestureObserver {
+        let state = self.state;
+        GestureObserver {
+            gesture: self.gesture,
+            action: boxed_action(move || action(state.clone())),
         }
     }
 }

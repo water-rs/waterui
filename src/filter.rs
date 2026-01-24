@@ -7,9 +7,8 @@
 //! Each filter is represented by a structure with reactive values that can be animated.
 //! Filters are purely visual and do not affect layout calculations.
 
-use nami::signal::IntoComputed;
 use nami::Computed;
-use waterui_core::metadata::MetadataKey;
+use waterui_core::{IntoComputedF32, metadata::MetadataKey};
 
 /// A structure representing a blur filter operation.
 ///
@@ -30,9 +29,9 @@ impl Blur {
     ///
     /// * `radius` - The radius of the blur in points (0 = no blur).
     #[must_use]
-    pub fn new(radius: impl IntoComputed<f32>) -> Self {
+    pub fn new(radius: impl IntoComputedF32) -> Self {
         Self {
-            radius: radius.into_computed(),
+            radius: radius.into_computed_f32(),
         }
     }
 }
@@ -58,9 +57,9 @@ impl Brightness {
     /// * `amount` - The brightness adjustment amount.
     ///   0 is normal brightness, negative darkens, positive brightens.
     #[must_use]
-    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+    pub fn new(amount: impl IntoComputedF32) -> Self {
         Self {
-            amount: amount.into_computed(),
+            amount: amount.into_computed_f32(),
         }
     }
 }
@@ -86,9 +85,9 @@ impl Contrast {
     /// * `amount` - The contrast adjustment amount.
     ///   1.0 is normal contrast, <1.0 decreases, >1.0 increases.
     #[must_use]
-    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+    pub fn new(amount: impl IntoComputedF32) -> Self {
         Self {
-            amount: amount.into_computed(),
+            amount: amount.into_computed_f32(),
         }
     }
 }
@@ -113,9 +112,9 @@ impl Saturation {
     /// * `amount` - The saturation adjustment amount.
     ///   1.0 is normal, 0 is grayscale, >1.0 oversaturates.
     #[must_use]
-    pub fn new(amount: impl IntoComputed<f32>) -> Self {
+    pub fn new(amount: impl IntoComputedF32) -> Self {
         Self {
-            amount: amount.into_computed(),
+            amount: amount.into_computed_f32(),
         }
     }
 }
@@ -140,9 +139,9 @@ impl Grayscale {
     /// * `intensity` - The intensity of the grayscale effect.
     ///   0.0 means no effect, 1.0 means full grayscale.
     #[must_use]
-    pub fn new(intensity: impl IntoComputed<f32>) -> Self {
+    pub fn new(intensity: impl IntoComputedF32) -> Self {
         Self {
-            intensity: intensity.into_computed(),
+            intensity: intensity.into_computed_f32(),
         }
     }
 }
@@ -166,9 +165,9 @@ impl HueRotation {
     ///
     /// * `angle` - The angle of hue rotation in degrees (0-360).
     #[must_use]
-    pub fn new(angle: impl IntoComputed<f32>) -> Self {
+    pub fn new(angle: impl IntoComputedF32) -> Self {
         Self {
-            angle: angle.into_computed(),
+            angle: angle.into_computed_f32(),
         }
     }
 }
@@ -192,9 +191,9 @@ impl Opacity {
     ///
     /// * `value` - The opacity value (0.0 = transparent, 1.0 = opaque).
     #[must_use]
-    pub fn new(value: impl IntoComputed<f32>) -> Self {
+    pub fn new(value: impl IntoComputedF32) -> Self {
         Self {
-            value: value.into_computed(),
+            value: value.into_computed_f32(),
         }
     }
 }
