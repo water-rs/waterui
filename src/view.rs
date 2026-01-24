@@ -9,7 +9,7 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-use crate::style::IntoSignalF32;
+use waterui_core::IntoComputedF32;
 use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
@@ -440,7 +440,26 @@ pub trait ViewExt: View + Sized {
         gesture: impl Into<Gesture>,
         action: impl FnMut() + 'static,
     ) -> Metadata<GestureObserver> {
-        Metadata::new(self, GestureObserver::new(gesture, action))
+        Metadata::new(self, GestureObserver::new(gesture).action(action))
+    }
+
+    /// Attaches a pre-built gesture observer to this view.
+    ///
+    /// Use this method when you need the builder pattern for state capture.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use waterui::gesture::{GestureObserver, TapGesture};
+    ///
+    /// view.gesture_observer(
+    ///     GestureObserver::new(TapGesture::repeat(2))
+    ///         .with_state(&counter)
+    ///         .action(|counter| counter.set(counter.get() + 1))
+    /// )
+    /// ```
+    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
+        Metadata::new(self, observer)
     }
 
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
@@ -534,7 +553,7 @@ pub trait ViewExt: View + Sized {
     /// let y = binding(1.0).animated();
     /// view.scale(x, y);
     /// ```
-    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
+    fn scale(self, x: impl IntoComputedF32, y: impl IntoComputedF32) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy(x, y))
     }
 
@@ -554,7 +573,7 @@ pub trait ViewExt: View + Sized {
     /// // Scale from top-left corner
     /// view.scale_from(0.5, 0.5, Anchor::TOP_LEFT);
     /// ```
-    fn scale_from(self, x: impl IntoSignalF32, y: impl IntoSignalF32, anchor: Anchor) -> Metadata<Scale> {
+    fn scale_from(self, x: impl IntoComputedF32, y: impl IntoComputedF32, anchor: Anchor) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy_from(x, y, anchor))
     }
 
@@ -577,7 +596,7 @@ pub trait ViewExt: View + Sized {
     /// let angle = binding(0.0).animated();
     /// view.rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
+    fn rotation(self, degrees: impl IntoComputedF32) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees(degrees))
     }
 
@@ -596,7 +615,7 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// view.rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
+    fn rotation_from(self, degrees: impl IntoComputedF32, anchor: Anchor) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
     }
 
@@ -620,7 +639,7 @@ pub trait ViewExt: View + Sized {
     /// let x = binding(0.0).animated();
     /// view.offset(x, 0.0);
     /// ```
-    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
+    fn offset(self, x: impl IntoComputedF32, y: impl IntoComputedF32) -> Metadata<Offset> {
         Metadata::new(self, Offset::new(x, y))
     }
 
@@ -673,8 +692,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Right-click me")
     ///     .context_menu(vec![
-    ///         MenuItem::new("Copy", || println!("Copy")),
-    ///         MenuItem::new("Paste", || println!("Paste")),
+    ///         MenuItem::new("Copy").action(|| println!("Copy")),
+    ///         MenuItem::new("Paste").action(|| println!("Paste")),
     ///     ]);
     /// ```
     fn context_menu(
@@ -766,10 +785,8 @@ pub trait ViewExt: View + Sized {
 
     /// Makes this view a drop destination for dragged content.
     ///
-    /// When compatible data is dropped onto this view, the handler receives the `DragData`.
-    ///
-    /// # Arguments
-    /// * `on_drop` - Handler called with the dropped data
+    /// For simple cases without state, pass a handler directly. For stateful
+    /// handlers, use `.with_state(&x).drop_destination(|state, data| ...)`.
     ///
     /// # Example
     ///
@@ -777,9 +794,19 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     /// use waterui::drag_drop::DragData;
     ///
+    /// // Simple usage without state
     /// text!("Drop here")
     ///     .drop_destination(|data: DragData| {
     ///         println!("Received: {:?}", data);
+    ///     });
+    ///
+    /// // With state - use .with_state() first
+    /// text!("Drop here")
+    ///     .with_state(&items)
+    ///     .with_state(&count)
+    ///     .drop_destination(|(items, count), data| {
+    ///         items.update(|v| v.push(data.as_str().to_string()));
+    ///         count.set(count.get() + 1);
     ///     });
     /// ```
     fn drop_destination(
@@ -787,28 +814,6 @@ pub trait ViewExt: View + Sized {
         on_drop: impl FnMut(DragData) + 'static,
     ) -> Metadata<DropDestination> {
         Metadata::new(self, DropDestination::new(on_drop))
-    }
-
-    /// Makes this view a drop destination with all event handlers.
-    ///
-    /// Provides full control over drag events including enter/exit feedback.
-    ///
-    /// # Arguments
-    /// * `on_drop` - Handler called with the dropped data
-    /// * `on_enter` - Handler called when drag enters view bounds
-    /// * `on_exit` - Handler called when drag exits view bounds
-    fn drop_destination_with_events(
-        self,
-        on_drop: impl FnMut(DragData) + 'static,
-        on_enter: impl FnMut() + 'static,
-        on_exit: impl FnMut() + 'static,
-    ) -> Metadata<DropDestination> {
-        Metadata::new(
-            self,
-            DropDestination::new(on_drop)
-                .on_enter(on_enter)
-                .on_exit(on_exit),
-        )
     }
 
     /// Controls whether this view responds to hit testing (touch/click events).
@@ -1052,7 +1057,7 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
         StatefulView {
             view: Metadata::new(
                 self.view,
-                GestureObserver::new(TapGesture::new(), move || action(state_for_handler.clone())),
+                GestureObserver::new(TapGesture::new()).action(move || action(state_for_handler.clone())),
             ),
             state,
         }
@@ -1070,9 +1075,37 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
         StatefulView {
             view: Metadata::new(
                 self.view,
-                GestureObserver::new(gesture, move || action(state_for_handler.clone())),
+                GestureObserver::new(gesture).action(move || action(state_for_handler.clone())),
             ),
             state,
         }
+    }
+
+    /// Makes this view a drop destination with the accumulated state.
+    ///
+    /// The handler receives both the accumulated state and the dropped data.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// view
+    ///     .with_state(&collected)
+    ///     .with_state(&bounce)
+    ///     .drop_destination(|(collected, bounce), data| {
+    ///         collected.update(|v| v.push(data.as_str().to_string()));
+    ///         bounce.set(1.2);
+    ///     })
+    ///     .drop_hover(&is_hovering)
+    /// ```
+    #[must_use]
+    pub fn drop_destination(
+        self,
+        mut handler: impl FnMut(S, DragData) + 'static,
+    ) -> Metadata<DropDestination> {
+        let state = self.state;
+        Metadata::new(
+            self.view,
+            DropDestination::new(move |data| handler(state.clone(), data)),
+        )
     }
 }
