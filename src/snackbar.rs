@@ -168,17 +168,29 @@ impl Snackbar {
 
     /// Adds an action button to the snackbar.
     ///
-    /// # Arguments
+    /// Use `.handler()` to set the callback, or `.with_state()` to capture state first.
     ///
-    /// * `label` - The text to display on the action button
-    /// * `handler` - The callback to execute when the action is pressed
+    /// # Examples
+    ///
+    /// Simple action:
+    /// ```rust,ignore
+    /// Snackbar::new("Message sent")
+    ///     .action("Undo").handler(|| println!("Undo!"))
+    /// ```
+    ///
+    /// With state:
+    /// ```rust,ignore
+    /// Snackbar::new("Item deleted")
+    ///     .action("Undo")
+    ///     .with_state(&items)
+    ///     .handler(|items| items.restore())
+    /// ```
     #[must_use]
-    pub fn action(mut self, label: impl Into<Str>, handler: impl FnMut() + 'static) -> Self {
-        self.action = Some(SnackbarAction {
+    pub fn action(self, label: impl Into<Str>) -> SnackbarActionBuilder {
+        SnackbarActionBuilder {
+            snackbar: self,
             label: label.into(),
-            handler: shared_action(handler),
-        });
-        self
+        }
     }
 
     /// Sets the auto-dismiss duration.
@@ -402,5 +414,76 @@ impl SnackbarManager {
 impl Default for SnackbarManager {
     fn default() -> Self {
         Self::new().0
+    }
+}
+
+// ============================================================================
+// Snackbar Action Builder
+// ============================================================================
+
+/// Builder for creating snackbar actions with captured state.
+#[derive(Debug)]
+pub struct SnackbarActionBuilder {
+    snackbar: Snackbar,
+    label: Str,
+}
+
+impl SnackbarActionBuilder {
+    /// Sets the action handler (no state).
+    #[must_use]
+    pub fn handler(mut self, handler: impl FnMut() + 'static) -> Snackbar {
+        self.snackbar.action = Some(SnackbarAction {
+            label: self.label,
+            handler: shared_action(handler),
+        });
+        self.snackbar
+    }
+
+    /// Adds state to capture for the action.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> SnackbarActionStatefulBuilder<T> {
+        SnackbarActionStatefulBuilder {
+            snackbar: self.snackbar,
+            label: self.label,
+            state: state.clone(),
+        }
+    }
+}
+
+/// Builder for snackbar actions with captured state.
+pub struct SnackbarActionStatefulBuilder<State> {
+    snackbar: Snackbar,
+    label: Str,
+    state: State,
+}
+
+impl<S> core::fmt::Debug for SnackbarActionStatefulBuilder<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SnackbarActionStatefulBuilder")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: Clone + 'static> SnackbarActionStatefulBuilder<S> {
+    /// Adds another state value, accumulating as nested tuples.
+    #[must_use]
+    pub fn with_state<T: Clone + 'static>(self, state: &T) -> SnackbarActionStatefulBuilder<(S, T)> {
+        SnackbarActionStatefulBuilder {
+            snackbar: self.snackbar,
+            label: self.label,
+            state: (self.state, state.clone()),
+        }
+    }
+
+    /// Sets the action handler with captured state.
+    #[must_use]
+    pub fn handler(mut self, mut handler: impl FnMut(S) + 'static) -> Snackbar {
+        let state = self.state;
+        self.snackbar.action = Some(SnackbarAction {
+            label: self.label,
+            handler: shared_action(move || handler(state.clone())),
+        });
+        self.snackbar
     }
 }

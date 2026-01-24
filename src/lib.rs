@@ -59,6 +59,8 @@ pub mod prelude {
     pub use super::fullscreen::*;
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
+    pub use super::gesture::GestureObserver;
+
     pub use super::border::Border;
     pub use super::component::*;
     pub use super::form::*;
@@ -76,6 +78,9 @@ pub mod prelude {
 
     pub use super::component::link::{Link, link};
     pub use super::component::menu::{Menu, MenuItem};
+
+    // Drag and drop extension traits
+    pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{Card, Divider, card, suspense};
 
