@@ -33,5 +33,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch = "0.2"
+
 [lints]
 workspace = true
