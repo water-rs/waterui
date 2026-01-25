@@ -26,6 +26,12 @@ use crate::{
     utils::copy_file,
 };
 
+fn gradle_cmd(gradlew: &Path, backend_path: &Path, task: &str) -> smol::process::Command {
+    let mut cmd = smol::process::Command::new(gradlew);
+    cmd.arg(task).arg("--project-dir").arg(backend_path);
+    cmd
+}
+
 fn validate_android_package_name(package: &str) -> eyre::Result<()> {
     if package.is_empty() {
         bail!("Android package name is empty (set `[package].bundle_identifier` in `Water.toml`).");
@@ -465,14 +471,9 @@ impl AndroidPlatform {
 
         // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
         // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
-        let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
-        cmd.args([
-            command_name,
-            "--project-dir",
-            backend_path.to_str().unwrap(),
-        ])
-        .env("WATERUI_SKIP_RUST_BUILD", "1")
-        .env("WATERUI_ANDROID_ABIS", &abis_str);
+        let mut cmd = gradle_cmd(&gradlew, &backend_path, command_name);
+        cmd.env("WATERUI_SKIP_RUST_BUILD", "1")
+            .env("WATERUI_ANDROID_ABIS", &abis_str);
 
         if let Some(java_home) = Java::detect_home().await {
             cmd.env("JAVA_HOME", java_home);
@@ -656,8 +657,7 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
     }
 
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
-    let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
-    cmd.args(["clean", "--project-dir", backend_path.to_str().unwrap()]);
+    let mut cmd = gradle_cmd(&gradlew, &backend_path, "clean");
 
     if let Some(java_home) = Java::detect_home().await {
         cmd.env("JAVA_HOME", java_home);
@@ -729,14 +729,9 @@ pub async fn package_android(
     //
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
     // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
-    let mut cmd = smol::process::Command::new(gradlew.to_str().unwrap());
-    cmd.args([
-        command_name,
-        "--project-dir",
-        backend_path.to_str().unwrap(),
-    ])
-    .env("WATERUI_SKIP_RUST_BUILD", "1")
-    .env("WATERUI_ANDROID_ABIS", abi);
+    let mut cmd = gradle_cmd(&gradlew, &backend_path, command_name);
+    cmd.env("WATERUI_SKIP_RUST_BUILD", "1")
+        .env("WATERUI_ANDROID_ABIS", abi);
 
     if let Some(java_home) = Java::detect_home().await {
         cmd.env("JAVA_HOME", java_home);
