@@ -114,8 +114,8 @@ pub async fn run(args: Args) -> Result<()> {
     }
     .await;
 
-    // Shut down preview app if this session launched it.
-    let _ = session.shutdown();
+    // Keep preview app running for reuse by future preview commands.
+    session.detach();
 
     result
 }
