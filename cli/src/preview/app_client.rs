@@ -39,8 +39,15 @@ impl PreviewAppClient {
                 Duration::from_millis(100),
             ) {
                 tracing::info!("Connected to preview app on port {port}");
-                stream.set_read_timeout(Some(Duration::from_secs(60)))?;
-                stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+                // Disable Nagle's algorithm for faster small writes
+                let _ = stream.set_nodelay(true);
+
+                // Longer timeouts to handle serialized requests when multiple
+                // clients are waiting in queue
+                stream.set_read_timeout(Some(Duration::from_secs(120)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(120)))?;
+
                 return Ok(Self {
                     stream,
                     has_sent_dylib: false,
