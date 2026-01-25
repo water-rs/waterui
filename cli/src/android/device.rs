@@ -11,7 +11,9 @@ use std::process::Stdio;
 use crate::{
     android::toolchain::AndroidSdk,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
-    utils::{parse_whitespace_separated_u32s, run_command, run_command_output},
+    utils::{
+        parse_whitespace_separated_u32s, run_command_os, run_command_output_os,
+    },
 };
 
 /// Panic information extracted from logcat.
@@ -57,11 +59,7 @@ impl Device for AndroidDevice {
     async fn launch(&self) -> eyre::Result<()> {
         let adb = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
-        run_command(
-            adb.to_str().unwrap(),
-            ["-s", &self.identifier, "wait-for-device"],
-        )
-        .await?;
+        run_command_os(&adb, ["-s", &self.identifier, "wait-for-device"]).await?;
         Ok(())
     }
 
@@ -73,7 +71,7 @@ impl Device for AndroidDevice {
         let adb = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
 
-        let output = run_command(adb.to_str().unwrap(), ["devices", "-l"])
+        let output = run_command_os(&adb, ["devices", "-l"])
             .await
             .map_err(|e| eyre!("Failed to list devices: {e}"))?;
 
@@ -85,8 +83,8 @@ impl Device for AndroidDevice {
                 let identifier = parts[0].to_string();
 
                 // Get device ABI
-                let abi = run_command(
-                    adb.to_str().unwrap(),
+                let abi = run_command_os(
+                    &adb,
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                 )
                 .await
@@ -118,7 +116,6 @@ async fn run_on_android(
 ) -> Result<Running, FailToRun> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
-    let adb_str = adb.to_str().unwrap();
 
     let env_vars: Vec<(String, String)> = options
         .env_vars()
@@ -147,7 +144,7 @@ async fn run_on_android(
 
     if let Some(port) = reverse_port {
         let spec = format!("tcp:{port}");
-        let output = Command::new(adb_str)
+        let output = Command::new(&adb)
             .args(["-s", device_id, "reverse", &spec, &spec])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -172,18 +169,21 @@ async fn run_on_android(
 
     // Install the APK on the device with -r flag to replace existing installation
     // This handles both cases: fresh install and reinstall over existing app
-    run_command(
-        adb_str,
-        [
-            "-s",
-            device_id,
-            "install",
-            "-r",
-            artifact.path().to_str().unwrap(),
-        ],
-    )
-    .await
-    .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
+    let install_output = Command::new(&adb)
+        .args(["-s", device_id, "install", "-r"])
+        .arg(artifact.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| FailToRun::Install(eyre!("Failed to install APK: {e}")))?;
+    if !install_output.status.success() {
+        return Err(FailToRun::Install(eyre!(
+            "Failed to install APK:\n{}\n{}",
+            String::from_utf8_lossy(&install_output.stdout).trim(),
+            String::from_utf8_lossy(&install_output.stderr).trim(),
+        )));
+    }
 
     // Launch the app (pass env vars as intent extras).
     //
@@ -206,7 +206,7 @@ async fn run_on_android(
         start_args.push(value.clone());
     }
 
-    let output = Command::new(adb_str)
+    let output = Command::new(&adb)
         .args(&start_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -223,7 +223,7 @@ async fn run_on_android(
     }
 
     // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(adb_str, device_id, artifact.bundle_id()).await?;
+    let pid = wait_for_app_pid(&adb, device_id, artifact.bundle_id()).await?;
 
     let adb_for_kill = adb.clone();
     let identifier_for_kill = device_id.to_string();
@@ -316,14 +316,13 @@ async fn run_on_android(
 
 /// Wait for an app to start and return its PID.
 async fn wait_for_app_pid(
-    adb_str: &str,
+    adb: &Path,
     device_id: &str,
     bundle_id: &str,
 ) -> Result<u32, FailToRun> {
     for _ in 0..10 {
         smol::Timer::after(std::time::Duration::from_millis(200)).await;
-        if let Ok(output) =
-            run_command(adb_str, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        if let Ok(output) = run_command_os(adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
         {
             if let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next() {
                 return Ok(pid);
@@ -332,8 +331,8 @@ async fn wait_for_app_pid(
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = run_command(
-        adb_str,
+    let crash_info = run_command_os(
+        adb,
         [
             "-s",
             device_id,
@@ -365,7 +364,7 @@ async fn find_emulator_identifier() -> Result<String, FailToRun> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
 
-    let output = run_command(adb.to_str().unwrap(), ["devices"])
+    let output = run_command_os(&adb, ["devices"])
         .await
         .map_err(|e| FailToRun::Run(eyre!("Failed to list devices: {e}")))?;
 
@@ -391,8 +390,6 @@ async fn monitor_android_process(
     pid: u32,
     sender: smol::channel::Sender<DeviceEvent>,
 ) {
-    let adb_str = adb.to_str().unwrap_or_default();
-
     // Check process status periodically
     loop {
         smol::Timer::after(std::time::Duration::from_secs(1)).await;
@@ -400,7 +397,8 @@ async fn monitor_android_process(
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
         // when the shell user doesn't have permission to send signals to the app process
-        let result = run_command(adb_str, ["-s", device_id, "shell", "pidof", bundle_id]).await;
+        let result =
+            run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await;
 
         // Check if the process with the same PID is still running
         let still_running = result
@@ -427,7 +425,12 @@ async fn monitor_android_process(
                 pid_arg,
                 "*:V".to_string(),
             ];
-            let pid_log = run_command_output(adb_str, pid_log_args.iter().map(String::as_str))
+            let pid_log = run_command_output_os(
+                &adb,
+                pid_log_args
+                    .iter()
+                    .map(|s| std::ffi::OsStr::new(s.as_str())),
+            )
                 .await
                 .ok()
                 .filter(|o| o.status.success())
@@ -450,7 +453,12 @@ async fn monitor_android_process(
                     "DEBUG:*".to_string(),
                     "libc:F".to_string(),
                 ];
-                run_command_output(adb_str, fallback_args.iter().map(String::as_str))
+                run_command_output_os(
+                    &adb,
+                    fallback_args
+                        .iter()
+                        .map(|s| std::ffi::OsStr::new(s.as_str())),
+                )
                     .await
                     .ok()
                     .filter(|o| o.status.success())
@@ -893,8 +901,8 @@ pub async fn tap(device_id: &str, x: u32, y: u32) -> eyre::Result<()> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
 
-    run_command(
-        adb.to_str().unwrap(),
+    run_command_os(
+        &adb,
         ["-s", device_id, "shell", "input", "tap", &x.to_string(), &y.to_string()],
     )
     .await?;
@@ -948,7 +956,7 @@ pub async fn swipe(
         args.push(d);
     }
 
-    run_command(adb.to_str().unwrap(), args).await?;
+    run_command_os(&adb, args).await?;
 
     Ok(())
 }
@@ -979,11 +987,7 @@ pub async fn text(device_id: &str, input: &str) -> eyre::Result<()> {
         .replace('(', "\\(")
         .replace(')', "\\)");
 
-    run_command(
-        adb.to_str().unwrap(),
-        ["-s", device_id, "shell", "input", "text", &escaped],
-    )
-    .await?;
+    run_command_os(&adb, ["-s", device_id, "shell", "input", "text", &escaped]).await?;
 
     Ok(())
 }
@@ -1028,14 +1032,14 @@ pub async fn describe(device_id: &str) -> eyre::Result<String> {
 
     // Dump UI hierarchy to a temp file on device
     let dump_path = "/sdcard/window_dump.xml";
-    run_command(
-        adb.to_str().unwrap(),
+    run_command_os(
+        &adb,
         ["-s", device_id, "shell", "uiautomator", "dump", dump_path],
     )
     .await?;
 
     // Read the dump file
-    let output = Command::new(adb.to_str().unwrap())
+    let output = Command::new(&adb)
         .args(["-s", device_id, "shell", "cat", dump_path])
         .output()
         .await?;
@@ -1051,11 +1055,7 @@ pub async fn describe(device_id: &str) -> eyre::Result<String> {
     let json = xml_to_ui_json(&xml)?;
 
     // Clean up
-    let _ = run_command(
-        adb.to_str().unwrap(),
-        ["-s", device_id, "shell", "rm", dump_path],
-    )
-    .await;
+    let _ = run_command_os(&adb, ["-s", device_id, "shell", "rm", dump_path]).await;
 
     Ok(json)
 }

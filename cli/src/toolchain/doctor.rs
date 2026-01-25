@@ -117,6 +117,12 @@ pub async fn doctor() -> Vec<DoctorItem> {
             Err(e) => items.push(DoctorItem::missing("iOS SDK", e.to_string())),
         }
 
+        // Check iOS Simulator SDK
+        match AppleSdk::IosSimulator.check().await {
+            Ok(()) => items.push(DoctorItem::ok("iOS Simulator SDK")),
+            Err(e) => items.push(DoctorItem::missing("iOS Simulator SDK", e.to_string())),
+        }
+
         // Check macOS SDK
         match AppleSdk::Macos.check().await {
             Ok(()) => items.push(DoctorItem::ok("macOS SDK")),
@@ -125,6 +131,7 @@ pub async fn doctor() -> Vec<DoctorItem> {
     } else {
         items.push(DoctorItem::skipped("Xcode"));
         items.push(DoctorItem::skipped("iOS SDK"));
+        items.push(DoctorItem::skipped("iOS Simulator SDK"));
         items.push(DoctorItem::skipped("macOS SDK"));
     }
 
