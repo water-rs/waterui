@@ -28,9 +28,9 @@ pub struct ZStackLayout {
 }
 
 impl Layout for ZStackLayout {
-    /// `ZStack` stretches in both directions to fill available space.
+    /// `ZStack` is content-sized by default (it does not stretch automatically).
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        StretchAxis::None
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {

@@ -8,7 +8,7 @@ pub mod cmake;
 pub mod doctor;
 /// A toolchain that cannot be fixed automatically.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Unfixable toolchain: {message}\n Suggestion: {suggestion}")]
+#[error("Unfixable toolchain: {message}\nSuggestion: {suggestion}")]
 pub struct UnfixableToolchain {
     /// A message describing why the toolchain is unfixable.
     message: String,
@@ -46,6 +46,20 @@ pub trait Installation: Send + Sync {
     fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
+/// Optional installation step.
+///
+/// This is used by composite toolchains (e.g. tuples) to represent "install if missing".
+impl<I: Installation> Installation for Option<I> {
+    type Error = eyre::Report;
+
+    async fn install(&self) -> Result<(), Self::Error> {
+        if let Some(install) = self {
+            install.install().await.map_err(Into::into)?;
+        }
+        Ok(())
+    }
+}
+
 /// An error indicating the state of the toolchain.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolchainError<Install: Installation> {
@@ -53,7 +67,7 @@ pub enum ToolchainError<Install: Installation> {
     #[error("{0}")]
     Unfixable(#[from] UnfixableToolchain),
     /// The toolchain is missing components that can be installed.
-    #[error("Toolchain is missing, but can be fixed automatically")]
+    #[error("Toolchain is missing components that can be fixed automatically. Run `water doctor --fix` for details.")]
     Fixable(Install),
 }
 
@@ -154,34 +168,170 @@ macro_rules! impl_installations {
 tuples!(impl_installations);
 
 macro_rules! impl_toolchains {
-    ($($ty:ident),*) => {
+    ($(($idx:tt, $ty:ident)),*) => {
         #[allow(unused_variables)]
         #[allow(non_snake_case)]
         impl<$($ty: Toolchain),*> Toolchain for ($($ty,)*) {
-            type Installation = ($($ty::Installation,)*);
+            // Each slot is `Some(install)` if that component is missing-and-fixable.
+            // Components that are already OK produce `None` and are skipped during installation.
+            type Installation = ($(Option<$ty::Installation>,)*);
 
             async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-                let ($($ty,)*) = self;
+                #[allow(unused_mut)]
+                let mut any_fixable = false;
+                #[allow(unused_mut)]
+                let mut installs: Self::Installation = ($(None::<$ty::Installation>,)*);
+
                 $(
-                    match $ty.check().await {
+                    match self.$idx.check().await {
                         Ok(()) => {}
-                        Err(e) => {
-                            return Err(match e {
-                                ToolchainError::Unfixable(u) => ToolchainError::Unfixable(u),
-                                ToolchainError::Fixable(_) => ToolchainError::Unfixable(
-                                    UnfixableToolchain::new(
-                                        format!("One of the toolchains requires fixing"),
-                                        "Run the fix command to install missing components",
-                                    )
-                                ),
-                            });
+                        Err(ToolchainError::Unfixable(u)) => {
+                            return Err(ToolchainError::Unfixable(u));
+                        }
+                        Err(ToolchainError::Fixable(install)) => {
+                            any_fixable = true;
+                            installs.$idx = Some(install);
                         }
                     }
                 )*
-                Ok(())
+
+                if any_fixable {
+                    Err(ToolchainError::Fixable(installs))
+                } else {
+                    Ok(())
+                }
             }
         }
     };
 }
 
-tuples!(impl_toolchains);
+macro_rules! tuples_idx {
+    ($macro:ident) => {
+        $macro!();
+        $macro!((0, T0));
+        $macro!((0, T0), (1, T1));
+        $macro!((0, T0), (1, T1), (2, T2));
+        $macro!((0, T0), (1, T1), (2, T2), (3, T3));
+        $macro!((0, T0), (1, T1), (2, T2), (3, T3), (4, T4));
+        $macro!((0, T0), (1, T1), (2, T2), (3, T3), (4, T4), (5, T5));
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9),
+            (10, T10)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9),
+            (10, T10),
+            (11, T11)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9),
+            (10, T10),
+            (11, T11),
+            (12, T12)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9),
+            (10, T10),
+            (11, T11),
+            (12, T12),
+            (13, T13)
+        );
+        $macro!(
+            (0, T0),
+            (1, T1),
+            (2, T2),
+            (3, T3),
+            (4, T4),
+            (5, T5),
+            (6, T6),
+            (7, T7),
+            (8, T8),
+            (9, T9),
+            (10, T10),
+            (11, T11),
+            (12, T12),
+            (13, T13),
+            (14, T14)
+        );
+    };
+}
+
+tuples_idx!(impl_toolchains);
