@@ -34,11 +34,9 @@
 mod library;
 pub mod protocol;
 pub mod renderer;
-mod tcp;
 mod view;
 
 pub use library::{LoadError, PreviewLibrary};
 pub use protocol::{DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size};
 pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
-pub use tcp::{RequestHandler, TcpServer};
 pub use view::Preview;
