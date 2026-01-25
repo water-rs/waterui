@@ -168,25 +168,31 @@ async fn check_toolchain(platform: TargetPlatform) -> Result<()> {
         TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
             let xcode = Xcode;
             if let Err(e) = xcode.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Xcode toolchain check failed: {e}");
             }
-            let sdk = AppleSdk::Ios;
+
+            let sdk = match platform {
+                TargetPlatform::Ios => AppleSdk::Ios,
+                TargetPlatform::IosSimulator => AppleSdk::IosSimulator,
+                TargetPlatform::Macos => AppleSdk::Macos,
+                TargetPlatform::Android => unreachable!(),
+            };
             if let Err(e) = sdk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("{sdk} toolchain check failed: {e}");
             }
         }
         TargetPlatform::Android => {
             let sdk = AndroidSdk;
             if let Err(e) = sdk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Android SDK toolchain check failed: {e}");
             }
             let ndk = AndroidNdk;
             if let Err(e) = ndk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Android NDK toolchain check failed: {e}");
             }
             let cmake = Cmake {};
             if let Err(e) = cmake.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("CMake toolchain check failed: {e}");
             }
         }
     }

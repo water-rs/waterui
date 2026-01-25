@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::{env, fmt::Write};
+use std::ffi::OsString;
 
 use color_eyre::eyre::{self, bail};
 use smol::fs;
@@ -18,7 +19,7 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{copy_file, run_command},
+    utils::{copy_file, run_command_os},
 };
 
 // ============================================================================
@@ -129,17 +130,14 @@ pub async fn clean_apple(project: &Project) -> eyre::Result<()> {
         return Ok(());
     }
 
-    run_command(
-        "xcodebuild",
-        [
-            "-project",
-            xcodeproj.to_str().unwrap_or_default(),
-            "-scheme",
-            &backend.scheme,
-            "clean",
-        ],
-    )
-    .await?;
+    let args: Vec<OsString> = vec![
+        "-project".into(),
+        xcodeproj.as_os_str().to_owned(),
+        "-scheme".into(),
+        backend.scheme.as_str().into(),
+        "clean".into(),
+    ];
+    run_command_os("xcodebuild", args).await?;
 
     let build_dir = project_path.join("build");
     if build_dir.exists() {
@@ -231,30 +229,30 @@ pub async fn package_apple(
     let archs_arg = format!("ARCHS={arch_name}");
 
     let mut args = vec![
-        "-project",
-        xcodeproj.to_str().unwrap_or_default(),
-        "-scheme",
-        &backend.scheme,
-        "-configuration",
-        configuration,
-        "-sdk",
-        sdk_name,
-        "-derivedDataPath",
-        derived_data.to_str().unwrap_or_default(),
-        &archs_arg,
-        "ONLY_ACTIVE_ARCHITECTURE=YES",
-        "build",
+        OsString::from("-project"),
+        xcodeproj.as_os_str().to_owned(),
+        OsString::from("-scheme"),
+        backend.scheme.as_str().into(),
+        OsString::from("-configuration"),
+        configuration.into(),
+        OsString::from("-sdk"),
+        sdk_name.into(),
+        OsString::from("-derivedDataPath"),
+        derived_data.as_os_str().to_owned(),
+        archs_arg.into(),
+        OsString::from("ONLY_ACTIVE_ARCHITECTURE=YES"),
+        OsString::from("build"),
     ];
 
     if platform.is_simulator() || options.is_debug() {
         args.extend([
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGNING_REQUIRED=NO",
-            "CODE_SIGN_IDENTITY=-",
+            OsString::from("CODE_SIGNING_ALLOWED=NO"),
+            OsString::from("CODE_SIGNING_REQUIRED=NO"),
+            OsString::from("CODE_SIGN_IDENTITY=-"),
         ]);
     }
 
-    run_command("xcodebuild", args.iter().copied()).await?;
+    run_command_os("xcodebuild", args).await?;
 
     // Reset the environment variable
     unsafe {

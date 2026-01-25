@@ -28,14 +28,13 @@ impl Brew {
     /// Install a cask via Homebrew
     ///
     /// # Arguments
-    /// * `name` - The name of the cask to install
-    /// * `cask` - The cask identifier
+    /// * `cask` - The cask identifier (e.g. "android-studio")
     ///
     /// # Errors
     ///
     /// Returns an `eyre::Result` indicating success or failure of the installation.
-    pub async fn install_with_cask(&self, name: &str, cask: &str) -> eyre::Result<()> {
-        run_command("brew", ["install", "--cask", name, cask]).await?;
+    pub async fn install_cask(&self, cask: &str) -> eyre::Result<()> {
+        run_command("brew", ["install", "--cask", cask]).await?;
         Ok(())
     }
 }
