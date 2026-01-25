@@ -3,6 +3,7 @@
 //! This module provides utility functions for building and packaging GTK4 apps.
 //! These functions are used by `Gtk4Backend` to implement the `Backend` trait.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, bail};
@@ -16,7 +17,7 @@ use crate::{
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::run_command,
+    utils::{run_command, run_command_os},
 };
 
 // ============================================================================
@@ -72,15 +73,12 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
     }
 
     // Run cargo clean for the GTK4 crate
-    run_command(
-        "cargo",
-        [
-            "clean",
-            "--manifest-path",
-            cargo_toml.to_str().unwrap_or_default(),
-        ],
-    )
-    .await?;
+    let args: Vec<OsString> = vec![
+        "clean".into(),
+        "--manifest-path".into(),
+        cargo_toml.as_os_str().to_owned(),
+    ];
+    run_command_os("cargo", args).await?;
 
     Ok(())
 }

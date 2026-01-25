@@ -37,6 +37,9 @@ pub enum AppleSdk {
     /// iOS SDK
     #[serde(rename = "iOS")]
     Ios,
+    /// iOS Simulator SDK
+    #[serde(rename = "iOS Simulator")]
+    IosSimulator,
     /// macOS SDK
     #[serde(rename = "macOS")]
     Macos,
@@ -57,6 +60,7 @@ impl AppleSdk {
     pub const fn sdk_name(&self) -> &str {
         match self {
             Self::Ios => "iphoneos",
+            Self::IosSimulator => "iphonesimulator",
             Self::Macos => "macosx",
             Self::TvOs => "appletvos",
             Self::WatchOs => "watchos",
@@ -67,7 +71,16 @@ impl AppleSdk {
 
 impl std::fmt::Display for AppleSdk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        serde_json::to_value(self).unwrap().as_str().unwrap().fmt(f)
+        // Avoid panics in Display; serde is for config IO, not formatting.
+        match self {
+            Self::Ios => "iOS",
+            Self::IosSimulator => "iOS Simulator",
+            Self::Macos => "macOS",
+            Self::TvOs => "tvOS",
+            Self::WatchOs => "watchOS",
+            Self::VisionOs => "visionOS",
+        }
+        .fmt(f)
     }
 }
 

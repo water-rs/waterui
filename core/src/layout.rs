@@ -167,8 +167,8 @@ pub trait Layout: Debug {
     /// Which axis this container stretches to fill available space.
     ///
     /// - `VStack`: `.horizontal` (fills available width, intrinsic height)
-    /// - `HStack`: `.vertical` (fills available height, intrinsic width)
-    /// - `ZStack`: `.both` (fills all available space)
+    /// - `HStack`: `.none` (content-sized by default)
+    /// - `ZStack`: `.none` (content-sized by default)
     /// - Other layouts: `.none` by default
     ///
     /// This allows parent containers to know whether to expand this container

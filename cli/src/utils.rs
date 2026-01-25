@@ -7,6 +7,7 @@ use std::{
     process::Stdio,
     sync::atomic::{AtomicBool, Ordering},
 };
+use std::ffi::OsStr;
 
 use color_eyre::eyre;
 use smol::{process::Command, unblock};
@@ -49,14 +50,14 @@ pub(crate) fn command(command: &mut Command) -> &mut Command {
 
 /// Run a command and capture its output regardless of exit status.
 ///
-/// When `STD_OUTPUT` is enabled, also prints to terminal.
-///
-/// # Errors
-/// - If the command fails to execute.
-pub(crate) async fn run_command_output(
-    name: &str,
-    args: impl IntoIterator<Item = &str>,
-) -> eyre::Result<Output> {
+/// Supports non-UTF8 executable paths and arguments.
+pub(crate) async fn run_command_output_os<N, A, S>(name: N, args: A) -> eyre::Result<Output>
+where
+    N: AsRef<OsStr>,
+    A: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let name = name.as_ref();
     let result = Command::new(name)
         .args(args)
         .kill_on_drop(true)
@@ -86,7 +87,20 @@ pub(crate) async fn run_command(
     name: &str,
     args: impl IntoIterator<Item = &str>,
 ) -> eyre::Result<String> {
-    let result = run_command_output(name, args).await?;
+    run_command_os(name, args).await
+}
+
+/// Run a command with the specified name and arguments.
+///
+/// Like `run_command`, but supports non-UTF8 executable paths and arguments.
+pub(crate) async fn run_command_os<N, A, S>(name: N, args: A) -> eyre::Result<String>
+where
+    N: AsRef<OsStr>,
+    A: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let name_ref = name.as_ref();
+    let result = run_command_output_os(name_ref, args).await?;
 
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
@@ -100,10 +114,10 @@ pub(crate) async fn run_command(
         } else {
             String::new()
         };
+        let name_display = name_ref.to_string_lossy();
         Err(eyre::eyre!(
-            "Command {} failed with status {}{output}",
-            name,
-            result.status
+            "Command {name_display} failed with status {}{output}",
+            result.status,
         ))
     }
 }
