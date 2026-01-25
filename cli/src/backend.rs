@@ -174,7 +174,7 @@ pub async fn reinit_backend<B: Backend>(project: &Project) -> Result<B, FailToIn
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if !cache_paths.contains(name_str.as_ref()) {
+            if !cache_paths.contains(&*name_str) {
                 let path = entry.path();
                 if path.is_dir() {
                     std::fs::remove_dir_all(&path)?;
