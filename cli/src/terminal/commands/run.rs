@@ -531,31 +531,32 @@ async fn check_toolchain_for_backend(backend: TargetBackend) -> Result<()> {
         TargetBackend::Apple => {
             let xcode = Xcode;
             if let Err(e) = xcode.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Xcode toolchain check failed: {e}");
             }
-            let sdk = AppleSdk::Ios;
+            // Running the Apple backend uses iOS Simulator tooling (`simctl`/`xcrun`).
+            let sdk = AppleSdk::IosSimulator;
             if let Err(e) = sdk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("{sdk} toolchain check failed: {e}");
             }
         }
         TargetBackend::Android => {
             let sdk = AndroidSdk;
             if let Err(e) = sdk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Android SDK toolchain check failed: {e}");
             }
             let ndk = AndroidNdk;
             if let Err(e) = ndk.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("Android NDK toolchain check failed: {e}");
             }
             let cmake = Cmake {};
             if let Err(e) = cmake.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("CMake toolchain check failed: {e}");
             }
         }
         TargetBackend::Gtk4 => {
             let toolchain = Gtk4Toolchain;
             if let Err(e) = toolchain.check().await {
-                bail!("Toolchain check failed: {e}");
+                bail!("GTK4 toolchain check failed: {e}");
             }
         }
     }

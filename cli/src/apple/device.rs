@@ -447,17 +447,21 @@ impl Device for AppleSimulator {
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         info!("Installing app on apple simulator {}", self.name);
-        run_command(
-            "xcrun",
-            [
-                "simctl",
-                "install",
-                &self.udid,
-                artifact.path().to_str().unwrap(),
-            ],
-        )
-        .await
-        .map_err(|e| FailToRun::Install(eyre!("Failed to install app: {e}")))?;
+        let install_output = Command::new("xcrun")
+            .args(["simctl", "install", &self.udid])
+            .arg(artifact.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| FailToRun::Install(eyre!("Failed to install app: {e}")))?;
+        if !install_output.status.success() {
+            return Err(FailToRun::Install(eyre!(
+                "Failed to install app:\n{}\n{}",
+                String::from_utf8_lossy(&install_output.stdout).trim(),
+                String::from_utf8_lossy(&install_output.stderr).trim(),
+            )));
+        }
 
         info!("Launching app on apple simulator {}", self.name);
 
@@ -468,8 +472,19 @@ impl Device for AppleSimulator {
         let process_name = artifact
             .path()
             .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or(bundle_id.as_str())
+            .ok_or_else(|| {
+                FailToRun::Run(eyre!(
+                    "Artifact path has no filename: {}",
+                    artifact.path().display()
+                ))
+            })?
+            .to_str()
+            .ok_or_else(|| {
+                FailToRun::Run(eyre!(
+                    "Artifact filename is not valid UTF-8: {}",
+                    artifact.path().display()
+                ))
+            })?
             .to_string();
 
         let log_level = options.log_level();
