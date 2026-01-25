@@ -97,6 +97,18 @@ impl PreviewSession {
         }
         Ok(())
     }
+
+    /// Detach the preview app so it keeps running after this session is dropped.
+    ///
+    /// This "forgets" the Running instance so its Drop handler won't kill the app.
+    /// The app will continue running and can be reused by future preview sessions.
+    pub fn detach(&mut self) {
+        if let Some(running) = self.running.take() {
+            // Leak the Running to prevent Drop from killing the app
+            std::mem::forget(running);
+            self.owns_app = false;
+        }
+    }
 }
 
 /// Launch a preview session for the given platform.
