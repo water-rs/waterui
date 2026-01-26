@@ -3,8 +3,11 @@
 //! Renders a WaterUI List as a GTK4 ListView inside a ScrolledWindow
 //! for efficient handling of large lists.
 
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use gtk4::Widget;
+use nami::Signal;
 use waterui::component::list::ListConfig;
 use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
@@ -33,6 +36,8 @@ impl GtkComponent for Native<ListConfig> {
 
         // Render each list item using Views trait
         let contents = config.contents;
+        let on_delete = config.on_delete.map(Rc::new);
+        let editing = config.editing.get();
         let len = contents.len();
         for index in 0..len {
             if let Some(item) = contents.get_view(index) {
@@ -50,13 +55,17 @@ impl GtkComponent for Native<ListConfig> {
                 content_widget.set_hexpand(true);
                 row_box.append(&content_widget);
 
-                // Add delete button if on_delete is set
-                if let Some(on_delete) = item.on_delete {
+                // Add delete button if enabled and item is deletable
+                if let Some(on_delete) = on_delete.as_ref()
+                    && editing
+                    && item.deletable.get()
+                {
                     let delete_btn = gtk4::Button::from_icon_name("edit-delete-symbolic");
                     delete_btn.add_css_class("destructive-action");
                     delete_btn.add_css_class("flat");
 
                     let env_clone = env.clone();
+                    let on_delete = on_delete.clone();
                     delete_btn.connect_clicked(move |_| {
                         on_delete(&env_clone, index);
                     });

@@ -6,12 +6,15 @@
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use color_eyre::eyre::{Context, Result, bail};
 use smol::stream::StreamExt;
 
 use super::app_client::PreviewAppClient;
 use super::protocol::PreviewPlatform;
+use super::protocol::DylibId;
+use super::protocol::PreviewTcpConfig;
 use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
@@ -33,64 +36,76 @@ pub struct PreviewSession {
     pub platform: PreviewPlatform,
     /// Path to the built dylib (if any).
     dylib_path: Option<PathBuf>,
-    /// Whether we've sent the dylib to the app.
-    dylib_sent: bool,
     /// Running instance for apps launched by this session.
     running: Option<Pin<Box<Running>>>,
     /// Whether this session owns the app lifecycle.
     owns_app: bool,
 }
 
+#[derive(Debug, Clone)]
+/// A built dylib payload (bytes + stable id).
+pub struct BuiltDylib {
+    /// SHA-256 id of `bytes`.
+    pub id: DylibId,
+    /// Raw dylib bytes.
+    pub bytes: Vec<u8>,
+}
+
 impl PreviewSession {
     /// Build the user's project as a dylib.
-    pub async fn build_dylib(&mut self, project_path: &std::path::Path) -> Result<Vec<u8>> {
-        let needs_rebuild = self.watcher.has_changed(project_path)?
-            || self.dylib_path.is_none();
+    pub async fn build_dylib(&mut self, project_path: &std::path::Path) -> Result<BuiltDylib> {
+        let stamp = self.watcher.stamp(project_path).await?;
+        let project = Project::open(project_path).await?;
+        let target = match self.platform {
+            PreviewPlatform::Macos => TargetPlatform::MacOS,
+            PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
+            PreviewPlatform::Ios => TargetPlatform::IOS,
+            PreviewPlatform::Android => TargetPlatform::Android,
+        };
 
-        if needs_rebuild {
+        let rust_build = RustBuild::new(project.root(), target.triple(), false);
+        let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
+        let candidate_path = self
+            .dylib_path
+            .clone()
+            .unwrap_or_else(|| expected_path.clone());
+
+        let dylib_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime).await? {
+            candidate_path
+        } else {
             eprintln!("[preview] Building dylib...");
-            let project = Project::open(project_path).await?;
-            let target = match self.platform {
-                PreviewPlatform::Macos => TargetPlatform::MacOS,
-                PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
-                PreviewPlatform::Ios => TargetPlatform::IOS,
-                PreviewPlatform::Android => TargetPlatform::Android,
-            };
-
-            let rust_build = RustBuild::new(project.root(), target.triple(), false);
             let dylib_path = rust_build
                 .build_dylib(project.crate_name(), false)
                 .await
                 .wrap_err("Failed to build dylib")?;
 
-            self.dylib_path = Some(dylib_path.clone());
-            self.dylib_sent = false;
-
             eprintln!("[preview] Dylib built: {}", dylib_path.display());
-        }
+            dylib_path
+        };
 
-        let dylib_path = self.dylib_path.as_ref().expect("dylib should exist");
-        let data = smol::fs::read(dylib_path).await?;
-        Ok(data)
+        self.dylib_path = Some(dylib_path.clone());
+
+        let data = smol::fs::read(&dylib_path).await?;
+        let id = DylibId::from_payload(&data);
+        Ok(BuiltDylib { id, bytes: data })
     }
 
     /// Render a preview and return PNG bytes.
-    pub fn render(
+    pub async fn render(
         &mut self,
-        dylib_data: &[u8],
+        dylib: &BuiltDylib,
         symbol: &str,
         width: f32,
         height: f32,
     ) -> Result<Vec<u8>> {
-        let needs_reload = !self.dylib_sent;
-        self.dylib_sent = true;
-
-        self.client.render(dylib_data, needs_reload, symbol, width, height)
+        self.client
+            .render(dylib.id, &dylib.bytes, symbol, width, height)
+            .await
     }
 
     /// Shutdown the preview app if this session launched it.
-    pub fn shutdown(&mut self) -> Result<()> {
-        let _ = self.client.shutdown();
+    pub async fn shutdown(&mut self) -> Result<()> {
+        let _ = self.client.shutdown().await;
         if self.owns_app {
             // Dropping `running` will terminate the app if still alive.
             self.running.take();
@@ -111,6 +126,17 @@ impl PreviewSession {
     }
 }
 
+async fn dylib_is_up_to_date(path: &std::path::Path, source_mtime: SystemTime) -> Result<bool> {
+    let metadata = match smol::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+
+    let dylib_mtime = metadata.modified()?;
+    Ok(dylib_mtime >= source_mtime)
+}
+
 /// Launch a preview session for the given platform.
 ///
 /// This will:
@@ -121,15 +147,18 @@ impl PreviewSession {
 /// # Errors
 /// Returns an error if the preview app cannot be launched or connected.
 pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<PreviewSession> {
+    let tcp_config = PreviewTcpConfig::from_env()
+        .map_err(|e| color_eyre::eyre::eyre!(e))
+        .wrap_err("Invalid preview TCP config")?;
+
     // First, try to connect to an already-running preview app
-    if let Ok(client) = PreviewAppClient::connect() {
+    if let Ok(client) = PreviewAppClient::connect(tcp_config).await {
         eprintln!("[preview] Connected to existing preview app");
         return Ok(PreviewSession {
             client,
             watcher: ProjectWatcher::new(),
             platform,
             dylib_path: None,
-            dylib_sent: false,
             running: None,
             owns_app: false,
         });
@@ -229,7 +258,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
     eprintln!("[preview] Preview app launched, waiting for TCP connection...");
 
     // Wait for TCP connection while monitoring for crashes
-    let result = wait_for_connection_or_crash(running, platform).await;
+    let result = wait_for_connection_or_crash(running, platform, tcp_config).await;
 
     match result {
         ConnectionResult::Connected { client, running } => Ok(PreviewSession {
@@ -237,7 +266,6 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             watcher: ProjectWatcher::new(),
             platform,
             dylib_path: None,
-            dylib_sent: false,
             running: Some(running),
             owns_app: true,
         }),
@@ -246,18 +274,14 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
         }
         ConnectionResult::Exited => {
             bail!(
-                "Preview app exited unexpectedly.\n\
-                 Check the app logs for more information."
+                "Preview app exited unexpectedly.\nCheck the app logs for more information."
             )
         }
         ConnectionResult::Timeout => {
             bail!(
-                "Preview app started but failed to connect via TCP after 10 seconds.\n\
-                 Possible causes:\n\
-                 - The app may have crashed during initialization\n\
-                 - The TCP server failed to start\n\
-                 - Port 2106-2155 may be blocked\n\n\
-                 Try running with WATERUI_CRASH_DEBUG=1 for more details."
+                "Preview app started but failed to connect via TCP after 10 seconds.\nPossible causes:\n- The app may have crashed during initialization\n- The TCP server failed to start\n- Port range {}..={} may be blocked\n\nTry running with WATERUI_CRASH_DEBUG=1 for more details.",
+                tcp_config.port_start,
+                tcp_config.ports().end()
             )
         }
     }
@@ -282,6 +306,7 @@ enum ConnectionResult {
 async fn wait_for_connection_or_crash(
     running: Running,
     _platform: PreviewPlatform,
+    tcp_config: PreviewTcpConfig,
 ) -> ConnectionResult {
     const MAX_ATTEMPTS: u32 = 100; // 10 seconds total
     const POLL_INTERVAL_MS: u64 = 100;
@@ -313,7 +338,7 @@ async fn wait_for_connection_or_crash(
         }
 
         // Try to connect to TCP
-        if let Ok(client) = PreviewAppClient::connect() {
+        if let Ok(client) = PreviewAppClient::connect(tcp_config).await {
             eprintln!("[preview] Connected to preview app after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
             return ConnectionResult::Connected { client, running };
         }
