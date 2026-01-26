@@ -27,10 +27,12 @@ use {
 
 // Platform-specific imports for Vulkan HAL texture import (Android)
 #[cfg(target_os = "android")]
-use {
-    ash::vk,
-    wgpu_hal::api::Vulkan as VulkanApi,
-};
+use crate::components::android_ahb;
+
+/// Native drop callback type for external resources.
+///
+/// Android: used to release an acquired `AHardwareBuffer*` without Rust linking to API-26+ symbols.
+pub type WuiExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 use waterui_graphics::shared_context::shared_context;
 use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, OutputSize, ViewEffectErased};
@@ -138,6 +140,8 @@ pub struct WuiViewEffectState {
     /// Imported texture from external source (IOSurface/AHardwareBuffer)
     /// This replaces capture_texture when using zero-copy import
     imported_texture: Option<wgpu::Texture>,
+    /// Format of the imported texture (if any)
+    imported_format: Option<wgpu::TextureFormat>,
     /// Retained Metal texture when using the Metal import path (keeps it alive for wgpu)
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     imported_metal_texture: Option<metal::Texture>,
@@ -317,6 +321,7 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             output_config,
             capture_texture: Some(capture_texture),
             imported_texture: None,
+            imported_format: None,
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             imported_metal_texture: None,
             capture_format,
@@ -436,6 +441,7 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             // We'll use this directly in render() instead of the capture texture
             // For now, we just validate it's not null
             state.imported_texture = None;
+            state.imported_format = None;
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 state.imported_metal_texture = None;
@@ -455,10 +461,16 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             }
         }
         WuiInputType::AHardwareBuffer => {
-            // Import AHardwareBuffer as wgpu texture (Android zero-copy)
+            // Import AHardwareBuffer as wgpu texture (Android zero-copy).
+            // This path requires a native drop callback to keep the AHardwareBuffer alive for
+            // the lifetime of the imported wgpu texture. Use the dedicated
+            // `waterui_view_effect_set_input_ahardwarebuffer` entry point.
             #[cfg(target_os = "android")]
             {
-                import_ahardwarebuffer(state, input_handle, width, height)
+                tracing::error!(
+                    "[ViewEffect] AHardwareBuffer import requires a drop callback; use waterui_view_effect_set_input_ahardwarebuffer"
+                );
+                false
             }
             #[cfg(not(target_os = "android"))]
             {
@@ -501,6 +513,7 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
                 },
             );
             state.imported_texture = None;
+            state.imported_format = None;
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 state.imported_metal_texture = None;
@@ -535,7 +548,9 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         let state = unsafe { &mut *state };
 
         let input_format = if state.imported_texture.is_some() {
-            wgpu::TextureFormat::Rgba16Float
+            state
+                .imported_format
+                .expect("[ViewEffect] imported texture is set but format is missing")
         } else {
             state.capture_format
         };
@@ -848,290 +863,6 @@ fn import_metal_texture(
     true
 }
 
-/// Import an AHardwareBuffer as a wgpu texture (Android zero-copy path).
-///
-/// This function creates a wgpu texture that directly references the AHardwareBuffer,
-/// enabling zero-copy texture sharing between the Android view system and the GPU effect pipeline.
-///
-/// Uses the VK_ANDROID_external_memory_android_hardware_buffer extension to import
-/// the hardware buffer as a Vulkan image, then wraps it as a wgpu texture.
-///
-/// # Arguments
-///
-/// * `state` - The ViewEffect state
-/// * `ahb_ptr` - Pointer to an AHardwareBuffer
-/// * `width` - Width in pixels
-/// * `height` - Height in pixels
-///
-/// # Safety
-///
-/// The AHardwareBuffer must remain valid for the lifetime of the imported texture.
-#[cfg(target_os = "android")]
-fn import_ahardwarebuffer(
-    state: &mut WuiViewEffectState,
-    ahb_ptr: *mut c_void,
-    width: u32,
-    height: u32,
-) -> bool {
-    use wgpu_hal::Api;
-
-    if ahb_ptr.is_null() {
-        tracing::error!("[ViewEffect] AHardwareBuffer pointer is null");
-        return false;
-    }
-
-    tracing::debug!(
-        "[ViewEffect] Importing AHardwareBuffer: {}x{}",
-        width, height
-    );
-
-    // Get the raw Vulkan device from wgpu
-    // We need to access the HAL device to create a texture from external memory
-    let hal_device_result = unsafe {
-        state.device.as_hal::<VulkanApi, _, _>(|hal_device| {
-            hal_device.map(|device| {
-                import_ahb_as_vulkan_texture(device, ahb_ptr, width, height)
-            })
-        })
-    };
-
-    let Some(import_result) = hal_device_result else {
-        tracing::error!("[ViewEffect] Failed to get Vulkan HAL device (not using Vulkan backend?)");
-        return false;
-    };
-
-    let (hal_texture, _vk_image, _vk_memory) = match import_result {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("[ViewEffect] AHardwareBuffer import failed: {}", e);
-            return false;
-        }
-    };
-
-    // Create wgpu texture descriptor
-    let texture_desc = wgpu::TextureDescriptor {
-        label: Some("ViewEffect Imported AHardwareBuffer Texture"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        // AHardwareBuffer typically uses RGBA8 or RGBA16Float
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    };
-
-    // Create wgpu texture from HAL texture
-    let wgpu_texture = unsafe {
-        state.device.create_texture_from_hal::<VulkanApi>(hal_texture, &texture_desc)
-    };
-
-    // Store the imported texture
-    state.imported_texture = Some(wgpu_texture);
-    state.input_width = width;
-    state.input_height = height;
-
-    // Recalculate output dimensions
-    let (output_width, output_height) = state.output_size.compute(width, height);
-    if output_width != state.output_width || output_height != state.output_height {
-        state.output_width = output_width;
-        state.output_height = output_height;
-        state.output_config.width = output_width;
-        state.output_config.height = output_height;
-
-        if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-            tracing::warn!("[ViewEffect] output resize failed ({}x{})", output_width, output_height);
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Import an AHardwareBuffer as a Vulkan HAL texture.
-///
-/// This function uses the VK_ANDROID_external_memory_android_hardware_buffer extension
-/// to create a VkImage backed by the AHardwareBuffer.
-#[cfg(target_os = "android")]
-fn import_ahb_as_vulkan_texture(
-    hal_device: &wgpu_hal::vulkan::Device,
-    ahb_ptr: *mut c_void,
-    width: u32,
-    height: u32,
-) -> Result<(wgpu_hal::vulkan::Texture, vk::Image, vk::DeviceMemory), &'static str> {
-    use wgpu_hal::Api;
-
-    // Get the raw Vulkan device
-    let raw_device = hal_device.raw_device();
-
-    // Get the physical device for memory type queries
-    let shared = hal_device.shared_instance();
-    let physical_device = shared.physical_device();
-    let instance = shared.raw_instance();
-
-    // Create ExternalMemoryImageCreateInfo for AHardwareBuffer
-    let mut external_memory_create_info = vk::ExternalMemoryImageCreateInfo::default()
-        .handle_types(vk::ExternalMemoryHandleTypeFlags::ANDROID_HARDWARE_BUFFER_ANDROID);
-
-    // Create the image with external memory support
-    // Using RGBA8 format which is commonly supported by AHardwareBuffer
-    let image_create_info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(vk::Format::R8G8B8A8_SRGB)
-        .extent(vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(vk::ImageUsageFlags::SAMPLED)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .push_next(&mut external_memory_create_info);
-
-    // Create the VkImage
-    let vk_image = unsafe {
-        raw_device.create_image(&image_create_info, None)
-            .map_err(|_| "Failed to create VkImage")?
-    };
-
-    // Get memory requirements for the image
-    let mem_requirements = unsafe {
-        raw_device.get_image_memory_requirements(vk_image)
-    };
-
-    // Get memory properties
-    let memory_properties = unsafe {
-        instance.get_physical_device_memory_properties(physical_device)
-    };
-
-    // Get AHardwareBuffer properties to determine the correct memory type
-    let ahb_properties = unsafe {
-        let mut properties = vk::AndroidHardwareBufferPropertiesANDROID::default();
-
-        // Load the extension function
-        let get_ahb_properties_fn = instance
-            .get_device_proc_addr(
-                raw_device.handle(),
-                c"vkGetAndroidHardwareBufferPropertiesANDROID".as_ptr(),
-            )
-            .ok_or("Failed to load vkGetAndroidHardwareBufferPropertiesANDROID")?;
-
-        type GetAhbPropertiesFn = unsafe extern "system" fn(
-            vk::Device,
-            *const c_void,
-            *mut vk::AndroidHardwareBufferPropertiesANDROID,
-        ) -> vk::Result;
-
-        let get_ahb_properties: GetAhbPropertiesFn = std::mem::transmute(get_ahb_properties_fn);
-
-        let result = get_ahb_properties(
-            raw_device.handle(),
-            ahb_ptr,
-            &mut properties,
-        );
-
-        if result != vk::Result::SUCCESS {
-            // Clean up the image we created
-            raw_device.destroy_image(vk_image, None);
-            return Err("vkGetAndroidHardwareBufferPropertiesANDROID failed");
-        }
-
-        properties
-    };
-
-    // Find memory type from AHB properties
-    let ahb_memory_type_index = find_memory_type_index(
-        &memory_properties,
-        ahb_properties.memory_type_bits,
-        vk::MemoryPropertyFlags::empty(), // AHB memory type is already suitable
-    ).ok_or("No suitable memory type from AHardwareBuffer properties")?;
-
-    // Allocate memory from AHardwareBuffer
-    let mut dedicated_allocate_info = vk::MemoryDedicatedAllocateInfo::default()
-        .image(vk_image);
-
-    let mut import_info = vk::ImportAndroidHardwareBufferInfoANDROID::default()
-        .buffer(ahb_ptr as *mut _);
-
-    let allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(ahb_properties.allocation_size)
-        .memory_type_index(ahb_memory_type_index)
-        .push_next(&mut dedicated_allocate_info)
-        .push_next(&mut import_info);
-
-    let vk_memory = unsafe {
-        raw_device.allocate_memory(&allocate_info, None)
-            .map_err(|_| {
-                raw_device.destroy_image(vk_image, None);
-                "Failed to allocate memory from AHardwareBuffer"
-            })?
-    };
-
-    // Bind the memory to the image
-    unsafe {
-        raw_device.bind_image_memory(vk_image, vk_memory, 0)
-            .map_err(|_| {
-                raw_device.free_memory(vk_memory, None);
-                raw_device.destroy_image(vk_image, None);
-                "Failed to bind image memory"
-            })?;
-    }
-
-    // Create the HAL texture wrapper
-    let hal_texture = unsafe {
-        <VulkanApi as Api>::Device::texture_from_raw(
-            vk_image,
-            &wgpu::TextureDescriptor {
-                label: Some("AHardwareBuffer Imported Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            None, // Drop callback - memory is handled separately
-        )
-    };
-
-    tracing::info!("[ViewEffect] Successfully imported AHardwareBuffer as Vulkan texture");
-
-    Ok((hal_texture, vk_image, vk_memory))
-}
-
-/// Find a memory type index that satisfies the given requirements.
-#[cfg(target_os = "android")]
-fn find_memory_type_index(
-    mem_properties: &vk::PhysicalDeviceMemoryProperties,
-    type_bits: u32,
-    required_flags: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    for i in 0..mem_properties.memory_type_count {
-        let type_supported = (type_bits & (1 << i)) != 0;
-        let properties_match = mem_properties.memory_types[i as usize]
-            .property_flags
-            .contains(required_flags);
-
-        if type_supported && properties_match {
-            return Some(i);
-        }
-    }
-    None
-}
-
 /// Set input from an AHardwareBuffer (Android-specific zero-copy path).
 ///
 /// This function is called from JNI with a HardwareBuffer object.
@@ -1152,22 +883,46 @@ fn find_memory_type_index(
 pub unsafe extern "C" fn waterui_view_effect_set_input_ahardwarebuffer(
     state: *mut WuiViewEffectState,
     ahb_ptr: *mut c_void,
+    drop_fn: WuiExternalDropFn,
+    drop_data: *mut c_void,
     width: u32,
     height: u32,
 ) -> bool {
-    if state.is_null() || ahb_ptr.is_null() || width == 0 || height == 0 {
+    if state.is_null() || ahb_ptr.is_null() || drop_fn as usize == 0 || width == 0 || height == 0 {
         return false;
     }
 
     #[cfg(target_os = "android")]
     {
         let state = unsafe { &mut *state };
-        import_ahardwarebuffer(state, ahb_ptr, width, height)
+        match android_ahb::import_ahardwarebuffer_as_wgpu_texture(
+            &state.device,
+            ahb_ptr,
+            width,
+            height,
+            "ViewEffect Imported AHardwareBuffer Texture",
+            drop_fn,
+            drop_data,
+        ) {
+            Ok((texture, format)) => {
+                state.imported_texture = Some(texture);
+                state.imported_format = Some(format);
+                state.input_width = width;
+                state.input_height = height;
+                true
+            }
+            Err(e) => {
+                tracing::error!("[ViewEffect] AHardwareBuffer import failed: {e}");
+                false
+            }
+        }
     }
 
     #[cfg(not(target_os = "android"))]
     {
         let _ = state;
+        let _ = drop_fn;
+        let _ = drop_data;
         tracing::error!("[ViewEffect] AHardwareBuffer import only supported on Android");
         false
     }
