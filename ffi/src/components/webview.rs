@@ -4,10 +4,13 @@
 //! to create and control web views.
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
 use core::pin::Pin;
 
+use base64::Engine;
 use crate::closure::WuiFn;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
 use waterui_str::Str;
@@ -215,6 +218,16 @@ pub struct WuiJsCallback {
     pub call: unsafe extern "C" fn(data: *mut (), success: bool, result: WuiStr),
 }
 
+/// Message payload emitted from JavaScript to a native-registered handler.
+///
+/// `payload_base64` is base64-encoded bytes from JavaScript.
+/// `reply` must be called exactly once for request/response semantics.
+#[repr(C)]
+pub struct WuiWebViewMessage {
+    pub payload_base64: WuiStr,
+    pub reply: WuiJsCallback,
+}
+
 /// FFI representation of a WebView handle with function pointers.
 ///
 /// Native backends create this struct with function pointers to their implementation.
@@ -256,6 +269,22 @@ pub struct WuiWebViewHandle {
     /// Set event callback. Native calls this when events occur.
     pub watch: unsafe extern "C" fn(*mut (), WuiFn<WuiWebViewEvent>),
 
+    // JS-to-native messaging
+    /// Register a named handler that can be called from JavaScript.
+    ///
+    /// Backends are expected to provide a Promise-based API where possible:
+    /// JavaScript sends `payload_base64` and receives a base64 reply.
+    pub add_handler:
+        Option<unsafe extern "C" fn(*mut (), WuiStr, WuiFn<WuiWebViewMessage>)>,
+    /// Removes a previously added handler.
+    pub remove_handler: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
+
+    // Cookies
+    /// Sets a cookie for the web view. The string is a Set-Cookie header value.
+    pub set_cookie: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
+    /// Gets cookies as newline-separated Set-Cookie strings.
+    pub get_cookies: Option<unsafe extern "C" fn(*const ()) -> WuiStr>,
+
     // JavaScript
     /// Execute JavaScript on the currently loaded page and call callback with result.
     pub run_javascript: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
@@ -271,9 +300,19 @@ pub struct WuiWebViewHandle {
 /// to extract the native webview pointer for rendering.
 pub struct FfiWebViewHandle {
     ffi: WuiWebViewHandle,
+    watchers: Rc<RefCell<Vec<Rc<dyn Fn(WebViewEvent)>>>>,
+    watcher_installed: Cell<bool>,
 }
 
 impl FfiWebViewHandle {
+    fn new(ffi: WuiWebViewHandle) -> Self {
+        Self {
+            ffi,
+            watchers: Rc::new(RefCell::new(Vec::new())),
+            watcher_installed: Cell::new(false),
+        }
+    }
+
     /// Returns the raw pointer to the native WebView wrapper.
     ///
     /// This pointer points to the native `WebViewWrapper` (Swift/Kotlin)
@@ -338,33 +377,91 @@ impl WebViewHandle for FfiWebViewHandle {
     }
 
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
-        // Wrap the Rust closure in a WuiFn that converts FFI events to Rust events
+        self.watchers.borrow_mut().push(Rc::new(f));
+
+        if self.watcher_installed.replace(true) {
+            return;
+        }
+
+        let watchers = self.watchers.clone();
+        // Wrap a single Rust closure in a WuiFn that converts FFI events to Rust events
+        // and fan-outs to all registered watchers.
         let callback = WuiFn::from(move |ffi_event: WuiWebViewEvent| {
-            let rust_event = unsafe { ffi_event.into_rust() };
-            f(rust_event);
+            let event = unsafe { ffi_event.into_rust() };
+            let snapshot = watchers.borrow().clone();
+            for watcher in snapshot {
+                watcher(event.clone())
+            }
         });
+
         unsafe { (self.ffi.watch)(self.ffi.data, callback) }
     }
 
-    fn add_handler(&self, _name: &str, _handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
-        // Not implemented in FFI layer yet
-        tracing::warn!("add_handler not implemented in FFI");
+    fn add_handler(&self, name: &str, handler: Box<dyn Fn(&[u8]) -> Vec<u8> + 'static>) {
+        let Some(add_handler) = self.ffi.add_handler else {
+            tracing::warn!("add_handler not supported by native backend");
+            return;
+        };
+
+        let engine = base64::engine::general_purpose::STANDARD;
+        let name = Str::from(name.to_string());
+        let callback = WuiFn::from(move |msg: WuiWebViewMessage| {
+            let payload_b64: Str = unsafe { msg.payload_base64.into_rust() };
+            let payload = match engine.decode(payload_b64.as_str()) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    let message = Str::from(err.to_string());
+                    unsafe { (msg.reply.call)(msg.reply.data, false, message.into_ffi()) };
+                    return;
+                }
+            };
+
+            let reply_bytes = handler(&payload);
+            let reply_b64 = engine.encode(reply_bytes);
+            let reply = Str::from(reply_b64);
+            unsafe { (msg.reply.call)(msg.reply.data, true, reply.into_ffi()) };
+        });
+
+        unsafe { add_handler(self.ffi.data, name.into_ffi(), callback) }
     }
 
-    fn remove_handler(&self, _name: &str) {
-        // Not implemented in FFI layer yet
-        tracing::warn!("remove_handler not implemented in FFI");
+    fn remove_handler(&self, name: &str) {
+        let Some(remove_handler) = self.ffi.remove_handler else {
+            tracing::warn!("remove_handler not supported by native backend");
+            return;
+        };
+
+        let name = Str::from(name.to_string());
+        unsafe { remove_handler(self.ffi.data, name.into_ffi()) }
     }
 
-    fn set_cookie(&self, _cookie: Cookie<'static>) {
-        // Not implemented in FFI layer yet
-        tracing::warn!("set_cookie not implemented in FFI");
+    fn set_cookie(&self, cookie: Cookie<'static>) {
+        let Some(set_cookie) = self.ffi.set_cookie else {
+            tracing::warn!("set_cookie not supported by native backend");
+            return;
+        };
+        let cookie = Str::from(cookie.to_string());
+        unsafe { set_cookie(self.ffi.data, cookie.into_ffi()) }
     }
 
     fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        // Not implemented in FFI layer yet
-        tracing::warn!("get_cookies not implemented in FFI");
-        Vec::new()
+        let Some(get_cookies) = self.ffi.get_cookies else {
+            tracing::warn!("get_cookies not supported by native backend");
+            return Vec::new();
+        };
+
+        let raw = unsafe { get_cookies(self.ffi.data.cast_const()) };
+        let text: Str = unsafe { raw.into_rust() };
+        text.as_str()
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                Cookie::parse(trimmed.to_string()).ok().map(Cookie::into_owned)
+            })
+            .collect()
     }
 
     fn run_javascript(&self, script: &str) -> impl core::future::Future<Output = Result<Str, Str>> {
@@ -470,10 +567,10 @@ pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView)
     unsafe {
         let webview = &*webview;
         let handle = webview.0.handle();
-        // Safety: Native backend controls both sides - they install the WebViewController
-        // which creates FfiWebViewHandle, and they call this function to retrieve it.
-        let ffi_handle = handle.downcast_ref_unchecked::<FfiWebViewHandle>();
-        ffi_handle.native_ptr()
+        match handle.downcast_ref::<FfiWebViewHandle>() {
+            Some(ffi_handle) => ffi_handle.native_ptr(),
+            None => core::ptr::null_mut(),
+        }
     }
 }
 
@@ -492,7 +589,7 @@ struct FfiWebViewController {
 impl CustomWebViewController for FfiWebViewController {
     fn open(&self) -> impl WebViewHandle {
         let handle = unsafe { (self.create_fn)() };
-        FfiWebViewHandle { ffi: handle }
+        FfiWebViewHandle::new(handle)
     }
 }
 

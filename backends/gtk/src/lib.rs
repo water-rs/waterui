@@ -24,6 +24,7 @@ pub mod components;
 pub mod layout;
 pub mod renderer;
 pub mod util;
+pub mod webview;
 pub mod window;
 
 pub use app::GtkApp;
