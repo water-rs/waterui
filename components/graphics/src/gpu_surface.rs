@@ -43,17 +43,47 @@ pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::Textu
         .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
 }
 
+/// Picks a preferred MSAA sample count for a given format, capped by `max_samples`.
+///
+/// This uses adapter-reported format features (WebGPU-compatible) and falls back to 1
+/// if multisampling isn't supported for that format on the current backend.
+#[must_use]
+pub fn preferred_msaa_samples(
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+    max_samples: u32,
+) -> u32 {
+    let max_samples = max_samples.max(1);
+    let features = adapter.get_texture_format_features(format);
+    for sample_count in [16u32, 8, 4, 2, 1] {
+        if sample_count <= max_samples && features.flags.sample_count_supported(sample_count) {
+            return sample_count;
+        }
+    }
+    1
+}
+
 /// GPU resources provided to the renderer during setup.
 ///
 /// Contains references to the wgpu device, queue, and surface format
 /// that the renderer can use to create pipelines, buffers, and other resources.
 pub struct GpuContext<'a> {
+    /// The GPU adapter used to create the device/queue.
+    ///
+    /// This is optional because some backends may not keep an adapter handle around.
+    /// When present, renderers can use it for format capability queries.
+    pub adapter: Option<&'a wgpu::Adapter>,
     /// The wgpu device for creating GPU resources.
     pub device: &'a wgpu::Device,
     /// The wgpu queue for submitting commands.
     pub queue: &'a wgpu::Queue,
     /// The texture format of the surface.
     pub surface_format: wgpu::TextureFormat,
+    /// Preferred MSAA sample count for `surface_format`.
+    ///
+    /// Backends should set this based on `adapter.get_texture_format_features(surface_format)`.
+    /// Renderers that want MSAA should use this value for pipeline and attachments.
+    pub msaa_samples: u32,
     /// Optional pipeline cache for faster pipeline creation.
     pub pipeline_cache: Option<&'a wgpu::PipelineCache>,
 }
@@ -62,6 +92,7 @@ impl core::fmt::Debug for GpuContext<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GpuContext")
             .field("surface_format", &self.surface_format)
+            .field("msaa_samples", &self.msaa_samples)
             .finish_non_exhaustive()
     }
 }
