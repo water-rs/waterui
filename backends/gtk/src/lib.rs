@@ -18,6 +18,11 @@
 //! backend.run(my_view);
 //! ```
 
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "waterui-gtk is Linux-only. The GTK backend targets Linux (X11/Wayland) and is not supported on this platform."
+);
+
 pub mod app;
 pub mod component;
 pub mod components;
