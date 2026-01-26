@@ -41,6 +41,7 @@ pub struct CandlestickRenderer {
     previous_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     msaa_target: Option<MsaaTarget>,
+    msaa_samples: u32,
 
     // Animation state
     animation: ChartAnimation,
@@ -72,6 +73,7 @@ impl CandlestickRenderer {
             previous_buffer: None,
             bind_group: None,
             msaa_target: None,
+            msaa_samples: 1,
             animation: ChartAnimation::default(),
             needs_redraw: false,
             zoom_pan: ZoomPanState::new(),
@@ -106,11 +108,9 @@ impl CandlestickRenderer {
     }
 
     fn create_pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-        };
+        // Charts output premultiplied alpha from shaders (including SDF-based edge AA),
+        // so blending must stay enabled even on HDR surfaces.
+        let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/candlestick.wgsl"));
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Candlestick Chart Shader"),
@@ -202,7 +202,7 @@ impl CandlestickRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: multisample_state(ctx.surface_format),
+                multisample: multisample_state(ctx.msaa_samples),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -211,6 +211,7 @@ impl CandlestickRenderer {
 
 impl GpuRenderer for CandlestickRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+        self.msaa_samples = ctx.msaa_samples;
         // Create pipeline
         self.pipeline = Some(Self::create_pipeline(ctx));
 
@@ -383,6 +384,7 @@ impl GpuRenderer for CandlestickRenderer {
                 frame.width,
                 frame.height,
                 &frame.view,
+                self.msaa_samples,
             );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
