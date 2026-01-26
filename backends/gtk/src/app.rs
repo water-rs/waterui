@@ -3,12 +3,13 @@
 use std::cell::RefCell;
 
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow};
+use gtk4::Application;
 use nami::Signal;
 use waterui::app::App;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
+use crate::webview::ensure_webview_controller;
 use crate::window::create_window;
 
 /// GTK4 application wrapper for WaterUI.
@@ -33,8 +34,9 @@ impl GtkApp {
     /// Runs the application with the provided root view.
     ///
     /// This method blocks until the application exits.
-    pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
+    pub fn run<V: View + Clone + 'static>(self, view: V, mut env: Environment) -> i32 {
         let view = view.clone();
+        ensure_webview_controller(&mut env);
         let env = env.clone();
 
         self.app.connect_activate(move |app| {
@@ -60,7 +62,8 @@ impl GtkApp {
         // Use RefCell to allow taking the content once (AnyView is not Clone)
         // Take ownership of the content using mem::take
         let content = RefCell::new(Some(std::mem::take(&mut main_window.content)));
-        let env = waterui_app.env;
+        let mut env = waterui_app.env;
+        ensure_webview_controller(&mut env);
 
         self.app.connect_activate(move |app| {
             // Take the content or use default if already taken (re-activation)
