@@ -14,10 +14,13 @@ categories.workspace = true
 waterui-core = { path = "../../core" }
 waterui-graphics = { path = "../graphics" }
 waterui-layout = { path = "../layout" }
+waterui-preview-protocol = { path = "../preview-protocol" }
 tracing.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0"
-thiserror.workspace = true
+async-channel = "2.3"
+indexmap = "2"
+blocking = "1.6"
+async-fs = "2.2.0"
+async-process = "2.5.0"
 
 # Async runtime
 async-io = "2.6"

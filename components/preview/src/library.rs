@@ -39,18 +39,19 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(unix)]
-    pub unsafe fn load_from_bytes(data: &[u8]) -> Result<Self, LoadError> {
-        use std::io::Write;
-
+    pub async unsafe fn load_from_bytes(data: &[u8]) -> Result<Self, LoadError> {
         let path = unique_temp_path();
 
-        let mut file = std::fs::File::create(&path).map_err(LoadError::Io)?;
-        file.write_all(data).map_err(LoadError::Io)?;
+        async_fs::write(&path, data).await.map_err(LoadError::Io)?;
 
         #[cfg(target_os = "macos")]
-        codesign_dylib(&path)?;
+        codesign_dylib(&path).await?;
 
-        let lib = unsafe { libloading::Library::new(&path).map_err(LoadError::Library)? };
+        let lib = blocking::unblock({
+            let path = path.clone();
+            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
+        })
+        .await?;
         Ok(Self {
             lib,
             temp_path: Some(path),
@@ -107,14 +108,15 @@ fn unique_temp_path() -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn codesign_dylib(path: &Path) -> Result<(), LoadError> {
-    let output = std::process::Command::new("codesign")
+async fn codesign_dylib(path: &Path) -> Result<(), LoadError> {
+    let output = async_process::Command::new("codesign")
         .arg("--force")
         .arg("--sign")
         .arg("-")
         .arg("--timestamp=none")
         .arg(path)
         .output()
+        .await
         .map_err(LoadError::Io)?;
 
     if output.status.success() {
