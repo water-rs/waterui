@@ -79,85 +79,20 @@ impl std::str::FromStr for PreviewPlatform {
 
 // ============================================================================
 // Daemon → Preview App protocol (TCP, ports 2106+)
-// These types match waterui-preview/src/protocol.rs exactly for serde compat
+// Re-exported from `waterui-preview-protocol` for serde compat across CLI/app
 // ============================================================================
 
-/// Frame size for rendering.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Size {
-    /// Width in points.
-    pub width: f32,
-    /// Height in points.
-    pub height: f32,
-}
+pub use waterui_preview_protocol::{
+    DylibId,
+    DylibSource,
+    PreviewError as AppError,
+    PreviewOutput as AppOutput,
+    PreviewRequest as AppRequest,
+    PreviewResponse as AppResponse,
+    Size,
+};
 
-impl Size {
-    /// Create a new size.
-    #[must_use]
-    pub const fn new(width: f32, height: f32) -> Self {
-        Self { width, height }
-    }
-}
-
-/// How to load the dylib in the preview app.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DylibSource {
-    /// Send new dylib bytes (first request or after code change).
-    Bytes(Vec<u8>),
-    /// Reuse the cached dylib (no code change since last request).
-    Cached,
-}
-
-/// Request from daemon to preview app (TCP).
-/// Must match `waterui_preview::protocol::PreviewRequest` for serde compatibility.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AppRequest {
-    /// Render a view from a dylib.
-    Render {
-        /// Dylib source - either new bytes or reuse cached.
-        dylib: DylibSource,
-        /// Symbol name (e.g., "waterui_preview_dashboard_admin_card").
-        symbol: String,
-        /// Frame size for rendering.
-        frame: Size,
-    },
-    /// Shutdown the preview app.
-    Shutdown,
-}
-
-/// Successful render output from preview app.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppOutput {
-    /// PNG image bytes.
-    pub png_data: Vec<u8>,
-}
-
-/// Errors that can occur during preview rendering in the app.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AppError {
-    /// No cached dylib available - client should resend with `DylibSource::Bytes`.
-    NoCachedDylib,
-    /// Failed to load dylib.
-    DylibLoad(String),
-    /// Symbol not found in dylib.
-    SymbolNotFound(String),
-    /// Rendering failed.
-    RenderFailed(String),
-}
-
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoCachedDylib => write!(f, "No cached dylib available"),
-            Self::DylibLoad(e) => write!(f, "Failed to load dylib: {e}"),
-            Self::SymbolNotFound(s) => write!(f, "Symbol not found: {s}"),
-            Self::RenderFailed(e) => write!(f, "Render failed: {e}"),
-        }
-    }
-}
-
-/// Response from preview app to daemon (TCP).
-pub type AppResponse = Result<AppOutput, AppError>;
+pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
 
 // ============================================================================
 // Utility functions

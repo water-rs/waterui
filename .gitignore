@@ -8,3 +8,11 @@ web/pkg
 .build
 Cargo.lock
 *.log
+
+# Personal/temporary files
+*.skill
+bugreport*.zip
+.worktrees/
+
+# Generated preview images
+examples/**/preview_*.png

@@ -17,11 +17,10 @@ use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 
 impl GtkComponent for Native<LazyContainer> {
-    fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+    fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let (layout, contents) = self.into_inner().into_inner();
         let contents = Rc::new(contents);
         let env = env.clone();
-        let renderer_ptr = renderer as *mut GtkRenderer;
 
         // Widget cache for performance (avoid re-rendering on scroll back)
         let widget_cache: Rc<RefCell<HashMap<usize, Widget>>> =
@@ -64,14 +63,11 @@ impl GtkComponent for Native<LazyContainer> {
 
             // Reconstruct view lazily
             if let Some(view) = contents_clone.get_view(index) {
-                // SAFETY: renderer_ptr is valid for the lifetime of the app
-                unsafe {
-                    if let Some(renderer) = renderer_ptr.as_mut() {
-                        let widget = renderer.render_any(view, &env_clone);
-                        cache_clone.borrow_mut().insert(index, widget.clone());
-                        list_item.set_child(Some(&widget));
-                    }
-                }
+                // Render with a fresh renderer to avoid holding a raw pointer.
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render_any(view, &env_clone);
+                cache_clone.borrow_mut().insert(index, widget.clone());
+                list_item.set_child(Some(&widget));
             }
         });
 
