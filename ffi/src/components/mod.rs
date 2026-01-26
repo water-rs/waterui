@@ -58,6 +58,9 @@ pub mod view_effect;
 /// AppliedFilter metadata FFI bindings for GPU filter rendering
 pub mod applied_filter;
 
+/// Android-only AHardwareBuffer import helpers (Vulkan)
+#[cfg(target_os = "android")]
+pub(crate) mod android_ahb;
+
 /// ViewRenderer FFI bindings for capturing views to PNG
 pub mod view_renderer;
-
