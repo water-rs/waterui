@@ -17,6 +17,7 @@ waterui-controls.workspace = true
 waterui-graphics.workspace = true
 waterui-form.workspace = true
 waterui-media.workspace = true
+waterui-webview.workspace = true
 nami.workspace = true
 tracing.workspace = true
 
@@ -26,29 +27,21 @@ glib.workspace = true
 cairo-rs.workspace = true
 gdk-pixbuf = "0.20"
 
-# GPU surface dependencies
-wgpu = { workspace = true, optional = true }
-wgpu-hal = { workspace = true, optional = true }
-glow = { workspace = true, optional = true }
-pollster = { version = "0.4", optional = true }
-raw-window-handle = { version = "0.6", optional = true }
-epoxy = { version = "0.1", optional = true }
-libloading = { version = "0.9", optional = true }
-
-# Platform-specific GDK backends for GPU surface
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-gdk4-x11 = { version = "0.9", optional = true }
-gdk4-wayland = { version = "0.9", optional = true }
+# GPU surface dependencies (wgpu is required for graphics views & filters).
+wgpu.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gdk4-macos = { version = "0.9", optional = true }
+gdk4-macos = { version = "0.9" }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSResponder", "NSView", "NSWindow"] }
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-quartz-core = { version = "0.3", features = ["CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-core-graphics"] }
 
 [features]
 default = []
-gpu = ["dep:wgpu", "dep:wgpu-hal", "dep:glow", "dep:pollster", "dep:raw-window-handle", "dep:epoxy", "dep:libloading"]
-x11 = ["gpu", "dep:gdk4-x11"]
-wayland = ["gpu", "dep:gdk4-wayland"]
-macos = ["gpu", "dep:gdk4-macos"]
+webkitgtk = []
 
 [lints]
 workspace = true
