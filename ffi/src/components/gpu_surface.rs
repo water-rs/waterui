@@ -60,6 +60,8 @@ ffi_view!(GpuSurface, WuiGpuSurface, gpu_surface);
 /// Uses shared device/queue from `SharedGpuContext` for efficiency.
 /// Only the Surface is created per-view.
 pub struct WuiGpuSurfaceState {
+    /// Adapter used to create the shared device/queue.
+    adapter: wgpu::Adapter,
     /// Shared device (Arc reference from SharedGpuContext)
     device: Arc<wgpu::Device>,
     /// Shared queue (Arc reference from SharedGpuContext)
@@ -70,6 +72,10 @@ pub struct WuiGpuSurfaceState {
     wgpu_surface: wgpu::Surface<'static>,
     /// Surface configuration
     config: wgpu::SurfaceConfiguration,
+    /// The format the user's renderer is currently configured for (via `GpuContext.surface_format`).
+    ///
+    /// This can differ from `config.format` when rendering into external textures.
+    renderer_format: wgpu::TextureFormat,
     /// User's GpuSurface (contains the renderer)
     gpu_surface: GpuSurface,
     /// Whether setup() has been called
@@ -227,10 +233,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         // 4. Create State
         // Store Arc<Device> and Arc<Queue> which are cheap to clone
         let state = Box::new(WuiGpuSurfaceState {
+            adapter: adapter.clone(),
             device,
             queue,
             pipeline_cache,
             wgpu_surface,
+            renderer_format: config.format,
             config,
             gpu_surface,
             initialized: false,
@@ -303,16 +311,20 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         }
 
         // Call setup on first render (await the future synchronously)
-        if !state.initialized {
+        if !state.initialized || state.renderer_format != state.config.format {
+            let format = state.config.format;
             let ctx = GpuContext {
+                adapter: Some(&state.adapter),
                 device: &state.device,
                 queue: &state.queue,
-                surface_format: state.config.format,
+                surface_format: format,
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, format, 4),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
             pollster::block_on(setup_future);
             state.initialized = true;
+            state.renderer_format = format;
         }
 
         // Get next frame texture (guard against wgpu panics so we don't abort across the FFI boundary).
@@ -441,18 +453,19 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
             state.gpu_surface.resize(width, height);
         }
 
-        if !state.initialized || state.config.format != target_format {
-            // Reconfigure the surface format to match the external target.
-            state.config.format = target_format;
+        if !state.initialized || state.renderer_format != target_format {
             let ctx = GpuContext {
+                adapter: Some(&state.adapter),
                 device: &state.device,
                 queue: &state.queue,
                 surface_format: target_format,
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, target_format, 4),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
             pollster::block_on(setup_future);
             state.initialized = true;
+            state.renderer_format = target_format;
         }
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -566,17 +579,19 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
             state.gpu_surface.resize(width, height);
         }
 
-        if !state.initialized || state.config.format != target_format {
-            state.config.format = target_format;
+        if !state.initialized || state.renderer_format != target_format {
             let ctx = GpuContext {
+                adapter: Some(&state.adapter),
                 device: &state.device,
                 queue: &state.queue,
                 surface_format: target_format,
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, target_format, 4),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
             pollster::block_on(setup_future);
             state.initialized = true;
+            state.renderer_format = target_format;
         }
 
         let view = wgpu_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -657,16 +672,20 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
     let state = unsafe { &mut *state };
 
     // Call setup if not already done
-    if !state.initialized {
+    if !state.initialized || state.renderer_format != state.config.format {
+        let format = state.config.format;
         let ctx = GpuContext {
+            adapter: Some(&state.adapter),
             device: &state.device,
             queue: &state.queue,
-            surface_format: state.config.format,
+            surface_format: format,
+            msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, format, 4),
             pipeline_cache: state.pipeline_cache.as_ref(),
         };
         let setup_future = state.gpu_surface.setup(&ctx);
         pollster::block_on(setup_future);
         state.initialized = true;
+        state.renderer_format = format;
     }
 
     // Render first frame

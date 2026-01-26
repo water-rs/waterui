@@ -37,6 +37,7 @@ pub struct RadarRenderer {
     color_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     msaa_target: Option<MsaaTarget>,
+    msaa_samples: u32,
 
     // Animation state
     animation: ChartAnimation,
@@ -65,6 +66,7 @@ impl RadarRenderer {
             color_buffer: None,
             bind_group: None,
             msaa_target: None,
+            msaa_samples: 1,
             animation: ChartAnimation::default(),
             needs_redraw: false,
         }
@@ -92,11 +94,9 @@ impl RadarRenderer {
     }
 
     fn create_pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-        };
+        // Charts output premultiplied alpha from shaders (including SDF-based edge AA),
+        // so blending must stay enabled even on HDR surfaces.
+        let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/radar.wgsl"));
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radar Shader"),
@@ -177,7 +177,7 @@ impl RadarRenderer {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: multisample_state(ctx.surface_format),
+                multisample: multisample_state(ctx.msaa_samples),
                 multiview: None,
                 cache: ctx.pipeline_cache,
             })
@@ -218,6 +218,7 @@ impl RadarRenderer {
 
 impl GpuRenderer for RadarRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl Future<Output = ()> {
+        self.msaa_samples = ctx.msaa_samples;
         // Create pipeline
         self.pipeline = Some(Self::create_pipeline(ctx));
 
@@ -348,6 +349,7 @@ impl GpuRenderer for RadarRenderer {
                 frame.width,
                 frame.height,
                 &frame.view,
+                self.msaa_samples,
             );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
