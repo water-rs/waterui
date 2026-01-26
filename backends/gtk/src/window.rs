@@ -1,6 +1,5 @@
 //! Window management utilities for GTK backend.
 
-use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow};
 
 /// Creates a new application window with the specified properties.
