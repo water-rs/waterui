@@ -4,6 +4,7 @@ pub mod button;
 pub mod container;
 pub mod divider;
 pub mod dynamic;
+pub mod fixed_container_widget;
 pub mod gpu_surface;
 pub mod lazy_container;
 pub mod list;

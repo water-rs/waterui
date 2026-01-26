@@ -1,547 +1,589 @@
-//! `GpuSurface` native renderer for GTK.
+//! `GpuSurface` native renderer for GTK (Linux-only).
 //!
-//! On macOS, GTK uses the Cocoa backend. We render WaterUI's `GpuSurface` by
-//! creating a per-view `CAMetalLayer` and presenting via `wgpu` using
-//! `SurfaceTargetUnsafe::CoreAnimationLayer`.
+//! Implementation strategy:
+//! - Use `GtkGLArea` to obtain a per-widget OpenGL context + framebuffer.
+//! - Create a wgpu device/queue from the *current* GL context via wgpu-hal "external" adapter.
+//! - Each frame, wrap the `GtkGLArea` framebuffer as a wgpu texture and let `GpuSurface` render into it.
+//!
+//! This avoids any window-system-specific surface creation (Wayland/X11) and keeps GL details
+//! fully internal to the GTK backend.
 
-use gtk4::prelude::*;
+use std::cell::RefCell;
+use std::ffi::{CString, c_char, c_void};
+use std::num::NonZeroU32;
+use std::rc::Rc;
+
+use gdk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
-use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
+use waterui_graphics::gpu_surface::{
+    GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, preferred_msaa_samples,
+};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 
-#[cfg(target_os = "macos")]
-mod macos {
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "GTK GpuSurface implementation is Linux-only. The waterui-gtk crate should not be built on non-Linux targets."
+);
 
-    use gtk4::prelude::*;
-
-    use objc2::rc::Retained;
-    use objc2::runtime::AnyObject;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSView, NSWindow};
-    use objc2_core_graphics::{CGPoint, CGRect, CGSize};
-    use objc2_quartz_core::{CAMetalLayer, CALayer};
-
-    use waterui_graphics::gpu_surface::{preferred_msaa_samples, preferred_surface_format};
-
+mod gdk_gl_ffi {
     use super::*;
 
-    #[derive(Debug)]
-    struct GpuSurfaceState {
-        // WaterUI object that owns the user renderer.
-        gpu_surface: Option<GpuSurface>,
-        // Native Metal host objects.
-        content_view: Option<Retained<NSView>>,
-        overlay_view: Option<Retained<NSView>>,
-        metal_layer: Option<Retained<CAMetalLayer>>,
-        // wgpu objects (created asynchronously).
-        instance: Option<wgpu::Instance>,
-        surface: Option<wgpu::Surface<'static>>,
-        adapter: Option<wgpu::Adapter>,
-        device: Option<wgpu::Device>,
-        queue: Option<wgpu::Queue>,
-        config: Option<wgpu::SurfaceConfiguration>,
-        msaa_samples: u32,
-        // Render lifecycle.
-        setup_in_flight: bool,
-        configured: bool,
-        // Input state (pixel coordinates).
-        pointer: PointerState,
-        gesture: GestureState,
-        // Cached scale factor for pixel conversion.
-        scale_factor: i32,
+    // gtk4/gdk4 link us to libgdk-4 already; declare the symbol directly.
+    //
+    // Safety: the returned pointer is owned by the GL implementation; we must not free it.
+    extern "C" {
+        pub fn gdk_gl_context_get_proc_address(
+            context: *mut gdk4::ffi::GdkGLContext,
+            proc_name: *const c_char,
+        ) -> *const c_void;
     }
+}
 
-    impl GpuSurfaceState {
-        fn new(gpu_surface: GpuSurface) -> Self {
-            Self {
-                gpu_surface: Some(gpu_surface),
-                content_view: None,
-                overlay_view: None,
-                metal_layer: None,
-                instance: None,
-                surface: None,
-                adapter: None,
-                device: None,
-                queue: None,
-                config: None,
-                msaa_samples: 1,
-                setup_in_flight: false,
-                configured: false,
-                pointer: PointerState::default(),
-                gesture: GestureState::default(),
-                scale_factor: 1,
-            }
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PixelSize {
+    width: u32,
+    height: u32,
+}
 
-        fn pixel_size_for_widget(widget: &gtk4::Widget, scale_factor: i32) -> (u32, u32) {
-            let w = widget.allocated_width().max(1) as u32;
-            let h = widget.allocated_height().max(1) as u32;
-            let scale = scale_factor.max(1) as u32;
-            (w.saturating_mul(scale), h.saturating_mul(scale))
+impl PixelSize {
+    fn from_widget(area: &gtk4::GLArea) -> Self {
+        let scale = area.scale_factor().max(1) as u32;
+        let w = area.allocated_width().max(1) as u32;
+        let h = area.allocated_height().max(1) as u32;
+        Self {
+            width: w.saturating_mul(scale),
+            height: h.saturating_mul(scale),
         }
     }
+}
 
-    fn get_nswindow_from_widget(widget: &gtk4::Widget) -> Retained<NSWindow> {
-        let root = widget
-            .root()
-            .unwrap_or_else(|| panic!("GpuSurface: widget must be rooted before realize"));
-        let surface = root
-            .surface()
-            .unwrap_or_else(|| panic!("GpuSurface: GtkNative must have a GdkSurface"));
+#[derive(Debug)]
+struct GpuState {
+    gpu_surface: Option<GpuSurface>,
 
-        let macos_surface = surface
-            .downcast::<gdk4_macos::MacosSurface>()
-            .unwrap_or_else(|_| panic!("GpuSurface: expected GdkMacosSurface on macOS"));
+    wgpu_instance: Option<wgpu::Instance>,
+    wgpu_adapter: Option<wgpu::Adapter>,
+    wgpu_device: Option<wgpu::Device>,
+    wgpu_queue: Option<wgpu::Queue>,
 
-        let native_window = macos_surface.native();
-        let ptr = native_window as *mut AnyObject;
-        let ptr = ptr.cast::<NSWindow>();
+    surface_format: Option<wgpu::TextureFormat>,
+    msaa_samples: u32,
 
-        // SAFETY: GDK returns a valid `NSWindow*` that remains alive while the
-        // window/surface is alive. We retain it for our own lifetime tracking.
-        unsafe { Retained::retain(ptr) }
-            .unwrap_or_else(|| panic!("GpuSurface: failed to retain NSWindow from GDK"))
+    last_size: Option<PixelSize>,
+    setup_in_flight: bool,
+    setup_done: bool,
+
+    pointer: PointerState,
+    gesture: GestureState,
+
+    // Used only for querying framebuffer properties.
+    glow: Option<Rc<glow::Context>>,
+}
+
+impl GpuState {
+    fn new(gpu_surface: GpuSurface) -> Self {
+        Self {
+            gpu_surface: Some(gpu_surface),
+            wgpu_instance: None,
+            wgpu_adapter: None,
+            wgpu_device: None,
+            wgpu_queue: None,
+            surface_format: None,
+            msaa_samples: 1,
+            last_size: None,
+            setup_in_flight: false,
+            setup_done: false,
+            pointer: PointerState::default(),
+            gesture: GestureState::default(),
+            glow: None,
+        }
     }
+}
 
-    fn make_overlay_view(
-        content_view: &Retained<NSView>,
-        mtm: MainThreadMarker,
-    ) -> (Retained<NSView>, Retained<CAMetalLayer>) {
-        let overlay_view = NSView::new(mtm);
-        overlay_view.setWantsLayer(true);
-
-        let metal_layer = CAMetalLayer::new();
-        metal_layer.setGeometryFlipped(true);
-        metal_layer.setOpaque(false);
-
-        // SAFETY: CAMetalLayer is a CALayer subclass.
-        overlay_view.setLayer(Some(metal_layer.as_ref().as_ref()));
-
-        content_view.addSubview(&overlay_view);
-
-        (overlay_view, metal_layer)
+fn map_gl_internal_format_to_wgpu(internal: i32) -> wgpu::TextureFormat {
+    match internal as u32 {
+        glow::RGBA8 => wgpu::TextureFormat::Rgba8Unorm,
+        glow::SRGB8_ALPHA8 => wgpu::TextureFormat::Rgba8UnormSrgb,
+        glow::RGB10_A2 => wgpu::TextureFormat::Rgb10a2Unorm,
+        glow::RGBA16F => wgpu::TextureFormat::Rgba16Float,
+        other => {
+            panic!("GpuSurface(GL): unsupported default framebuffer internal format 0x{other:x}")
+        }
     }
+}
 
-    fn update_overlay_geometry(
-        widget: &gtk4::Widget,
-        content_view: &Retained<NSView>,
-        overlay_view: &Retained<NSView>,
-        metal_layer: &Retained<CAMetalLayer>,
-        scale_factor: i32,
-    ) {
-        let root = widget
-            .root()
-            .unwrap_or_else(|| panic!("GpuSurface: widget must be rooted"));
-        let root_widget: gtk4::Widget = root.upcast();
-        let bounds = widget
-            .compute_bounds(&root_widget)
-            .unwrap_or_else(|| panic!("GpuSurface: failed to compute widget bounds in root"));
+fn query_framebuffer_format(gl: &glow::Context) -> wgpu::TextureFormat {
+    // GLArea binds its framebuffer before invoking the "render" signal.
+    let obj_type = unsafe {
+        gl.get_framebuffer_attachment_parameter_i32(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+        )
+    };
 
-        let x = bounds.x() as f64;
-        let y = bounds.y() as f64;
-        let w = bounds.width().max(1.0) as f64;
-        let h = bounds.height().max(1.0) as f64;
-
-        // GTK's coordinate system is top-left. Cocoa can be flipped or not.
-        let flipped = content_view.isFlipped();
-        let content_h = content_view.bounds().size.height;
-        let y = if flipped { y } else { content_h - y - h };
-
-        let frame = CGRect::new(CGPoint::new(x, y), CGSize::new(w, h));
-        overlay_view.setFrame(frame);
-
-        let scale = scale_factor.max(1) as f64;
-        metal_layer.setDrawableSize(CGSize::new(w * scale, h * scale));
-    }
-
-    fn install_pointer_controllers(widget: &gtk4::Widget, state: &Rc<RefCell<GpuSurfaceState>>) {
-        // Motion (hover).
-        let motion = gtk4::EventControllerMotion::new();
-        motion.connect_enter({
-            let state = Rc::clone(state);
-            move |_ctrl, x, y| {
-                let mut state = state.borrow_mut();
-                let scale = state.scale_factor.max(1) as f32;
-                state.pointer.position = Some(waterui_core::layout::Point::new(
-                    x as f32 * scale,
-                    y as f32 * scale,
-                ));
-            }
-        });
-        motion.connect_motion({
-            let state = Rc::clone(state);
-            move |_ctrl, x, y| {
-                let mut state = state.borrow_mut();
-                let scale = state.scale_factor.max(1) as f32;
-                state.pointer.position = Some(waterui_core::layout::Point::new(
-                    x as f32 * scale,
-                    y as f32 * scale,
-                ));
-            }
-        });
-        motion.connect_leave({
-            let state = Rc::clone(state);
-            move |_ctrl| {
-                let mut state = state.borrow_mut();
-                state.pointer.position = None;
-            }
-        });
-        widget.add_controller(motion);
-
-        // Press state.
-        let click = gtk4::GestureClick::new();
-        click.set_button(0);
-        click.connect_pressed({
-            let state = Rc::clone(state);
-            move |_gesture, _n_press, x, y| {
-                let mut state = state.borrow_mut();
-                let scale = state.scale_factor.max(1) as f32;
-                let p = waterui_core::layout::Point::new(x as f32 * scale, y as f32 * scale);
-                state.pointer.hit = Some(p);
-            }
-        });
-        click.connect_released({
-            let state = Rc::clone(state);
-            move |_gesture, _n_press, _x, _y| {
-                let mut state = state.borrow_mut();
-                state.pointer.hit = None;
-            }
-        });
-        widget.add_controller(click);
-    }
-
-    fn schedule_wgpu_init(widget: &gtk4::Widget, state: Rc<RefCell<GpuSurfaceState>>) {
-        let widget = widget.clone();
-        gtk4::glib::MainContext::default().spawn_local(async move {
-            let (layer_ptr, scale_factor, width, height) = {
-                let mut state_ref = state.borrow_mut();
-
-                let layer = state_ref
-                    .metal_layer
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("GpuSurface: CAMetalLayer must exist before init"));
-
-                let scale = state_ref.scale_factor.max(1);
-                let (w, h) = GpuSurfaceState::pixel_size_for_widget(&widget, scale);
-                (Retained::as_ptr(layer) as *mut std::ffi::c_void, scale, w, h)
-            };
-
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::METAL,
-                ..Default::default()
-            });
-
-            let surface = unsafe {
-                instance
-                    .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer_ptr))
-                    .unwrap_or_else(|e| panic!("GpuSurface: failed to create wgpu Surface: {e}"))
-            };
-
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                })
-                .await
-                .unwrap_or_else(|e| panic!("GpuSurface: request_adapter failed: {e}"));
-
-            let adapter_limits = adapter.limits();
-            let required_limits = wgpu::Limits::default().using_resolution(adapter_limits);
-
-            let (device, queue) = adapter
-                .request_device(
-                    &wgpu::DeviceDescriptor {
-                        label: Some("WaterUI GTK GpuSurface Device"),
-                        required_features: wgpu::Features::empty(),
-                        required_limits,
-                        memory_hints: wgpu::MemoryHints::Performance,
-                        experimental_features: wgpu::ExperimentalFeatures::default(),
-                        trace: wgpu::Trace::default(),
-                    },
-                    None,
+    match obj_type as u32 {
+        glow::RENDERBUFFER => {
+            let name = unsafe {
+                gl.get_framebuffer_attachment_parameter_i32(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
                 )
-                .await
-                .unwrap_or_else(|e| panic!("GpuSurface: request_device failed: {e}"));
-
-            device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
-                tracing::error!("[wgpu] Uncaptured error: {error}");
-            }));
-
-            let caps = surface.get_capabilities(&adapter);
-            let format = preferred_surface_format(&caps);
-            let present_mode = caps
-                .present_modes
-                .iter()
-                .copied()
-                .find(|m| *m == wgpu::PresentMode::Fifo)
-                .unwrap_or_else(|| {
-                    *caps
-                        .present_modes
-                        .first()
-                        .unwrap_or(&wgpu::PresentMode::AutoVsync)
-                });
-            let alpha_mode = caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|m| *m == wgpu::CompositeAlphaMode::PreMultiplied)
-                .or_else(|| caps.alpha_modes.first().copied())
-                .unwrap_or(wgpu::CompositeAlphaMode::Auto);
-
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width,
-                height,
-                present_mode,
-                alpha_mode,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
             };
-            surface.configure(&device, &config);
+            let rb =
+                glow::NativeRenderbuffer(NonZeroU32::new(name as u32).unwrap_or_else(|| {
+                    panic!("GpuSurface(GL): expected non-zero renderbuffer name")
+                }));
+            unsafe {
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+            }
+            let internal = unsafe {
+                gl.get_renderbuffer_parameter_i32(
+                    glow::RENDERBUFFER,
+                    glow::RENDERBUFFER_INTERNAL_FORMAT,
+                )
+            };
+            unsafe {
+                gl.bind_renderbuffer(glow::RENDERBUFFER, None);
+            }
+            map_gl_internal_format_to_wgpu(internal)
+        }
+        glow::TEXTURE => {
+            let name = unsafe {
+                gl.get_framebuffer_attachment_parameter_i32(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
+                )
+            };
+            let target = unsafe {
+                gl.get_framebuffer_attachment_parameter_i32(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET,
+                )
+            };
 
-            let msaa_samples = preferred_msaa_samples(&adapter, format, 4);
+            let tex = glow::NativeTexture(
+                NonZeroU32::new(name as u32)
+                    .unwrap_or_else(|| panic!("GpuSurface(GL): expected non-zero texture name")),
+            );
 
-            let mut state_ref = state.borrow_mut();
-            state_ref.instance = Some(instance);
-            state_ref.surface = Some(surface);
-            state_ref.adapter = Some(adapter);
-            state_ref.device = Some(device);
-            state_ref.queue = Some(queue);
-            state_ref.config = Some(config);
-            state_ref.msaa_samples = msaa_samples;
-            state_ref.configured = true;
-            state_ref.scale_factor = scale_factor;
-        });
+            unsafe {
+                gl.bind_texture(target as u32, Some(tex));
+            }
+            let internal = unsafe {
+                gl.get_tex_level_parameter_i32(target as u32, 0, glow::TEXTURE_INTERNAL_FORMAT)
+            };
+            unsafe {
+                gl.bind_texture(target as u32, None);
+            }
+            map_gl_internal_format_to_wgpu(internal)
+        }
+        other => panic!("GpuSurface(GL): unexpected framebuffer attachment type {other}"),
+    }
+}
+
+fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
+    let id = unsafe { gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING) };
+    glow::NativeFramebuffer(NonZeroU32::new(id as u32).unwrap_or_else(|| {
+        panic!(
+            "GpuSurface(GL): expected non-zero FRAMEBUFFER_BINDING (GtkGLArea should use an FBO)"
+        )
+    }))
+}
+
+fn make_gl_loader(gl_ctx: &gdk4::GLContext) -> impl FnMut(&str) -> *const c_void {
+    use glib::translate::ToGlibPtr;
+
+    let ctx_ptr = gl_ctx.as_ref().to_glib_none().0;
+    move |name: &str| {
+        let c = CString::new(name)
+            .unwrap_or_else(|_| panic!("GpuSurface(GL): GL proc name contains NUL byte: {name:?}"));
+        // SAFETY: `ctx_ptr` is a valid `GdkGLContext*` as long as `gl_ctx` is alive.
+        unsafe { gdk_gl_ffi::gdk_gl_context_get_proc_address(ctx_ptr, c.as_ptr()) }
+    }
+}
+
+fn init_wgpu_if_needed(area: &gtk4::GLArea, state: &mut GpuState, gl_ctx: &gdk4::GLContext) {
+    if state.wgpu_device.is_some() {
+        return;
     }
 
-    fn schedule_setup(state: Rc<RefCell<GpuSurfaceState>>) {
-        gtk4::glib::MainContext::default().spawn_local(async move {
-            let (mut gpu_surface, device, queue, adapter, format, msaa_samples) = {
-                let mut state_ref = state.borrow_mut();
-                if state_ref.setup_in_flight {
-                    return;
-                }
-                if !state_ref.configured {
-                    return;
-                }
+    let mut loader = make_gl_loader(gl_ctx);
+    let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
+    let format = query_framebuffer_format(&glow);
 
-                state_ref.setup_in_flight = true;
-
-                let gpu_surface = state_ref
-                    .gpu_surface
-                    .take()
-                    .unwrap_or_else(|| panic!("GpuSurface: missing GpuSurface during setup"));
-                let device = state_ref
-                    .device
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("GpuSurface: device must exist before setup"))
-                    .clone();
-                let queue = state_ref
-                    .queue
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("GpuSurface: queue must exist before setup"))
-                    .clone();
-                let adapter = state_ref
-                    .adapter
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("GpuSurface: adapter must exist before setup"))
-                    .clone();
-                let format = state_ref
-                    .config
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("GpuSurface: config must exist before setup"))
-                    .format;
-                let msaa_samples = state_ref.msaa_samples;
-                (gpu_surface, device, queue, adapter, format, msaa_samples)
-            };
-
-            let ctx = GpuContext {
-                adapter: Some(&adapter),
-                device: &device,
-                queue: &queue,
-                surface_format: format,
-                msaa_samples,
-                pipeline_cache: None,
-            };
-
-            gpu_surface.setup(&ctx).await;
-
-            let mut state_ref = state.borrow_mut();
-            state_ref.gpu_surface = Some(gpu_surface);
-            state_ref.setup_in_flight = false;
-        });
+    let exposed = unsafe {
+        wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
     }
+    .unwrap_or_else(|| panic!("GpuSurface(GL): wgpu-hal failed to create external adapter"));
 
-    fn render_frame(widget: &gtk4::Widget, state: &Rc<RefCell<GpuSurfaceState>>) {
-        let (device, queue, adapter, surface, mut gpu_surface, mut config, pointer, gesture) = {
-            let mut state_ref = state.borrow_mut();
-            if state_ref.setup_in_flight || !state_ref.configured {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::GL,
+        ..Default::default()
+    });
+
+    // SAFETY: We rely on wgpu-core accepting the external hal adapter for the GL backend.
+    // The GL context must be current whenever any derived objects are used/dropped.
+    let adapter = unsafe { instance.create_adapter_from_hal::<wgpu::hal::api::Gles>(exposed) };
+
+    let adapter_limits = adapter.limits();
+    let required_limits = wgpu::Limits::default().using_resolution(adapter_limits);
+
+    // Create the hal device/queue while the GtkGLArea context is current.
+    let open = unsafe {
+        adapter
+            .as_hal::<wgpu::hal::api::Gles>()
+            .expect("GpuSurface(GL): expected GL adapter")
+            .open(
+                wgpu::Features::empty(),
+                &required_limits,
+                &wgpu::MemoryHints::Performance,
+            )
+    }
+    .unwrap_or_else(|e| panic!("GpuSurface(GL): failed to open hal device: {e:?}"));
+
+    let (device, queue) = unsafe {
+        adapter.create_device_from_hal::<wgpu::hal::api::Gles>(
+            open,
+            &wgpu::DeviceDescriptor {
+                label: Some("WaterUI GTK(GLES) Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            },
+        )
+    }
+    .unwrap_or_else(|e| panic!("GpuSurface(GL): failed to create wgpu device from hal: {e}"));
+
+    device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
+        tracing::error!("[wgpu] Uncaptured error: {error}");
+    }));
+
+    let msaa_samples = preferred_msaa_samples(&adapter, format, 4);
+
+    state.wgpu_instance = Some(instance);
+    state.wgpu_adapter = Some(adapter);
+    state.wgpu_device = Some(device);
+    state.wgpu_queue = Some(queue);
+    state.surface_format = Some(format);
+    state.msaa_samples = msaa_samples;
+    state.glow = Some(glow);
+
+    // Ensure we drive frames once wgpu is ready.
+    area.queue_render();
+}
+
+fn schedule_setup(state: Rc<RefCell<GpuState>>) {
+    gtk4::glib::MainContext::default().spawn_local(async move {
+        let (mut gpu_surface, device, queue, adapter, format, msaa_samples) = {
+            let mut st = state.borrow_mut();
+            if st.setup_in_flight || st.setup_done {
                 return;
             }
-
-            let Some(surface) = state_ref.surface.as_ref() else { return };
-            let Some(device) = state_ref.device.as_ref() else { return };
-            let Some(queue) = state_ref.queue.as_ref() else { return };
-            let Some(adapter) = state_ref.adapter.as_ref() else { return };
-            let Some(config) = state_ref.config.as_ref() else { return };
-            let Some(gpu_surface) = state_ref.gpu_surface.take() else {
-                // Setup might still be running; avoid re-entrancy.
+            let Some(device) = st.wgpu_device.as_ref() else {
                 return;
             };
+            let Some(queue) = st.wgpu_queue.as_ref() else {
+                return;
+            };
+            let Some(adapter) = st.wgpu_adapter.as_ref() else {
+                return;
+            };
+            let Some(format) = st.surface_format else {
+                return;
+            };
+            let Some(gpu_surface) = st.gpu_surface.take() else {
+                panic!("GpuSurface: missing GpuSurface during setup (internal state corrupted)");
+            };
+
+            st.setup_in_flight = true;
 
             (
+                gpu_surface,
                 device.clone(),
                 queue.clone(),
                 adapter.clone(),
-                // `wgpu::Surface` is not Clone; keep it borrowed by re-borrowing later.
-                (),
-                gpu_surface,
-                config.clone(),
-                state_ref.pointer,
-                state_ref.gesture,
+                format,
+                st.msaa_samples,
             )
         };
 
-        let _ = (queue, adapter, surface, device, config, pointer, gesture, widget);
-        let _ = gpu_surface;
-        panic!("GpuSurface: internal error - render path not initialized correctly");
+        let ctx = GpuContext {
+            adapter: Some(&adapter),
+            device: &device,
+            queue: &queue,
+            surface_format: format,
+            msaa_samples,
+            pipeline_cache: None,
+        };
+
+        gpu_surface.setup(&ctx).await;
+
+        let mut st = state.borrow_mut();
+        st.gpu_surface = Some(gpu_surface);
+        st.setup_in_flight = false;
+        st.setup_done = true;
+    });
+}
+
+fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
+    let (device, queue, adapter, format, msaa_samples, mut gpu_surface, pointer, gesture, glow) = {
+        let mut st = state.borrow_mut();
+        let Some(device) = st.wgpu_device.as_ref() else {
+            return;
+        };
+        let Some(queue) = st.wgpu_queue.as_ref() else {
+            return;
+        };
+        let Some(adapter) = st.wgpu_adapter.as_ref() else {
+            return;
+        };
+        let Some(format) = st.surface_format else {
+            return;
+        };
+        let Some(glow) = st.glow.as_ref() else { return };
+        let Some(gpu_surface) = st.gpu_surface.take() else {
+            // Setup may still be running.
+            return;
+        };
+
+        (
+            device.clone(),
+            queue.clone(),
+            adapter.clone(),
+            format,
+            msaa_samples,
+            gpu_surface,
+            st.pointer,
+            st.gesture,
+            Rc::clone(glow),
+        )
+    };
+
+    let size = PixelSize::from_widget(area);
+    gpu_surface.resize(size.width, size.height);
+
+    // Confirm format hasn't changed (it shouldn't). If it does, crash early.
+    let observed_format = query_framebuffer_format(&glow);
+    if observed_format != format {
+        panic!(
+            "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
+        );
     }
 
-    pub(super) fn render_gpu_surface(mut gpu_surface: GpuSurface) -> gtk4::Widget {
-        let area = gtk4::DrawingArea::new();
-        area.set_hexpand(true);
-        area.set_vexpand(true);
-        area.set_can_target(true);
+    let fb = current_framebuffer(&glow);
 
-        let state = Rc::new(RefCell::new(GpuSurfaceState::new(gpu_surface)));
+    let hal_texture = wgpu::hal::gles::Texture {
+        inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer { inner: fb },
+        drop_guard: None,
+        mip_level_count: 1,
+        array_layer_count: 1,
+        format,
+        format_desc: wgpu::hal::gles::TextureFormatDesc {
+            internal: 0,
+            external: 0,
+            data_type: 0,
+        },
+        copy_size: wgpu::hal::CopyExtent {
+            width: size.width,
+            height: size.height,
+            depth: 1,
+        },
+    };
 
-        // Track tick callback id so we can stop it when unrealized.
-        let tick_enabled = Rc::new(Cell::new(false));
+    let texture = unsafe {
+        device.create_texture_from_hal::<wgpu::hal::api::Gles>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some("WaterUI GTK External FBO Texture"),
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            },
+        )
+    };
 
-        install_pointer_controllers(&area.clone().upcast(), &state);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        area.connect_realize({
-            let state = Rc::clone(&state);
-            let tick_enabled = Rc::clone(&tick_enabled);
-            move |area| {
-                let widget: gtk4::Widget = area.clone().upcast();
+    let frame = GpuFrame {
+        device: &device,
+        queue: &queue,
+        texture: &texture,
+        view,
+        format,
+        width: size.width,
+        height: size.height,
+        pointer,
+        gesture,
+    };
 
-                let root = widget
-                    .root()
-                    .unwrap_or_else(|| panic!("GpuSurface: widget must be rooted before realize"));
-                let surface = root
-                    .surface()
-                    .unwrap_or_else(|| panic!("GpuSurface: GtkNative must have a GdkSurface"));
+    // Let the WaterUI renderer submit work.
+    gpu_surface.render(&frame);
 
-                let scale_factor = surface.scale_factor();
-                {
-                    let mut st = state.borrow_mut();
-                    st.scale_factor = scale_factor.max(1);
-                }
+    // Keep the surface alive for the next frame.
+    let mut st = state.borrow_mut();
+    st.last_size = Some(size);
+    st.gpu_surface = Some(gpu_surface);
 
-                let ns_window = get_nswindow_from_widget(&widget);
-                let content_view = ns_window
-                    .contentView()
-                    .unwrap_or_else(|| panic!("GpuSurface: NSWindow has no contentView"));
+    // Prevent GTK from drawing anything else for this GLArea.
+    let _ = (adapter, msaa_samples);
+}
 
-                let mtm = MainThreadMarker::new().unwrap_or_else(|| {
-                    panic!("GpuSurface: must be created on the main thread (Cocoa requirement)")
-                });
+fn install_pointer_controllers(widget: &gtk4::Widget, state: &Rc<RefCell<GpuState>>) {
+    let motion = gtk4::EventControllerMotion::new();
+    motion.connect_enter({
+        let state = Rc::clone(state);
+        move |_ctrl, x, y| {
+            let mut st = state.borrow_mut();
+            let scale = widget.scale_factor().max(1) as f32;
+            st.pointer.position = Some(waterui_core::layout::Point::new(
+                x as f32 * scale,
+                y as f32 * scale,
+            ));
+        }
+    });
+    motion.connect_motion({
+        let state = Rc::clone(state);
+        move |_ctrl, x, y| {
+            let mut st = state.borrow_mut();
+            let scale = widget.scale_factor().max(1) as f32;
+            st.pointer.position = Some(waterui_core::layout::Point::new(
+                x as f32 * scale,
+                y as f32 * scale,
+            ));
+        }
+    });
+    motion.connect_leave({
+        let state = Rc::clone(state);
+        move |_ctrl| {
+            let mut st = state.borrow_mut();
+            st.pointer.position = None;
+        }
+    });
+    widget.add_controller(motion);
 
-                let (overlay_view, metal_layer) = make_overlay_view(&content_view, mtm);
+    let click = gtk4::GestureClick::new();
+    click.set_button(0);
+    click.connect_pressed({
+        let state = Rc::clone(state);
+        move |_gesture, _n_press, x, y| {
+            let mut st = state.borrow_mut();
+            let scale = widget.scale_factor().max(1) as f32;
+            let p = waterui_core::layout::Point::new(x as f32 * scale, y as f32 * scale);
+            st.pointer.hit = Some(p);
+        }
+    });
+    click.connect_released({
+        let state = Rc::clone(state);
+        move |_gesture, _n_press, _x, _y| {
+            let mut st = state.borrow_mut();
+            st.pointer.hit = None;
+        }
+    });
+    widget.add_controller(click);
+}
 
-                update_overlay_geometry(
-                    &widget,
-                    &content_view,
-                    &overlay_view,
-                    &metal_layer,
-                    scale_factor,
-                );
+fn render_gpu_surface(mut gpu_surface: GpuSurface) -> gtk4::Widget {
+    let area = gtk4::GLArea::new();
+    area.set_hexpand(true);
+    area.set_vexpand(true);
+    area.set_can_target(true);
+    area.set_auto_render(false);
+    area.set_has_depth_buffer(false);
+    area.set_has_stencil_buffer(false);
 
-                {
-                    let mut st = state.borrow_mut();
-                    st.content_view = Some(content_view);
-                    st.overlay_view = Some(overlay_view);
-                    st.metal_layer = Some(metal_layer);
-                }
+    // Request both GL and GLES; GDK picks the best available.
+    area.set_allowed_apis(gdk4::GLAPI::GL | gdk4::GLAPI::GLES);
 
-                schedule_wgpu_init(&widget, Rc::clone(&state));
+    let state = Rc::new(RefCell::new(GpuState::new(gpu_surface)));
+    install_pointer_controllers(&area.clone().upcast(), &state);
 
-                // Start driving frames from GTK's frame clock.
-                if !tick_enabled.get() {
-                    tick_enabled.set(true);
-                    widget.add_tick_callback({
-                        let state = Rc::clone(&state);
-                        move |widget, _clock| {
-                            let (content_view, overlay_view, metal_layer, scale_factor) = {
-                                let st = state.borrow();
-                                match (
-                                    st.content_view.as_ref(),
-                                    st.overlay_view.as_ref(),
-                                    st.metal_layer.as_ref(),
-                                ) {
-                                    (Some(c), Some(v), Some(l)) => {
-                                        (c.clone(), v.clone(), l.clone(), st.scale_factor)
-                                    }
-                                    _ => return gtk4::glib::ControlFlow::Continue,
-                                }
-                            };
-
-                            update_overlay_geometry(
-                                widget,
-                                &content_view,
-                                &overlay_view,
-                                &metal_layer,
-                                scale_factor,
-                            );
-
-                            // Kick async setup once wgpu is configured.
-                            schedule_setup(Rc::clone(&state));
-
-                            // Real rendering is wired up once `render_frame` is implemented.
-                            gtk4::glib::ControlFlow::Continue
-                        }
-                    });
-                }
+    area.connect_realize({
+        let state = Rc::clone(&state);
+        move |area| {
+            area.make_current();
+            if let Some(err) = area.error() {
+                panic!("GpuSurface(GL): GtkGLArea realize failed: {err}");
             }
-        });
 
-        area.connect_unrealize({
-            let state = Rc::clone(&state);
-            move |_area| {
+            // Drive frames via the frame clock.
+            let widget: gtk4::Widget = area.clone().upcast();
+            widget.add_tick_callback({
+                let area = area.clone();
+                let state = Rc::clone(&state);
+                move |_widget, _clock| {
+                    // Kick setup once the device exists.
+                    schedule_setup(Rc::clone(&state));
+                    area.queue_render();
+                    gtk4::glib::ControlFlow::Continue
+                }
+            });
+        }
+    });
+
+    area.connect_unrealize({
+        let state = Rc::clone(&state);
+        move |area| {
+            // Drop wgpu objects while the GtkGLArea context is still current.
+            area.make_current();
+            if let Some(err) = area.error() {
+                panic!("GpuSurface(GL): GtkGLArea unrealize error: {err}");
+            }
+
+            let mut st = state.borrow_mut();
+            st.gpu_surface = None;
+            st.wgpu_queue = None;
+            st.wgpu_device = None;
+            st.wgpu_adapter = None;
+            st.wgpu_instance = None;
+            st.glow = None;
+            st.setup_in_flight = false;
+            st.setup_done = false;
+            st.last_size = None;
+        }
+    });
+
+    area.connect_render({
+        let state = Rc::clone(&state);
+        move |area, gl_ctx| {
+            area.make_current();
+            if let Some(err) = area.error() {
+                panic!("GpuSurface(GL): GtkGLArea render error: {err}");
+            }
+
+            {
                 let mut st = state.borrow_mut();
-                if let Some(overlay) = st.overlay_view.take() {
-                    overlay.removeFromSuperview();
-                }
-                st.metal_layer = None;
-                st.content_view = None;
-                st.configured = false;
+                init_wgpu_if_needed(area, &mut st, gl_ctx);
             }
-        });
 
-        area.upcast()
-    }
+            render_frame(area, &state);
+
+            gtk4::glib::Propagation::Stop
+        }
+    });
+
+    area.upcast()
 }
 
 impl GtkComponent for Native<GpuSurface> {
     fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
-        #[cfg(target_os = "macos")]
-        {
-            return macos::render_gpu_surface(self.into_inner());
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = self;
-            panic!("GpuSurface: GTK backend currently supports GPU surfaces only on macOS");
-        }
+        render_gpu_surface(self.into_inner())
     }
 }
-

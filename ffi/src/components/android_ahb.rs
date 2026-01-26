@@ -16,8 +16,8 @@
 use core::ffi::c_void;
 
 use ash::vk;
-use wgpu_hal::api::Vulkan as VulkanApi;
 use wgpu_hal::Api as _;
+use wgpu_hal::api::Vulkan as VulkanApi;
 
 pub type ExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
 
@@ -67,7 +67,7 @@ pub(crate) fn import_ahardwarebuffer_as_wgpu_texture(
         return Err("AHardwareBuffer import requires non-zero dimensions");
     }
 
-    let Some(imported) = unsafe {
+    let Some(imported) = (unsafe {
         device.as_hal::<VulkanApi, _, _>(|hal_device| {
             hal_device.map(|hal_device| {
                 import_ahardwarebuffer_as_hal_texture(
@@ -81,7 +81,7 @@ pub(crate) fn import_ahardwarebuffer_as_wgpu_texture(
                 )
             })
         })
-    } else {
+    }) else {
         return Err("AHardwareBuffer import requires Vulkan backend");
     };
 
@@ -123,10 +123,8 @@ fn import_ahardwarebuffer_as_hal_texture(
     let physical_device = shared.physical_device();
     let instance = shared.raw_instance();
 
-    let ext = ash::android::external_memory_android_hardware_buffer::Device::new(
-        instance,
-        raw_device,
-    );
+    let ext =
+        ash::android::external_memory_android_hardware_buffer::Device::new(instance, raw_device);
 
     let mut format_props = vk::AndroidHardwareBufferFormatPropertiesANDROID::default();
     let mut ahb_props =
@@ -180,7 +178,8 @@ fn import_ahardwarebuffer_as_hal_texture(
             .map_err(|_| "Failed to create VkImage for AHardwareBuffer import")?
     };
 
-    let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
     let memory_type_index = find_memory_type_index(
         &memory_properties,
@@ -241,7 +240,8 @@ fn import_ahardwarebuffer_as_hal_texture(
         view_formats: alloc::vec::Vec::new(),
     };
 
-    let hal_texture = unsafe { hal_device.texture_from_raw(vk_image, &hal_desc, Some(drop_callback)) };
+    let hal_texture =
+        unsafe { hal_device.texture_from_raw(vk_image, &hal_desc, Some(drop_callback)) };
 
     Ok((hal_texture, wgpu_format))
 }
