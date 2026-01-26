@@ -22,3 +22,4 @@ pub mod tabs;
 pub mod text;
 pub mod text_field;
 pub mod toggle;
+pub mod webview;
