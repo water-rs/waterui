@@ -2,13 +2,13 @@
 //!
 //! Provides the `Preview` view component for rendering and capturing WaterUI views.
 //!
-//! This crate is used by the preview daemon app at `~/.water/preview_app/`
-//! to handle preview requests from the CLI via TCP.
+//! This crate is used by the preview support app scaffolded by the CLI at
+//! `~/.water/preview_support/` to handle preview requests via TCP.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! CLI (water preview) → TCP → Preview Daemon App (uses this crate) → PNG capture
+//! CLI (water preview) → TCP → Preview Support App (uses this crate) → PNG capture
 //! ```
 //!
 //! ## Usage
@@ -32,11 +32,13 @@
 //! ```
 
 mod library;
-pub mod protocol;
 pub mod renderer;
 mod view;
 
 pub use library::{LoadError, PreviewLibrary};
-pub use protocol::{DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size};
+pub use waterui_preview_protocol as protocol;
+pub use waterui_preview_protocol::{
+    DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
+};
 pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
 pub use view::Preview;

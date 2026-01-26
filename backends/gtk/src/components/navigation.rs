@@ -13,37 +13,53 @@ use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guards;
 
+fn css_for_header_bar_color(color: waterui_graphics::color::Color, env: &Environment) -> String {
+    let resolved = color.resolve(env).get();
+    let srgb = resolved.to_srgb_with_headroom();
+    format!(
+        ".waterui-navigation-headerbar {{ background-color: rgba({}, {}, {}, {}); }}",
+        (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
+        (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
+        (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
+        resolved.opacity.clamp(0.0, 1.0)
+    )
+}
+
 impl GtkComponent for NavigationView {
     /// Renders a `WaterUI` `NavigationView` as a GTK4 Box with HeaderBar.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+        // When this NavigationView lives inside a NavigationStack, the stack owns the
+        // navigation chrome. In that case, render content only (no nested header bars).
+        if env.get::<NavigationController>().is_some() {
+            let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            container.set_hexpand(true);
+            container.set_vexpand(true);
+
+            let content_widget = renderer.render_any(self.content, env);
+            container.append(&content_widget);
+            return container.upcast();
+        }
+
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.set_hexpand(true);
         container.set_vexpand(true);
 
         // Create the header bar
         let header_bar = gtk4::HeaderBar::new();
+        header_bar.add_css_class("waterui-navigation-headerbar");
+        let provider = gtk4::CssProvider::new();
+        header_bar
+            .style_context()
+            .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-        // Set the title
-        let title_text = self.bar.title.content().get().to_plain();
-        let title_label = gtk4::Label::new(Some(&title_text));
-        header_bar.set_title_widget(Some(&title_label));
-
-        // Watch for title changes
-        let guard = self.bar.title.content().watch({
-            let title_label = title_label.clone();
-            move |ctx| {
-                let text = ctx.into_value().to_plain();
-                let title_label = title_label.clone();
-                glib::idle_add_local_once(move || {
-                    title_label.set_text(&text);
-                });
-            }
-        });
+        // Title is a view; render it and let that subtree manage its own reactivity.
+        let title_widget = renderer.render_any(self.bar.title, env);
+        header_bar.set_title_widget(Some(&title_widget));
 
         // Watch for hidden state changes
         let hidden_guard = self.bar.hidden.watch({
             let header_bar = header_bar.clone();
-            move |ctx| {
+            move |ctx: nami::watcher::Context<bool>| {
                 let hidden = ctx.into_value();
                 let header_bar = header_bar.clone();
                 glib::idle_add_local_once(move || {
@@ -52,10 +68,25 @@ impl GtkComponent for NavigationView {
             }
         });
 
+        // Watch for color changes
+        let env_for_color = env.clone();
+        let provider_for_color = provider.clone();
+        let color_guard = self.bar.color.watch(move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
+            let color = ctx.into_value();
+            let css = css_for_header_bar_color(color, &env_for_color);
+            let provider = provider_for_color.clone();
+            glib::idle_add_local_once(move || {
+                provider.load_from_data(&css);
+            });
+        });
+
         // Set initial hidden state
         if self.bar.hidden.get() {
             header_bar.set_visible(false);
         }
+
+        // Set initial color state
+        provider.load_from_data(&css_for_header_bar_color(self.bar.color.get(), env));
 
         container.append(&header_bar);
 
@@ -64,7 +95,7 @@ impl GtkComponent for NavigationView {
         container.append(&content_widget);
 
         // Store watcher guards
-        store_watcher_guards(&container, vec![guard, hidden_guard]);
+        store_watcher_guards(&container, vec![hidden_guard, color_guard]);
 
         container.upcast()
     }
@@ -82,6 +113,15 @@ impl GtkComponent for NavigationStack<(), ()> {
 
         // Create a header bar for the stack
         let header_bar = gtk4::HeaderBar::new();
+        header_bar.add_css_class("waterui-navigation-headerbar");
+        let provider = gtk4::CssProvider::new();
+        header_bar
+            .style_context()
+            .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+        let back_button = gtk4::Button::with_label("Back");
+        back_button.set_visible(false);
+        header_bar.pack_start(&back_button);
         container.append(&header_bar);
 
         // Create the stack for content views
@@ -96,22 +136,45 @@ impl GtkComponent for NavigationStack<(), ()> {
         // Install the controller in the environment for child views
         let mut child_env = env.clone();
 
-        // Create the GTK navigation controller with renderer and environment access
+        // Create the GTK navigation controller and install it into the subtree environment.
         let controller = GtkNavigationController::new(
             gtk_stack.clone(),
             header_bar.clone(),
-            renderer,
+            back_button.clone(),
+            provider.clone(),
             &child_env,
         );
         let navigation_controller = NavigationController::new(controller.clone());
 
         // Insert controller into environment so child views can access it
-        child_env.insert(navigation_controller);
+        child_env.insert(navigation_controller.clone());
+        controller.set_env(child_env.clone());
 
-        // Render the root view
-        let root_widget = renderer.render_any(root, &child_env);
-        gtk_stack.add_named(&root_widget, Some("root"));
-        gtk_stack.set_visible_child_name("root");
+        // Back button should route through the controller so it shares the same logic as Rust-driven pops.
+        back_button.connect_clicked({
+            let controller = controller.clone();
+            move |_| {
+                let mut ctrl = controller.clone();
+                ctrl.pop();
+            }
+        });
+
+        // Render the root view. If it is a NavigationView, let the stack own the chrome.
+        match root.downcast::<NavigationView>() {
+            Ok(nav_view) => {
+                let NavigationView { bar, content } = *nav_view;
+                let title_widget = renderer.render_any(bar.title, &child_env);
+                controller.set_root_bar_state(title_widget, bar.color, bar.hidden);
+                let root_widget = renderer.render_any(content, &child_env);
+                gtk_stack.add_named(&root_widget, Some("root"));
+                gtk_stack.set_visible_child_name("root");
+            }
+            Err(root) => {
+                let root_widget = renderer.render_any(root, &child_env);
+                gtk_stack.add_named(&root_widget, Some("root"));
+                gtk_stack.set_visible_child_name("root");
+            }
+        }
 
         container.upcast()
     }
@@ -126,42 +189,67 @@ struct GtkNavigationController {
 struct GtkNavigationControllerInner {
     stack: gtk4::Stack,
     header_bar: gtk4::HeaderBar,
+    back_button: gtk4::Button,
+    color_provider: gtk4::CssProvider,
     view_stack: Vec<NavigationViewState>,
+    active_bar_guards: Vec<nami::watcher::BoxWatcherGuard>,
     next_id: usize,
-    /// Raw pointer to the renderer for rendering pushed views.
-    /// SAFETY: The renderer must outlive the navigation controller.
-    renderer_ptr: *mut GtkRenderer,
     /// Environment for rendering child views.
     env: Environment,
 }
 
 struct NavigationViewState {
     id: String,
-    title: String,
+    title_widget: Option<gtk4::Widget>,
+    bar_color: Option<nami::Computed<waterui_graphics::color::Color>>,
+    bar_hidden: Option<nami::Computed<bool>>,
 }
 
 impl GtkNavigationController {
     /// Creates a new GTK navigation controller.
     ///
-    /// # Safety
-    ///
-    /// The renderer pointer must remain valid for the lifetime of this controller.
     fn new(
         stack: gtk4::Stack,
         header_bar: gtk4::HeaderBar,
-        renderer: &mut GtkRenderer,
+        back_button: gtk4::Button,
+        color_provider: gtk4::CssProvider,
         env: &Environment,
     ) -> Self {
         Self {
             inner: Rc::new(RefCell::new(GtkNavigationControllerInner {
                 stack,
                 header_bar,
-                view_stack: Vec::new(),
+                back_button,
+                color_provider,
+                // Track root so `pop()` can return to it.
+                view_stack: vec![NavigationViewState {
+                    id: "root".to_string(),
+                    title_widget: None,
+                    bar_color: None,
+                    bar_hidden: None,
+                }],
+                active_bar_guards: Vec::new(),
                 next_id: 0,
-                renderer_ptr: renderer as *mut GtkRenderer,
                 env: env.clone(),
             })),
         }
+    }
+
+    fn set_env(&self, env: Environment) {
+        self.inner.borrow_mut().env = env;
+    }
+
+    fn set_root_bar_state(
+        &self,
+        title_widget: gtk4::Widget,
+        bar_color: nami::Computed<waterui_graphics::color::Color>,
+        bar_hidden: nami::Computed<bool>,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        inner.view_stack[0].title_widget = Some(title_widget);
+        inner.view_stack[0].bar_color = Some(bar_color);
+        inner.view_stack[0].bar_hidden = Some(bar_hidden);
+        inner.apply_active_bar_for_top();
     }
 }
 
@@ -172,21 +260,9 @@ impl CustomNavigationController for GtkNavigationController {
         let id = format!("view_{}", inner.next_id);
         inner.next_id += 1;
 
-        let title = content.bar.title.content().get().to_plain();
-
-        // Render the NavigationView content using stored renderer
-        // SAFETY: The renderer pointer is valid for the lifetime of this controller
-        let content_widget = unsafe {
-            if inner.renderer_ptr.is_null() {
-                tracing::error!("NavigationController: renderer pointer is null");
-                // Fallback to placeholder if renderer is unavailable
-                let label = gtk4::Label::new(Some(&format!("Content for: {title}")));
-                label.upcast::<Widget>()
-            } else {
-                let renderer = &mut *inner.renderer_ptr;
-                renderer.render_any(content.content, &inner.env)
-            }
-        };
+        // Render with a fresh renderer to avoid holding a raw pointer.
+        let mut renderer = GtkRenderer::new();
+        let content_widget = renderer.render_any(content.content, &inner.env);
 
         // Create container and add the rendered content
         let view_container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -198,53 +274,95 @@ impl CustomNavigationController for GtkNavigationController {
         inner.stack.add_named(&view_container, Some(&id));
         inner.stack.set_visible_child_name(&id);
 
-        // Update header bar title
-        let title_label = gtk4::Label::new(Some(&title));
-        inner.header_bar.set_title_widget(Some(&title_label));
-
-        // Add back button if this isn't the first view
-        if !inner.view_stack.is_empty() {
-            let back_button = gtk4::Button::with_label("Back");
-            let controller = GtkNavigationController {
-                inner: self.inner.clone(),
-            };
-            back_button.connect_clicked(move |_| {
-                let mut ctrl = controller.inner.borrow_mut();
-                GtkNavigationControllerInner::pop_internal(&mut ctrl);
-            });
-            inner.header_bar.pack_start(&back_button);
-        }
-
-        // Track the view
-        inner.view_stack.push(NavigationViewState { id, title: title.to_string() });
+        // Update header bar title widget
+        let title_widget = renderer.render_any(content.bar.title, &inner.env);
+        // Track the view and its bar configuration for later restores.
+        inner.view_stack.push(NavigationViewState {
+            id,
+            title_widget: Some(title_widget),
+            bar_color: Some(content.bar.color),
+            bar_hidden: Some(content.bar.hidden),
+        });
+        inner.apply_active_bar_for_top();
     }
 
     fn pop(&mut self) {
         let mut inner = self.inner.borrow_mut();
-        GtkNavigationControllerInner::pop_internal(&mut inner);
+        inner.pop_internal();
     }
 }
 
 impl GtkNavigationControllerInner {
-    fn pop_internal(inner: &mut GtkNavigationControllerInner) {
-        if inner.view_stack.len() <= 1 {
+    fn pop_internal(&mut self) {
+        if self.view_stack.len() <= 1 {
             return; // Can't pop the root view
         }
 
         // Remove current view
-        if let Some(current) = inner.view_stack.pop() {
-            if let Some(child) = inner.stack.child_by_name(&current.id) {
-                inner.stack.remove(&child);
+        if let Some(current) = self.view_stack.pop() {
+            if let Some(child) = self.stack.child_by_name(&current.id) {
+                self.stack.remove(&child);
             }
         }
 
         // Show previous view
-        if let Some(previous) = inner.view_stack.last() {
-            inner.stack.set_visible_child_name(&previous.id);
+        if let Some(previous) = self.view_stack.last() {
+            self.stack.set_visible_child_name(&previous.id);
+        }
 
-            // Update title
-            let title_label = gtk4::Label::new(Some(&previous.title));
-            inner.header_bar.set_title_widget(Some(&title_label));
+        self.apply_active_bar_for_top();
+    }
+
+    fn apply_active_bar_for_top(&mut self) {
+        // Drop previous active subscriptions so only the top-of-stack drives chrome.
+        self.active_bar_guards.clear();
+
+        let is_root = self.view_stack.len() <= 1;
+        self.back_button.set_visible(!is_root);
+
+        let Some(top) = self.view_stack.last() else {
+            return;
+        };
+
+        // Title widget
+        if let Some(title) = &top.title_widget {
+            self.header_bar.set_title_widget(Some(title));
+        } else {
+            self.header_bar.set_title_widget(None::<&gtk4::Widget>);
+        }
+
+        // Hidden state
+        if let Some(hidden) = &top.bar_hidden {
+            let header_bar = self.header_bar.clone();
+            let hidden_guard = hidden.watch(move |ctx: nami::watcher::Context<bool>| {
+                let hidden = ctx.into_value();
+                let header_bar = header_bar.clone();
+                glib::idle_add_local_once(move || {
+                    header_bar.set_visible(!hidden);
+                });
+            });
+            self.header_bar.set_visible(!hidden.get());
+            self.active_bar_guards.push(hidden_guard);
+        } else {
+            self.header_bar.set_visible(true);
+        }
+
+        // Background color
+        if let Some(color) = &top.bar_color {
+            self.color_provider
+                .load_from_data(&css_for_header_bar_color(color.get(), &self.env));
+            let env = self.env.clone();
+            let provider = self.color_provider.clone();
+            let color_guard =
+                color.watch(move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
+                    let color = ctx.into_value();
+                    let css = css_for_header_bar_color(color, &env);
+                    let provider = provider.clone();
+                    glib::idle_add_local_once(move || {
+                        provider.load_from_data(&css);
+                    });
+                });
+            self.active_bar_guards.push(color_guard);
         }
     }
 }

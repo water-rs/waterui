@@ -166,6 +166,24 @@ impl RustBuild {
         Ok(dylib_path)
     }
 
+    /// Compute the expected dylib output path without building.
+    ///
+    /// This uses `cargo metadata` to resolve the target directory to avoid assuming
+    /// a fixed `target/` path.
+    ///
+    /// # Errors
+    /// Returns an error if Cargo metadata cannot be read.
+    pub async fn dylib_path(
+        &self,
+        crate_name: &str,
+        release: bool,
+    ) -> Result<PathBuf, RustBuildError> {
+        let lib_dir = self.lib_output_dir(release).await?;
+        let lib_name = crate_name.replace('-', "_");
+        let ext = lib_extension_for_triple(&self.triple);
+        Ok(lib_dir.join(format!("lib{lib_name}.{ext}")))
+    }
+
     /// Return target directory path
     async fn build_inner(&self, release: bool) -> Result<PathBuf, RustBuildError> {
         let mut cmd = Command::new("cargo");
@@ -215,8 +233,17 @@ impl RustBuild {
             ));
         }
 
-        // use `cargo metadata` to get the target directory
+        self.lib_output_dir(release).await
+    }
 
+    async fn lib_output_dir(&self, release: bool) -> Result<PathBuf, RustBuildError> {
+        let target_directory = self.target_directory().await?;
+        Ok(target_directory
+            .join(self.triple.to_string())
+            .join(if release { "release" } else { "debug" }))
+    }
+
+    async fn target_directory(&self) -> Result<PathBuf, RustBuildError> {
         let build_path = self.path.clone();
         let metadata = unblock(move || {
             cargo_metadata::MetadataCommand::new()
@@ -231,14 +258,7 @@ impl RustBuild {
                 })
         })
         .await?;
-
-        let target_directory = metadata.target_directory.as_std_path();
-
-        let dir = target_directory
-            .join(self.triple.to_string())
-            .join(if release { "release" } else { "debug" });
-
-        Ok(dir)
+        Ok(metadata.target_directory.as_std_path().to_path_buf())
     }
 
     /// Generate `BINDGEN_EXTRA_CLANG_ARGS` for simulator builds.

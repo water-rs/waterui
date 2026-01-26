@@ -153,10 +153,15 @@ impl IntoFFI for Window {
             title: self.title.into_ffi(),
             closable: self.closable,
             resizable: self.resizable,
-            frame: self.frame.into_ffi(),
+            // Frame bindings are currently not consumed by native backends, and leaking
+            // them across FFI is easy to do accidentally. Until there is end-to-end support,
+            // do not transfer ownership.
+            frame: null_mut(),
             content: self.content.into_ffi(),
             state: self.state.into_ffi(),
-            toolbar: self.toolbar.map_or(null_mut(), IntoFFI::into_ffi),
+            // Toolbars are currently not rendered by native backends. Avoid leaking AnyView
+            // pointers across FFI by not transferring ownership.
+            toolbar: null_mut(),
             style: self.style.into(),
             background: self.background.into(),
         }

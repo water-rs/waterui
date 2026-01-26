@@ -21,13 +21,11 @@ use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::padding::Padding;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_media::photo::PhotoConfig;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
-use waterui_graphics::color::Color;
-#[cfg(feature = "gpu")]
 use waterui_graphics::gpu_surface::GpuSurface;
+use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
 
@@ -114,17 +112,15 @@ impl GtkRenderer {
         Self::register_native::<StepperConfig>(dispatcher);
         Self::register_native::<ScrollView>(dispatcher);
         Self::register_native::<Tabs>(dispatcher);
-        Self::register_native::<Color>(dispatcher);
         Self::register_native::<ListConfig>(dispatcher);
-        Self::register_native::<PhotoConfig>(dispatcher);
         Self::register_native::<SecureFieldConfig>(dispatcher);
         Self::register_native::<PickerConfig>(dispatcher);
+        Self::register_native::<WebView>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
 
-        // Register GPU surface (requires "gpu" feature)
-        #[cfg(feature = "gpu")]
+        // Register GPU surface (used by waterui-graphics and waterui-media)
         Self::register_native::<GpuSurface>(dispatcher);
 
         // Register views that implement View directly
@@ -188,7 +184,7 @@ impl GtkRenderer {
 
     /// Registers handlers for metadata wrapper views.
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
-        use waterui::background::{Background, ForegroundColor};
+        use waterui::background::Background;
         use waterui::component::focus::Focused;
         use waterui::gesture::GestureObserver;
         use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
@@ -197,15 +193,10 @@ impl GtkRenderer {
         use waterui_layout::safe_area::IgnoreSafeArea;
         use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 
-        // Metadata<Environment> - merge environment and render content
-        dispatcher.register::<Metadata<Environment>>(|_state, ctx, metadata, env| {
+        // Metadata<Environment> - use provided environment for subtree
+        dispatcher.register::<Metadata<Environment>>(|_state, ctx, metadata, _env| {
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
-            // Merge the metadata environment into the current environment
-            let mut merged_env = env.clone();
-            // Copy values from the metadata environment
-            // For now, we just use the content's environment as-is
-            // A full implementation would merge specific values
-            renderer.render_any(metadata.content, &merged_env)
+            renderer.render_any(metadata.content, &metadata.value)
         });
 
         // Metadata<Retain> - just render content (the value stays alive in the struct)
@@ -218,7 +209,6 @@ impl GtkRenderer {
         dispatcher.register::<Metadata<Background>>(|_state, ctx, metadata, env| {
             use nami::Signal;
             use waterui::background::Background;
-            use waterui_core::resolve::Resolvable;
 
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
@@ -246,37 +236,6 @@ impl GtkRenderer {
                     .style_context()
                     .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
             }
-
-            widget
-        });
-
-        // Metadata<ForegroundColor> - apply foreground color and render content
-        dispatcher.register::<Metadata<ForegroundColor>>(|_state, ctx, metadata, env| {
-            use nami::Signal;
-            use waterui_core::resolve::Resolvable;
-
-            let renderer = unsafe { ctx.renderer() }.expect("renderer required");
-            let widget = renderer.render_any(metadata.content, env);
-
-            // Apply foreground color using CSS
-            let color = metadata.value.color.get();
-            let resolved = color.resolve(env).get();
-            let srgb = resolved.to_srgb_with_headroom();
-
-            let css = format!(
-                "* {{ color: rgba({}, {}, {}, {}); }}",
-                (srgb.red.clamp(0.0, 1.0) * 255.0) as u8,
-                (srgb.green.clamp(0.0, 1.0) * 255.0) as u8,
-                (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8,
-                resolved.opacity.clamp(0.0, 1.0)
-            );
-
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_data(&css);
-
-            widget
-                .style_context()
-                .add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
             widget
         });
@@ -331,7 +290,6 @@ impl GtkRenderer {
                 DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent,
                 MagnificationEvent, TapEvent,
             };
-            use waterui_core::handler::Handler;
 
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
             let widget = renderer.render_any(metadata.content, env);
@@ -370,7 +328,7 @@ impl GtkRenderer {
                             env.insert(tap_event);
 
                             if let Ok(mut handler) = action.try_borrow_mut() {
-                                handler.handle(&env);
+                                (&mut **handler)(&env);
                             }
                             gesture.set_state(gtk4::EventSequenceState::Claimed);
                         }
@@ -400,7 +358,7 @@ impl GtkRenderer {
                         env.insert(event);
 
                         if let Ok(mut handler) = action.try_borrow_mut() {
-                            handler.handle(&env);
+                            (&mut **handler)(&env);
                         }
                         gesture.set_state(gtk4::EventSequenceState::Claimed);
                     });
@@ -435,7 +393,7 @@ impl GtkRenderer {
                             env.insert(event);
 
                             if let Ok(mut handler) = action.try_borrow_mut() {
-                                handler.handle(&env);
+                                (&mut **handler)(&env);
                             }
                             gesture.set_state(gtk4::EventSequenceState::Claimed);
                         });
@@ -470,7 +428,7 @@ impl GtkRenderer {
                             env.insert(event);
 
                             if let Ok(mut handler) = action.try_borrow_mut() {
-                                handler.handle(&env);
+                                (&mut **handler)(&env);
                             }
                         });
                     }
@@ -502,7 +460,7 @@ impl GtkRenderer {
                             env.insert(event);
 
                             if let Ok(mut handler) = action.try_borrow_mut() {
-                                handler.handle(&env);
+                                (&mut **handler)(&env);
                             }
                         });
                     }
@@ -533,7 +491,7 @@ impl GtkRenderer {
                         env.insert(event);
 
                         if let Ok(mut handler) = action.try_borrow_mut() {
-                            handler.handle(&env);
+                            (&mut **handler)(&env);
                         }
                         gesture.set_state(gtk4::EventSequenceState::Claimed);
                     });
@@ -553,7 +511,7 @@ impl GtkRenderer {
                         let env = env.clone();
 
                         if let Ok(mut handler) = action.try_borrow_mut() {
-                            handler.handle(&env);
+                            (&mut **handler)(&env);
                         }
                         gesture.set_state(gtk4::EventSequenceState::Claimed);
                     });

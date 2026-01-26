@@ -98,7 +98,6 @@ water run --platform macos
 ```rust
 Window::new("Window Title", content)
     .style(WindowStyle::Titled)
-    .background(WindowBackground::Opaque)
     .resizable(true)
     .show(env);
 ```
@@ -108,7 +107,7 @@ Window::new("Window Title", content)
 ```rust
 Window::new("Frosted Glass", content)
     .style(WindowStyle::Titled)
-    .background(WindowBackground::Material(Material::Regular))
+    .background(Material::Regular)
     .show(env);
 ```
 
@@ -117,7 +116,7 @@ Window::new("Frosted Glass", content)
 ```rust
 let color = Color::srgb_f32(0.2, 0.4, 0.8).with_alpha(0.85);
 Window::new("Colored Window", content)
-    .background(WindowBackground::Color(color))
+    .background(color)
     .show(env);
 ```
 

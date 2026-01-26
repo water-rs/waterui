@@ -315,6 +315,38 @@ impl View for Window {
     }
 }
 
+/// Shows a window only once per "open" cycle.
+///
+/// This helper avoids accidentally creating multiple native windows when the bound
+/// [`WindowState`] changes (e.g. Normal → Minimized), which would re-run `Window`'s
+/// `View::body()` and call `show()` again.
+///
+/// The window is shown when `state` transitions from `Closed` to any other state.
+/// When `state` becomes `Closed` again (either programmatically or via the native
+/// close button updating the binding), the helper resets and a subsequent open will
+/// create a new window.
+pub fn conditional_window<F>(state: Binding<WindowState>, creator: F) -> impl View
+where
+    F: Fn(Binding<WindowState>) -> Window + 'static,
+{
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    let shown = Rc::new(Cell::new(false));
+
+    waterui_core::dynamic::watch(state.clone(), move |s| {
+        if s == WindowState::Closed {
+            shown.set(false);
+            AnyView::new(())
+        } else if !shown.get() {
+            shown.set(true);
+            AnyView::new(creator(state.clone()))
+        } else {
+            AnyView::new(())
+        }
+    })
+}
+
 
 /// A handle to control a window after it has been shown.
 #[derive(Debug, Clone)]
@@ -325,7 +357,7 @@ pub struct WindowHandle {
 
 impl WindowHandle {
     /// Close the window.
-    pub fn close(self) {
+    pub fn close(&self) {
         self.state.set(WindowState::Closed);
     }
 

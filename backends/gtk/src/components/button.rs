@@ -26,7 +26,8 @@ impl GtkComponent for Native<ButtonConfig> {
         let action = RefCell::new(config.action);
         let env_clone = env.clone();
         button.connect_clicked(move |_| {
-            action.borrow_mut().handle(&env_clone);
+            let mut action = action.borrow_mut();
+            (&mut **action)(&env_clone);
         });
 
         // TODO: Apply button style based on config.style

@@ -3,13 +3,12 @@
 use gtk4::prelude::*;
 use gtk4::{Adjustment, Box as GtkBox, Orientation, SpinButton, Widget};
 use nami::{Signal, SignalExt};
-use std::cell::RefCell;
-use std::rc::Rc;
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
+use crate::util::store_watcher_guard;
 
 impl GtkComponent for Native<StepperConfig> {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
@@ -45,30 +44,31 @@ impl GtkComponent for Native<StepperConfig> {
         let spin_button = SpinButton::new(Some(&adjustment), 1.0, 0);
 
         // Two-way binding: Binding -> SpinButton
-        let binding = config.value.clone();
-        let spin_clone = spin_button.clone();
+        let binding = config.value;
         let guard = binding.clone().computed().watch({
-            move |ctx| {
+            let spin_button = spin_button.clone();
+            move |ctx: nami::watcher::Context<i32>| {
                 let value = ctx.into_value();
-                let current = spin_clone.value() as i32;
-                if value != current {
-                    spin_clone.set_value(f64::from(value));
-                }
+                let spin_button = spin_button.clone();
+                glib::idle_add_local_once(move || {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let current = spin_button.value() as i32;
+                    if value != current {
+                        spin_button.set_value(f64::from(value));
+                    }
+                });
             }
         });
-
-        // Store the guard to keep the watcher alive
-        // SAFETY: We're storing a guard to keep the reactive watcher alive
-        unsafe {
-            spin_button.set_data("waterui_guard", Rc::new(guard));
-        }
+        store_watcher_guard(&spin_button, guard);
 
         // Two-way binding: SpinButton -> Binding
-        let binding_for_signal = Rc::new(RefCell::new(binding));
+        let binding_for_signal = binding.clone();
         spin_button.connect_value_changed(move |btn| {
             #[allow(clippy::cast_possible_truncation)]
             let value = btn.value() as i32;
-            binding_for_signal.borrow_mut().set(value);
+            if binding_for_signal.get() != value {
+                binding_for_signal.set(value);
+            }
         });
 
         container.append(&spin_button);
