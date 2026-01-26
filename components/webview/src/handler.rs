@@ -88,7 +88,10 @@ pub trait WebViewHandle: 'static {
     fn set_redirects_enabled(&self, _enabled: bool) {}
     /// Watches for web view events.
     ///
-    /// Only one watcher can be active at a time; setting a new watcher replaces the previous one.
+    /// Multiple watchers can be active at the same time.
+    ///
+    /// Watchers are invoked in registration order. Backends should ensure a watcher is not
+    /// dropped while it may still be called.
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static);
 
     /// Returns whether the web view can navigate back in its history.
@@ -300,6 +303,11 @@ impl AnyWebViewHandle {
     /// Runs the given JavaScript code in the context of the web view.
     pub async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         self.inner.run_javascript(script).await
+    }
+
+    /// Downcasts the handle to a concrete type with runtime checks.
+    pub fn downcast_ref<T: WebViewHandle>(&self) -> Option<&T> {
+        (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
     }
 
     /// Downcasts the handle to a concrete type without runtime checks.
