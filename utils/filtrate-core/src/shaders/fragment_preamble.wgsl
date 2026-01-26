@@ -117,8 +117,8 @@ fn hsl_to_rgb(hsl: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
-    var color = textureSample(input_texture, input_sampler, uv);
+    // Use explicit LOD to support unfilterable float textures (e.g. HDR formats).
+    var color = textureSampleLevel(input_texture, input_sampler, uv, 0.0);
 
     // Parameter index tracker (incremented by each filter fragment)
     var param_idx: u32 = 0u;
-

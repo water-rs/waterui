@@ -123,7 +123,7 @@ impl CustomViewRenderer for FFIViewRenderer {
                 call: render_trampoline,
             };
 
-            // Call native render function
+            // Call native render function (must call callback synchronously)
             unsafe {
                 (render_fn)(view_ptr_void, wui_size, callback);
             }

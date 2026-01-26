@@ -11,7 +11,7 @@ use waterui::app::App;
 use waterui::background::Material;
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui::window::{Window, WindowState, WindowStyle, conditional_window};
 
 fn main() -> impl View {
     // Reactive state to track window states
@@ -84,20 +84,6 @@ fn main() -> impl View {
         conditional_window(transparent_state.clone(), |state| create_transparent_window(state)),
         conditional_window(ultra_thin_state.clone(), |state| create_ultra_thin_window(state)),
     ))
-}
-
-/// Helper to conditionally render a window based on state binding
-fn conditional_window<F>(state: Binding<WindowState>, creator: F) -> impl View
-where
-    F: Fn(Binding<WindowState>) -> Window + 'static,
-{
-    watch(state.clone(), move |s| {
-        if s != WindowState::Closed {
-            AnyView::new(creator(state.clone()))
-        } else {
-            AnyView::new(())
-        }
-    })
 }
 
 /// Helper function to create a window section with open and close buttons

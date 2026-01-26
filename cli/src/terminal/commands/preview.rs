@@ -90,14 +90,14 @@ pub async fn run(args: Args) -> Result<()> {
     let result = async {
         // Build dylib
         let spinner = shell::spinner("Building project...");
-        let dylib_data = session.build_dylib(&project_path).await?;
+        let dylib = session.build_dylib(&project_path).await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
 
         // Render preview
         let spinner = shell::spinner("Rendering view...");
-        let png_data = session.render(&dylib_data, &symbol, width, height)?;
+        let png_data = session.render(&dylib, &symbol, width, height).await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }

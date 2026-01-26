@@ -8,12 +8,22 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use color_eyre::eyre::Result;
+use color_eyre::eyre::Context as _;
 
 /// Watches project directories for changes.
 #[derive(Debug, Default)]
 pub struct ProjectWatcher {
     /// Cached modification times per project path.
     mtimes: HashMap<PathBuf, SystemTime>,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Snapshot of a project's last-known modification time.
+pub struct ProjectStamp {
+    /// Latest modification time across relevant project files.
+    pub mtime: SystemTime,
+    /// Whether the project changed since the last stamp.
+    pub changed: bool,
 }
 
 impl ProjectWatcher {
@@ -29,17 +39,31 @@ impl ProjectWatcher {
     ///
     /// # Errors
     /// Returns an error if the project directory cannot be scanned.
-    pub fn has_changed(&mut self, project_path: &Path) -> Result<bool> {
-        let current_mtime = get_latest_mtime(project_path)?;
+    pub async fn stamp(&mut self, project_path: &Path) -> Result<ProjectStamp> {
+        let path = project_path.to_path_buf();
+        let current_mtime = smol::unblock(move || get_latest_mtime(&path))
+            .await
+            .wrap_err("Failed to scan project modification time")?;
         let cached_mtime = self.mtimes.get(project_path);
 
         let changed = cached_mtime != Some(&current_mtime);
-        if changed {
-            self.mtimes
-                .insert(project_path.to_path_buf(), current_mtime);
-        }
+        self.mtimes
+            .insert(project_path.to_path_buf(), current_mtime);
 
-        Ok(changed)
+        Ok(ProjectStamp {
+            mtime: current_mtime,
+            changed,
+        })
+    }
+
+    /// Check if a project has changed since the last check.
+    ///
+    /// Returns `true` if the project has been modified or is being checked for the first time.
+    ///
+    /// # Errors
+    /// Returns an error if the project directory cannot be scanned.
+    pub async fn has_changed(&mut self, project_path: &Path) -> Result<bool> {
+        Ok(self.stamp(project_path).await?.changed)
     }
 
     /// Clear cached state for a project.
@@ -128,6 +152,8 @@ mod tests {
 
     #[test]
     fn test_watcher_detects_changes() {
+        use smol::block_on;
+
         let dir = tempdir().unwrap();
         let src = dir.path().join("src");
         fs::create_dir_all(&src).unwrap();
@@ -137,16 +163,16 @@ mod tests {
         let mut watcher = ProjectWatcher::new();
 
         // First check should always return true (new project)
-        assert!(watcher.has_changed(dir.path()).unwrap());
+        assert!(block_on(watcher.has_changed(dir.path())).unwrap());
 
         // Second check without changes should return false
-        assert!(!watcher.has_changed(dir.path()).unwrap());
+        assert!(!block_on(watcher.has_changed(dir.path())).unwrap());
 
         // Modify file
         std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(&file, "fn main() { println!(\"hello\"); }").unwrap();
 
         // Should detect change
-        assert!(watcher.has_changed(dir.path()).unwrap());
+        assert!(block_on(watcher.has_changed(dir.path())).unwrap());
     }
 }

@@ -10,41 +10,32 @@ use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 
 impl GtkComponent for Native<Dynamic> {
-    fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+    fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let dynamic = self.into_inner();
 
         // Create a container that will hold the dynamic content
         let container = GtkBox::new(Orientation::Vertical, 0);
 
-        // We need to store the renderer and environment for later use
-        // This is tricky because we need to render new content when it arrives
+        // Dynamic updates can happen later; render updates using a fresh renderer to avoid
+        // keeping a raw pointer to the original `GtkRenderer` (which is short-lived).
         let env = env.clone();
         let container_clone = container.clone();
 
-        // Store renderer pointer for later rendering
-        // SAFETY: This is safe because the renderer outlives the container
-        let renderer_ptr = renderer as *mut GtkRenderer;
-
         dynamic.connect(move |ctx: Context<AnyView>| {
             let view = ctx.into_value();
-
-            // Clear existing children
-            while let Some(child) = container_clone.first_child() {
-                container_clone.remove(&child);
-            }
-
-            // Render the new view
-            // SAFETY: The renderer pointer is valid during the app lifetime
-            let widget = unsafe {
-                if let Some(renderer) = renderer_ptr.as_mut() {
-                    renderer.render_any(view, &env)
-                } else {
-                    // Fallback: create an empty widget if renderer is gone
-                    GtkBox::new(Orientation::Horizontal, 0).upcast()
+            let env = env.clone();
+            let container = container_clone.clone();
+            glib::idle_add_local_once(move || {
+                // Clear existing children
+                while let Some(child) = container.first_child() {
+                    container.remove(&child);
                 }
-            };
 
-            container_clone.append(&widget);
+                // Render the new view
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render_any(view, &env);
+                container.append(&widget);
+            });
         });
 
         container.upcast()

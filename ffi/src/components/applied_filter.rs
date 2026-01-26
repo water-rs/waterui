@@ -32,6 +32,9 @@ use waterui_graphics::shared_context::shared_context;
 
 use crate::{IntoFFI, WuiAnyView};
 use super::view_effect::WuiInputType;
+#[cfg(target_os = "android")]
+use crate::components::android_ahb;
+use super::view_effect::WuiExternalDropFn;
 
 /// Callback type for async completion notifications.
 pub type WuiCallback = unsafe extern "C" fn(user_data: *mut c_void);
@@ -623,7 +626,9 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
         WuiInputType::AHardwareBuffer => {
             #[cfg(target_os = "android")]
             {
-                tracing::error!("[AppliedFilter] AHardwareBuffer import not implemented yet");
+                tracing::error!(
+                    "[AppliedFilter] AHardwareBuffer import requires a drop callback; use waterui_applied_filter_set_input_ahardwarebuffer"
+                );
                 false
             }
             #[cfg(not(target_os = "android"))]
@@ -672,6 +677,62 @@ pub unsafe extern "C" fn waterui_applied_filter_set_input(
             }
             true
         }
+    }
+}
+
+/// Set input from an AHardwareBuffer (Android-specific zero-copy path).
+///
+/// This requires native to pass a drop callback that releases an acquired reference to the
+/// AHardwareBuffer when wgpu is done using it (after GPU work completes).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_set_input_ahardwarebuffer(
+    state: *mut WuiAppliedFilterState,
+    ahb_ptr: *mut c_void,
+    drop_fn: WuiExternalDropFn,
+    drop_data: *mut c_void,
+    width: u32,
+    height: u32,
+) -> bool {
+    if state.is_null() || ahb_ptr.is_null() || drop_fn as usize == 0 || width == 0 || height == 0 {
+        return false;
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let state = unsafe { &mut *state };
+
+        if !ensure_dimensions(state, width, height) {
+            return false;
+        }
+
+        match android_ahb::import_ahardwarebuffer_as_wgpu_texture(
+            &state.device,
+            ahb_ptr,
+            width,
+            height,
+            "AppliedFilter Imported AHardwareBuffer Texture",
+            drop_fn,
+            drop_data,
+        ) {
+            Ok((texture, format)) => {
+                state.imported_texture = Some(texture);
+                state.imported_format = Some(format);
+                true
+            }
+            Err(e) => {
+                tracing::error!("[AppliedFilter] AHardwareBuffer import failed: {e}");
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = state;
+        let _ = drop_fn as usize;
+        let _ = drop_data;
+        tracing::error!("[AppliedFilter] AHardwareBuffer import only supported on Android");
+        false
     }
 }
 

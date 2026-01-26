@@ -2959,6 +2959,29 @@ typedef struct WuiJsCallback {
 } WuiJsCallback;
 
 /**
+ * Message payload emitted from JavaScript to a native-registered handler.
+ *
+ * `payload_base64` is base64-encoded bytes from JavaScript.
+ * `reply` must be called exactly once for request/response semantics.
+ */
+typedef struct WuiWebViewMessage {
+  struct WuiStr payload_base64;
+  struct WuiJsCallback reply;
+} WuiWebViewMessage;
+
+/**
+ * A C-compatible function wrapper that can be called multiple times.
+ *
+ * This structure wraps a Rust `Fn` closure to allow it to be passed across
+ * the FFI boundary while maintaining proper memory management.
+ */
+typedef struct WuiFn_WuiWebViewMessage {
+  void *data;
+  void (*call)(const void*, struct WuiWebViewMessage);
+  void (*drop)(void*);
+} WuiFn_WuiWebViewMessage;
+
+/**
  * FFI representation of a WebView handle with function pointers.
  *
  * Native backends create this struct with function pointers to their implementation.
@@ -3012,6 +3035,25 @@ typedef struct WuiWebViewHandle {
    * Set event callback. Native calls this when events occur.
    */
   void (*watch)(void*, struct WuiFn_WuiWebViewEvent);
+  /**
+   * Register a named handler that can be called from JavaScript.
+   *
+   * Backends are expected to provide a Promise-based API where possible:
+   * JavaScript sends `payload_base64` and receives a base64 reply.
+   */
+  void (*add_handler)(void*, struct WuiStr, struct WuiFn_WuiWebViewMessage);
+  /**
+   * Removes a previously added handler.
+   */
+  void (*remove_handler)(void*, struct WuiStr);
+  /**
+   * Sets a cookie for the web view. The string is a Set-Cookie header value.
+   */
+  void (*set_cookie)(void*, struct WuiStr);
+  /**
+   * Gets cookies as newline-separated Set-Cookie strings.
+   */
+  struct WuiStr (*get_cookies)(const void*);
   /**
    * Execute JavaScript on the currently loaded page and call callback with result.
    */
@@ -3199,6 +3241,13 @@ typedef struct WuiViewEffect {
 } WuiViewEffect;
 
 /**
+ * Native drop callback type for external resources.
+ *
+ * Android: used to release an acquired `AHardwareBuffer*` without Rust linking to API-26+ symbols.
+ */
+typedef void (*WuiExternalDropFn)(void *user_data);
+
+/**
  * FFI representation of a Metadata<AppliedFilter>.
  */
 typedef struct WuiAppliedFilter {
@@ -3330,6 +3379,28 @@ typedef struct WuiLivePhotoSource {
 } WuiLivePhotoSource;
 
 typedef struct Computed_ColorScheme WuiComputed_ColorScheme;
+
+typedef struct WuiArraySlice_WuiId {
+  struct WuiId *head;
+  uintptr_t len;
+} WuiArraySlice_WuiId;
+
+typedef struct WuiArrayVTable_WuiId {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiId (*slice)(const void*);
+} WuiArrayVTable_WuiId;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of WuiArray is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiId {
+  NonNull data;
+  struct WuiArrayVTable_WuiId vtable;
+} WuiArray_WuiId;
 
 typedef struct Computed_AnyViews_AnyView WuiComputed_AnyViews_AnyView;
 
@@ -5572,6 +5643,8 @@ bool waterui_view_effect_child_is_gpu_surface(const struct WuiViewEffect *effect
  */
 bool waterui_view_effect_set_input_ahardwarebuffer(struct WuiViewEffectState *state,
                                                    void *ahb_ptr,
+                                                   WuiExternalDropFn drop_fn,
+                                                   void *drop_data,
                                                    uint32_t width,
                                                    uint32_t height);
 
@@ -5696,6 +5769,19 @@ bool waterui_applied_filter_set_input(struct WuiAppliedFilterState *state,
                                       void *input_handle,
                                       uint32_t width,
                                       uint32_t height);
+
+/**
+ * Set input from an AHardwareBuffer (Android-specific zero-copy path).
+ *
+ * This requires native to pass a drop callback that releases an acquired reference to the
+ * AHardwareBuffer when wgpu is done using it (after GPU work completes).
+ */
+bool waterui_applied_filter_set_input_ahardwarebuffer(struct WuiAppliedFilterState *state,
+                                                      void *ahb_ptr,
+                                                      WuiExternalDropFn drop_fn,
+                                                      void *drop_data,
+                                                      uint32_t width,
+                                                      uint32_t height);
 
 /**
  * Prepare the capture texture for rendering.
@@ -6989,6 +7075,22 @@ struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, 
  * The caller must ensure that `anyviews` is a valid pointer.
  */
 uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
+
+/**
+ * Watches for changes in a views collection.
+ *
+ * The callback receives the current list of view IDs (in order) whenever the collection changes.
+ *
+ * # Safety
+ * - `anyviews` must be a valid pointer.
+ * - `data`, `call`, and `drop` must form a valid callback triplet.
+ */
+struct WuiWatcherGuard *waterui_anyviews_watch(const struct WuiAnyViews *anyviews,
+                                               void *data,
+                                               void (*call)(void*,
+                                                            struct WuiArray_WuiId,
+                                                            struct WuiWatcherMetadata*),
+                                               void (*drop)(void*));
 
 /**
  * Reads the current value from a computed
