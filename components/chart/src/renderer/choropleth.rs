@@ -49,6 +49,7 @@ pub struct ChoroplethRenderer {
     color_stop_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     msaa_target: Option<MsaaTarget>,
+    msaa_samples: u32,
 
     // Animation state
     animation: ChartAnimation,
@@ -87,6 +88,7 @@ impl ChoroplethRenderer {
             color_stop_buffer: None,
             bind_group: None,
             msaa_target: None,
+            msaa_samples: 1,
             animation: ChartAnimation::default(),
             needs_redraw: false,
             total_indices: 0,
@@ -181,6 +183,7 @@ impl Default for ChoroplethRenderer {
 
 impl GpuRenderer for ChoroplethRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
+        self.msaa_samples = ctx.msaa_samples;
         // Create shader
         let shader_source = shader_with_common(include_str!("../shaders/choropleth.wgsl"));
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -276,7 +279,7 @@ impl GpuRenderer for ChoroplethRenderer {
                 conservative: false,
             },
             depth_stencil: None,
-            multisample: multisample_state(ctx.surface_format),
+            multisample: multisample_state(ctx.msaa_samples),
             multiview: None,
             cache: None,
         }));
@@ -548,6 +551,7 @@ impl GpuRenderer for ChoroplethRenderer {
                 frame.width,
                 frame.height,
                 &frame.view,
+                self.msaa_samples,
             );
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
