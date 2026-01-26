@@ -440,7 +440,8 @@ impl Layout for AxisLabelsLayout {
                     .clamp(0.0, 1.0);
                 let size = child.size_that_fits(ProposalSize::UNSPECIFIED);
                 let x = chart_left + pos * chart_width - size.width * 0.5;
-                rects.push(Rect::new(Point::new(x, y), size));
+                // Align labels by their bottom edge so they don't collide with the axis title label.
+                rects.push(Rect::new(Point::new(x, y - size.height), size));
             }
         }
 

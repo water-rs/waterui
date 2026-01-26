@@ -219,19 +219,6 @@ pub mod base {
         }
     }
 
-    /// Chooses an MSAA sample count for the given format.
-    #[must_use]
-    pub fn msaa_sample_count(format: wgpu::TextureFormat) -> u32 {
-        // HDR formats are not guaranteed to support MSAA on all backends.
-        if matches!(
-            format,
-            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-        ) {
-            return 1;
-        }
-        MSAA_MAX_SAMPLES
-    }
-
     /// Returns the color attachment view and optional resolve target for MSAA.
     #[must_use]
     pub fn msaa_attachment<'a>(
@@ -241,8 +228,9 @@ pub mod base {
         width: u32,
         height: u32,
         resolve: &'a wgpu::TextureView,
+        sample_count: u32,
     ) -> (&'a wgpu::TextureView, Option<&'a wgpu::TextureView>) {
-        let sample_count = msaa_sample_count(format);
+        let sample_count = sample_count.clamp(1, MSAA_MAX_SAMPLES);
         if sample_count <= 1 {
             return (resolve, None);
         }
@@ -263,9 +251,9 @@ pub mod base {
 
     /// Multisample state for chart pipelines.
     #[must_use]
-    pub fn multisample_state(format: wgpu::TextureFormat) -> wgpu::MultisampleState {
+    pub fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
         wgpu::MultisampleState {
-            count: msaa_sample_count(format),
+            count: sample_count.clamp(1, MSAA_MAX_SAMPLES),
             mask: !0,
             alpha_to_coverage_enabled: false,
         }
