@@ -9,7 +9,7 @@ use crate::{
     android::toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin},
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
-    toolchain::{Installation, Toolchain, ToolchainError},
+    toolchain::{Installation, Toolchain, ToolchainError, sccache::Sccache},
 };
 
 /// Status of a toolchain check.
@@ -181,6 +181,21 @@ pub async fn doctor() -> Vec<DoctorItem> {
         }
         Err(ToolchainError::Unfixable(e)) => {
             items.push(DoctorItem::missing("GTK4", e.to_string()));
+        }
+    }
+
+    // Check sccache (optional but recommended for faster builds)
+    match Sccache.check().await {
+        Ok(()) => items.push(DoctorItem::ok("sccache")),
+        Err(ToolchainError::Fixable(installation)) => {
+            items.push(DoctorItem::fixable(
+                "sccache",
+                "sccache not found (recommended for faster builds)",
+                installation,
+            ));
+        }
+        Err(ToolchainError::Unfixable(e)) => {
+            items.push(DoctorItem::missing("sccache", e.to_string()));
         }
     }
 

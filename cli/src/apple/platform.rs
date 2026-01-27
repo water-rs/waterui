@@ -38,7 +38,10 @@ pub async fn build_rust_lib(
     let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
 
     let triple = platform.triple();
-    let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+    let mut build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
+    }
     let lib_dir = build.build_lib(options.is_release()).await?;
 
     // If output_dir is specified, copy the library there
