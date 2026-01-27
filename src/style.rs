@@ -16,8 +16,8 @@
 //! }
 //! ```
 
-use nami::Computed;
-use waterui_core::{IntoComputedF32, metadata::MetadataKey};
+use nami::{Computed, SignalExt};
+use waterui_core::{IntoSignalF32, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 
 /// Represents a shadow effect that can be applied to UI elements.
@@ -217,42 +217,42 @@ impl MetadataKey for Scale {}
 impl Scale {
     /// Creates a uniform scale transform from center.
     #[must_use]
-    pub fn uniform(factor: impl IntoComputedF32) -> Self {
-        let factor = factor.into_computed_f32();
+    pub fn uniform(factor: impl IntoSignalF32) -> Self {
+        let factor = factor.into_signal_f32();
         Self {
-            x: factor.clone(),
-            y: factor,
+            x: factor.clone().computed(),
+            y: factor.computed(),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a uniform scale transform from a specific anchor point.
     #[must_use]
-    pub fn uniform_from(factor: impl IntoComputedF32, anchor: Anchor) -> Self {
-        let factor = factor.into_computed_f32();
+    pub fn uniform_from(factor: impl IntoSignalF32, anchor: Anchor) -> Self {
+        let factor = factor.into_signal_f32();
         Self {
-            x: factor.clone(),
-            y: factor,
+            x: factor.clone().computed(),
+            y: factor.computed(),
             anchor,
         }
     }
 
     /// Creates a non-uniform scale transform from center.
     #[must_use]
-    pub fn xy(x: impl IntoComputedF32, y: impl IntoComputedF32) -> Self {
+    pub fn xy(x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
         Self {
-            x: x.into_computed_f32(),
-            y: y.into_computed_f32(),
+            x: x.into_signal_f32().computed(),
+            y: y.into_signal_f32().computed(),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a non-uniform scale transform from a specific anchor point.
     #[must_use]
-    pub fn xy_from(x: impl IntoComputedF32, y: impl IntoComputedF32, anchor: Anchor) -> Self {
+    pub fn xy_from(x: impl IntoSignalF32, y: impl IntoSignalF32, anchor: Anchor) -> Self {
         Self {
-            x: x.into_computed_f32(),
-            y: y.into_computed_f32(),
+            x: x.into_signal_f32().computed(),
+            y: y.into_signal_f32().computed(),
             anchor,
         }
     }
@@ -295,18 +295,18 @@ impl MetadataKey for Rotation {}
 impl Rotation {
     /// Creates a rotation transform around center.
     #[must_use]
-    pub fn degrees(angle: impl IntoComputedF32) -> Self {
+    pub fn degrees(angle: impl IntoSignalF32) -> Self {
         Self {
-            angle: angle.into_computed_f32(),
+            angle: angle.into_signal_f32().computed(),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a rotation transform around a specific anchor point.
     #[must_use]
-    pub fn degrees_from(angle: impl IntoComputedF32, anchor: Anchor) -> Self {
+    pub fn degrees_from(angle: impl IntoSignalF32, anchor: Anchor) -> Self {
         Self {
-            angle: angle.into_computed_f32(),
+            angle: angle.into_signal_f32().computed(),
             anchor,
         }
     }
@@ -346,10 +346,10 @@ impl MetadataKey for Offset {}
 impl Offset {
     /// Creates an offset transform.
     #[must_use]
-    pub fn new(x: impl IntoComputedF32, y: impl IntoComputedF32) -> Self {
+    pub fn new(x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
         Self {
-            x: x.into_computed_f32(),
-            y: y.into_computed_f32(),
+            x: x.into_signal_f32().computed(),
+            y: y.into_signal_f32().computed(),
         }
     }
 }

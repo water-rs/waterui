@@ -112,7 +112,7 @@ pub use easing::{EasingCurve, Interpolatable};
 pub use nami as reactive;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
 mod computed_f32;
-pub use computed_f32::{IntoComputedF32, IntoF32};
+pub use computed_f32::IntoSignalF32;
 pub use waterui_str::Str;
 pub mod id;
 pub mod layout;
