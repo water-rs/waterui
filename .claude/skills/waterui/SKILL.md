@@ -7,6 +7,28 @@ description: Build cross-platform apps with WaterUI. Use when writing views, han
 
 Build views with reactive state. When unsure, use Explore agent to search `examples/*/src/lib.rs`.
 
+## CRITICAL: Reactive-First Pattern
+
+**WaterUI is a reactive framework. ALWAYS pass Bindings directly to APIs instead of using `.get()` or `watch`.**
+
+Most WaterUI APIs accept `impl Signal` or `impl IntoSignalF32` - pass bindings directly for automatic reactivity:
+
+```rust
+// ✅ CORRECT - Pass binding directly, updates automatically
+Photo::new(url).blur(blur_value.clone())       // blur updates as slider moves
+view.visible(is_visible.clone())               // visibility reacts to state
+view.opacity(opacity_value.clone())            // opacity animates reactively
+view.disabled(is_loading.clone())              // disabled state follows loading
+text!("Count: {count}")                        // text updates automatically
+
+// ❌ WRONG - Static value, requires manual refresh
+Photo::new(url).blur(blur_value.get())         // blur frozen at initial value
+view.visible(is_visible.get())                 // visibility never changes
+watch(count.clone(), |c| text(format!("{c}"))) // unnecessary indirection
+```
+
+**Rule: If an API accepts a value that might change, check if it accepts `impl Signal` and pass the binding.**
+
 ## Quick Start
 
 ```rust
@@ -14,7 +36,7 @@ use waterui::prelude::*;
 
 #[hot_reload]
 fn main() -> impl View {
-    let count = Binding::new(0);
+    let count = Binding::i32(0);
 
     vstack((
         text!("Count: {count}").headline(),
@@ -54,9 +76,12 @@ when(state.equal_to(0), || "Loading")
 ## State
 
 ```rust
-let toggle = Binding::bool(false);      // bool
-let count = Binding::new(0);            // i32
-let name = Binding::container(String::new()); // heap types
+// Use type-specific constructors (Binding::new does NOT exist)
+let toggle = Binding::bool(false);
+let count = Binding::i32(0);
+let value = Binding::f64(1.5);
+let name = Binding::container(String::new());  // heap types (String, Vec, etc.)
+let text = Binding::container(Str::from("hello")); // Str type
 
 // Pass by reference to child views
 fn section(count: &Binding<i32>) -> impl View { ... }
@@ -64,7 +89,7 @@ fn section(count: &Binding<i32>) -> impl View { ... }
 
 ## Reactive Transforms
 
-Methods on signals (no `.clone()` needed):
+Methods on signals (no `.clone()` needed for transforms):
 ```rust
 count.not()                    // bool negation
 count.select(a, b)             // if-else
@@ -77,19 +102,55 @@ count.zip(&other).map(|(a,b)| a + b)  // combine signals
 
 Convert to Computed: `signal.computed()`
 
-## Event Handlers
+## Reactive Modifiers
+
+**Pass bindings directly to modifiers for real-time updates:**
 
 ```rust
-// Single state
+let opacity = Binding::f64(1.0);
+let blur = Binding::f64(0.0);
+let is_visible = Binding::bool(true);
+let is_disabled = Binding::bool(false);
+let scale_factor = Binding::f64(1.0);
+
+view
+    .opacity(opacity.clone())           // reactive opacity
+    .visible(is_visible.clone())        // reactive visibility
+    .disabled(is_disabled.clone())      // reactive disabled state
+    .scale(scale_factor.clone(), scale_factor.clone())  // reactive scale
+
+// Filters also accept reactive values
+Photo::new(url)
+    .blur(blur.clone())                 // blur updates in real-time
+    .saturation(saturation.clone())     // saturation updates in real-time
+    .brightness(brightness.clone())     // brightness updates in real-time
+```
+
+## Event Handlers
+
+**IMPORTANT: Always use `.with_state()` - never clone bindings manually!**
+
+```rust
+// Single state - receives Binding directly
 button("Click")
     .with_state(&count)
     .action(|c| c.set(c.get() + 1))
 
-// Multiple states → tuple
+// Multiple states → nested tuple (((a, b), c), d)
 button("Reset")
     .with_state(&x)
     .with_state(&y)
     .action(|(x, y)| { x.set(0); y.set(0); })
+
+// Four states example
+button("Submit")
+    .with_state(&url)
+    .with_state(&blur)
+    .with_state(&status)
+    .with_state(&handler)
+    .action(|(((url, blur), status), handler)| {
+        // Use all four bindings
+    })
 
 // Async
 button("Load").action_async(|_| async { fetch().await })
@@ -101,13 +162,20 @@ view.on_change(&signal, |new_val| handle(new_val))
 
 ## Text
 
-```rust
-// Static
-text("Hello").title()       // semantic sizes: title, headline, body, caption, footnote
+**IMPORTANT: Always use `text!` macro for reactive text - never use `watch`!**
 
-// Reactive interpolation
-text!("Count: {count}")     // auto-updates
-text!("{a} + {b} = {sum}")  // multiple signals
+```rust
+// Static text - use text() function
+text("Hello").title()       // semantic sizes: title, headline, body, caption, footnote, sub_headline
+
+// Reactive text - use text! macro (auto-updates when bindings change)
+text!("Count: {count}")              // single binding
+text!("{a} + {b} = {sum}")           // multiple bindings
+text!("Value: {value:.2}")           // with formatting
+
+// text! returns LocalizedText with font methods
+text!("Status: {status}").sub_headline()
+text!("Small: {value}").caption()
 ```
 
 ## Layout
@@ -128,7 +196,7 @@ let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
 
 ```rust
 // Built-in (zero-sized, efficient)
-Blue, Green, Red, Orange, Purple, Cyan, Yellow, Pink
+Blue, Green, Red, Orange, Purple, Cyan, Yellow, Pink, Grey
 
 // Custom
 const BRAND: Srgb = Srgb::from_hex("#3B82F6");
@@ -150,7 +218,8 @@ Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`
 .size(w, h) / .width(w) / .height(h)
 .scale(x, y) / .rotation(degrees) / .offset(x, y)
 .border(color, width) / .shadow() / .clip(shape)
-.disabled(bool_signal) / .visible(bool_signal)
+.disabled(bool_signal) / .visible(bool_signal)  // accept signals!
+.opacity(f64_signal)                             // accepts signal!
 ```
 
 ## Components
@@ -158,7 +227,7 @@ Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`
 | Category | Components |
 |----------|------------|
 | Layout | `hstack`, `vstack`, `zstack`, `scroll`, `spacer`, `grid` |
-| Controls | `button`, `toggle`, `Slider`, `Stepper`, `field`, `Menu` |
+| Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu` |
 | Navigation | `NavigationStack`, `NavigationLink`, `TabView` |
 | Media | `Photo`, `VideoPlayer`, `MediaPicker` |
 | Graphics | `Canvas`, `Chart`, `Map`, `Barcode::qr()` |
@@ -191,18 +260,21 @@ fn my_card() -> impl View {
 Task(subagent_type="waterui-preview", prompt="<function_name> --platform macos --path <crate_path>\nExpect: <visual description>")
 ```
 
-The preview agent will:
-1. Run `water preview` to render the view
-2. Evaluate the result against expectations
-3. Report back with ✓ MATCHES or ✗ DIFFERS
-
 ## Common Patterns
 
 ```rust
-// Animated toggle
-let scale = active.select(1.2_f32, 1.0).with(Animation::spring(300.0, 15.0));
+// Reactive blur with slider (real-time updates)
+let blur = Binding::f64(0.0);
+vstack((
+    Photo::new(url).blur(blur.clone()),  // blur reacts to slider
+    Slider::new(0.0..=10.0, &blur),
+    text!("Blur: {blur:.1}"),
+))
 
-// Conditional visibility
+// Animated toggle
+let scale = active.select(1.2 as f32, 1.0).with(Animation::spring(300.0, 15.0));
+
+// Conditional visibility (reactive)
 .visible(items.map(|i| !i.is_empty()).computed())
 
 // List rendering
@@ -238,6 +310,37 @@ fn render(mode: Mode) -> AnyView {
 #[derive(FormBuilder)]
 struct Settings { name: String, volume: f64 }
 form(&settings_binding)
+
+// Dynamic view for URL changes (Photo with reactive blur)
+let url_input = Binding::container(Str::from("https://example.com/image.jpg"));
+let blur = Binding::f64(0.0);
+let status = Binding::container(String::from("Loading..."));
+let (handler, photo_view) = Dynamic::new();
+
+// Load button - only Dynamic for URL change, blur is reactive
+button("Load")
+    .with_state(&url_input)
+    .with_state(&blur)
+    .with_state(&status)
+    .with_state(&handler)
+    .action(|(((url, blur), status), handler)| {
+        let photo = Photo::new(url.get())
+            .on_event({
+                let status = status.clone();
+                move |event| match event {
+                    PhotoEvent::Loaded => status.set(String::from("Loaded")),
+                    PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
+                }
+            })
+            .blur(blur.clone());  // Pass binding for reactive blur!
+        handler.set(photo);
+    });
+
+vstack((
+    text!("{status}"),
+    photo_view,
+    Slider::new(0.0..=10.0, &blur),  // Slider controls blur in real-time
+))
 ```
 
 ## Extension Traits
@@ -268,6 +371,18 @@ WaterUI uses `*Ext` traits. When unsure, search `trait.*Ext` in codebase.
 
 ## Gotchas
 
+**No `Binding::new()`** - use type-specific constructors:
+```rust
+// WRONG
+let count = Binding::new(0);
+
+// CORRECT
+let count = Binding::i32(0);
+let value = Binding::f64(1.5);
+let flag = Binding::bool(false);
+let name = Binding::container(String::new());
+```
+
 **No `_f32` suffix** - use `as f32` cast:
 ```rust
 // WRONG
@@ -277,13 +392,43 @@ WaterUI uses `*Ext` traits. When unsure, search `trait.*Ext` in codebase.
 .select(1.0 as f32, 0.3)
 ```
 
-**No `.get()` in view bodies** - breaks reactivity:
+**No `.get()` for reactive values** - pass binding directly:
+```rust
+// WRONG - static, won't update
+Photo::new(url).blur(blur.get())
+view.opacity(opacity.get())
+
+// CORRECT - reactive, updates automatically
+Photo::new(url).blur(blur.clone())
+view.opacity(opacity.clone())
+```
+
+**No `watch()` for text** - use `text!` macro:
 ```rust
 // WRONG
-text(format!("Count: {}", count.get()))
+watch(status.clone(), |msg| text(msg))
 
 // CORRECT
-text!("Count: {count}")
+text!("{status}")
+```
+
+**No `watch()` when reactive API exists** - pass binding directly:
+```rust
+// WRONG - unnecessary watch
+watch(blur.clone(), |b| Photo::new(url).blur(b))
+
+// CORRECT - pass binding directly
+Photo::new(url).blur(blur.clone())
+```
+
+**No manual `.clone()` for button states** - use `.with_state()`:
+```rust
+// WRONG
+let count_clone = count.clone();
+button("Click").action(move || count_clone.set(...))
+
+// CORRECT
+button("Click").with_state(&count).action(|c| c.set(...))
 ```
 
 **Two-param transforms:**
@@ -291,4 +436,13 @@ text!("Count: {count}")
 .scale(x, y)    // not .scale(uniform)
 .offset(x, y)
 .size(w, h)
+```
+
+**`text!` returns `LocalizedText`** - supports all font methods:
+```rust
+// LocalizedText has: .title(), .headline(), .sub_headline(), .body(), .caption(), .footnote()
+// Plus: .size(), .bold(), .italic(), .font()
+text!("{status}").sub_headline()
+text!("{value}").caption()
+text!("{note}").footnote()
 ```
