@@ -219,10 +219,12 @@ impl AnimatedMeshRenderer {
 
 impl GpuRenderer for AnimatedMeshRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(ANIMATED_MESH_SHADER.label),
-            source: wgpu::ShaderSource::Wgsl(ANIMATED_MESH_SHADER.source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(ANIMATED_MESH_SHADER.label),
+                source: wgpu::ShaderSource::Wgsl(ANIMATED_MESH_SHADER.source.into()),
+            });
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -232,19 +234,21 @@ impl GpuRenderer for AnimatedMeshRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Animated Mesh Gradient Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Animated Mesh Gradient Bind Group Layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Animated Mesh Gradient Bind Group"),
@@ -255,11 +259,13 @@ impl GpuRenderer for AnimatedMeshRenderer {
             }],
         });
 
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Animated Mesh Gradient Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Animated Mesh Gradient Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None
@@ -267,34 +273,36 @@ impl GpuRenderer for AnimatedMeshRenderer {
             Some(wgpu::BlendState::REPLACE)
         };
 
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Animated Mesh Gradient Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
-        });
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Animated Mesh Gradient Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: ctx.pipeline_cache,
+            });
 
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
@@ -313,9 +321,15 @@ impl GpuRenderer for AnimatedMeshRenderer {
             self.pipeline_format = None;
         }
 
-        let Some(pipeline) = &self.pipeline else { return };
-        let Some(uniform_buffer) = &self.uniform_buffer else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         let elapsed = self.start_time.elapsed().as_secs_f32();
         let uniforms = AnimatedMeshUniforms {
@@ -332,7 +346,9 @@ impl GpuRenderer for AnimatedMeshRenderer {
         uniform_data
             .write(&uniforms)
             .expect("Failed to write uniform buffer");
-        frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+        frame
+            .queue
+            .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
         let mut encoder = frame
             .device
@@ -373,7 +389,8 @@ pub struct AnimatedMeshGradient {
 
 impl core::fmt::Debug for AnimatedMeshGradient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AnimatedMeshGradient").finish_non_exhaustive()
+        f.debug_struct("AnimatedMeshGradient")
+            .finish_non_exhaustive()
     }
 }
 

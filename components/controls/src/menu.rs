@@ -97,7 +97,9 @@ impl MenuItem {
     /// ```
     #[must_use]
     pub fn new(label: impl Into<Text>) -> MenuItemBuilder {
-        MenuItemBuilder { label: label.into() }
+        MenuItemBuilder {
+            label: label.into(),
+        }
     }
 }
 

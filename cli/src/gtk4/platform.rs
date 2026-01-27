@@ -90,7 +90,11 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 /// Package a GTK4 app (locate the built binary).
 pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
     // For GTK4, "packaging" just means locating the built binary
-    let profile = if options.is_debug() { "debug" } else { "release" };
+    let profile = if options.is_debug() {
+        "debug"
+    } else {
+        "release"
+    };
     // GTK4 uses its own target directory since it's a standalone project
     let backend_path = project.backend_path::<Gtk4Backend>();
 
@@ -120,10 +124,7 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
         };
 
         if alt_binary_path.exists() {
-            return Ok(Artifact::new(
-                project.bundle_identifier(),
-                alt_binary_path,
-            ));
+            return Ok(Artifact::new(project.bundle_identifier(), alt_binary_path));
         }
 
         bail!(

@@ -210,11 +210,13 @@ impl TargetPlatform {
     #[must_use]
     pub fn arch(&self) -> Architecture {
         match self {
-            Self::MacOS | Self::IOSSimulator | Self::TvOSSimulator
-            | Self::WatchOSSimulator | Self::VisionOSSimulator
-            | Self::Linux | Self::Windows => {
-                DefaultToHost::default().0.architecture
-            }
+            Self::MacOS
+            | Self::IOSSimulator
+            | Self::TvOSSimulator
+            | Self::WatchOSSimulator
+            | Self::VisionOSSimulator
+            | Self::Linux
+            | Self::Windows => DefaultToHost::default().0.architecture,
             Self::IOS | Self::TvOS | Self::WatchOS | Self::VisionOS | Self::Android => {
                 Architecture::Aarch64(Aarch64Architecture::Aarch64)
             }

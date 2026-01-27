@@ -11,16 +11,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 /// GPU-accelerated pie chart renderer.
 pub struct PieChartRenderer {
@@ -432,10 +432,23 @@ impl GpuRenderer for PieChartRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
-                glam::Vec4::new(x, y, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, hovered_slice)
+                glam::Vec4::new(
+                    x,
+                    y,
+                    if frame.pointer.hit.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    hovered_slice,
+                )
             } else {
                 glam::Vec4::new(-1.0, -1.0, 0.0, -1.0)
             },
@@ -446,7 +459,11 @@ impl GpuRenderer for PieChartRenderer {
                 0.0,
             ),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render
         let mut encoder = frame
@@ -515,7 +532,11 @@ impl ChartRenderer for PieChartRenderer {
         self.needs_redraw = true;
     }
 
-    fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<Self::DataValue>> {
+    fn hit_test(
+        &self,
+        point: Point,
+        viewport: &ChartViewport,
+    ) -> Option<HitResult<Self::DataValue>> {
         if self.data.is_empty() {
             return None;
         }

@@ -4,7 +4,7 @@
 //! for data updates, animation, and hit-testing.
 
 use waterui_core::layout::Point;
-use waterui_graphics::{wgpu, GpuRenderer};
+use waterui_graphics::{GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::DataBounds;
@@ -117,7 +117,11 @@ pub trait ChartRenderer: GpuRenderer {
     ///
     /// Hit-testing is performed on CPU using the same coordinate math as
     /// the shader, since all elements are rendered in a single draw call.
-    fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<Self::DataValue>>;
+    fn hit_test(
+        &self,
+        point: Point,
+        viewport: &ChartViewport,
+    ) -> Option<HitResult<Self::DataValue>>;
 
     /// Returns the current data bounds.
     ///
@@ -171,8 +175,8 @@ fn chart_coords_from_viewport(
 pub mod base {
     extern crate alloc;
 
-    use alloc::vec::Vec;
     use alloc::string::String;
+    use alloc::vec::Vec;
     use encase::{ShaderType, StorageBuffer, UniformBuffer};
     use waterui_graphics::{GpuContext, wgpu};
 
@@ -215,7 +219,14 @@ pub mod base {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            Self { texture, view, width, height, format, sample_count }
+            Self {
+                texture,
+                view,
+                width,
+                height,
+                format,
+                sample_count,
+            }
         }
     }
 
@@ -272,7 +283,9 @@ pub mod base {
 
     /// Creates a storage buffer with the given data using encase for proper alignment.
     #[must_use]
-    pub fn create_storage_buffer<T: ShaderType + encase::ShaderSize + encase::internal::WriteInto>(
+    pub fn create_storage_buffer<
+        T: ShaderType + encase::ShaderSize + encase::internal::WriteInto,
+    >(
         ctx: &GpuContext,
         label: &str,
         data: &[T],
@@ -280,11 +293,12 @@ pub mod base {
         use wgpu::util::DeviceExt;
         let mut buffer = StorageBuffer::new(Vec::new());
         buffer.write(data).expect("Failed to write storage buffer");
-        ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: buffer.as_ref(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        })
+        ctx.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: buffer.as_ref(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
     }
 
     /// Creates an empty storage buffer with the given capacity.
@@ -314,15 +328,18 @@ pub mod base {
         use wgpu::util::DeviceExt;
         let mut buffer = UniformBuffer::new(Vec::new());
         buffer.write(data).expect("Failed to write uniform buffer");
-        ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: buffer.as_ref(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        })
+        ctx.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: buffer.as_ref(),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            })
     }
 
     /// Writes data to a storage buffer using encase for proper alignment.
-    pub fn write_storage_buffer<T: ShaderType + encase::ShaderSize + encase::internal::WriteInto>(
+    pub fn write_storage_buffer<
+        T: ShaderType + encase::ShaderSize + encase::internal::WriteInto,
+    >(
         queue: &wgpu::Queue,
         buffer: &wgpu::Buffer,
         data: &[T],

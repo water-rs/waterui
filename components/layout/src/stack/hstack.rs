@@ -725,11 +725,14 @@ mod tests {
 
         // With ZERO proposal (min size query)
         let min_size = layout.size_that_fits(ProposalSize::ZERO, &children);
-        
+
         // Width: 50 + 10 + 0 + 10 + 80 = 150
-        assert!((min_size.width - 150.0).abs() < f32::EPSILON, 
-            "Min size query should return sum of child min widths (150.0), got {}", min_size.width);
-            
+        assert!(
+            (min_size.width - 150.0).abs() < f32::EPSILON,
+            "Min size query should return sum of child min widths (150.0), got {}",
+            min_size.width
+        );
+
         // Verify regular behavior (Unspecified) still works
         let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
         // Should also be 150 because spacer has 0 intrinsic width

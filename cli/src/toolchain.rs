@@ -67,7 +67,9 @@ pub enum ToolchainError<Install: Installation> {
     #[error("{0}")]
     Unfixable(#[from] UnfixableToolchain),
     /// The toolchain is missing components that can be installed.
-    #[error("Toolchain is missing components that can be fixed automatically. Run `water doctor --fix` for details.")]
+    #[error(
+        "Toolchain is missing components that can be fixed automatically. Run `water doctor --fix` for details."
+    )]
     Fixable(Install),
 }
 

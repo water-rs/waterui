@@ -26,8 +26,8 @@ use nami::{Computed, Signal};
 use waterui_core::{IntoComputedF32, View, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    container::FixedContainer, stack::Alignment,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
+    stack::Alignment,
 };
 
 // ============================================================================
@@ -248,11 +248,7 @@ pub trait PositionExt: View + Sized {
     /// ```rust,ignore
     /// text("Hello").position(100.0, 50.0)  // center at (100, 50)
     /// ```
-    fn position(
-        self,
-        x: impl IntoComputedF32,
-        y: impl IntoComputedF32,
-    ) -> PositionedChild<Self> {
+    fn position(self, x: impl IntoComputedF32, y: impl IntoComputedF32) -> PositionedChild<Self> {
         self.position_anchor(UnitPoint::CENTER, x, y)
     }
 
@@ -421,9 +417,9 @@ pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
     use super::*;
     use crate::StretchAxis;
+    use alloc::vec;
 
     struct MockSubView {
         size: Size,
@@ -446,10 +442,7 @@ mod tests {
         let layout = AbsoluteLayout;
 
         // Absolute fills whatever is proposed
-        let size = layout.size_that_fits(
-            ProposalSize::new(Some(200.0), Some(300.0)),
-            &[],
-        );
+        let size = layout.size_that_fits(ProposalSize::new(Some(200.0), Some(300.0)), &[]);
         assert!((size.width - 200.0).abs() < f32::EPSILON);
         assert!((size.height - 300.0).abs() < f32::EPSILON);
     }

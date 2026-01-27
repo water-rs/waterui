@@ -1104,8 +1104,6 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
     }
 }
 
-
-
 // ========== Metadata<ClipShape> FFI ==========
 // Used to clip views to shapes
 
