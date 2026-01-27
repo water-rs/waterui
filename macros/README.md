@@ -193,20 +193,6 @@ let msg2 = s!("Hello {}, you are {}", name, age);
 let static_msg = s!("No variables here");
 ```
 
-**Used internally by `text!` macro:**
-
-```rust
-// From /Users/lexoliu/Coding/waterui/src/lib.rs
-#[macro_export]
-macro_rules! text {
-    ($($arg:tt)*) => {
-        {
-            $crate::text::Text::new($crate::s!($($arg)*))
-        }
-    };
-}
-```
-
 **Implementation details:**
 
 - Uses `zip` combinator to merge multiple reactive signals

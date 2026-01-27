@@ -4,6 +4,7 @@
 //! worker to satisfy platform constraints (e.g. macOS main-thread renderer requirements),
 //! while still allowing multiple CLI clients to connect concurrently.
 
+use std::collections::HashSet;
 use std::io;
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -23,6 +24,7 @@ use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
 };
 
+use crate::cache::{preview_dylib_cache_dir, preview_dylib_cache_path};
 /// The main preview view - hosts the TCP server for CLI preview requests.
 #[derive(Debug, Default)]
 pub struct Preview;
@@ -76,8 +78,6 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
     let config =
         PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let listener = bind_first_available(config)?;
-    #[cfg(target_os = "macos")]
-    write_preview_pid_file(listener.local_addr()?.port()).await;
     tracing::info!(
         "Preview daemon listening on {}:{}",
         config.host,
@@ -102,27 +102,6 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
         })
         .detach();
     }
-}
-
-#[cfg(target_os = "macos")]
-async fn write_preview_pid_file(port: u16) {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return;
-    };
-
-    let pid_path = home
-        .join(".water")
-        .join("preview_support")
-        .join(".water")
-        .join("preview.pid");
-
-    if let Some(parent) = pid_path.parent() {
-        let _ = async_fs::create_dir_all(parent).await;
-    }
-
-    let pid = std::process::id();
-    let content = format!("{pid}\n{port}\n");
-    let _ = async_fs::write(pid_path, content).await;
 }
 
 fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpListener> {
@@ -195,19 +174,22 @@ async fn handle_connection(
 struct DylibCache {
     capacity: NonZeroUsize,
     libraries: indexmap::IndexMap<DylibId, PreviewLibrary>,
+    disk_present: HashSet<DylibId>,
 }
 
 impl DylibCache {
-    fn new() -> Self {
+    async fn load() -> io::Result<Self> {
         let capacity = dylib_cache_capacity();
-        Self {
+        let disk_present = load_disk_dylibs().await?;
+        Ok(Self {
             capacity,
             libraries: indexmap::IndexMap::new(),
-        }
+            disk_present,
+        })
     }
 
     fn contains(&self, id: &DylibId) -> bool {
-        self.libraries.contains_key(id) || dylib_cache_path(*id).exists()
+        self.libraries.contains_key(id) || self.disk_present.contains(id)
     }
 
     fn get(&mut self, id: &DylibId) -> Option<&PreviewLibrary> {
@@ -216,6 +198,7 @@ impl DylibCache {
     }
 
     fn insert(&mut self, id: DylibId, library: PreviewLibrary) {
+        self.disk_present.insert(id);
         if self.libraries.contains_key(&id) {
             self.libraries.insert(id, library);
             self.touch(&id);
@@ -244,17 +227,48 @@ impl DylibCache {
             return Ok(());
         }
 
-        let path = dylib_cache_path(id);
-        if !path.exists() {
+        if !self.disk_present.contains(&id) {
             return Err(PreviewError::UnknownDylibId(id));
         }
 
+        let path = preview_dylib_cache_path(id);
         let library = unsafe { PreviewLibrary::load_from_path(&path) }
             .await
             .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
         self.insert(id, library);
         Ok(())
     }
+}
+
+async fn load_disk_dylibs() -> io::Result<HashSet<DylibId>> {
+    let dir = preview_dylib_cache_dir();
+    async_fs::create_dir_all(&dir).await?;
+
+    use futures_lite::stream::StreamExt as _;
+
+    let mut entries = async_fs::read_dir(&dir).await?;
+    let mut present = HashSet::new();
+    while let Some(entry) = entries.try_next().await? {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("dylib") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid preview dylib cache entry (non-utf8 filename): {}", path.display()),
+            ));
+        };
+
+        let id = stem.parse::<DylibId>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid preview dylib cache entry {}: {e}", path.display()),
+            )
+        })?;
+        present.insert(id);
+    }
+    Ok(present)
 }
 
 fn dylib_cache_capacity() -> NonZeroUsize {
@@ -266,20 +280,10 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
 }
 
-fn dylib_cache_path(id: DylibId) -> std::path::PathBuf {
-    let hex = id.to_string();
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let base = home
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join(".water")
-        .join("cache")
-        .join("preview")
-        .join("dylibs");
-    base.join(format!("{hex}.dylib"))
-}
-
 async fn render_worker(env: Environment, worker_rx: Receiver<WorkerMessage>) {
-    let mut cache = DylibCache::new();
+    let mut cache = DylibCache::load()
+        .await
+        .expect("failed to initialize preview dylib cache");
 
     while let Ok(msg) = worker_rx.recv().await {
         let response = handle_request(&env, &mut cache, msg.request).await;
@@ -293,6 +297,7 @@ async fn handle_request(
     request: PreviewRequest,
 ) -> PreviewResponse {
     match request {
+        PreviewRequest::Ping => PreviewResponse::Pong,
         PreviewRequest::HasDylib { id } => PreviewResponse::HasDylib {
             present: cache.contains(&id),
         },
