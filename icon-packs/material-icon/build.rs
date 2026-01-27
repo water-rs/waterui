@@ -84,8 +84,11 @@ fn main() {
 fn fail_build(out_dir: &str, msg: &str) -> ! {
     eprintln!("cargo:warning={msg}");
     eprintln!("cargo:warning=Building without icon definitions.");
-    fs::write(Path::new(out_dir).join("icons.rs"), "// No icons available\n")
-        .expect("Failed to write output file");
+    fs::write(
+        Path::new(out_dir).join("icons.rs"),
+        "// No icons available\n",
+    )
+    .expect("Failed to write output file");
     std::process::exit(0);
 }
 
@@ -199,12 +202,11 @@ fn to_const_name(name: &str) -> String {
 }
 
 const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
-    "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
-    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
-    "typeof", "unsized", "virtual", "yield",
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
 ];
 
 /// Convert kebab-case to snake_case, escaping keywords

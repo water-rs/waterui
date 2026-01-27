@@ -5,11 +5,11 @@
 //! - List::for_each for dynamic collections
 //! - ListItem configuration
 
+use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
-use waterui::Identifiable;
 
 #[derive(Clone)]
 struct Contact {

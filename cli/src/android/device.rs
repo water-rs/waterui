@@ -11,9 +11,7 @@ use std::process::Stdio;
 use crate::{
     android::toolchain::AndroidSdk,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
-    utils::{
-        parse_whitespace_separated_u32s, run_command_os, run_command_output_os,
-    },
+    utils::{parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
 };
 
 /// Panic information extracted from logcat.
@@ -315,14 +313,11 @@ async fn run_on_android(
 }
 
 /// Wait for an app to start and return its PID.
-async fn wait_for_app_pid(
-    adb: &Path,
-    device_id: &str,
-    bundle_id: &str,
-) -> Result<u32, FailToRun> {
+async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Result<u32, FailToRun> {
     for _ in 0..10 {
         smol::Timer::after(std::time::Duration::from_millis(200)).await;
-        if let Ok(output) = run_command_os(adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        if let Ok(output) =
+            run_command_os(adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
         {
             if let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next() {
                 return Ok(pid);
@@ -397,8 +392,7 @@ async fn monitor_android_process(
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
         // when the shell user doesn't have permission to send signals to the app process
-        let result =
-            run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await;
+        let result = run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id]).await;
 
         // Check if the process with the same PID is still running
         let still_running = result
@@ -431,11 +425,11 @@ async fn monitor_android_process(
                     .iter()
                     .map(|s| std::ffi::OsStr::new(s.as_str())),
             )
-                .await
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
 
             // Fallback for older logcat versions that don't support --pid.
             let fallback_log = if pid_log.trim().is_empty() {
@@ -459,11 +453,11 @@ async fn monitor_android_process(
                         .iter()
                         .map(|s| std::ffi::OsStr::new(s.as_str())),
                 )
-                    .await
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -564,8 +558,8 @@ fn start_android_log_stream(
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
 ) -> Receiver<PanicInfo> {
-    use futures::io::{AsyncBufReadExt, BufReader};
     use futures::StreamExt;
+    use futures::io::{AsyncBufReadExt, BufReader};
 
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
@@ -832,8 +826,8 @@ impl Device for AndroidEmulator {
 
     async fn scan() -> eyre::Result<Vec<Self>> {
         // List available AVDs using avdmanager or emulator -list-avds
-        let emulator_path = AndroidSdk::emulator_path()
-            .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+        let emulator_path =
+            AndroidSdk::emulator_path().ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
 
         let output = Command::new(&emulator_path)
             .arg("-list-avds")
@@ -903,7 +897,15 @@ pub async fn tap(device_id: &str, x: u32, y: u32) -> eyre::Result<()> {
 
     run_command_os(
         &adb,
-        ["-s", device_id, "shell", "input", "tap", &x.to_string(), &y.to_string()],
+        [
+            "-s",
+            device_id,
+            "shell",
+            "input",
+            "tap",
+            &x.to_string(),
+            &y.to_string(),
+        ],
     )
     .await?;
 
@@ -933,13 +935,7 @@ pub async fn swipe(
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
 
-    let mut args = vec![
-        "-s",
-        device_id,
-        "shell",
-        "input",
-        "swipe",
-    ];
+    let mut args = vec!["-s", device_id, "shell", "input", "swipe"];
 
     let x1 = from.0.to_string();
     let y1 = from.1.to_string();
@@ -1083,14 +1079,8 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
                     .split("][")
                     .collect();
                 if parts.len() == 2 {
-                    let lt: Vec<i32> = parts[0]
-                        .split(',')
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    let rb: Vec<i32> = parts[1]
-                        .split(',')
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
+                    let lt: Vec<i32> = parts[0].split(',').filter_map(|s| s.parse().ok()).collect();
+                    let rb: Vec<i32> = parts[1].split(',').filter_map(|s| s.parse().ok()).collect();
                     if lt.len() == 2 && rb.len() == 2 {
                         let mut frame = serde_json::Map::new();
                         frame.insert("x".to_string(), serde_json::Value::Number(lt[0].into()));
@@ -1125,7 +1115,10 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
                             "text" => "AXValue",
                             _ => attr,
                         };
-                        element.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                        element.insert(
+                            key.to_string(),
+                            serde_json::Value::String(value.to_string()),
+                        );
                     }
                 }
             }

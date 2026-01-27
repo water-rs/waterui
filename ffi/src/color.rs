@@ -3,8 +3,8 @@ use crate::{
 };
 
 use waterui::{Color, Signal};
-use waterui_graphics::color::ResolvedColor;
 use waterui_core::{Environment, resolve::Resolvable};
+use waterui_graphics::color::ResolvedColor;
 
 opaque!(WuiColor, Color);
 

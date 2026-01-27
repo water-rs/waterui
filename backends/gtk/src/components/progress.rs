@@ -1,7 +1,7 @@
 //! GTK4 Progress (`ProgressBar`) component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::Signal;
 use waterui::component::progress::ProgressConfig;
 use waterui_core::{Environment, Native};

@@ -297,11 +297,11 @@ pub unsafe extern "C" fn waterui_layout_size_that_fits(
         children_slice.iter().map(|s| s as &dyn SubView).collect();
 
     let size = layout.size_that_fits(proposal, &subview_refs);
-    
+
     // Explicitly drop the children array and its elements (WuiSubViews)
     // This releases the strong reference to the Swift SubViewProxy held by WuiSubView
     children.consume_and_drop_elements();
-    
+
     size.into_ffi()
 }
 

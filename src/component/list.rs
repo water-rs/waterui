@@ -9,8 +9,8 @@ use alloc::boxed::Box;
 use nami::collection::Collection;
 use nami::{Computed, Signal};
 
-use nami::SignalExt;
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
+use nami::SignalExt;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View, id::Identifiable, layout::StretchAxis,
@@ -59,7 +59,7 @@ where
     ///
     /// When edit mode is enabled, delete buttons and drag handles are shown.
     #[must_use]
-    pub fn editing(self, editing: impl Signal<Output = bool> + Clone + 'static) -> ListBuilder<V> {
+    pub fn editing(self, editing: impl Signal<Output = bool> + 'static) -> ListBuilder<V> {
         ListBuilder {
             contents: self.0,
             editing: editing.computed(),
@@ -204,7 +204,7 @@ where
 {
     /// Enables edit mode with the given reactive signal.
     #[must_use]
-    pub fn editing(mut self, editing: impl Signal<Output = bool> + Clone + 'static) -> Self {
+    pub fn editing(mut self, editing: impl Signal<Output = bool> + 'static) -> Self {
         self.editing = editing.computed();
         self
     }
@@ -314,7 +314,7 @@ impl ListItem {
     ///
     /// When false, swipe-to-delete and delete button are disabled for this item.
     #[must_use]
-    pub fn deletable(mut self, deletable: impl Signal<Output = bool> + Clone + 'static) -> Self {
+    pub fn deletable(mut self, deletable: impl Signal<Output = bool> + 'static) -> Self {
         self.deletable = deletable.computed();
         self
     }
@@ -453,13 +453,18 @@ impl<V: Views<View = ListItem>, S: Clone + 'static> ListMoveStatefulBuilder<V, S
 
     /// Sets the move handler with captured state.
     #[must_use]
-    pub fn handler(self, on_move: impl Fn(S, &Environment, usize, usize) + 'static) -> ListBuilder<V> {
+    pub fn handler(
+        self,
+        on_move: impl Fn(S, &Environment, usize, usize) + 'static,
+    ) -> ListBuilder<V> {
         let state = self.state;
         ListBuilder {
             contents: self.contents,
             editing: Computed::new(false),
             on_delete: None,
-            on_move: Some(Box::new(move |env, from, to| on_move(state.clone(), env, from, to))),
+            on_move: Some(Box::new(move |env, from, to| {
+                on_move(state.clone(), env, from, to);
+            })),
         }
     }
 }
@@ -495,7 +500,10 @@ impl<V: Views<View = ListItem>> ListBuilderDeleteBuilder<V> {
 
     /// Adds state to capture for the handler.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListBuilderDeleteStatefulBuilder<V, T> {
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> ListBuilderDeleteStatefulBuilder<V, T> {
         ListBuilderDeleteStatefulBuilder {
             contents: self.contents,
             editing: self.editing,
@@ -522,7 +530,10 @@ impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListBuilderDeleteStatefu
 impl<V: Views<View = ListItem>, S: Clone + 'static> ListBuilderDeleteStatefulBuilder<V, S> {
     /// Adds another state value, accumulating as nested tuples.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListBuilderDeleteStatefulBuilder<V, (S, T)> {
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> ListBuilderDeleteStatefulBuilder<V, (S, T)> {
         ListBuilderDeleteStatefulBuilder {
             contents: self.contents,
             editing: self.editing,
@@ -602,7 +613,10 @@ impl<V: Views<View = ListItem>, S> core::fmt::Debug for ListBuilderMoveStatefulB
 impl<V: Views<View = ListItem>, S: Clone + 'static> ListBuilderMoveStatefulBuilder<V, S> {
     /// Adds another state value, accumulating as nested tuples.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> ListBuilderMoveStatefulBuilder<V, (S, T)> {
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> ListBuilderMoveStatefulBuilder<V, (S, T)> {
         ListBuilderMoveStatefulBuilder {
             contents: self.contents,
             editing: self.editing,
@@ -613,13 +627,18 @@ impl<V: Views<View = ListItem>, S: Clone + 'static> ListBuilderMoveStatefulBuild
 
     /// Sets the move handler with captured state.
     #[must_use]
-    pub fn handler(self, on_move: impl Fn(S, &Environment, usize, usize) + 'static) -> ListBuilder<V> {
+    pub fn handler(
+        self,
+        on_move: impl Fn(S, &Environment, usize, usize) + 'static,
+    ) -> ListBuilder<V> {
         let state = self.state;
         ListBuilder {
             contents: self.contents,
             editing: self.editing,
             on_delete: self.on_delete,
-            on_move: Some(Box::new(move |env, from, to| on_move(state.clone(), env, from, to))),
+            on_move: Some(Box::new(move |env, from, to| {
+                on_move(state.clone(), env, from, to);
+            })),
         }
     }
 }

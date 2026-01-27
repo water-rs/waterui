@@ -11,8 +11,8 @@ pub mod transport {
     use std::io;
 
     use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use serde::de::DeserializeOwned;
     use serde::Serialize;
+    use serde::de::DeserializeOwned;
 
     /// Length prefix size for framed messages (big-endian `u32`).
     pub const LEN_PREFIX_BYTES: usize = 4;
@@ -57,10 +57,13 @@ pub mod transport {
         W: AsyncWrite + Unpin,
         T: Serialize,
     {
-        let data = serde_json::to_vec(value)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let data =
+            serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len: u32 = data.len().try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "preview frame too large for u32 length")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "preview frame too large for u32 length",
+            )
         })?;
 
         writer.write_all(&len.to_be_bytes()).await?;

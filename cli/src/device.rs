@@ -620,11 +620,7 @@ impl Device for Local {
         Ok(())
     }
 
-    async fn run(
-        &self,
-        artifact: Artifact,
-        options: RunOptions,
-    ) -> Result<Running, FailToRun> {
+    async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
         let artifact_path = artifact.path();
 
         // Dispatch based on artifact type
@@ -892,7 +888,10 @@ async fn run_binary(artifact: Artifact, options: RunOptions) -> Result<Running, 
                 let Ok(line) = result else { break };
                 let level = parse_log_level(&line);
                 if stdout_sender
-                    .try_send(DeviceEvent::Log { level, message: line })
+                    .try_send(DeviceEvent::Log {
+                        level,
+                        message: line,
+                    })
                     .is_err()
                 {
                     break;
@@ -916,7 +915,9 @@ async fn run_binary(artifact: Artifact, options: RunOptions) -> Result<Running, 
                 let Ok(line) = result else { break };
 
                 // Detect panic start
-                if line.contains("panicked at") || line.starts_with("thread '") && line.contains("panic") {
+                if line.contains("panicked at")
+                    || line.starts_with("thread '") && line.contains("panic")
+                {
                     capturing_panic = true;
                     panic_lines.clear();
                 }
@@ -1042,7 +1043,10 @@ fn extract_panic_message(lines: &[String]) -> Option<String> {
                 // Find message in next lines
                 for next_line in lines.iter().skip(1) {
                     let msg = next_line.trim();
-                    if !msg.is_empty() && !msg.starts_with("note:") && !msg.starts_with("stack backtrace:") {
+                    if !msg.is_empty()
+                        && !msg.starts_with("note:")
+                        && !msg.starts_with("stack backtrace:")
+                    {
                         return Some(format!("{msg}\n  at {location}"));
                     }
                 }
@@ -1059,7 +1063,8 @@ fn extract_panic_message(lines: &[String]) -> Option<String> {
 /// Parse log level from a line of output.
 fn parse_log_level(line: &str) -> tracing::Level {
     let line_lower = line.to_lowercase();
-    if line_lower.contains("error") || line_lower.contains("fatal") || line_lower.contains("panic") {
+    if line_lower.contains("error") || line_lower.contains("fatal") || line_lower.contains("panic")
+    {
         tracing::Level::ERROR
     } else if line_lower.contains("warn") {
         tracing::Level::WARN

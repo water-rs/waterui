@@ -103,7 +103,6 @@ pub struct DualPluralForms {
 
     /// other + other (fallback, required)
     pub other_other: String,
-
     // Additional combinations can be added as needed
     // zero_zero, zero_one, etc.
 }

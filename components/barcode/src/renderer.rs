@@ -164,7 +164,7 @@ impl BarcodeRenderer {
 
                 if is_dark {
                     let pixel_idx = ((py * actual_size + px) * 4) as usize;
-                    texture_data[pixel_idx] = 0;     // R
+                    texture_data[pixel_idx] = 0; // R
                     texture_data[pixel_idx + 1] = 0; // G
                     texture_data[pixel_idx + 2] = 0; // B
                     // A stays 255
