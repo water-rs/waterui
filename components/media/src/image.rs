@@ -259,7 +259,9 @@ impl GpuRenderer for ImageRenderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                // Use sRGB format - web images are encoded in sRGB color space.
+                // GPU automatically converts sRGB to linear when sampling.
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
