@@ -10,9 +10,23 @@ use icu_locid::Locale;
 use icu_locid_transform::fallback::LocaleFallbacker;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro_crate::{FoundCrate, crate_name};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Result, Token, parse_macro_input};
+
+fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
+    match crate_name("waterui") {
+        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            Ok(quote!(::#ident))
+        }
+        Err(_) => Err(quote! {
+            compile_error!("`text!` requires the `waterui` crate as a dependency (it may be renamed; Cargo.toml must include it).");
+        }),
+    }
+}
 
 /// Parsed translation value from TOML
 #[derive(Debug, Clone)]
@@ -264,7 +278,10 @@ fn is_valid_ident(name: &str) -> bool {
     syn::parse_str::<Ident>(name).is_ok()
 }
 
-fn build_zip_expr_and_pattern(idents: &[Ident]) -> (TokenStream2, TokenStream2) {
+fn build_zip_expr_and_pattern(
+    waterui: &TokenStream2,
+    idents: &[Ident],
+) -> (TokenStream2, TokenStream2) {
     let mut iter = idents.iter();
     let first = iter
         .next()
@@ -273,33 +290,33 @@ fn build_zip_expr_and_pattern(idents: &[Ident]) -> (TokenStream2, TokenStream2) 
     let mut pattern = quote! { #first };
 
     for ident in iter {
-        expr = quote! { ::waterui::reactive::zip::zip(#expr, #ident.clone()) };
+        expr = quote! { #waterui::reactive::zip::zip(#expr, #ident.clone()) };
         pattern = quote! { (#pattern, #ident) };
     }
 
     (expr, pattern)
 }
 
-fn build_signal_map(idents: &[Ident], body: TokenStream2) -> TokenStream2 {
+fn build_signal_map(waterui: &TokenStream2, idents: &[Ident], body: TokenStream2) -> TokenStream2 {
     match idents.len() {
-        0 => quote! { ::waterui::reactive::constant(#body) },
+        0 => quote! { #waterui::reactive::constant(#body) },
         1 => {
             let ident = &idents[0];
             quote! {
                 {
                     let __signal = #ident.clone();
-                    ::waterui::reactive::SignalExt::map(&__signal, move |#ident| {
+                    #waterui::reactive::SignalExt::map(&__signal, move |#ident| {
                         #body
                     })
                 }
             }
         }
         _ => {
-            let (zip_expr, pattern) = build_zip_expr_and_pattern(idents);
+            let (zip_expr, pattern) = build_zip_expr_and_pattern(waterui, idents);
             quote! {
                 {
                     let __zipped = #zip_expr;
-                    ::waterui::reactive::SignalExt::map(&__zipped, move |#pattern| {
+                    #waterui::reactive::SignalExt::map(&__zipped, move |#pattern| {
                         #body
                     })
                 }
@@ -308,9 +325,9 @@ fn build_signal_map(idents: &[Ident], body: TokenStream2) -> TokenStream2 {
     }
 }
 
-fn build_format_signal(format_str: &LitStr, idents: &[Ident]) -> TokenStream2 {
-    let body = quote! { ::waterui::reactive::__alloc::format!(#format_str) };
-    build_signal_map(idents, body)
+fn build_format_signal(waterui: &TokenStream2, format_str: &LitStr, idents: &[Ident]) -> TokenStream2 {
+    let body = quote! { #waterui::reactive::__alloc::format!(#format_str) };
+    build_signal_map(waterui, idents, body)
 }
 
 fn unique_ident(base: &str, existing: &[Ident]) -> Ident {
@@ -373,6 +390,11 @@ pub(crate) fn text(input: TokenStream) -> TokenStream {
 }
 
 fn expand_text_macro(input: TextInput) -> TokenStream2 {
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+
     let key = input.format_string.value();
     let translation_key = make_key(&key, input.context.as_deref());
     let placeholders = parse_placeholders(&key);
@@ -400,6 +422,13 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     let mut captures = Vec::new();
     let mut all_names: Vec<String> = Vec::new();
 
+    if !placeholders.is_empty() {
+        // Bring `to_owned()` into scope (relies on auto-ref for literals like `0`).
+        captures.push(quote! {
+            use #waterui::reactive::__alloc::borrow::ToOwned as _;
+        });
+    }
+
     for ph in &placeholders {
         let name = match ph {
             Placeholder::Regular(n) | Placeholder::Plural(n) => n,
@@ -412,12 +441,12 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
             if let Some(expr) = binding_map.get(name) {
                 // Clone the expression to get an owned value (works for both &T and T)
                 captures.push(quote! {
-                    let #name_ident = ::waterui::reactive::__alloc::borrow::ToOwned::to_owned(#expr);
+                    let #name_ident = (#expr).to_owned();
                 });
             } else {
                 // Auto-capture from scope, use ToOwned to handle both &T and T
                 captures.push(quote! {
-                    let #name_ident = ::waterui::reactive::__alloc::borrow::ToOwned::to_owned(#name_ident);
+                    let #name_ident = (#name_ident).to_owned();
                 });
             }
         }
@@ -434,7 +463,7 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     for locale_code in bundle.locales.keys() {
         // Use bundle.get() to resolve with fallback chain (e.g., zh-TW → zh-Hant → zh → en)
         if let Some(value) = bundle.get(locale_code, &translation_key) {
-            let arm = generate_translation_arm(locale_code, value, &all_idents, &plural_names);
+            let arm = generate_translation_arm(&waterui, locale_code, value, &all_idents, &plural_names);
             locale_arms.push(arm);
         }
     }
@@ -443,25 +472,25 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
     let default_format = key.replace("{#", "{");
     let default_format_lit = LitStr::new(&default_format, Span::call_site());
     let default_body = if all_idents.is_empty() {
-        quote! { ::waterui::text::Text::new(#default_format_lit) }
+        quote! { #waterui::text::Text::new(#default_format_lit) }
     } else {
-        let content = build_format_signal(&default_format_lit, &all_idents);
+        let content = build_format_signal(&waterui, &default_format_lit, &all_idents);
         quote! {
-            ::waterui::text::Text::new(#content)
+            #waterui::text::Text::new(#content)
         }
     };
 
     // Generate the LocalizedText
     quote! {
-        ::waterui::locale::LocalizedText::new({
+        #waterui::locale::LocalizedText::new({
             #(#captures)*
 
-            move |locale: &::waterui::locale::Locale| {
+            move |locale: &#waterui::locale::Locale| {
                 let lang = locale.language.as_str();
                 let region = locale.region.as_ref().map(|r| r.as_str());
                 let locale_key = match region {
-                    Some(r) => ::std::format!("{}-{}", lang, r),
-                    None => lang.to_string(),
+                    Some(r) => #waterui::reactive::__alloc::format!("{}-{}", lang, r),
+                    None => #waterui::reactive::__alloc::format!("{}", lang),
                 };
 
                 match locale_key.as_str() {
@@ -479,6 +508,7 @@ fn expand_text_macro(input: TextInput) -> TokenStream2 {
 }
 
 fn generate_translation_arm(
+    waterui: &TokenStream2,
     locale_code: &str,
     value: &TranslationValue,
     all_idents: &[Ident],
@@ -495,14 +525,14 @@ fn generate_translation_arm(
             if all_idents.is_empty() {
                 quote! {
                     #locale_pattern => {
-                        ::waterui::text::Text::new(#format_lit)
+                        #waterui::text::Text::new(#format_lit)
                     }
                 }
             } else {
-                let content = build_format_signal(&format_lit, all_idents);
+                let content = build_format_signal(waterui, &format_lit, all_idents);
                 quote! {
                     #locale_pattern => {
-                        ::waterui::text::Text::new(#content)
+                        #waterui::text::Text::new(#content)
                     }
                 }
             }
@@ -526,8 +556,8 @@ fn generate_translation_arm(
                 let format_str = text.replace("{#", "{");
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
-                    ::waterui::locale::PluralCategory::Zero => {
-                        ::waterui::reactive::__alloc::format!(#format_lit)
+                    #waterui::locale::PluralCategory::Zero => {
+                        #waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -535,8 +565,8 @@ fn generate_translation_arm(
                 let format_str = text.replace("{#", "{");
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
-                    ::waterui::locale::PluralCategory::One => {
-                        ::waterui::reactive::__alloc::format!(#format_lit)
+                    #waterui::locale::PluralCategory::One => {
+                        #waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -544,8 +574,8 @@ fn generate_translation_arm(
                 let format_str = text.replace("{#", "{");
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
-                    ::waterui::locale::PluralCategory::Two => {
-                        ::waterui::reactive::__alloc::format!(#format_lit)
+                    #waterui::locale::PluralCategory::Two => {
+                        #waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -553,8 +583,8 @@ fn generate_translation_arm(
                 let format_str = text.replace("{#", "{");
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
-                    ::waterui::locale::PluralCategory::Few => {
-                        ::waterui::reactive::__alloc::format!(#format_lit)
+                    #waterui::locale::PluralCategory::Few => {
+                        #waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -562,8 +592,8 @@ fn generate_translation_arm(
                 let format_str = text.replace("{#", "{");
                 let format_lit = LitStr::new(&format_str, Span::call_site());
                 category_arms.push(quote! {
-                    ::waterui::locale::PluralCategory::Many => {
-                        ::waterui::reactive::__alloc::format!(#format_lit)
+                    #waterui::locale::PluralCategory::Many => {
+                        #waterui::reactive::__alloc::format!(#format_lit)
                     }
                 });
             }
@@ -572,18 +602,18 @@ fn generate_translation_arm(
             let other_format_lit = LitStr::new(&other_format, Span::call_site());
             let locale_ident = unique_ident("__waterui_locale_value", all_idents);
             let body = quote! {
-                let category = ::waterui::locale::select_plural(&#locale_ident, #plural_ident);
+                let category = #waterui::locale::select_plural(&#locale_ident, #plural_ident);
                 match category {
                     #(#category_arms)*
-                    _ => ::waterui::reactive::__alloc::format!(#other_format_lit),
+                    _ => #waterui::reactive::__alloc::format!(#other_format_lit),
                 }
             };
-            let content = build_signal_map(all_idents, body);
+            let content = build_signal_map(waterui, all_idents, body);
 
             quote! {
                 #locale_pattern => {
                     let #locale_ident = locale.clone();
-                    ::waterui::text::Text::new(#content)
+                    #waterui::text::Text::new(#content)
                 }
             }
         }
