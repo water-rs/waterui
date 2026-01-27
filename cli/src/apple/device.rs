@@ -250,12 +250,20 @@ async fn poll_for_crash_report(
         )
         .await
         {
-            trace_debug!("Found crash report after {} polls: {}", poll_count, report.summary());
+            trace_debug!(
+                "Found crash report after {} polls: {}",
+                poll_count,
+                report.summary()
+            );
             return Some(report);
         }
 
         if Instant::now() >= deadline {
-            trace_debug!("No crash report found after {} polls within {:?}", poll_count, timeout);
+            trace_debug!(
+                "No crash report found after {} polls within {:?}",
+                poll_count,
+                timeout
+            );
             return None;
         }
 
@@ -422,6 +430,13 @@ pub struct AppleSimulator {
     /// Timestamp of the last boot time
     #[serde(rename = "lastBootedAt")]
     pub last_booted_at: Option<String>,
+
+    /// Runtime identifier key from `simctl` (e.g. `com.apple.CoreSimulator.SimRuntime.iOS-26-2`).
+    ///
+    /// This is not part of the simulator device object itself; it comes from the map key in
+    /// `xcrun simctl list devices --json`.
+    #[serde(skip)]
+    pub runtime_identifier: Option<String>,
 }
 
 impl Device for AppleSimulator {
@@ -601,13 +616,31 @@ impl Device for AppleSimulator {
 
         let content = run_command("xcrun", ["simctl", "list", "devices", "--json"]).await?;
 
-        let simulators = serde_json::from_str::<Root>(&content)?
-            .devices
-            .into_values()
-            .flatten()
-            .collect();
+        let root = serde_json::from_str::<Root>(&content)?;
+        let mut simulators = Vec::new();
+        for (runtime_identifier, sims) in root.devices {
+            for mut sim in sims {
+                sim.runtime_identifier = Some(runtime_identifier.clone());
+                simulators.push(sim);
+            }
+        }
 
         Ok(simulators)
+    }
+}
+
+impl AppleSimulator {
+    /// Scan iOS simulators only.
+    pub async fn scan_ios() -> eyre::Result<Vec<Self>> {
+        let simulators = Self::scan().await?;
+        Ok(simulators
+            .into_iter()
+            .filter(|s| {
+                s.runtime_identifier
+                    .as_deref()
+                    .is_some_and(|r| r.contains("SimRuntime.iOS-"))
+            })
+            .collect())
     }
 }
 
@@ -628,7 +661,9 @@ pub async fn screenshot(udid: &str, output: &Path) -> eyre::Result<()> {
             "io",
             udid,
             "screenshot",
-            output.to_str().ok_or_else(|| eyre!("Invalid output path"))?,
+            output
+                .to_str()
+                .ok_or_else(|| eyre!("Invalid output path"))?,
         ],
     )
     .await?;
@@ -663,10 +698,7 @@ pub async fn screenshot_bytes(udid: &str) -> eyre::Result<Vec<u8>> {
 ///
 /// IDB is required for gesture automation on iOS simulators.
 async fn check_idb_installed() -> eyre::Result<()> {
-    let output = Command::new("which")
-        .arg("idb")
-        .output()
-        .await?;
+    let output = Command::new("which").arg("idb").output().await?;
 
     if !output.status.success() {
         eyre::bail!(
@@ -751,10 +783,7 @@ pub async fn swipe(
         args.push(format!("{duration_sec:.2}"));
     }
 
-    let output = Command::new("idb")
-        .args(&args)
-        .output()
-        .await?;
+    let output = Command::new("idb").args(&args).output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -1,6 +1,9 @@
 //! Shared audio capture logic for visualizers.
 
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use waterkit_audio::AudioRecorderBuilder;
 
@@ -76,11 +79,11 @@ impl AudioCapture {
     pub fn get_smoothed_samples(&self, smoothing: f32) -> Vec<f32> {
         let raw = self.samples.lock().unwrap().clone();
         let mut smoothed = self.smoothed.lock().unwrap();
-        
+
         for (i, &target) in raw.iter().enumerate() {
             smoothed[i] = smoothed[i] * (1.0 - smoothing) + target * smoothing;
         }
-        
+
         smoothed.clone()
     }
 }

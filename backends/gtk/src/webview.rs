@@ -1,13 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_webview::{
-    cookie::Cookie,
     CustomWebViewController, ScriptInjectionTime, WebViewController, WebViewEvent, WebViewHandle,
+    cookie::Cookie,
 };
 
 #[cfg(all(feature = "webkitgtk", unix, not(target_os = "macos")))]
@@ -153,7 +153,10 @@ impl GtkWebViewHandle {
     fn install_observers(&self) {
         // Avoid panics if WebKit isn't actually available at runtime.
         if self.widget.find_property("uri").is_none()
-            || self.widget.find_property("estimated-load-progress").is_none()
+            || self
+                .widget
+                .find_property("estimated-load-progress")
+                .is_none()
             || self.widget.find_property("can-go-back").is_none()
             || self.widget.find_property("can-go-forward").is_none()
         {

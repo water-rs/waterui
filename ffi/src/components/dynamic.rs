@@ -26,4 +26,3 @@ unsafe extern "C" fn waterui_dynamic_connect(
         });
     }
 }
-

@@ -95,7 +95,7 @@ waterui-icons-lucide = { version = "0.1.0", path = "icon-packs/lucide" }
 waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
-waterkit-location = { git = "https://github.com/water-rs/kit", package = "waterkit-location" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", package = "waterkit-location" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }

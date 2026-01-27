@@ -1,10 +1,10 @@
 //! GPU renderer for particle simulation and visualization.
 
 use crate::{
+    EmitterShape,
     config::{BlendMode, ParticleShape},
     gpu::{GpuParticle, Uniforms},
     shaders::{COMPUTE_SHADER, RENDER_SHADER},
-    EmitterShape,
 };
 use encase::{ShaderSize, UniformBuffer};
 use std::borrow::Cow;
@@ -73,7 +73,10 @@ impl ParticleRenderer {
         if let Some(buffer) = &self.uniform_buffer {
             let now = std::time::Instant::now();
             let time = now.duration_since(self.start_time).as_secs_f32();
-            let dt = now.duration_since(self.last_frame_time).as_secs_f32().min(0.1);
+            let dt = now
+                .duration_since(self.last_frame_time)
+                .as_secs_f32()
+                .min(0.1);
             self.last_frame_time = now;
 
             let seed = fastrand::u32(..);
@@ -100,7 +103,11 @@ impl ParticleRenderer {
                 emitter_size: glam::Vec2::new(emitter_w, emitter_h),
                 emit_rate: self.config.emit_rate,
                 turbulence: self.config.turbulence,
-                stretch_factor: if self.config.stretch_with_velocity { 1.0 } else { 0.0 },
+                stretch_factor: if self.config.stretch_with_velocity {
+                    1.0
+                } else {
+                    0.0
+                },
                 softness: self.config.softness,
                 life_range: glam::Vec2::from_array(self.config.life_range),
                 speed_range: glam::Vec2::from_array(self.config.speed_range),
@@ -126,7 +133,9 @@ impl ParticleRenderer {
 
             // Use encase for uniform buffer write
             let mut uniform_data = UniformBuffer::new(Vec::new());
-            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+            uniform_data
+                .write(&uniforms)
+                .expect("Failed to write uniform buffer");
             queue.write_buffer(buffer, 0, uniform_data.as_ref());
         }
     }
@@ -367,8 +376,7 @@ impl GpuRenderer for ParticleRenderer {
         }
 
         // Render Pass
-        if let (Some(pipeline), Some(bind_group)) =
-            (&self.render_pipeline, &self.render_bind_group)
+        if let (Some(pipeline), Some(bind_group)) = (&self.render_pipeline, &self.render_bind_group)
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Particle Render Pass"),

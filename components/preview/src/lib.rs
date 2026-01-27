@@ -36,9 +36,9 @@ pub mod renderer;
 mod view;
 
 pub use library::{LoadError, PreviewLibrary};
+pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
+pub use view::Preview;
 pub use waterui_preview_protocol as protocol;
 pub use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
 };
-pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
-pub use view::Preview;

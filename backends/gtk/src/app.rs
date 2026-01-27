@@ -2,8 +2,8 @@
 
 use std::cell::RefCell;
 
-use gtk4::prelude::*;
 use gtk4::Application;
+use gtk4::prelude::*;
 use nami::Signal;
 use waterui::app::App;
 use waterui_core::{Environment, View};

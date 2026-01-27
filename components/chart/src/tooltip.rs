@@ -80,7 +80,8 @@ impl TooltipContent {
         value: impl Into<String>,
         color: impl Into<Srgb>,
     ) -> Self {
-        self.values.push(TooltipValue::new(label, value).color(color));
+        self.values
+            .push(TooltipValue::new(label, value).color(color));
         self
     }
 
@@ -180,7 +181,11 @@ impl View for Tooltip {
                     .width(8.0)
                     .height(8.0);
                 let line = text(alloc::format!("{}: {}", val.label, val.value));
-                AnyView::new(HStack::new(VerticalAlignment::Center, 6.0, (indicator, line)))
+                AnyView::new(HStack::new(
+                    VerticalAlignment::Center,
+                    6.0,
+                    (indicator, line),
+                ))
             } else {
                 AnyView::new(text(alloc::format!("{}: {}", val.label, val.value)))
             };
@@ -189,8 +194,8 @@ impl View for Tooltip {
 
         // Background with rounded corners
         let content = VStack::new(HorizontalAlignment::Leading, 4.0, views);
-        let background = RoundedRectangle::new(self.corner_radius / 100.0)
-            .fill(Color::from(self.background));
+        let background =
+            RoundedRectangle::new(self.corner_radius / 100.0).fill(Color::from(self.background));
 
         // Stack content over background
         AnyView::new(Frame::new(waterui_layout::stack::ZStack::new(

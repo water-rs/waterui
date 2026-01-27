@@ -11,14 +11,14 @@ use bytemuck::cast_slice;
 use encase::{ShaderType, StorageBuffer};
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 use wgpu::util::DeviceExt;
 
-use super::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use super::ChartRenderer;
+use super::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 use crate::animation::ChartAnimation;
 use crate::data::{ChoroplethData, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
@@ -165,13 +165,16 @@ impl ChoroplethRenderer {
 
     /// Converts color scale to GPU format.
     fn color_scale_to_stops(&self) -> Vec<GpuColorStop> {
-        self.data.color_scale.stops.iter().map(|(pos, color)| {
-            GpuColorStop {
+        self.data
+            .color_scale
+            .stops
+            .iter()
+            .map(|(pos, color)| GpuColorStop {
                 position: *pos,
                 _pad: [0.0; 3],
                 color: glam::Vec4::new(color.red, color.green, color.blue, 1.0),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
@@ -186,107 +189,120 @@ impl GpuRenderer for ChoroplethRenderer {
         self.msaa_samples = ctx.msaa_samples;
         // Create shader
         let shader_source = shader_with_common(include_str!("../shaders/choropleth.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("choropleth_shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("choropleth_shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         // Bind group layout
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("choropleth_bind_group_layout"),
-            entries: &[
-                // Uniforms
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Current vertices
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Previous vertices
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Color stops
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("choropleth_bind_group_layout"),
+                    entries: &[
+                        // Uniforms
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Current vertices
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Previous vertices
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Color stops
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         // Pipeline layout
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("choropleth_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("choropleth_pipeline_layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         // Render pipeline
-        self.pipeline = Some(ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("choropleth_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None, // No culling for 2D map
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(ctx.msaa_samples),
-            multiview: None,
-            cache: None,
-        }));
+        self.pipeline = Some(
+            ctx.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("choropleth_pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: ctx.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None, // No culling for 2D map
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        unclipped_depth: false,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: multisample_state(ctx.msaa_samples),
+                    multiview: None,
+                    cache: None,
+                }),
+        );
 
         // Create initial buffers with default data
         let default_uniforms = ChoroplethUniforms::default();
-        self.uniform_buffer = Some(create_uniform_buffer(ctx, "choropleth_uniforms", &default_uniforms));
+        self.uniform_buffer = Some(create_uniform_buffer(
+            ctx,
+            "choropleth_uniforms",
+            &default_uniforms,
+        ));
 
         // Create vertex buffers sized for current data (fallback to 1 element)
         let default_vertex = GpuVertex {
@@ -300,61 +316,99 @@ impl GpuRenderer for ChoroplethRenderer {
         }
         self.vertex_capacity = vertices.len();
         self.vertex_buffer = Some(create_storage_buffer(ctx, "choropleth_vertices", &vertices));
-        self.prev_vertex_buffer = Some(create_storage_buffer(ctx, "choropleth_prev_vertices", &vertices));
+        self.prev_vertex_buffer = Some(create_storage_buffer(
+            ctx,
+            "choropleth_prev_vertices",
+            &vertices,
+        ));
 
         // Create index buffer (for tessellated geometry)
         let index_len = indices.len();
         let index_data = if index_len == 0 { vec![0_u32] } else { indices };
         self.index_capacity = index_data.len();
         self.total_indices = index_len as u32;
-        self.index_buffer = Some(ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("choropleth_indices"),
-            contents: cast_slice(&index_data),
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-        }));
+        self.index_buffer = Some(ctx.device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("choropleth_indices"),
+                contents: cast_slice(&index_data),
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            },
+        ));
 
         // Create color stop buffer
         let default_stops = vec![
-            GpuColorStop { position: 0.0, _pad: [0.0; 3], color: glam::Vec4::new(0.27, 0.0, 0.33, 1.0) },
-            GpuColorStop { position: 0.25, _pad: [0.0; 3], color: glam::Vec4::new(0.23, 0.32, 0.55, 1.0) },
-            GpuColorStop { position: 0.5, _pad: [0.0; 3], color: glam::Vec4::new(0.13, 0.57, 0.55, 1.0) },
-            GpuColorStop { position: 0.75, _pad: [0.0; 3], color: glam::Vec4::new(0.37, 0.79, 0.38, 1.0) },
-            GpuColorStop { position: 1.0, _pad: [0.0; 3], color: glam::Vec4::new(0.99, 0.91, 0.15, 1.0) },
+            GpuColorStop {
+                position: 0.0,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.27, 0.0, 0.33, 1.0),
+            },
+            GpuColorStop {
+                position: 0.25,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.23, 0.32, 0.55, 1.0),
+            },
+            GpuColorStop {
+                position: 0.5,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.13, 0.57, 0.55, 1.0),
+            },
+            GpuColorStop {
+                position: 0.75,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.37, 0.79, 0.38, 1.0),
+            },
+            GpuColorStop {
+                position: 1.0,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.99, 0.91, 0.15, 1.0),
+            },
         ];
         let stops = self.color_scale_to_stops();
-        let stops = if stops.is_empty() { default_stops } else { stops };
+        let stops = if stops.is_empty() {
+            default_stops
+        } else {
+            stops
+        };
         self.color_stop_capacity = stops.len();
         self.color_stop_buffer = Some(create_storage_buffer(ctx, "choropleth_color_stops", &stops));
 
         // Create bind group
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("choropleth_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.prev_vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.bind_group = Some(
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("choropleth_bind_group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self
+                            .prev_vertex_buffer
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                ],
+            }),
+        );
 
         async {}
     }
 
     fn render(&mut self, frame: &GpuFrame) {
-        let Some(pipeline) = &self.pipeline else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
 
         // Update zoom/pan state from gesture input
         self.zoom_pan
@@ -367,11 +421,31 @@ impl GpuRenderer for ChoroplethRenderer {
             polygon_id: 0.0,
         };
         let default_stops = [
-            GpuColorStop { position: 0.0, _pad: [0.0; 3], color: glam::Vec4::new(0.27, 0.0, 0.33, 1.0) },
-            GpuColorStop { position: 0.25, _pad: [0.0; 3], color: glam::Vec4::new(0.23, 0.32, 0.55, 1.0) },
-            GpuColorStop { position: 0.5, _pad: [0.0; 3], color: glam::Vec4::new(0.13, 0.57, 0.55, 1.0) },
-            GpuColorStop { position: 0.75, _pad: [0.0; 3], color: glam::Vec4::new(0.37, 0.79, 0.38, 1.0) },
-            GpuColorStop { position: 1.0, _pad: [0.0; 3], color: glam::Vec4::new(0.99, 0.91, 0.15, 1.0) },
+            GpuColorStop {
+                position: 0.0,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.27, 0.0, 0.33, 1.0),
+            },
+            GpuColorStop {
+                position: 0.25,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.23, 0.32, 0.55, 1.0),
+            },
+            GpuColorStop {
+                position: 0.5,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.13, 0.57, 0.55, 1.0),
+            },
+            GpuColorStop {
+                position: 0.75,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.37, 0.79, 0.38, 1.0),
+            },
+            GpuColorStop {
+                position: 1.0,
+                _pad: [0.0; 3],
+                color: glam::Vec4::new(0.99, 0.91, 0.15, 1.0),
+            },
         ];
         let mut needs_rebind = false;
 
@@ -425,11 +499,13 @@ impl GpuRenderer for ChoroplethRenderer {
             let index_len = indices.len();
             let index_data = if index_len == 0 { vec![0_u32] } else { indices };
             if index_data.len() > self.index_capacity {
-                self.index_buffer = Some(frame.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("choropleth_indices"),
-                    contents: cast_slice(&index_data),
-                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                }));
+                self.index_buffer = Some(frame.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("choropleth_indices"),
+                        contents: cast_slice(&index_data),
+                        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    },
+                ));
                 self.index_capacity = index_data.len();
             } else if let Some(buffer) = &self.index_buffer {
                 frame.queue.write_buffer(buffer, 0, cast_slice(&index_data));
@@ -464,32 +540,42 @@ impl GpuRenderer for ChoroplethRenderer {
 
         if needs_rebind {
             let bind_group_layout = pipeline.get_bind_group_layout(0);
-            self.bind_group = Some(frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("choropleth_bind_group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.prev_vertex_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
-                    },
-                ],
-            }));
+            self.bind_group = Some(
+                frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("choropleth_bind_group"),
+                    layout: &bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.vertex_buffer.as_ref().unwrap().as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self
+                                .prev_vertex_buffer
+                                .as_ref()
+                                .unwrap()
+                                .as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.color_stop_buffer.as_ref().unwrap().as_entire_binding(),
+                        },
+                    ],
+                }),
+            );
         }
 
-        let Some(bind_group) = &self.bind_group else { return };
-        let Some(index_buffer) = &self.index_buffer else { return };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
+        let Some(index_buffer) = &self.index_buffer else {
+            return;
+        };
 
         if self.total_indices == 0 {
             return;
@@ -498,7 +584,8 @@ impl GpuRenderer for ChoroplethRenderer {
         // Update uniforms
         // Transform geo bounds for zoom/pan
         let geo_bounds = self.data.bounds();
-        let geo_data_bounds = DataBounds::new(geo_bounds[0], geo_bounds[2], geo_bounds[1], geo_bounds[3]);
+        let geo_data_bounds =
+            DataBounds::new(geo_bounds[0], geo_bounds[2], geo_bounds[1], geo_bounds[3]);
         let visible_bounds = self.zoom_pan.transform_bounds(&geo_data_bounds);
         let uniforms = ChoroplethUniforms {
             viewport: glam::Vec4::new(
@@ -507,17 +594,30 @@ impl GpuRenderer for ChoroplethRenderer {
                 1.0 / frame.width as f32,
                 1.0 / frame.height as f32,
             ),
-            bounds: glam::Vec4::new(visible_bounds.min_x, visible_bounds.max_x, visible_bounds.min_y, visible_bounds.max_y),
+            bounds: glam::Vec4::new(
+                visible_bounds.min_x,
+                visible_bounds.max_x,
+                visible_bounds.min_y,
+                visible_bounds.max_y,
+            ),
             animation: glam::Vec4::new(
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: glam::Vec4::new(
                 frame.pointer.position.map_or(-1.0, |p| p.x),
                 frame.pointer.position.map_or(-1.0, |p| p.y),
-                if frame.pointer.hit.is_some() { 1.0 } else { 0.0 },
+                if frame.pointer.hit.is_some() {
+                    1.0
+                } else {
+                    0.0
+                },
                 self.hover_polygon_id.map_or(-1.0, |id| id as f32),
             ),
             value_range: glam::Vec4::new(
@@ -539,9 +639,11 @@ impl GpuRenderer for ChoroplethRenderer {
         }
 
         // Begin render pass
-        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("choropleth_encoder"),
-        });
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("choropleth_encoder"),
+            });
 
         {
             let (color_view, resolve_target) = msaa_attachment(
@@ -617,13 +719,18 @@ impl ChartRenderer for ChoroplethRenderer {
         self.needs_redraw = true;
     }
 
-    fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<Self::DataValue>> {
+    fn hit_test(
+        &self,
+        point: Point,
+        viewport: &ChartViewport,
+    ) -> Option<HitResult<Self::DataValue>> {
         if self.data.polygons.is_empty() {
             return None;
         }
 
         let geo_bounds = self.data.bounds();
-        let geo_data_bounds = DataBounds::new(geo_bounds[0], geo_bounds[2], geo_bounds[1], geo_bounds[3]);
+        let geo_data_bounds =
+            DataBounds::new(geo_bounds[0], geo_bounds[2], geo_bounds[1], geo_bounds[3]);
         let visible_bounds = self.zoom_pan.transform_bounds(&geo_data_bounds);
         let lon_range = visible_bounds.max_x - visible_bounds.min_x;
         let lat_range = visible_bounds.max_y - visible_bounds.min_y;
@@ -733,4 +840,5 @@ fn check(
     position: f32,
     _pad: [f32; 3],
     color: glam::Vec4,
-) {}
+) {
+}

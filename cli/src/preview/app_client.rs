@@ -5,11 +5,11 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use color_eyre::eyre::{Result, bail};
 use color_eyre::eyre::WrapErr as _;
+use color_eyre::eyre::{Result, bail};
 use futures::{FutureExt as _, pin_mut, select};
-use smol::net::TcpStream;
 use smol::Timer;
+use smol::net::TcpStream;
 
 use super::protocol::{AppRequest, AppResponse, DylibId, DylibSource, PreviewTcpConfig, Size};
 
@@ -113,15 +113,39 @@ impl PreviewAppClient {
             .await
             .wrap_err("Failed to send request")?;
 
-        read_json_frame::<_, AppResponse>(&mut self.stream)
-            .await
-            .wrap_err("Failed to receive response")
+        let timeout = request_timeout();
+        let recv = async {
+            read_json_frame::<_, AppResponse>(&mut self.stream)
+                .await
+                .wrap_err("Failed to receive response")
+        }
+        .fuse();
+        let timeout_fut = Timer::after(timeout).fuse();
+
+        pin_mut!(recv);
+        pin_mut!(timeout_fut);
+
+        select! {
+            result = recv => result,
+            _ = timeout_fut => {
+                bail!("Preview app request timed out after {timeout:?}");
+            }
+        }
     }
 }
 
 fn connect_timeout() -> Duration {
     const DEFAULT_MS: u64 = 100;
     std::env::var("WATERUI_PREVIEW_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn request_timeout() -> Duration {
+    const DEFAULT_MS: u64 = 60_000;
+    std::env::var("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)

@@ -401,7 +401,10 @@ impl<S> core::fmt::Debug for GestureObserverStatefulBuilder<S> {
 impl<S: Clone + 'static> GestureObserverStatefulBuilder<S> {
     /// Adds another state value, accumulating as nested tuples.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> GestureObserverStatefulBuilder<(S, T)> {
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> GestureObserverStatefulBuilder<(S, T)> {
         GestureObserverStatefulBuilder {
             gesture: self.gesture,
             state: (self.state, state.clone()),

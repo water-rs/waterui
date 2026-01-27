@@ -1,22 +1,23 @@
 //! View renderer that dispatches `WaterUI` views to GTK widgets.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
-use waterui_backend_core::ViewDispatcher;
-use waterui_core::dynamic::Dynamic;
-use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
-use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Environment, Native, View};
+use gtk4::prelude::*;
 use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::prelude::Divider;
+use waterui_backend_core::ViewDispatcher;
 use waterui_controls::button::ButtonConfig;
 use waterui_controls::slider::SliderConfig;
-use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::stepper::StepperConfig;
+use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_core::dynamic::Dynamic;
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{AnyView, Environment, Native, View};
+use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
 use waterui_form::picker::PickerConfig;
 use waterui_form::secure::SecureFieldConfig;
+use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::padding::Padding;
 use waterui_layout::scroll::ScrollView;
@@ -24,7 +25,6 @@ use waterui_layout::spacer::Spacer;
 use waterui_navigation::tab::Tabs;
 use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_text::TextConfig;
-use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
@@ -184,6 +184,7 @@ impl GtkRenderer {
 
     /// Registers handlers for metadata wrapper views.
     fn register_metadata_handlers(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
+        use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
         use waterui::background::Background;
         use waterui::component::focus::Focused;
         use waterui::gesture::GestureObserver;
@@ -191,7 +192,6 @@ impl GtkRenderer {
         use waterui::style::Shadow;
         use waterui_core::event::OnEvent;
         use waterui_layout::safe_area::IgnoreSafeArea;
-        use waterui::accessibility::{AccessibilityLabel, AccessibilityRole};
 
         // Metadata<Environment> - use provided environment for subtree
         dispatcher.register::<Metadata<Environment>>(|_state, ctx, metadata, _env| {
@@ -287,8 +287,8 @@ impl GtkRenderer {
             use std::cell::RefCell;
             use std::rc::Rc;
             use waterui::gesture::{
-                DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent,
-                MagnificationEvent, TapEvent,
+                DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
+                TapEvent,
             };
 
             let renderer = unsafe { ctx.renderer() }.expect("renderer required");
@@ -406,7 +406,8 @@ impl GtkRenderer {
                         let drag_started = drag_started.clone();
 
                         drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
-                            let distance = (offset_x * offset_x + offset_y * offset_y).sqrt() as f32;
+                            let distance =
+                                (offset_x * offset_x + offset_y * offset_y).sqrt() as f32;
                             if distance < min_distance && !*drag_started.borrow() {
                                 return;
                             }
@@ -555,8 +556,9 @@ impl GtkRenderer {
     }
 
     /// Registers a `Native<T>` wrapped component with the dispatcher.
-    fn register_native<T: waterui_core::NativeView + 'static>(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>)
-    where
+    fn register_native<T: waterui_core::NativeView + 'static>(
+        dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+    ) where
         Native<T>: GtkComponent,
     {
         Self::register::<Native<T>>(dispatcher);
