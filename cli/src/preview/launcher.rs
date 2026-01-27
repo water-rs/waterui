@@ -40,6 +40,8 @@ pub struct PreviewSession {
     running: Option<Pin<Box<Running>>>,
     /// Whether this session owns the app lifecycle.
     owns_app: bool,
+    /// Optional path to sccache for compilation caching.
+    sccache_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +65,10 @@ impl PreviewSession {
             PreviewPlatform::Android => TargetPlatform::Android,
         };
 
-        let rust_build = RustBuild::new(project.root(), target.triple(), false);
+        let mut rust_build = RustBuild::new(project.root(), target.triple(), false);
+        if let Some(sccache) = &self.sccache_path {
+            rust_build = rust_build.with_sccache(sccache.clone());
+        }
         let expected_path = rust_build.dylib_path(project.crate_name(), false).await?;
         let candidate_path = self
             .dylib_path
@@ -144,9 +149,16 @@ async fn dylib_is_up_to_date(path: &std::path::Path, source_mtime: SystemTime) -
 /// 2. If not found, scaffold and launch the preview app
 /// 3. Wait for TCP connection
 ///
+/// # Arguments
+/// * `platform` - Target platform for preview
+/// * `sccache_path` - Optional path to sccache for compilation caching
+///
 /// # Errors
 /// Returns an error if the preview app cannot be launched or connected.
-pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<PreviewSession> {
+pub async fn launch_preview_session(
+    platform: PreviewPlatform,
+    sccache_path: Option<PathBuf>,
+) -> Result<PreviewSession> {
     let tcp_config = PreviewTcpConfig::from_env()
         .map_err(|e| color_eyre::eyre::eyre!(e))
         .wrap_err("Invalid preview TCP config")?;
@@ -161,6 +173,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             dylib_path: None,
             running: None,
             owns_app: false,
+            sccache_path,
         });
     }
 
@@ -280,6 +293,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             dylib_path: None,
             running: Some(running),
             owns_app: true,
+            sccache_path,
         }),
         ConnectionResult::Crashed(message) => {
             bail!("Preview app crashed:\n{message}")

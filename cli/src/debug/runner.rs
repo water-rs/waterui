@@ -61,10 +61,15 @@ impl HotReloadRunner {
     /// # Arguments
     /// * `project` - The project to watch and rebuild
     /// * `triple` - The target triple to build for
+    /// * `sccache_path` - Optional path to sccache for compilation caching
     ///
     /// # Errors
     /// Returns an error if the server or file watcher cannot be started.
-    pub async fn new(project: &Project, triple: Triple) -> color_eyre::Result<Self> {
+    pub async fn new(
+        project: &Project,
+        triple: Triple,
+        sccache_path: Option<PathBuf>,
+    ) -> color_eyre::Result<Self> {
         let server = HotReloadServer::launch(DEFAULT_PORT).await?;
         let watcher = FileWatcher::new(project.root())?;
 
@@ -78,7 +83,10 @@ impl HotReloadRunner {
             })
             .await;
 
-        let rust_build = RustBuild::new(project.root(), triple.clone(), true);
+        let mut rust_build = RustBuild::new(project.root(), triple.clone(), true);
+        if let Some(sccache) = sccache_path {
+            rust_build = rust_build.with_sccache(sccache);
+        }
         let file_rx = watcher.receiver().clone();
         let broadcast_tx = server.broadcast_sender();
         let crate_name = project.crate_name().replace('-', "_");

@@ -8,9 +8,10 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
-use crate::{error, header, success};
+use crate::{error, header, success, warn};
 use waterui_cli::preview::protocol::function_path_to_symbol;
 use waterui_cli::preview::{PreviewPlatform, launch_preview_session};
+use waterui_cli::toolchain::sccache::Sccache;
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -80,9 +81,19 @@ pub async fn run(args: Args) -> Result<()> {
     let symbol = function_path_to_symbol(crate_name, &args.function_path);
     header!("Preview: {}", symbol);
 
+    // Detect sccache for compilation caching
+    let sccache = Sccache;
+    let sccache_path = match sccache.path().await {
+        Ok(path) => Some(path),
+        Err(_) => {
+            warn!("sccache not found. Build efficiency may be reduced. Install with: brew install sccache");
+            None
+        }
+    };
+
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell::spinner("Connecting to preview app...");
-    let mut session = launch_preview_session(args.platform.into()).await?;
+    let mut session = launch_preview_session(args.platform.into(), sccache_path).await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
