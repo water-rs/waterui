@@ -24,6 +24,8 @@ pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
     hot_reload: bool,
+    /// Optional path to sccache for compilation caching.
+    sccache_path: Option<PathBuf>,
 }
 
 /// Options for building Rust libraries.
@@ -32,6 +34,8 @@ pub struct BuildOptions {
     release: bool,
     hot_reload: bool,
     output_dir: Option<std::path::PathBuf>,
+    /// Optional path to sccache for compilation caching.
+    sccache_path: Option<std::path::PathBuf>,
 }
 
 impl BuildOptions {
@@ -42,6 +46,7 @@ impl BuildOptions {
             release,
             output_dir: None,
             hot_reload,
+            sccache_path: None,
         }
     }
 
@@ -69,6 +74,22 @@ impl BuildOptions {
         self.output_dir = Some(output_dir.into());
         self
     }
+
+    /// Get the sccache path, if configured
+    #[must_use]
+    pub fn sccache_path(&self) -> Option<&std::path::Path> {
+        self.sccache_path.as_deref()
+    }
+
+    /// Set the sccache path for compilation caching.
+    ///
+    /// When set, `RUSTC_WRAPPER` will be configured to use sccache,
+    /// which can significantly improve build times by caching compiled artifacts.
+    #[must_use]
+    pub fn with_sccache(mut self, sccache_path: impl Into<std::path::PathBuf>) -> Self {
+        self.sccache_path = Some(sccache_path.into());
+        self
+    }
 }
 
 /// Errors that can occur during the Rust build process.
@@ -90,7 +111,18 @@ impl RustBuild {
             path: path.as_ref().to_path_buf(),
             triple,
             hot_reload,
+            sccache_path: None,
         }
+    }
+
+    /// Set the sccache path for compilation caching.
+    ///
+    /// When set, `RUSTC_WRAPPER` will be configured to use sccache,
+    /// which can significantly improve incremental build times.
+    #[must_use]
+    pub fn with_sccache(mut self, sccache_path: PathBuf) -> Self {
+        self.sccache_path = Some(sccache_path);
+        self
     }
 
     /// Get the target triple for this build.
@@ -192,6 +224,11 @@ impl RustBuild {
             .arg("--lib")
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
+
+        // Use sccache as rustc wrapper if configured
+        if let Some(sccache_path) = &self.sccache_path {
+            cmd = cmd.env("RUSTC_WRAPPER", sccache_path);
+        }
 
         if self.hot_reload {
             // Preserve existing RUSTFLAGS and append our cfg flag
