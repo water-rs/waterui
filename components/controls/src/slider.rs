@@ -7,9 +7,9 @@
 
 use core::ops::RangeInclusive;
 
-use nami::Binding;
+use nami::{Binding, s};
 use waterui_core::{AnyView, View, configurable, layout::StretchAxis};
-use waterui_text::text;
+use waterui_text::Text;
 
 /// Configuration for the [`Slider`] widget.
 #[derive(Debug)]
@@ -76,7 +76,7 @@ impl Slider {
     #[must_use]
     pub fn new(range: RangeInclusive<f64>, value: &Binding<f64>) -> Self {
         Self(SliderConfig {
-            label: AnyView::new(text!("{:.2}", value)),
+            label: AnyView::new(Text::new(s!("{:.2}", value))),
             min_value_label: AnyView::default(),
             max_value_label: AnyView::default(),
             range,

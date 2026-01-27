@@ -94,7 +94,7 @@ pub mod prelude {
     pub use super::background::{Background, Material, Shader};
 
     // Re-export macros
-    pub use waterui_macros::hot_reload;
+    pub use waterui_macros::*;
 }
 pub use color::Color;
 pub use form::FormBuilder;

@@ -13,5 +13,5 @@ pub mod protocol;
 pub mod watcher;
 
 pub use app_client::PreviewAppClient;
-pub use launcher::{PreviewSession, kill_preview_support_app, launch_preview_session};
+pub use launcher::{PreviewSession, launch_preview_session};
 pub use protocol::{PreviewPlatform, Size};
