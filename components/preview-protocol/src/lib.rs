@@ -219,6 +219,16 @@ impl std::fmt::Display for DylibId {
     }
 }
 
+impl std::str::FromStr for DylibId {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = hex::decode(s).map_err(|_| "invalid hex")?;
+        let bytes: [u8; 32] = bytes.try_into().map_err(|_| "expected 32 bytes")?;
+        Ok(DylibId(bytes))
+    }
+}
+
 impl Serialize for DylibId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -280,6 +290,10 @@ pub enum DylibSource {
 /// Request from CLI to preview support app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreviewRequest {
+    /// Fast liveness probe.
+    ///
+    /// Used by the CLI to confirm the app is responsive (not just accepting TCP).
+    Ping,
     /// Ask whether a dylib id is present in the app cache.
     HasDylib {
         /// Dylib id to query.
@@ -325,6 +339,8 @@ pub enum PreviewError {
 /// Response from preview support app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreviewResponse {
+    /// Response to [`PreviewRequest::Ping`].
+    Pong,
     /// Response to [`PreviewRequest::HasDylib`].
     HasDylib {
         /// Whether the dylib id is present.

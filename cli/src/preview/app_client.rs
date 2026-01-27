@@ -44,13 +44,11 @@ impl PreviewAppClient {
                 // Fast handshake: ensure the server is responsive (not just accepting TCP).
                 //
                 // Some failure modes leave the TCP listener alive while the single render worker
-                // is wedged, causing all requests to hang. A short HasDylib roundtrip detects this.
-                let handshake_id = DylibId::from_bytes([0; 32]);
-                let handshake = AppRequest::HasDylib { id: handshake_id };
-                if client
+                // is wedged, causing all requests to hang. A short Ping roundtrip detects this.
+                let handshake = AppRequest::Ping;
+                if let Ok(waterui_preview_protocol::PreviewResponse::Pong) = client
                     .request_with_timeout(handshake, handshake_timeout())
                     .await
-                    .is_ok()
                 {
                     return Ok(client);
                 }
@@ -185,6 +183,7 @@ fn request_timeout() -> Duration {
 
 fn request_kind(request: &AppRequest) -> &'static str {
     match request {
+        AppRequest::Ping => "Ping",
         AppRequest::HasDylib { .. } => "HasDylib",
         AppRequest::Render { .. } => "Render",
         AppRequest::Shutdown => "Shutdown",

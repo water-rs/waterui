@@ -31,6 +31,7 @@
 //! waterui_ffi::export!();
 //! ```
 
+mod cache;
 mod library;
 pub mod renderer;
 mod view;

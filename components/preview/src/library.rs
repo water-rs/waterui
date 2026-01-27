@@ -3,34 +3,20 @@
 //! Handles loading dylibs received from the daemon and resolving preview symbols.
 
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use waterui_core::AnyView;
 use waterui_preview_protocol::DylibId;
+
+use crate::cache::preview_dylib_cache_path;
 
 /// A loaded preview library.
 #[derive(Debug)]
 pub struct PreviewLibrary {
     lib: libloading::Library,
-    temp_path: Option<PathBuf>,
 }
 
 impl PreviewLibrary {
-    /// Load a library from a file path.
-    ///
-    /// # Safety
-    /// The library must be a valid WaterUI preview library with the expected ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the library cannot be loaded.
-    pub unsafe fn load(path: &Path) -> Result<Self, libloading::Error> {
-        let lib = unsafe { libloading::Library::new(path)? };
-        Ok(Self {
-            lib,
-            temp_path: None,
-        })
-    }
-
     /// Load a library from an on-disk cache path, codesigning only if needed (macOS).
     ///
     /// # Safety
@@ -52,23 +38,21 @@ impl PreviewLibrary {
         .await;
 
         match first_try {
-            Ok(lib) => Ok(Self {
-                lib,
-                temp_path: None,
-            }),
-            Err(_e) => {
-                // If the dylib is already ad-hoc signed (or not required), this extra codesign
-                // call would be wasted. Instead, try loading first and only codesign on failure.
+            Ok(lib) => Ok(Self { lib }),
+            Err(load_error) => {
+                // Only codesign when the file is not already signed/valid. If it's already
+                // signed and dlopen failed, surface the original error immediately.
+                if codesign_verify_dylib(path).await? {
+                    return Err(load_error);
+                }
+
                 codesign_dylib(path).await?;
                 let lib = blocking::unblock({
                     let path = path.to_path_buf();
                     move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
                 })
                 .await?;
-                Ok(Self {
-                    lib,
-                    temp_path: None,
-                })
+                Ok(Self { lib })
             }
         }
     }
@@ -80,10 +64,7 @@ impl PreviewLibrary {
             move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
         })
         .await?;
-        Ok(Self {
-            lib,
-            temp_path: None,
-        })
+        Ok(Self { lib })
     }
 
     /// Load a library from bytes by writing to a temp file.
@@ -97,16 +78,8 @@ impl PreviewLibrary {
     pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
         // Prefer a stable on-disk cache keyed by dylib id. This avoids re-codesigning and also
         // enables reuse across preview app restarts.
-        let cache_path = dylib_cache_path(id);
-
-        if !cache_path.exists() {
-            if let Some(parent) = cache_path.parent() {
-                async_fs::create_dir_all(parent).await.map_err(LoadError::Io)?;
-            }
-            async_fs::write(&cache_path, data)
-                .await
-                .map_err(LoadError::Io)?;
-        }
+        let cache_path = preview_dylib_cache_path(id);
+        ensure_cached_file(&cache_path, data).await?;
 
         Self::load_with_codesign_fallback(&cache_path).await
     }
@@ -142,24 +115,29 @@ impl PreviewLibrary {
     }
 }
 
-impl Drop for PreviewLibrary {
-    fn drop(&mut self) {
-        if let Some(path) = self.temp_path.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
+async fn ensure_cached_file(path: &Path, bytes: &[u8]) -> Result<(), LoadError> {
+    let parent = path
+        .parent()
+        .expect("cache path must have a parent directory");
+    async_fs::create_dir_all(parent).await.map_err(LoadError::Io)?;
 
-fn dylib_cache_path(id: DylibId) -> PathBuf {
-    let hex = id.to_string();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let base = home
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join(".water")
-        .join("cache")
-        .join("preview")
-        .join("dylibs");
-    base.join(format!("{hex}.dylib"))
+    match async_fs::metadata(path).await {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(LoadError::Io(e)),
+    }
+
+    let temp = path.with_extension("dylib.tmp");
+    async_fs::write(&temp, bytes).await.map_err(LoadError::Io)?;
+    match async_fs::rename(&temp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another process won the race; discard our temp file.
+            let _ = async_fs::remove_file(&temp).await;
+            Ok(())
+        }
+        Err(e) => Err(LoadError::Io(e)),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -184,6 +162,19 @@ async fn codesign_dylib(path: &Path) -> Result<(), LoadError> {
             stderr
         }))
     }
+}
+
+#[cfg(target_os = "macos")]
+async fn codesign_verify_dylib(path: &Path) -> Result<bool, LoadError> {
+    let output = async_process::Command::new("codesign")
+        .arg("--verify")
+        .arg("--verbose=0")
+        .arg(path)
+        .output()
+        .await
+        .map_err(LoadError::Io)?;
+
+    Ok(output.status.success())
 }
 
 /// Errors that can occur when loading a library.

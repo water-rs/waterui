@@ -20,6 +20,7 @@ syn = { version = "2.0", features = ["full"] }
 icu_locid = "1.5"
 icu_locid_transform = "1.5"
 toml = "0.8"
+proc-macro-crate = "3"
 
 [lints]
 workspace = true
