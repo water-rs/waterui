@@ -32,7 +32,7 @@ use nami::signal::IntoSignal;
 use waterui_core::animation::Animation;
 use waterui_core::easing::EasingCurve;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, Metadata, View};
+use waterui_core::{Environment, IntoSignalF32, Metadata, View};
 
 use crate::gpu_surface::SetupFuture;
 
@@ -1390,7 +1390,7 @@ pub trait FilterViewExt: View + Sized {
     /// let radius = binding(10.0);
     /// my_view.blur(radius.animated())
     /// ```
-    fn blur<T: IntoSignal<f32>>(
+    fn blur<T: IntoSignalF32>(
         self,
         radius: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Blur<T::Signal>>>
@@ -1399,12 +1399,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Blur(radius.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Blur(radius.into_signal_f32())),
         )
     }
 
     /// Apply a brightness filter.
-    fn brightness<T: IntoSignal<f32>>(
+    fn brightness<T: IntoSignalF32>(
         self,
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Brightness<T::Signal>>>
@@ -1413,12 +1413,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Brightness(amount.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Brightness(amount.into_signal_f32())),
         )
     }
 
     /// Apply a contrast filter.
-    fn contrast<T: IntoSignal<f32>>(
+    fn contrast<T: IntoSignalF32>(
         self,
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Contrast<T::Signal>>>
@@ -1427,12 +1427,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Contrast(amount.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Contrast(amount.into_signal_f32())),
         )
     }
 
     /// Apply a saturation filter.
-    fn saturation<T: IntoSignal<f32>>(
+    fn saturation<T: IntoSignalF32>(
         self,
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Saturation<T::Signal>>>
@@ -1441,12 +1441,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Saturation(amount.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Saturation(amount.into_signal_f32())),
         )
     }
 
     /// Apply a grayscale filter.
-    fn grayscale<T: IntoSignal<f32>>(
+    fn grayscale<T: IntoSignalF32>(
         self,
         intensity: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Grayscale<T::Signal>>>
@@ -1455,12 +1455,14 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Grayscale(intensity.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Grayscale(
+                intensity.into_signal_f32(),
+            )),
         )
     }
 
     /// Apply a hue rotation filter.
-    fn hue_rotation<T: IntoSignal<f32>>(
+    fn hue_rotation<T: IntoSignalF32>(
         self,
         angle: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::HueRotation<T::Signal>>>
@@ -1469,7 +1471,7 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::HueRotation(angle.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::HueRotation(angle.into_signal_f32())),
         )
     }
 
@@ -1479,7 +1481,7 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply an opacity filter.
-    fn opacity<T: IntoSignal<f32>>(
+    fn opacity<T: IntoSignalF32>(
         self,
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Opacity<T::Signal>>>
@@ -1488,12 +1490,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Opacity(amount.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Opacity(amount.into_signal_f32())),
         )
     }
 
     /// Apply a sepia filter.
-    fn sepia<T: IntoSignal<f32>>(
+    fn sepia<T: IntoSignalF32>(
         self,
         intensity: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sepia<T::Signal>>>
@@ -1502,12 +1504,12 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sepia(intensity.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Sepia(intensity.into_signal_f32())),
         )
     }
 
     /// Apply a sharpen filter.
-    fn sharpen<T: IntoSignal<f32>>(
+    fn sharpen<T: IntoSignalF32>(
         self,
         amount: T,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Sharpen<T::Signal>>>
@@ -1516,25 +1518,22 @@ pub trait FilterViewExt: View + Sized {
     {
         FilteredView::new(
             self,
-            FilterAdapter::new(filtrate_core::filters::Sharpen(amount.into_signal())),
+            FilterAdapter::new(filtrate_core::filters::Sharpen(amount.into_signal_f32())),
         )
     }
 
     /// Apply a vignette filter.
-    fn vignette<R: IntoSignal<f32>, S: IntoSignal<f32>>(
+    fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
         self,
         radius: R,
         softness: S,
     ) -> FilteredView<Self, FilterAdapter<filtrate_core::filters::Vignette<R::Signal, S::Signal>>>
-    where
-        R::Signal: 'static,
-        S::Signal: 'static,
     {
         FilteredView::new(
             self,
             FilterAdapter::new(filtrate_core::filters::Vignette(
-                radius.into_signal(),
-                softness.into_signal(),
+                radius.into_signal_f32(),
+                softness.into_signal_f32(),
             )),
         )
     }
