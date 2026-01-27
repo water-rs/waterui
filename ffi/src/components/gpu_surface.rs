@@ -11,6 +11,7 @@
 
 use core::ffi::c_void;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -26,6 +27,34 @@ use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurfa
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
+
+fn gpu_capture_poll_timeout() -> Option<Duration> {
+    const DEFAULT_MS: u64 = 2_000;
+    let ms = std::env::var("WATERUI_GPU_CAPTURE_POLL_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MS);
+    if ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(ms))
+    }
+}
+
+fn poll_capture_completion(device: &wgpu::Device) -> bool {
+    let poll_type = wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: gpu_capture_poll_timeout(),
+    };
+
+    match device.poll(poll_type) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("[GpuSurface] capture poll timed out/failed: {e}");
+            false
+        }
+    }
+}
 
 /// FFI representation of a GpuSurface view.
 ///
@@ -512,8 +541,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
 
         state.gpu_surface.render(&frame);
         // Ensure external renderers see completed writes before returning.
-        let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
-        true
+        poll_capture_completion(&state.device)
     }));
 
     match render_result {
@@ -641,8 +669,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         };
 
         state.gpu_surface.render(&frame);
-        let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
-        true
+        poll_capture_completion(&state.device)
     }));
 
     match render_result {
