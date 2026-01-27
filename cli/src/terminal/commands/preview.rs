@@ -10,7 +10,7 @@ use color_eyre::eyre::{Result, bail};
 use crate::shell;
 use crate::{error, header, success};
 use waterui_cli::preview::protocol::function_path_to_symbol;
-use waterui_cli::preview::{PreviewPlatform, kill_preview_support_app, launch_preview_session};
+use waterui_cli::preview::{PreviewPlatform, launch_preview_session};
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -97,20 +97,7 @@ pub async fn run(args: Args) -> Result<()> {
 
         // Render preview
         let spinner = shell::spinner("Rendering view...");
-        let png_data = match session.render(&dylib, &symbol, width, height).await {
-            Ok(png) => png,
-            Err(e) => {
-                let is_timeout = e.to_string().contains("timed out");
-                if is_timeout && matches!(args.platform, CliPreviewPlatform::Macos) {
-                    eprintln!("[preview] Render timed out; restarting preview app and retrying once...");
-                    kill_preview_support_app().await;
-                    session = launch_preview_session(PreviewPlatform::Macos).await?;
-                    session.render(&dylib, &symbol, width, height).await?
-                } else {
-                    return Err(e);
-                }
-            }
-        };
+        let png_data = session.render(&dylib, &symbol, width, height).await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
