@@ -78,7 +78,9 @@ impl VelloSvgRenderer {
     pub fn from_path(path_data: &str, width: f32, height: f32) -> Self {
         let svg_content = alloc::format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}"><path d="{}"/></svg>"#,
-            width, height, path_data
+            width,
+            height,
+            path_data
         );
         Self::new(&svg_content)
     }
@@ -127,7 +129,13 @@ impl VelloSvgRenderer {
     }
 
     /// Creates or updates the texture and renders the scene.
-    fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
+    fn render_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) {
         // Create texture if needed
         if self.texture.is_none() || self.current_width != width || self.current_height != height {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -141,8 +149,7 @@ impl VelloSvgRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
 
@@ -249,16 +256,18 @@ impl GpuRenderer for VelloSvgRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(waterui_graphics::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.clone().into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    waterui_graphics::shaders::BLIT.source.clone().into(),
+                ),
             });
 
-        let pipeline_layout =
-            ctx.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Vello SVG Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Vello SVG Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None

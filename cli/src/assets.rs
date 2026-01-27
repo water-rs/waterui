@@ -151,12 +151,7 @@ pub async fn scan_fonts(project: &Project) -> eyre::Result<Vec<FontDeclaration>>
             resolve
                 .nodes
                 .iter()
-                .map(|node| {
-                    (
-                        &node.id,
-                        node.features.iter().map(|f| f.as_str()).collect(),
-                    )
-                })
+                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
                 .collect()
         })
         .unwrap_or_default();
@@ -276,9 +271,7 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
                 }
                 full_path
             }
-            FontSource::Remote { url } => {
-                download_font(&name, url, &cache_dir).await?
-            }
+            FontSource::Remote { url } => download_font(&name, url, &cache_dir).await?,
             FontSource::BuiltIn => {
                 // Look up in registry
                 let url = FONT_REGISTRY
@@ -458,7 +451,12 @@ fn extract_fontawesome_version(extract_dir: &Path) -> String {
                 let parts: Vec<&str> = name.split('-').collect();
                 for (i, part) in parts.iter().enumerate() {
                     if part.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                        return parts[i..].join("-").split('-').next().unwrap_or("7.1.0").to_string();
+                        return parts[i..]
+                            .join("-")
+                            .split('-')
+                            .next()
+                            .unwrap_or("7.1.0")
+                            .to_string();
                     }
                 }
             }
@@ -503,7 +501,10 @@ async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
                 if file_name.contains(&style_keyword) {
                     // Also verify the base name matches to avoid false positives
                     let name_parts: Vec<&str> = name_lower.split_whitespace().collect();
-                    let matches_base = name_parts.iter().take(3).all(|part| file_name.contains(part));
+                    let matches_base = name_parts
+                        .iter()
+                        .take(3)
+                        .all(|part| file_name.contains(part));
                     if matches_base {
                         return Ok(path);
                     }
@@ -529,7 +530,9 @@ async fn find_font_file(dir: &Path, name: &str) -> eyre::Result<PathBuf> {
 /// - "FontAwesome7Free-Brands" -> "brands"
 fn extract_style_keyword(name: &str) -> Option<String> {
     // Check for common style suffixes
-    let styles = ["solid", "regular", "brands", "light", "thin", "bold", "medium"];
+    let styles = [
+        "solid", "regular", "brands", "light", "thin", "bold", "medium",
+    ];
     for style in styles {
         if name.ends_with(style) || name.contains(&format!("-{style}")) {
             return Some(style.to_string());
@@ -576,7 +579,11 @@ pub async fn copy_fonts(fonts: &[ResolvedFont], dest: &Path) -> eyre::Result<()>
             .ok_or_eyre("Font path has no filename")?;
         let dest_path = dest.join(file_name);
 
-        debug!("Copying font {} -> {}", font.path.display(), dest_path.display());
+        debug!(
+            "Copying font {} -> {}",
+            font.path.display(),
+            dest_path.display()
+        );
         fs::copy(&font.path, &dest_path).await?;
     }
 
@@ -613,12 +620,16 @@ mod tests {
         assert!(!FONT_REGISTRY.is_empty());
         assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Inter"));
         // Icon pack fonts should NOT be in the built-in registry
-        assert!(!FONT_REGISTRY
-            .iter()
-            .any(|(name, _)| name.contains("Font Awesome")));
-        assert!(!FONT_REGISTRY
-            .iter()
-            .any(|(name, _)| name.contains("Material Design")));
+        assert!(
+            !FONT_REGISTRY
+                .iter()
+                .any(|(name, _)| name.contains("Font Awesome"))
+        );
+        assert!(
+            !FONT_REGISTRY
+                .iter()
+                .any(|(name, _)| name.contains("Material Design"))
+        );
     }
 
     #[test]

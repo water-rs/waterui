@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics.workspace = true
-waterkit-audio = { git = "https://github.com/water-rs/kit" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit" }
 wgpu.workspace = true
 bytemuck = { version = "1.14", features = ["derive"] }
 encase.workspace = true

@@ -9,16 +9,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, GaugeData};
 use crate::interaction::{ChartViewport, HitResult};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 /// GPU-accelerated gauge chart renderer.
 ///
@@ -140,10 +140,12 @@ impl GaugeRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/gauge.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Gauge Chart Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Gauge Chart Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -269,38 +271,51 @@ impl GpuRenderer for GaugeRenderer {
         self.pipeline = Some(Self::create_pipeline(ctx));
 
         let uniforms = GaugeUniforms::default();
-        self.uniform_buffer = Some(create_uniform_buffer(ctx, "Gauge Chart Uniforms", &uniforms));
+        self.uniform_buffer = Some(create_uniform_buffer(
+            ctx,
+            "Gauge Chart Uniforms",
+            &uniforms,
+        ));
 
         let colors = self.get_region_colors();
         self.region_color_buffer = Some(create_storage_buffer(ctx, "Gauge Region Colors", &colors));
 
         let thresholds = self.get_region_thresholds();
-        self.region_threshold_buffer =
-            Some(create_storage_buffer(ctx, "Gauge Region Thresholds", &thresholds));
+        self.region_threshold_buffer = Some(create_storage_buffer(
+            ctx,
+            "Gauge Region Thresholds",
+            &thresholds,
+        ));
 
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Gauge Chart Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.region_color_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self
-                        .region_threshold_buffer
-                        .as_ref()
-                        .unwrap()
-                        .as_entire_binding(),
-                },
-            ],
-        }));
+        self.bind_group = Some(
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Gauge Chart Bind Group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self
+                            .region_color_buffer
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self
+                            .region_threshold_buffer
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                ],
+            }),
+        );
 
         async {}
     }
@@ -368,7 +383,11 @@ impl GpuRenderer for GaugeRenderer {
                 1.0,
             ),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render
         let mut encoder = frame

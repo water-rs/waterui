@@ -84,21 +84,21 @@ impl Label {
 
     /// Places the icon on the trailing side (after text).
     #[must_use]
-    pub fn trailing(mut self) -> Self {
+    pub const fn trailing(mut self) -> Self {
         self.icon_position = IconPosition::Trailing;
         self
     }
 
     /// Places the icon on the leading side (before text). This is the default.
     #[must_use]
-    pub fn leading(mut self) -> Self {
+    pub const fn leading(mut self) -> Self {
         self.icon_position = IconPosition::Leading;
         self
     }
 
     /// Sets the spacing between icon and text.
     #[must_use]
-    pub fn spacing(mut self, spacing: f32) -> Self {
+    pub const fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing;
         self
     }

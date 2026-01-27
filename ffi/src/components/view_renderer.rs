@@ -10,8 +10,8 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 use waterui_core::AnyView;
+use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 
 use super::layout::WuiSize;
 use crate::WuiEnv;
@@ -46,8 +46,8 @@ pub struct ViewRenderCallback {
 ///
 /// The view pointer is an `AnyView` that native should render.
 pub type ViewRenderFn = unsafe extern "C" fn(
-    view: *mut (),    // AnyView pointer (boxed)
-    size: WuiSize,    // Target size
+    view: *mut (), // AnyView pointer (boxed)
+    size: WuiSize, // Target size
     callback: ViewRenderCallback,
 );
 

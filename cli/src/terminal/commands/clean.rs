@@ -8,8 +8,8 @@ use color_eyre::eyre::Result;
 use crate::shell;
 use crate::{header, success};
 use waterui_cli::{
-    android::platform::clean_android, apple::platform::clean_apple,
-    gtk4::platform::clean_gtk4, project::Project,
+    android::platform::clean_android, apple::platform::clean_apple, gtk4::platform::clean_gtk4,
+    project::Project,
 };
 
 /// Target backend for cleaning.

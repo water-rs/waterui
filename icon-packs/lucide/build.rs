@@ -21,8 +21,7 @@ use std::path::Path;
 const LUCIDE_VERSION: &str = "0.562.0";
 
 /// CDN URL for icon data
-const ICON_NODES_URL: &str =
-    "https://cdn.jsdelivr.net/npm/lucide-static@0.562.0/icon-nodes.json";
+const ICON_NODES_URL: &str = "https://cdn.jsdelivr.net/npm/lucide-static@0.562.0/icon-nodes.json";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -233,12 +232,11 @@ fn to_const_name(name: &str) -> String {
 }
 
 const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
-    "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
-    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
-    "typeof", "unsized", "virtual", "yield",
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
 ];
 
 /// Convert kebab-case to snake_case, escaping keywords

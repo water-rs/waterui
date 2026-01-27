@@ -7,16 +7,16 @@ use core::future::Future;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{ContourData, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.05;
 
@@ -103,10 +103,12 @@ impl ContourRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/contour.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Contour Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Contour Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -206,7 +208,11 @@ impl GpuRenderer for ContourRenderer {
         } else {
             self.data.values.clone()
         };
-        self.value_buffer = Some(create_storage_buffer(ctx, "Contour Values", &initial_values));
+        self.value_buffer = Some(create_storage_buffer(
+            ctx,
+            "Contour Values",
+            &initial_values,
+        ));
 
         // Create level buffer (contour thresholds)
         let initial_levels: Vec<f32> = if self.data.levels.is_empty() {
@@ -214,7 +220,11 @@ impl GpuRenderer for ContourRenderer {
         } else {
             self.data.levels.clone()
         };
-        self.level_buffer = Some(create_storage_buffer(ctx, "Contour Levels", &initial_levels));
+        self.level_buffer = Some(create_storage_buffer(
+            ctx,
+            "Contour Levels",
+            &initial_levels,
+        ));
 
         // Create bind group
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
@@ -255,11 +265,12 @@ impl GpuRenderer for ContourRenderer {
         // Need at least 2x2 grid and some levels
         if self.data.rows < 2 || self.data.cols < 2 || self.data.levels.is_empty() {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Contour Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Contour Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Contour Clear Pass"),
@@ -297,14 +308,13 @@ impl GpuRenderer for ContourRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
-            style: glam::Vec4::new(
-                self.line_width,
-                self.data.levels.len() as f32,
-                0.0,
-                0.0,
-            ),
+            style: glam::Vec4::new(self.line_width, self.data.levels.len() as f32, 0.0, 0.0),
             zoom_pan: glam::Vec4::new(
                 self.zoom_pan.scale,
                 self.zoom_pan.offset.x,
@@ -312,7 +322,11 @@ impl GpuRenderer for ContourRenderer {
                 0.0,
             ),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Calculate instance count:
         // instances = num_levels * cells_per_level

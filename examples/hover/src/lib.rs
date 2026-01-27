@@ -11,7 +11,7 @@ use waterui::app::App;
 use waterui::cursor::CursorStyle;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
-use waterui::reactive::{binding, SignalExt};
+use waterui::reactive::{SignalExt, binding};
 
 // Colors for hover states
 const HOVER_ACTIVE_COLOR: Srgb = Srgb::from_hex("#4CAF50");

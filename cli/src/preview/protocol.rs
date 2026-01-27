@@ -83,13 +83,8 @@ impl std::str::FromStr for PreviewPlatform {
 // ============================================================================
 
 pub use waterui_preview_protocol::{
-    DylibId,
-    DylibSource,
-    PreviewError as AppError,
-    PreviewOutput as AppOutput,
-    PreviewRequest as AppRequest,
-    PreviewResponse as AppResponse,
-    Size,
+    DylibId, DylibSource, PreviewError as AppError, PreviewOutput as AppOutput,
+    PreviewRequest as AppRequest, PreviewResponse as AppResponse, Size,
 };
 
 pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
@@ -103,10 +98,7 @@ pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
 /// Example: `test_preview` with crate `together-app` -> `waterui_preview_together_app_test_preview`
 #[must_use]
 pub fn function_path_to_symbol(crate_name: &str, function_path: &str) -> String {
-    let fn_name = function_path
-        .rsplit("::")
-        .next()
-        .unwrap_or(function_path);
+    let fn_name = function_path.rsplit("::").next().unwrap_or(function_path);
     // Replace dashes with underscores (Cargo uses dashes, Rust uses underscores)
     let crate_name = crate_name.replace('-', "_");
     format!("waterui_preview_{crate_name}_{fn_name}")

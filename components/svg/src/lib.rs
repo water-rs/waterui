@@ -20,11 +20,11 @@ mod cpu_renderer;
 #[cfg(feature = "vello-backend")]
 mod vello_renderer;
 
-use waterui_core::resolve::Resolvable;
 use waterui_core::Signal;
+use waterui_core::resolve::Resolvable;
 use waterui_core::{Environment, View};
-use waterui_graphics::color::Color;
 use waterui_graphics::GpuSurface;
+use waterui_graphics::color::Color;
 use waterui_layout::frame::Frame;
 use waterui_str::Str;
 
@@ -165,7 +165,9 @@ impl Svg {
     /// Format a ResolvedColor as an SVG-compatible hex string.
     ///
     /// Converts from linear RGB to sRGB and formats as #rrggbb.
-    fn resolved_color_to_svg_hex(color: &waterui_graphics::color::ResolvedColor) -> alloc::string::String {
+    fn resolved_color_to_svg_hex(
+        color: &waterui_graphics::color::ResolvedColor,
+    ) -> alloc::string::String {
         let srgb = color.to_srgb();
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let r = (srgb.red * 255.0).clamp(0.0, 255.0) as u8;
