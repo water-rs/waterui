@@ -67,7 +67,11 @@ impl SimpleTime {
     /// Create a new time.
     #[must_use]
     pub const fn new(hour: u8, minute: u8, second: u8) -> Self {
-        Self { hour, minute, second }
+        Self {
+            hour,
+            minute,
+            second,
+        }
     }
 }
 
@@ -79,45 +83,82 @@ struct MonthNames {
 
 const MONTHS_EN: MonthNames = MonthNames {
     full: &[
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ],
     short: &[
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ],
 };
 
 const MONTHS_DE: MonthNames = MonthNames {
     full: &[
-        "Januar", "Februar", "März", "April", "Mai", "Juni",
-        "Juli", "August", "September", "Oktober", "November", "Dezember",
+        "Januar",
+        "Februar",
+        "März",
+        "April",
+        "Mai",
+        "Juni",
+        "Juli",
+        "August",
+        "September",
+        "Oktober",
+        "November",
+        "Dezember",
     ],
     short: &[
-        "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
-        "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+        "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
     ],
 };
 
 const MONTHS_FR: MonthNames = MonthNames {
     full: &[
-        "janvier", "février", "mars", "avril", "mai", "juin",
-        "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+        "janvier",
+        "février",
+        "mars",
+        "avril",
+        "mai",
+        "juin",
+        "juillet",
+        "août",
+        "septembre",
+        "octobre",
+        "novembre",
+        "décembre",
     ],
     short: &[
-        "janv.", "févr.", "mars", "avr.", "mai", "juin",
-        "juil.", "août", "sept.", "oct.", "nov.", "déc.",
+        "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
+        "déc.",
     ],
 };
 
 const MONTHS_ES: MonthNames = MonthNames {
     full: &[
-        "enero", "febrero", "marzo", "abril", "mayo", "junio",
-        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
     ],
     short: &[
-        "ene", "feb", "mar", "abr", "may", "jun",
-        "jul", "ago", "sep", "oct", "nov", "dic",
+        "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
     ],
 };
 
@@ -176,7 +217,10 @@ pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> Stri
             format!("{} {} {}", date.day, months.short[month_idx], date.year)
         }
         ("es", DateStyle::Long | DateStyle::Full) => {
-            format!("{} de {} de {}", date.day, months.full[month_idx], date.year)
+            format!(
+                "{} de {} de {}",
+                date.day, months.full[month_idx], date.year
+            )
         }
 
         // English (default): 12/31/2023 or December 31, 2023
@@ -218,7 +262,10 @@ pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> Stri
         match style {
             TimeStyle::Short => format!("{}:{:02} {}", hour12, time.minute, period),
             TimeStyle::Medium | TimeStyle::Long | TimeStyle::Full => {
-                format!("{}:{:02}:{:02} {}", hour12, time.minute, time.second, period)
+                format!(
+                    "{}:{:02}:{:02} {}",
+                    hour12, time.minute, time.second, period
+                )
             }
         }
     }

@@ -135,7 +135,9 @@ pub async fn text(input: &str) -> eyre::Result<()> {
 ///
 /// Returns an error if the screenshot fails.
 pub async fn screenshot(output: &Path) -> eyre::Result<()> {
-    let output_str = output.to_str().ok_or_else(|| eyre!("Invalid output path"))?;
+    let output_str = output
+        .to_str()
+        .ok_or_else(|| eyre!("Invalid output path"))?;
 
     let result = Command::new("screencapture")
         .arg("-x") // No sound

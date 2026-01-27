@@ -7,8 +7,8 @@ use core::ops::{Add, AddAssign};
 use nami::impl_constant;
 use nami::signal::IntoSignal;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
-use waterui_graphics::color::Color;
 use waterui_core::configurable;
+use waterui_graphics::color::Color;
 
 configurable!(
     /// A view that displays one or more lines of read-only text.
@@ -94,7 +94,12 @@ where
     fn add_assign(&mut self, rhs: T) {
         let rhs = rhs.into();
         let rhs_content = rhs.0.content;
-        self.0.content = self.0.content.zip(&rhs_content).map(|(a, b)| a + b).computed();
+        self.0.content = self
+            .0
+            .content
+            .zip(&rhs_content)
+            .map(|(a, b)| a + b)
+            .computed();
     }
 }
 

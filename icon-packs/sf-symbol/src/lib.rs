@@ -223,7 +223,8 @@ pub const QUESTIONMARK_CIRCLE: SystemIcon = SystemIcon::from_static("questionmar
 pub const EXCLAMATIONMARK_CIRCLE: SystemIcon = SystemIcon::from_static("exclamationmark.circle");
 
 /// Exclamation mark triangle/warning icon ("exclamationmark.triangle").
-pub const EXCLAMATIONMARK_TRIANGLE: SystemIcon = SystemIcon::from_static("exclamationmark.triangle");
+pub const EXCLAMATIONMARK_TRIANGLE: SystemIcon =
+    SystemIcon::from_static("exclamationmark.triangle");
 
 // ============================================================================
 // Menu Icons

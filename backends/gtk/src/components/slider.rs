@@ -1,7 +1,7 @@
 //! GTK4 Slider (Scale) component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_controls::slider::SliderConfig;
 use waterui_core::{Environment, Native};

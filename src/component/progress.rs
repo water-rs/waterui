@@ -26,7 +26,6 @@ use crate::SignalExt;
 use crate::ViewExt;
 use nami::Computed;
 use nami::signal::IntoComputed;
-use nami::zip::FlattenMap;
 use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::layout::StretchAxis;
