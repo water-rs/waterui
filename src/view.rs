@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
-use waterui_core::IntoComputedF32;
+use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
@@ -552,7 +552,7 @@ pub trait ViewExt: View + Sized {
     /// let y = binding(1.0).animated();
     /// view.scale(x, y);
     /// ```
-    fn scale(self, x: impl IntoComputedF32, y: impl IntoComputedF32) -> Metadata<Scale> {
+    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy(x, y))
     }
 
@@ -574,8 +574,8 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn scale_from(
         self,
-        x: impl IntoComputedF32,
-        y: impl IntoComputedF32,
+        x: impl IntoSignalF32,
+        y: impl IntoSignalF32,
         anchor: Anchor,
     ) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy_from(x, y, anchor))
@@ -600,7 +600,7 @@ pub trait ViewExt: View + Sized {
     /// let angle = binding(0.0).animated();
     /// view.rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoComputedF32) -> Metadata<Rotation> {
+    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees(degrees))
     }
 
@@ -619,7 +619,7 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// view.rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(self, degrees: impl IntoComputedF32, anchor: Anchor) -> Metadata<Rotation> {
+    fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
     }
 
@@ -643,7 +643,7 @@ pub trait ViewExt: View + Sized {
     /// let x = binding(0.0).animated();
     /// view.offset(x, 0.0);
     /// ```
-    fn offset(self, x: impl IntoComputedF32, y: impl IntoComputedF32) -> Metadata<Offset> {
+    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
         Metadata::new(self, Offset::new(x, y))
     }
 
