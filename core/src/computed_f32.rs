@@ -6,38 +6,19 @@
 
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 
-/// A trait for types that can be converted into a `Computed<f32>`.
-///
-/// This enables ergonomic APIs where users can pass either:
-/// - Raw numeric literals: `0.5`, `1.0`, `42`
-/// - Reactive signals: `Binding<f32>`, `Computed<i32>`, etc.
-///
-/// # Example
-///
-/// ```ignore
-/// fn set_opacity(opacity: impl IntoComputedF32) {
-///     let computed: Computed<f32> = opacity.into_computed_f32();
-///     // use computed...
-/// }
-///
-/// // All of these work:
-/// set_opacity(0.5);      // f64 literal
-/// set_opacity(1.0_f32);  // f32 literal
-/// set_opacity(1);        // i32 literal
-/// set_opacity(binding);  // Binding<f32>
-/// ```
-pub trait IntoComputedF32: 'static {
-    /// Converts this value into a `Computed<f32>`.
-    fn into_computed_f32(self) -> Computed<f32>;
+pub trait IntoSignalF32 {
+    type Signal: Signal<Output = f32>;
+    fn into_signal_f32(self) -> Self::Signal;
 }
 
-impl<S> IntoComputedF32 for S
+impl<S> IntoSignalF32 for S
 where
     S: Signal + 'static,
     S::Output: IntoF32,
 {
-    fn into_computed_f32(self) -> Computed<f32> {
-        self.map(IntoF32::into_f32).into_computed()
+    type Signal = nami::map::Map<S, fn(S::Output) -> f32, f32>;
+    fn into_signal_f32(self) -> Self::Signal {
+        self.map(IntoF32::into_f32)
     }
 }
 
