@@ -36,7 +36,6 @@ use crate::{
     background::IntoBackground,
     border::Border,
     drag_drop::{DragData, Draggable, DropDestination},
-    filter::Opacity,
     gesture::{Gesture, GestureObserver, TapGesture},
     interaction::Hittable,
     metadata::{context_menu::ContextMenu, secure::Secure},
@@ -877,10 +876,10 @@ pub trait ViewExt: View + Sized {
         // Compose: opacity + hit testing
         // opacity: 0.5 when disabled, 1.0 when enabled
         // hittable: false when disabled, true when enabled
-        let opacity_value = is_disabled.map(|d| if d { 0.5 } else { 1.0 });
+        let opacity_value = is_disabled.clone().map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
 
-        Metadata::new(self, Opacity::new(opacity_value)).hittable(hittable_value)
+        self.opacity(opacity_value).hittable(hittable_value)
     }
 
     /// Starts building a view with captured state for event handlers.
