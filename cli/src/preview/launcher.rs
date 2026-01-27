@@ -9,6 +9,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use color_eyre::eyre::{Context, Result, bail};
+use smol::process::Command;
 use smol::stream::StreamExt;
 
 use super::app_client::PreviewAppClient;
@@ -163,6 +164,10 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             owns_app: false,
         });
     }
+
+    // If a preview app exists but is unresponsive, try to kill it before launching a new one.
+    // This prevents slowly consuming the entire port range with wedged processes.
+    kill_preview_support_app().await;
 
     eprintln!("[preview] No preview app running, launching...");
 
@@ -394,6 +399,56 @@ fn preview_support_path() -> PathBuf {
         .expect("home directory should exist")
         .join(".water")
         .join("preview_support")
+}
+
+fn preview_support_pid_file() -> PathBuf {
+    preview_support_path().join(".water").join("preview.pid")
+}
+
+/// Best-effort cleanup: terminate a previously launched preview support app on this host.
+///
+/// This is used to recover from wedged preview processes that still hold the TCP port.
+pub async fn kill_preview_support_app() {
+    #[cfg(unix)]
+    {
+        let pid_path = preview_support_pid_file();
+        let Ok(contents) = smol::fs::read_to_string(&pid_path).await else {
+            return;
+        };
+
+        let Some(pid_line) = contents.lines().next() else {
+            return;
+        };
+        let Ok(pid) = pid_line.trim().parse::<i32>() else {
+            return;
+        };
+
+        // Validate the pid looks like our preview support app before killing.
+        let is_preview_support = Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .arg("-o")
+            .arg("command=")
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.contains(".water/preview_support"))
+            .unwrap_or(false);
+
+        if !is_preview_support {
+            return;
+        }
+
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output()
+            .await;
+
+        let _ = smol::fs::remove_file(&pid_path).await;
+        smol::Timer::after(Duration::from_millis(250)).await;
+    }
 }
 
 /// Ensure the preview support app exists and matches the current CLI version.
