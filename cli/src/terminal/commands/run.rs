@@ -33,7 +33,7 @@ use waterui_cli::{
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
-    toolchain::{Toolchain, cmake::Cmake},
+    toolchain::{Toolchain, cmake::Cmake, sccache::Sccache},
 };
 
 #[cfg(target_os = "macos")]
@@ -290,6 +290,16 @@ pub async fn run(args: Args) -> Result<()> {
     let hot_reload = !args.no_hot_reload;
     let native_logs = args.native_logs;
 
+    // Detect sccache for compilation caching
+    let sccache = Sccache;
+    let sccache_path = match sccache.path().await {
+        Ok(path) => Some(path),
+        Err(_) => {
+            warn!("sccache not found. Build efficiency may be reduced. Install with: brew install sccache");
+            None
+        }
+    };
+
     #[cfg(target_os = "macos")]
     let mut crash_ctx = CrashReportContext::new(&project, args.platform, backend);
 
@@ -302,6 +312,7 @@ pub async fn run(args: Args) -> Result<()> {
         hot_reload,
         log_level,
         native_logs,
+        sccache_path,
     ))
     .await?;
 
@@ -403,6 +414,7 @@ async fn build_and_run(
     hot_reload: bool,
     log_level: Option<LogLevel>,
     native_logs: bool,
+    sccache_path: Option<PathBuf>,
 ) -> Result<(Running, Option<HotReloadRunner>)> {
     // Get the library target platform for this CLI platform
     let lib_platform = match cli_platform {
@@ -427,7 +439,10 @@ async fn build_and_run(
 
     // Build and package while device launches in background
     shell::status("▶", "Building...");
-    let build_options = BuildOptions::new(false, hot_reload);
+    let mut build_options = BuildOptions::new(false, hot_reload);
+    if let Some(ref sccache) = sccache_path {
+        build_options = build_options.with_sccache(sccache.clone());
+    }
 
     // Build based on backend, not platform
     match backend {
@@ -462,7 +477,7 @@ async fn build_and_run(
     let triple = lib_platform.triple();
     let runner = if hot_reload {
         shell::status("▶", "Starting hot reload...");
-        Some(HotReloadRunner::new(project, triple).await?)
+        Some(HotReloadRunner::new(project, triple, sccache_path).await?)
     } else {
         None
     };
