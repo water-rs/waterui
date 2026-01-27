@@ -13,13 +13,33 @@
 
 #![cfg(target_os = "android")]
 
+use alloc::boxed::Box;
 use core::ffi::c_void;
 
 use ash::vk;
-use wgpu_hal::Api as _;
 use wgpu_hal::api::Vulkan as VulkanApi;
 
 pub type ExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
+
+/// A wrapper that allows `*mut c_void` to be Send + Sync.
+///
+/// # Safety
+/// The caller must ensure that the pointed data is thread-safe or that
+/// the drop callback is only called from a single thread context.
+struct SendSyncPtr(*mut c_void);
+
+impl SendSyncPtr {
+    #[inline]
+    fn get(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+// SAFETY: The AHardwareBuffer drop callback is called from the wgpu resource cleanup path,
+// which may happen on any thread. The JNI implementation of the drop callback is thread-safe
+// because it simply releases a reference to the native AHardwareBuffer.
+unsafe impl Send for SendSyncPtr {}
+unsafe impl Sync for SendSyncPtr {}
 
 fn vk_to_wgpu_format(format: vk::Format) -> Option<wgpu::TextureFormat> {
     Some(match format {
@@ -67,25 +87,20 @@ pub(crate) fn import_ahardwarebuffer_as_wgpu_texture(
         return Err("AHardwareBuffer import requires non-zero dimensions");
     }
 
-    let Some(imported) = (unsafe {
-        device.as_hal::<VulkanApi, _, _>(|hal_device| {
-            hal_device.map(|hal_device| {
-                import_ahardwarebuffer_as_hal_texture(
-                    hal_device,
-                    ahb_ptr,
-                    width,
-                    height,
-                    label,
-                    ahb_drop,
-                    ahb_drop_data,
-                )
-            })
-        })
-    }) else {
+    // SAFETY: We immediately use the returned reference and don't store it beyond this scope.
+    let Some(hal_device) = (unsafe { device.as_hal::<VulkanApi>() }) else {
         return Err("AHardwareBuffer import requires Vulkan backend");
     };
 
-    let (hal_texture, format) = imported?;
+    let (hal_texture, format) = import_ahardwarebuffer_as_hal_texture(
+        &hal_device,
+        ahb_ptr,
+        width,
+        height,
+        label,
+        ahb_drop,
+        ahb_drop_data,
+    )?;
 
     let desc = wgpu::TextureDescriptor {
         label: Some(label),
@@ -110,7 +125,7 @@ pub(crate) fn import_ahardwarebuffer_as_wgpu_texture(
 }
 
 fn import_ahardwarebuffer_as_hal_texture(
-    hal_device: &wgpu_hal::vulkan::Device,
+    hal_device: &impl core::ops::Deref<Target = wgpu_hal::vulkan::Device>,
     ahb_ptr: *mut c_void,
     width: u32,
     height: u32,
@@ -119,21 +134,28 @@ fn import_ahardwarebuffer_as_hal_texture(
     ahb_drop_data: *mut c_void,
 ) -> Result<(wgpu_hal::vulkan::Texture, wgpu::TextureFormat), &'static str> {
     let raw_device = hal_device.raw_device();
-    let shared = hal_device.shared_instance();
-    let physical_device = shared.physical_device();
-    let instance = shared.raw_instance();
+    let physical_device = hal_device.raw_physical_device();
+    let instance = hal_device.shared_instance().raw_instance();
 
     let ext =
         ash::android::external_memory_android_hardware_buffer::Device::new(instance, raw_device);
 
     let mut format_props = vk::AndroidHardwareBufferFormatPropertiesANDROID::default();
-    let mut ahb_props =
-        vk::AndroidHardwareBufferPropertiesANDROID::default().push_next(&mut format_props);
 
-    unsafe {
-        ext.get_android_hardware_buffer_properties(ahb_ptr.cast(), &mut ahb_props)
-            .map_err(|_| "vkGetAndroidHardwareBufferPropertiesANDROID failed")?;
-    }
+    // Query AHB properties via Vulkan. The push_next chain borrows format_props mutably,
+    // so we extract ahb_props values before the borrow ends.
+    let (memory_type_bits, allocation_size) = {
+        let mut ahb_props =
+            vk::AndroidHardwareBufferPropertiesANDROID::default().push_next(&mut format_props);
+
+        unsafe {
+            ext.get_android_hardware_buffer_properties(ahb_ptr.cast(), &mut ahb_props)
+                .map_err(|_| "vkGetAndroidHardwareBufferPropertiesANDROID failed")?;
+        }
+
+        (ahb_props.memory_type_bits, ahb_props.allocation_size)
+    };
+    // ahb_props is dropped here, releasing the borrow on format_props.
 
     if format_props.external_format != 0 {
         return Err("AHardwareBuffer uses external format (YUV/etc), not supported for import");
@@ -183,7 +205,7 @@ fn import_ahardwarebuffer_as_hal_texture(
 
     let memory_type_index = find_memory_type_index(
         &memory_properties,
-        ahb_props.memory_type_bits,
+        memory_type_bits,
         vk::MemoryPropertyFlags::empty(),
     )
     .ok_or("No suitable Vulkan memory type for AHardwareBuffer import")?;
@@ -193,7 +215,7 @@ fn import_ahardwarebuffer_as_hal_texture(
         vk::ImportAndroidHardwareBufferInfoANDROID::default().buffer(ahb_ptr.cast());
 
     let allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(ahb_props.allocation_size)
+        .allocation_size(allocation_size)
         .memory_type_index(memory_type_index)
         .push_next(&mut dedicated_allocate_info)
         .push_next(&mut import_info);
@@ -218,10 +240,11 @@ fn import_ahardwarebuffer_as_hal_texture(
     }
 
     let raw_device_for_drop = raw_device.clone();
+    let ahb_drop_data = SendSyncPtr(ahb_drop_data);
     let drop_callback: wgpu_hal::DropCallback = Box::new(move || unsafe {
         raw_device_for_drop.destroy_image(vk_image, None);
         raw_device_for_drop.free_memory(vk_memory, None);
-        ahb_drop(ahb_drop_data);
+        ahb_drop(ahb_drop_data.get());
     });
 
     let hal_desc = wgpu_hal::TextureDescriptor {
