@@ -1,7 +1,7 @@
 //! GTK Spacer component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui_core::{Environment, Native, NativeView};
 use waterui_layout::spacer::Spacer;
 

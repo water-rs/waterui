@@ -1,5 +1,6 @@
 //! Utility functions for the CLI.
 
+use std::ffi::OsStr;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -7,7 +8,6 @@ use std::{
     process::Stdio,
     sync::atomic::{AtomicBool, Ordering},
 };
-use std::ffi::OsStr;
 
 use color_eyre::eyre;
 use smol::{process::Command, unblock};

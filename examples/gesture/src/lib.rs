@@ -40,7 +40,10 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
     vstack((
         text("Double Tap Gesture").headline(),
         "Double-tap the box to increment",
-        text!("Double tap count: {count}", count = double_tap_count.clone()),
+        text!(
+            "Double tap count: {count}",
+            count = double_tap_count.clone()
+        ),
         text("Double Tap Me!")
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
@@ -55,7 +58,10 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View {
     vstack((
         text("Long Press Gesture").headline(),
         "Press and hold for 500ms",
-        text!("Long press count: {count}", count = long_press_count.clone()),
+        text!(
+            "Long press count: {count}",
+            count = long_press_count.clone()
+        ),
         text("Long Press Me!")
             .padding()
             .background(LONG_PRESS_COLOR.with_opacity(0.3))

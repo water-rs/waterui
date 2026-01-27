@@ -1,7 +1,7 @@
 //! `SubView` implementation using GTK widget measurement.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView};
 
 /// A wrapper around a GTK widget that implements the `SubView` trait.
@@ -48,15 +48,9 @@ impl SubView for GtkSubView {
         // Use GTK's measurement API
         // -1 means "no constraint" in GTK's measure()
 
-        let for_height = proposal
-            .height
-            .map(|h| h as i32)
-            .unwrap_or(-1);
+        let for_height = proposal.height.map(|h| h as i32).unwrap_or(-1);
 
-        let for_width = proposal
-            .width
-            .map(|w| w as i32)
-            .unwrap_or(-1);
+        let for_width = proposal.width.map(|w| w as i32).unwrap_or(-1);
 
         // Measure horizontal (width)
         let (_min_width, natural_width, _min_baseline, _nat_baseline) = self
@@ -64,9 +58,8 @@ impl SubView for GtkSubView {
             .measure(gtk4::Orientation::Horizontal, for_height);
 
         // Measure vertical (height)
-        let (_min_height, natural_height, _min_baseline2, _nat_baseline2) = self
-            .widget
-            .measure(gtk4::Orientation::Vertical, for_width);
+        let (_min_height, natural_height, _min_baseline2, _nat_baseline2) =
+            self.widget.measure(gtk4::Orientation::Vertical, for_width);
 
         // Clamp to proposal if provided
         let width = match proposal.width {

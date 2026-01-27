@@ -2,8 +2,8 @@
 
 use nami::Signal;
 use waterui_core::{Environment, View};
-use waterui_graphics::color::Srgb;
 use waterui_graphics::GpuSurface;
+use waterui_graphics::color::Srgb;
 
 use crate::charts::SignalRenderer;
 use crate::data::DepthData;

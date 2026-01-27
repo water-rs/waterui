@@ -210,30 +210,45 @@ impl AnimationConfig {
     /// Creates a linear animation.
     #[must_use]
     pub const fn linear(duration: Duration) -> Self {
-        Self { duration, easing: EasingType::Linear }
+        Self {
+            duration,
+            easing: EasingType::Linear,
+        }
     }
 
     /// Creates an ease-in animation.
     #[must_use]
     pub const fn ease_in(duration: Duration) -> Self {
-        Self { duration, easing: EasingType::EaseIn }
+        Self {
+            duration,
+            easing: EasingType::EaseIn,
+        }
     }
 
     /// Creates an ease-out animation.
     #[must_use]
     pub const fn ease_out(duration: Duration) -> Self {
-        Self { duration, easing: EasingType::EaseOut }
+        Self {
+            duration,
+            easing: EasingType::EaseOut,
+        }
     }
 
     /// Creates an ease-in-out animation.
     #[must_use]
     pub const fn ease_in_out(duration: Duration) -> Self {
-        Self { duration, easing: EasingType::EaseInOut }
+        Self {
+            duration,
+            easing: EasingType::EaseInOut,
+        }
     }
 
     /// Creates a spring animation.
     #[must_use]
     pub const fn spring(duration: Duration) -> Self {
-        Self { duration, easing: EasingType::Spring }
+        Self {
+            duration,
+            easing: EasingType::Spring,
+        }
     }
 }

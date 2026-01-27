@@ -103,7 +103,9 @@ impl IntoFFI for Animation {
 /// # Safety
 /// The metadata pointer must be valid and point to a properly initialized metadata object.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_get_animation(metadata: *const WuiWatcherMetadata) -> WuiAnimation {
+pub unsafe extern "C" fn waterui_get_animation(
+    metadata: *const WuiWatcherMetadata,
+) -> WuiAnimation {
     unsafe {
         (*metadata)
             .try_get::<Animation>()

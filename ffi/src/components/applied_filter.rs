@@ -21,20 +21,16 @@ use alloc::vec;
 
 // Platform-specific imports for Metal HAL texture import
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-use {
-    metal::foreign_types::ForeignType,
-    metal::MTLTextureType,
-    wgpu_hal::api::Metal as MetalApi,
-};
+use {metal::MTLTextureType, metal::foreign_types::ForeignType, wgpu_hal::api::Metal as MetalApi};
 
 use waterui_graphics::filter_view::{AppliedFilter, FilterContext, FilterInput, FilterOutput};
 use waterui_graphics::shared_context::shared_context;
 
-use crate::{IntoFFI, WuiAnyView};
+use super::view_effect::WuiExternalDropFn;
 use super::view_effect::WuiInputType;
 #[cfg(target_os = "android")]
 use crate::components::android_ahb;
-use super::view_effect::WuiExternalDropFn;
+use crate::{IntoFFI, WuiAnyView};
 
 /// Callback type for async completion notifications.
 pub type WuiCallback = unsafe extern "C" fn(user_data: *mut c_void);
@@ -104,11 +100,7 @@ pub struct WuiAppliedFilterState {
     output_height: u32,
 }
 
-fn ensure_dimensions(
-    state: &mut WuiAppliedFilterState,
-    width: u32,
-    height: u32,
-) -> bool {
+fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32) -> bool {
     if width == 0 || height == 0 {
         return false;
     }
@@ -146,9 +138,7 @@ fn ensure_dimensions(
     if needs_resize
         && !try_configure_surface(&state.output_surface, &state.device, &state.output_config)
     {
-        tracing::warn!(
-            "[AppliedFilter] resize reconfigure failed ({width}x{height})"
-        );
+        tracing::warn!("[AppliedFilter] resize reconfigure failed ({width}x{height})");
         return false;
     }
 
@@ -231,7 +221,9 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
         let pipeline_cache = guard.pipeline_cache.clone();
 
         // Create output surface
-        let Some(output_surface) = super::gpu_surface::create_surface_from_layer(instance, output_layer) else {
+        let Some(output_surface) =
+            super::gpu_surface::create_surface_from_layer(instance, output_layer)
+        else {
             tracing::error!("[AppliedFilter] Failed to create output surface from layer");
             return core::ptr::null_mut();
         };
@@ -247,11 +239,18 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
         let format = if surface_caps.formats.contains(&preferred) {
             preferred
         } else {
-            tracing::warn!("[AppliedFilter] Preferred format {:?} not supported, using {:?}", preferred, surface_caps.formats[0]);
+            tracing::warn!(
+                "[AppliedFilter] Preferred format {:?} not supported, using {:?}",
+                preferred,
+                surface_caps.formats[0]
+            );
             surface_caps.formats[0]
         };
 
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
             wgpu::PresentMode::Fifo
         } else {
             surface_caps.present_modes[0]
@@ -280,7 +279,9 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
 
         tracing::info!(
             "[AppliedFilter] Configuring output: {}x{} {:?}",
-            output_width, output_height, format
+            output_width,
+            output_height,
+            format
         );
 
         if !try_configure_surface(&output_surface, &device, &output_config) {
@@ -327,8 +328,8 @@ pub unsafe extern "C" fn waterui_applied_filter_init(
             dimension: wgpu::TextureDimension::D2,
             format: capture_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
-                 | wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -460,7 +461,10 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
 ) -> WuiAppliedFilterRenderResult {
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if state.is_null() || width == 0 || height == 0 {
-            return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         }
 
         let state = unsafe { &mut *state };
@@ -468,32 +472,56 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         // Verify setup was called
         if !state.initialized {
             tracing::error!("[AppliedFilter] render called before setup completed");
-            return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         }
 
         if !ensure_dimensions(state, width, height) {
-            return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         }
 
         // Get output texture
         let output = match state.output_surface.get_current_texture() {
             Ok(o) => o,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-                    return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+                if !try_configure_surface(
+                    &state.output_surface,
+                    &state.device,
+                    &state.output_config,
+                ) {
+                    return WuiAppliedFilterRenderResult {
+                        success: false,
+                        needs_redraw: false,
+                    };
                 }
                 match state.output_surface.get_current_texture() {
                     Ok(o) => o,
-                    Err(_) => return WuiAppliedFilterRenderResult { success: false, needs_redraw: false },
+                    Err(_) => {
+                        return WuiAppliedFilterRenderResult {
+                            success: false,
+                            needs_redraw: false,
+                        };
+                    }
                 }
             }
             Err(wgpu::SurfaceError::Timeout) => {
                 // Skip frame but success
-                return WuiAppliedFilterRenderResult { success: true, needs_redraw: false };
+                return WuiAppliedFilterRenderResult {
+                    success: true,
+                    needs_redraw: false,
+                };
             }
             Err(e) => {
                 tracing::error!("[AppliedFilter] render failed: {e}");
-                return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+                return WuiAppliedFilterRenderResult {
+                    success: false,
+                    needs_redraw: false,
+                };
             }
         };
 
@@ -504,7 +532,10 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
             capture
         } else {
             tracing::error!("[AppliedFilter] no input texture available");
-            return WuiAppliedFilterRenderResult { success: false, needs_redraw: false };
+            return WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            };
         };
 
         let input_format = if state.imported_texture.is_some() {
@@ -551,14 +582,20 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         // Present
         output.present();
 
-        WuiAppliedFilterRenderResult { success: true, needs_redraw }
+        WuiAppliedFilterRenderResult {
+            success: true,
+            needs_redraw,
+        }
     }));
 
     match render_result {
         Ok(result) => result,
         Err(_) => {
             tracing::error!("[AppliedFilter] render panicked");
-            WuiAppliedFilterRenderResult { success: false, needs_redraw: false }
+            WuiAppliedFilterRenderResult {
+                success: false,
+                needs_redraw: false,
+            }
         }
     }
 }

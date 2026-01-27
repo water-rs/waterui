@@ -166,8 +166,8 @@ pub fn col(label: impl Into<Text>, rows: impl Views<View = Text> + 'static) -> T
 // ============================================================================
 
 use crate::ViewExt;
-use waterui_graphics::color::Grey;
 use waterui_core::dynamic::watch;
+use waterui_graphics::color::Grey;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack};
 

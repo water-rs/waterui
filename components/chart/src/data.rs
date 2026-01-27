@@ -47,7 +47,14 @@ pub struct Candle {
 impl Candle {
     /// Creates a new candle.
     #[must_use]
-    pub const fn new(timestamp: f32, open: f32, high: f32, low: f32, close: f32, volume: f32) -> Self {
+    pub const fn new(
+        timestamp: f32,
+        open: f32,
+        high: f32,
+        low: f32,
+        close: f32,
+        volume: f32,
+    ) -> Self {
         Self {
             timestamp,
             open,
@@ -80,7 +87,10 @@ impl DepthLevel {
     /// Creates a new depth level.
     #[must_use]
     pub const fn new(price: f32, cumulative_volume: f32) -> Self {
-        Self { price, cumulative_volume }
+        Self {
+            price,
+            cumulative_volume,
+        }
     }
 }
 
@@ -156,7 +166,12 @@ impl HeatmapCell {
     /// Creates a new heatmap cell.
     #[must_use]
     pub const fn new(row: u32, col: u32, value: f32) -> Self {
-        Self { row, col, value, _pad: 0.0 }
+        Self {
+            row,
+            col,
+            value,
+            _pad: 0.0,
+        }
     }
 }
 
@@ -199,17 +214,28 @@ impl HeatmapData {
             }
         }
 
-        Self { rows, cols, values, min_value, max_value }
+        Self {
+            rows,
+            cols,
+            values,
+            min_value,
+            max_value,
+        }
     }
 
     /// Creates a new heatmap from row-major values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>) -> Self {
-        let (min_value, max_value) = values.iter().fold(
-            (f32::MAX, f32::MIN),
-            |(min, max), &v| (min.min(v), max.max(v)),
-        );
-        Self { rows, cols, values, min_value, max_value }
+        let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
+            (min.min(v), max.max(v))
+        });
+        Self {
+            rows,
+            cols,
+            values,
+            min_value,
+            max_value,
+        }
     }
 
     /// Returns the value at (row, col).
@@ -255,10 +281,9 @@ impl ContourData {
     /// Generates evenly-spaced contour levels between min and max values.
     #[must_use]
     pub fn new(rows: u32, cols: u32, values: Vec<f32>, num_levels: usize) -> Self {
-        let (min_value, max_value) = values.iter().fold(
-            (f32::MAX, f32::MIN),
-            |(min, max), &v| (min.min(v), max.max(v)),
-        );
+        let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
+            (min.min(v), max.max(v))
+        });
 
         // Generate evenly-spaced levels
         let range = max_value - min_value;
@@ -270,17 +295,30 @@ impl ContourData {
             Vec::new()
         };
 
-        Self { rows, cols, values, levels, min_value, max_value }
+        Self {
+            rows,
+            cols,
+            values,
+            levels,
+            min_value,
+            max_value,
+        }
     }
 
     /// Creates contour data with explicit contour levels.
     #[must_use]
     pub fn with_levels(rows: u32, cols: u32, values: Vec<f32>, levels: Vec<f32>) -> Self {
-        let (min_value, max_value) = values.iter().fold(
-            (f32::MAX, f32::MIN),
-            |(min, max), &v| (min.min(v), max.max(v)),
-        );
-        Self { rows, cols, values, levels, min_value, max_value }
+        let (min_value, max_value) = values.iter().fold((f32::MAX, f32::MIN), |(min, max), &v| {
+            (min.min(v), max.max(v))
+        });
+        Self {
+            rows,
+            cols,
+            values,
+            levels,
+            min_value,
+            max_value,
+        }
     }
 
     /// Returns the value at (row, col).
@@ -391,7 +429,11 @@ impl RadarSeries {
     pub fn color_hex(mut self, hex: &str) -> Self {
         // Parse hex color directly
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' { 1 } else { 0 };
+        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
+            1
+        } else {
+            0
+        };
         if bytes.len() - offset >= 6 {
             let r = parse_hex_byte(bytes, offset);
             let g = parse_hex_byte(bytes, offset + 2);
@@ -501,13 +543,23 @@ impl GeoPolygon {
         } else {
             Vec::new()
         };
-        Self { id, value, vertices, indices }
+        Self {
+            id,
+            value,
+            vertices,
+            indices,
+        }
     }
 
     /// Creates a polygon with pre-computed triangle indices.
     #[must_use]
     pub fn with_indices(id: u32, value: f32, vertices: Vec<[f32; 2]>, indices: Vec<u32>) -> Self {
-        Self { id, value, vertices, indices }
+        Self {
+            id,
+            value,
+            vertices,
+            indices,
+        }
     }
 
     /// Returns the bounding box [min_x, min_y, max_x, max_y].
@@ -547,10 +599,9 @@ impl ChoroplethData {
     /// Creates new choropleth data from polygons.
     #[must_use]
     pub fn new(polygons: Vec<GeoPolygon>) -> Self {
-        let (min_value, max_value) = polygons.iter().fold(
-            (f32::MAX, f32::MIN),
-            |(min, max), p| (min.min(p.value), max.max(p.value)),
-        );
+        let (min_value, max_value) = polygons.iter().fold((f32::MAX, f32::MIN), |(min, max), p| {
+            (min.min(p.value), max.max(p.value))
+        });
         Self {
             polygons,
             min_value,
@@ -785,7 +836,11 @@ impl AreaSeries {
     #[must_use]
     pub fn color_hex(mut self, hex: &str) -> Self {
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' { 1 } else { 0 };
+        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
+            1
+        } else {
+            0
+        };
         if bytes.len() - offset >= 6 {
             let r = parse_hex_byte(bytes, offset);
             let g = parse_hex_byte(bytes, offset + 2);
@@ -900,7 +955,12 @@ impl DataBounds {
     /// Creates new bounds.
     #[must_use]
     pub const fn new(min_x: f32, max_x: f32, min_y: f32, max_y: f32) -> Self {
-        Self { min_x, max_x, min_y, max_y }
+        Self {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        }
     }
 
     /// Computes bounds from data points.
@@ -999,7 +1059,11 @@ impl GaugeRegion {
     #[must_use]
     pub fn hex(threshold: f32, hex: &str) -> Self {
         let bytes = hex.as_bytes();
-        let offset = if !bytes.is_empty() && bytes[0] == b'#' { 1 } else { 0 };
+        let offset = if !bytes.is_empty() && bytes[0] == b'#' {
+            1
+        } else {
+            0
+        };
         let (r, g, b) = if bytes.len() - offset >= 6 {
             (
                 parse_hex_byte(bytes, offset) as f32 / 255.0,
@@ -1052,7 +1116,11 @@ impl GaugeData {
     pub fn region(mut self, region: GaugeRegion) -> Self {
         self.regions.push(region);
         // Sort by threshold
-        self.regions.sort_by(|a, b| a.threshold.partial_cmp(&b.threshold).unwrap_or(core::cmp::Ordering::Equal));
+        self.regions.sort_by(|a, b| {
+            a.threshold
+                .partial_cmp(&b.threshold)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         self
     }
 
@@ -1306,4 +1374,3 @@ impl_constant!(PieData);
 impl_constant!(ScatterData);
 impl_constant!(CandlestickData);
 impl_constant!(BubbleData);
-

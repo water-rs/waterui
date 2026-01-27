@@ -20,12 +20,12 @@ use nami::{
     Computed,
     collection::{Collection, List},
 };
-use waterui_graphics::color::Color;
 use waterui_controls::button;
 use waterui_core::{
     AnyView, Environment, Metadata, Retain, View, env::use_env, handler::ViewBuilder,
     impl_extractor, layout::StretchAxis, raw_view,
 };
+use waterui_graphics::color::Color;
 
 /// A view that combines a navigation bar with content.
 ///
