@@ -11,8 +11,8 @@ use syntect::{
     parsing::{SyntaxReference, SyntaxSet},
 };
 use two_face::syntax::extra_newlines;
-use waterui_graphics::color::Srgb;
 use waterui_core::Str;
+use waterui_graphics::color::Srgb;
 
 use crate::styled::{Style, StyledStr};
 

@@ -3,9 +3,9 @@
 //! This module provides utility functions for building and packaging Apple apps.
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::{env, fmt::Write};
-use std::ffi::OsString;
 
 use color_eyre::eyre::{self, bail};
 use smol::fs;
@@ -204,9 +204,9 @@ pub async fn package_apple(
     let source_lib = lib_dir.join(format!("lib{lib_name}.a"));
 
     // Get SDK name - must be an Apple platform
-    let sdk_name = platform.sdk_name().ok_or_else(|| {
-        eyre::eyre!("Platform {:?} is not an Apple platform", platform)
-    })?;
+    let sdk_name = platform
+        .sdk_name()
+        .ok_or_else(|| eyre::eyre!("Platform {:?} is not an Apple platform", platform))?;
 
     // Xcode uses "Debug-iphonesimulator" for simulators, "Debug" for macOS
     let products_config = if sdk_name == "macosx" {
@@ -300,7 +300,8 @@ async fn copy_assets_and_fonts(project: &Project, dest_dir: &Path) -> eyre::Resu
 }
 
 /// Template for WaterUIFonts.swift
-const WATERUI_FONTS_TEMPLATE: &str = include_str!("../templates/apple/AppName/WaterUIFonts.swift.tpl");
+const WATERUI_FONTS_TEMPLATE: &str =
+    include_str!("../templates/apple/AppName/WaterUIFonts.swift.tpl");
 
 /// Generate WaterUIFonts.swift file for registering custom fonts.
 async fn generate_font_registration_swift(

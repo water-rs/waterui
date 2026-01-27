@@ -170,7 +170,9 @@ impl Kotlin {
         if cfg!(target_os = "linux") {
             if let Ok(home) = env::var("HOME") {
                 let paths = [
-                    format!("{home}/.local/share/JetBrains/Toolbox/apps/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
+                    format!(
+                        "{home}/.local/share/JetBrains/Toolbox/apps/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"
+                    ),
                     format!("{home}/android-studio/plugins/Kotlin/kotlinc/bin/kotlinc"),
                 ];
                 for path in paths {

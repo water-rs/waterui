@@ -23,14 +23,14 @@
 //! ```
 
 use nami::signal::IntoComputed;
-use waterui_graphics::color::{Color, Srgb};
 use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
+use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::BackgroundView;
 use waterui_str::Str;
 
 use crate::gradient::{
-    AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
-    RadialGradient, UnitPoint,
+    AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex, RadialGradient,
+    UnitPoint,
 };
 
 /// A material background metadata for native blur effects.
@@ -186,7 +186,8 @@ impl Background {
     /// // Subtle overlay blur
     /// overlay.background(Material::UltraThin);
     /// ```
-    pub fn material(material: Material) -> Self {
+    #[must_use] 
+    pub const fn material(material: Material) -> Self {
         Self::Material(material)
     }
 
@@ -269,6 +270,7 @@ impl Background {
     /// * `width` - Number of columns in the vertex grid
     /// * `height` - Number of rows in the vertex grid
     /// * `vertices` - Vertices arranged row by row (width × height total)
+    #[must_use] 
     pub fn mesh_gradient(width: u32, height: u32, vertices: Vec<MeshVertex>) -> Self {
         Self::Gradient(Gradient::Mesh(MeshGradient::new(width, height, vertices)))
     }
@@ -304,4 +306,3 @@ impl From<Gradient> for Background {
         Self::Gradient(gradient)
     }
 }
-

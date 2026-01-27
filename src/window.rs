@@ -25,7 +25,12 @@ use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size, stack::zstack};
 use waterui_str::Str;
 
-use crate::{ViewExt, background::{Material, MaterialBackground}, prelude::FullScreenOverlayManager, snackbar::SnackbarManager};
+use crate::{
+    ViewExt,
+    background::{Material, MaterialBackground},
+    prelude::FullScreenOverlayManager,
+    snackbar::SnackbarManager,
+};
 
 /// Represents a window in the UI.
 #[derive(Debug)]
@@ -311,7 +316,7 @@ impl View for Window {
     fn body(self, env: &Environment) -> impl View {
         self.show(env);
         // Return empty view - the window is shown separately
-        ()
+        ();
     }
 }
 
@@ -346,7 +351,6 @@ where
         }
     })
 }
-
 
 /// A handle to control a window after it has been shown.
 #[derive(Debug, Clone)]

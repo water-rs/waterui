@@ -9,16 +9,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
+    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -120,10 +120,12 @@ impl LineChartRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/line.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Line Chart Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Line Chart Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -278,11 +280,12 @@ impl GpuRenderer for LineChartRenderer {
 
         if self.data.len() < 2 {
             // Need at least 2 points to draw a line - clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Line Chart Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Line Chart Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Line Chart Clear Pass"),
@@ -303,7 +306,8 @@ impl GpuRenderer for LineChartRenderer {
         }
 
         // Update zoom/pan state from gesture input
-        self.zoom_pan.update(&frame.gesture, frame.width as f32, frame.height as f32);
+        self.zoom_pan
+            .update(&frame.gesture, frame.width as f32, frame.height as f32);
 
         // Transform bounds based on zoom/pan state
         let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
@@ -327,11 +331,24 @@ impl GpuRenderer for LineChartRenderer {
                     self.animation.time,
                     self.animation.progress,
                     self.animation.easing as f32,
-                    if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                    if self.animation.entry_active > 0 {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ),
                 pointer: if let Some((x, y)) = frame.pointer_normalized() {
                     if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
-                        glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                        glam::Vec4::new(
+                            px,
+                            py,
+                            if frame.pointer.hit.is_some() {
+                                1.0
+                            } else {
+                                0.0
+                            },
+                            0.0,
+                        )
                     } else {
                         glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
                     }
@@ -345,7 +362,11 @@ impl GpuRenderer for LineChartRenderer {
             fill_opacity: self.fill_opacity,
             point_count: self.data.len() as f32,
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render line segments
         let mut encoder = frame
@@ -439,10 +460,10 @@ impl ChartRenderer for LineChartRenderer {
         let mut closest_dist = f32::MAX;
 
         for (i, data_point) in self.data.iter().enumerate() {
-            let normalized_x =
-                (data_point.x - visible_bounds.min_x) / (visible_bounds.max_x - visible_bounds.min_x);
-            let normalized_y =
-                (data_point.y - visible_bounds.min_y) / (visible_bounds.max_y - visible_bounds.min_y);
+            let normalized_x = (data_point.x - visible_bounds.min_x)
+                / (visible_bounds.max_x - visible_bounds.min_x);
+            let normalized_y = (data_point.y - visible_bounds.min_y)
+                / (visible_bounds.max_y - visible_bounds.min_y);
 
             let dx = chart_x - normalized_x;
             let dy = chart_y - normalized_y;

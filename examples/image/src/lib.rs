@@ -45,7 +45,7 @@ fn generate_checkerboard(width: u32, height: u32, square_size: u32) -> Vec<u8> {
             pixels.push(color); // R
             pixels.push(color); // G
             pixels.push(color); // B
-            pixels.push(255);   // A
+            pixels.push(255); // A
         }
     }
 
@@ -180,8 +180,7 @@ fn photo_section() -> impl View {
     vstack((
         text("Photo from URL").headline(),
         "Async loading with blur filter",
-        Photo::new("https://picsum.photos/200/150")
-            .blur(2.0),
+        Photo::new("https://picsum.photos/200/150").blur(2.0),
     ))
     .padding()
 }
@@ -207,11 +206,9 @@ fn main() -> impl View {
             text("GPU Image Processing").title(),
             "Demonstrating filtrate GPU filters on Image and Photo",
             Divider,
-
             // Simple test - just one Image
             text("Image Test").headline(),
             original_image_section(),
-
             // Photo test
             text("Photo Test").headline(),
             photo_section(),

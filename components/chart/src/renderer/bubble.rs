@@ -8,16 +8,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{BubblePoint, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -127,10 +127,12 @@ impl BubbleRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/bubble.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bubble Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Bubble Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -286,11 +288,12 @@ impl GpuRenderer for BubbleRenderer {
             .update(&frame.gesture, frame.width as f32, frame.height as f32);
 
         if self.data.is_empty() {
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Bubble Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Bubble Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Bubble Clear Pass"),
@@ -330,7 +333,11 @@ impl GpuRenderer for BubbleRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             default_color: glam::Vec4::new(
                 self.default_color.red,
@@ -345,7 +352,11 @@ impl GpuRenderer for BubbleRenderer {
                 self.size_bounds.1,
             ),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         let mut encoder = frame
             .device

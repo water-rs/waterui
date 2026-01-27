@@ -7,16 +7,16 @@ use core::future::Future;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, HeatmapData};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.05;
 
@@ -91,10 +91,12 @@ impl HeatmapRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/heatmap.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Heatmap Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Heatmap Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -184,7 +186,11 @@ impl GpuRenderer for HeatmapRenderer {
             self.data.values.clone()
         };
 
-        self.value_buffer = Some(create_storage_buffer(ctx, "Heatmap Values", &initial_values));
+        self.value_buffer = Some(create_storage_buffer(
+            ctx,
+            "Heatmap Values",
+            &initial_values,
+        ));
 
         // Create bind group
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
@@ -222,11 +228,12 @@ impl GpuRenderer for HeatmapRenderer {
 
         if cell_count == 0 {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Heatmap Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Heatmap Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Heatmap Clear Pass"),
@@ -264,7 +271,11 @@ impl GpuRenderer for HeatmapRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
                 if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
@@ -279,7 +290,11 @@ impl GpuRenderer for HeatmapRenderer {
                         glam::Vec4::new(
                             padded_x,
                             padded_y,
-                            if frame.pointer.hit.is_some() { 1.0 } else { 0.0 },
+                            if frame.pointer.hit.is_some() {
+                                1.0
+                            } else {
+                                0.0
+                            },
                             0.0,
                         )
                     } else {
@@ -291,9 +306,18 @@ impl GpuRenderer for HeatmapRenderer {
             } else {
                 glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
             },
-            zoom_pan: glam::Vec4::new(self.zoom_pan.scale, self.zoom_pan.offset.x, self.zoom_pan.offset.y, 0.0),
+            zoom_pan: glam::Vec4::new(
+                self.zoom_pan.scale,
+                self.zoom_pan.offset.x,
+                self.zoom_pan.offset.y,
+                0.0,
+            ),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render heatmap
         let mut encoder = frame

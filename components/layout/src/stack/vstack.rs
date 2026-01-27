@@ -130,7 +130,6 @@ impl Layout for VStackLayout {
             })
             .collect();
 
-
         // Calculate stretch child height - only for main-axis (vertically) stretching children
         let main_axis_stretch_count = measurements
             .iter()
@@ -483,14 +482,20 @@ mod tests {
         // With ZERO proposal (min size query), toggle's width SHOULD be included
         let min_size = layout.size_that_fits(ProposalSize::ZERO, &children);
         // Width: max of ALL children = max(50, 200, 80) = 200
-        assert!((min_size.width - 200.0).abs() < f32::EPSILON, 
-            "Min size query should include stretching children's widths, got {}", min_size.width);
-        
+        assert!(
+            (min_size.width - 200.0).abs() < f32::EPSILON,
+            "Min size query should include stretching children's widths, got {}",
+            min_size.width
+        );
+
         // Verify existing behavior: UNSPECIFIED excludes stretching children
         let children2: Vec<&dyn SubView> = vec![&mut label, &mut toggle, &mut button];
         let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children2);
         // Width: max of non-stretching children = max(50, 80) = 80
-        assert!((intrinsic_size.width - 80.0).abs() < f32::EPSILON,
-            "Unspecified proposal should exclude stretching children's widths, got {}", intrinsic_size.width);
+        assert!(
+            (intrinsic_size.width - 80.0).abs() < f32::EPSILON,
+            "Unspecified proposal should exclude stretching children's widths, got {}",
+            intrinsic_size.width
+        );
     }
 }

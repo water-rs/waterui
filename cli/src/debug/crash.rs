@@ -125,7 +125,10 @@ pub async fn find_macos_ips_crash_report_since(
     let crash_dir = PathBuf::from(home).join("Library/Logs/DiagnosticReports");
 
     if !crash_dir.exists() {
-        crash_debug!("Crash report directory does not exist: {}", crash_dir.display());
+        crash_debug!(
+            "Crash report directory does not exist: {}",
+            crash_dir.display()
+        );
         return None;
     }
 
@@ -152,7 +155,10 @@ pub async fn find_macos_ips_crash_report_since(
         // scan recent `.ips` reports and filter by bundle ID / PID.
         crash_debug!("No match with process pattern, falling back to *.ips");
         let candidates = list_recent_ips_reports(&crash_dir, "*.ips").await;
-        crash_debug!("Found {} candidates with *.ips pattern", candidates.as_ref().map_or(0, |v| v.len()));
+        crash_debug!(
+            "Found {} candidates with *.ips pattern",
+            candidates.as_ref().map_or(0, |v| v.len())
+        );
         if let Some(c) = candidates {
             best = pick_best_ips_report(c, app_identifier, pid, since).await;
         }
@@ -289,7 +295,11 @@ async fn parse_ips_report(path: &Path) -> Option<IpsReport> {
     let crash = iter.next()?.ok()?;
 
     let timestamp_str = header.get("timestamp")?.as_str()?;
-    crash_debug!("Parsing timestamp from {}: '{}'", path.display(), timestamp_str);
+    crash_debug!(
+        "Parsing timestamp from {}: '{}'",
+        path.display(),
+        timestamp_str
+    );
     let time = parse_ips_timestamp(timestamp_str);
     if time.is_none() {
         crash_debug!("Failed to parse timestamp: '{}'", timestamp_str);

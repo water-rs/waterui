@@ -9,9 +9,9 @@ use crate::shell::{self, display_output};
 use crate::{error, header, success};
 use waterui_cli::{
     android::platform::build_android,
+    android::toolchain::{AndroidNdk, AndroidSdk},
     apple::platform::build_rust_lib,
     apple::toolchain::{AppleSdk, Xcode},
-    android::toolchain::{AndroidNdk, AndroidSdk},
     build::BuildOptions,
     platform::TargetPlatform as LibTargetPlatform,
     project::Project,
@@ -114,9 +114,10 @@ pub async fn run(args: Args) -> Result<()> {
             }
 
             // iOS Simulator - uses host architecture by default
-            (TargetPlatform::IosSimulator, None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64)) => {
-                build_rust_lib(&project, LibTargetPlatform::IOSSimulator, build_options).await
-            }
+            (
+                TargetPlatform::IosSimulator,
+                None | Some(TargetArch::Arm64) | Some(TargetArch::X86_64),
+            ) => build_rust_lib(&project, LibTargetPlatform::IOSSimulator, build_options).await,
             (TargetPlatform::IosSimulator, Some(arch)) => {
                 bail!(
                     "iOS Simulator only supports arm64 or x86_64, not {:?}",

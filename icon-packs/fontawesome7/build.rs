@@ -27,8 +27,7 @@ use std::path::{Path, PathBuf};
 const FA_VERSION: &str = "7.1.0";
 
 /// Download URL for the desktop release (contains icons.json with SVG paths)
-const FA_DESKTOP_URL: &str =
-    "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip";
+const FA_DESKTOP_URL: &str = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip";
 
 /// Icon metadata from icons.json
 #[derive(Debug, Deserialize)]
@@ -81,8 +80,8 @@ fn main() {
     };
 
     // Parse icons.json
-    let icons: HashMap<String, IconData> = serde_json::from_str(&icons_json)
-        .expect("Failed to parse icons.json");
+    let icons: HashMap<String, IconData> =
+        serde_json::from_str(&icons_json).expect("Failed to parse icons.json");
 
     // Generate each style module
     for style in &["brands", "regular", "solid"] {
@@ -114,10 +113,7 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
         _ => "Font Awesome 7 Free Solid",
     };
 
-    output.push_str(&format!(
-        "/// Font family name for {} icons.\n",
-        style
-    ));
+    output.push_str(&format!("/// Font family name for {} icons.\n", style));
     output.push_str(&format!(
         "pub const FONT_FAMILY: &str = \"{}\";\n\n",
         font_family
@@ -133,8 +129,8 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
     for (icon_name, icon_data) in style_icons {
         let const_name = to_const_name(icon_name);
         let fn_name = to_fn_name(icon_name);
-        let codepoint = u32::from_str_radix(&icon_data.unicode, 16)
-            .expect("Invalid unicode codepoint");
+        let codepoint =
+            u32::from_str_radix(&icon_data.unicode, 16).expect("Invalid unicode codepoint");
 
         // Webfont constant
         output.push_str(&format!("/// `{}` icon as webfont glyph.\n", icon_name));
@@ -187,8 +183,7 @@ fn get_icons_json(cache_dir: &Path, is_docs_rs: bool) -> Result<String, String> 
 
     // Try cached version first
     if cache_file.exists() {
-        return fs::read_to_string(&cache_file)
-            .map_err(|e| format!("Failed to read cache: {}", e));
+        return fs::read_to_string(&cache_file).map_err(|e| format!("Failed to read cache: {}", e));
     }
 
     // Only download on docs.rs
@@ -207,14 +202,15 @@ fn get_icons_json(cache_dir: &Path, is_docs_rs: bool) -> Result<String, String> 
 /// Download icons.json (for docs.rs builds).
 fn download_icons_json(cache_dir: &Path, cache_file: &Path) -> Result<String, String> {
     // Download and extract to a temp directory
-    let mut archive = arkiv::Archive::download(FA_DESKTOP_URL)
-        .map_err(|e| format!("Download failed: {}", e))?;
+    let mut archive =
+        arkiv::Archive::download(FA_DESKTOP_URL).map_err(|e| format!("Download failed: {}", e))?;
 
     // Create temp directory for extraction
     let temp_dir = cache_dir.join("temp_extract");
     fs::create_dir_all(&temp_dir).ok();
 
-    archive.unpack(&temp_dir)
+    archive
+        .unpack(&temp_dir)
         .map_err(|e| format!("Extract failed: {}", e))?;
 
     // Find and read icons.json
@@ -257,12 +253,11 @@ fn to_const_name(name: &str) -> String {
 }
 
 const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
-    "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
-    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
-    "typeof", "unsized", "virtual", "yield",
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
 ];
 
 fn to_fn_name(name: &str) -> String {

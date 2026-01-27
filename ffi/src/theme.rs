@@ -55,8 +55,8 @@ use nami::SignalExt;
 use waterui::theme::{
     self, color, install_color_scheme, install_color_signal, install_font_signal,
 };
-use waterui_graphics::color::ResolvedColor;
 use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title};
 
 // ============================================================================

@@ -2,8 +2,8 @@
 
 use std::cell::RefCell;
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui_controls::button::ButtonConfig;
 use waterui_core::{Environment, Native};
 

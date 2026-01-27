@@ -1,20 +1,14 @@
 use crate::audio::{AudioCapture, SAMPLES_COUNT};
 use crate::theme::WaveformTheme;
-use waterui_core::{
-    binding,
-    env::Environment,
-    Binding,
-    Signal,
-    view::View,
-};
 use encase::{ShaderSize, ShaderType, UniformBuffer};
-use waterui_graphics::{
-    color::Color,
-    wgpu::{self, util::DeviceExt},
-    GpuContext, GpuFrame, GpuRenderer, GpuSurface,
-};
 use std::borrow::Cow;
 use std::sync::OnceLock;
+use waterui_core::{Binding, Signal, binding, env::Environment, view::View};
+use waterui_graphics::{
+    GpuContext, GpuFrame, GpuRenderer, GpuSurface,
+    color::Color,
+    wgpu::{self, util::DeviceExt},
+};
 
 // Singleton audio capture shared across all visualizers
 static AUDIO_CAPTURE: OnceLock<AudioCapture> = OnceLock::new();
@@ -202,7 +196,7 @@ impl WaveformRenderer {
 impl GpuRenderer for WaveformRenderer {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
-        
+
         // 1. Create Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Waveform Visualizer Shader"),
@@ -332,19 +326,22 @@ impl GpuRenderer for WaveformRenderer {
 
         // 1. Update Audio Samples with Smoothing
         {
-             let capture = get_audio_capture();
-             if let Ok(audio_samples) = capture.samples.lock() {
-                 let smoothing_factor = 0.3;
-                 for (i, &sample) in audio_samples.iter().enumerate() {
-                     if i < SAMPLES_COUNT {
-                         self.smoothed_samples[i] += (sample - self.smoothed_samples[i]) * smoothing_factor;
-                     }
-                 }
-             }
-             
-             frame
-                .queue
-                .write_buffer(samples_buffer, 0, bytemuck::cast_slice(&self.smoothed_samples));
+            let capture = get_audio_capture();
+            if let Ok(audio_samples) = capture.samples.lock() {
+                let smoothing_factor = 0.3;
+                for (i, &sample) in audio_samples.iter().enumerate() {
+                    if i < SAMPLES_COUNT {
+                        self.smoothed_samples[i] +=
+                            (sample - self.smoothed_samples[i]) * smoothing_factor;
+                    }
+                }
+            }
+
+            frame.queue.write_buffer(
+                samples_buffer,
+                0,
+                bytemuck::cast_slice(&self.smoothed_samples),
+            );
         }
 
         // 2. Update Uniforms using encase
@@ -360,7 +357,9 @@ impl GpuRenderer for WaveformRenderer {
             glow_color: glam::Vec3::from_array(self.config.glow_color),
         };
         let mut uniform_data = UniformBuffer::new(Vec::new());
-        uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
+        uniform_data
+            .write(&uniforms)
+            .expect("Failed to write uniform buffer");
         frame
             .queue
             .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
@@ -373,32 +372,32 @@ impl GpuRenderer for WaveformRenderer {
             });
 
         {
-             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                 label: Some("Waveform Visualizer Pass"),
-                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                     view: &frame.view,
-                     resolve_target: None,
-                     ops: wgpu::Operations {
-                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                             // Use background color from config
-                             r: self.config.bg_color[0] as f64,
-                             g: self.config.bg_color[1] as f64,
-                             b: self.config.bg_color[2] as f64,
-                             a: 1.0,
-                         }),
-                         store: wgpu::StoreOp::Store,
-                     },
-                     depth_slice: None,
-                 })],
-                 depth_stencil_attachment: None,
-                 timestamp_writes: None,
-                 occlusion_query_set: None,
-             });
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Waveform Visualizer Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            // Use background color from config
+                            r: self.config.bg_color[0] as f64,
+                            g: self.config.bg_color[1] as f64,
+                            b: self.config.bg_color[2] as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
 
-             rpass.set_pipeline(pipeline);
-             rpass.set_bind_group(0, bind_group, &[]);
-             // Draw a single full-screen triangle. Vertex shader generates positions.
-             rpass.draw(0..3, 0..1);
+            rpass.set_pipeline(pipeline);
+            rpass.set_bind_group(0, bind_group, &[]);
+            // Draw a single full-screen triangle. Vertex shader generates positions.
+            rpass.draw(0..3, 0..1);
         }
 
         frame.queue.submit(std::iter::once(encoder.finish()));

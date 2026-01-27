@@ -106,7 +106,10 @@ impl TemplateContext {
                 "__PROJECT_ROOT_RELATIVE_PATH__",
                 &self.project_root_relative_path(),
             )
-            .replace("__IS_ACCESSORY__", if self.accessory { "true" } else { "false" })
+            .replace(
+                "__IS_ACCESSORY__",
+                if self.accessory { "true" } else { "false" },
+            )
             .replace(
                 "__MACOS_LSUIELEMENT__",
                 if self.accessory { "YES" } else { "NO" },
@@ -200,7 +203,9 @@ impl TemplateContext {
                 };
                 // Escape double quotes in description
                 let escaped_desc = desc.replace('"', "\\\"");
-                Some(format!("                                {plist_key} = \"{escaped_desc}\";"))
+                Some(format!(
+                    "                                {plist_key} = \"{escaped_desc}\";"
+                ))
             })
             .collect::<Vec<_>>()
             .join("\n")

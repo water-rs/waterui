@@ -18,10 +18,8 @@ use alloc::vec;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
-    metal::foreign_types::ForeignTypeRef,
-    metal::MTLTextureType,
+    metal::MTLTextureType, metal::foreign_types::ForeignTypeRef, wgpu_hal::Api,
     wgpu_hal::api::Metal as MetalApi,
-    wgpu_hal::Api,
 };
 
 use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
@@ -155,7 +153,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         }
         let ctx = shared_context();
         let guard = ctx.read();
-        
+
         let instance = &guard.instance;
         let adapter = &guard.adapter;
         let device = guard.device.clone();
@@ -164,7 +162,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
 
         // 2. Create Surface
         // We use the shared instance to create a surface for this specific window/layer.
-        // NOTE: The shared instance was created with support for all backends (on desktop) 
+        // NOTE: The shared instance was created with support for all backends (on desktop)
         // or Vulkan+GLES (on Android), so it should be compatible.
         let Some(wgpu_surface) = create_surface_from_layer(instance, layer) else {
             tracing::error!("[GpuSurface] Failed to create wgpu Surface from layer");
@@ -174,28 +172,35 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         // 3. Configure Surface
         // We need to find a format supported by both the Adapter and Surface.
         let surface_caps = wgpu_surface.get_capabilities(adapter);
-        
+
         // Validation: Ensure adapter can present to this surface
         if surface_caps.formats.is_empty() {
-             tracing::error!("[GpuSurface] Shared adapter cannot present to this surface!");
-             // In a perfect world, we might fallback to re-creating the shared context 
-             // with a different adapter, but that's complex since other views might be using it.
-             // For now, this is a fatal error for this view.
-             return core::ptr::null_mut();
+            tracing::error!("[GpuSurface] Shared adapter cannot present to this surface!");
+            // In a perfect world, we might fallback to re-creating the shared context
+            // with a different adapter, but that's complex since other views might be using it.
+            // For now, this is a fatal error for this view.
+            return core::ptr::null_mut();
         }
 
         let preferred = waterui_graphics::gpu_surface::preferred_surface_format(&surface_caps);
-        
+
         // Select format (preferring what we calculated, but ensuring it's in caps)
         let format = if surface_caps.formats.contains(&preferred) {
             preferred
         } else {
-            tracing::warn!("[GpuSurface] Preferred format {:?} not supported, falling back to {:?}", preferred, surface_caps.formats[0]);
+            tracing::warn!(
+                "[GpuSurface] Preferred format {:?} not supported, falling back to {:?}",
+                preferred,
+                surface_caps.formats[0]
+            );
             surface_caps.formats[0]
         };
 
         // Select presentation mode (VSync)
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
             wgpu::PresentMode::Fifo
         } else {
             surface_caps.present_modes[0]
@@ -222,12 +227,18 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        
-        tracing::info!("[GpuSurface] Configuring surface: {}x{} {:?} {:?}", width, height, format, present_mode);
+
+        tracing::info!(
+            "[GpuSurface] Configuring surface: {}x{} {:?} {:?}",
+            width,
+            height,
+            format,
+            present_mode
+        );
 
         if !try_configure_surface(&wgpu_surface, &device, &config) {
-             tracing::error!("[GpuSurface] Surface configuration failed!");
-             return core::ptr::null_mut();
+            tracing::error!("[GpuSurface] Surface configuration failed!");
+            return core::ptr::null_mut();
         }
 
         // 4. Create State
@@ -251,7 +262,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_init(
         Box::into_raw(state)
     }));
 
-     match init_result {
+    match init_result {
         Ok(ptr) => ptr,
         Err(_) => {
             tracing::error!("[GpuSurface] init panicked");
@@ -318,7 +329,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
                 device: &state.device,
                 queue: &state.queue,
                 surface_format: format,
-                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, format, 4),
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(
+                    &state.adapter,
+                    format,
+                    4,
+                ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
@@ -438,8 +453,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
         let state = unsafe { &mut *state };
         let texture = unsafe { &*(texture as *const wgpu::Texture) };
 
-        if !texture.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
-            tracing::error!("[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage");
+        if !texture
+            .usage()
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        {
+            tracing::error!(
+                "[GpuSurface] render_to_texture: texture missing RENDER_ATTACHMENT usage"
+            );
             return false;
         }
 
@@ -459,7 +479,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_texture(
                 device: &state.device,
                 queue: &state.queue,
                 surface_format: target_format,
-                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, target_format, 4),
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(
+                    &state.adapter,
+                    target_format,
+                    4,
+                ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
@@ -585,7 +609,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
                 device: &state.device,
                 queue: &state.queue,
                 surface_format: target_format,
-                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, target_format, 4),
+                msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(
+                    &state.adapter,
+                    target_format,
+                    4,
+                ),
                 pipeline_cache: state.pipeline_cache.as_ref(),
             };
             let setup_future = state.gpu_surface.setup(&ctx);
@@ -679,7 +707,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
             device: &state.device,
             queue: &state.queue,
             surface_format: format,
-            msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(&state.adapter, format, 4),
+            msaa_samples: waterui_graphics::gpu_surface::preferred_msaa_samples(
+                &state.adapter,
+                format,
+                4,
+            ),
             pipeline_cache: state.pipeline_cache.as_ref(),
         };
         let setup_future = state.gpu_surface.setup(&ctx);
@@ -792,7 +824,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_pointer(
             None
         },
         hit: if pointer.has_hit {
-            Some(waterui_core::layout::Point::new(pointer.hit_x, pointer.hit_y))
+            Some(waterui_core::layout::Point::new(
+                pointer.hit_x,
+                pointer.hit_y,
+            ))
         } else {
             None
         },

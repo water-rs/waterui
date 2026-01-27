@@ -44,7 +44,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     pub use super::env::Environment;
     pub use super::{
-        AnyView, AnimationExt, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, Str, View, ViewExt,
         accessibility, animation, app, color, component, cursor, drag_drop, entry, env, error,
         filter, form, fullscreen, gesture, gradient, id, layout, locale, media, metadata,
         navigation, reactive, shape, signal, style, task, text, webview, widget, window,
@@ -127,9 +127,9 @@ pub use waterui_core::{
 mod reactive_ext;
 pub(crate) mod view_ext;
 pub use nami as reactive;
+pub use nami::SignalExt;
 #[doc(inline)]
 pub use reactive::{Binding, Computed, Signal, signal};
-pub use nami::SignalExt;
 pub use reactive_ext::AnimationExt;
 
 /// Task management utilities and async support.

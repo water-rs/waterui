@@ -852,7 +852,9 @@ impl GpuRenderer for CanvasRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(waterui_graphics::shaders::BLIT.label),
-                source: wgpu::ShaderSource::Wgsl(waterui_graphics::shaders::BLIT.source.clone().into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    waterui_graphics::shaders::BLIT.source.clone().into(),
+                ),
             });
 
         let bind_group_layout =

@@ -8,4 +8,4 @@ pub mod placer;
 pub mod subview;
 
 pub use placer::{create_layout_container, place_children, update_positions};
-pub use subview::{stretch_axis_for_widget, GtkSubView};
+pub use subview::{GtkSubView, stretch_axis_for_widget};

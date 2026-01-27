@@ -88,7 +88,11 @@ fn fruit_basket(
         }
         // Trigger bounce animation
         let current = bounce.get();
-        let target = if (current - 1.2).abs() < 0.01 { 1.25 } else { 1.2 };
+        let target = if (current - 1.2).abs() < 0.01 {
+            1.25
+        } else {
+            1.2
+        };
         bounce.set(target);
         spawn_local(async move {
             sleep(Duration::from_millis(200)).await;

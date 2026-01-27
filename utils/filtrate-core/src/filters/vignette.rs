@@ -21,7 +21,9 @@ use nami::Signal;
 #[derive(Debug, Clone, Copy)]
 pub struct Vignette<R, S>(pub R, pub S);
 
-impl<R: Signal<Output = f32> + 'static, S: Signal<Output = f32> + 'static> Filter for Vignette<R, S> {
+impl<R: Signal<Output = f32> + 'static, S: Signal<Output = f32> + 'static> Filter
+    for Vignette<R, S>
+{
     const COLOR_ONLY: bool = true;
 
     type Params = [f32; 2];

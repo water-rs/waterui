@@ -4,8 +4,8 @@
 //! that can be used to create a clear distinction between different sections
 //! or elements in a user interface.
 
-use waterui_graphics::color::Grey;
 use waterui_core::View;
+use waterui_graphics::color::Grey;
 use waterui_layout::stack;
 
 use crate::ViewExt;

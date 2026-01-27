@@ -34,10 +34,7 @@ fn main() -> impl View {
     // Main layout
     vstack((
         // Title
-        text("Media Picker Demo")
-            .title()
-            .bold()
-            .padding_with(16.0),
+        text("Media Picker Demo").title().bold().padding_with(16.0),
         // Picker buttons row
         hstack((
             picker_button(
@@ -141,13 +138,8 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
         DisplayState::Loaded(media) => media_view(media),
 
         DisplayState::Error(message) => vstack((
-            text("Error")
-                .sub_headline()
-                .bold()
-                .foreground(Accent),
-            text(message)
-                .body()
-                .foreground(MutedForeground),
+            text("Error").sub_headline().bold().foreground(Accent),
+            text(message).body().foreground(MutedForeground),
         ))
         .spacing(8.0)
         .padding_with(16.0)

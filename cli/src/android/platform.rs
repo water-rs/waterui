@@ -312,7 +312,9 @@ impl AndroidPlatform {
         let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
 
         // Detect Kotlin path before entering unsafe block (detect_path is async)
-        let kotlin_bin_dir = Kotlin::detect_path().await.and_then(|p| p.parent().map(PathBuf::from));
+        let kotlin_bin_dir = Kotlin::detect_path()
+            .await
+            .and_then(|p| p.parent().map(PathBuf::from));
 
         // Set environment variables for cargo, cc-rs, and cmake before building
         // SAFETY: CLI is single-threaded at this point
@@ -544,7 +546,9 @@ pub async fn build_android(
     let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
 
     // Detect Kotlin path before entering unsafe block (detect_path is async)
-    let kotlin_bin_dir = Kotlin::detect_path().await.and_then(|p| p.parent().map(PathBuf::from));
+    let kotlin_bin_dir = Kotlin::detect_path()
+        .await
+        .and_then(|p| p.parent().map(PathBuf::from));
 
     // Set environment variables for cargo, cc-rs, and cmake before building
     // SAFETY: CLI is single-threaded at this point

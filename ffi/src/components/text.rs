@@ -25,10 +25,9 @@ impl IntoFFI for ResolvedFont {
         WuiResolvedFont {
             size: self.size,
             weight: self.weight.into_ffi(),
-            family: self.family.map_or_else(
-                || waterui::Str::from("").into_ffi(),
-                IntoFFI::into_ffi,
-            ),
+            family: self
+                .family
+                .map_or_else(|| waterui::Str::from("").into_ffi(), IntoFFI::into_ffi),
         }
     }
 }

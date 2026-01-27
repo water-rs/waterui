@@ -101,10 +101,13 @@ impl SharedGpuContext {
         }
 
         tracing::trace!("[ShaderCache] Cache MISS: {} - compiling", label);
-        let module = Arc::new(self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(label),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        }));
+        let module = Arc::new(
+            self.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                }),
+        );
 
         cache.insert(label, module.clone());
         module
@@ -141,10 +144,10 @@ pub fn init_shared_context() -> Result<(), SharedContextError> {
     }
 
     let ctx = create_shared_context()?;
-    
+
     // Try to set it; if another thread beat us, that's fine
     let _ = SHARED_CONTEXT.set(Arc::new(RwLock::new(ctx)));
-    
+
     Ok(())
 }
 
@@ -158,11 +161,9 @@ pub fn init_shared_context() -> Result<(), SharedContextError> {
 #[must_use]
 pub fn shared_context() -> Arc<RwLock<SharedGpuContext>> {
     SHARED_CONTEXT
-        .get_or_init(|| {
-            match create_shared_context() {
-                Ok(ctx) => Arc::new(RwLock::new(ctx)),
-                Err(e) => panic!("Failed to initialize shared GPU context: {e}"),
-            }
+        .get_or_init(|| match create_shared_context() {
+            Ok(ctx) => Arc::new(RwLock::new(ctx)),
+            Err(e) => panic!("Failed to initialize shared GPU context: {e}"),
         })
         .clone()
 }
@@ -183,7 +184,9 @@ pub fn is_initialized() -> bool {
 
 /// Save the pipeline cache to disk.
 pub fn save_pipeline_cache() {
-    let Some(ctx) = try_shared_context() else { return };
+    let Some(ctx) = try_shared_context() else {
+        return;
+    };
     let guard = ctx.read();
 
     if let Some(cache) = &guard.pipeline_cache {
@@ -194,8 +197,12 @@ pub fn save_pipeline_cache() {
                 }
 
                 match fs::write(&path, &data) {
-                    Ok(_) => tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path),
-                    Err(e) => tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e),
+                    Ok(_) => {
+                        tracing::info!("[SharedGpuContext] Saved pipeline cache to {:?}", path)
+                    }
+                    Err(e) => {
+                        tracing::warn!("[SharedGpuContext] Failed to save pipeline cache: {}", e)
+                    }
                 }
             }
         }
@@ -208,7 +215,9 @@ pub fn clear_pipeline_cache() {
         if path.exists() {
             match fs::remove_file(&path) {
                 Ok(_) => tracing::info!("[SharedGpuContext] Cleared pipeline cache at {:?}", path),
-                Err(e) => tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e),
+                Err(e) => {
+                    tracing::warn!("[SharedGpuContext] Failed to clear pipeline cache: {}", e)
+                }
             }
         }
     }
@@ -299,16 +308,18 @@ fn create_shared_context() -> Result<SharedGpuContext, SharedContextError> {
     // Create pipeline cache only if the feature is available
     let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         // Try to load cache from disk, but don't fail if it's corrupted
-        let cache_data = get_cache_path().and_then(|path| {
-            match fs::read(&path) {
-                Ok(data) => {
-                    tracing::info!("[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)", path, data.len());
-                    Some(data)
-                }
-                Err(_) => {
-                    tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
-                    None
-                }
+        let cache_data = get_cache_path().and_then(|path| match fs::read(&path) {
+            Ok(data) => {
+                tracing::info!(
+                    "[SharedGpuContext] Loaded pipeline cache from {:?} ({} bytes)",
+                    path,
+                    data.len()
+                );
+                Some(data)
+            }
+            Err(_) => {
+                tracing::debug!("[SharedGpuContext] No existing pipeline cache found");
+                None
             }
         });
 
@@ -364,7 +375,11 @@ mod tests {
             if let Some(path) = get_cache_path() {
                 if path.exists() {
                     let metadata = fs::metadata(&path).expect("Failed to read cache metadata");
-                    println!("Cache saved to: {:?} (size: {} bytes)", path, metadata.len());
+                    println!(
+                        "Cache saved to: {:?} (size: {} bytes)",
+                        path,
+                        metadata.len()
+                    );
                     // Cleanup
                     let _ = fs::remove_file(path);
                 }

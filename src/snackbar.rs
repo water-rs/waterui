@@ -41,7 +41,7 @@ use waterui_controls::{ButtonStyle, button};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::handler::{SharedAction, shared_action};
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnyView, AnimationExt, View};
+use waterui_core::{AnimationExt, AnyView, View};
 use waterui_icon::SystemIcon;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
@@ -52,8 +52,8 @@ use waterui_text::text::text;
 
 use crate::ViewExt;
 use crate::background::Material;
-use crate::graphics::FilterViewExt;
 use crate::component::label::Label;
+use crate::graphics::FilterViewExt;
 use crate::shape::RoundedRectangle;
 use crate::style::Shadow;
 
@@ -378,7 +378,7 @@ impl SnackbarManager {
         })
     }
 
-    fn build_content(&self, snackbar: Snackbar, manager: SnackbarManager) -> AnyView {
+    fn build_content(&self, snackbar: Snackbar, manager: Self) -> AnyView {
         // Message with optional icon using Label component
         let label_view = if let Some(icon) = snackbar.icon {
             Label::new(snackbar.message).icon(icon)
@@ -387,7 +387,7 @@ impl SnackbarManager {
         };
 
         // Add action button if present
-        if let Some(mut action) = snackbar.action {
+        if let Some(action) = snackbar.action {
             let action_label = action.label.clone();
 
             AnyView::new(
@@ -468,7 +468,10 @@ impl<S> core::fmt::Debug for SnackbarActionStatefulBuilder<S> {
 impl<S: Clone + 'static> SnackbarActionStatefulBuilder<S> {
     /// Adds another state value, accumulating as nested tuples.
     #[must_use]
-    pub fn with_state<T: Clone + 'static>(self, state: &T) -> SnackbarActionStatefulBuilder<(S, T)> {
+    pub fn with_state<T: Clone + 'static>(
+        self,
+        state: &T,
+    ) -> SnackbarActionStatefulBuilder<(S, T)> {
         SnackbarActionStatefulBuilder {
             snackbar: self.snackbar,
             label: self.label,

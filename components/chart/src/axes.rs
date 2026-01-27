@@ -15,7 +15,7 @@ use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::{
-    absolute, Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint,
+    Layout, Point, PositionExt, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint, absolute,
 };
 use waterui_text::text;
 
@@ -150,8 +150,14 @@ impl<C: View + 'static> View for ChartAxes<C> {
             .unwrap_or_default();
 
         // Get axis title labels (clone before consuming self)
-        let y_label: Option<String> = self.y_axis.as_ref().and_then(|a| a.axis_label().map(Into::into));
-        let x_label: Option<String> = self.x_axis.as_ref().and_then(|a| a.axis_label().map(Into::into));
+        let y_label: Option<String> = self
+            .y_axis
+            .as_ref()
+            .and_then(|a| a.axis_label().map(Into::into));
+        let x_label: Option<String> = self
+            .x_axis
+            .as_ref()
+            .and_then(|a| a.axis_label().map(Into::into));
 
         let padding = self.padding;
 
@@ -166,8 +172,16 @@ impl<C: View + 'static> View for ChartAxes<C> {
 
         // Grid lines behind the chart (if enabled)
         views.push(AnyView::new(GridLines {
-            y_ticks: if y_show_grid { y_ticks.clone() } else { Vec::new() },
-            x_ticks: if x_show_grid { x_ticks.clone() } else { Vec::new() },
+            y_ticks: if y_show_grid {
+                y_ticks.clone()
+            } else {
+                Vec::new()
+            },
+            x_ticks: if x_show_grid {
+                x_ticks.clone()
+            } else {
+                Vec::new()
+            },
             padding_left: padding.left,
             padding_right: padding.right,
             padding_top: padding.top,
@@ -201,20 +215,24 @@ impl<C: View + 'static> View for ChartAxes<C> {
         // Y-axis title label (positioned at top-left)
         if let Some(label) = y_label {
             views.push(AnyView::new(
-                text(label)
-                    .size(12.0)
-                    .bold()
-                    .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0, 2.0),
+                text(label).size(12.0).bold().position_in_offset(
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::TOP_LEADING,
+                    2.0,
+                    2.0,
+                ),
             ));
         }
 
         // X-axis title label (positioned at bottom-center)
         if let Some(label) = x_label {
             views.push(AnyView::new(
-                text(label)
-                    .size(12.0)
-                    .bold()
-                    .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -2.0),
+                text(label).size(12.0).bold().position_in_offset(
+                    UnitPoint::BOTTOM,
+                    UnitPoint::BOTTOM,
+                    0.0,
+                    -2.0,
+                ),
             ));
         }
 
@@ -583,8 +601,16 @@ where
 
             // Grid lines behind
             views.push(AnyView::new(GridLines {
-                y_ticks: if y_show_grid { y_ticks.clone() } else { Vec::new() },
-                x_ticks: if x_show_grid { x_ticks.clone() } else { Vec::new() },
+                y_ticks: if y_show_grid {
+                    y_ticks.clone()
+                } else {
+                    Vec::new()
+                },
+                x_ticks: if x_show_grid {
+                    x_ticks.clone()
+                } else {
+                    Vec::new()
+                },
                 padding_left: padding.left,
                 padding_right: padding.right,
                 padding_top: padding.top,
@@ -615,20 +641,24 @@ where
             // Y-axis title label
             if let Some(ref label) = y_label {
                 views.push(AnyView::new(
-                    text(label.clone())
-                        .size(12.0)
-                        .bold()
-                        .position_in_offset(UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, 2.0, 2.0),
+                    text(label.clone()).size(12.0).bold().position_in_offset(
+                        UnitPoint::TOP_LEADING,
+                        UnitPoint::TOP_LEADING,
+                        2.0,
+                        2.0,
+                    ),
                 ));
             }
 
             // X-axis title label
             if let Some(ref label) = x_label {
                 views.push(AnyView::new(
-                    text(label.clone())
-                        .size(12.0)
-                        .bold()
-                        .position_in_offset(UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -2.0),
+                    text(label.clone()).size(12.0).bold().position_in_offset(
+                        UnitPoint::BOTTOM,
+                        UnitPoint::BOTTOM,
+                        0.0,
+                        -2.0,
+                    ),
                 ));
             }
 

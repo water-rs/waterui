@@ -20,8 +20,8 @@
 //! }
 //! ```
 
-use waterui_graphics::color::Color;
 use waterui_core::metadata::MetadataKey;
+use waterui_graphics::color::Color;
 use waterui_layout::EdgeSet;
 
 /// Represents a border effect that can be applied to UI elements.
@@ -83,7 +83,7 @@ impl Border {
     ///
     /// * `radius` - The corner radius in points (0 = square corners)
     #[must_use]
-    pub fn corner_radius(mut self, radius: f32) -> Self {
+    pub const fn corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
     }
@@ -107,7 +107,7 @@ impl Border {
     /// Border::new(Color::gray(), 1.0).edges(EdgeSet::HORIZONTAL);
     /// ```
     #[must_use]
-    pub fn edges(mut self, edges: EdgeSet) -> Self {
+    pub const fn edges(mut self, edges: EdgeSet) -> Self {
         self.edges = edges;
         self
     }

@@ -236,10 +236,12 @@ impl GpuRenderer for ShaderRenderer {
         let full_shader = self.build_full_shader();
 
         // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: self.label.or(Some("ShaderSurface Shader")),
-            source: wgpu::ShaderSource::Wgsl(full_shader.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: self.label.or(Some("ShaderSurface Shader")),
+                source: wgpu::ShaderSource::Wgsl(full_shader.into()),
+            });
 
         // Uniform buffer layout (WGSL alignment rules):
         // - time: f32 at offset 0 (4 bytes)

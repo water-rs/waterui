@@ -17,8 +17,8 @@ use waterui_core::{Environment, Metadata, Retain, View};
 
 use crate::library::PreviewLibrary;
 use crate::renderer::RenderResultExt as _;
-use waterui_preview_protocol::transport::{read_json_frame, write_json_frame};
 use waterui_preview_protocol::tcp::PreviewTcpConfig;
+use waterui_preview_protocol::transport::{read_json_frame, write_json_frame};
 use waterui_preview_protocol::{
     DylibId, DylibSource, PreviewError, PreviewOutput, PreviewRequest, PreviewResponse, Size,
 };
@@ -73,7 +73,8 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
     env.get::<ViewRenderer>()
         .expect("Preview support app must provide a ViewRenderer in Environment");
 
-    let config = PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let config =
+        PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let listener = bind_first_available(config)?;
     tracing::info!(
         "Preview daemon listening on {}:{}",
@@ -290,10 +291,13 @@ async fn handle_render(
             return Err(PreviewError::SymbolNotFound(symbol.to_string()));
         }
 
-        unsafe { library.load_view(symbol) }.map_err(|e| PreviewError::RenderFailed(e.to_string()))?
+        unsafe { library.load_view(symbol) }
+            .map_err(|e| PreviewError::RenderFailed(e.to_string()))?
     };
 
-    let renderer = env.get::<ViewRenderer>().expect("ViewRenderer missing in Environment");
+    let renderer = env
+        .get::<ViewRenderer>()
+        .expect("ViewRenderer missing in Environment");
     let render_size = RenderSize::new(frame.width, frame.height);
 
     let result = renderer.render(view, render_size).await;

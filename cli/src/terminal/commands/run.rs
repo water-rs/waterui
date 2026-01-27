@@ -14,7 +14,7 @@ use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
     android::{
         device::{AndroidDevice, AndroidEmulator},
-        platform::{build_android, package_android, AndroidPlatform},
+        platform::{AndroidPlatform, build_android, package_android},
         toolchain::{AndroidNdk, AndroidSdk},
     },
     apple::{
@@ -85,9 +85,7 @@ impl CrashReportContext {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_latest_ips_report(
-    ctx: &CrashReportContext,
-) -> Option<debug::CrashReport> {
+async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
     let device_identifier = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into());
     debug::find_macos_ips_crash_report_since(
         "macOS",
@@ -253,7 +251,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Step 1: Check toolchain
     let spinner = shell::spinner("Checking toolchain...");
-    check_toolchain_for_backend(backend).await?;
+    check_toolchain_for_backend(args.platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -383,7 +381,10 @@ async fn augment_event_with_crash_report(
         Some(DeviceEvent::Crashed(mut msg)) => {
             if !msg.contains("Crash report:") {
                 if let Some(report) = find_latest_ips_report(ctx).await {
-                    msg.push_str(&format!("\n\nCrash report: {}", report.log_path().display()));
+                    msg.push_str(&format!(
+                        "\n\nCrash report: {}",
+                        report.log_path().display()
+                    ));
                 }
             }
             Some(DeviceEvent::Crashed(msg))
@@ -467,7 +468,8 @@ async fn build_and_run(
     };
 
     shell::status("▶", "Running...");
-    let running = run_with_options(device, artifact, runner.as_ref(), log_level, native_logs).await?;
+    let running =
+        run_with_options(device, artifact, runner.as_ref(), log_level, native_logs).await?;
 
     Ok((running, runner))
 }
@@ -526,15 +528,22 @@ impl SelectedDevice {
     }
 }
 
-async fn check_toolchain_for_backend(backend: TargetBackend) -> Result<()> {
+async fn check_toolchain_for_backend(
+    platform: TargetPlatform,
+    backend: TargetBackend,
+) -> Result<()> {
     match backend {
         TargetBackend::Apple => {
             let xcode = Xcode;
             if let Err(e) = xcode.check().await {
                 bail!("Xcode toolchain check failed: {e}");
             }
-            // Running the Apple backend uses iOS Simulator tooling (`simctl`/`xcrun`).
-            let sdk = AppleSdk::IosSimulator;
+            let sdk = match platform {
+                TargetPlatform::Ios => AppleSdk::IosSimulator,
+                TargetPlatform::Macos => AppleSdk::Macos,
+                // Apple backend isn't supported on these platforms, but keep the match exhaustive.
+                TargetPlatform::Android | TargetPlatform::Linux => return Ok(()),
+            };
             if let Err(e) = sdk.check().await {
                 bail!("{sdk} toolchain check failed: {e}");
             }
@@ -575,7 +584,7 @@ async fn find_device(
 
     match platform {
         TargetPlatform::Ios => {
-            let devices = AppleSimulator::scan().await?;
+            let devices = AppleSimulator::scan_ios().await?;
 
             if let Some(id) = device_id {
                 // Find specific device

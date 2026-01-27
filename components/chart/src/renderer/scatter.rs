@@ -11,16 +11,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
+    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -82,7 +82,13 @@ impl SpatialGrid {
 
     /// Finds the nearest point within the given radius (in data coordinates).
     /// Returns (point_index, distance) or None if no point found.
-    fn find_nearest(&self, data_x: f32, data_y: f32, radius: f32, points: &[DataPoint]) -> Option<(usize, f32)> {
+    fn find_nearest(
+        &self,
+        data_x: f32,
+        data_y: f32,
+        radius: f32,
+        points: &[DataPoint],
+    ) -> Option<(usize, f32)> {
         if self.resolution == 0 || points.is_empty() {
             return None;
         }
@@ -97,8 +103,10 @@ impl SpatialGrid {
         let cells_to_check_x = (radius / cell_size_x).ceil() as i32 + 1;
         let cells_to_check_y = (radius / cell_size_y).ceil() as i32 + 1;
 
-        let center_cell_x = (((data_x - self.bounds.min_x) / width) * self.resolution as f32) as i32;
-        let center_cell_y = (((data_y - self.bounds.min_y) / height) * self.resolution as f32) as i32;
+        let center_cell_x =
+            (((data_x - self.bounds.min_x) / width) * self.resolution as f32) as i32;
+        let center_cell_y =
+            (((data_y - self.bounds.min_y) / height) * self.resolution as f32) as i32;
 
         let mut nearest_idx = None;
         let mut nearest_dist = f32::MAX;
@@ -109,7 +117,8 @@ impl SpatialGrid {
                 let cx = center_cell_x + dx;
                 let cy = center_cell_y + dy;
 
-                if cx < 0 || cy < 0 || cx >= self.resolution as i32 || cy >= self.resolution as i32 {
+                if cx < 0 || cy < 0 || cx >= self.resolution as i32 || cy >= self.resolution as i32
+                {
                     continue;
                 }
 
@@ -331,7 +340,11 @@ impl GpuRenderer for ScatterChartRenderer {
 
         // Create uniform buffer
         let uniforms = ChartUniforms::default();
-        self.uniform_buffer = Some(create_uniform_buffer(ctx, "Scatter Chart Uniforms", &uniforms));
+        self.uniform_buffer = Some(create_uniform_buffer(
+            ctx,
+            "Scatter Chart Uniforms",
+            &uniforms,
+        ));
 
         // Create data buffers
         let initial_capacity = self.data.len().max(64);
@@ -399,11 +412,12 @@ impl GpuRenderer for ScatterChartRenderer {
 
         if self.data.is_empty() {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Scatter Chart Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Scatter Chart Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Scatter Chart Clear Pass"),
@@ -424,7 +438,8 @@ impl GpuRenderer for ScatterChartRenderer {
         }
 
         // Update zoom/pan state from gesture input
-        self.zoom_pan.update(&frame.gesture, frame.width as f32, frame.height as f32);
+        self.zoom_pan
+            .update(&frame.gesture, frame.width as f32, frame.height as f32);
 
         // Transform bounds based on zoom/pan state
         let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
@@ -447,11 +462,24 @@ impl GpuRenderer for ScatterChartRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
                 if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
-                    glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, self.point_radius)
+                    glam::Vec4::new(
+                        px,
+                        py,
+                        if frame.pointer.hit.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        self.point_radius,
+                    )
                 } else {
                     glam::Vec4::new(-1.0, -1.0, 0.0, self.point_radius)
                 }
@@ -459,7 +487,11 @@ impl GpuRenderer for ScatterChartRenderer {
                 glam::Vec4::new(-1.0, -1.0, 0.0, self.point_radius)
             },
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render points
         let mut encoder = frame
@@ -538,7 +570,11 @@ impl ChartRenderer for ScatterChartRenderer {
         self.needs_redraw = true;
     }
 
-    fn hit_test(&self, point: Point, viewport: &ChartViewport) -> Option<HitResult<Self::DataValue>> {
+    fn hit_test(
+        &self,
+        point: Point,
+        viewport: &ChartViewport,
+    ) -> Option<HitResult<Self::DataValue>> {
         if self.data.is_empty() {
             return None;
         }
@@ -556,7 +592,8 @@ impl ChartRenderer for ScatterChartRenderer {
 
         // Find nearest point within radius using spatial index (O(1) average case)
         let denom = (1.0 - 2.0 * PLOT_PADDING).max(0.001);
-        let radius_data = self.point_radius * 2.0 * visible_bounds.width() / (viewport.width * denom);
+        let radius_data =
+            self.point_radius * 2.0 * visible_bounds.width() / (viewport.width * denom);
 
         self.spatial_index
             .find_nearest(data_x, data_y, radius_data, &self.data)

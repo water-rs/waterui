@@ -1,7 +1,7 @@
 //! GTK4 `TextField` (Entry) component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::{Environment, Native};

@@ -7,16 +7,16 @@ use core::future::Future;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, RadarData};
 use crate::interaction::{ChartViewport, HitResult};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
+    shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 /// GPU-accelerated radar/spider chart renderer.
 ///
@@ -98,10 +98,12 @@ impl RadarRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/radar.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Radar Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Radar Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -272,11 +274,12 @@ impl GpuRenderer for RadarRenderer {
         // Need at least 3 axes and 1 series to render
         if axis_count < 3 || series_count == 0 {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Radar Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Radar Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Radar Clear Pass"),
@@ -314,11 +317,19 @@ impl GpuRenderer for RadarRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             style: glam::Vec4::new(self.line_width, self.fill_opacity, 0.0, 0.0),
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Calculate instance counts:
         // - ring_count rings

@@ -8,7 +8,10 @@ use waterui::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_navigation::tab::{Tab, TabPosition, Tabs};
-use waterui_navigation::{Bar, CustomNavigationController, NavigationController, NavigationStack, NavigationTitleDisplayMode, NavigationView};
+use waterui_navigation::{
+    Bar, CustomNavigationController, NavigationController, NavigationStack,
+    NavigationTitleDisplayMode, NavigationView,
+};
 
 into_ffi! {
     NavigationView,
@@ -266,7 +269,9 @@ pub unsafe extern "C" fn waterui_env_install_navigation_controller(
 /// - `controller` must be a valid pointer returned by `waterui_navigation_controller_new`
 /// - `controller` must not have been previously dropped or consumed
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_navigation_controller(controller: *mut WuiNavigationController) {
+pub unsafe extern "C" fn waterui_drop_navigation_controller(
+    controller: *mut WuiNavigationController,
+) {
     // SAFETY: Caller guarantees pointer is valid and not previously dropped
     unsafe {
         drop(Box::from_raw(controller));
@@ -309,4 +314,3 @@ pub unsafe extern "C" fn waterui_navigation_pop(env: *const WuiEnv) {
         }
     }
 }
-

@@ -71,7 +71,7 @@ pub async fn run(args: Args) -> Result<()> {
 
 /// Scan iOS simulators.
 async fn scan_ios_devices() -> Result<Vec<AppleSimulator>, String> {
-    AppleSimulator::scan().await.map_err(|e| e.to_string())
+    AppleSimulator::scan_ios().await.map_err(|e| e.to_string())
 }
 
 /// Scan Android devices and emulators.
@@ -96,9 +96,7 @@ async fn scan_android_devices() -> Option<(Vec<String>, Vec<AndroidDevice>)> {
             .unwrap_or_default()
     };
 
-    let devices_future = async {
-        AndroidDevice::scan().await.unwrap_or_default()
-    };
+    let devices_future = async { AndroidDevice::scan().await.unwrap_or_default() };
 
     let (avds, connected_devices) = zip(avds_future, devices_future).await;
     Some((avds, connected_devices))

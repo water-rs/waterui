@@ -195,8 +195,7 @@ impl crate::IntoRust for WuiDate {
     unsafe fn into_rust(self) -> Self::Rust {
         // Safe: We clamp invalid values to valid ranges
         let month = Month::try_from(self.month).unwrap_or(Month::January);
-        Date::from_calendar_date(self.year, month, self.day.clamp(1, 31))
-            .unwrap_or(Date::MIN)
+        Date::from_calendar_date(self.year, month, self.day.clamp(1, 31)).unwrap_or(Date::MIN)
     }
 }
 

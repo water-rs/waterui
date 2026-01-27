@@ -1,7 +1,7 @@
 //! GTK4 Tabs (Notebook) component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_core::id::Id;
 use waterui_core::{Environment, Native};

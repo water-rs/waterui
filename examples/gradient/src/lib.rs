@@ -8,11 +8,13 @@
 //! - Shape fills with gradients
 
 use waterui::app::App;
-use waterui::preview;
 use waterui::prelude::*;
-use waterui::task::{sleep, spawn_local};
+use waterui::preview;
 use waterui::shape::{Circle, RoundedRectangle};
-use waterui_graphics::{AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor};
+use waterui::task::{sleep, spawn_local};
+use waterui_graphics::{
+    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor,
+};
 
 use core::time::Duration;
 
@@ -114,8 +116,7 @@ fn animated_background_section() -> impl View {
                 text("Fluid Background")
                     .size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
-                text("Colors flow over time")
-                    .foreground(Color::srgb(200, 200, 255)),
+                text("Colors flow over time").foreground(Color::srgb(200, 200, 255)),
             ))
             .padding(),
         ))
@@ -138,8 +139,7 @@ fn gpu_animated_mesh_gradient_section() -> impl View {
                 text("Mesh Gradient")
                     .size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
-                text("No per-frame CPU updates")
-                    .foreground(Color::srgb(200, 220, 255)),
+                text("No per-frame CPU updates").foreground(Color::srgb(200, 220, 255)),
             ))
             .padding(),
         ))
@@ -167,10 +167,7 @@ fn shape_fill_section() -> impl View {
             // Linear gradient clipped to rounded rectangle
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(1.0, 0.3, 0.5)),
-                        (1.0, color(0.3, 0.5, 1.0)),
-                    ],
+                    vec![(0.0, color(1.0, 0.3, 0.5)), (1.0, color(0.3, 0.5, 1.0))],
                     [0.0, 0.0],
                     [1.0, 1.0],
                 )
