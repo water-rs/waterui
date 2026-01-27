@@ -76,6 +76,8 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
     let config =
         PreviewTcpConfig::from_env().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let listener = bind_first_available(config)?;
+    #[cfg(target_os = "macos")]
+    write_preview_pid_file(listener.local_addr()?.port()).await;
     tracing::info!(
         "Preview daemon listening on {}:{}",
         config.host,
@@ -100,6 +102,27 @@ async fn run_tcp_server(env: Environment) -> io::Result<()> {
         })
         .detach();
     }
+}
+
+#[cfg(target_os = "macos")]
+async fn write_preview_pid_file(port: u16) {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+
+    let pid_path = home
+        .join(".water")
+        .join("preview_support")
+        .join(".water")
+        .join("preview.pid");
+
+    if let Some(parent) = pid_path.parent() {
+        let _ = async_fs::create_dir_all(parent).await;
+    }
+
+    let pid = std::process::id();
+    let content = format!("{pid}\n{port}\n");
+    let _ = async_fs::write(pid_path, content).await;
 }
 
 fn bind_first_available(config: PreviewTcpConfig) -> io::Result<std::net::TcpListener> {
@@ -184,7 +207,7 @@ impl DylibCache {
     }
 
     fn contains(&self, id: &DylibId) -> bool {
-        self.libraries.contains_key(id)
+        self.libraries.contains_key(id) || dylib_cache_path(*id).exists()
     }
 
     fn get(&mut self, id: &DylibId) -> Option<&PreviewLibrary> {
@@ -214,6 +237,24 @@ impl DylibCache {
             self.libraries.move_index(index, last);
         }
     }
+
+    async fn ensure_loaded(&mut self, id: DylibId) -> Result<(), PreviewError> {
+        if self.libraries.contains_key(&id) {
+            self.touch(&id);
+            return Ok(());
+        }
+
+        let path = dylib_cache_path(id);
+        if !path.exists() {
+            return Err(PreviewError::UnknownDylibId(id));
+        }
+
+        let library = unsafe { PreviewLibrary::load_from_path(&path) }
+            .await
+            .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
+        self.insert(id, library);
+        Ok(())
+    }
 }
 
 fn dylib_cache_capacity() -> NonZeroUsize {
@@ -223,6 +264,18 @@ fn dylib_cache_capacity() -> NonZeroUsize {
         .and_then(|v| v.parse::<usize>().ok())
         .and_then(NonZeroUsize::new)
         .unwrap_or_else(|| NonZeroUsize::new(DEFAULT).expect("DEFAULT is non-zero"))
+}
+
+fn dylib_cache_path(id: DylibId) -> std::path::PathBuf {
+    let hex = id.to_string();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let base = home
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join(".water")
+        .join("cache")
+        .join("preview")
+        .join("dylibs");
+    base.join(format!("{hex}.dylib"))
 }
 
 async fn render_worker(env: Environment, worker_rx: Receiver<WorkerMessage>) {
@@ -266,7 +319,7 @@ async fn handle_render(
             if !cache.contains(&id) {
                 #[cfg(unix)]
                 {
-                    let library = unsafe { PreviewLibrary::load_from_bytes(&bytes) }
+                    let library = unsafe { PreviewLibrary::load_from_bytes(id, &bytes) }
                         .await
                         .map_err(|e| PreviewError::DylibLoad(e.to_string()))?;
                     cache.insert(id, library);
@@ -285,6 +338,9 @@ async fn handle_render(
     };
 
     let view = {
+        if let Err(e) = cache.ensure_loaded(id).await {
+            return Err(e);
+        }
         let library = cache.get(&id).ok_or(PreviewError::UnknownDylibId(id))?;
 
         if !library.has_symbol(symbol) {
