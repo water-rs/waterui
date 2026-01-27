@@ -29,8 +29,7 @@ use nami::signal::IntoComputed;
 use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::layout::StretchAxis;
-use waterui_text::text;
-
+use waterui_macros::text;
 /// Configuration for progress indicators.
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
