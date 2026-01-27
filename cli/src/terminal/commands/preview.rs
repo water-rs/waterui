@@ -3,7 +3,6 @@
 //! Renders a view function and saves it as a PNG image.
 
 use std::path::PathBuf;
-use std::time::Instant;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
@@ -11,7 +10,7 @@ use color_eyre::eyre::{Result, bail};
 use crate::shell;
 use crate::{error, header, success};
 use waterui_cli::preview::protocol::function_path_to_symbol;
-use waterui_cli::preview::{PreviewPlatform, launch_preview_session};
+use waterui_cli::preview::{PreviewPlatform, kill_preview_support_app, launch_preview_session};
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -52,14 +51,6 @@ pub struct Args {
     #[arg(short, long, default_value = "preview.png")]
     output: PathBuf,
 
-    /// Render the same preview multiple times (useful for benchmarking).
-    #[arg(long, default_value_t = 1)]
-    repeat: u32,
-
-    /// Print timing information to stderr.
-    #[arg(long)]
-    timing: bool,
-
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -89,64 +80,49 @@ pub async fn run(args: Args) -> Result<()> {
     let symbol = function_path_to_symbol(crate_name, &args.function_path);
     header!("Preview: {}", symbol);
 
-    if args.repeat == 0 {
-        bail!("--repeat must be >= 1");
-    }
-
     // Launch preview session (connects to existing app or launches new one)
-    let connect_start = Instant::now();
     let spinner = shell::spinner("Connecting to preview app...");
     let mut session = launch_preview_session(args.platform.into()).await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
-    let connect_elapsed = connect_start.elapsed();
 
     let result = async {
         // Build dylib
-        let build_start = Instant::now();
         let spinner = shell::spinner("Building project...");
         let dylib = session.build_dylib(&project_path).await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        let build_elapsed = build_start.elapsed();
 
-        let mut render_times = Vec::with_capacity(args.repeat as usize);
-
-        for i in 0..args.repeat {
-            // Render preview
-            let spinner = shell::spinner("Rendering view...");
-            let render_start = Instant::now();
-            let png_data = session.render(&dylib, &symbol, width, height).await?;
-            render_times.push(render_start.elapsed());
-
-            if let Some(s) = spinner {
-                s.finish_and_clear();
+        // Render preview
+        let spinner = shell::spinner("Rendering view...");
+        let png_data = match session.render(&dylib, &symbol, width, height).await {
+            Ok(png) => png,
+            Err(e) => {
+                let is_timeout = e.to_string().contains("timed out");
+                if is_timeout && matches!(args.platform, CliPreviewPlatform::Macos) {
+                    eprintln!("[preview] Render timed out; restarting preview app and retrying once...");
+                    kill_preview_support_app().await;
+                    session = launch_preview_session(PreviewPlatform::Macos).await?;
+                    session.render(&dylib, &symbol, width, height).await?
+                } else {
+                    return Err(e);
+                }
             }
-
-            // If repeating, write each output as <name>-<n>.<ext>
-            let output_path = if args.repeat == 1 {
-                args.output.clone()
-            } else {
-                numbered_output_path(&args.output, i + 1)
-            };
-
-            if png_data.is_empty() {
-                error!("Preview returned empty PNG data");
-                bail!("Preview returned empty PNG data");
-            }
-            smol::fs::write(&output_path, &png_data).await?;
-            success!("Preview saved to {}", output_path.display());
+        };
+        if let Some(s) = spinner {
+            s.finish_and_clear();
         }
 
-        if args.timing {
-            eprintln!("[timing] connect: {:?}", connect_elapsed);
-            eprintln!("[timing] build:   {:?}", build_elapsed);
-            for (i, t) in render_times.iter().enumerate() {
-                eprintln!("[timing] render#{:02}: {:?}", i + 1, t);
-            }
+        // Save output
+        if png_data.is_empty() {
+            error!("Preview returned empty PNG data");
+            bail!("Preview returned empty PNG data");
         }
+
+        smol::fs::write(&args.output, &png_data).await?;
+        success!("Preview saved to {}", args.output.display());
         Ok(())
     }
     .await;
@@ -172,19 +148,4 @@ fn parse_frame(s: &str) -> Result<(f32, f32)> {
         .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
 
     Ok((width, height))
-}
-
-fn numbered_output_path(base: &PathBuf, n: u32) -> PathBuf {
-    let parent = base.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let stem = base
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("preview");
-    let ext = base.extension().and_then(|e| e.to_str());
-
-    let filename = match ext {
-        Some(ext) if !ext.is_empty() => format!("{stem}-{n}.{ext}"),
-        _ => format!("{stem}-{n}"),
-    };
-    parent.join(filename)
 }

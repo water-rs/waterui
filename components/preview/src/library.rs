@@ -4,9 +4,9 @@
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use waterui_core::AnyView;
+use waterui_preview_protocol::DylibId;
 
 /// A loaded preview library.
 #[derive(Debug)]
@@ -31,6 +31,61 @@ impl PreviewLibrary {
         })
     }
 
+    /// Load a library from an on-disk cache path, codesigning only if needed (macOS).
+    ///
+    /// # Safety
+    /// The library must be a valid WaterUI preview library with the expected ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the library cannot be loaded.
+    #[cfg(unix)]
+    pub async unsafe fn load_from_path(path: &Path) -> Result<Self, LoadError> {
+        Self::load_with_codesign_fallback(path).await
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn load_with_codesign_fallback(path: &Path) -> Result<Self, LoadError> {
+        let first_try = blocking::unblock({
+            let path = path.to_path_buf();
+            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
+        })
+        .await;
+
+        match first_try {
+            Ok(lib) => Ok(Self {
+                lib,
+                temp_path: None,
+            }),
+            Err(_e) => {
+                // If the dylib is already ad-hoc signed (or not required), this extra codesign
+                // call would be wasted. Instead, try loading first and only codesign on failure.
+                codesign_dylib(path).await?;
+                let lib = blocking::unblock({
+                    let path = path.to_path_buf();
+                    move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
+                })
+                .await?;
+                Ok(Self {
+                    lib,
+                    temp_path: None,
+                })
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn load_with_codesign_fallback(path: &Path) -> Result<Self, LoadError> {
+        let lib = blocking::unblock({
+            let path = path.to_path_buf();
+            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
+        })
+        .await?;
+        Ok(Self {
+            lib,
+            temp_path: None,
+        })
+    }
+
     /// Load a library from bytes by writing to a temp file.
     ///
     /// # Safety
@@ -39,23 +94,21 @@ impl PreviewLibrary {
     /// # Errors
     /// Returns an error if the library cannot be loaded.
     #[cfg(unix)]
-    pub async unsafe fn load_from_bytes(data: &[u8]) -> Result<Self, LoadError> {
-        let path = unique_temp_path();
+    pub async unsafe fn load_from_bytes(id: DylibId, data: &[u8]) -> Result<Self, LoadError> {
+        // Prefer a stable on-disk cache keyed by dylib id. This avoids re-codesigning and also
+        // enables reuse across preview app restarts.
+        let cache_path = dylib_cache_path(id);
 
-        async_fs::write(&path, data).await.map_err(LoadError::Io)?;
+        if !cache_path.exists() {
+            if let Some(parent) = cache_path.parent() {
+                async_fs::create_dir_all(parent).await.map_err(LoadError::Io)?;
+            }
+            async_fs::write(&cache_path, data)
+                .await
+                .map_err(LoadError::Io)?;
+        }
 
-        #[cfg(target_os = "macos")]
-        codesign_dylib(&path).await?;
-
-        let lib = blocking::unblock({
-            let path = path.clone();
-            move || unsafe { libloading::Library::new(&path).map_err(LoadError::Library) }
-        })
-        .await?;
-        Ok(Self {
-            lib,
-            temp_path: Some(path),
-        })
+        Self::load_with_codesign_fallback(&cache_path).await
     }
 
     /// Check if the library has a symbol.
@@ -97,14 +150,16 @@ impl Drop for PreviewLibrary {
     }
 }
 
-#[cfg(unix)]
-fn unique_temp_path() -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    std::env::temp_dir().join(format!("waterui_preview_{pid}_{nanos}.dylib"))
+fn dylib_cache_path(id: DylibId) -> PathBuf {
+    let hex = id.to_string();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let base = home
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join(".water")
+        .join("cache")
+        .join("preview")
+        .join("dylibs");
+    base.join(format!("{hex}.dylib"))
 }
 
 #[cfg(target_os = "macos")]

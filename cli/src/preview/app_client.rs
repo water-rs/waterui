@@ -35,10 +35,28 @@ impl PreviewAppClient {
                 tracing::info!("Connected to preview app on {addr}");
 
                 let _ = stream.set_nodelay(true);
-                return Ok(Self {
+
+                let mut client = Self {
                     stream,
                     present_dylibs: HashSet::new(),
-                });
+                };
+
+                // Fast handshake: ensure the server is responsive (not just accepting TCP).
+                //
+                // Some failure modes leave the TCP listener alive while the single render worker
+                // is wedged, causing all requests to hang. A short HasDylib roundtrip detects this.
+                let handshake_id = DylibId::from_bytes([0; 32]);
+                let handshake = AppRequest::HasDylib { id: handshake_id };
+                if client
+                    .request_with_timeout(handshake, handshake_timeout())
+                    .await
+                    .is_ok()
+                {
+                    return Ok(client);
+                }
+
+                // Not responsive - try the next port.
+                continue;
             }
         }
 
@@ -109,11 +127,15 @@ impl PreviewAppClient {
     }
 
     async fn request(&mut self, request: AppRequest) -> Result<AppResponse> {
+        self.request_with_timeout(request, request_timeout()).await
+    }
+
+    async fn request_with_timeout(&mut self, request: AppRequest, timeout: Duration) -> Result<AppResponse> {
+        let kind = request_kind(&request);
         write_json_frame(&mut self.stream, &request)
             .await
             .wrap_err("Failed to send request")?;
 
-        let timeout = request_timeout();
         let recv = async {
             read_json_frame::<_, AppResponse>(&mut self.stream)
                 .await
@@ -128,7 +150,7 @@ impl PreviewAppClient {
         select! {
             result = recv => result,
             _ = timeout_fut => {
-                bail!("Preview app request timed out after {timeout:?}");
+                bail!("Preview app request timed out after {timeout:?} ({kind})");
             }
         }
     }
@@ -143,13 +165,30 @@ fn connect_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
 }
 
+fn handshake_timeout() -> Duration {
+    const DEFAULT_MS: u64 = 500;
+    std::env::var("WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
 fn request_timeout() -> Duration {
-    const DEFAULT_MS: u64 = 60_000;
+    const DEFAULT_MS: u64 = 20_000;
     std::env::var("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn request_kind(request: &AppRequest) -> &'static str {
+    match request {
+        AppRequest::HasDylib { .. } => "HasDylib",
+        AppRequest::Render { .. } => "Render",
+        AppRequest::Shutdown => "Shutdown",
+    }
 }
 
 async fn connect_with_timeout(addr: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
