@@ -309,7 +309,10 @@ impl AndroidPlatform {
         let target_upper = triple.to_string().replace('-', "_").to_uppercase();
 
         // Build with RustBuild
-        let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+        let mut build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+        if let Some(sccache_path) = options.sccache_path() {
+            build = build.with_sccache(sccache_path.to_path_buf());
+        }
 
         // Detect Kotlin path before entering unsafe block (detect_path is async)
         let kotlin_bin_dir = Kotlin::detect_path()
@@ -543,7 +546,10 @@ pub async fn build_android(
     let target_upper = triple.to_string().replace('-', "_").to_uppercase();
 
     // Build with RustBuild
-    let build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+    let mut build = RustBuild::new(project.root(), triple.clone(), options.is_hot_reload());
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
+    }
 
     // Detect Kotlin path before entering unsafe block (detect_path is async)
     let kotlin_bin_dir = Kotlin::detect_path()
