@@ -810,19 +810,19 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
         let fonts_dest = assets_dir.join("fonts");
         assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
 
-        // Generate WaterUIFonts.kt for font registration
-        let java_dir = backend_path.join("app/src/main/java");
-        generate_font_registration_kotlin(project, &resolved_fonts, &java_dir).await?;
-
         info!("Copied {} fonts to Android app", resolved_fonts.len());
     }
+
+    // Always generate WaterUIFonts.kt (even if empty) since MainActivity references it
+    let java_dir = backend_path.join("app/src/main/java");
+    generate_font_registration_kotlin(project, &resolved_fonts, &java_dir).await?;
 
     Ok(())
 }
 
-/// Template for WaterUIFonts.kt
+/// Template for WaterUIFonts.kt (in android_dynamic/ to avoid scaffold auto-copy)
 const WATERUI_FONTS_TEMPLATE: &str =
-    include_str!("../templates/android/app/src/main/java/WaterUIFonts.kt.tpl");
+    include_str!("../templates/android_dynamic/WaterUIFonts.kt.tpl");
 
 /// Generate WaterUIFonts.kt file for registering custom fonts.
 async fn generate_font_registration_kotlin(
