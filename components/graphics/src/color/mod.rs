@@ -708,7 +708,7 @@ impl View for Color {
 
 impl View for ResolvedColor {
     fn body(self, _env: &Environment) -> impl View {
-        crate::GpuSurface::new(SolidColorRenderer::new(self))
+        crate::GpuSurface::new(SolidColorRenderer::new(self)).on_demand()
     }
 }
 
