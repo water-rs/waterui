@@ -4,7 +4,7 @@ use nami::{Computed, SignalExt};
 use waterui_core::{Environment, View, dynamic::watch};
 use waterui_text::{
     Text,
-    font::{Body, Font, Headline, Title},
+    font::{Body, Caption, Font, Footnote, Headline, Subheadline, Title},
     styled::StyledStr,
 };
 
@@ -141,7 +141,10 @@ macro_rules! impl_font {
 
 impl_font!("Set font to title.", title, Title);
 impl_font!("Set font to headline.", headline, Headline);
+impl_font!("Set font to sub_headline.", sub_headline, Subheadline);
 impl_font!("Set font to body.", body, Body);
+impl_font!("Set font to caption.", caption, Caption);
+impl_font!("Set font to footnote.", footnote, Footnote);
 
 impl<F, T> View for LocalizedText<F, T>
 where
