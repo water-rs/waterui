@@ -311,6 +311,24 @@ pub trait GpuRenderer: 'static {
     fn resize(&mut self, _width: u32, _height: u32) {}
 }
 
+/// Rendering mode for a `GpuSurface`.
+///
+/// - `Continuous`: render at display refresh rate (for time-based animations like flames).
+/// - `OnDemand`: render only when inputs change (pointer/gesture/size or explicit invalidation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuSurfaceRenderMode {
+    /// Render continuously (vsync-driven).
+    Continuous = 0,
+    /// Render only when the surface is marked dirty by the native backend.
+    OnDemand = 1,
+}
+
+impl Default for GpuSurfaceRenderMode {
+    fn default() -> Self {
+        Self::Continuous
+    }
+}
+
 /// Private object-safe trait for type-erased GPU renderers.
 trait GpuRendererImpl: 'static {
     fn setup<'a>(&'a mut self, ctx: &'a GpuContext<'a>) -> SetupFuture<'a>;
@@ -357,6 +375,8 @@ impl<T: GpuRenderer> GpuRendererImpl for T {
 pub struct GpuSurface {
     /// The renderer that handles GPU drawing (type-erased).
     renderer: Box<dyn GpuRendererImpl>,
+    /// Whether this surface should render continuously or only on demand.
+    render_mode: GpuSurfaceRenderMode,
 }
 
 impl core::fmt::Debug for GpuSurface {
@@ -381,7 +401,33 @@ impl GpuSurface {
     pub fn new<R: GpuRenderer>(renderer: R) -> Self {
         Self {
             renderer: Box::new(renderer),
+            render_mode: GpuSurfaceRenderMode::Continuous,
         }
+    }
+
+    /// Sets the render mode for this surface.
+    #[must_use]
+    pub const fn render_mode(mut self, mode: GpuSurfaceRenderMode) -> Self {
+        self.render_mode = mode;
+        self
+    }
+
+    /// Render at display refresh rate (use for time-based animations).
+    #[must_use]
+    pub const fn continuous(self) -> Self {
+        self.render_mode(GpuSurfaceRenderMode::Continuous)
+    }
+
+    /// Render only when the native backend marks the surface dirty.
+    #[must_use]
+    pub const fn on_demand(self) -> Self {
+        self.render_mode(GpuSurfaceRenderMode::OnDemand)
+    }
+
+    /// Returns the current render mode.
+    #[must_use]
+    pub const fn get_render_mode(&self) -> GpuSurfaceRenderMode {
+        self.render_mode
     }
 
     /// Calls `setup` on the renderer, returning a future that completes when ready.

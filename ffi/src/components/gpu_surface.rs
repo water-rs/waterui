@@ -23,7 +23,9 @@ use {
     wgpu_hal::api::Metal as MetalApi,
 };
 
-use waterui_graphics::gpu_surface::{GestureState, GpuContext, GpuFrame, GpuSurface, PointerState};
+use waterui_graphics::gpu_surface::{
+    GestureState, GpuContext, GpuFrame, GpuSurface, GpuSurfaceRenderMode, PointerState,
+};
 use waterui_graphics::shared_context::shared_context;
 
 use crate::IntoFFI;
@@ -66,16 +68,25 @@ pub struct WuiGpuSurface {
     /// Opaque pointer to the boxed GpuSurface.
     /// This is consumed during init and should not be used after.
     pub surface: *mut c_void,
+    /// Render mode for the surface (see `GpuSurfaceRenderMode`).
+    pub render_mode: u32,
 }
 
 impl IntoFFI for GpuSurface {
     type FFI = WuiGpuSurface;
 
     fn into_ffi(self) -> Self::FFI {
+        let render_mode = match self.get_render_mode() {
+            GpuSurfaceRenderMode::Continuous => 0,
+            GpuSurfaceRenderMode::OnDemand => 1,
+        };
         // Box the GpuSurface for FFI transfer.
         let boxed = Box::new(self);
         let ptr = Box::into_raw(boxed) as *mut c_void;
-        WuiGpuSurface { surface: ptr }
+        WuiGpuSurface {
+            surface: ptr,
+            render_mode,
+        }
     }
 }
 
