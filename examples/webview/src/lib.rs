@@ -85,10 +85,12 @@ fn main(webview: WebView) -> impl View {
     let system_user_agent: Binding<Str> = binding("");
     let custom_user_agent: Binding<Str> = binding("");
 
+    // Configure webview with reactive redirect setting
+    let webview = webview.redirects_enabled(allow_redirects.clone());
+
     let can_go_back = webview.can_go_back();
     let can_go_forward = webview.can_go_forward();
 
-    webview.set_redirects_enabled(allow_redirects.get());
     webview.go_to(address.get().as_str());
 
     let toolbar = vstack((
@@ -207,7 +209,6 @@ fn main(webview: WebView) -> impl View {
     .width(250.0);
 
     let event_signal = WebView::event(&webview);
-    let allow_redirects_for_change = allow_redirects.clone();
     let event_guard = {
         let webview = webview.clone();
         event_signal.watch(move |ctx| {
@@ -223,13 +224,7 @@ fn main(webview: WebView) -> impl View {
         })
     };
 
-    let webview_for_redirect = webview.clone();
-
-    hstack((webview, toolbar))
-        .on_change(&allow_redirects_for_change, move |enabled| {
-            webview_for_redirect.set_redirects_enabled(enabled);
-        })
-        .retain(event_guard)
+    hstack((webview, toolbar)).retain(event_guard)
 }
 
 fn missing_controller_view() -> impl View {

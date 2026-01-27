@@ -33,6 +33,7 @@ pub use waterui_url::Url;
 
 use waterui_core::{
     Binding, Computed, Signal, View, binding, env::use_env, layout::StretchAxis, raw_view,
+    reactive::watcher::BoxWatcherGuard,
 };
 use waterui_str::Str;
 
@@ -101,12 +102,36 @@ pub enum WebViewError {
 /// the native backend emits [`WebViewEvent::StateChanged`] events.
 ///
 /// WebView implements [`View`] so it can be used directly in the view hierarchy.
-#[derive(Clone, Debug)]
 pub struct WebView {
     event: Binding<WebViewEvent>,
     handle: AnyWebViewHandle,
     can_go_back: Binding<bool>,
     can_go_forward: Binding<bool>,
+    #[allow(dead_code)]
+    redirects_watcher: Option<std::rc::Rc<BoxWatcherGuard>>,
+}
+
+impl Clone for WebView {
+    fn clone(&self) -> Self {
+        Self {
+            event: self.event.clone(),
+            handle: self.handle.clone(),
+            can_go_back: self.can_go_back.clone(),
+            can_go_forward: self.can_go_forward.clone(),
+            redirects_watcher: self.redirects_watcher.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for WebView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebView")
+            .field("event", &self.event)
+            .field("handle", &self.handle)
+            .field("can_go_back", &self.can_go_back)
+            .field("can_go_forward", &self.can_go_forward)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebView {
@@ -142,7 +167,36 @@ impl WebView {
             event,
             can_go_back,
             can_go_forward,
+            redirects_watcher: None,
         }
+    }
+
+    /// Sets whether redirects are allowed, using a reactive signal.
+    ///
+    /// The native backend will automatically sync with the signal's value.
+    /// When the signal changes, the redirect setting is updated immediately.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let allow_redirects = binding(false);
+    /// let webview = WebView::new(handle)
+    ///     .redirects_enabled(allow_redirects.clone());
+    /// ```
+    pub fn redirects_enabled(mut self, enabled: impl Into<Computed<bool>>) -> Self {
+        let enabled = enabled.into();
+
+        // Initial sync
+        self.handle.set_redirects_enabled(enabled.get());
+
+        // Watch for changes
+        let handle = self.handle.clone();
+        let guard = enabled.watch(move |ctx| {
+            handle.set_redirects_enabled(ctx.into_value());
+        });
+
+        self.redirects_watcher = Some(std::rc::Rc::new(guard));
+        self
     }
 
     /// Opens a new WebView and navigates to the specified URL.
