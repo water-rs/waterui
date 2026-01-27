@@ -9,16 +9,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DataPoint};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
+    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -108,10 +108,12 @@ impl BarChartRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/bar.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bar Chart Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Bar Chart Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -270,11 +272,12 @@ impl GpuRenderer for BarChartRenderer {
 
         if self.data.is_empty() {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Bar Chart Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Bar Chart Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Bar Chart Clear Pass"),
@@ -295,7 +298,8 @@ impl GpuRenderer for BarChartRenderer {
         }
 
         // Update zoom/pan state from gesture input
-        self.zoom_pan.update(&frame.gesture, frame.width as f32, frame.height as f32);
+        self.zoom_pan
+            .update(&frame.gesture, frame.width as f32, frame.height as f32);
 
         // Transform bounds based on zoom/pan state
         let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
@@ -318,11 +322,24 @@ impl GpuRenderer for BarChartRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
                 if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
-                    glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                    glam::Vec4::new(
+                        px,
+                        py,
+                        if frame.pointer.hit.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        0.0,
+                    )
                 } else {
                     glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
                 }
@@ -330,7 +347,11 @@ impl GpuRenderer for BarChartRenderer {
                 glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
             },
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render bars
         let mut encoder = frame

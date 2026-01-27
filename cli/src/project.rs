@@ -753,7 +753,10 @@ pub struct Package {
     /// Bundle identifier for the application (e.g., "com.example.waterdemo").
     pub bundle_identifier: String,
     /// Path to assets directory relative to project root. Defaults to "assets".
-    #[serde(default = "default_assets_path", skip_serializing_if = "is_default_assets_path")]
+    #[serde(
+        default = "default_assets_path",
+        skip_serializing_if = "is_default_assets_path"
+    )]
     pub assets_path: String,
     /// Whether to build as an accessory (headless) app on macOS.
     #[serde(default, skip_serializing_if = "is_false")]

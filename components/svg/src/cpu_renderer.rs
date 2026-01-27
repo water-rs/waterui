@@ -84,7 +84,9 @@ impl SvgRenderer {
     pub fn from_path(path_data: &str, width: f32, height: f32) -> Self {
         let svg_content = alloc::format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}"><path d="{}"/></svg>"#,
-            width, height, path_data
+            width,
+            height,
+            path_data
         );
         Self::new(&svg_content)
     }
@@ -116,8 +118,8 @@ impl SvgRenderer {
         #[allow(clippy::cast_precision_loss)]
         let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
 
-        let transform = resvg::tiny_skia::Transform::from_translate(offset_x, offset_y)
-            .pre_scale(scale, scale);
+        let transform =
+            resvg::tiny_skia::Transform::from_translate(offset_x, offset_y).pre_scale(scale, scale);
 
         resvg::render(&self.svg_tree, transform, &mut pixmap.as_mut());
 
@@ -247,13 +249,13 @@ impl GpuRenderer for SvgRenderer {
         self.bind_group_layout = Some(bind_group_layout.clone());
 
         // Create pipeline layout
-        let pipeline_layout =
-            ctx.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("SVG Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("SVG Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None

@@ -81,7 +81,10 @@ impl IntoFFI for Annotation {
         WuiAnnotation {
             coordinate: self.coordinate.into_ffi(),
             title: self.title.into_ffi(),
-            subtitle: self.subtitle.unwrap_or_else(|| Str::from_static("")).into_ffi(),
+            subtitle: self
+                .subtitle
+                .unwrap_or_else(|| Str::from_static(""))
+                .into_ffi(),
         }
     }
 }
@@ -162,4 +165,8 @@ ffi_view!(MapConfig, WuiMap, map);
 // =============================================================================
 
 crate::ffi_computed!(Region, WuiRegion, region);
-crate::ffi_computed!(Vec<Annotation>, crate::array::WuiArray<WuiAnnotation>, annotations);
+crate::ffi_computed!(
+    Vec<Annotation>,
+    crate::array::WuiArray<WuiAnnotation>,
+    annotations
+);

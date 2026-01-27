@@ -9,16 +9,16 @@ use core::future::Future;
 use encase::ShaderType;
 use waterui_core::layout::Point;
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{DataBounds, DepthData, DepthLevel};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
+    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -66,10 +66,10 @@ impl DepthRenderer {
         Self {
             data: DepthData::default(),
             bounds: DataBounds::default(),
-            bid_fill_color: [0.133, 0.773, 0.369, 0.5],  // Green with 50% opacity
-            bid_line_color: [0.133, 0.773, 0.369, 1.0],  // Green #22C55E
-            ask_fill_color: [0.937, 0.267, 0.267, 0.5],  // Red with 50% opacity
-            ask_line_color: [0.937, 0.267, 0.267, 1.0],  // Red #EF4444
+            bid_fill_color: [0.133, 0.773, 0.369, 0.5], // Green with 50% opacity
+            bid_line_color: [0.133, 0.773, 0.369, 1.0], // Green #22C55E
+            ask_fill_color: [0.937, 0.267, 0.267, 0.5], // Red with 50% opacity
+            ask_line_color: [0.937, 0.267, 0.267, 1.0], // Red #EF4444
             pipeline: None,
             uniform_buffer: None,
             color_buffer: None,
@@ -118,10 +118,12 @@ impl DepthRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/depth.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Depth Chart Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Depth Chart Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -223,7 +225,11 @@ impl GpuRenderer for DepthRenderer {
 
         // Create uniform buffer
         let uniforms = ChartUniforms::default();
-        self.uniform_buffer = Some(create_uniform_buffer(ctx, "Depth Chart Uniforms", &uniforms));
+        self.uniform_buffer = Some(create_uniform_buffer(
+            ctx,
+            "Depth Chart Uniforms",
+            &uniforms,
+        ));
 
         // Create color buffer
         let mid_price = self.data.mid_price().unwrap_or(0.0);
@@ -320,11 +326,12 @@ impl GpuRenderer for DepthRenderer {
 
         if total_levels == 0 {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Depth Chart Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Depth Chart Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Depth Chart Clear Pass"),
@@ -345,7 +352,8 @@ impl GpuRenderer for DepthRenderer {
         }
 
         // Update zoom/pan state from gesture input
-        self.zoom_pan.update(&frame.gesture, frame.width as f32, frame.height as f32);
+        self.zoom_pan
+            .update(&frame.gesture, frame.width as f32, frame.height as f32);
 
         // Transform bounds based on zoom/pan state
         let visible_bounds = self.zoom_pan.transform_bounds(&self.bounds);
@@ -368,11 +376,24 @@ impl GpuRenderer for DepthRenderer {
                 self.animation.time,
                 self.animation.progress,
                 self.animation.easing as f32,
-                if self.animation.entry_active > 0 { 1.0 } else { 0.0 },
+                if self.animation.entry_active > 0 {
+                    1.0
+                } else {
+                    0.0
+                },
             ),
             pointer: if let Some((x, y)) = frame.pointer_normalized() {
                 if let Some((px, py)) = super::unpad_normalized_point(x, y, PLOT_PADDING) {
-                    glam::Vec4::new(px, py, if frame.pointer.hit.is_some() { 1.0 } else { 0.0 }, 0.0)
+                    glam::Vec4::new(
+                        px,
+                        py,
+                        if frame.pointer.hit.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        0.0,
+                    )
                 } else {
                     glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
                 }
@@ -380,12 +401,17 @@ impl GpuRenderer for DepthRenderer {
                 glam::Vec4::new(-1.0, -1.0, 0.0, 0.0)
             },
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Update colors with mid price
-        let mid_price = self.data.mid_price().unwrap_or(
-            (self.bounds.min_x + self.bounds.max_x) / 2.0
-        );
+        let mid_price = self
+            .data
+            .mid_price()
+            .unwrap_or((self.bounds.min_x + self.bounds.max_x) / 2.0);
         let colors = DepthColors {
             bid_fill: glam::Vec4::from_array(self.bid_fill_color),
             bid_line: glam::Vec4::from_array(self.bid_line_color),
@@ -502,9 +528,10 @@ impl ChartRenderer for DepthRenderer {
         let price_range = visible_bounds.max_x - visible_bounds.min_x;
         let price = visible_bounds.min_x + chart_x * price_range;
 
-        let mid_price = self.data.mid_price().unwrap_or(
-            (visible_bounds.min_x + visible_bounds.max_x) / 2.0
-        );
+        let mid_price = self
+            .data
+            .mid_price()
+            .unwrap_or((visible_bounds.min_x + visible_bounds.max_x) / 2.0);
 
         // Find the closest level
         if price < mid_price {

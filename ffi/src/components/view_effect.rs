@@ -20,10 +20,7 @@ use alloc::vec;
 
 // Platform-specific imports for Metal HAL texture import
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-use {
-    metal::MTLTextureType,
-    wgpu_hal::api::Metal as MetalApi,
-};
+use {metal::MTLTextureType, wgpu_hal::api::Metal as MetalApi};
 
 // Platform-specific imports for Vulkan HAL texture import (Android)
 #[cfg(target_os = "android")]
@@ -35,7 +32,9 @@ use crate::components::android_ahb;
 pub type WuiExternalDropFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 use waterui_graphics::shared_context::shared_context;
-use waterui_graphics::view_effect::{EffectContext, EffectInput, EffectOutput, OutputSize, ViewEffectErased};
+use waterui_graphics::view_effect::{
+    EffectContext, EffectInput, EffectOutput, OutputSize, ViewEffectErased,
+};
 
 use crate::{IntoFFI, WuiAnyView};
 
@@ -102,9 +101,7 @@ impl IntoFFI for ViewEffectErased {
 
         // Box the ViewEffectErased for FFI transfer
         // The effect renderer remains inside the erased wrapper
-        let effect_wrapper = Box::new(ViewEffectRendererWrapper {
-            erased: self,
-        });
+        let effect_wrapper = Box::new(ViewEffectRendererWrapper { erased: self });
         let effect_ptr = Box::into_raw(effect_wrapper) as *mut c_void;
 
         WuiViewEffect {
@@ -236,7 +233,9 @@ pub unsafe extern "C" fn waterui_view_effect_init(
         let pipeline_cache = guard.pipeline_cache.clone();
 
         // Create output surface
-        let Some(output_surface) = super::gpu_surface::create_surface_from_layer(instance, output_layer) else {
+        let Some(output_surface) =
+            super::gpu_surface::create_surface_from_layer(instance, output_layer)
+        else {
             tracing::error!("[ViewEffect] Failed to create output surface from layer");
             return core::ptr::null_mut();
         };
@@ -252,11 +251,18 @@ pub unsafe extern "C" fn waterui_view_effect_init(
         let format = if surface_caps.formats.contains(&preferred) {
             preferred
         } else {
-            tracing::warn!("[ViewEffect] Preferred format {:?} not supported, using {:?}", preferred, surface_caps.formats[0]);
+            tracing::warn!(
+                "[ViewEffect] Preferred format {:?} not supported, using {:?}",
+                preferred,
+                surface_caps.formats[0]
+            );
             surface_caps.formats[0]
         };
 
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
             wgpu::PresentMode::Fifo
         } else {
             surface_caps.present_modes[0]
@@ -285,7 +291,9 @@ pub unsafe extern "C" fn waterui_view_effect_init(
 
         tracing::info!(
             "[ViewEffect] Configuring output: {}x{} {:?}",
-            output_width, output_height, format
+            output_width,
+            output_height,
+            format
         );
 
         if !try_configure_surface(&output_surface, &device, &output_config) {
@@ -308,8 +316,8 @@ pub unsafe extern "C" fn waterui_view_effect_init(
             dimension: wgpu::TextureDimension::D2,
             format: capture_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
-                 | wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -410,7 +418,11 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             state.output_config.height = output_height;
 
             if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-                tracing::warn!("[ViewEffect] output resize failed ({}x{})", output_width, output_height);
+                tracing::warn!(
+                    "[ViewEffect] output resize failed ({}x{})",
+                    output_width,
+                    output_height
+                );
                 return false;
             }
         }
@@ -428,8 +440,8 @@ pub unsafe extern "C" fn waterui_view_effect_set_input(
             dimension: wgpu::TextureDimension::D2,
             format: state.capture_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
-                 | wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         }));
     }
@@ -573,7 +585,11 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         let output = match state.output_surface.get_current_texture() {
             Ok(o) => o,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
+                if !try_configure_surface(
+                    &state.output_surface,
+                    &state.device,
+                    &state.output_config,
+                ) {
                     return false;
                 }
                 match state.output_surface.get_current_texture() {
@@ -800,7 +816,9 @@ fn import_metal_texture(
 
     tracing::debug!(
         "[ViewEffect] Importing Metal texture: {}x{} {:?}",
-        width, height, metal_texture.pixel_format()
+        width,
+        height,
+        metal_texture.pixel_format()
     );
 
     // Create HAL texture from the Metal texture
@@ -837,7 +855,9 @@ fn import_metal_texture(
 
     // Create wgpu texture from HAL texture
     let wgpu_texture = unsafe {
-        state.device.create_texture_from_hal::<MetalApi>(hal_texture, &texture_desc)
+        state
+            .device
+            .create_texture_from_hal::<MetalApi>(hal_texture, &texture_desc)
     };
 
     // Store the imported texture
@@ -855,7 +875,11 @@ fn import_metal_texture(
         state.output_config.height = output_height;
 
         if !try_configure_surface(&state.output_surface, &state.device, &state.output_config) {
-            tracing::warn!("[ViewEffect] output resize failed ({}x{})", output_width, output_height);
+            tracing::warn!(
+                "[ViewEffect] output resize failed ({}x{})",
+                output_width,
+                output_height
+            );
             return false;
         }
     }

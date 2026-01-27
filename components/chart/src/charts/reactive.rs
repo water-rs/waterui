@@ -107,14 +107,11 @@ where
 
     fn render(&mut self, frame: &GpuFrame) {
         // Check for pending data updates
-        let needs_update = self.pending_update
-            .lock()
-            .ok()
-            .map_or(false, |mut guard| {
-                let pending = *guard;
-                *guard = false;
-                pending
-            });
+        let needs_update = self.pending_update.lock().ok().map_or(false, |mut guard| {
+            let pending = *guard;
+            *guard = false;
+            pending
+        });
 
         if needs_update {
             // Read current value from signal and update renderer

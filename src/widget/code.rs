@@ -3,8 +3,8 @@ use executor_core::spawn_local;
 use nami::Binding;
 use native_executor::sleep;
 use std::time::Duration;
-use waterui_graphics::color::Color;
 use waterui_core::View;
+use waterui_graphics::color::Color;
 use waterui_layout::{
     spacer,
     stack::{HorizontalAlignment, VStack, hstack},

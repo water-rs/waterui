@@ -1,7 +1,7 @@
 //! GTK4 Divider (Separator) component implementation.
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use waterui::prelude::Divider;
 use waterui_core::Environment;
 

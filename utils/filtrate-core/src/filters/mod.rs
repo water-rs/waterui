@@ -4,8 +4,8 @@
 //! Filters with `COLOR_ONLY = true` can be automatically fused with adjacent
 //! color-only filters for better performance.
 
-mod brightness;
 mod blur;
+mod brightness;
 mod contrast;
 mod grayscale;
 mod hue_rotation;
@@ -16,8 +16,8 @@ mod sepia;
 mod sharpen;
 mod vignette;
 
-pub use brightness::Brightness;
 pub use blur::Blur;
+pub use brightness::Brightness;
 pub use contrast::Contrast;
 pub use grayscale::Grayscale;
 pub use hue_rotation::HueRotation;

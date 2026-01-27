@@ -178,7 +178,10 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
 
         match waterui_cli::apple::local::screenshot(&output).await {
             Ok(()) => {
-                success!("Screenshot saved to {} (from macOS local)", output.display());
+                success!(
+                    "Screenshot saved to {} (from macOS local)",
+                    output.display()
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -353,18 +356,9 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
     println!("{}", "-".repeat(80));
 
     for (i, elem) in elements.iter().enumerate() {
-        let label = elem
-            .get("AXLabel")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
-        let elem_type = elem
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
-        let value = elem
-            .get("AXValue")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let label = elem.get("AXLabel").and_then(|v| v.as_str()).unwrap_or("-");
+        let elem_type = elem.get("type").and_then(|v| v.as_str()).unwrap_or("-");
+        let value = elem.get("AXValue").and_then(|v| v.as_str()).unwrap_or("");
 
         // Get frame info
         let frame = elem.get("frame");

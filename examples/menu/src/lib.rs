@@ -82,7 +82,9 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
             ],
         ),
         spacer().height(12.0),
-        text!("{action_log}").font(font::Caption).foreground(MutedForeground),
+        text!("{action_log}")
+            .font(font::Caption)
+            .foreground(MutedForeground),
     ))
     .padding()
 }
@@ -114,7 +116,9 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
                     .action(|a| a.set("Selected all!".to_string())),
             ]),
         spacer().height(12.0),
-        text!("{context_action}").font(font::Caption).foreground(MutedForeground),
+        text!("{context_action}")
+            .font(font::Caption)
+            .foreground(MutedForeground),
     ))
     .padding()
 }
@@ -168,7 +172,9 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 ]),
         )),
         spacer().height(12.0),
-        text!("{view_action}").font(font::Caption).foreground(MutedForeground),
+        text!("{view_action}")
+            .font(font::Caption)
+            .foreground(MutedForeground),
     ))
     .padding()
 }

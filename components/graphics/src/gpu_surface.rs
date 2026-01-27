@@ -128,9 +128,8 @@ impl PointerState {
     /// Returns `None` if there is no active pointer position.
     #[must_use]
     pub fn normalized(&self, width: u32, height: u32) -> Option<(f32, f32)> {
-        self.position.map(|p| {
-            (p.x / width as f32, p.y / height as f32)
-        })
+        self.position
+            .map(|p| (p.x / width as f32, p.y / height as f32))
     }
 
     /// Returns `true` if the pointer is hovering over this surface.

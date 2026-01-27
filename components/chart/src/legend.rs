@@ -9,7 +9,7 @@ use waterui_core::{AnyView, View};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, VerticalAlignment};
-use waterui_layout::{absolute, PositionExt, UnitPoint};
+use waterui_layout::{PositionExt, UnitPoint, absolute};
 use waterui_shape::{Rectangle, ShapeExt};
 use waterui_text::text;
 
@@ -156,14 +156,33 @@ impl View for Legend {
         // Position legend within the available bounds
         let inset: f32 = 8.0;
         let (anchor, position, offset_x, offset_y) = match self.position {
-            LegendPosition::TopRight => (UnitPoint::TOP_TRAILING, UnitPoint::TOP_TRAILING, -inset, inset),
-            LegendPosition::TopLeft => (UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, inset, inset),
-            LegendPosition::BottomRight => (UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING, -inset, -inset),
-            LegendPosition::BottomLeft => (UnitPoint::BOTTOM_LEADING, UnitPoint::BOTTOM_LEADING, inset, -inset),
+            LegendPosition::TopRight => (
+                UnitPoint::TOP_TRAILING,
+                UnitPoint::TOP_TRAILING,
+                -inset,
+                inset,
+            ),
+            LegendPosition::TopLeft => {
+                (UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING, inset, inset)
+            }
+            LegendPosition::BottomRight => (
+                UnitPoint::BOTTOM_TRAILING,
+                UnitPoint::BOTTOM_TRAILING,
+                -inset,
+                -inset,
+            ),
+            LegendPosition::BottomLeft => (
+                UnitPoint::BOTTOM_LEADING,
+                UnitPoint::BOTTOM_LEADING,
+                inset,
+                -inset,
+            ),
             LegendPosition::Top => (UnitPoint::TOP, UnitPoint::TOP, 0.0, inset),
             LegendPosition::Bottom => (UnitPoint::BOTTOM, UnitPoint::BOTTOM, 0.0, -inset),
         };
 
-        AnyView::new(absolute((content.position_in_offset(anchor, position, offset_x, offset_y),)))
+        AnyView::new(absolute((
+            content.position_in_offset(anchor, position, offset_x, offset_y),
+        )))
     }
 }

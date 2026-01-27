@@ -20,7 +20,12 @@ impl<T> HitResult<T> {
     /// Creates a new hit result.
     #[must_use]
     pub const fn new(series: usize, index: usize, value: T, screen_position: Point) -> Self {
-        Self { series, index, value, screen_position }
+        Self {
+            series,
+            index,
+            value,
+            screen_position,
+        }
     }
 }
 
@@ -41,7 +46,12 @@ impl ChartViewport {
     /// Creates a new viewport.
     #[must_use]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// Checks if a point is within the viewport.
@@ -271,7 +281,9 @@ impl ZoomPanState {
     /// Returns true if there's any zoom or pan applied.
     #[must_use]
     pub fn is_transformed(&self) -> bool {
-        (self.scale - 1.0).abs() > 0.001 || self.offset.x.abs() > 0.001 || self.offset.y.abs() > 0.001
+        (self.scale - 1.0).abs() > 0.001
+            || self.offset.x.abs() > 0.001
+            || self.offset.y.abs() > 0.001
     }
 
     /// Clamps offset to keep data visible.

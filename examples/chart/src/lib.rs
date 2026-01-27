@@ -56,7 +56,11 @@ impl ChartMode {
         Self::Gauge,
     ];
 
-    const STRESS: &[Self] = &[Self::StressScatter10K, Self::StressLine1K, Self::StressHeatmap10K];
+    const STRESS: &[Self] = &[
+        Self::StressScatter10K,
+        Self::StressLine1K,
+        Self::StressHeatmap10K,
+    ];
 
     const fn label(self) -> &'static str {
         match self {
@@ -118,10 +122,7 @@ fn main() -> impl View {
     zstack((
         Color::srgb_hex("#1a1a2e"),
         vstack((
-            text("Charts Demo")
-                .title()
-                .bold()
-                .foreground(Srgb::WHITE),
+            text("Charts Demo").title().bold().foreground(Srgb::WHITE),
             mode_buttons(ChartMode::BASIC, &mode),
             // GPU stress test buttons (data loads that choke Swift Charts)
             mode_buttons(ChartMode::STRESS, &mode),

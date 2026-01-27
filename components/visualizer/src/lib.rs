@@ -28,7 +28,7 @@ mod waveform;
 // mod spectrogram;
 // mod phase;
 
-pub use theme::{WaveformTheme, SpectrumTheme};
+pub use theme::{SpectrumTheme, WaveformTheme};
 pub use waveform::Waveform;
 // pub use spectrum::Spectrum;
 // pub use spectrogram::Spectrogram;

@@ -15,7 +15,10 @@ fn validate_all_wgsl_shaders() {
             continue;
         }
 
-        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("Failed to read shader source: {file_name}"));
 

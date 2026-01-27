@@ -10,13 +10,13 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
 
-use base64::Engine;
 use crate::closure::WuiFn;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
+use base64::Engine;
 use waterui_str::Str;
 use waterui_webview::{
-    WebView, cookie::Cookie, CustomWebViewController, ScriptInjectionTime, Url, WebViewController,
-    WebViewError, WebViewEvent, WebViewHandle,
+    CustomWebViewController, ScriptInjectionTime, Url, WebView, WebViewController, WebViewError,
+    WebViewEvent, WebViewHandle, cookie::Cookie,
 };
 
 // =============================================================================
@@ -274,8 +274,7 @@ pub struct WuiWebViewHandle {
     ///
     /// Backends are expected to provide a Promise-based API where possible:
     /// JavaScript sends `payload_base64` and receives a base64 reply.
-    pub add_handler:
-        Option<unsafe extern "C" fn(*mut (), WuiStr, WuiFn<WuiWebViewMessage>)>,
+    pub add_handler: Option<unsafe extern "C" fn(*mut (), WuiStr, WuiFn<WuiWebViewMessage>)>,
     /// Removes a previously added handler.
     pub remove_handler: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
 
@@ -371,9 +370,7 @@ impl WebViewHandle for FfiWebViewHandle {
 
     fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
         let owned_script = Str::from(script.to_string());
-        unsafe {
-            (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi())
-        }
+        unsafe { (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi()) }
     }
 
     fn watch(&self, f: impl Fn(WebViewEvent) + 'static) {
@@ -459,7 +456,9 @@ impl WebViewHandle for FfiWebViewHandle {
                 if trimmed.is_empty() {
                     return None;
                 }
-                Cookie::parse(trimmed.to_string()).ok().map(Cookie::into_owned)
+                Cookie::parse(trimmed.to_string())
+                    .ok()
+                    .map(Cookie::into_owned)
             })
             .collect()
     }
@@ -482,8 +481,8 @@ impl WebViewHandle for FfiWebViewHandle {
 
         // Create the callback
         let state_clone = state.clone();
-        let callback_box: Box<Box<dyn FnOnce(bool, Str)>> = Box::new(Box::new(
-            move |success: bool, result_str: Str| {
+        let callback_box: Box<Box<dyn FnOnce(bool, Str)>> =
+            Box::new(Box::new(move |success: bool, result_str: Str| {
                 let mut state = state_clone.borrow_mut();
                 state.result = Some(if success {
                     Ok(result_str)
@@ -493,8 +492,7 @@ impl WebViewHandle for FfiWebViewHandle {
                 if let Some(waker) = state.waker.take() {
                     waker.wake();
                 }
-            },
-        ));
+            }));
         let callback_data = Box::into_raw(callback_box).cast::<()>();
 
         unsafe extern "C" fn js_callback_trampoline(data: *mut (), success: bool, result: WuiStr) {
@@ -522,10 +520,7 @@ impl WebViewHandle for FfiWebViewHandle {
         impl core::future::Future for JsFuture {
             type Output = Result<Str, Str>;
 
-            fn poll(
-                self: Pin<&mut Self>,
-                cx: &mut core::task::Context<'_>,
-            ) -> Poll<Self::Output> {
+            fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
                 let mut state = self.state.borrow_mut();
                 if let Some(result) = state.result.take() {
                     Poll::Ready(result)

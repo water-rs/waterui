@@ -78,11 +78,19 @@ fn main() -> impl View {
             .padding_with(EdgeInsets::all(20.0)),
         ),
         // Conditionally render windows based on state (invisible triggers)
-        conditional_window(standard_state.clone(), |state| create_standard_window(state)),
-        conditional_window(borderless_state.clone(), |state| create_borderless_window(state)),
+        conditional_window(standard_state.clone(), |state| {
+            create_standard_window(state)
+        }),
+        conditional_window(borderless_state.clone(), |state| {
+            create_borderless_window(state)
+        }),
         conditional_window(frosted_state.clone(), |state| create_frosted_window(state)),
-        conditional_window(transparent_state.clone(), |state| create_transparent_window(state)),
-        conditional_window(ultra_thin_state.clone(), |state| create_ultra_thin_window(state)),
+        conditional_window(transparent_state.clone(), |state| {
+            create_transparent_window(state)
+        }),
+        conditional_window(ultra_thin_state.clone(), |state| {
+            create_ultra_thin_window(state)
+        }),
     ))
 }
 
@@ -197,13 +205,9 @@ fn transparent_window_content() -> impl View {
 
 /// Helper to create a colored box
 fn colored_box(color: Color, label: &'static str) -> impl View {
-    vstack((
-        spacer(),
-        text(label).bold().body(),
-        spacer(),
-    ))
-    .padding_with(EdgeInsets::all(32.0))
-    .background(color)
+    vstack((spacer(), text(label).bold().body(), spacer()))
+        .padding_with(EdgeInsets::all(32.0))
+        .background(color)
 }
 
 /// Showcase all material types

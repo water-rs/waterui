@@ -8,10 +8,10 @@ use color_eyre::eyre::{Result, bail};
 use crate::shell::{self, display_output};
 use crate::{header, success};
 use waterui_cli::{
-    android::platform::{build_android, package_android, AndroidPlatform},
+    android::platform::{AndroidPlatform, build_android, package_android},
+    android::toolchain::{AndroidNdk, AndroidSdk},
     apple::platform::{build_rust_lib, package_apple},
     apple::toolchain::{AppleSdk, Xcode},
-    android::toolchain::{AndroidNdk, AndroidSdk},
     build::BuildOptions,
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
@@ -223,18 +223,14 @@ async fn build_for_platform(
     options: BuildOptions,
 ) -> Result<PathBuf> {
     match platform {
-        TargetPlatform::Ios => {
-            build_rust_lib(project, LibTargetPlatform::IOS, options).await
-        }
+        TargetPlatform::Ios => build_rust_lib(project, LibTargetPlatform::IOS, options).await,
         TargetPlatform::IosSimulator => {
             build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await
         }
         TargetPlatform::Android => {
             build_android(project, LibTargetPlatform::Android, options).await
         }
-        TargetPlatform::Macos => {
-            build_rust_lib(project, LibTargetPlatform::MacOS, options).await
-        }
+        TargetPlatform::Macos => build_rust_lib(project, LibTargetPlatform::MacOS, options).await,
     }
 }
 
@@ -244,18 +240,14 @@ async fn package_for_platform(
     options: PackageOptions,
 ) -> Result<waterui_cli::device::Artifact> {
     match platform {
-        TargetPlatform::Ios => {
-            package_apple(project, LibTargetPlatform::IOS, options).await
-        }
+        TargetPlatform::Ios => package_apple(project, LibTargetPlatform::IOS, options).await,
         TargetPlatform::IosSimulator => {
             package_apple(project, LibTargetPlatform::IOSSimulator, options).await
         }
         TargetPlatform::Android => {
             package_android(project, LibTargetPlatform::Android, options).await
         }
-        TargetPlatform::Macos => {
-            package_apple(project, LibTargetPlatform::MacOS, options).await
-        }
+        TargetPlatform::Macos => package_apple(project, LibTargetPlatform::MacOS, options).await,
     }
 }
 

@@ -106,11 +106,7 @@ impl View for IconGlyph {
     fn body(self, _env: &Environment) -> impl View {
         // Encode the codepoint to UTF-8 and convert to owned String
         let text = alloc::string::String::from(self.codepoint);
-        StyledStr::plain(text).font(
-            Font::default()
-                .size(self.size)
-                .family(self.font_family),
-        )
+        StyledStr::plain(text).font(Font::default().size(self.size).family(self.font_family))
     }
 }
 

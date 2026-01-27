@@ -15,7 +15,7 @@ pub mod heatmap;
 pub mod line;
 pub mod pie;
 pub mod radar;
-pub mod scatter;
 pub mod reactive;
+pub mod scatter;
 
 pub use reactive::SignalRenderer;

@@ -17,12 +17,12 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use crate::Url;
+use crate::image::Image;
 use executor_core::spawn_local;
 use image::GenericImageView;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::{Environment, View};
-use crate::image::Image;
-use crate::Url;
 
 /// A photo component that displays an image from a URL.
 ///
@@ -148,11 +148,16 @@ async fn fetch_and_decode(url: Url) -> Result<(Vec<u8>, u32, u32), String> {
         return Err(format!("HTTP error: {}", response.status()));
     }
 
-    let data = response.into_body().into_bytes().await.map_err(|e| e.to_string())?;
+    let data = response
+        .into_body()
+        .into_bytes()
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Decode on a background thread to avoid blocking
     blocking::unblock(move || {
-        let img = image::load_from_memory(&data).map_err(|e| format!("Image decode failed: {}", e))?;
+        let img =
+            image::load_from_memory(&data).map_err(|e| format!("Image decode failed: {}", e))?;
 
         let (width, height) = img.dimensions();
         let rgba = img.into_rgba8();

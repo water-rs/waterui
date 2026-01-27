@@ -34,8 +34,8 @@
 //! ```
 
 use nami::{SignalExt, constant, signal::IntoComputed};
-use waterui_graphics::color::Color;
 use waterui_core::Computed;
+use waterui_graphics::color::Color;
 
 /// A color stop in a gradient, consisting of a color and its position.
 ///
@@ -354,7 +354,12 @@ impl AngularGradient {
     #[must_use]
     pub fn full_sweep(stops: Vec<ColorStop>) -> Self {
         use core::f32::consts::TAU;
-        Self::new(stops, UnitPoint::CENTER, -core::f32::consts::FRAC_PI_2, TAU - core::f32::consts::FRAC_PI_2)
+        Self::new(
+            stops,
+            UnitPoint::CENTER,
+            -core::f32::consts::FRAC_PI_2,
+            TAU - core::f32::consts::FRAC_PI_2,
+        )
     }
 }
 
@@ -392,10 +397,7 @@ impl MeshVertex {
     ///
     /// * `position` - Position in unit coordinates, can be static or reactive
     /// * `color` - Color at this vertex, can be static or reactive
-    pub fn new(
-        position: impl IntoComputed<(f32, f32)>,
-        color: impl IntoComputed<Color>,
-    ) -> Self {
+    pub fn new(position: impl IntoComputed<(f32, f32)>, color: impl IntoComputed<Color>) -> Self {
         Self {
             position: position.into_computed(),
             color: color.into_computed(),
@@ -503,7 +505,7 @@ impl MeshGradient {
     /// When true (default), colors are interpolated using cubic interpolation
     /// for smoother transitions. When false, linear interpolation is used.
     #[must_use]
-    pub fn smooths_colors(mut self, smooth: bool) -> Self {
+    pub const fn smooths_colors(mut self, smooth: bool) -> Self {
         self.smooths_colors = smooth;
         self
     }

@@ -17,11 +17,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
-use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::color::ResolvedColor;
-use waterui_core::View;
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuRenderer, GpuSurface};
 use crate::include_shader;
+use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
+use waterui_core::View;
 
 static GRADIENT_SHADER: crate::prewarm::PrewarmedShader = include_shader!("shaders/gradient.wgsl");
 
@@ -118,8 +118,26 @@ impl Default for GradientConfig {
         Self {
             gradient_type: GradientType::Linear,
             stops: vec![
-                (0.0, ResolvedColor { red: 1.0, green: 0.0, blue: 0.0, opacity: 1.0, headroom: 0.0 }),
-                (1.0, ResolvedColor { red: 0.0, green: 0.0, blue: 1.0, opacity: 1.0, headroom: 0.0 }),
+                (
+                    0.0,
+                    ResolvedColor {
+                        red: 1.0,
+                        green: 0.0,
+                        blue: 0.0,
+                        opacity: 1.0,
+                        headroom: 0.0,
+                    },
+                ),
+                (
+                    1.0,
+                    ResolvedColor {
+                        red: 0.0,
+                        green: 0.0,
+                        blue: 1.0,
+                        opacity: 1.0,
+                        headroom: 0.0,
+                    },
+                ),
             ],
             start_point: [0.5, 0.0],
             end_point: [0.5, 1.0],
@@ -134,11 +152,7 @@ impl Default for GradientConfig {
 
 impl GradientConfig {
     /// Creates a linear gradient configuration.
-    pub fn linear(
-        stops: Vec<(f32, ResolvedColor)>,
-        start: [f32; 2],
-        end: [f32; 2],
-    ) -> Self {
+    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
         Self {
             gradient_type: GradientType::Linear,
             stops,
@@ -300,10 +314,12 @@ impl GpuRenderer for GradientRenderer {
         );
 
         // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(GRADIENT_SHADER.label),
-            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(GRADIENT_SHADER.label),
+                source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
+            });
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -332,44 +348,46 @@ impl GpuRenderer for GradientRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Gradient Bind Group Layout"),
-            entries: &[
-                // Uniforms
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Color stops
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Mesh vertices
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Gradient Bind Group Layout"),
+                    entries: &[
+                        // Uniforms
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Color stops
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Mesh vertices
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Gradient Bind Group"),
@@ -390,11 +408,13 @@ impl GpuRenderer for GradientRenderer {
             ],
         });
 
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Gradient Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Gradient Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None
@@ -405,42 +425,10 @@ impl GpuRenderer for GradientRenderer {
         // Try with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        let mut pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Gradient Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
-        });
-
-        // Check for validation error
-        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
-        if let Some(e) = error {
-            tracing::warn!("[GradientRenderer] Pipeline creation with cache failed: {}", e);
-            // Retry without cache
-            pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Gradient Pipeline (No Cache)"),
+        let mut pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
@@ -465,8 +453,47 @@ impl GpuRenderer for GradientRenderer {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
+
+        // Check for validation error
+        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!(
+                "[GradientRenderer] Pipeline creation with cache failed: {}",
+                e
+            );
+            // Retry without cache
+            pipeline = ctx
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Gradient Pipeline (No Cache)"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: ctx.surface_format,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
         } else {
             tracing::info!("[GradientRenderer] Pipeline creation with cache SUCCESS");
         }
@@ -500,30 +527,48 @@ impl GpuRenderer for GradientRenderer {
             tracing::warn!("[GradientRenderer] No pipeline available");
             return;
         };
-        let Some(uniform_buffer) = &self.uniform_buffer else { return };
-        let Some(stops_buffer) = &self.stops_buffer else { return };
-        let Some(mesh_buffer) = &self.mesh_buffer else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(stops_buffer) = &self.stops_buffer else {
+            return;
+        };
+        let Some(mesh_buffer) = &self.mesh_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         // Only update buffers if dirty
         if self.dirty {
             // Update uniforms using encase
             let uniforms = self.prepare_uniforms();
             let mut uniform_data = UniformBuffer::new(Vec::new());
-            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
-            frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+            uniform_data
+                .write(&uniforms)
+                .expect("Failed to write uniform buffer");
+            frame
+                .queue
+                .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
             // Update color stops using encase
             let stops = self.prepare_stops();
             let mut storage_data = StorageBuffer::new(Vec::new());
-            storage_data.write(&stops).expect("Failed to write storage buffer");
-            frame.queue.write_buffer(stops_buffer, 0, storage_data.as_ref());
+            storage_data
+                .write(&stops)
+                .expect("Failed to write storage buffer");
+            frame
+                .queue
+                .write_buffer(stops_buffer, 0, storage_data.as_ref());
 
             // Update mesh vertices (if mesh gradient)
             if matches!(self.config.gradient_type, GradientType::Mesh) {
                 let vertices = self.prepare_mesh_vertices();
                 let mut mesh_data = StorageBuffer::new(Vec::new());
-                mesh_data.write(&vertices).expect("Failed to write storage buffer");
+                mesh_data
+                    .write(&vertices)
+                    .expect("Failed to write storage buffer");
                 frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
             }
 
@@ -531,9 +576,11 @@ impl GpuRenderer for GradientRenderer {
         }
 
         // Render
-        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Gradient Encoder"),
-        });
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Gradient Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -585,11 +632,7 @@ impl Gradient {
 
     /// Creates a linear gradient view.
     #[must_use]
-    pub fn linear(
-        stops: Vec<(f32, ResolvedColor)>,
-        start: [f32; 2],
-        end: [f32; 2],
-    ) -> Self {
+    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
         Self::new(GradientConfig::linear(stops, start, end))
     }
 
@@ -601,7 +644,12 @@ impl Gradient {
         start_radius: f32,
         end_radius: f32,
     ) -> Self {
-        Self::new(GradientConfig::radial(stops, center, start_radius, end_radius))
+        Self::new(GradientConfig::radial(
+            stops,
+            center,
+            start_radius,
+            end_radius,
+        ))
     }
 
     /// Creates an angular gradient view.
@@ -612,7 +660,12 @@ impl Gradient {
         start_angle: f32,
         end_angle: f32,
     ) -> Self {
-        Self::new(GradientConfig::angular(stops, center, start_angle, end_angle))
+        Self::new(GradientConfig::angular(
+            stops,
+            center,
+            start_angle,
+            end_angle,
+        ))
     }
 
     /// Creates a mesh gradient view.
@@ -623,7 +676,12 @@ impl Gradient {
         vertices: Vec<([f32; 2], ResolvedColor)>,
         smooths_colors: bool,
     ) -> Self {
-        Self::new(GradientConfig::mesh(width, height, vertices, smooths_colors))
+        Self::new(GradientConfig::mesh(
+            width,
+            height,
+            vertices,
+            smooths_colors,
+        ))
     }
 }
 
@@ -743,10 +801,12 @@ where
 {
     fn setup(&mut self, ctx: &GpuContext) -> impl core::future::Future<Output = ()> {
         // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(GRADIENT_SHADER.label),
-            source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(GRADIENT_SHADER.label),
+                source: wgpu::ShaderSource::Wgsl(GRADIENT_SHADER.source.clone().into()),
+            });
 
         // Create uniform buffer using encase size calculation
         let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get() as u64;
@@ -775,41 +835,43 @@ where
             mapped_at_creation: false,
         });
 
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Mesh Gradient Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Mesh Gradient Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Mesh Gradient Bind Group"),
@@ -830,11 +892,13 @@ where
             ],
         });
 
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Mesh Gradient Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Mesh Gradient Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let blend = if ctx.is_hdr() {
             None
@@ -845,42 +909,10 @@ where
         // Try with cache first
         ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        let mut pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Mesh Gradient Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
-        });
-
-        // Check for validation error
-        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
-        if let Some(e) = error {
-            tracing::warn!("[ReactiveMeshRenderer] Pipeline creation with cache failed: {}", e);
-            // Retry without cache
-            pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Mesh Gradient Pipeline (No Cache)"),
+        let mut pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Mesh Gradient Pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
@@ -905,8 +937,47 @@ where
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
-                cache: None,
+                cache: ctx.pipeline_cache,
             });
+
+        // Check for validation error
+        let error = crate::pollster::block_on(ctx.device.pop_error_scope());
+        if let Some(e) = error {
+            tracing::warn!(
+                "[ReactiveMeshRenderer] Pipeline creation with cache failed: {}",
+                e
+            );
+            // Retry without cache
+            pipeline = ctx
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Mesh Gradient Pipeline (No Cache)"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: ctx.surface_format,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
         } else {
             tracing::info!("[ReactiveMeshRenderer] Pipeline creation with cache SUCCESS");
         }
@@ -931,20 +1002,36 @@ where
             }
         }
 
-        let Some(pipeline) = &self.pipeline else { return };
-        let Some(uniform_buffer) = &self.uniform_buffer else { return };
-        let Some(stops_buffer) = &self.stops_buffer else { return };
-        let Some(mesh_buffer) = &self.mesh_buffer else { return };
-        let Some(bind_group) = &self.bind_group else { return };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(stops_buffer) = &self.stops_buffer else {
+            return;
+        };
+        let Some(mesh_buffer) = &self.mesh_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
 
         // Read current colors from Signal
         let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
 
         // Check if colors changed
         let colors_changed = match &self.last_colors {
-            Some(last) => last.len() != colors.len() || last.iter().zip(&colors).any(|(a, b)| {
-                a.red != b.red || a.green != b.green || a.blue != b.blue || a.opacity != b.opacity
-            }),
+            Some(last) => {
+                last.len() != colors.len()
+                    || last.iter().zip(&colors).any(|(a, b)| {
+                        a.red != b.red
+                            || a.green != b.green
+                            || a.blue != b.blue
+                            || a.opacity != b.opacity
+                    })
+            }
             None => true,
         };
 
@@ -965,14 +1052,24 @@ where
                 smooths_colors: u32::from(self.smooths_colors),
             };
             let mut uniform_data = UniformBuffer::new(Vec::new());
-            uniform_data.write(&uniforms).expect("Failed to write uniform buffer");
-            frame.queue.write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+            uniform_data
+                .write(&uniforms)
+                .expect("Failed to write uniform buffer");
+            frame
+                .queue
+                .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
 
             // Prepare empty stops (mesh gradient doesn't use stops)
-            let stops: Vec<GpuColorStop> = (0..MAX_COLOR_STOPS).map(|_| GpuColorStop::default()).collect();
+            let stops: Vec<GpuColorStop> = (0..MAX_COLOR_STOPS)
+                .map(|_| GpuColorStop::default())
+                .collect();
             let mut stops_data = StorageBuffer::new(Vec::new());
-            stops_data.write(&stops).expect("Failed to write storage buffer");
-            frame.queue.write_buffer(stops_buffer, 0, stops_data.as_ref());
+            stops_data
+                .write(&stops)
+                .expect("Failed to write storage buffer");
+            frame
+                .queue
+                .write_buffer(stops_buffer, 0, stops_data.as_ref());
 
             // Prepare mesh vertices from colors
             // Generate grid positions and map colors
@@ -993,14 +1090,18 @@ where
                 vertices.push(GpuMeshVertex::default());
             }
             let mut mesh_data = StorageBuffer::new(Vec::new());
-            mesh_data.write(&vertices).expect("Failed to write storage buffer");
+            mesh_data
+                .write(&vertices)
+                .expect("Failed to write storage buffer");
             frame.queue.write_buffer(mesh_buffer, 0, mesh_data.as_ref());
         }
 
         // Render
-        let mut encoder = frame.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Mesh Gradient Encoder"),
-        });
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Mesh Gradient Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

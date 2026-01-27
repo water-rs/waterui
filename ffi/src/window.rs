@@ -5,9 +5,10 @@ use waterui::window::{Window, WindowBackground, WindowManager, WindowState, Wind
 use waterui_layout::Rect;
 
 use crate::{
-    IntoFFI, IntoRust, WuiEnv, WuiAnyView, color::WuiColor,
-    reactive::{WuiBinding, WuiComputed},
+    IntoFFI, IntoRust, WuiAnyView, WuiEnv,
+    color::WuiColor,
     ffi_binding,
+    reactive::{WuiBinding, WuiComputed},
 };
 
 /// FFI-compatible representation of [`WindowStyle`].

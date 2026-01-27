@@ -136,7 +136,10 @@ mod tests {
     fn detects_android_device() {
         assert_eq!(detect_platform("emulator-5554"), DevicePlatform::Android);
         assert_eq!(detect_platform("ABCD1234"), DevicePlatform::Android);
-        assert_eq!(detect_platform("192.168.1.100:5555"), DevicePlatform::Android);
+        assert_eq!(
+            detect_platform("192.168.1.100:5555"),
+            DevicePlatform::Android
+        );
     }
 
     #[test]

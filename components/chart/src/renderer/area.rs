@@ -8,16 +8,16 @@ use core::future::Future;
 
 use encase::ShaderType;
 use waterui_core::layout::Point;
-use waterui_graphics::{wgpu, GpuContext, GpuFrame, GpuRenderer};
+use waterui_graphics::{GpuContext, GpuFrame, GpuRenderer, wgpu};
 
 use crate::animation::ChartAnimation;
 use crate::data::{AreaData, AreaSeries, DataBounds};
 use crate::interaction::{ChartViewport, HitResult, ZoomPanState};
-use crate::renderer::base::{
-    create_storage_buffer, create_uniform_buffer, msaa_attachment, multisample_state,
-    shader_with_common, write_storage_buffer, write_uniform_buffer, ChartUniforms, MsaaTarget,
-};
 use crate::renderer::ChartRenderer;
+use crate::renderer::base::{
+    ChartUniforms, MsaaTarget, create_storage_buffer, create_uniform_buffer, msaa_attachment,
+    multisample_state, shader_with_common, write_storage_buffer, write_uniform_buffer,
+};
 
 const PLOT_PADDING: f32 = 0.1;
 
@@ -91,10 +91,12 @@ impl AreaRenderer {
         // so blending must stay enabled even on HDR surfaces.
         let blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let shader_source = shader_with_common(include_str!("../shaders/area.wgsl"));
-        let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Area Chart Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Area Chart Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         let bind_group_layout =
             ctx.device
@@ -217,9 +219,17 @@ impl AreaRenderer {
                 let x0 = self.data.x_values[i];
                 let x1 = self.data.x_values[i + 1];
 
-                let y0_bottom = if self.data.stacked { cumulative[si][i] } else { 0.0 };
+                let y0_bottom = if self.data.stacked {
+                    cumulative[si][i]
+                } else {
+                    0.0
+                };
                 let y0_top = cumulative[si + 1][i];
-                let y1_bottom = if self.data.stacked { cumulative[si][i + 1] } else { 0.0 };
+                let y1_bottom = if self.data.stacked {
+                    cumulative[si][i + 1]
+                } else {
+                    0.0
+                };
                 let y1_top = cumulative[si + 1][i + 1];
 
                 segments.push(GpuAreaSegment {
@@ -291,28 +301,34 @@ impl GpuRenderer for AreaRenderer {
         self.color_buffer = Some(create_storage_buffer(ctx, "Area Chart Colors", &colors));
 
         let bind_group_layout = self.pipeline.as_ref().unwrap().get_bind_group_layout(0);
-        self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Area Chart Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.segment_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.color_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.prev_segment_buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        }));
+        self.bind_group = Some(
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Area Chart Bind Group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.segment_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.color_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self
+                            .prev_segment_buffer
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                ],
+            }),
+        );
 
         async {}
     }
@@ -333,11 +349,12 @@ impl GpuRenderer for AreaRenderer {
 
         if segment_count == 0 {
             // Clear to transparent
-            let mut encoder = frame
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Area Chart Clear Encoder"),
-                });
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Area Chart Clear Encoder"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Area Chart Clear Pass"),
@@ -390,7 +407,11 @@ impl GpuRenderer for AreaRenderer {
                         glam::Vec4::new(
                             px,
                             py,
-                            if frame.pointer.hit.is_some() { 1.0 } else { 0.0 },
+                            if frame.pointer.hit.is_some() {
+                                1.0
+                            } else {
+                                0.0
+                            },
                             0.0,
                         )
                     } else {
@@ -405,7 +426,11 @@ impl GpuRenderer for AreaRenderer {
             stacked: if self.data.stacked { 1 } else { 0 },
             _pad: 0,
         };
-        write_uniform_buffer(frame.queue, self.uniform_buffer.as_ref().unwrap(), &uniforms);
+        write_uniform_buffer(
+            frame.queue,
+            self.uniform_buffer.as_ref().unwrap(),
+            &uniforms,
+        );
 
         // Render
         let mut encoder = frame

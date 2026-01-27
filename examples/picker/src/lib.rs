@@ -146,7 +146,10 @@ fn main() -> impl View {
             ))
             .padding_with(EdgeInsets::all(12.0)),
             // Footer
-            vstack((Divider, text("Built with WaterUI Picker Components").caption())),
+            vstack((
+                Divider,
+                text("Built with WaterUI Picker Components").caption(),
+            )),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )

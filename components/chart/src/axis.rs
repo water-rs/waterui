@@ -273,8 +273,8 @@ mod tests {
     fn test_nice_number() {
         assert_eq!(nice_number(0.15, true), 0.2);
         assert_eq!(nice_number(0.7, true), 1.0);
-        assert_eq!(nice_number(2.5, true), 2.0);  // frac=2.5 < 3.0 -> 2.0
-        assert_eq!(nice_number(3.0, true), 5.0);  // frac=3.0 >= 3.0, < 7.0 -> 5.0
+        assert_eq!(nice_number(2.5, true), 2.0); // frac=2.5 < 3.0 -> 2.0
+        assert_eq!(nice_number(3.0, true), 5.0); // frac=3.0 >= 3.0, < 7.0 -> 5.0
         assert_eq!(nice_number(7.0, true), 10.0);
         assert_eq!(nice_number(150.0, true), 200.0);
     }
@@ -286,7 +286,11 @@ mod tests {
 
         // Should have nice round numbers
         assert!(!ticks.is_empty());
-        assert!(ticks.iter().all(|t| t.value() % 20.0 == 0.0 || t.value() % 25.0 == 0.0));
+        assert!(
+            ticks
+                .iter()
+                .all(|t| t.value() % 20.0 == 0.0 || t.value() % 25.0 == 0.0)
+        );
     }
 
     #[test]

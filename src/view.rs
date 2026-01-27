@@ -9,10 +9,10 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-use waterui_core::IntoComputedF32;
 use alloc::vec::Vec;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
+use waterui_core::IntoComputedF32;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
@@ -573,7 +573,12 @@ pub trait ViewExt: View + Sized {
     /// // Scale from top-left corner
     /// view.scale_from(0.5, 0.5, Anchor::TOP_LEFT);
     /// ```
-    fn scale_from(self, x: impl IntoComputedF32, y: impl IntoComputedF32, anchor: Anchor) -> Metadata<Scale> {
+    fn scale_from(
+        self,
+        x: impl IntoComputedF32,
+        y: impl IntoComputedF32,
+        anchor: Anchor,
+    ) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy_from(x, y, anchor))
     }
 
@@ -872,7 +877,7 @@ pub trait ViewExt: View + Sized {
         // Compose: opacity + hit testing
         // opacity: 0.5 when disabled, 1.0 when enabled
         // hittable: false when disabled, true when enabled
-        let opacity_value = is_disabled.clone().map(|d| if d { 0.5 } else { 1.0 });
+        let opacity_value = is_disabled.map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
 
         Metadata::new(self, Opacity::new(opacity_value)).hittable(hittable_value)
@@ -984,7 +989,7 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
             view: Metadata::new(
                 self.view,
                 OnEvent::new(Event::HoverEnter, move || {
-                    handler(state_for_handler.clone())
+                    handler(state_for_handler.clone());
                 }),
             ),
             state,
@@ -1057,7 +1062,8 @@ impl<V: View, S: Clone + 'static> StatefulView<V, S> {
         StatefulView {
             view: Metadata::new(
                 self.view,
-                GestureObserver::new(TapGesture::new()).action(move || action(state_for_handler.clone())),
+                GestureObserver::new(TapGesture::new())
+                    .action(move || action(state_for_handler.clone())),
             ),
             state,
         }

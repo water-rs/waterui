@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use color_eyre::eyre::Result;
 use color_eyre::eyre::Context as _;
+use color_eyre::eyre::Result;
 
 /// Watches project directories for changes.
 #[derive(Debug, Default)]

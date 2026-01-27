@@ -31,44 +31,62 @@
 
 extern crate alloc;
 
-pub mod data;
 pub mod animation;
-pub mod interaction;
-pub mod renderer;
-pub mod charts;
-pub mod axis;
 pub mod axes;
+pub mod axis;
+pub mod charts;
+pub mod data;
+pub mod interaction;
 pub mod legend;
+pub mod renderer;
 pub mod tooltip;
 
 // Re-export core types
+pub use animation::{ChartAnimation, ChartAnimator, EasingType};
 pub use data::{
-    // Basic types
-    DataPoint, DataBounds, ColorScale, SeriesStyle,
+    AreaData,
+    // Area chart types
+    AreaSeries,
     // Dedicated chart data types (with impl_constant!)
-    BarData, LineData, PieData, ScatterData, CandlestickData, BubbleData,
-    // Candlestick/financial types
-    Candle,
-    // Depth chart types
-    DepthLevel, DepthData,
-    // Heatmap types
-    HeatmapCell, HeatmapData,
-    // Contour types
-    ContourData,
+    BarData,
+    BubbleData,
     // Bubble types
     BubblePoint,
-    // Radar types
-    RadarData, RadarSeries,
-    // Choropleth/geographic types
-    GeoPolygon, ChoroplethData,
-    // Area chart types
-    AreaSeries, AreaData,
+    // Candlestick/financial types
+    Candle,
+    CandlestickData,
+    ChoroplethData,
+    ColorScale,
+    // Contour types
+    ContourData,
+    DataBounds,
+    // Basic types
+    DataPoint,
+    DepthData,
+    // Depth chart types
+    DepthLevel,
     // Gauge types
-    GaugeData, GaugeRegion,
+    GaugeData,
+    GaugeRegion,
+    // Choropleth/geographic types
+    GeoPolygon,
+    // Heatmap types
+    HeatmapCell,
+    HeatmapData,
+    LineData,
+    PieData,
+    // Radar types
+    RadarData,
+    RadarSeries,
+    ScatterData,
+    SeriesStyle,
 };
-pub use animation::{ChartAnimation, ChartAnimator, EasingType};
 pub use interaction::{ChartViewport, HitResult, SelectionState, ZoomPanState};
-pub use renderer::{AreaRenderer, ChartRenderer, BarChartRenderer, BubbleRenderer, CandlestickRenderer, ChoroplethRenderer, ContourRenderer, DepthRenderer, GaugeRenderer, HeatmapRenderer, LineChartRenderer, PieChartRenderer, RadarRenderer, ScatterChartRenderer};
+pub use renderer::{
+    AreaRenderer, BarChartRenderer, BubbleRenderer, CandlestickRenderer, ChartRenderer,
+    ChoroplethRenderer, ContourRenderer, DepthRenderer, GaugeRenderer, HeatmapRenderer,
+    LineChartRenderer, PieChartRenderer, RadarRenderer, ScatterChartRenderer,
+};
 
 // Re-export chart views
 pub use charts::area::AreaChart;
@@ -89,8 +107,8 @@ pub use charts::scatter::ScatterChart;
 pub use charts::SignalRenderer;
 
 // Re-export axis types
-pub use axis::{AxisConfig, TickFormat, Tick};
 pub use axes::{ChartAxes, ChartAxesReactive, ChartExt};
+pub use axis::{AxisConfig, Tick, TickFormat};
 
 // Re-export legend types
 pub use legend::{Legend, LegendItem, LegendOrientation, LegendPosition};

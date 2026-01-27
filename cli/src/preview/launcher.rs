@@ -12,13 +12,13 @@ use color_eyre::eyre::{Context, Result, bail};
 use smol::stream::StreamExt;
 
 use super::app_client::PreviewAppClient;
-use super::protocol::PreviewPlatform;
 use super::protocol::DylibId;
+use super::protocol::PreviewPlatform;
 use super::protocol::PreviewTcpConfig;
 use super::watcher::ProjectWatcher;
 
 use crate::build::RustBuild;
-use crate::device::{Device, DeviceEvent, Local, Running, RunOptions};
+use crate::device::{Device, DeviceEvent, Local, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
 
@@ -196,21 +196,29 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
                 .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
 
             // Find an iOS simulator
-            let simulators = crate::apple::device::AppleSimulator::scan().await?;
+            let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
             let simulator = simulators
                 .iter()
                 .find(|s| s.state == "Booted")
                 .cloned()
                 .or_else(|| simulators.into_iter().next())
                 .ok_or_else(|| {
-                    color_eyre::eyre::eyre!("No iOS simulator available. Please create one in Xcode.")
+                    color_eyre::eyre::eyre!(
+                        "No iOS simulator available. Please create one in Xcode."
+                    )
                 })?;
 
             simulator.launch().await?;
             eprintln!("[preview] Building and running preview app on iOS Simulator...");
             let run_options = RunOptions::new();
             project
-                .run_with_options(backend, TargetPlatform::IOSSimulator, simulator, run_options, false)
+                .run_with_options(
+                    backend,
+                    TargetPlatform::IOSSimulator,
+                    simulator,
+                    run_options,
+                    false,
+                )
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
         }
@@ -239,16 +247,20 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
                 // Try emulator
                 let avds = crate::android::platform::AndroidPlatform::list_avds().await?;
                 let avd_name = avds.into_iter().next().ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "No Android devices or emulators available."
-                    )
+                    color_eyre::eyre::eyre!("No Android devices or emulators available.")
                 })?;
                 let emulator = crate::android::device::AndroidEmulator::new(avd_name);
                 emulator.launch().await?;
                 eprintln!("[preview] Building and running preview app on Android emulator...");
                 let run_options = RunOptions::new();
                 project
-                    .run_with_options(backend, TargetPlatform::Android, emulator, run_options, false)
+                    .run_with_options(
+                        backend,
+                        TargetPlatform::Android,
+                        emulator,
+                        run_options,
+                        false,
+                    )
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             }
@@ -273,9 +285,7 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
             bail!("Preview app crashed:\n{message}")
         }
         ConnectionResult::Exited => {
-            bail!(
-                "Preview app exited unexpectedly.\nCheck the app logs for more information."
-            )
+            bail!("Preview app exited unexpectedly.\nCheck the app logs for more information.")
         }
         ConnectionResult::Timeout => {
             bail!(
@@ -290,7 +300,10 @@ pub async fn launch_preview_session(platform: PreviewPlatform) -> Result<Preview
 /// Result of waiting for TCP connection.
 enum ConnectionResult {
     /// Successfully connected to preview app.
-    Connected { client: PreviewAppClient, running: Pin<Box<Running>> },
+    Connected {
+        client: PreviewAppClient,
+        running: Pin<Box<Running>>,
+    },
     /// App crashed with error message.
     Crashed(String),
     /// App exited without crash.
@@ -315,16 +328,23 @@ async fn wait_for_connection_or_crash(
 
     for i in 0..MAX_ATTEMPTS {
         // Check for app events (crash, exit) - non-blocking
-        while let Some(event) =
-            futures_lite::future::poll_once(running.as_mut().next()).await.flatten()
+        while let Some(event) = futures_lite::future::poll_once(running.as_mut().next())
+            .await
+            .flatten()
         {
             match event {
                 DeviceEvent::Crashed(message) => {
-                    eprintln!("[preview] App crashed after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
+                    eprintln!(
+                        "[preview] App crashed after {}ms",
+                        (i + 1) * POLL_INTERVAL_MS as u32
+                    );
                     return ConnectionResult::Crashed(message);
                 }
                 DeviceEvent::Exited => {
-                    eprintln!("[preview] App exited after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
+                    eprintln!(
+                        "[preview] App exited after {}ms",
+                        (i + 1) * POLL_INTERVAL_MS as u32
+                    );
                     return ConnectionResult::Exited;
                 }
                 DeviceEvent::Log { level, message } => {
@@ -339,7 +359,10 @@ async fn wait_for_connection_or_crash(
 
         // Try to connect to TCP
         if let Ok(client) = PreviewAppClient::connect(tcp_config).await {
-            eprintln!("[preview] Connected to preview app after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
+            eprintln!(
+                "[preview] Connected to preview app after {}ms",
+                (i + 1) * POLL_INTERVAL_MS as u32
+            );
             return ConnectionResult::Connected { client, running };
         }
 
@@ -347,8 +370,9 @@ async fn wait_for_connection_or_crash(
     }
 
     // One final check for crash events before giving up
-    while let Some(event) =
-        futures_lite::future::poll_once(running.as_mut().next()).await.flatten()
+    while let Some(event) = futures_lite::future::poll_once(running.as_mut().next())
+        .await
+        .flatten()
     {
         match event {
             DeviceEvent::Crashed(message) => {

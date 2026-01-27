@@ -3,11 +3,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk4::prelude::*;
 use gtk4::Widget;
+use gtk4::prelude::*;
 use nami::Signal;
 use waterui_core::Environment;
-use waterui_navigation::{CustomNavigationController, NavigationController, NavigationStack, NavigationView};
+use waterui_navigation::{
+    CustomNavigationController, NavigationController, NavigationStack, NavigationView,
+};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -71,14 +73,16 @@ impl GtkComponent for NavigationView {
         // Watch for color changes
         let env_for_color = env.clone();
         let provider_for_color = provider.clone();
-        let color_guard = self.bar.color.watch(move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
-            let color = ctx.into_value();
-            let css = css_for_header_bar_color(color, &env_for_color);
-            let provider = provider_for_color.clone();
-            glib::idle_add_local_once(move || {
-                provider.load_from_data(&css);
-            });
-        });
+        let color_guard = self.bar.color.watch(
+            move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
+                let color = ctx.into_value();
+                let css = css_for_header_bar_color(color, &env_for_color);
+                let provider = provider_for_color.clone();
+                glib::idle_add_local_once(move || {
+                    provider.load_from_data(&css);
+                });
+            },
+        );
 
         // Set initial hidden state
         if self.bar.hidden.get() {
@@ -353,15 +357,16 @@ impl GtkNavigationControllerInner {
                 .load_from_data(&css_for_header_bar_color(color.get(), &self.env));
             let env = self.env.clone();
             let provider = self.color_provider.clone();
-            let color_guard =
-                color.watch(move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
+            let color_guard = color.watch(
+                move |ctx: nami::watcher::Context<waterui_graphics::color::Color>| {
                     let color = ctx.into_value();
                     let css = css_for_header_bar_color(color, &env);
                     let provider = provider.clone();
                     glib::idle_add_local_once(move || {
                         provider.load_from_data(&css);
                     });
-                });
+                },
+            );
             self.active_bar_guards.push(color_guard);
         }
     }

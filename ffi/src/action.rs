@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use waterui_core::handler::BoxedAction;
 use waterui_core::Environment;
+use waterui_core::handler::BoxedAction;
 
 use crate::{IntoFFI, WuiEnv};
 

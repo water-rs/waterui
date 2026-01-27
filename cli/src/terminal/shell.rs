@@ -498,10 +498,7 @@ impl Shell {
         // Print location if available
         if let (Some(file), Some(line)) = (report.file, report.line) {
             let col = report.column.unwrap_or(1);
-            writeln!(
-                stderr,
-                "   {note_style}-->{reset} {file}:{line}:{col}"
-            )?;
+            writeln!(stderr, "   {note_style}-->{reset} {file}:{line}:{col}")?;
 
             // Try to resolve the file path (may be relative to workspace root)
             let file_path = Path::new(file);
@@ -514,50 +511,52 @@ impl Shell {
 
             // Try to read and display code context
             if let Some(ref resolved) = resolved_path {
-            if let Ok(source_file) = File::open(resolved) {
-                let reader = io::BufReader::new(source_file);
-                let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+                if let Ok(source_file) = File::open(resolved) {
+                    let reader = io::BufReader::new(source_file);
+                    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
-                let line_idx = line.saturating_sub(1);
-                let start = line_idx.saturating_sub(1);
-                let end = (line_idx + 2).min(lines.len());
+                    let line_idx = line.saturating_sub(1);
+                    let start = line_idx.saturating_sub(1);
+                    let end = (line_idx + 2).min(lines.len());
 
-                // Calculate the width needed for line numbers
-                let max_line_num = end;
-                let line_num_width = max_line_num.to_string().len();
+                    // Calculate the width needed for line numbers
+                    let max_line_num = end;
+                    let line_num_width = max_line_num.to_string().len();
 
-                writeln!(stderr, "    {line_num_style}|{reset}")?;
+                    writeln!(stderr, "    {line_num_style}|{reset}")?;
 
-                for (idx, source_line) in lines[start..end].iter().enumerate() {
-                    let current_line = start + idx + 1;
-                    let is_panic_line = current_line == line;
+                    for (idx, source_line) in lines[start..end].iter().enumerate() {
+                        let current_line = start + idx + 1;
+                        let is_panic_line = current_line == line;
 
-                    if is_panic_line {
-                        // Highlight the panic line
-                        writeln!(
-                            stderr,
-                            "{error_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {highlight_style}{source_line}{reset}"
-                        )?;
+                        if is_panic_line {
+                            // Highlight the panic line
+                            writeln!(
+                                stderr,
+                                "{error_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {highlight_style}{source_line}{reset}"
+                            )?;
 
-                        // Print the column indicator
-                        let col_offset = col.saturating_sub(1);
-                        let spaces = " ".repeat(col_offset);
-                        let carets = "^".repeat(source_line.len().saturating_sub(col_offset).min(20).max(1));
-                        writeln!(
-                            stderr,
-                            "{:>line_num_width$} {line_num_style}|{reset} {spaces}{error_style}{carets}{reset}",
-                            ""
-                        )?;
-                    } else {
-                        writeln!(
-                            stderr,
-                            "{line_num_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {source_line}"
-                        )?;
+                            // Print the column indicator
+                            let col_offset = col.saturating_sub(1);
+                            let spaces = " ".repeat(col_offset);
+                            let carets = "^".repeat(
+                                source_line.len().saturating_sub(col_offset).min(20).max(1),
+                            );
+                            writeln!(
+                                stderr,
+                                "{:>line_num_width$} {line_num_style}|{reset} {spaces}{error_style}{carets}{reset}",
+                                ""
+                            )?;
+                        } else {
+                            writeln!(
+                                stderr,
+                                "{line_num_style}{current_line:>line_num_width$}{reset} {line_num_style}|{reset} {source_line}"
+                            )?;
+                        }
                     }
-                }
 
-                writeln!(stderr, "    {line_num_style}|{reset}")?;
-            }
+                    writeln!(stderr, "    {line_num_style}|{reset}")?;
+                }
             }
         }
 
@@ -570,10 +569,7 @@ impl Shell {
         // Print crash report path
         if let Some(path) = report.crash_report_path {
             writeln!(stderr)?;
-            writeln!(
-                stderr,
-                "{note_style}crash report{reset}: {path}"
-            )?;
+            writeln!(stderr, "{note_style}crash report{reset}: {path}")?;
         }
 
         stderr.flush()

@@ -4,8 +4,8 @@ use waterui::{
 };
 
 use crate::{
-    IntoFFI, WuiAnyView, array::WuiArray, ffi_computed, id::WuiId, reactive::WuiWatcherMetadata,
-    reactive::WuiWatcherGuard,
+    IntoFFI, WuiAnyView, array::WuiArray, ffi_computed, id::WuiId, reactive::WuiWatcherGuard,
+    reactive::WuiWatcherMetadata,
 };
 use alloc::{boxed::Box, vec::Vec};
 use nami::watcher::WatcherGuard;

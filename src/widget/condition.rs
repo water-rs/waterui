@@ -179,7 +179,7 @@ where
     ///     .or(state.equal_to(1), || "Ready")
     ///     .otherwise(|| "Error");
     /// ```
-    pub fn or<C, V>(self, condition: C, then: V) -> WhenChain<Self, C, V>
+    pub const fn or<C, V>(self, condition: C, then: V) -> WhenChain<Self, C, V>
     where
         C: IntoComputed<bool>,
         V: ViewBuilder,
@@ -202,7 +202,7 @@ where
     /// let is_visible = binding(true);
     /// when(is_visible, || "Visible").otherwise(|| "Hidden");
     /// ```
-    pub fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>
+    pub const fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>
     where
         V: ViewBuilder,
     {
@@ -241,7 +241,7 @@ where
     ///     .or(state.equal_to(2), || "Warning")
     ///     .otherwise(|| "Error");
     /// ```
-    pub fn or<C, V>(self, condition: C, then: V) -> WhenChain<Self, C, V>
+    pub const fn or<C, V>(self, condition: C, then: V) -> WhenChain<Self, C, V>
     where
         C: IntoComputed<bool>,
         V: ViewBuilder,
@@ -256,7 +256,7 @@ where
     /// Completes the chain with a fallback view.
     ///
     /// This method must be called to finalize the conditional chain.
-    pub fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>
+    pub const fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>
     where
         V: ViewBuilder,
     {
@@ -305,11 +305,10 @@ where
     fn eval_static(&self) -> Option<AnyView> {
         let signal = self.condition.clone().into_signal();
         let any: &dyn Any = &signal;
-        if let Some(&cond) = any.downcast_ref::<bool>() {
-            if cond {
+        if let Some(&cond) = any.downcast_ref::<bool>()
+            && cond {
                 return Some(self.then.build().anyview());
             }
-        }
         None
     }
 
@@ -347,11 +346,10 @@ where
         // Check this branch
         let signal = self.condition.clone().into_signal();
         let any: &dyn Any = &signal;
-        if let Some(&cond) = any.downcast_ref::<bool>() {
-            if cond {
+        if let Some(&cond) = any.downcast_ref::<bool>()
+            && cond {
                 return Some(self.then.build().anyview());
             }
-        }
         None
     }
 
@@ -387,7 +385,6 @@ where
         }
     }
 }
-
 
 /// Extension trait for getting branch count.
 trait BranchCount {

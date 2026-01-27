@@ -63,7 +63,9 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
     vstack((
         text("Brightness").headline(),
         "Adjust brightness (-1 to 1)",
-        sample_content().brightness(animated_brightness).min_height(100.0),
+        sample_content()
+            .brightness(animated_brightness)
+            .min_height(100.0),
         Slider::new(-1.0..=1.0, brightness),
         hstack((
             button("-1").with_state(brightness).action(|b| b.set(-1.0)),
@@ -85,7 +87,9 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
     vstack((
         text("Saturation").headline(),
         "Adjust color saturation (0 = grayscale)",
-        sample_content().saturation(animated_saturation).min_height(100.0),
+        sample_content()
+            .saturation(animated_saturation)
+            .min_height(100.0),
         Slider::new(0.0..=2.0, saturation),
         hstack((
             button("0").with_state(saturation).action(|s| s.set(0.0)),
@@ -107,7 +111,9 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View {
     vstack((
         text("Contrast").headline(),
         "Adjust color contrast",
-        sample_content().contrast(animated_contrast).min_height(100.0),
+        sample_content()
+            .contrast(animated_contrast)
+            .min_height(100.0),
         Slider::new(0.0..=2.0, contrast),
         hstack((
             button("0").with_state(contrast).action(|c| c.set(0.0)),
@@ -129,7 +135,9 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
     vstack((
         text("Hue Rotation").headline(),
         "Rotate colors around the color wheel (0-360 degrees)",
-        sample_content().hue_rotation(animated_hue).min_height(100.0),
+        sample_content()
+            .hue_rotation(animated_hue)
+            .min_height(100.0),
         Slider::new(0.0..=360.0, hue),
         hstack((
             button("0").with_state(hue).action(|h| h.set(0.0)),
@@ -151,7 +159,9 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
     vstack((
         text("Grayscale").headline(),
         "Convert to grayscale (0 = color, 1 = grayscale)",
-        sample_content().grayscale(animated_grayscale).min_height(100.0),
+        sample_content()
+            .grayscale(animated_grayscale)
+            .min_height(100.0),
         Slider::new(0.0..=1.0, grayscale),
         hstack((
             button("0").with_state(grayscale).action(|g| g.set(0.0)),
