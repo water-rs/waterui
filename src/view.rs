@@ -151,6 +151,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background
+    /// let my_gradient_view = stack::hstack((Color::red(), Color::blue()));
     /// text!("Hello").background(my_gradient_view);
     /// ```
     fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {

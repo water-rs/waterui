@@ -11,7 +11,7 @@
 
 use core::ffi::c_void;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -41,6 +41,15 @@ fn gpu_capture_poll_timeout() -> Option<Duration> {
     } else {
         Some(Duration::from_millis(ms))
     }
+}
+
+fn gpu_await_ready_timeout() -> Duration {
+    const DEFAULT_MS: u64 = 500;
+    let ms = std::env::var("WATERUI_GPU_AWAIT_READY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MS);
+    Duration::from_millis(ms.max(1))
 }
 
 fn poll_capture_completion(device: &wgpu::Device) -> bool {
@@ -758,13 +767,39 @@ pub unsafe extern "C" fn waterui_gpu_surface_await_ready(
         state.renderer_format = format;
     }
 
-    // Render first frame
-    let output = match state.wgpu_surface.get_current_texture() {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!("[GpuSurface] await_ready: failed to get texture: {e}");
-            unsafe { callback(user_data) };
-            return;
+    // Render first frame.
+    //
+    // On macOS, CAMetalLayer may not produce a drawable immediately after becoming visible,
+    // and wgpu can report `Timeout`. Since this function is explicitly used to prevent
+    // "pop-in", retry briefly before giving up.
+    let deadline = Instant::now() + gpu_await_ready_timeout();
+    let output = loop {
+        match state.wgpu_surface.get_current_texture() {
+            Ok(o) => break o,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                tracing::debug!("[GpuSurface] await_ready: surface lost/outdated, reconfiguring");
+                if !try_configure_surface(&state.wgpu_surface, &state.device, &state.config) {
+                    tracing::warn!("[GpuSurface] await_ready: reconfigure failed");
+                    unsafe { callback(user_data) };
+                    return;
+                }
+                continue;
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                if Instant::now() >= deadline {
+                    tracing::warn!("[GpuSurface] await_ready: timed out waiting for drawable");
+                    unsafe { callback(user_data) };
+                    return;
+                }
+                // Small sleep to avoid busy-looping; we're on a backend render thread.
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("[GpuSurface] await_ready: failed to get texture: {e}");
+                unsafe { callback(user_data) };
+                return;
+            }
         }
     };
 

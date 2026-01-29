@@ -40,36 +40,41 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MDI_META_URL");
     println!("cargo:rerun-if-env-changed=MDI_PATH_URL");
 
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
     let out_path = Path::new(&out_dir);
     let meta_cache = out_path.join(format!("mdi-{MDI_VERSION}-meta.json"));
     let js_cache = out_path.join(format!("mdi-{MDI_VERSION}.js"));
 
-    // Get URLs from env or use defaults
-    let meta_url = env::var("MDI_META_URL").unwrap_or_else(|_| META_JSON_URL.to_string());
-    let path_url = env::var("MDI_PATH_URL").unwrap_or_else(|_| MDI_JS_URL.to_string());
+    let vendored_meta =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("mdi-{MDI_VERSION}-meta.json"));
+    let vendored_js =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("mdi-{MDI_VERSION}.js"));
 
-    // Get metadata from cache or download
-    let meta_json = if meta_cache.exists() {
-        fs::read_to_string(&meta_cache).expect("Failed to read cached meta.json")
-    } else {
-        let content = fetch_content(&meta_url, "MDI metadata").unwrap_or_else(|e| {
-            fail_build(&out_dir, &format!("Failed to get MDI metadata: {e}"));
-        });
-        fs::write(&meta_cache, &content).ok();
-        content
-    };
+    println!("cargo:rerun-if-changed={}", vendored_meta.display());
+    println!("cargo:rerun-if-changed={}", vendored_js.display());
 
-    // Get SVG paths from cache or download
-    let mdi_js = if js_cache.exists() {
-        fs::read_to_string(&js_cache).expect("Failed to read cached mdi.js")
-    } else {
-        let content = fetch_content(&path_url, "MDI paths").unwrap_or_else(|e| {
-            fail_build(&out_dir, &format!("Failed to get MDI paths: {e}"));
-        });
-        fs::write(&js_cache, &content).ok();
-        content
-    };
+    // Default to vendored data for deterministic, offline builds.
+    // Overrides can point to a local file path or a URL.
+    let meta_source = env::var("MDI_META_URL").unwrap_or_else(|_| vendored_meta.display().to_string());
+    let path_source = env::var("MDI_PATH_URL").unwrap_or_else(|_| vendored_js.display().to_string());
+
+    if !is_url(&meta_source) {
+        println!("cargo:rerun-if-changed={meta_source}");
+    }
+    if !is_url(&path_source) {
+        println!("cargo:rerun-if-changed={path_source}");
+    }
+
+    let meta_json = load_content(&meta_source, &meta_cache, "MDI metadata").unwrap_or_else(|e| {
+        panic!(
+            "waterui-icons-material-icon: {e}\nHint: provide vendored data in `data/` or set `MDI_META_URL` to a local file path/URL."
+        )
+    });
+    let mdi_js = load_content(&path_source, &js_cache, "MDI paths").unwrap_or_else(|e| {
+        panic!(
+            "waterui-icons-material-icon: {e}\nHint: provide vendored data in `data/` or set `MDI_PATH_URL` to a local file path/URL."
+        )
+    });
 
     // Parse metadata
     let icons: Vec<IconMeta> = serde_json::from_str(&meta_json).expect("Failed to parse meta.json");
@@ -81,15 +86,23 @@ fn main() {
     generate_icons_rs(&out_dir, &icons, &paths);
 }
 
-fn fail_build(out_dir: &str, msg: &str) -> ! {
-    eprintln!("cargo:warning={msg}");
-    eprintln!("cargo:warning=Building without icon definitions.");
-    fs::write(
-        Path::new(out_dir).join("icons.rs"),
-        "// No icons available\n",
-    )
-    .expect("Failed to write output file");
-    std::process::exit(0);
+fn is_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
+fn load_content(source: &str, cache_path: &Path, desc: &str) -> Result<String, String> {
+    if is_url(source) {
+        if cache_path.exists() {
+            return fs::read_to_string(cache_path)
+                .map_err(|e| format!("Failed to read cached {desc}: {e}"));
+        }
+        let content = fetch_content(source, desc)?;
+        let _ = fs::write(cache_path, &content);
+        Ok(content)
+    } else {
+        fs::read_to_string(source)
+            .map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
+    }
 }
 
 /// Fetch content from URL or local file path
