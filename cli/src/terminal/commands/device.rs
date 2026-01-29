@@ -38,12 +38,33 @@ pub enum DeviceCommand {
 #[derive(ClapArgs, Debug)]
 pub struct CaptureArgs {
     /// Device identifier (UDID for iOS, serial for Android, "local" for macOS).
-    #[arg(long)]
-    id: String,
+    /// Mutually exclusive with --pid.
+    #[arg(long, conflicts_with = "pid")]
+    id: Option<String>,
+
+    /// Process ID for macOS local app window capture.
+    /// Mutually exclusive with --id.
+    #[arg(long, conflicts_with = "id")]
+    pid: Option<i32>,
+
+    /// Capture a specific window by index (0-based). Default: 0 (main window).
+    /// Only valid with --pid.
+    #[arg(long, requires = "pid")]
+    window: Option<usize>,
+
+    /// Capture all windows of the process.
+    /// Only valid with --pid.
+    #[arg(long, requires = "pid", conflicts_with = "window")]
+    all_windows: bool,
 
     /// Output file path. Defaults to `screenshot_YYYY-MM-DD_HHMMSS.png` in current directory.
+    /// For --all-windows, this is ignored; use --output-dir instead.
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Output directory for multiple window screenshots (used with --all-windows).
+    #[arg(long, requires = "all_windows")]
+    output_dir: Option<PathBuf>,
 }
 
 /// Arguments for the tap subcommand.
@@ -168,9 +189,15 @@ pub async fn run(args: Args) -> Result<()> {
 
 /// Run the capture subcommand.
 async fn run_capture(args: CaptureArgs) -> Result<()> {
-    let device_id = &args.id;
+    // Handle PID-based capture (macOS window capture)
+    if let Some(pid) = args.pid {
+        return run_capture_by_pid(pid, args.window, args.all_windows, args.output, args.output_dir).await;
+    }
 
-    // Handle local device for macOS
+    // Handle device ID-based capture
+    let device_id = args.id.as_deref().unwrap_or(gesture::LOCAL_DEVICE_ID);
+
+    // Handle local device for macOS (full screen)
     if device_id == gesture::LOCAL_DEVICE_ID {
         let output = args
             .output
@@ -223,6 +250,102 @@ async fn run_capture(args: CaptureArgs) -> Result<()> {
         Err(e) => {
             error!("Failed to capture screenshot: {e}");
             Err(e)
+        }
+    }
+}
+
+/// Run capture by PID (macOS window capture).
+async fn run_capture_by_pid(
+    pid: i32,
+    window_index: Option<usize>,
+    all_windows: bool,
+    output: Option<PathBuf>,
+    output_dir: Option<PathBuf>,
+) -> Result<()> {
+    use waterui_cli::apple::local::{list_windows_by_pid, screenshot_window};
+
+    // Get windows for this PID
+    let windows = list_windows_by_pid(pid)?;
+
+    if windows.is_empty() {
+        error!("No windows found for PID {pid}");
+        eyre::bail!("No windows found for PID {pid}");
+    }
+
+    // Filter to only normal windows (layer 0)
+    let normal_windows: Vec<_> = windows.iter().filter(|w| w.layer == 0).collect();
+
+    if normal_windows.is_empty() {
+        error!("No normal windows found for PID {pid} (found {} auxiliary windows)", windows.len());
+        eyre::bail!("No normal windows found for PID {pid}");
+    }
+
+    if all_windows {
+        // Capture all windows
+        let dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&dir)?;
+
+        for (i, window) in normal_windows.iter().enumerate() {
+            let filename = if window.name.is_empty() {
+                format!("window_{i}.png")
+            } else {
+                // Sanitize window name for filename
+                let safe_name: String = window
+                    .name
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                    .collect();
+                format!("window_{i}_{safe_name}.png")
+            };
+            let path = dir.join(&filename);
+
+            match screenshot_window(window.window_id, &path).await {
+                Ok(()) => {
+                    success!(
+                        "Window {i} \"{}\" saved to {}",
+                        window.name,
+                        path.display()
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to capture window {i}: {e}");
+                }
+            }
+        }
+
+        note!("Captured {} windows for PID {pid}", normal_windows.len());
+        Ok(())
+    } else {
+        // Capture single window
+        let index = window_index.unwrap_or(0);
+
+        if index >= normal_windows.len() {
+            error!(
+                "Window index {index} out of range (found {} windows)",
+                normal_windows.len()
+            );
+            eyre::bail!(
+                "Window index {index} out of range (found {} windows)",
+                normal_windows.len()
+            );
+        }
+
+        let window = &normal_windows[index];
+        let output_path = output.unwrap_or_else(capture::generate_screenshot_filename);
+
+        match screenshot_window(window.window_id, &output_path).await {
+            Ok(()) => {
+                success!(
+                    "Screenshot saved to {} (window \"{}\" from PID {pid})",
+                    output_path.display(),
+                    window.name
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to capture screenshot: {e}");
+                Err(e)
+            }
         }
     }
 }

@@ -54,12 +54,16 @@ struct Uniforms {
 ///
 /// # Example
 ///
-/// ```
-/// Waveform::new()
-///     .line_color(Color::CYAN)
-///     .bg_color(Color::BLACK)
+/// ```rust
+/// use waterui_core::Binding;
+/// use waterui_graphics::color::Color;
+/// use waterui_visualizer::Waveform;
+///
+/// let _waveform = Waveform::new()
+///     .line_color(Color::cyan())
+///     .bg_color(Color::srgb(0, 0, 0))
 ///     .glow(0.8)
-///     .sensitivity(1.5)
+///     .sensitivity(Binding::f64(1.5));
 /// ```
 #[derive(Clone)]
 pub struct Waveform {

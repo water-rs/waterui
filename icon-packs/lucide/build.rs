@@ -27,27 +27,27 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LUCIDE_ICON_URL");
 
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
     let out_path = Path::new(&out_dir);
     let cache_file = out_path.join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
 
-    // Get URL from env or use default
-    let url = env::var("LUCIDE_ICON_URL").unwrap_or_else(|_| ICON_NODES_URL.to_string());
+    let vendored =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("data").join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
+    println!("cargo:rerun-if-changed={}", vendored.display());
 
-    // Get icon nodes from cache or download
-    let icon_nodes_json = if cache_file.exists() {
-        fs::read_to_string(&cache_file).expect("Failed to read cached icon-nodes.json")
-    } else {
-        let content = fetch_content(&url).unwrap_or_else(|e| {
-            eprintln!("cargo:warning=Failed to get Lucide icons: {e}");
-            eprintln!("cargo:warning=Building without icon definitions.");
-            fs::write(out_path.join("icons.rs"), "// No icons available\n")
-                .expect("Failed to write output file");
-            std::process::exit(0);
-        });
-        fs::write(&cache_file, &content).ok();
-        content
-    };
+    // Default to vendored data for deterministic, offline builds.
+    // Override can be a local file path or a URL.
+    let source = env::var("LUCIDE_ICON_URL").unwrap_or_else(|_| vendored.display().to_string());
+
+    if !is_url(&source) {
+        println!("cargo:rerun-if-changed={source}");
+    }
+
+    let icon_nodes_json = load_content(&source, &cache_file, "Lucide icon-nodes.json").unwrap_or_else(|e| {
+        panic!(
+            "waterui-icons-lucide: {e}\nHint: provide vendored data in `data/` or set `LUCIDE_ICON_URL` to a local file path/URL."
+        )
+    });
 
     // Parse icon nodes
     let icons: HashMap<String, Vec<(String, HashMap<String, serde_json::Value>)>> =
@@ -69,6 +69,25 @@ fn fetch_content(path: &str) -> Result<String, String> {
     } else {
         eprintln!("Reading Lucide icons from local file: {path}");
         fs::read_to_string(path).map_err(|e| format!("Failed to read file: {e}"))
+    }
+}
+
+fn is_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
+fn load_content(source: &str, cache_path: &Path, desc: &str) -> Result<String, String> {
+    if is_url(source) {
+        if cache_path.exists() {
+            return fs::read_to_string(cache_path)
+                .map_err(|e| format!("Failed to read cached {desc}: {e}"));
+        }
+        let content = fetch_content(source)?;
+        let _ = fs::write(cache_path, &content);
+        Ok(content)
+    } else {
+        fs::read_to_string(source)
+            .map_err(|e| format!("Failed to read {desc} from {source}: {e}"))
     }
 }
 
