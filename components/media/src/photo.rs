@@ -1,8 +1,7 @@
 //! A Photo component that displays an image from a URL.
 //!
 //! The Photo component fetches an image from a URL, decodes it, and displays
-//! it using the GPU-accelerated [`Image`] view. It uses async loading with
-//! a dynamic view that updates when the image is ready.
+//! it using the GPU-accelerated [`Image`] view.
 //!
 //! # Example
 //!
@@ -15,7 +14,7 @@
 //! ```
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use crate::Url;
 use crate::image::Image;
@@ -135,6 +134,7 @@ fn spawn_load_task(
     .detach();
 }
 
+/// Fetch and decode an image from a URL.
 async fn fetch_and_decode(url: Url) -> Result<(Vec<u8>, u32, u32), String> {
     // Fetch the image data using redirect-following client
     use zenwave::{Client, Method, redirect::FollowRedirect};
@@ -145,7 +145,7 @@ async fn fetch_and_decode(url: Url) -> Result<(Vec<u8>, u32, u32), String> {
         .map_err(|e| e.to_string())?;
 
     if !response.status().is_success() {
-        return Err(format!("HTTP error: {}", response.status()));
+        return Err(alloc::format!("HTTP error: {}", response.status()));
     }
 
     let data = response
@@ -156,13 +156,11 @@ async fn fetch_and_decode(url: Url) -> Result<(Vec<u8>, u32, u32), String> {
 
     // Decode on a background thread to avoid blocking
     blocking::unblock(move || {
-        let img =
-            image::load_from_memory(&data).map_err(|e| format!("Image decode failed: {}", e))?;
-
+        let img = image::load_from_memory(&data)
+            .map_err(|e| alloc::format!("Image decode failed: {}", e))?;
         let (width, height) = img.dimensions();
         let rgba = img.into_rgba8();
         let pixels = rgba.into_raw();
-
         Ok((pixels, width, height))
     })
     .await

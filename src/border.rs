@@ -15,8 +15,7 @@
 //! fn rounded_border_example() -> impl View {
 //!     // Rounded border
 //!     text!("Rounded")
-//!         .border(Color::blue(), 1.0)
-//!         .corner_radius(8.0)
+//!         .border_with(Border::new(Color::blue(), 1.0).corner_radius(8.0))
 //! }
 //! ```
 
