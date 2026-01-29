@@ -114,7 +114,7 @@ Window::new("Frosted Glass", content)
 ### Window with Custom Color
 
 ```rust
-let color = Color::srgb_f32(0.2, 0.4, 0.8).with_alpha(0.85);
+let color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
 Window::new("Colored Window", content)
     .background(color)
     .show(env);

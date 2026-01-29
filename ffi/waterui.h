@@ -2803,6 +2803,10 @@ typedef struct WuiGpuSurface {
    * This is consumed during init and should not be used after.
    */
   void *surface;
+  /**
+   * Render mode for the surface (0=Continuous, 1=OnDemand).
+   */
+  uint32_t render_mode;
 } WuiGpuSurface;
 
 /**

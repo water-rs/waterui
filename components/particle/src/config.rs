@@ -81,7 +81,7 @@ impl Default for ParticleProps {
             angle: 0.0..core::f32::consts::TAU,
             size: 0.01..0.02,
             color_start: Color::srgb(255, 255, 255),
-            color_end: Color::srgb(255, 255, 255).with_alpha(0.0),
+            color_end: Color::srgb(255, 255, 255).with_opacity(0.0),
             stretch_with_velocity: false,
             softness: 0.5,
             shape: ParticleShape::Circle,

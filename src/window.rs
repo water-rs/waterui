@@ -10,7 +10,7 @@
 //!
 //! // Semi-transparent colored window
 //! Window::new("Tinted", content)
-//!     .background(Color::black().with_alpha(0.8));
+//!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
 //! // Frosted glass window (opaque window + material blur on content)
 //! Window::new("Frosted", content)
@@ -228,7 +228,7 @@ impl Window {
     ///
     /// // Semi-transparent colored window
     /// Window::new("Tinted", content)
-    ///     .background(Color::black().with_alpha(0.8));
+    ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
     /// // Frosted glass window (opaque + material blur on content)
     /// Window::new("Frosted", content)
