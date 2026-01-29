@@ -96,17 +96,17 @@ pub struct AndroidNdk;
 pub struct Java;
 
 impl Java {
-    /// Detect the path to the Java installation.
+    /// Detect the path to the Java installation for Android development.
+    ///
+    /// Priority order:
+    /// 1. Android Studio's bundled JBR (guaranteed compatible with AGP)
+    /// 2. JAVA_HOME environment variable (may be incompatible)
+    /// 3. Java from PATH (fallback)
+    ///
+    /// We prioritize Android Studio's JBR because system Java (e.g., Homebrew's
+    /// JDK 25) may be incompatible with the Android Gradle Plugin.
     pub async fn detect_path() -> Option<PathBuf> {
-        // Check JAVA_HOME first
-        if let Ok(home) = env::var("JAVA_HOME") {
-            let java_path = PathBuf::from(home).join("bin/java");
-            if java_path.exists() {
-                return Some(java_path);
-            }
-        }
-
-        // Check Android Studio's bundled JBR on macOS
+        // Check Android Studio's bundled JBR first (guaranteed compatible)
         if cfg!(target_os = "macos") {
             const ANDROID_STUDIO_JBRS: &[&str] = &[
                 "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java",
@@ -120,7 +120,42 @@ impl Java {
             }
         }
 
-        // Check PATH
+        // Check Android Studio on Linux
+        if cfg!(target_os = "linux") {
+            if let Ok(home) = env::var("HOME") {
+                let paths = [
+                    format!("{home}/.local/share/JetBrains/Toolbox/apps/android-studio/jbr/bin/java"),
+                    format!("{home}/android-studio/jbr/bin/java"),
+                ];
+                for path in paths {
+                    let java_path = PathBuf::from(&path);
+                    if java_path.exists() {
+                        return Some(java_path);
+                    }
+                }
+            }
+        }
+
+        // Check Android Studio on Windows
+        if cfg!(target_os = "windows") {
+            if let Ok(program_files) = env::var("ProgramFiles") {
+                let java_path =
+                    PathBuf::from(&program_files).join("Android/Android Studio/jbr/bin/java.exe");
+                if java_path.exists() {
+                    return Some(java_path);
+                }
+            }
+        }
+
+        // Fall back to JAVA_HOME (may be incompatible with AGP)
+        if let Ok(home) = env::var("JAVA_HOME") {
+            let java_path = PathBuf::from(home).join("bin/java");
+            if java_path.exists() {
+                return Some(java_path);
+            }
+        }
+
+        // Check PATH as last resort
         which("java").await.ok()
     }
 
