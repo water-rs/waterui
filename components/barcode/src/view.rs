@@ -11,7 +11,9 @@ use waterui_graphics::GpuSurface;
 /// # Example
 ///
 /// ```rust
-/// Barcode::new("https://waterui.dev")
+/// use waterui_barcode::Barcode;
+///
+/// Barcode::new("https://waterui.dev");
 /// ```
 #[derive(Clone, Debug)]
 pub struct Barcode {

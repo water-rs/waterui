@@ -6,7 +6,7 @@
 //! - Reactive cursor styles that change based on state
 //! - Lifecycle events with `on_appear` and `on_disappear`
 
-use waterui::animation::AnimationExt;
+use waterui::animation::{Animation, AnimationExt};
 use waterui::app::App;
 use waterui::cursor::CursorStyle;
 use waterui::graphics::color::Srgb;
@@ -157,11 +157,11 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
             .opacity(
                 is_dragging_opacity
                     .select(0.8, 1.0)
-                    .with(Animation::default()),
+                    .with_animation(Animation::default()),
             )
             .with_state(is_dragging)
-            .on_hover_enter(|dragging| dragging.set(true))
-            .on_hover_exit(|dragging| dragging.set(false)),
+            .on_hover_enter(|dragging: Binding<bool>| dragging.set(true))
+            .on_hover_exit(|dragging: Binding<bool>| dragging.set(false)),
     ))
     .padding()
 }

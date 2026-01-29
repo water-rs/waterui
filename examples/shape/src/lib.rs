@@ -231,7 +231,7 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
         when(show_hdr.clone(), || {
             hdr_shapes().metadata(HighDynamicRange::new())
         })
-        .or(|| hdr_shapes().metadata(StandardDynamicRange::new())),
+        .otherwise(|| hdr_shapes().metadata(StandardDynamicRange::new())),
     ))
     .padding()
 }

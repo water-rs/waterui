@@ -127,7 +127,7 @@
 //!
 //! // Combine multiple reactive values with animation
 //! let combined = value1
-//!     .zip(value2)
+//!     .zip(&value2)
 //!     .map(|(a, b)| a + b)
 //!     .with_animation(Animation::ease_in_out(Duration::from_millis(250)));
 //!

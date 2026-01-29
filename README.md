@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg" alt="License" />
     <img src="https://img.shields.io/codecov/c/github/water-rs/waterui?logo=codecov" alt="Code Coverage" />
     </div>
-    <img src="./waterui-logo.png" alt="WaterUI Logo" width="150"/ >
+    <img src="https://assets.waterui.dev/images/logo.png" alt="WaterUI Logo" width="150" />
     <p>Learn rust, run native; Learn once, apply anywhere</p>
 
 </div>
@@ -106,17 +106,14 @@ WaterUI uses `Binding<T>` for mutable state and `Computed<T>` for derived values
 ```rust
 use waterui::prelude::*;
 
-#[hot_reload]
 fn counter() -> impl View {
-    let count = Binding::int(0);
+    let count = Binding::i32(0);
 
     vstack((
-        text!("Count: {}", count),
-        button("Increment")
-            .action({
-                let count = count.clone();
-                move || count.set(count.get() + 1)
-            }),
+        text!("Count: {count}"),
+        button("Increment").with_state(&count).action(|count| {
+            count.set(count.get() + 1);
+        }),
     ))
 }
 ```
@@ -191,27 +188,25 @@ fn settings_view() -> impl View {
 
 ```rust
 use waterui::prelude::*;
-use waterui::gesture::{TapGesture, DragGesture, LongPressGesture};
+use waterui::gesture::{GestureObserver, LongPressGesture, TapGesture};
 
-#[hot_reload]
 fn gestures() -> impl View {
-    let tap_count = Binding::int(0);
+    let tap_count = Binding::i32(0);
 
     vstack((
-        text!("Taps: {}", tap_count),
+        text!("Taps: {tap_count}"),
         text("Tap Me")
             .padding()
             .background(Color::srgb_hex("#2196F3").with_opacity(0.3))
-            .gesture(TapGesture::new(), {
-                let tap_count = tap_count.clone();
-                move || tap_count.set(tap_count.get() + 1)
-            }),
+            .gesture_observer(
+                GestureObserver::new(TapGesture::new())
+                    .with_state(&tap_count)
+                    .action(|count| count.set(count.get() + 1)),
+            ),
         text("Long Press")
             .padding()
             .background(Color::srgb_hex("#FF9800").with_opacity(0.3))
-            .gesture(LongPressGesture::new(500), || {
-                println!("Long press detected");
-            }),
+            .gesture(LongPressGesture::new(500), || {}),
     ))
 }
 ```
@@ -220,6 +215,7 @@ fn gestures() -> impl View {
 
 ```rust
 use waterui::prelude::*;
+use waterui::Identifiable;
 use waterui::component::list::{List, ListItem};
 
 #[derive(Clone)]
@@ -243,8 +239,8 @@ fn contacts_list() -> impl View {
         Contact { id: 3, name: "Carol Williams", role: "Designer" },
     ];
 
-    List::for_each(contacts, |contact| ListItem {
-        content: AnyView::new(
+    List::for_each(contacts, |contact| {
+        ListItem::new(
             vstack((
                 text(contact.name).size(17.0).bold(),
                 text(contact.role)
@@ -252,8 +248,7 @@ fn contacts_list() -> impl View {
                     .foreground(Color::srgb(128, 128, 128)),
             ))
             .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
-        ),
-        on_delete: None,
+        )
     })
 }
 ```

@@ -7,7 +7,194 @@ use std::path::Path;
 use std::time::Duration;
 
 use color_eyre::eyre::{self, eyre};
+use core_foundation::base::{CFType, TCFType};
+use core_foundation::number::CFNumber;
+use core_foundation::string::CFString;
+use core_graphics::window::{
+    kCGNullWindowID, kCGWindowListOptionOnScreenOnly, CGWindowListCopyWindowInfo,
+};
 use smol::process::Command;
+
+/// Information about a macOS window.
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    /// The window ID (used for screencapture -l).
+    pub window_id: u32,
+    /// The window title/name.
+    pub name: String,
+    /// The owning process ID.
+    pub owner_pid: i32,
+    /// The owning application name.
+    pub owner_name: String,
+    /// Window layer (0 = normal windows).
+    pub layer: i32,
+}
+
+/// List all windows belonging to a specific process.
+///
+/// Uses Core Graphics `CGWindowListCopyWindowInfo` to enumerate windows.
+///
+/// # Arguments
+///
+/// * `pid` - The process ID to filter windows by
+///
+/// # Returns
+///
+/// A vector of `WindowInfo` for all windows owned by the process,
+/// sorted by window layer (main windows first).
+pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
+    use core_foundation::array::CFArray;
+    use core_foundation::dictionary::CFDictionary;
+
+    let window_list_ptr = unsafe {
+        CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+    };
+
+    if window_list_ptr.is_null() {
+        eyre::bail!("Failed to get window list from Core Graphics");
+    }
+
+    let window_list: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_create_rule(window_list_ptr) };
+
+    let mut windows = Vec::new();
+
+    for window_dict in window_list.iter() {
+        // Get owner PID
+        let owner_pid_key = CFString::new("kCGWindowOwnerPID");
+        let Some(owner_pid_val) = window_dict.find(&owner_pid_key) else {
+            continue;
+        };
+        let owner_pid_num =
+            unsafe { CFNumber::wrap_under_get_rule(owner_pid_val.as_CFTypeRef() as *const _) };
+        let Some(owner_pid) = owner_pid_num.to_i32() else {
+            continue;
+        };
+
+        // Filter by PID
+        if owner_pid != pid {
+            continue;
+        }
+
+        // Get window ID
+        let window_id_key = CFString::new("kCGWindowNumber");
+        let Some(window_id_val) = window_dict.find(&window_id_key) else {
+            continue;
+        };
+        let window_id_num =
+            unsafe { CFNumber::wrap_under_get_rule(window_id_val.as_CFTypeRef() as *const _) };
+        let Some(window_id) = window_id_num.to_i32() else {
+            continue;
+        };
+
+        // Get window name (may be empty)
+        let name_key = CFString::new("kCGWindowName");
+        let name = window_dict
+            .find(&name_key)
+            .map(|v| {
+                let cf_str =
+                    unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                cf_str.to_string()
+            })
+            .unwrap_or_default();
+
+        // Get owner name
+        let owner_name_key = CFString::new("kCGWindowOwnerName");
+        let owner_name = window_dict
+            .find(&owner_name_key)
+            .map(|v| {
+                let cf_str =
+                    unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                cf_str.to_string()
+            })
+            .unwrap_or_default();
+
+        // Get window layer
+        let layer_key = CFString::new("kCGWindowLayer");
+        let layer = window_dict
+            .find(&layer_key)
+            .and_then(|v| {
+                let num = unsafe { CFNumber::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                num.to_i32()
+            })
+            .unwrap_or(0);
+
+        windows.push(WindowInfo {
+            window_id: window_id as u32,
+            name,
+            owner_pid,
+            owner_name,
+            layer,
+        });
+    }
+
+    // Sort by layer (layer 0 = normal windows, negative = below, positive = above)
+    // Main windows typically have layer 0
+    windows.sort_by_key(|w| w.layer);
+
+    Ok(windows)
+}
+
+/// Capture a screenshot of a specific window by its window ID.
+///
+/// Uses `screencapture -l <windowid>` to capture a single window.
+///
+/// # Arguments
+///
+/// * `window_id` - The window ID (from `WindowInfo::window_id`)
+/// * `output` - The output file path
+///
+/// # Errors
+///
+/// Returns an error if the screenshot fails.
+pub async fn screenshot_window(window_id: u32, output: &Path) -> eyre::Result<()> {
+    let output_str = output
+        .to_str()
+        .ok_or_else(|| eyre!("Invalid output path"))?;
+
+    let result = Command::new("screencapture")
+        .arg("-x") // No sound
+        .arg("-l")
+        .arg(window_id.to_string())
+        .arg(output_str)
+        .output()
+        .await?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        eyre::bail!("Failed to capture window screenshot: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Capture a screenshot of a specific window and return the raw PNG bytes.
+///
+/// # Arguments
+///
+/// * `window_id` - The window ID (from `WindowInfo::window_id`)
+///
+/// # Errors
+///
+/// Returns an error if the screenshot fails.
+pub async fn screenshot_window_bytes(window_id: u32) -> eyre::Result<Vec<u8>> {
+    let result = Command::new("screencapture")
+        .arg("-x") // No sound
+        .arg("-l")
+        .arg(window_id.to_string())
+        .arg("-t")
+        .arg("png")
+        .arg("-") // Output to stdout
+        .output()
+        .await?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        eyre::bail!("Failed to capture window screenshot: {}", stderr.trim());
+    }
+
+    Ok(result.stdout)
+}
 
 /// Perform a tap (click) gesture at the specified screen coordinates.
 ///

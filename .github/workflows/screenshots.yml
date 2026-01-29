@@ -1,0 +1,149 @@
+name: Generate Screenshots
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/**'
+      - 'src/**'
+      - 'components/**'
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: 'Comma-separated list of examples to screenshot (empty = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  screenshots:
+    name: Generate Screenshots
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: screenshots-macos
+
+      - name: Install water CLI
+        run: cargo install --path cli
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Boot iOS Simulator
+        run: |
+          # Find available iPhone simulator
+          DEVICE=$(xcrun simctl list devices available | grep "iPhone" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+          echo "SIMULATOR_UDID=$DEVICE" >> $GITHUB_ENV
+          xcrun simctl boot "$DEVICE" || true
+          echo "Booted simulator: $DEVICE"
+
+      - name: Discover Examples
+        id: examples
+        run: |
+          if [ -n "${{ github.event.inputs.examples }}" ]; then
+            # Use provided list
+            EXAMPLES="${{ github.event.inputs.examples }}"
+          else
+            # Discover all examples with lib.rs
+            EXAMPLES=$(find examples -name "lib.rs" -mindepth 2 -maxdepth 2 | xargs -I {} dirname {} | xargs -I {} basename {} | tr '\n' ',' | sed 's/,$//')
+          fi
+          echo "examples=$EXAMPLES" >> $GITHUB_OUTPUT
+          echo "Discovered examples: $EXAMPLES"
+
+      - name: Generate Screenshots
+        run: |
+          mkdir -p screenshots
+
+          IFS=',' read -ra EXAMPLE_LIST <<< "${{ steps.examples.outputs.examples }}"
+          for example in "${EXAMPLE_LIST[@]}"; do
+            example=$(echo "$example" | xargs)  # trim whitespace
+            if [ -z "$example" ]; then continue; fi
+
+            echo "::group::Screenshot: $example"
+
+            EXAMPLE_PATH="examples/$example"
+            if [ ! -d "$EXAMPLE_PATH" ]; then
+              echo "Warning: Example $example not found, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Build and run on iOS Simulator
+            echo "Building $example for iOS..."
+            water build --platform ios --path "$EXAMPLE_PATH" || {
+              echo "Warning: Failed to build $example, skipping"
+              echo "::endgroup::"
+              continue
+            }
+
+            echo "Running $example on simulator..."
+            water run --platform ios --path "$EXAMPLE_PATH" --device "$SIMULATOR_UDID" &
+            APP_PID=$!
+
+            # Wait for app to start
+            sleep 10
+
+            # Capture screenshot
+            echo "Capturing screenshot..."
+            water device capture --id "$SIMULATOR_UDID" --output "screenshots/${example}-ios.png" || {
+              echo "Warning: Failed to capture screenshot for $example"
+            }
+
+            # Terminate app
+            kill $APP_PID 2>/dev/null || true
+
+            echo "::endgroup::"
+          done
+
+          echo "Generated screenshots:"
+          ls -la screenshots/
+
+      - name: Setup Node.js (for wrangler)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Upload to R2
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_ASSETS_API_TOKEN }}
+        run: |
+          for screenshot in screenshots/*.png; do
+            if [ -f "$screenshot" ]; then
+              filename=$(basename "$screenshot")
+              echo "Uploading $filename to R2..."
+              wrangler r2 object put "assets/screenshots/$filename" --file "$screenshot" --remote
+            fi
+          done
+          echo "Upload complete!"
+
+      - name: Upload Artifacts (for PR review)
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 7

@@ -18,7 +18,7 @@
 //!     .speed(1.8..2.2)
 //!     .angle(PI * 0.49..PI * 0.51)
 //!     .size(0.002..0.004)
-//!     .color(Color::WHITE.with_alpha(0.5), Color::TRANSPARENT)
+//!     .color(Color::srgb(255, 255, 255).with_opacity(0.5), Color::transparent())
 //!     .stretch_with_velocity()
 //!     .gravity(0.0, 2.5);
 //! ```

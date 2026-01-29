@@ -40,9 +40,9 @@
 //! use waterui_layout::stack::vstack;
 //!
 //! let env = Environment::new().with(DefaultErrorView::new(|error: BoxedStdError| {
-//!     let message = error.to_string();
+//!     let message = Binding::container(error.to_string());
 //!     vstack((
-//!         text!("❌ Error: {}", message.clone()),
+//!         text!("❌ Error: {message}"),
 //!         text!("Please contact support if this persists.")
 //!             .foreground(Color::srgb(128, 128, 128)),
 //!     ))
@@ -65,10 +65,10 @@
 //!
 //! fn my_view() -> impl View {
 //!     match load_data().error_view(|err| {
-//!         let message = err.to_string();
-//!         text!("Failed to load: {}", message)
+//!         let message = Binding::container(err.to_string());
+//!         text!("Failed to load: {message}")
 //!     }) {
-//!         Ok(data) => text!("{data}").anyview(),
+//!         Ok(data) => text::text(data).anyview(),
 //!         Err(error_view) => error_view.anyview(),
 //!     }
 //! }
