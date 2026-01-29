@@ -13,6 +13,14 @@ Cargo.lock
 *.skill
 bugreport*.zip
 .worktrees/
+.wrangler/
+node_modules/
 
-# Generated preview images
-examples/**/preview_*.png
+# Binary assets (hosted on assets.waterui.dev)
+*.png
+*.heic
+*.jpg
+*.jpeg
+
+# Large data files (downloaded at build time)
+icon-packs/**/data/

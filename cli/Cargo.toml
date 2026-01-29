@@ -55,6 +55,8 @@ waterui-preview-protocol = { path = "../components/preview-protocol" }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }

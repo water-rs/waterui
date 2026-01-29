@@ -26,7 +26,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use wgpu;
 
 /// Error type for shared context operations.
@@ -121,6 +121,7 @@ impl SharedGpuContext {
 }
 
 static SHARED_CONTEXT: OnceLock<Arc<RwLock<SharedGpuContext>>> = OnceLock::new();
+static SHARED_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Initialize the shared GPU context.
 ///
@@ -140,7 +141,15 @@ static SHARED_CONTEXT: OnceLock<Arc<RwLock<SharedGpuContext>>> = OnceLock::new()
 /// ```
 pub fn init_shared_context() -> Result<(), SharedContextError> {
     if SHARED_CONTEXT.get().is_some() {
-        return Err(SharedContextError::AlreadyInitialized);
+        return Ok(());
+    }
+
+    // Ensure only one thread performs the expensive device creation.
+    let init_lock = SHARED_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = init_lock.lock();
+
+    if SHARED_CONTEXT.get().is_some() {
+        return Ok(());
     }
 
     let ctx = create_shared_context()?;

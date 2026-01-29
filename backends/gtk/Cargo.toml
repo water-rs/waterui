@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "GTK4 backend for WaterUI"
 
 [dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
 waterui.workspace = true
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
@@ -21,8 +23,8 @@ waterui-webview.workspace = true
 nami.workspace = true
 tracing.workspace = true
 
-gtk4.workspace = true
-gdk4.workspace = true
+gtk4 = { workspace = true, features = ["v4_6"] }
+gdk4 = { workspace = true, features = ["v4_6"] }
 glib.workspace = true
 cairo-rs.workspace = true
 gdk-pixbuf = "0.20"

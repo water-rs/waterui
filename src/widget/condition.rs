@@ -8,16 +8,15 @@
 //! ```rust
 //! use waterui::prelude::*;
 //! use waterui::widget::condition::when;
-//! use waterui_core::binding;
 //!
-//! let is_visible = binding(true);
+//! let is_visible = Binding::bool(true);
 //!
 //! // Simple if-else
 //! when(is_visible.clone(), || "Visible")
 //!     .otherwise(|| "Hidden");
 //!
 //! // Multiple conditions (if-elif-else)
-//! let state = binding(0);
+//! let state = Binding::i32(0);
 //! when(state.equal_to(0), || "Loading...")
 //!     .or(state.equal_to(1), || "Ready")
 //!     .or(state.equal_to(2), || "Error")
@@ -196,10 +195,10 @@ where
     /// # Examples
     ///
     /// ```rust
+    /// use waterui::prelude::*;
     /// use waterui::widget::condition::when;
-    /// use nami::binding;
     ///
-    /// let is_visible = binding(true);
+    /// let is_visible = Binding::bool(true);
     /// when(is_visible, || "Visible").otherwise(|| "Hidden");
     /// ```
     pub const fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>

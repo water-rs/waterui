@@ -17,7 +17,7 @@ use syn::{Expr, Ident, LitStr, Result, Token, parse_macro_input};
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Itself) => Ok(quote!(::waterui)),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
             Ok(quote!(::#ident))

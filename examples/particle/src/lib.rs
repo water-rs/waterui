@@ -22,8 +22,8 @@ fn rain() -> impl View {
         // Very thin streaks
         .size(0.0008..0.0015)
         .color(
-            Color::from(Srgb::new(0.8, 0.9, 1.0)).with_alpha(0.4),
-            Color::from(Srgb::new(0.85, 0.95, 1.0)).with_alpha(0.0),
+            Color::from(Srgb::new(0.8, 0.9, 1.0)).with_opacity(0.4),
+            Color::from(Srgb::new(0.85, 0.95, 1.0)).with_opacity(0.0),
         )
         .gravity(0.0, 5.0) // Higher gravity
         .wind(0.05, 0.0) // Subtle wind
@@ -45,8 +45,8 @@ fn snow() -> impl View {
         // High size variation for depth
         .size(0.0015..0.006)
         .color(
-            Color::from(Srgb::WHITE).with_alpha(0.8),
-            Color::from(Srgb::WHITE).with_alpha(0.0),
+            Color::from(Srgb::WHITE).with_opacity(0.8),
+            Color::from(Srgb::WHITE).with_opacity(0.0),
         )
         // Low gravity, high turbulence for flutter
         .gravity(0.0, 0.05)
@@ -67,8 +67,8 @@ fn fog() -> impl View {
         // Large generic blobs
         .size(0.1..0.25)
         .color(
-            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.1),
-            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_alpha(0.0),
+            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_opacity(0.1),
+            Color::from(Srgb::new(0.8, 0.85, 0.8)).with_opacity(0.0),
         )
         .gravity(0.0, -0.01)
         .wind(0.02, 0.0)
@@ -85,8 +85,8 @@ fn flame() -> impl View {
         .angle(PI * 1.4..PI * 1.6) // Up
         .size(0.03..0.06)
         .color(
-            Color::from(Srgb::new(1.0, 0.7, 0.1)).with_alpha(0.6), // Orange
-            Color::from(Srgb::new(1.0, 0.1, 0.05)).with_alpha(0.0), // Red fade
+            Color::from(Srgb::new(1.0, 0.7, 0.1)).with_opacity(0.6), // Orange
+            Color::from(Srgb::new(1.0, 0.1, 0.05)).with_opacity(0.0), // Red fade
         )
         .gravity(0.0, -1.0) // Rise
         .additive()
@@ -104,8 +104,8 @@ fn firework() -> impl View {
         .angle(PI * 1.35..PI * 1.65) // Cone up
         .size(0.006..0.012)
         .color(
-            Color::from(Srgb::new(1.0, 0.9, 0.6)).with_alpha(0.9), // Gold bright
-            Color::from(Srgb::new(1.0, 0.4, 0.1)).with_alpha(0.0), // Orange fade
+            Color::from(Srgb::new(1.0, 0.9, 0.6)).with_opacity(0.9), // Gold bright
+            Color::from(Srgb::new(1.0, 0.4, 0.1)).with_opacity(0.0), // Orange fade
         )
         .gravity(0.0, 2.5) // Fall back down
         .stretch_with_velocity()
@@ -133,7 +133,7 @@ fn confetti_view() -> impl View {
             .turbulence(0.3)
             .color(
                 Color::from(Srgb::new(1.0, 0.5, 0.7)),
-                Color::from(Srgb::new(1.0, 0.5, 0.7)).with_alpha(0.0),
+                Color::from(Srgb::new(1.0, 0.5, 0.7)).with_opacity(0.0),
             )
             .shape(shape)
             .spin(spin.clone())
@@ -151,7 +151,7 @@ fn confetti_view() -> impl View {
             .turbulence(0.35)
             .color(
                 Color::from(Srgb::new(0.5, 0.9, 0.7)),
-                Color::from(Srgb::new(0.5, 0.9, 0.7)).with_alpha(0.0),
+                Color::from(Srgb::new(0.5, 0.9, 0.7)).with_opacity(0.0),
             )
             .shape(shape)
             .spin(spin.clone())
@@ -169,7 +169,7 @@ fn confetti_view() -> impl View {
             .turbulence(0.4)
             .color(
                 Srgb::new(0.5, 0.8, 1.0),
-                Srgb::new(0.5, 0.8, 1.0).with_alpha(0.0),
+                Srgb::new(0.5, 0.8, 1.0).with_opacity(0.0),
             )
             .shape(shape)
             .spin(spin.clone())
@@ -187,7 +187,7 @@ fn confetti_view() -> impl View {
             .turbulence(0.45)
             .color(
                 Srgb::new(0.8, 0.6, 1.0),
-                Srgb::new(0.8, 0.6, 1.0).with_alpha(0.0),
+                Srgb::new(0.8, 0.6, 1.0).with_opacity(0.0),
             )
             .shape(shape)
             .spin(spin.clone())
@@ -205,7 +205,7 @@ fn confetti_view() -> impl View {
             .turbulence(0.5)
             .color(
                 Srgb::new(1.0, 0.9, 0.4),
-                Srgb::new(1.0, 0.9, 0.4).with_alpha(0.0),
+                Srgb::new(1.0, 0.9, 0.4).with_opacity(0.0),
             )
             .shape(shape)
             .spin(spin.clone())
@@ -224,8 +224,8 @@ fn explosion() -> impl View {
         .angle(0.0..PI * 2.0)
         .size(0.003..0.008) // Tiny blocks
         .color(
-            Srgb::new(1.0, 0.5, 0.0).with_alpha(1.0), // Orange
-            Srgb::new(0.2, 0.2, 0.2).with_alpha(1.0), // Fade to dark grey solid
+            Srgb::new(1.0, 0.5, 0.0).with_opacity(1.0), // Orange
+            Srgb::new(0.2, 0.2, 0.2).with_opacity(1.0), // Fade to dark grey solid
         )
         .gravity(0.0, 3.0) // Heavy pieces fall
         .shape(ParticleShape::Rect) // Square blocks
@@ -273,25 +273,32 @@ fn main() -> impl View {
             vstack((
                 hstack((
                     Button::new(text("Rain"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(0)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(0)),
                     Button::new(text("Snow"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(1)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(1)),
                     Button::new(text("Fog"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(2)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(2)),
                 ))
                 .spacing(10.0),
                 hstack((
                     Button::new(text("Flame"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(3)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(3)),
                     Button::new(text("Firework"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(4)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(4)),
                 ))
                 .spacing(10.0),
                 hstack((
                     Button::new(text("Confetti"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(5)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(5)),
                     Button::new(text("Explosion"))
-                        .action_with(&mode, |m: Binding<i32>, _env: Environment| m.set(6)),
+                        .with_state(&mode)
+                        .action(|m: Binding<i32>| m.set(6)),
                 ))
                 .spacing(10.0),
             ))

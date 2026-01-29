@@ -23,6 +23,7 @@ use core::{
 };
 use pastey::paste;
 pub use srgb::Srgb;
+use std::{collections::HashMap, sync::OnceLock};
 
 use nami::{Computed, Signal, SignalExt, impl_constant};
 
@@ -730,6 +731,22 @@ struct SolidColorRenderer {
     pipeline_format: Option<crate::wgpu::TextureFormat>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SolidColorPipelineKey {
+    format: crate::wgpu::TextureFormat,
+    blend_enabled: bool,
+}
+
+struct SolidColorSharedDeviceState {
+    shader: crate::wgpu::ShaderModule,
+    bind_group_layout: crate::wgpu::BindGroupLayout,
+    pipeline_layout: crate::wgpu::PipelineLayout,
+    pipelines: HashMap<SolidColorPipelineKey, crate::wgpu::RenderPipeline>,
+}
+
+static SOLID_COLOR_SHARED: OnceLock<parking_lot::Mutex<HashMap<usize, SolidColorSharedDeviceState>>> =
+    OnceLock::new();
+
 impl SolidColorRenderer {
     fn new(color: ResolvedColor) -> Self {
         Self {
@@ -746,12 +763,6 @@ impl crate::GpuRenderer for SolidColorRenderer {
     fn setup(&mut self, ctx: &crate::GpuContext) -> impl core::future::Future<Output = ()> {
         let device = &ctx.device;
 
-        // Create shader directly (no more shared context cache - compile on-demand)
-        let shader = device.create_shader_module(crate::wgpu::ShaderModuleDescriptor {
-            label: Some(SOLID_COLOR_SHADER.label),
-            source: crate::wgpu::ShaderSource::Wgsl(SOLID_COLOR_SHADER.source.clone().into()),
-        });
-
         let uniform_size = <SolidColorUniforms as encase::ShaderSize>::SHADER_SIZE.get() as u64;
         let uniform_buffer = device.create_buffer(&crate::wgpu::BufferDescriptor {
             label: Some("Solid Color Uniforms"),
@@ -760,20 +771,143 @@ impl crate::GpuRenderer for SolidColorRenderer {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
-                label: Some("Solid Color Bind Group Layout"),
-                entries: &[crate::wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: crate::wgpu::ShaderStages::FRAGMENT,
-                    ty: crate::wgpu::BindingType::Buffer {
-                        ty: crate::wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
+        let device_key = ctx.device as *const crate::wgpu::Device as usize;
+        let key = SolidColorPipelineKey {
+            format: ctx.surface_format,
+            blend_enabled: !ctx.is_hdr(),
+        };
+
+        let (pipeline, bind_group_layout) = {
+            let cache =
+                SOLID_COLOR_SHARED.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+            let mut cache = cache.lock();
+
+            let shared = cache.entry(device_key).or_insert_with(|| {
+                let shader = device.create_shader_module(crate::wgpu::ShaderModuleDescriptor {
+                    label: Some(SOLID_COLOR_SHADER.label),
+                    source: crate::wgpu::ShaderSource::Wgsl(
+                        SOLID_COLOR_SHADER.source.clone().into(),
+                    ),
+                });
+
+                let bind_group_layout =
+                    device.create_bind_group_layout(&crate::wgpu::BindGroupLayoutDescriptor {
+                        label: Some("Solid Color Bind Group Layout"),
+                        entries: &[crate::wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: crate::wgpu::ShaderStages::FRAGMENT,
+                            ty: crate::wgpu::BindingType::Buffer {
+                                ty: crate::wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+
+                let pipeline_layout =
+                    device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
+                        label: Some("Solid Color Pipeline Layout"),
+                        bind_group_layouts: &[&bind_group_layout],
+                        push_constant_ranges: &[],
+                    });
+
+                SolidColorSharedDeviceState {
+                    shader,
+                    bind_group_layout,
+                    pipeline_layout,
+                    pipelines: HashMap::new(),
+                }
             });
+
+            if !shared.pipelines.contains_key(&key) {
+                let blend = if key.blend_enabled {
+                    Some(crate::wgpu::BlendState::ALPHA_BLENDING)
+                } else {
+                    None
+                };
+
+                // Try with pipeline cache first (if provided by the backend).
+                device.push_error_scope(crate::wgpu::ErrorFilter::Validation);
+
+                let mut pipeline =
+                    device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
+                        label: Some("Solid Color Pipeline"),
+                        layout: Some(&shared.pipeline_layout),
+                        vertex: crate::wgpu::VertexState {
+                            module: &shared.shader,
+                            entry_point: Some("vs_main"),
+                            buffers: &[],
+                            compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(crate::wgpu::FragmentState {
+                            module: &shared.shader,
+                            entry_point: Some("fs_main"),
+                            targets: &[Some(crate::wgpu::ColorTargetState {
+                                format: key.format,
+                                blend,
+                                write_mask: crate::wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: crate::wgpu::PrimitiveState {
+                            topology: crate::wgpu::PrimitiveTopology::TriangleList,
+                            ..Default::default()
+                        },
+                        depth_stencil: None,
+                        multisample: crate::wgpu::MultisampleState::default(),
+                        multiview: None,
+                        cache: ctx.pipeline_cache,
+                    });
+
+                let error = crate::pollster::block_on(device.pop_error_scope());
+                if let Some(e) = error {
+                    tracing::warn!("[Solid Color] Pipeline creation with cache failed: {}", e);
+                    pipeline =
+                        device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
+                            label: Some("Solid Color Pipeline (No Cache)"),
+                            layout: Some(&shared.pipeline_layout),
+                            vertex: crate::wgpu::VertexState {
+                                module: &shared.shader,
+                                entry_point: Some("vs_main"),
+                                buffers: &[],
+                                compilation_options:
+                                    crate::wgpu::PipelineCompilationOptions::default(),
+                            },
+                            fragment: Some(crate::wgpu::FragmentState {
+                                module: &shared.shader,
+                                entry_point: Some("fs_main"),
+                                targets: &[Some(crate::wgpu::ColorTargetState {
+                                    format: key.format,
+                                    blend,
+                                    write_mask: crate::wgpu::ColorWrites::ALL,
+                                })],
+                                compilation_options:
+                                    crate::wgpu::PipelineCompilationOptions::default(),
+                            }),
+                            primitive: crate::wgpu::PrimitiveState {
+                                topology: crate::wgpu::PrimitiveTopology::TriangleList,
+                                ..Default::default()
+                            },
+                            depth_stencil: None,
+                            multisample: crate::wgpu::MultisampleState::default(),
+                            multiview: None,
+                            cache: None,
+                        });
+                }
+
+                shared.pipelines.insert(key, pipeline);
+            }
+
+            (
+                shared
+                    .pipelines
+                    .get(&key)
+                    .expect("Solid color pipeline must exist")
+                    .clone(),
+                shared.bind_group_layout.clone(),
+            )
+        };
 
         let bind_group = device.create_bind_group(&crate::wgpu::BindGroupDescriptor {
             label: Some("Solid Color Bind Group"),
@@ -783,86 +917,6 @@ impl crate::GpuRenderer for SolidColorRenderer {
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
-
-        let pipeline_layout =
-            device.create_pipeline_layout(&crate::wgpu::PipelineLayoutDescriptor {
-                label: Some("Solid Color Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(crate::wgpu::BlendState::ALPHA_BLENDING)
-        };
-
-        // Try with cache first
-        device.push_error_scope(crate::wgpu::ErrorFilter::Validation);
-
-        let mut pipeline = device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
-            label: Some("Solid Color Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: crate::wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(crate::wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(crate::wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend,
-                    write_mask: crate::wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: crate::wgpu::PrimitiveState {
-                topology: crate::wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: crate::wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: ctx.pipeline_cache,
-        });
-
-        // Check for validation error
-        let error = crate::pollster::block_on(device.pop_error_scope());
-        if let Some(e) = error {
-            tracing::warn!("[Solid Color] Pipeline creation with cache failed: {}", e);
-            // Retry without cache
-            pipeline = device.create_render_pipeline(&crate::wgpu::RenderPipelineDescriptor {
-                label: Some("Solid Color Pipeline (No Cache)"),
-                layout: Some(&pipeline_layout),
-                vertex: crate::wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(crate::wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(crate::wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: crate::wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: crate::wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: crate::wgpu::PrimitiveState {
-                    topology: crate::wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: crate::wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
-        }
 
         self.pipeline = Some(pipeline);
         self.uniform_buffer = Some(uniform_buffer);
