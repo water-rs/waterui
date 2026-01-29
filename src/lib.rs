@@ -3,6 +3,7 @@
 #![allow(clippy::future_not_send)]
 #![allow(clippy::doc_markdown)]
 extern crate alloc;
+extern crate self as waterui;
 #[macro_use]
 mod macros;
 pub mod background;
