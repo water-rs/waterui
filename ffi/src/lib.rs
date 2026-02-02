@@ -19,6 +19,11 @@ extern crate alloc;
 extern crate std;
 #[macro_use]
 mod macros;
+
+// JNI module for Android backend (when android-jni feature is enabled)
+#[cfg(feature = "android-jni")]
+pub mod jni;
+
 pub mod action;
 pub mod animation;
 pub mod array;
@@ -105,10 +110,47 @@ macro_rules! export {
                 vm: *mut core::ffi::c_void,
                 _reserved: *mut core::ffi::c_void,
             ) -> i32 {
-                unsafe { $crate::__android_init(vm) }
+                // Initialize Android context (ndk_context)
+                unsafe { $crate::__android_init(vm) };
+                // Initialize JNI module (cached classes, JavaVM reference)
+                // Note: We use __jni_init which is conditionally defined based on
+                // the android-jni feature in waterui-ffi crate (not the calling crate).
+                unsafe { $crate::__jni_init(vm) }
             }
         };
     };
+}
+
+/// JNI initialization helper for Android.
+/// This is called from JNI_OnLoad in the export! macro.
+///
+/// When `android-jni` feature is enabled, this initializes the JNI module.
+/// When disabled, this is a no-op that returns JNI_VERSION_1_6.
+///
+/// # Safety
+/// Must only be called once from JNI_OnLoad.
+#[doc(hidden)]
+#[cfg(all(target_os = "android", feature = "android-jni"))]
+#[inline(always)]
+pub unsafe fn __jni_init(vm: *mut core::ffi::c_void) -> i32 {
+    unsafe { jni::init(vm as *mut jni::jni::sys::JavaVM) }
+}
+
+/// JNI initialization stub when android-jni feature is disabled.
+#[doc(hidden)]
+#[cfg(all(target_os = "android", not(feature = "android-jni")))]
+#[inline(always)]
+pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
+    // JNI_VERSION_1_6 = 0x00010006
+    0x0001_0006
+}
+
+/// JNI initialization stub for non-Android platforms.
+#[doc(hidden)]
+#[cfg(not(target_os = "android"))]
+#[inline(always)]
+pub unsafe fn __jni_init(_vm: *mut core::ffi::c_void) -> i32 {
+    0x0001_0006
 }
 
 /// # Safety
@@ -162,13 +204,11 @@ pub unsafe fn __init() {
 }
 
 #[cfg(target_os = "android")]
-pub unsafe fn __android_init(vm: *mut core::ffi::c_void) -> i32 {
+pub unsafe fn __android_init(vm: *mut core::ffi::c_void) {
     tracing::debug!("Initializing Android context for WaterUI FFI");
     unsafe {
         ndk_context::initialize_android_context(vm, core::ptr::null_mut());
     }
-
-    jni::sys::JNI_VERSION_1_6
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
@@ -346,6 +386,9 @@ pub unsafe extern "C" fn waterui_view_body(
     env: *mut WuiEnv,
 ) -> *mut WuiAnyView {
     unsafe {
+        if view.is_null() || env.is_null() {
+            return core::ptr::null_mut();
+        }
         let view = view.into_rust();
         let body = view.body(&*env);
 
@@ -410,6 +453,16 @@ impl IntoFFI for &'static str {
     type FFI = WuiStr;
     fn into_ffi(self) -> Self::FFI {
         WuiStr(WuiArray::new(Str::from_static(self)))
+    }
+}
+
+impl WuiStr {
+    /// Returns the string as a `&str` without consuming the `WuiStr`.
+    ///
+    /// # Safety
+    /// The caller must ensure the underlying bytes are valid UTF-8.
+    pub unsafe fn as_str(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(self.0.as_slice()) }
     }
 }
 
@@ -547,8 +600,8 @@ use waterui_core::event::{LifeCycleHook, OnEvent};
 /// Type alias for Metadata<LifeCycleHook> FFI struct
 pub type WuiMetadataLifeCycleHook = WuiMetadata<WuiLifeCycleHook>;
 
-// Generate waterui_metadata_lifecycle_hook_id() and waterui_force_as_metadata_lifecycle_hook()
-ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, lifecycle_hook);
+// Generate waterui_metadata_life_cycle_hook_id() and waterui_force_as_metadata_life_cycle_hook()
+ffi_metadata!(LifeCycleHook, WuiMetadataLifeCycleHook, life_cycle_hook);
 
 // Used to attach interaction event handlers (hover enter/exit) - repeatable handlers
 
@@ -1070,6 +1123,16 @@ pub struct WuiRetain {
     /// Opaque pointer to the retained value (Box<dyn Any>).
     /// This must be kept alive and dropped when the view is disposed.
     _opaque: *mut (),
+}
+
+impl WuiRetain {
+    pub(crate) fn opaque_ptr(&self) -> *mut () {
+        self._opaque
+    }
+
+    pub(crate) fn from_ptr(ptr: *mut ()) -> Self {
+        Self { _opaque: ptr }
+    }
 }
 
 impl IntoFFI for Retain {

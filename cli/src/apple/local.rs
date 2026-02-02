@@ -11,7 +11,7 @@ use core_foundation::base::{CFType, TCFType};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::window::{
-    kCGNullWindowID, kCGWindowListOptionOnScreenOnly, CGWindowListCopyWindowInfo,
+    CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionOnScreenOnly,
 };
 use smol::process::Command;
 
@@ -46,9 +46,8 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
     use core_foundation::array::CFArray;
     use core_foundation::dictionary::CFDictionary;
 
-    let window_list_ptr = unsafe {
-        CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
-    };
+    let window_list_ptr =
+        unsafe { CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) };
 
     if window_list_ptr.is_null() {
         eyre::bail!("Failed to get window list from Core Graphics");
@@ -92,8 +91,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let name = window_dict
             .find(&name_key)
             .map(|v| {
-                let cf_str =
-                    unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
                 cf_str.to_string()
             })
             .unwrap_or_default();
@@ -103,8 +101,7 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let owner_name = window_dict
             .find(&owner_name_key)
             .map(|v| {
-                let cf_str =
-                    unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
+                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef() as *const _) };
                 cf_str.to_string()
             })
             .unwrap_or_default();
@@ -210,11 +207,9 @@ pub async fn screenshot_window_bytes(window_id: u32) -> eyre::Result<Vec<u8>> {
 /// Returns an error if the click fails.
 pub async fn tap(x: u32, y: u32) -> eyre::Result<()> {
     let script = format!(
-        r#"
-        tell application "System Events"
-            click at {{{x}, {y}}}
-        end tell
-        "#
+        include_str!("applescript/tap.applescript.tpl"),
+        x = x,
+        y = y,
     );
 
     let output = Command::new("osascript")
@@ -254,14 +249,12 @@ pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -
     // AppleScript doesn't have native drag support
     // We simulate with click at start, delay, click at end
     let script = format!(
-        r#"
-        tell application "System Events"
-            click at {{{}, {}}}
-            delay {}
-            click at {{{}, {}}}
-        end tell
-        "#,
-        from.0, from.1, duration_sec, to.0, to.1
+        include_str!("applescript/swipe.applescript.tpl"),
+        from_x = from.0,
+        from_y = from.1,
+        to_x = to.0,
+        to_y = to.1,
+        duration_sec = duration_sec,
     );
 
     let output = Command::new("osascript")
@@ -290,11 +283,8 @@ pub async fn text(input: &str) -> eyre::Result<()> {
     let escaped = input.replace('\\', "\\\\").replace('"', "\\\"");
 
     let script = format!(
-        r#"
-        tell application "System Events"
-            keystroke "{escaped}"
-        end tell
-        "#
+        include_str!("applescript/text.applescript.tpl"),
+        escaped = escaped,
     );
 
     let output = Command::new("osascript")

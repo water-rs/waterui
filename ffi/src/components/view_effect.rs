@@ -735,7 +735,8 @@ pub unsafe extern "C" fn waterui_view_effect_child_is_gpu_surface(
 
     // Check if content's type ID matches GpuSurface
     let content_type_id = unsafe { crate::waterui_view_id(effect.content) };
-    let gpu_surface_id = super::gpu_surface::waterui_gpu_surface_id();
+    let gpu_surface_id =
+        crate::WuiTypeId::of::<waterui_core::Native<waterui_graphics::GpuSurface>>();
 
     content_type_id == gpu_surface_id
 }

@@ -124,7 +124,9 @@ impl Java {
         if cfg!(target_os = "linux") {
             if let Ok(home) = env::var("HOME") {
                 let paths = [
-                    format!("{home}/.local/share/JetBrains/Toolbox/apps/android-studio/jbr/bin/java"),
+                    format!(
+                        "{home}/.local/share/JetBrains/Toolbox/apps/android-studio/jbr/bin/java"
+                    ),
                     format!("{home}/android-studio/jbr/bin/java"),
                 ];
                 for path in paths {

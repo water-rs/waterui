@@ -66,7 +66,7 @@ pub async fn run(args: Args) -> Result<()> {
     let (width, height) = parse_frame(&args.frame)?;
 
     // Canonicalize project path
-    let project_path = args.path.canonicalize()?;
+    let project_path = crate::project_path::canonicalize(&args.path)?;
 
     // Get crate name from Cargo.toml
     let cargo_toml = project_path.join("Cargo.toml");
@@ -86,7 +86,9 @@ pub async fn run(args: Args) -> Result<()> {
     let sccache_path = match sccache.path().await {
         Ok(path) => Some(path),
         Err(_) => {
-            warn!("sccache not found. Build efficiency may be reduced. Install with: brew install sccache");
+            warn!(
+                "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
+            );
             None
         }
     };

@@ -1,6 +1,9 @@
 //! Build system
 
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
@@ -26,6 +29,10 @@ pub struct RustBuild {
     hot_reload: bool,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<PathBuf>,
+    /// Cargo features to enable.
+    features: Vec<String>,
+    /// Extra environment variables to set for the cargo build process.
+    envs: Vec<(String, OsString)>,
 }
 
 /// Options for building Rust libraries.
@@ -112,6 +119,8 @@ impl RustBuild {
             triple,
             hot_reload,
             sccache_path: None,
+            features: Vec::new(),
+            envs: Vec::new(),
         }
     }
 
@@ -122,6 +131,36 @@ impl RustBuild {
     #[must_use]
     pub fn with_sccache(mut self, sccache_path: PathBuf) -> Self {
         self.sccache_path = Some(sccache_path);
+        self
+    }
+
+    /// Add a Cargo feature to enable during the build.
+    ///
+    /// Features are passed to cargo via `--features`.
+    #[must_use]
+    pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
+        self.features.push(feature.into());
+        self
+    }
+
+    /// Add multiple Cargo features to enable during the build.
+    #[must_use]
+    pub fn with_features(mut self, features: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.features.extend(features.into_iter().map(Into::into));
+        self
+    }
+
+    /// Add an environment variable for the cargo build process.
+    #[must_use]
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<OsString>) -> Self {
+        self.envs.push((key.into(), value.into()));
+        self
+    }
+
+    /// Add multiple environment variables for the cargo build process.
+    #[must_use]
+    pub fn with_envs(mut self, envs: impl IntoIterator<Item = (String, OsString)>) -> Self {
+        self.envs.extend(envs);
         self
     }
 
@@ -225,6 +264,11 @@ impl RustBuild {
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
 
+        // Apply extra environment variables first.
+        for (key, value) in &self.envs {
+            cmd.env(key, value);
+        }
+
         // Use sccache as rustc wrapper if configured
         if let Some(sccache_path) = &self.sccache_path {
             cmd = cmd.env("RUSTC_WRAPPER", sccache_path);
@@ -250,6 +294,11 @@ impl RustBuild {
 
         if release {
             cmd = cmd.arg("--release");
+        }
+
+        // Add cargo features if specified
+        if !self.features.is_empty() {
+            cmd = cmd.args(["--features", &self.features.join(",")]);
         }
 
         let output = cmd

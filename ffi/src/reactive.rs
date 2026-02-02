@@ -172,7 +172,10 @@ impl<T> OpaqueType for WuiBinding<T> {}
 
 /// Generates computed FFI support for read-only reactive types.
 ///
-/// Generates:
+/// When `c-api` feature is enabled, generates C FFI functions.
+/// When `android-jni` feature is enabled, generates JNI functions.
+///
+/// # Generated Functions (C-API)
 /// - `waterui_read_computed_{ident}` - read current value
 /// - `waterui_watch_computed_{ident}` - subscribe to changes
 /// - `waterui_drop_computed_{ident}` - cleanup
@@ -185,6 +188,8 @@ impl<T> OpaqueType for WuiBinding<T> {}
 macro_rules! ffi_computed {
     ($ty:ty,$ffi:ty, $ident:tt) => {
         pastey::paste!{
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
             /// Reads the current value from a computed
             /// # Safety
             /// The computed pointer must be valid and point to a properly initialized computed object.
@@ -194,6 +199,7 @@ macro_rules! ffi_computed {
                 unsafe { $crate::IntoFFI::into_ffi((&(*computed)).get()) }
             }
 
+            #[cfg(feature = "c-api")]
             /// Watches for changes in a computed
             /// # Safety
             /// The computed pointer must be valid and point to a properly initialized computed object.
@@ -216,6 +222,7 @@ macro_rules! ffi_computed {
                 }
             }
 
+            #[cfg(feature = "c-api")]
             /// Drops a computed
             /// # Safety
             /// The caller must ensure that `computed` is a valid pointer.
@@ -224,6 +231,75 @@ macro_rules! ffi_computed {
                 unsafe { drop(alloc::boxed::Box::from_raw(computed)); }
             }
 
+            // ========== Android JNI ==========
+            #[cfg(feature = "android-jni")]
+            /// JNI: Drops a computed
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropComputed $ident:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                computed_ptr: $crate::jni::jlong,
+            ) {
+                unsafe { drop(alloc::boxed::Box::from_raw(computed_ptr as *mut $crate::reactive::WuiComputed<$ty>)) };
+            }
+
+            #[cfg(feature = "android-jni")]
+            /// JNI: Watches for changes in a computed
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchComputed $ident:camel>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                computed_ptr: $crate::jni::jlong,
+                watcher: $crate::jni::JObject<'local>,
+            ) -> $crate::jni::jlong {
+                use waterui::Signal;
+                use alloc::boxed::Box;
+                use alloc::rc::Rc;
+                use $crate::IntoFFI;
+
+                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(&mut env, &watcher);
+
+                // Cast function pointers
+                let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
+                    unsafe { core::mem::transmute(call_ptr as *const ()) };
+                let drop_fn: unsafe extern "C" fn(*mut ()) =
+                    unsafe { core::mem::transmute(drop_ptr as *const ()) };
+
+                // Get the computed reference
+                let computed = unsafe { &*(computed_ptr as *const $crate::reactive::WuiComputed<$ty>) };
+
+                // Create a cleaner to ensure drop_fn is called when the watcher is dropped
+                struct Cleaner {
+                    data: *mut (),
+                    drop_fn: unsafe extern "C" fn(*mut ()),
+                }
+                impl Drop for Cleaner {
+                    fn drop(&mut self) {
+                        unsafe { (self.drop_fn)(self.data) }
+                    }
+                }
+                let cleaner = Rc::new(Cleaner {
+                    data: data_ptr as *mut (),
+                    drop_fn,
+                });
+                let cleaner_clone = cleaner.clone();
+
+                // Register the watcher with the computed
+                let guard = computed.watch(move |ctx: nami::watcher::Context<$ty>| {
+                    let _ = &cleaner_clone; // Capture cleaner to ensure it lives as long as the watcher
+                    let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
+                    let value: $ty = ctx.into_value();
+                    unsafe {
+                        call_fn(data_ptr as *mut (), value.into_ffi(), metadata.into_ffi());
+                    }
+                });
+
+                // Return the guard as a pointer
+                let guard_box = Box::new($crate::reactive::WuiWatcherGuard(Box::new(guard)));
+                Box::into_raw(guard_box) as $crate::jni::jlong
+            }
+
+            #[cfg(feature = "c-api")]
             /// Clones a computed
             /// # Safety
             /// The caller must ensure that `computed` is a valid pointer.
@@ -235,6 +311,7 @@ macro_rules! ffi_computed {
                 }
             }
 
+            #[cfg(feature = "c-api")]
             /// Creates a watcher from native callbacks.
             /// # Safety
             /// All function pointers must be valid.
@@ -257,6 +334,11 @@ macro_rules! ffi_computed {
                 let watcher = unsafe { $crate::reactive::WuiWatcher::new(data, call, drop) };
                 Box::into_raw(Box::new(watcher))
             }
+
+            // ========== Android JNI ==========
+            // Note: JNI reactive bindings require more complex struct conversions
+            // and are implemented in ffi/src/jni/reactive.rs with helper functions.
+            // The macros here generate stub functions that delegate to those helpers.
         }
     };
 
@@ -271,10 +353,13 @@ macro_rules! ffi_computed {
 ///
 /// Generates `waterui_new_computed_{ident}` for creating signals from native callbacks.
 /// Requires the FFI type to implement `IntoRust`.
+///
+/// Only generated for `c-api` feature - JNI uses a different approach.
 #[macro_export]
 macro_rules! ffi_computed_ctor {
     ($ty:ty,$ffi:ty, $ident:tt) => {
         pastey::paste!{
+            #[cfg(feature = "c-api")]
             /// Creates a computed signal from native callbacks.
             /// # Safety
             /// All function pointers must be valid and follow the expected calling conventions.
@@ -305,10 +390,22 @@ macro_rules! ffi_computed_ctor {
     }
 }
 
+/// Generates binding FFI support for mutable reactive types.
+///
+/// When `c-api` feature is enabled, generates C FFI functions.
+/// When `android-jni` feature is enabled, generates JNI functions.
+///
+/// # Generated Functions (C-API)
+/// - `waterui_read_binding_{ident}` - read current value
+/// - `waterui_set_binding_{ident}` - set value
+/// - `waterui_watch_binding_{ident}` - subscribe to changes
+/// - `waterui_drop_binding_{ident}` - cleanup
 #[macro_export]
 macro_rules! ffi_binding {
     ($ty:ty,$ffi:ty, $ident:tt) => {
         pastey::paste!{
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
             /// Reads the current value from a binding
             /// # Safety
             /// The binding pointer must be valid and point to a properly initialized binding object.
@@ -316,6 +413,8 @@ macro_rules! ffi_binding {
             pub unsafe extern "C" fn [< waterui_read_binding_ $ident >](binding: *const $crate::reactive::WuiBinding<$ty>) -> $ffi {
                 unsafe { (*binding).get().into_ffi() }
             }
+
+            #[cfg(feature = "c-api")]
             /// Sets the value of a binding
             /// # Safety
             /// The binding pointer must be valid and point to a properly initialized binding object.
@@ -325,6 +424,8 @@ macro_rules! ffi_binding {
                     (*binding).set($crate::IntoRust::into_rust(value));
                 }
             }
+
+            #[cfg(feature = "c-api")]
             /// Watches for changes in a binding
             /// # Safety
             /// The binding pointer must be valid and point to a properly initialized binding object.
@@ -357,6 +458,8 @@ macro_rules! ffi_binding {
                     guard.into_ffi()
                 }
             }
+
+            #[cfg(feature = "c-api")]
             /// Drops a binding
             /// # Safety
             /// The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
@@ -365,6 +468,84 @@ macro_rules! ffi_binding {
                 unsafe {
                     drop(alloc::boxed::Box::from_raw(binding));
                 }
+            }
+
+            // ========== Android JNI ==========
+            #[cfg(feature = "android-jni")]
+            /// JNI: Drops a binding
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropBinding $ident:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                binding_ptr: $crate::jni::jlong,
+            ) {
+                unsafe { drop(alloc::boxed::Box::from_raw(binding_ptr as *mut $crate::reactive::WuiBinding<$ty>)) };
+            }
+
+            #[cfg(feature = "android-jni")]
+            /// JNI: Watches for changes in a binding
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchBinding $ident:camel>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                binding_ptr: $crate::jni::jlong,
+                watcher: $crate::jni::JObject<'local>,
+            ) -> $crate::jni::jlong {
+                use waterui::Signal;
+                use alloc::boxed::Box;
+                use alloc::rc::Rc;
+                use core::cell::Cell;
+                use $crate::IntoFFI;
+
+                let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(&mut env, &watcher);
+
+                // Cast function pointers
+                let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
+                    unsafe { core::mem::transmute(call_ptr as *const ()) };
+                let drop_fn: unsafe extern "C" fn(*mut ()) =
+                    unsafe { core::mem::transmute(drop_ptr as *const ()) };
+
+                // Get the binding reference
+                let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$ty>) };
+
+                // Create a cleaner to ensure drop_fn is called when the watcher is dropped
+                struct Cleaner {
+                    data: *mut (),
+                    drop_fn: unsafe extern "C" fn(*mut ()),
+                }
+                impl Drop for Cleaner {
+                    fn drop(&mut self) {
+                        unsafe { (self.drop_fn)(self.data) }
+                    }
+                }
+                let cleaner = Rc::new(Cleaner {
+                    data: data_ptr as *mut (),
+                    drop_fn,
+                });
+                let cleaner_clone = cleaner.clone();
+
+                // Filter out synchronous callbacks during setup to prevent re-entrancy deadlocks
+                let is_setting_up = Rc::new(Cell::new(true));
+                let is_setting_up_clone = is_setting_up.clone();
+
+                // Register the watcher with the binding
+                let guard = binding.watch(move |ctx: nami::watcher::Context<$ty>| {
+                    let _ = &cleaner_clone; // Capture cleaner to ensure it lives as long as the watcher
+                    if is_setting_up_clone.get() {
+                        return; // Skip synchronous callback during setup
+                    }
+                    let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
+                    let value: $ty = ctx.into_value();
+                    unsafe {
+                        call_fn(data_ptr as *mut (), value.into_ffi(), metadata.into_ffi());
+                    }
+                });
+
+                is_setting_up.set(false);
+
+                // Return the guard as a pointer
+                let guard_box = Box::new($crate::reactive::WuiWatcherGuard(Box::new(guard)));
+                Box::into_raw(guard_box) as $crate::jni::jlong
             }
         }
     };
@@ -397,13 +578,103 @@ ffi_reactive!(Str, WuiStr);
 
 ffi_reactive!(AnyView, *mut WuiAnyView);
 
-ffi_reactive!(i32, i32);
+// Note: Kotlin uses different naming for Binding vs Computed:
+// - Binding: Int, Double, Float (Java-style)
+// - Computed: I32, F64, F32 (Rust-style)
+// So we call ffi_binding! and ffi_computed! separately with different identifiers.
+
+ffi_binding!(i32, i32, int);
+ffi_computed!(i32, i32, i32);
 
 ffi_reactive!(bool, bool);
 
-ffi_reactive!(f32, f32);
+ffi_binding!(f32, f32, float);
+ffi_computed!(f32, f32, f32);
 
-ffi_reactive!(f64, f64);
+ffi_binding!(f64, f64, double);
+ffi_computed!(f64, f64, f64);
+
+// ============================================================================
+// JNI Primitive Reactive Macros
+// ============================================================================
+//
+// The `JniPrimitive` trait is defined in `jni/convert.rs` and re-exported via `jni` module.
+// These macros generate read/set functions for types implementing that trait.
+
+/// Generates JNI read/set functions for primitive binding types.
+///
+/// Uses the `JniPrimitive` trait (from jni::convert) for type-safe conversion.
+#[macro_export]
+macro_rules! jni_binding_primitive {
+    ($rust_ty:ty, $binding_name:tt) => {
+        pastey::paste! {
+            #[cfg(feature = "android-jni")]
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readBinding $binding_name:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                binding_ptr: $crate::jni::jlong,
+            ) -> <$rust_ty as $crate::jni::JniPrimitive>::Jni {
+                use waterui::Signal;
+                use $crate::jni::JniPrimitive;
+                let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
+                binding.get().to_jni()
+            }
+
+            #[cfg(feature = "android-jni")]
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_setBinding $binding_name:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                binding_ptr: $crate::jni::jlong,
+                value: <$rust_ty as $crate::jni::JniPrimitive>::Jni,
+            ) {
+                use $crate::jni::JniPrimitive;
+                let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
+                binding.set(<$rust_ty>::from_jni(value));
+            }
+        }
+    };
+}
+
+/// Generates JNI read functions for primitive computed types.
+#[macro_export]
+macro_rules! jni_computed_primitive {
+    ($rust_ty:ty, $computed_name:tt) => {
+        pastey::paste! {
+            #[cfg(feature = "android-jni")]
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readComputed $computed_name:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                computed_ptr: $crate::jni::jlong,
+            ) -> <$rust_ty as $crate::jni::JniPrimitive>::Jni {
+                use waterui::Signal;
+                use $crate::jni::JniPrimitive;
+                let computed = unsafe { &*(computed_ptr as *const $crate::reactive::WuiComputed<$rust_ty>) };
+                computed.get().to_jni()
+            }
+        }
+    };
+}
+
+// Generate JNI read/set for primitive bindings
+// Note: Kotlin naming convention differs - Binding uses Java names (Int, Double, Float)
+jni_binding_primitive!(bool, bool);
+jni_binding_primitive!(i32, int);
+jni_binding_primitive!(f32, float);
+jni_binding_primitive!(f64, double);
+
+// Generate JNI read for primitive computed
+// Note: Kotlin naming convention differs - Computed uses Rust names (I32, F64, F32)
+jni_computed_primitive!(bool, bool);
+jni_computed_primitive!(i32, i32);
+jni_computed_primitive!(f32, f32);
+jni_computed_primitive!(f64, f64);
+
+// Generate additional computed aliases (ColorScheme and CursorStyle use i32)
+jni_computed_primitive!(i32, color_scheme);
+jni_computed_primitive!(i32, cursor_style);
 
 // Date reactive bindings (using WuiDate FFI representation)
 use crate::components::form::WuiDate;
@@ -463,6 +734,7 @@ impl<T: IntoFFI> IntoFFI for Watcher<T> {
 ///
 /// # Safety
 /// The caller must ensure that the provided data pointer and drop function are valid.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_new_watcher_guard(
     data: *mut (),
@@ -491,6 +763,7 @@ use waterui_form::secure::Secure;
 /// Reads the current value from a Secure binding
 /// # Safety
 /// The binding pointer must be valid and point to a properly initialized binding object.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<Secure>) -> WuiStr {
     use alloc::string::String;
@@ -505,6 +778,7 @@ pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<
 /// Sets the value of a Secure binding
 /// # Safety
 /// The binding pointer must be valid and point to a properly initialized binding object.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_set_binding_secure(
     binding: *mut WuiBinding<Secure>,
@@ -520,6 +794,7 @@ pub unsafe extern "C" fn waterui_set_binding_secure(
 /// # Safety
 /// The binding pointer must be valid and point to a properly initialized binding object.
 /// The watcher pointer will be consumed and freed when the returned guard is dropped.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_watch_binding_secure(
     binding: *const WuiBinding<Secure>,
@@ -552,6 +827,7 @@ pub unsafe extern "C" fn waterui_watch_binding_secure(
 /// Drops a Secure binding
 /// # Safety
 /// The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_drop_binding_secure(binding: *mut WuiBinding<Secure>) {
     unsafe {
@@ -562,6 +838,7 @@ pub unsafe extern "C" fn waterui_drop_binding_secure(binding: *mut WuiBinding<Se
 /// Creates a watcher from native callbacks for Secure
 /// # Safety
 /// All function pointers must be valid.
+#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_new_watcher_secure(
     data: *mut (),

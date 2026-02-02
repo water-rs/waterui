@@ -110,7 +110,7 @@ pub enum NavigationTitleDisplayMode {
 ///
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
@@ -120,6 +120,19 @@ pub struct Bar {
     pub hidden: Computed<bool>,
     /// The display mode for the title (automatic, inline, or large)
     pub display_mode: NavigationTitleDisplayMode,
+}
+
+impl Default for Bar {
+    fn default() -> Self {
+        Self {
+            title: AnyView::default(),
+            // Sentinel: treat fully-transparent as "use platform default".
+            // Backends can still choose to render this as transparent if they prefer.
+            color: Computed::constant(Color::transparent()),
+            hidden: Computed::constant(false),
+            display_mode: NavigationTitleDisplayMode::Automatic,
+        }
+    }
 }
 
 /// A link that navigates to another view when activated.

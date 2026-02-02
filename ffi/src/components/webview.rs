@@ -540,7 +540,7 @@ impl WebViewHandle for FfiWebViewHandle {
 // =============================================================================
 
 opaque!(WuiWebView, WebView);
-ffi_view!(WebView, *mut WuiWebView, webview);
+ffi_view!(WebView, *mut WuiWebView, web_view);
 
 /// Gets the native handle pointer from a WebView.
 ///

@@ -37,7 +37,12 @@ fn main() {
 
     // Default to vendored data for deterministic, offline builds.
     // Override can be a local file path or a URL.
-    let source = env::var("LUCIDE_ICON_URL").unwrap_or_else(|_| vendored.display().to_string());
+    let default_source = if vendored.exists() {
+        vendored.display().to_string()
+    } else {
+        ICON_NODES_URL.to_string()
+    };
+    let source = env::var("LUCIDE_ICON_URL").unwrap_or(default_source);
 
     if !is_url(&source) {
         println!("cargo:rerun-if-changed={source}");

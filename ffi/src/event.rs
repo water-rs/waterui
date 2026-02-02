@@ -8,6 +8,7 @@ use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 // ============================================================================
 
 /// FFI lifecycle enum for one-time lifecycle events.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub enum WuiLifeCycle {
     Appear,
@@ -86,6 +87,7 @@ pub unsafe extern "C" fn waterui_drop_lifecycle_hook(handler: *mut WuiLifeCycleH
 // ============================================================================
 
 /// FFI event enum for repeatable interaction events.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub enum WuiEvent {
     HoverEnter,
