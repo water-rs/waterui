@@ -35,28 +35,71 @@ macro_rules! ffi_safe {
     };
 }
 
+/// Generates FFI functions for view types.
+///
+/// When `c-api` feature is enabled (default), generates C FFI functions.
+/// When `android-jni` feature is enabled, generates JNI functions.
+///
+/// # Generated Functions (C-API)
+/// - `waterui_<ident>_id()` - Returns the type ID as 128-bit value
+/// - `waterui_force_as_<ident>()` - Downcasts AnyView to the view type
+///
+/// # Generated Functions (Android-JNI)
+/// - `Java_dev_waterui_android_ffi_WatcherJni_<ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_forceAs<Ident>()` - Returns struct
+/// Generates FFI functions for view types.
+///
+/// Uses `:lower_camel` for JNI names (colorPickerId) and `:camel` for forceAs (forceAsColorPicker).
 #[macro_export]
 macro_rules! ffi_view {
-    ($view:ty,$ffi:ty,$ident:tt) => {
+    ($view:ty, $ffi:ty, $ident:tt) => {
         pastey::paste! {
-        /// # Safety
-        /// This function is unsafe because it dereferences a raw pointer and performs unchecked downcasting.
-        /// The caller must ensure that `view` is a valid pointer to an `AnyView` that contains the expected view type.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn [<waterui_force_as_ $ident>](view: *mut $crate::WuiAnyView) -> $ffi {
-            unsafe {
-                let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
-                let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
-                $crate::IntoFFI::into_ffi(view)
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_force_as_ $ident>](view: *mut $crate::WuiAnyView) -> $ffi {
+                unsafe {
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view);
+                    let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
+                    $crate::IntoFFI::into_ffi(view)
+                }
             }
-        }
 
-        /// Returns the type ID as a 128-bit value for O(1) comparison.
-        /// Uses TypeId in normal builds, type_name hash in hot reload builds.
-        #[unsafe(no_mangle)]
-        pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiTypeId {
-            $crate::WuiTypeId::of::<waterui_core::Native<$view>>()
-        }
+            #[cfg(feature = "c-api")]
+            #[unsafe(no_mangle)]
+            pub extern "C" fn [<waterui_ $ident _id>]() -> $crate::WuiTypeId {
+                $crate::WuiTypeId::of::<waterui_core::Native<$view>>()
+            }
+
+            // ========== Android JNI ==========
+            // :lower_camel → buttonId, colorPickerId (first letter lowercase)
+            // :camel → Button, ColorPicker (first letter uppercase, for forceAs prefix)
+            #[cfg(feature = "android-jni")]
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ $ident:lower_camel Id>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+            ) -> $crate::jni::jobject {
+                let type_id = $crate::WuiTypeId::of::<waterui_core::Native<$view>>();
+                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+            }
+
+            #[cfg(feature = "android-jni")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                view_ptr: $crate::jni::jlong,
+            ) -> $crate::jni::jobject {
+                use $crate::jni::convert::jlong_to_ptr_mut;
+                unsafe {
+                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                    let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
+                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(view);
+                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
+                }
+            }
         }
     };
 }
@@ -66,13 +109,19 @@ macro_rules! ffi_view {
 /// Unlike `ffi_view!`, this macro does NOT wrap in `Native<T>` because
 /// `Metadata<T>` is stored directly in the view tree (not as a native view).
 ///
-/// # Generated Functions
+/// # Generated Functions (C-API)
 /// - `waterui_metadata_<ident>_id()` - Returns the type ID as 128-bit value
 /// - `waterui_force_as_metadata_<ident>()` - Downcasts AnyView to the metadata type
+///
+/// # Generated Functions (Android-JNI)
+/// - `Java_dev_waterui_android_ffi_WatcherJni_metadata<Ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata<Ident>()` - Returns struct
 #[macro_export]
 macro_rules! ffi_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
         pastey::paste! {
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
             /// Uses TypeId in normal builds, type_name hash in hot reload builds.
             #[unsafe(no_mangle)]
@@ -81,6 +130,7 @@ macro_rules! ffi_metadata {
                 $crate::WuiTypeId::of::<waterui_core::Metadata<$ty>>()
             }
 
+            #[cfg(feature = "c-api")]
             /// Force-casts an AnyView to this metadata type
             ///
             /// # Safety
@@ -97,6 +147,39 @@ macro_rules! ffi_metadata {
                     $crate::IntoFFI::into_ffi(metadata)
                 }
             }
+
+            // ========== Android JNI ==========
+            #[cfg(feature = "android-jni")]
+            /// JNI: Returns the type ID for this metadata type.
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_metadata $ident:camel Id>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+            ) -> $crate::jni::jobject {
+                let type_id = $crate::WuiTypeId::of::<waterui_core::Metadata<$ty>>();
+                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+            }
+
+            #[cfg(feature = "android-jni")]
+            /// JNI: Force-casts an AnyView pointer to this metadata type.
+            ///
+            /// # Safety
+            /// The view pointer must be valid and contain the expected metadata type.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata $ident:camel>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                view_ptr: $crate::jni::jlong,
+            ) -> $crate::jni::jobject {
+                use $crate::jni::convert::jlong_to_ptr_mut;
+                unsafe {
+                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                    let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
+                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
+                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
+                }
+            }
         }
     };
 }
@@ -106,13 +189,19 @@ macro_rules! ffi_metadata {
 /// Similar to `ffi_metadata!`, but for `IgnorableMetadata<T>` which can be
 /// safely ignored by renderers that don't support the metadata type.
 ///
-/// # Generated Functions
+/// # Generated Functions (C-API)
 /// - `waterui_ignorable_metadata_<ident>_id()` - Returns the type ID as 128-bit value
 /// - `waterui_force_as_ignorable_metadata_<ident>()` - Downcasts AnyView to the metadata type
+///
+/// # Generated Functions (Android-JNI)
+/// - `Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata<Ident>Id()` - Returns TypeIdStruct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsIgnorableMetadata<Ident>()` - Returns struct
 #[macro_export]
 macro_rules! ffi_ignorable_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
         pastey::paste! {
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
             /// Uses TypeId in normal builds, type_name hash in hot reload builds.
             #[unsafe(no_mangle)]
@@ -121,6 +210,7 @@ macro_rules! ffi_ignorable_metadata {
                 $crate::WuiTypeId::of::<waterui_core::IgnorableMetadata<$ty>>()
             }
 
+            #[cfg(feature = "c-api")]
             /// Force-casts an AnyView to this ignorable metadata type
             ///
             /// # Safety
@@ -137,10 +227,50 @@ macro_rules! ffi_ignorable_metadata {
                     $crate::IntoFFI::into_ffi(metadata)
                 }
             }
+
+            // ========== Android JNI ==========
+            #[cfg(feature = "android-jni")]
+            /// JNI: Returns the type ID for this ignorable metadata type.
+            #[unsafe(no_mangle)]
+            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata $ident:camel Id>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+            ) -> $crate::jni::jobject {
+                let type_id = $crate::WuiTypeId::of::<waterui_core::IgnorableMetadata<$ty>>();
+                $crate::jni::type_id_to_java(&mut env, type_id).into_raw()
+            }
+
+            #[cfg(feature = "android-jni")]
+            /// JNI: Force-casts an AnyView pointer to this ignorable metadata type.
+            ///
+            /// # Safety
+            /// The view pointer must be valid and contain the expected ignorable metadata type.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsIgnorableMetadata $ident:camel>]<'local>(
+                mut env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                view_ptr: $crate::jni::jlong,
+            ) -> $crate::jni::jobject {
+                use $crate::jni::convert::jlong_to_ptr_mut;
+                unsafe {
+                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                    let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
+                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
+                    $crate::jni::convert::struct_to_java(&mut env, &ffi_struct).into_raw()
+                }
+            }
         }
     };
 }
 
+/// Defines an opaque FFI type that is passed as a pointer across FFI boundaries.
+///
+/// This macro creates a wrapper struct and implements `IntoFFI`/`IntoRust` traits
+/// for pointer-based transfer. It also generates a drop function for cleanup.
+///
+/// When `c-api` feature is enabled, generates `waterui_drop_<ident>()`.
+/// When `android-jni` feature is enabled, generates JNI drop function.
 #[macro_export]
 macro_rules! opaque {
     ($name:ident,$ty:ty,$ident:tt) => {
@@ -175,12 +305,33 @@ macro_rules! opaque {
         }
 
         pastey::paste! {
+            // ========== C-API (for Apple/GTK backends) ==========
+            #[cfg(feature = "c-api")]
             /// # Safety
             /// The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_drop_ $ident>](value: *mut $name) {
                 unsafe {
                     let _ = $crate::IntoRust::into_rust(value);
+                }
+            }
+
+            // ========== Android JNI ==========
+            #[cfg(feature = "android-jni")]
+            /// JNI: Drops the opaque pointer, freeing its memory.
+            ///
+            /// # Safety
+            /// The pointer must be valid and not have been dropped before.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_drop $ident:camel>]<'local>(
+                _env: $crate::jni::JNIEnv<'local>,
+                _class: $crate::jni::JClass<'local>,
+                ptr: $crate::jni::jlong,
+            ) {
+                use $crate::jni::convert::jlong_to_ptr_mut;
+                unsafe {
+                    let ptr: *mut $name = jlong_to_ptr_mut(ptr);
+                    let _ = $crate::IntoRust::into_rust(ptr);
                 }
             }
         }
@@ -224,6 +375,7 @@ macro_rules! into_ffi {
 
     ($ty:ty, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
         $(#[$meta])*
+        #[derive(Clone, Copy)]
         #[repr(C)]
         pub enum $ffi {
             $($variant),*
@@ -251,6 +403,7 @@ macro_rules! into_ffi {
     // enum which have default variant
     ($ty:ty, $default:ident, $(#[$meta:meta])* pub enum $ffi:ident { $($variant:ident),* $(,)? }) => {
         $(#[$meta])*
+        #[derive(Clone, Copy)]
         #[repr(C)]
         pub enum $ffi {
             $($variant),*

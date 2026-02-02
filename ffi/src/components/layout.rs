@@ -12,8 +12,8 @@ opaque!(WuiLayout, Box<dyn Layout>, layout);
 
 #[repr(C)]
 pub struct WuiFixedContainer {
-    layout: *mut WuiLayout,
-    contents: WuiArray<*mut WuiAnyView>,
+    pub layout: *mut WuiLayout,
+    pub contents: WuiArray<*mut WuiAnyView>,
 }
 
 /// Returns the type ID for Spacer views as a 128-bit value.
@@ -38,8 +38,8 @@ impl IntoFFI for FixedContainer {
 
 #[repr(C)]
 pub struct WuiContainer {
-    layout: *mut WuiLayout,
-    contents: *mut WuiAnyViews,
+    pub layout: *mut WuiLayout,
+    pub contents: *mut WuiAnyViews,
 }
 
 ffi_view!(LazyContainer, WuiContainer, layout_container);
@@ -368,8 +368,8 @@ into_ffi! {Axis,All,
 
 #[repr(C)]
 pub struct WuiScrollView {
-    axis: WuiAxis,
-    content: *mut WuiAnyView, // Pointer to the content view
+    pub axis: WuiAxis,
+    pub content: *mut WuiAnyView, // Pointer to the content view
 }
 
 impl IntoFFI for ScrollView {

@@ -170,7 +170,7 @@ mod tests {
 
         // Modify file
         std::thread::sleep(std::time::Duration::from_millis(10));
-        fs::write(&file, "fn main() { println!(\"hello\"); }").unwrap();
+        fs::write(&file, "fn main() { let _ = 1; }").unwrap();
 
         // Should detect change
         assert!(block_on(watcher.has_changed(dir.path())).unwrap());
