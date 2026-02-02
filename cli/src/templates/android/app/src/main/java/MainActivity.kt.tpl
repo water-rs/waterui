@@ -59,9 +59,6 @@ class MainActivity : AppCompatActivity() {
 
                 // Known environment variables that might be set by the CLI
                 val knownEnvVars = listOf(
-                    "WATERUI_HOT_RELOAD_HOST",
-                    "WATERUI_HOT_RELOAD_PORT",
-                    "WATERUI_HOT_RELOAD_DIR",
                     "RUST_LOG",
                     "RUST_BACKTRACE"
                 )

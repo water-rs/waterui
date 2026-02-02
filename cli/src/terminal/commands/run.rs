@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 
 #[cfg(target_os = "macos")]
 use time::OffsetDateTime;
@@ -24,7 +24,6 @@ use waterui_cli::{
     },
     backend::reinit_backend,
     build::BuildOptions,
-    debug::{HotReloadEvent, HotReloadRunner},
     device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
     gtk4::{
         backend::Gtk4Backend,
@@ -144,10 +143,6 @@ pub struct Args {
     /// Device identifier (if not specified, uses first available device).
     #[arg(short, long)]
     device: Option<String>,
-
-    /// Disable hot reload (hot reload is enabled by default).
-    #[arg(long)]
-    no_hot_reload: bool,
 
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
@@ -291,7 +286,6 @@ pub async fn run(args: Args) -> Result<()> {
     // Step 3: Build, package, launch device, and run
     // Launch happens in background while building for efficiency
     let log_level = args.logs.map(LogLevel::from);
-    let hot_reload = !args.no_hot_reload;
     let native_logs = args.native_logs;
 
     // Detect sccache for compilation caching
@@ -315,13 +309,12 @@ pub async fn run(args: Args) -> Result<()> {
         }
     };
 
-    let (running, hot_reload_runner) = display_output(build_and_run(
+    let running = display_output(build_and_run(
         &project,
         args.platform,
         backend,
         device,
         needs_launch,
-        hot_reload,
         log_level,
         native_logs,
         sccache_path,
@@ -329,13 +322,10 @@ pub async fn run(args: Args) -> Result<()> {
     .await?;
 
     line!();
-    if hot_reload_runner.is_some() {
-        note!("Hot reload enabled - editing source files will update the app");
-    }
     note!("Press Ctrl+C to stop the application");
     line!();
 
-    // Stream device events and hot reload events
+    // Stream device events
     let mut running = std::pin::pin!(running);
     let backend_log_name = match backend {
         TargetBackend::Apple => "Apple",
@@ -343,46 +333,26 @@ pub async fn run(args: Args) -> Result<()> {
         TargetBackend::Gtk4 => "GTK4",
     };
 
-    // Get hot reload event receiver if available
-    let hot_reload_rx = hot_reload_runner.as_ref().map(|r| r.events().clone());
-
     loop {
-        // Drain all pending hot reload events first (non-blocking)
-        if let Some(ref rx) = hot_reload_rx {
-            while let Ok(event) = rx.try_recv() {
-                handle_hot_reload_event(event);
+        let event = running.next().await;
+
+        #[cfg(target_os = "macos")]
+        let mut event = event;
+
+        #[cfg(target_os = "macos")]
+        if let Some(DeviceEvent::Started) = event.as_ref() {
+            if let Some(ref mut ctx) = crash_ctx {
+                ctx.refresh_start();
             }
         }
 
-        // Wait for next event with a short timeout so we can check hot reload events periodically
-        let timeout = smol::Timer::after(std::time::Duration::from_millis(100));
-        let device_event = running.next();
-        let mut pending_event: Option<Option<DeviceEvent>> = None;
-        futures::select! {
-            _ = FutureExt::fuse(timeout) => {
-                // Timeout - loop back to check hot reload events
-            }
-            dev_event = FutureExt::fuse(device_event) => {
-                pending_event = Some(dev_event);
-            }
+        #[cfg(target_os = "macos")]
+        if let Some(ref ctx) = crash_ctx {
+            event = augment_event_with_crash_report(event, ctx).await;
         }
 
-        if let Some(mut event) = pending_event {
-            #[cfg(target_os = "macos")]
-            if let Some(DeviceEvent::Started) = event.as_ref() {
-                if let Some(ref mut ctx) = crash_ctx {
-                    ctx.refresh_start();
-                }
-            }
-
-            #[cfg(target_os = "macos")]
-            if let Some(ref ctx) = crash_ctx {
-                event = augment_event_with_crash_report(event, ctx).await;
-            }
-
-            if handle_device_event(event, backend_log_name) {
-                break;
-            }
+        if handle_device_event(event, backend_log_name) {
+            break;
         }
     }
 
@@ -423,12 +393,10 @@ async fn build_and_run(
     backend: TargetBackend,
     device: SelectedDevice,
     needs_launch: bool,
-    hot_reload: bool,
     log_level: Option<LogLevel>,
     native_logs: bool,
     sccache_path: Option<PathBuf>,
-) -> Result<(Running, Option<HotReloadRunner>)> {
-    // Determine platform triple for hot reload.
+) -> Result<Running> {
     let lib_platform = match cli_platform {
         TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
@@ -460,7 +428,7 @@ async fn build_and_run(
 
     // Build and package while device launches in background
     shell::status("▶", "Building...");
-    let mut build_options = BuildOptions::new(false, hot_reload);
+    let mut build_options = BuildOptions::new(false);
     if let Some(ref sccache) = sccache_path {
         build_options = build_options.with_sccache(sccache.clone());
     }
@@ -505,33 +473,16 @@ async fn build_and_run(
     }
     let device = launch_task.await?;
 
-    // Create hot reload runner if enabled
-    let triple = match backend {
-        TargetBackend::Android => AndroidPlatform::new(android_abi.ok_or_else(|| {
-            color_eyre::eyre::eyre!("Internal error: missing Android ABI for triple")
-        })?)
-        .triple(),
-        _ => lib_platform.triple(),
-    };
-    let runner = if hot_reload {
-        shell::status("▶", "Starting hot reload...");
-        Some(HotReloadRunner::new(project, triple, sccache_path).await?)
-    } else {
-        None
-    };
-
     shell::status("▶", "Running...");
-    let running =
-        run_with_options(device, artifact, runner.as_ref(), log_level, native_logs).await?;
+    let running = run_with_options(device, artifact, log_level, native_logs).await?;
 
-    Ok((running, runner))
+    Ok(running)
 }
 
-/// Run artifact on device with hot reload support.
+/// Run artifact on device.
 async fn run_with_options(
     device: SelectedDevice,
     artifact: Artifact,
-    runner: Option<&HotReloadRunner>,
     log_level: Option<LogLevel>,
     native_logs: bool,
 ) -> Result<Running> {
@@ -541,15 +492,6 @@ async fn run_with_options(
         run_options.set_log_level(level);
     }
     run_options.set_native_logs(native_logs);
-
-    // Set hot reload env vars if runner is provided
-    if let Some(runner) = runner {
-        run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), runner.host());
-        run_options.insert_env_var(
-            "WATERUI_HOT_RELOAD_PORT".to_string(),
-            runner.port().to_string(),
-        );
-    }
 
     let running = match device {
         SelectedDevice::AppleSimulator(sim) => sim.run(artifact, run_options).await?,
@@ -715,30 +657,6 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Apple => "Apple",
         TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
-    }
-}
-
-/// Handle a hot reload event, displaying status to the user.
-fn handle_hot_reload_event(event: HotReloadEvent) {
-    match event {
-        HotReloadEvent::ServerStarted { host, port } => {
-            shell::status("◉", format!("Hot reload server on {host}:{port}"));
-        }
-        HotReloadEvent::FileChanged => {
-            shell::status("◌", "File changed, rebuilding...");
-        }
-        HotReloadEvent::Rebuilding => {
-            shell::status("◐", "Building...");
-        }
-        HotReloadEvent::Built { path } => {
-            shell::status("◑", format!("Built: {}", path.display()));
-        }
-        HotReloadEvent::BuildFailed { error } => {
-            error!("Build failed: {error}");
-        }
-        HotReloadEvent::Broadcast => {
-            success!("Hot reload: updated");
-        }
     }
 }
 

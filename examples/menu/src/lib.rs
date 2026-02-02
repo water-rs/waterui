@@ -179,7 +179,6 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
