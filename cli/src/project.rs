@@ -22,7 +22,6 @@ impl Project {
     /// - `backend`: The backend to use for building and packaging
     /// - `platform`: The target platform to build for
     /// - `device`: The device to run on
-    /// - `hot_reload`: Whether to enable hot reload
     ///
     /// # Errors
     /// - If any step in the build, package, or run process fails.
@@ -31,9 +30,8 @@ impl Project {
         backend: &B,
         platform: TargetPlatform,
         device: D,
-        hot_reload: bool,
     ) -> Result<Running, FailToRun> {
-        self.run_with_options(backend, platform, device, RunOptions::new(), hot_reload)
+        self.run_with_options(backend, platform, device, RunOptions::new())
             .await
     }
 
@@ -46,11 +44,10 @@ impl Project {
         platform: TargetPlatform,
         device: D,
         run_options: RunOptions,
-        hot_reload: bool,
     ) -> Result<Running, FailToRun> {
         // Build rust library for the target platform
         backend
-            .build(self, platform, BuildOptions::new(false, hot_reload))
+            .build(self, platform, BuildOptions::new(false))
             .await
             .map_err(FailToRun::Build)?;
 
@@ -60,7 +57,7 @@ impl Project {
             .await
             .map_err(FailToRun::Package)?;
 
-        Self::run_packaged(device, artifact, run_options, hot_reload).await
+        Self::run_packaged(device, artifact, run_options).await
     }
 
     /// Run the Android backend for the specific target ABI of the device.
@@ -72,7 +69,6 @@ impl Project {
         _backend: &AndroidBackend,
         device: D,
         run_options: RunOptions,
-        hot_reload: bool,
     ) -> Result<Running, FailToRun> {
         let abi = device.android_abi();
 
@@ -81,7 +77,7 @@ impl Project {
             .map_err(FailToRun::Build)?;
 
         AndroidPlatform::new(abi)
-            .build(self, BuildOptions::new(false, hot_reload))
+            .build(self, BuildOptions::new(false))
             .await
             .map_err(FailToRun::Build)?;
 
@@ -90,45 +86,17 @@ impl Project {
                 .await
                 .map_err(FailToRun::Package)?;
 
-        Self::run_packaged(device, artifact, run_options, hot_reload).await
+        Self::run_packaged(device, artifact, run_options).await
     }
 
     async fn run_packaged<D: Device>(
         device: D,
         artifact: Artifact,
-        mut run_options: RunOptions,
-        hot_reload: bool,
+        run_options: RunOptions,
     ) -> Result<Running, FailToRun> {
-        use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
-
-        let server = if hot_reload {
-            let server = HotReloadServer::launch(DEFAULT_PORT)
-                .await
-                .map_err(FailToRun::HotReload)?;
-
-            run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
-            run_options.insert_env_var(
-                "WATERUI_HOT_RELOAD_PORT".to_string(),
-                server.port().to_string(),
-            );
-
-            info!(
-                "Hot reload server started on {}:{}",
-                server.host(),
-                server.port()
-            );
-
-            Some(server)
-        } else {
-            None
-        };
-
         info!("Running on device");
 
-        let mut running = device.run(artifact, run_options).await?;
-        if let Some(server) = server {
-            running.retain(server);
-        }
+        let running = device.run(artifact, run_options).await?;
         Ok(running)
     }
 
