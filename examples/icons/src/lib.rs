@@ -161,7 +161,6 @@ fn all_demos() -> impl View {
     icon_demos()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     scroll(
         vstack((

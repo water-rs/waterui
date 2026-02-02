@@ -19,7 +19,7 @@ The framework is built on three core principles:
 
 - **Native-first rendering**: Your UI components compile to UIKit/AppKit views on iOS/macOS and Android View on Android, delivering authentic native behavior and performance.
 - **Fine-grained reactivity**: Powered by the `nami` crate, UI updates are surgical and automatic—only affected components re-render when state changes.
-- **Hot reload**: Changes to your Rust code reload instantly in running apps via dynamic library swapping, providing a development experience similar to web frameworks.
+- **Instant previews**: Render individual view functions to PNG without running the full app, enabling rapid iteration during development.
 
 WaterUI is ideal for building production mobile apps, cross-platform tools, and native desktop applications where performance and platform integration matter.
 
@@ -58,7 +58,7 @@ cd my-app
 water run
 ```
 
-Your app launches with hot reload enabled. Edit `src/lib.rs` and watch changes appear instantly.
+Your app launches on the selected platform. You can use `water preview` to render individual views instantly during development.
 
 ### 3. Write Your First View
 
@@ -66,7 +66,6 @@ Your app launches with hot reload enabled. Edit `src/lib.rs` and watch changes a
 use waterui::prelude::*;
 use waterui::app::App;
 
-#[hot_reload]
 fn main() -> impl View {
     vstack((
         text("Hello, WaterUI!").size(24.0).bold(),
@@ -169,7 +168,6 @@ struct Settings {
     volume: f64,
 }
 
-#[hot_reload]
 fn settings_view() -> impl View {
     let settings = Settings::binding();
 
@@ -371,9 +369,12 @@ water create --name "My App" --backend apple --backend android
 # Create playground (auto-configured backends)
 water create --playground --name my-playground
 
-# Run with hot reload
+# Run on device/simulator
 water run --platform ios --device "iPhone 15 Pro"
 water run --platform android
+
+# Preview a view function (renders to PNG)
+water preview my_view --platform macos --output preview.png
 
 # Build Rust library for specific target
 water build ios

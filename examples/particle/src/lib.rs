@@ -233,7 +233,6 @@ fn explosion() -> impl View {
 }
 
 /// Main View
-#[hot_reload]
 fn main() -> impl View {
     let mode = binding(0);
 

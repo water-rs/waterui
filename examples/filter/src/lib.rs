@@ -258,7 +258,6 @@ fn combined_section(
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     // State for individual filter sections (using f64 for Slider compatibility)
     let blur_radius = Binding::f64(0.0);

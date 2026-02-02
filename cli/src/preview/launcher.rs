@@ -66,7 +66,7 @@ impl PreviewSession {
             PreviewPlatform::Android => TargetPlatform::Android,
         };
 
-        let mut rust_build = RustBuild::new(project.root(), target.triple(), false);
+        let mut rust_build = RustBuild::new(project.root(), target.triple());
         if let Some(sccache) = &self.sccache_path {
             rust_build = rust_build.with_sccache(sccache.clone());
         }
@@ -200,7 +200,7 @@ pub async fn launch_preview_session(
             info!("Building and running preview app on macOS...");
             let run_options = RunOptions::new();
             project
-                .run_with_options(backend, TargetPlatform::MacOS, device, run_options, false)
+                .run_with_options(backend, TargetPlatform::MacOS, device, run_options)
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
         }
@@ -231,7 +231,6 @@ pub async fn launch_preview_session(
                     TargetPlatform::IOSSimulator,
                     simulator,
                     run_options,
-                    false,
                 )
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
@@ -252,7 +251,7 @@ pub async fn launch_preview_session(
                 info!("Building and running preview app on Android device...");
                 let run_options = RunOptions::new();
                 project
-                    .run_android_with_options(backend, device, run_options, false)
+                    .run_android_with_options(backend, device, run_options)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             } else {
@@ -266,7 +265,7 @@ pub async fn launch_preview_session(
                 info!("Building and running preview app on Android emulator...");
                 let run_options = RunOptions::new();
                 project
-                    .run_android_with_options(backend, emulator, run_options, false)
+                    .run_android_with_options(backend, emulator, run_options)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             }

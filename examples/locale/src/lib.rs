@@ -166,7 +166,6 @@ fn formatted_content(locale: Locale) -> impl View {
     vstack((date_section(locale), Divider, unit_section(locale_for_unit)))
 }
 
-#[hot_reload]
 fn main(env: &Environment) -> impl View {
     // Get system locale from environment (injected by native FFI)
     let system_locale = env
