@@ -4,7 +4,8 @@ use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr, ffi_computed, ffi_computed_ctor, ffi_reactive};
 use alloc::vec::Vec;
 use waterui::view::ConfigurableView;
-use waterui_text::font::{Font, FontWeight, ResolvedFont};
+pub use waterui_text::font::ResolvedFont;
+use waterui_text::font::{Font, FontWeight};
 use waterui_text::styled::{Style, StyledStr};
 use waterui_text::{Text, TextConfig};
 
@@ -141,8 +142,12 @@ pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) ->
     }
 }
 
+/// Resolves a font in the given environment.
+///
+/// # Safety
+/// Both `font` and `env` must be valid, non-null pointers.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn waterui_resolve_font(
+pub unsafe extern "C" fn waterui_resolve_font(
     font: *const WuiFont,
     env: *const WuiEnv,
 ) -> *mut WuiComputed<ResolvedFont> {

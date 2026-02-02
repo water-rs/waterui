@@ -82,6 +82,22 @@ impl IntoRust for WuiWindowState {
 // Generate FFI binding functions for WindowState
 ffi_binding!(WindowState, WuiWindowState, window_state);
 
+// JNI primitive support for WindowState (enum treated as jint)
+#[cfg(feature = "android-jni")]
+impl crate::jni::JniPrimitive for WindowState {
+    type Jni = jni::sys::jint;
+    fn to_jni(self) -> Self::Jni {
+        WuiWindowState::from(self) as Self::Jni
+    }
+    fn from_jni(val: Self::Jni) -> Self {
+        let ffi: WuiWindowState = unsafe { core::mem::transmute(val) };
+        unsafe { IntoRust::into_rust(ffi) }
+    }
+}
+
+// Generate JNI read/set for WindowState binding
+crate::jni_binding_primitive!(WindowState, window_state);
+
 use crate::reactive::{WuiWatcher, WuiWatcherMetadata};
 
 /// Creates a watcher for WindowState from native callbacks.

@@ -5,7 +5,8 @@ use crate::{IntoFFI, IntoRust, WuiAnyView, ffi_reactive};
 
 #[repr(C)]
 pub struct WuiId {
-    inner: i32,
+    /// The inner integer value of the ID.
+    pub inner: i32,
 }
 
 impl IntoFFI for waterui_core::id::Id {

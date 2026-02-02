@@ -40,6 +40,29 @@ ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
 
 ffi_reactive!(Color, *mut WuiColor);
 
+// On Android, `ResolvedColor` is a raw view (native fill) to avoid creating a
+// `GpuSurface` for simple color blocks.
+#[cfg(target_os = "android")]
+ffi_view!(ResolvedColor, WuiResolvedColor, resolved_color);
+
+// JNI primitive support for Color (pointer treated as jlong)
+#[cfg(feature = "android-jni")]
+impl crate::jni::JniPrimitive for Color {
+    type Jni = jni::sys::jlong;
+    fn to_jni(self) -> Self::Jni {
+        self.into_ffi() as Self::Jni
+    }
+    fn from_jni(val: Self::Jni) -> Self {
+        unsafe { IntoRust::into_rust(val as *mut WuiColor) }
+    }
+}
+
+// Generate JNI read/set for Color binding
+crate::jni_binding_primitive!(Color, color);
+
+// Generate JNI read for Color computed
+crate::jni_computed_primitive!(Color, color);
+
 #[derive(Debug, Clone)]
 struct LinearResolvedColor {
     resolved: ResolvedColor,

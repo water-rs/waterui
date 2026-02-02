@@ -12,14 +12,20 @@ ffi_view!(Dynamic, *mut WuiDynamic, dynamic);
 /// - The dynamic pointer must be valid.
 /// - The watcher pointer will be consumed and freed when the Dynamic is dropped.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn waterui_dynamic_connect(
+pub unsafe extern "C" fn waterui_dynamic_connect(
     dynamic: *mut WuiDynamic,
     watcher: *mut WuiWatcher<AnyView>,
 ) {
     unsafe {
         // Take ownership of the watcher - it will be dropped when Dynamic's callback drops
         let watcher = Box::from_raw(watcher);
-        (dynamic).into_rust().connect(move |ctx| {
+        // IMPORTANT: do NOT consume/free `dynamic` here. The native side still owns the
+        // opaque pointer and will call `waterui_drop_dynamic` when the view is disposed.
+        //
+        // We clone the inner Dynamic (cheap Rc clone) and connect the receiver on the
+        // shared state so subsequent updates flow to native callbacks.
+        let dynamic = &mut *dynamic;
+        dynamic.0.clone().connect(move |ctx| {
             let metadata = ctx.metadata().clone();
             let value = ctx.into_value();
             watcher.call(value, metadata);

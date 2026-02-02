@@ -20,9 +20,17 @@ pub type SetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 /// format, it falls back to a standard sRGB swapchain format (or the first supported format).
 #[must_use]
 pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-    // HDR (linear, extended range) preferred when supported by the surface.
     let hdr = wgpu::TextureFormat::Rgba16Float;
-    if caps.formats.contains(&hdr) {
+    let prefer_hdr = if cfg!(target_os = "android") {
+        std::env::var("WATERUI_GPU_PREFER_HDR")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+    } else {
+        true
+    };
+
+    // HDR (linear, extended range) preferred when supported by the surface.
+    if prefer_hdr && caps.formats.contains(&hdr) {
         return hdr;
     }
 
@@ -34,6 +42,11 @@ pub fn preferred_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::Textu
         .find(wgpu::TextureFormat::is_srgb)
     {
         return fmt;
+    }
+
+    // HDR as a fallback (when sRGB is unavailable).
+    if caps.formats.contains(&hdr) {
+        return hdr;
     }
 
     // Fallback: use the first reported format.

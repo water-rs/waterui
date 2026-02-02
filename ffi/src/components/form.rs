@@ -209,7 +209,7 @@ impl IntoFFI for core::ops::RangeInclusive<Date> {
     }
 }
 
-into_ffi! {DatePickerType, DateHourAndMinute, pub enum WuiDatePickerType {
+into_ffi! {DatePickerType, pub enum WuiDatePickerType {
     Date,
     HourAndMinute,
     HourMinuteAndSecond,
