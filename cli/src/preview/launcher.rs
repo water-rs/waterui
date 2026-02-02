@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use color_eyre::eyre::{Context, Result, bail};
 use smol::stream::StreamExt;
+use tracing::{error, info};
 
 use super::app_client::PreviewAppClient;
 use super::protocol::DylibId;
@@ -78,13 +79,13 @@ impl PreviewSession {
         let dylib_path = if dylib_is_up_to_date(&candidate_path, stamp.mtime).await? {
             candidate_path
         } else {
-            eprintln!("[preview] Building dylib...");
+            info!("Building dylib...");
             let dylib_path = rust_build
                 .build_dylib(project.crate_name(), false)
                 .await
                 .wrap_err("Failed to build dylib")?;
 
-            eprintln!("[preview] Dylib built: {}", dylib_path.display());
+            info!("Dylib built: {}", dylib_path.display());
             dylib_path
         };
 
@@ -165,7 +166,7 @@ pub async fn launch_preview_session(
 
     // First, try to connect to an already-running preview app
     if let Ok(client) = PreviewAppClient::connect(tcp_config).await {
-        eprintln!("[preview] Connected to existing preview app");
+        info!("Connected to existing preview app");
         return Ok(PreviewSession {
             client,
             watcher: ProjectWatcher::new(),
@@ -177,7 +178,7 @@ pub async fn launch_preview_session(
         });
     }
 
-    eprintln!("[preview] No preview app running, launching...");
+    info!("No preview app running, launching...");
 
     // Ensure the preview support app exists and is up to date
     let preview_app_path = preview_support_path();
@@ -196,7 +197,7 @@ pub async fn launch_preview_session(
                 .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
             let device = Local;
             device.launch().await?;
-            eprintln!("[preview] Building and running preview app on macOS...");
+            info!("Building and running preview app on macOS...");
             let run_options = RunOptions::new();
             project
                 .run_with_options(backend, TargetPlatform::MacOS, device, run_options, false)
@@ -222,7 +223,7 @@ pub async fn launch_preview_session(
                 })?;
 
             simulator.launch().await?;
-            eprintln!("[preview] Building and running preview app on iOS Simulator...");
+            info!("Building and running preview app on iOS Simulator...");
             let run_options = RunOptions::new();
             project
                 .run_with_options(
@@ -244,16 +245,14 @@ pub async fn launch_preview_session(
                 .ok_or_else(|| color_eyre::eyre::eyre!("Android backend not configured"))?;
 
             // Find an Android device or emulator
-            let devices = crate::android::device::AndroidDevice::scan()
-                .await
-                .unwrap_or_default();
+            let devices = crate::android::device::AndroidDevice::scan().await?;
 
             if let Some(device) = devices.into_iter().next() {
                 device.launch().await?;
-                eprintln!("[preview] Building and running preview app on Android device...");
+                info!("Building and running preview app on Android device...");
                 let run_options = RunOptions::new();
                 project
-                    .run_with_options(backend, TargetPlatform::Android, device, run_options, false)
+                    .run_android_with_options(backend, device, run_options, false)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             } else {
@@ -262,25 +261,19 @@ pub async fn launch_preview_session(
                 let avd_name = avds.into_iter().next().ok_or_else(|| {
                     color_eyre::eyre::eyre!("No Android devices or emulators available.")
                 })?;
-                let emulator = crate::android::device::AndroidEmulator::new(avd_name);
+                let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
                 emulator.launch().await?;
-                eprintln!("[preview] Building and running preview app on Android emulator...");
+                info!("Building and running preview app on Android emulator...");
                 let run_options = RunOptions::new();
                 project
-                    .run_with_options(
-                        backend,
-                        TargetPlatform::Android,
-                        emulator,
-                        run_options,
-                        false,
-                    )
+                    .run_android_with_options(backend, emulator, run_options, false)
                     .await
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))?
             }
         }
     };
 
-    eprintln!("[preview] Preview app launched, waiting for TCP connection...");
+    info!("Preview app launched, waiting for TCP connection...");
 
     // Wait for TCP connection while monitoring for crashes
     let result = wait_for_connection_or_crash(running, platform, tcp_config).await;
@@ -348,23 +341,17 @@ async fn wait_for_connection_or_crash(
         {
             match event {
                 DeviceEvent::Crashed(message) => {
-                    eprintln!(
-                        "[preview] App crashed after {}ms",
-                        (i + 1) * POLL_INTERVAL_MS as u32
-                    );
+                    info!("App crashed after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
                     return ConnectionResult::Crashed(message);
                 }
                 DeviceEvent::Exited => {
-                    eprintln!(
-                        "[preview] App exited after {}ms",
-                        (i + 1) * POLL_INTERVAL_MS as u32
-                    );
+                    info!("App exited after {}ms", (i + 1) * POLL_INTERVAL_MS as u32);
                     return ConnectionResult::Exited;
                 }
                 DeviceEvent::Log { level, message } => {
                     // Print log messages at ERROR level to help diagnose startup issues
                     if level == tracing::Level::ERROR {
-                        eprintln!("[preview] ERROR: {message}");
+                        error!("{message}");
                     }
                 }
                 _ => {}
@@ -373,8 +360,8 @@ async fn wait_for_connection_or_crash(
 
         // Try to connect to TCP
         if let Ok(client) = PreviewAppClient::connect(tcp_config).await {
-            eprintln!(
-                "[preview] Connected to preview app after {}ms",
+            info!(
+                "Connected to preview app after {}ms",
                 (i + 1) * POLL_INTERVAL_MS as u32
             );
             return ConnectionResult::Connected { client, running };
@@ -429,7 +416,7 @@ async fn ensure_preview_support_app(path: &PathBuf) -> Result<()> {
         if path.exists() {
             smol::fs::remove_dir_all(path).await?;
         }
-        eprintln!("[preview] Scaffolding preview app at {}", path.display());
+        info!("Scaffolding preview app at {}", path.display());
         scaffold_preview_app(path).await?;
         smol::fs::write(&metadata_path, PREVIEW_APP_VERSION).await?;
     } else if !metadata_path.exists() {
@@ -485,6 +472,6 @@ async fn scaffold_preview_app(path: &PathBuf) -> Result<()> {
     let lib_template = include_str!("../templates/preview/src/lib.rs.tpl");
     smol::fs::write(project.root().join("src/lib.rs"), lib_template).await?;
 
-    eprintln!("[preview] Preview app scaffolded at {}", path.display());
+    info!("Preview app scaffolded at {}", path.display());
     Ok(())
 }
