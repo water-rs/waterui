@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, Subcommand};
 use color_eyre::eyre::{self, Result};
 
-use crate::{error, note, shell, success};
+use crate::{error, line, note, shell, success};
 use waterui_cli::{android, apple, capture, gesture};
 
 /// Arguments for the device command.
@@ -191,7 +191,14 @@ pub async fn run(args: Args) -> Result<()> {
 async fn run_capture(args: CaptureArgs) -> Result<()> {
     // Handle PID-based capture (macOS window capture)
     if let Some(pid) = args.pid {
-        return run_capture_by_pid(pid, args.window, args.all_windows, args.output, args.output_dir).await;
+        return run_capture_by_pid(
+            pid,
+            args.window,
+            args.all_windows,
+            args.output,
+            args.output_dir,
+        )
+        .await;
     }
 
     // Handle device ID-based capture
@@ -276,7 +283,10 @@ async fn run_capture_by_pid(
     let normal_windows: Vec<_> = windows.iter().filter(|w| w.layer == 0).collect();
 
     if normal_windows.is_empty() {
-        error!("No normal windows found for PID {pid} (found {} auxiliary windows)", windows.len());
+        error!(
+            "No normal windows found for PID {pid} (found {} auxiliary windows)",
+            windows.len()
+        );
         eyre::bail!("No normal windows found for PID {pid}");
     }
 
@@ -293,7 +303,13 @@ async fn run_capture_by_pid(
                 let safe_name: String = window
                     .name
                     .chars()
-                    .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
                     .collect();
                 format!("window_{i}_{safe_name}.png")
             };
@@ -301,11 +317,7 @@ async fn run_capture_by_pid(
 
             match screenshot_window(window.window_id, &path).await {
                 Ok(()) => {
-                    success!(
-                        "Window {i} \"{}\" saved to {}",
-                        window.name,
-                        path.display()
-                    );
+                    success!("Window {i} \"{}\" saved to {}", window.name, path.display());
                 }
                 Err(e) => {
                     error!("Failed to capture window {i}: {e}");
@@ -462,7 +474,7 @@ async fn run_describe(args: DescribeArgs) -> Result<()> {
 
     if shell::get().is_json() {
         // JSON mode: output raw JSON
-        println!("{json}");
+        shell::json_raw(&json);
     } else {
         // Readable mode: format as table
         print_ui_elements_readable(&json)?;
@@ -475,8 +487,8 @@ async fn run_describe(args: DescribeArgs) -> Result<()> {
 fn print_ui_elements_readable(json: &str) -> Result<()> {
     let elements: Vec<serde_json::Value> = serde_json::from_str(json)?;
 
-    println!("UI Elements ({} found):", elements.len());
-    println!("{}", "-".repeat(80));
+    line!("UI Elements ({} found):", elements.len());
+    line!("{}", "-".repeat(80));
 
     for (i, elem) in elements.iter().enumerate() {
         let label = elem.get("AXLabel").and_then(|v| v.as_str()).unwrap_or("-");
@@ -502,7 +514,7 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
 
         // Only show elements with a label or value
         if label != "-" || !value.is_empty() {
-            println!(
+            line!(
                 "[{}] {} \"{}\"{}",
                 i,
                 elem_type,
@@ -513,9 +525,14 @@ fn print_ui_elements_readable(json: &str) -> Result<()> {
                     String::new()
                 }
             );
-            println!(
+            line!(
                 "    tap: --x {} --y {}  (frame: {:.0},{:.0} {}x{})",
-                center_x as u32, center_y as u32, x, y, w as u32, h as u32
+                center_x as u32,
+                center_y as u32,
+                x,
+                y,
+                w as u32,
+                h as u32
             );
         }
     }

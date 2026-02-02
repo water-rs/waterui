@@ -128,7 +128,11 @@ impl PreviewAppClient {
         self.request_with_timeout(request, request_timeout()).await
     }
 
-    async fn request_with_timeout(&mut self, request: AppRequest, timeout: Duration) -> Result<AppResponse> {
+    async fn request_with_timeout(
+        &mut self,
+        request: AppRequest,
+        timeout: Duration,
+    ) -> Result<AppResponse> {
         let kind = request_kind(&request);
         write_json_frame(&mut self.stream, &request)
             .await

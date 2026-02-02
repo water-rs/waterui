@@ -39,10 +39,7 @@ pub struct Args {
 
 /// Run the clean command.
 pub async fn run(args: Args) -> Result<()> {
-    let project_path = args
-        .path
-        .canonicalize()
-        .unwrap_or_else(|_| args.path.clone());
+    let project_path = crate::project_path::canonicalize(&args.path)?;
     let project = Project::open(&project_path).await?;
 
     header!("Cleaning build artifacts...");

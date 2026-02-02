@@ -86,10 +86,10 @@ class MainActivity : AppCompatActivity() {
         private fun loadWaterUiLibraries() {
             try {
                 // waterui_app is the standardized name used by `water build android`
+                // It contains both the app code and JNI bindings (pure Rust JNI approach)
                 loadLibraryGlobal("waterui_app")
-                loadLibraryGlobal("waterui_android")
             } catch (error: UnsatisfiedLinkError) {
-                throw RuntimeException("Failed to load WaterUI native libraries", error)
+                throw RuntimeException("Failed to load WaterUI native library", error)
             }
         }
 

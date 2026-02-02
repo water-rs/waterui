@@ -32,6 +32,7 @@ use nami::{Computed, Signal, watcher::Metadata as WatcherMetadata};
 ///
 /// You should avoid using this component if possible,
 /// most of components in `WaterUI` already provide a way to update their content reactively.
+#[derive(Clone)]
 pub struct Dynamic(DynamicHandler);
 
 raw_view!(Dynamic);

@@ -20,8 +20,10 @@ ffi_computed!(Vec<TableColumn>, WuiArray<WuiTableColumn>, table_cols);
 
 #[repr(C)]
 pub struct WuiTableColumn {
-    label: WuiText,
-    rows: *mut WuiAnyViews,
+    /// The column label as styled text.
+    pub label: WuiText,
+    /// The row views for this column.
+    pub rows: *mut WuiAnyViews,
 }
 
 impl IntoFFI for TableColumn {
