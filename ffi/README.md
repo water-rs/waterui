@@ -136,7 +136,7 @@ pub struct WuiTypeId {
 }
 ```
 
-In normal builds, this wraps Rust's `TypeId`. In hot reload builds (with `waterui_hot_reload_lib` cfg), it uses a 128-bit FNV-1a hash of the type name, ensuring type IDs remain stable across dylib reloads.
+This uses a 128-bit FNV-1a hash of the type name, ensuring type IDs remain stable across dylib boundaries (required for the preview system which loads user code as a dylib).
 
 Native backends use type IDs to determine which view type they're rendering:
 

@@ -34,7 +34,6 @@ watch(count.clone(), |c| text(format!("{c}"))) // unnecessary indirection
 ```rust
 use waterui::prelude::*;
 
-#[hot_reload]
 fn main() -> impl View {
     let count = Binding::i32(0);
 
