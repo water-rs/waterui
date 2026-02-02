@@ -1,14 +1,19 @@
 //! `water devices` command implementation.
 
+use std::collections::HashSet;
+
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 
 use crate::shell;
-use crate::{header, line, warn};
+use crate::{header, line};
 use smol::future::zip;
 use smol::process::Command;
 use waterui_cli::{
-    android::{device::AndroidDevice, toolchain::AndroidSdk},
+    android::{
+        device::{AndroidDevice, emulator_avd_name_with_adb},
+        toolchain::AndroidSdk,
+    },
     apple::device::AppleSimulator,
     device::Device,
 };
@@ -38,12 +43,12 @@ pub struct Args {
 pub async fn run(args: Args) -> Result<()> {
     match args.platform {
         TargetPlatform::Ios => {
-            let ios_devices = scan_ios_devices().await;
-            display_ios_devices(ios_devices);
+            let ios_devices = scan_ios_devices().await?;
+            display_ios_devices(&ios_devices);
         }
         TargetPlatform::Android => {
-            let android_result = scan_android_devices().await;
-            display_android_devices(android_result);
+            let (avds, devices, running_avds) = scan_android_devices().await?;
+            display_android_devices(&avds, &devices, &running_avds);
         }
         TargetPlatform::Macos => {
             display_macos_devices();
@@ -60,8 +65,11 @@ pub async fn run(args: Args) -> Result<()> {
             }
 
             // Display results in order
-            display_ios_devices(ios_devices);
-            display_android_devices(android_result);
+            display_ios_devices(&ios_devices?);
+            {
+                let (avds, devices, running_avds) = android_result?;
+                display_android_devices(&avds, &devices, &running_avds);
+            }
             display_macos_devices();
         }
     }
@@ -70,13 +78,16 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 /// Scan iOS simulators.
-async fn scan_ios_devices() -> Result<Vec<AppleSimulator>, String> {
-    AppleSimulator::scan_ios().await.map_err(|e| e.to_string())
+async fn scan_ios_devices() -> Result<Vec<AppleSimulator>> {
+    Ok(AppleSimulator::scan_ios().await?)
 }
 
 /// Scan Android devices and emulators.
-async fn scan_android_devices() -> Option<(Vec<String>, Vec<AndroidDevice>)> {
-    let emulator_path = AndroidSdk::emulator_path()?;
+async fn scan_android_devices() -> Result<(Vec<String>, Vec<AndroidDevice>, HashSet<String>)> {
+    let emulator_path = AndroidSdk::emulator_path()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Android emulator not found"))?;
+    let adb_path =
+        AndroidSdk::adb_path().ok_or_else(|| color_eyre::eyre::eyre!("Android adb not found"))?;
 
     // List available AVDs (emulators) and connected devices in parallel
     let avds_future = async {
@@ -84,70 +95,77 @@ async fn scan_android_devices() -> Option<(Vec<String>, Vec<AndroidDevice>)> {
             .arg("-list-avds")
             .output()
             .await
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|output| {
-                output
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to list AVDs: {e}"))
+            .and_then(|output| {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    bail!("Failed to list AVDs: {}", stderr.trim());
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Ok(stdout
                     .lines()
+                    .map(str::trim)
                     .filter(|line| !line.is_empty())
                     .map(String::from)
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>())
             })
-            .unwrap_or_default()
     };
 
-    let devices_future = async { AndroidDevice::scan().await.unwrap_or_default() };
+    let devices_future = AndroidDevice::scan();
 
     let (avds, connected_devices) = zip(avds_future, devices_future).await;
-    Some((avds, connected_devices))
+    let avds = avds?;
+    let connected_devices = connected_devices?;
+
+    // Resolve running emulator AVD names (so we can mark the correct AVDs as "Booted")
+    let mut running_avds = HashSet::new();
+    for device in &connected_devices {
+        let id = device.identifier();
+        if !id.starts_with("emulator-") {
+            continue;
+        }
+        let name = emulator_avd_name_with_adb(&adb_path, id).await?;
+        running_avds.insert(name);
+    }
+
+    Ok((avds, connected_devices, running_avds))
 }
 
 /// Display iOS devices.
-fn display_ios_devices(result: Result<Vec<AppleSimulator>, String>) {
-    match result {
-        Ok(devs) => {
-            if !devs.is_empty() {
-                header!("iOS Simulators");
-            }
+fn display_ios_devices(devs: &[AppleSimulator]) {
+    if !devs.is_empty() {
+        header!("iOS Simulators");
+    }
 
-            for sim in &devs {
-                let state_icon = if sim.state == "Booted" { "●" } else { "○" };
-                line!("  {} {} ({})", state_icon, sim.name, sim.udid);
-            }
+    for sim in devs {
+        let state_icon = if sim.state == "Booted" { "●" } else { "○" };
+        line!("  {} {} ({})", state_icon, sim.name, sim.udid);
+    }
 
-            if devs.is_empty() {
-                line!("  No iOS simulators available");
-            }
-        }
-        Err(e) => {
-            warn!("Failed to scan iOS simulators: {e}");
-        }
+    if devs.is_empty() {
+        line!("  No iOS simulators available");
     }
 }
 
 /// Display Android devices and emulators.
-fn display_android_devices(result: Option<(Vec<String>, Vec<AndroidDevice>)>) {
-    let Some((avds, connected_devices)) = result else {
-        // Android SDK not installed, silently skip
-        return;
-    };
-
+fn display_android_devices(
+    avds: &[String],
+    connected_devices: &[AndroidDevice],
+    running_avds: &HashSet<String>,
+) {
     header!("Android");
 
     // Show emulators
-    for avd in &avds {
-        // Check if this emulator is currently running (would show up in connected devices)
-        let is_running = connected_devices
-            .iter()
-            .any(|d| d.identifier().starts_with("emulator-"));
+    for avd in avds {
+        let is_running = running_avds.contains(avd);
         let state_icon = if is_running { "●" } else { "○" };
         line!("  {} {} (emulator)", state_icon, avd);
     }
 
     // Show connected physical devices
-    for device in &connected_devices {
+    for device in connected_devices {
         if !device.identifier().starts_with("emulator-") {
-            line!("  ● {} ({})", device.identifier(), device.abi());
+            line!("  ● {} ({})", device.identifier(), device.abi().as_str());
         }
     }
 

@@ -45,11 +45,9 @@ impl Project {
         backend: &B,
         platform: TargetPlatform,
         device: D,
-        mut run_options: RunOptions,
+        run_options: RunOptions,
         hot_reload: bool,
     ) -> Result<Running, FailToRun> {
-        use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
-
         // Build rust library for the target platform
         backend
             .build(self, platform, BuildOptions::new(false, hot_reload))
@@ -62,13 +60,52 @@ impl Project {
             .await
             .map_err(FailToRun::Package)?;
 
+        Self::run_packaged(device, artifact, run_options, hot_reload).await
+    }
+
+    /// Run the Android backend for the specific target ABI of the device.
+    ///
+    /// This is required because Android packaging is ABI-dependent (e.g., x86_64 emulator vs
+    /// arm64-v8a physical device).
+    pub async fn run_android_with_options<D: Device + AndroidAbiProvider>(
+        &self,
+        _backend: &AndroidBackend,
+        device: D,
+        run_options: RunOptions,
+        hot_reload: bool,
+    ) -> Result<Running, FailToRun> {
+        let abi = device.android_abi();
+
+        AndroidPlatform::clean_jni_libs(self)
+            .await
+            .map_err(FailToRun::Build)?;
+
+        AndroidPlatform::new(abi)
+            .build(self, BuildOptions::new(false, hot_reload))
+            .await
+            .map_err(FailToRun::Build)?;
+
+        let artifact =
+            AndroidPlatform::package_with_abis(self, PackageOptions::new(false, true), &[abi])
+                .await
+                .map_err(FailToRun::Package)?;
+
+        Self::run_packaged(device, artifact, run_options, hot_reload).await
+    }
+
+    async fn run_packaged<D: Device>(
+        device: D,
+        artifact: Artifact,
+        mut run_options: RunOptions,
+        hot_reload: bool,
+    ) -> Result<Running, FailToRun> {
+        use crate::debug::hot_reload::{DEFAULT_PORT, HotReloadServer};
+
         let server = if hot_reload {
-            // Start the hot reload server
             let server = HotReloadServer::launch(DEFAULT_PORT)
                 .await
                 .map_err(FailToRun::HotReload)?;
 
-            // Set environment variables for the app to connect back
             run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
             run_options.insert_env_var(
                 "WATERUI_HOT_RELOAD_PORT".to_string(),
@@ -89,11 +126,9 @@ impl Project {
         info!("Running on device");
 
         let mut running = device.run(artifact, run_options).await?;
-
         if let Some(server) = server {
             running.retain(server);
         }
-
         Ok(running)
     }
 
@@ -625,7 +660,7 @@ use serde::{Deserialize, Serialize};
 use smol::{fs::read_to_string, process::Command, unblock};
 
 use crate::{
-    android::backend::AndroidBackend,
+    android::{backend::AndroidBackend, device::AndroidAbiProvider, platform::AndroidPlatform},
     apple::backend::AppleBackend,
     backend::{Backend, Backends},
     build::BuildOptions,

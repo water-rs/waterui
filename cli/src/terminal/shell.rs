@@ -216,6 +216,18 @@ impl Shell {
         }
     }
 
+    /// Print a raw JSON line to stdout (JSON mode only).
+    pub fn json_raw(&self, json: &str) -> io::Result<()> {
+        match &self.output {
+            ShellOut::Human => Ok(()),
+            ShellOut::Json => {
+                let mut stdout = io::stdout().lock();
+                writeln!(stdout, "{json}")?;
+                stdout.flush()
+            }
+        }
+    }
+
     /// Print a device log with level-appropriate styling.
     ///
     /// The message should be in format "[TAG] message" for best display.
@@ -647,6 +659,12 @@ pub fn note_fn(message: impl Display) {
 #[doc(hidden)]
 pub fn println(message: impl Display) {
     let _ = get().println(message);
+}
+
+/// Print a raw JSON line to stdout (JSON mode only).
+#[doc(hidden)]
+pub fn json_raw(json: &str) {
+    let _ = get().json_raw(json);
 }
 
 /// Print a header (use `header!` macro instead).
