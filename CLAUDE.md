@@ -49,9 +49,6 @@ cargo test
 cargo test -p waterui-core
 cargo test -p waterui-cli
 
-# Check with hot reload lib feature (for development)
-RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo check
-
 # Generate FFI C header (after modifying ffi/ APIs), never write C header by hand
 cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
 
@@ -129,7 +126,7 @@ Rust View Tree → FFI (C ABI) → Native Backend (Swift/Kotlin) → Platform UI
 The `water` CLI orchestrates builds across platforms:
 
 - `water create` - Scaffold new project (supports `--playground` for quick experiments)
-- `water run` - Build and deploy to device/simulator with hot reload.
+- `water run` - Build and deploy to device/simulator
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
 - `water package` - Package built artifacts for distribution
 - `water clean` - Remove build artifacts
@@ -139,7 +136,6 @@ The `water` CLI orchestrates builds across platforms:
 **CLI Architecture Notes:**
 - Entry point: `cli/src/terminal/main.rs` - Uses `clap` for parsing, `smol` async runtime
 - Commands in `cli/src/terminal/commands/` - Each command is async and returns `Result<()>`
-- Hot reload: `cli/src/debug/hot_reload.rs` - WebSocket server with 150ms debounced builds
 - Platform abstraction: `Platform` trait in `cli/src/platform.rs` implemented by `ApplePlatform` and `AndroidPlatform`
 - Shell output: `cli/src/terminal/shell.rs` - Global singleton with human-readable (ANSI) or JSON modes
 
@@ -203,15 +199,6 @@ waterui_ffi::export!();  // Generates FFI entry points
 - Worktree + submodule rules: after creating a worktree, run submodule init/update in that worktree and avoid switching submodule branches across worktrees; if you need parallel backend changes, use separate backend clones (or dedicated submodule checkouts per worktree) so submodule state does not collide between worktrees
 - The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
 - When adding new components, update: Rust view → FFI exports → regenerate header → Swift component → Android component + JNI
-
-### Hot Reload System
-
-The hot reload system uses a WebSocket-based architecture:
-1. CLI launches `HotReloadServer` on port 2006+ (tries up to 50 variations)
-2. Server broadcasts dylib updates to connected apps via WebSocket
-3. `BuildManager` debounces file changes (150ms) and manages incremental builds
-4. Environment variables `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` are passed to running apps
-5. Apps wrapped in `Hotreload` component check for updates and reload dynamically
 
 ### Testing Patterns
 

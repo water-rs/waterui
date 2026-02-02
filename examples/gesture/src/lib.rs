@@ -122,7 +122,6 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     let tap_count = Binding::i32(0);
     let double_tap_count = Binding::i32(0);

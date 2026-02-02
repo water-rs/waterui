@@ -127,7 +127,7 @@ pub async fn run(args: Args) -> Result<()> {
     success!("Toolchain ready");
 
     // Step 2: Build (package requires a built library)
-    let build_options = BuildOptions::new(args.release, false);
+    let build_options = BuildOptions::new(args.release);
 
     if args.platform == TargetPlatform::Android {
         // Clean stale jniLibs before building
