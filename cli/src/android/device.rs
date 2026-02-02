@@ -3,12 +3,14 @@ use smol::channel::{Receiver, Sender};
 use smol::io::AsyncWriteExt;
 use smol::process::Command;
 use smol::spawn;
-use tracing::error;
+use tracing::{debug, error};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use crate::{
+    android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
     device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
     utils::{parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
@@ -26,13 +28,13 @@ struct PanicInfo {
 pub struct AndroidDevice {
     identifier: String,
     /// Primary ABI of the device (e.g., "arm64-v8a", "`x86_64`")
-    abi: String,
+    abi: AndroidAbi,
 }
 
 impl AndroidDevice {
     /// Create a new Android device with the given identifier and ABI.
     #[must_use]
-    pub const fn new(identifier: String, abi: String) -> Self {
+    pub const fn new(identifier: String, abi: AndroidAbi) -> Self {
         Self { identifier, abi }
     }
 
@@ -44,8 +46,8 @@ impl AndroidDevice {
 
     /// Get the device's primary ABI.
     #[must_use]
-    pub fn abi(&self) -> &str {
-        &self.abi
+    pub const fn abi(&self) -> AndroidAbi {
+        self.abi
     }
 }
 
@@ -68,8 +70,13 @@ impl Device for AndroidDevice {
     async fn scan() -> eyre::Result<Vec<Self>> {
         let adb = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
+        Self::scan_with_adb(&adb).await
+    }
+}
 
-        let output = run_command_os(&adb, ["devices", "-l"])
+impl AndroidDevice {
+    async fn scan_with_adb(adb: &Path) -> eyre::Result<Vec<Self>> {
+        let output = run_command_os(adb, ["devices", "-l"])
             .await
             .map_err(|e| eyre!("Failed to list devices: {e}"))?;
 
@@ -82,18 +89,39 @@ impl Device for AndroidDevice {
 
                 // Get device ABI
                 let abi = run_command_os(
-                    &adb,
+                    adb,
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                 )
                 .await
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "arm64-v8a".to_string());
+                .map_err(|e| eyre!("Failed to get device ABI: {e}"))?;
+                let abi = abi
+                    .trim()
+                    .parse::<AndroidAbi>()
+                    .map_err(|e| eyre!("Unsupported device ABI: {e}"))?;
 
                 devices.push(Self::new(identifier, abi));
             }
         }
 
         Ok(devices)
+    }
+}
+
+/// Provides the Android ABI required to build/package for a target.
+pub trait AndroidAbiProvider {
+    /// Return the device ABI used for building and packaging.
+    fn android_abi(&self) -> AndroidAbi;
+}
+
+impl AndroidAbiProvider for AndroidDevice {
+    fn android_abi(&self) -> AndroidAbi {
+        self.abi()
+    }
+}
+
+impl AndroidAbiProvider for AndroidEmulator {
+    fn android_abi(&self) -> AndroidAbi {
+        self.expected_abi()
     }
 }
 
@@ -354,32 +382,61 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
     Err(FailToRun::Launch(eyre!("{}", error_msg)))
 }
 
-/// Find the running emulator's device identifier.
-async fn find_emulator_identifier() -> Result<String, FailToRun> {
+/// Query the AVD name for a running emulator device via `adb emu avd name`.
+///
+/// # Errors
+/// Returns an error if the device isn't an emulator or adb doesn't return a name.
+pub async fn emulator_avd_name_with_adb(adb: &Path, emulator_id: &str) -> eyre::Result<String> {
+    if !emulator_id.starts_with("emulator-") {
+        eyre::bail!("Not an Android emulator identifier: {emulator_id}");
+    }
+
+    let output = run_command_os(adb, ["-s", emulator_id, "emu", "avd", "name"]).await?;
+    let name = output.lines().next().unwrap_or_default().trim();
+    if name.is_empty() {
+        eyre::bail!("Failed to query AVD name for {emulator_id}: empty response");
+    }
+    Ok(name.to_string())
+}
+
+/// Resolve the AVD name for a running emulator device.
+///
+/// # Errors
+/// Returns an error if adb isn't available or the emulator doesn't return a name.
+pub async fn emulator_avd_name(emulator_id: &str) -> eyre::Result<String> {
     let adb = AndroidSdk::adb_path()
-        .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
+        .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
+    emulator_avd_name_with_adb(&adb, emulator_id).await
+}
 
-    let output = run_command_os(&adb, ["devices"])
-        .await
-        .map_err(|e| FailToRun::Run(eyre!("Failed to list devices: {e}")))?;
+async fn try_find_running_emulator_for_avd(
+    adb: &Path,
+    avd_name: &str,
+) -> eyre::Result<Option<AndroidDevice>> {
+    let devices = AndroidDevice::scan_with_adb(adb).await?;
 
-    output
-        .lines()
-        .skip(1)
-        .find_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 && parts[0].starts_with("emulator-") && parts[1] == "device" {
-                Some(parts[0].to_string())
-            } else {
-                None
+    for device in devices {
+        let id = device.identifier();
+        if !id.starts_with("emulator-") {
+            continue;
+        }
+
+        match emulator_avd_name_with_adb(adb, id).await {
+            Ok(name) if name == avd_name => return Ok(Some(device)),
+            Ok(_) => {}
+            Err(e) => {
+                // Some emulator builds may not respond until fully booted.
+                debug!("Failed to query AVD name for {id}: {e}");
             }
-        })
-        .ok_or_else(|| FailToRun::Run(eyre!("Emulator not running")))
+        }
+    }
+
+    Ok(None)
 }
 
 /// Monitor an Android process and send events when it crashes or exits.
 async fn monitor_android_process(
-    adb: std::path::PathBuf,
+    adb: PathBuf,
     device_id: &str,
     bundle_id: &str,
     pid: u32,
@@ -552,7 +609,7 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32, pid_filter
 /// Always streams at minimum fatal level to capture panics.
 /// Returns a receiver for panic info that fires if a panic is detected.
 fn start_android_log_stream(
-    adb: std::path::PathBuf,
+    adb: PathBuf,
     device_id: String,
     pid: u32,
     log_level: Option<LogLevel>,
@@ -753,19 +810,34 @@ fn try_parse_logcat(line: &str) -> Option<LogcatParsed> {
 pub struct AndroidEmulator {
     /// AVD name.
     avd_name: String,
+    expected_abi: AndroidAbi,
+    device: OnceLock<AndroidDevice>,
 }
 
 impl AndroidEmulator {
-    /// Create a new Android emulator with the given AVD name.
-    #[must_use]
-    pub const fn new(avd_name: String) -> Self {
-        Self { avd_name }
+    /// Open an Android emulator definition by AVD name (reads config to determine ABI).
+    ///
+    /// # Errors
+    /// Returns an error if the AVD config is missing or malformed.
+    pub async fn open(avd_name: String) -> eyre::Result<Self> {
+        let expected_abi = read_avd_abi(&avd_name).await?;
+        Ok(Self {
+            avd_name,
+            expected_abi,
+            device: OnceLock::new(),
+        })
     }
 
     /// Get the AVD name.
     #[must_use]
     pub fn avd_name(&self) -> &str {
         &self.avd_name
+    }
+
+    #[must_use]
+    /// ABI expected for this AVD (from its config).
+    pub const fn expected_abi(&self) -> AndroidAbi {
+        self.expected_abi
     }
 }
 
@@ -787,9 +859,9 @@ impl Device for AndroidEmulator {
             .stderr(std::process::Stdio::null())
             .spawn()?;
 
-        // Wait for the emulator to boot by polling adb devices
-        let adb_path =
-            AndroidSdk::adb_path().ok_or_else(|| eyre::eyre!("Android adb not found"))?;
+        // Wait for the emulator to boot (and match the requested AVD).
+        let adb_path = AndroidSdk::adb_path()
+            .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
 
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(120);
@@ -799,20 +871,21 @@ impl Device for AndroidEmulator {
                 eyre::bail!("Emulator launch timed out after 120 seconds");
             }
 
-            // Check for booted emulator via adb
-            if let Ok(output) = Command::new(&adb_path).arg("devices").output().await {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines().skip(1) {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 2
-                            && parts[0].starts_with("emulator-")
-                            && parts[1] == "device"
-                        {
-                            // Emulator is ready
-                            return Ok(());
-                        }
-                    }
+            if let Some(device) =
+                try_find_running_emulator_for_avd(&adb_path, &self.avd_name).await?
+            {
+                if device.abi() != self.expected_abi {
+                    eyre::bail!(
+                        "AVD '{}' expected ABI {}, but running emulator reports {}",
+                        self.avd_name,
+                        self.expected_abi.as_str(),
+                        device.abi().as_str()
+                    );
                 }
+                self.device
+                    .set(device)
+                    .map_err(|_| eyre::eyre!("Emulator device already initialized"))?;
+                return Ok(());
             }
 
             smol::Timer::after(std::time::Duration::from_secs(2)).await;
@@ -820,8 +893,13 @@ impl Device for AndroidEmulator {
     }
 
     async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
-        let identifier = find_emulator_identifier().await?;
-        run_on_android(&identifier, artifact, options).await
+        let device = self.device.get().ok_or_else(|| {
+            FailToRun::Run(eyre!(
+                "Android emulator '{}' is not launched. Launch it before running.",
+                self.avd_name
+            ))
+        })?;
+        run_on_android(device.identifier(), artifact, options).await
     }
 
     async fn scan() -> eyre::Result<Vec<Self>> {
@@ -836,18 +914,40 @@ impl Device for AndroidEmulator {
             .map_err(|e| eyre!("Failed to list AVDs: {e}"))?;
 
         if !output.status.success() {
-            return Ok(Vec::new());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eyre::bail!("Failed to list AVDs: {}", stderr.trim());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let avds: Vec<Self> = stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|name| Self::new(name.trim().to_string()))
-            .collect();
+        let mut avds = Vec::new();
+        for name in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            avds.push(Self::open(name.to_string()).await?);
+        }
 
         Ok(avds)
     }
+}
+
+async fn read_avd_abi(avd_name: &str) -> eyre::Result<AndroidAbi> {
+    let home = dirs::home_dir().ok_or_else(|| eyre!("Failed to resolve home directory"))?;
+    let config_path = home
+        .join(".android/avd")
+        .join(format!("{avd_name}.avd"))
+        .join("config.ini");
+
+    let content = smol::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| eyre!("Failed to read AVD config {}: {e}", config_path.display()))?;
+
+    let abi_value = content
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(k, v)| (k.trim(), v.trim())))
+        .find_map(|(k, v)| (k == "abi.type").then_some(v))
+        .ok_or_else(|| eyre!("AVD config {} missing key abi.type", config_path.display()))?;
+
+    abi_value
+        .parse::<AndroidAbi>()
+        .map_err(|e| eyre!("Unsupported AVD ABI '{abi_value}': {e}"))
 }
 
 /// Capture a screenshot from an Android device.

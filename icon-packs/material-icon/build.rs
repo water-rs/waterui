@@ -55,8 +55,19 @@ fn main() {
 
     // Default to vendored data for deterministic, offline builds.
     // Overrides can point to a local file path or a URL.
-    let meta_source = env::var("MDI_META_URL").unwrap_or_else(|_| vendored_meta.display().to_string());
-    let path_source = env::var("MDI_PATH_URL").unwrap_or_else(|_| vendored_js.display().to_string());
+    let default_meta_source = if vendored_meta.exists() {
+        vendored_meta.display().to_string()
+    } else {
+        META_JSON_URL.to_string()
+    };
+    let default_path_source = if vendored_js.exists() {
+        vendored_js.display().to_string()
+    } else {
+        MDI_JS_URL.to_string()
+    };
+
+    let meta_source = env::var("MDI_META_URL").unwrap_or(default_meta_source);
+    let path_source = env::var("MDI_PATH_URL").unwrap_or(default_path_source);
 
     if !is_url(&meta_source) {
         println!("cargo:rerun-if-changed={meta_source}");
