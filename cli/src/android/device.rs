@@ -148,51 +148,6 @@ async fn run_on_android(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-    // If hot reload is using localhost, set up adb reverse so the device can connect back
-    // to the host's hot reload server (listening on 127.0.0.1:<port>).
-    let reverse_port = env_vars
-        .iter()
-        .find(|(k, _)| k == "WATERUI_HOT_RELOAD_PORT")
-        .and_then(|(_, v)| v.parse::<u16>().ok())
-        .zip(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == "WATERUI_HOT_RELOAD_HOST")
-                .map(|(_, v)| v.as_str()),
-        )
-        .and_then(|(port, host)| {
-            if host == "127.0.0.1" || host == "localhost" {
-                Some(port)
-            } else {
-                None
-            }
-        });
-
-    if let Some(port) = reverse_port {
-        let spec = format!("tcp:{port}");
-        let output = Command::new(&adb)
-            .args(["-s", device_id, "reverse", &spec, &spec])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
-
-        match output {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                tracing::warn!(
-                    "Failed to set up adb reverse for hot reload ({}): stdout='{}' stderr='{}'",
-                    spec,
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            Err(e) => {
-                tracing::warn!("Failed to set up adb reverse for hot reload ({spec}): {e}");
-            }
-        }
-    }
-
     // Install the APK on the device with -r flag to replace existing installation
     // This handles both cases: fresh install and reinstall over existing app
     let install_output = Command::new(&adb)
@@ -257,7 +212,6 @@ async fn run_on_android(
     let bundle_id_for_kill = artifact.bundle_id().to_string();
     let bundle_id_for_monitor = artifact.bundle_id().to_string();
     let log_level = options.log_level();
-    let reverse_port_for_drop = reverse_port;
 
     let (running, sender) = Running::new(move || {
         // Use std::process::Command for synchronous execution in Drop context
@@ -284,13 +238,6 @@ async fn run_on_android(
             Err(e) => {
                 error!("Failed to stop app {}: {}", bundle_id_for_kill, e);
             }
-        }
-
-        if let Some(port) = reverse_port_for_drop {
-            let spec = format!("tcp:{port}");
-            let _ = std::process::Command::new(&adb_for_kill)
-                .args(["-s", &identifier_for_kill, "reverse", "--remove", &spec])
-                .output();
         }
     });
 

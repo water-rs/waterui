@@ -142,9 +142,6 @@ pub mod task {
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
 
-#[cfg(debug_assertions)]
-#[macro_use]
-pub mod debug;
 
 mod entry;
 pub use entry::entry;

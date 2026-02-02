@@ -26,7 +26,6 @@ use crate::utils::{command, run_command};
 pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
-    hot_reload: bool,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<PathBuf>,
     /// Cargo features to enable.
@@ -39,7 +38,6 @@ pub struct RustBuild {
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     release: bool,
-    hot_reload: bool,
     output_dir: Option<std::path::PathBuf>,
     /// Optional path to sccache for compilation caching.
     sccache_path: Option<std::path::PathBuf>,
@@ -48,19 +46,12 @@ pub struct BuildOptions {
 impl BuildOptions {
     /// Create new build options
     #[must_use]
-    pub const fn new(release: bool, hot_reload: bool) -> Self {
+    pub const fn new(release: bool) -> Self {
         Self {
             release,
             output_dir: None,
-            hot_reload,
             sccache_path: None,
         }
-    }
-
-    /// Whether to enable hot-reload support
-    #[must_use]
-    pub const fn is_hot_reload(&self) -> bool {
-        self.hot_reload
     }
 
     /// Whether to build in release mode
@@ -113,11 +104,10 @@ pub enum RustBuildError {
 
 impl RustBuild {
     /// Create a new rust build for the given path and target triple.
-    pub fn new(path: impl AsRef<Path>, triple: Triple, hot_reload: bool) -> Self {
+    pub fn new(path: impl AsRef<Path>, triple: Triple) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
             triple,
-            hot_reload,
             sccache_path: None,
             features: Vec::new(),
             envs: Vec::new(),
@@ -272,16 +262,6 @@ impl RustBuild {
         // Use sccache as rustc wrapper if configured
         if let Some(sccache_path) = &self.sccache_path {
             cmd = cmd.env("RUSTC_WRAPPER", sccache_path);
-        }
-
-        if self.hot_reload {
-            // Preserve existing RUSTFLAGS and append our cfg flag
-            let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
-            if !rustflags.is_empty() {
-                rustflags.push(' ');
-            }
-            rustflags.push_str("--cfg waterui_hot_reload_lib");
-            cmd.env("RUSTFLAGS", rustflags);
         }
 
         // Set BINDGEN_EXTRA_CLANG_ARGS for iOS/tvOS/watchOS/visionOS simulator builds

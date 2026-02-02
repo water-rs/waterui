@@ -4,7 +4,7 @@ Cross-platform build orchestration and development tooling for WaterUI applicati
 
 ## Overview
 
-`waterui-cli` is the command-line interface that powers the `water` binary, the primary tool for building, running, and managing WaterUI applications across iOS, macOS, and Android. It abstracts platform-specific build systems (Xcode for Apple, Gradle for Android) and provides a unified developer experience with hot reload, device management, and project scaffolding.
+`waterui-cli` is the command-line interface that powers the `water` binary, the primary tool for building, running, and managing WaterUI applications across iOS, macOS, and Android. It abstracts platform-specific build systems (Xcode for Apple, Gradle for Android) and provides a unified developer experience with device management, project scaffolding, and instant view previews.
 
 The crate is split into two components:
 - **Library** (`src/lib.rs`): Core abstractions for platforms, devices, builds, and project management
@@ -34,7 +34,7 @@ Create a new WaterUI project and run it on iOS Simulator:
 # Create a new project
 water create my-app --platform ios,android
 
-# Run on iOS Simulator with hot reload
+# Run on iOS Simulator
 cd my-app
 water run --platform ios
 
@@ -136,94 +136,15 @@ The `Project` type manages the `Water.toml` manifest and coordinates builds acro
 
 - `Project::open()`: Open existing project
 - `Project::create()`: Scaffold new project
-- `Project::run()`: Build, package, and run on a device with optional hot reload
-
-Example from `src/project.rs`:
-
-```rust
-pub async fn run(&self, device: impl Device, hot_reload: bool) -> Result<Running, FailToRun> {
-    let platform = device.platform();
-
-    // Build Rust library
-    platform.build(self, BuildOptions::new(false, hot_reload)).await?;
-
-    // Package for platform
-    let artifact = platform.package(self, PackageOptions::new(false, true)).await?;
-
-    // Start hot reload server if enabled
-    let mut run_options = RunOptions::new();
-    let server = if hot_reload {
-        let server = HotReloadServer::launch(DEFAULT_PORT).await?;
-        run_options.insert_env_var("WATERUI_HOT_RELOAD_HOST".to_string(), server.host());
-        run_options.insert_env_var("WATERUI_HOT_RELOAD_PORT".to_string(), server.port().to_string());
-        Some(server)
-    } else { None };
-
-    // Run on device
-    let mut running = device.run(artifact, run_options).await?;
-    if let Some(server) = server {
-        running.retain(server); // Keep server alive
-    }
-    Ok(running)
-}
-```
-
-### Hot Reload System
-
-The hot reload system uses WebSocket to broadcast dylib updates to connected apps:
-
-1. CLI launches `HotReloadServer` on `localhost:2006+`
-2. Server monitors file changes with 250ms debouncing
-3. On change, rebuild library and broadcast to all connected clients
-4. Apps reload the updated library without restarting
-
-Example from `src/debug/hot_reload.rs`:
-
-```rust
-pub async fn launch(starting_port: u16) -> Result<Self, FailToLaunch> {
-    // Try ports 2006..2056
-    for port in starting_port..(starting_port + PORT_RETRY_COUNT) {
-        match Self::try_launch_on_port(port).await {
-            Ok(server) => return Ok(server),
-            Err(FailToLaunch::BindError(_, _)) => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(FailToLaunch::NoAvailablePort(starting_port, starting_port + PORT_RETRY_COUNT))
-}
-
-pub fn send_library(&self, data: Vec<u8>) {
-    let _ = self.broadcast_tx.try_send(BroadcastMessage::Binary(data));
-}
-```
-
-Environment variables `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` are passed to running apps.
+- `Project::run()`: Build, package, and run on a device
 
 ### Rust Build
 
 The `RustBuild` type wraps `cargo build` with platform-specific configuration:
 
 - Target triple selection (e.g., `aarch64-apple-ios-sim`)
-- Hot reload flag (`--cfg waterui_hot_reload_lib`)
 - Simulator-specific clang args for bindgen
-
-Example from `src/build.rs`:
-
-```rust
-let mut cmd = Command::new("cargo");
-let mut cmd = command(&mut cmd)
-    .arg("build")
-    .arg("--lib")
-    .args(["--target", self.triple.to_string().as_str()])
-    .current_dir(&self.path);
-
-if self.hot_reload {
-    let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
-    if !rustflags.is_empty() { rustflags.push(' '); }
-    rustflags.push_str("--cfg waterui_hot_reload_lib");
-    cmd.env("RUSTFLAGS", rustflags);
-}
-```
+- Optional sccache integration for faster builds
 
 ### Toolchain Management
 
@@ -301,7 +222,7 @@ This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
 - **`device`**: Device trait, device types, run options, and events
 - **`project`**: Project management, manifest parsing, create/open
 - **`build`**: Rust build orchestration with cargo
-- **`debug`**: Hot reload server, build manager, file watcher
+- **`debug`**: Crash handling and diagnostics
 - **`toolchain`**: Toolchain checking and installation
 - **`backend`**: Backend configuration and scaffolding
 - **`templates`**: Project scaffolding templates
@@ -327,8 +248,8 @@ This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
 
 The CLI supports:
 
-- **Hot reload**: WebSocket-based live code updates
 - **Multi-platform**: iOS, macOS, Android with unified workflow
+- **Instant previews**: Render individual views to PNG without running the full app
 - **Device management**: Automatic device discovery and simulator launching
 - **Interactive creation**: Guided project setup with prompts
 - **Playground mode**: Auto-managed backends for quick prototyping

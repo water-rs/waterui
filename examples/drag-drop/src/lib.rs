@@ -102,7 +102,6 @@ fn fruit_basket(
     .drop_hover(&is_hovering)
 }
 
-#[hot_reload]
 fn main() -> impl View {
     let is_hovering = Binding::bool(false);
     let collected: Binding<Vec<String>> = Binding::container(Vec::new());

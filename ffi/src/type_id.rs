@@ -6,8 +6,8 @@
 
 /// Type ID as a 128-bit value for O(1) comparison.
 ///
-/// - Normal build: Uses `std::any::TypeId` (guaranteed unique by Rust)
-/// - Hot reload: Uses 128-bit FNV-1a hash of `type_name()` (stable across dylib reloads)
+/// Uses 128-bit FNV-1a hash of `type_name()` for stability across dylib boundaries,
+/// which is required for the preview system that loads user code as a dylib.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WuiTypeId {
@@ -19,7 +19,7 @@ impl WuiTypeId {
     /// Creates a type ID from a type parameter.
     ///
     /// Always uses type_name hash to ensure consistency with `from_runtime()`,
-    /// which handles views that may come from hot-reloaded dylibs.
+    /// which handles views that may come from dynamically loaded dylibs.
     #[inline]
     pub fn of<T: 'static>() -> Self {
         Self::from_type_name(core::any::type_name::<T>())
@@ -28,7 +28,7 @@ impl WuiTypeId {
     /// Creates a type ID from a runtime TypeId and type name.
     ///
     /// Always uses type_name hash because this is called at runtime with views
-    /// that may come from hot-reloaded dylibs. TypeId is not stable across
+    /// that may come from dynamically loaded dylibs. TypeId is not stable across
     /// dylib boundaries, but type_name is.
     #[inline]
     pub fn from_runtime(_type_id: core::any::TypeId, name: &'static str) -> Self {

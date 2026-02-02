@@ -123,7 +123,7 @@ macro_rules! ffi_metadata {
             // ========== C-API (for Apple/GTK backends) ==========
             #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
-            /// Uses TypeId in normal builds, type_name hash in hot reload builds.
+            /// Returns the view's TypeId (guaranteed unique within a single binary).
             #[unsafe(no_mangle)]
             pub extern "C" fn [<waterui_metadata_ $ident _id>]() -> $crate::WuiTypeId {
                 // Metadata<T> is stored directly, not wrapped in Native<T>
@@ -203,7 +203,7 @@ macro_rules! ffi_ignorable_metadata {
             // ========== C-API (for Apple/GTK backends) ==========
             #[cfg(feature = "c-api")]
             /// Returns the type ID as a 128-bit value for O(1) comparison.
-            /// Uses TypeId in normal builds, type_name hash in hot reload builds.
+            /// Returns the view's TypeId (guaranteed unique within a single binary).
             #[unsafe(no_mangle)]
             pub extern "C" fn [<waterui_ignorable_metadata_ $ident _id>]() -> $crate::WuiTypeId {
                 // IgnorableMetadata<T> is stored directly, not wrapped in Native<T>

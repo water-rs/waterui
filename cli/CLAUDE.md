@@ -33,7 +33,7 @@ cli/src/
 │   └── toolchain.rs    # Android SDK/NDK toolchain
 ├── build.rs            # RustBuild for compiling Rust code
 ├── toolchain/          # Toolchain utilities (doctor, brew, cmake)
-├── debug/              # Hot reload server
+├── debug/              # Crash handling and diagnostics
 └── templates/          # Project scaffolding templates
 ```
 
