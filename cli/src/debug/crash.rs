@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use smol::process::Command;
 use time::OffsetDateTime;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// Check if crash debug output is enabled via `WATERUI_CRASH_DEBUG=1`
 fn crash_debug_enabled() -> bool {
@@ -18,9 +18,10 @@ fn crash_debug_enabled() -> bool {
 macro_rules! crash_debug {
     ($($arg:tt)*) => {
         if crash_debug_enabled() {
-            eprintln!("[crash-debug] {}", format!($($arg)*));
+            info!($($arg)*);
+        } else {
+            debug!($($arg)*);
         }
-        debug!($($arg)*);
     };
 }
 

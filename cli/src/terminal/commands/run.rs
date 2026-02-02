@@ -10,17 +10,17 @@ use futures::{FutureExt, StreamExt};
 use time::OffsetDateTime;
 
 use crate::shell::{self, display_output};
+use crate::toolchain_checks;
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
     android::{
         device::{AndroidDevice, AndroidEmulator},
-        platform::{AndroidPlatform, build_android, package_android},
-        toolchain::{AndroidNdk, AndroidSdk},
+        platform::AndroidPlatform,
     },
     apple::{
         device::AppleSimulator,
         platform::{build_rust_lib, package_apple},
-        toolchain::{AppleSdk, Xcode},
+        toolchain::AppleSdk,
     },
     backend::reinit_backend,
     build::BuildOptions,
@@ -29,11 +29,10 @@ use waterui_cli::{
     gtk4::{
         backend::Gtk4Backend,
         platform::{build_gtk4, package_gtk4},
-        toolchain::Gtk4Toolchain,
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
-    toolchain::{Toolchain, cmake::Cmake, sccache::Sccache},
+    toolchain::sccache::Sccache,
 };
 
 #[cfg(target_os = "macos")]
@@ -44,16 +43,24 @@ use waterui_cli::project::PackageType;
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
     started_at: OffsetDateTime,
+    device_identifier: String,
     bundle_id: String,
     process_name: String,
 }
 
 #[cfg(target_os = "macos")]
 impl CrashReportContext {
-    fn new(project: &Project, platform: TargetPlatform, backend: TargetBackend) -> Option<Self> {
+    fn try_new(
+        project: &Project,
+        platform: TargetPlatform,
+        backend: TargetBackend,
+    ) -> Result<Option<Self>> {
         if platform != TargetPlatform::Macos || backend != TargetBackend::Apple {
-            return None;
+            return Ok(None);
         }
+
+        let device_identifier = whoami::fallible::hostname()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to determine hostname: {e}"))?;
 
         let process_name = match project.manifest().package.package_type {
             PackageType::Playground => "WaterUIApp".to_string(),
@@ -72,11 +79,12 @@ impl CrashReportContext {
             }
         };
 
-        Some(Self {
+        Ok(Some(Self {
             started_at: OffsetDateTime::now_utc(),
+            device_identifier,
             bundle_id: project.bundle_identifier().to_string(),
             process_name,
-        })
+        }))
     }
 
     fn refresh_start(&mut self) {
@@ -86,10 +94,9 @@ impl CrashReportContext {
 
 #[cfg(target_os = "macos")]
 async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
-    let device_identifier = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into());
     debug::find_macos_ips_crash_report_since(
         "macOS",
-        &device_identifier,
+        &ctx.device_identifier,
         &ctx.bundle_id,
         &ctx.process_name,
         None,
@@ -233,10 +240,7 @@ fn resolve_backend(
 
 /// Run the run command.
 pub async fn run(args: Args) -> Result<()> {
-    let project_path = args
-        .path
-        .canonicalize()
-        .unwrap_or_else(|_| args.path.clone());
+    let project_path = crate::project_path::canonicalize(&args.path)?;
     let mut project = Project::open(&project_path).await?;
 
     // Resolve the backend to use
@@ -295,13 +299,21 @@ pub async fn run(args: Args) -> Result<()> {
     let sccache_path = match sccache.path().await {
         Ok(path) => Some(path),
         Err(_) => {
-            warn!("sccache not found. Build efficiency may be reduced. Install with: brew install sccache");
+            warn!(
+                "sccache not found. Build efficiency may be reduced. Install with: brew install sccache"
+            );
             None
         }
     };
 
     #[cfg(target_os = "macos")]
-    let mut crash_ctx = CrashReportContext::new(&project, args.platform, backend);
+    let mut crash_ctx = match CrashReportContext::try_new(&project, args.platform, backend) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            warn!("Crash report augmentation disabled: {e}");
+            None
+        }
+    };
 
     let (running, hot_reload_runner) = display_output(build_and_run(
         &project,
@@ -416,12 +428,21 @@ async fn build_and_run(
     native_logs: bool,
     sccache_path: Option<PathBuf>,
 ) -> Result<(Running, Option<HotReloadRunner>)> {
-    // Get the library target platform for this CLI platform
+    // Determine platform triple for hot reload.
     let lib_platform = match cli_platform {
         TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Android => LibTargetPlatform::Android,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
+    };
+
+    let android_abi = match (backend, &device) {
+        (TargetBackend::Android, SelectedDevice::AndroidDevice(dev)) => Some(dev.abi()),
+        (TargetBackend::Android, SelectedDevice::AndroidEmulator(emu)) => Some(emu.expected_abi()),
+        (TargetBackend::Android, _) => {
+            bail!("Internal error: Android backend requires an Android device")
+        }
+        _ => None,
     };
 
     // Launch device in background while building (if needed)
@@ -450,7 +471,13 @@ async fn build_and_run(
             build_rust_lib(project, lib_platform, build_options).await?;
         }
         TargetBackend::Android => {
-            build_android(project, lib_platform, build_options).await?;
+            let abi = android_abi.ok_or_else(|| {
+                color_eyre::eyre::eyre!("Internal error: missing Android ABI for build")
+            })?;
+            AndroidPlatform::clean_jni_libs(project).await?;
+            AndroidPlatform::new(abi)
+                .build(project, build_options)
+                .await?;
         }
         TargetBackend::Gtk4 => {
             build_gtk4(project, build_options).await?;
@@ -463,7 +490,12 @@ async fn build_and_run(
     // Package based on backend, not platform
     let artifact = match backend {
         TargetBackend::Apple => package_apple(project, lib_platform, package_options).await?,
-        TargetBackend::Android => package_android(project, lib_platform, package_options).await?,
+        TargetBackend::Android => {
+            let abi = android_abi.ok_or_else(|| {
+                color_eyre::eyre::eyre!("Internal error: missing Android ABI for packaging")
+            })?;
+            AndroidPlatform::package_with_abis(project, package_options, &[abi]).await?
+        }
         TargetBackend::Gtk4 => package_gtk4(project, package_options).await?,
     };
 
@@ -474,7 +506,13 @@ async fn build_and_run(
     let device = launch_task.await?;
 
     // Create hot reload runner if enabled
-    let triple = lib_platform.triple();
+    let triple = match backend {
+        TargetBackend::Android => AndroidPlatform::new(android_abi.ok_or_else(|| {
+            color_eyre::eyre::eyre!("Internal error: missing Android ABI for triple")
+        })?)
+        .triple(),
+        _ => lib_platform.triple(),
+    };
     let runner = if hot_reload {
         shell::status("▶", "Starting hot reload...");
         Some(HotReloadRunner::new(project, triple, sccache_path).await?)
@@ -549,39 +587,26 @@ async fn check_toolchain_for_backend(
 ) -> Result<()> {
     match backend {
         TargetBackend::Apple => {
-            let xcode = Xcode;
-            if let Err(e) = xcode.check().await {
-                bail!("Xcode toolchain check failed: {e}");
-            }
             let sdk = match platform {
                 TargetPlatform::Ios => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                // Apple backend isn't supported on these platforms, but keep the match exhaustive.
-                TargetPlatform::Android | TargetPlatform::Linux => return Ok(()),
+                TargetPlatform::Android | TargetPlatform::Linux => {
+                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                }
             };
-            if let Err(e) = sdk.check().await {
-                bail!("{sdk} toolchain check failed: {e}");
-            }
+            toolchain_checks::check_apple(sdk).await?;
         }
         TargetBackend::Android => {
-            let sdk = AndroidSdk;
-            if let Err(e) = sdk.check().await {
-                bail!("Android SDK toolchain check failed: {e}");
+            if platform != TargetPlatform::Android {
+                bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            let ndk = AndroidNdk;
-            if let Err(e) = ndk.check().await {
-                bail!("Android NDK toolchain check failed: {e}");
-            }
-            let cmake = Cmake {};
-            if let Err(e) = cmake.check().await {
-                bail!("CMake toolchain check failed: {e}");
-            }
+            toolchain_checks::check_android().await?;
         }
         TargetBackend::Gtk4 => {
-            let toolchain = Gtk4Toolchain;
-            if let Err(e) = toolchain.check().await {
-                bail!("GTK4 toolchain check failed: {e}");
+            if platform != TargetPlatform::Macos && platform != TargetPlatform::Linux {
+                bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
+            toolchain_checks::check_gtk4().await?;
         }
     }
     Ok(())
@@ -631,7 +656,7 @@ async fn find_device(
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Android => {
-            let devices = AndroidDevice::scan().await.unwrap_or_default();
+            let devices = AndroidDevice::scan().await?;
 
             if let Some(id) = device_id {
                 // Find specific device
@@ -652,14 +677,13 @@ async fn find_device(
             let avds = AndroidPlatform::list_avds().await?;
             let avd_name = avds.into_iter().next().ok_or_else(|| {
                 color_eyre::eyre::eyre!(
-                    "No Android devices connected and no emulators available. \
-                     Create an emulator in Android Studio or connect a device."
+                    "No Android devices connected and no emulators available. Create an emulator in Android Studio or connect a device."
                 )
             })?;
 
-            Ok(SelectedDevice::AndroidEmulator(AndroidEmulator::new(
-                avd_name,
-            )))
+            Ok(SelectedDevice::AndroidEmulator(
+                AndroidEmulator::open(avd_name).await?,
+            ))
         }
         TargetPlatform::Linux => {
             // Linux runs on the local machine

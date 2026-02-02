@@ -4,7 +4,7 @@ use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    android::platform::{build_android, clean_android, is_android_platform, package_android},
+    android::platform::{AndroidAbi, AndroidPlatform, clean_android, is_android_platform},
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
@@ -144,7 +144,8 @@ impl Backend for AndroidBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
-        build_android(project, platform, options).await
+        debug_assert!(platform == TargetPlatform::Android);
+        AndroidPlatform::arm64().build(project, options).await
     }
 
     async fn package(
@@ -153,7 +154,8 @@ impl Backend for AndroidBackend {
         platform: TargetPlatform,
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
-        package_android(project, platform, options).await
+        debug_assert!(platform == TargetPlatform::Android);
+        AndroidPlatform::package_with_abis(project, options, &[AndroidAbi::Arm64V8a]).await
     }
 
     async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
