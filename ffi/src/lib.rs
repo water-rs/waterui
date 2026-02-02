@@ -78,9 +78,6 @@ macro_rules! export {
                 $crate::IntoFFI::into_ffi(env)
             }
 
-            #[cfg(debug_assertions)]
-            ::waterui::hot_reloadable_library!(app);
-
             /// Creates the application from the user's `app(env)` function.
             ///
             /// Takes ownership of the environment (with theme already installed) from native,
@@ -264,8 +261,6 @@ pub trait InvalidValue {
     fn invalid() -> Self;
 }
 
-// Hot reload configuration FFI functions are in hot_reload.rs
-
 /// Defines a marker trait for types that should be treated as opaque when crossing FFI boundaries.
 ///
 /// Opaque types are typically used when the internal structure of a type is not relevant
@@ -400,8 +395,7 @@ pub unsafe extern "C" fn waterui_view_body(
 
 /// Gets the id of a view as a 128-bit value for O(1) comparison.
 ///
-/// - Normal build: Returns the view's `TypeId` (guaranteed unique)
-/// - Hot reload: Returns 128-bit hash of `type_name()` (stable across dylibs)
+/// Returns the view's `TypeId` (guaranteed unique within a single binary).
 ///
 /// # Safety
 /// The caller must ensure that `view` is a valid pointer to a properly
@@ -431,8 +425,6 @@ pub unsafe extern "C" fn waterui_view_stretch_axis(
 ) -> crate::components::layout::WuiStretchAxis {
     unsafe { (&*view).stretch_axis().into() }
 }
-
-// WuiTypeId is defined in hot_reload.rs and re-exported from crate root
 
 // ============================================================================
 // WuiStr - UTF-8 string for FFI

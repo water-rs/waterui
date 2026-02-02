@@ -1,8 +1,8 @@
 //! Full-screen overlay system for `WaterUI`.
 //!
 //! This module provides a centralized overlay manager that can display
-//! full-screen overlays such as hot reload status, modal dialogs, loading
-//! screens, and toast notifications.
+//! full-screen overlays such as modal dialogs, loading screens, and
+//! toast notifications.
 
 use crate::View;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};

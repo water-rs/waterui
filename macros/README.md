@@ -1,6 +1,6 @@
 # waterui-macros
 
-Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, string formatting, and hot reload functionality.
+Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, string formatting, and preview functionality.
 
 ## Overview
 
@@ -9,7 +9,7 @@ This crate is the macro engine behind WaterUI's ergonomic APIs. It provides four
 1. **Form Generation** - Automatically generate UI forms from Rust structs with `#[derive(FormBuilder)]` and `#[form]`
 2. **Reactive Projections** - Decompose struct bindings into per-field bindings with `#[derive(Project)]`
 3. **Formatted Strings** - Create reactive formatted strings with the `s!` macro
-4. **Hot Reload** - Enable per-function hot reloading with `#[hot_reload]`
+4. **Preview** - Enable instant view previews with `#[preview]`
 
 This crate is typically accessed through the main `waterui` crate via `use waterui::prelude::*;` rather than being used directly.
 
@@ -200,49 +200,42 @@ let static_msg = s!("No variables here");
 - Returns `Computed<Str>` for reactive values, `Constant<Str>` for static strings
 - Validates format string at compile time (detects mismatched argument counts)
 
-### Hot Reload
+### Preview
 
-#### `#[hot_reload]`
+#### `#[preview]`
 
-Attribute macro that enables per-function hot reloading during development. When the library is rebuilt via `water run`, only the annotated function is updated without restarting the app.
+Attribute macro that enables instant view previews during development. Use `water preview` to render annotated functions to PNG without running the full app.
 
-**Example from `/Users/lexoliu/Coding/waterui/src/debug/hot_reload.rs` documentation:**
+**Example:**
 
 ```rust
 use waterui::prelude::*;
 
-#[hot_reload]
+#[preview]
 fn sidebar() -> impl View {
     vstack((
         text("Sidebar"),
         text("Content"),
     ))
 }
-
-fn main() -> impl View {
-    hstack((
-        sidebar(),  // This view will hot reload when modified
-        content_panel(),
-    ))
-}
 ```
 
 **How it works:**
 
-1. Wraps the function body in a `HotReloadView` that registers with the hot reload system
-2. Generates a C-exported symbol (when built with `--cfg waterui_hot_reload_lib`):
+1. Generates a C-exported symbol that returns the view:
    ```rust
    #[unsafe(no_mangle)]
-   pub unsafe extern "C" fn waterui_hot_reload_sidebar() -> *mut ()
+   pub unsafe extern "C" fn waterui_preview_my_crate_sidebar() -> *mut WuiAnyView
    ```
-3. The CLI loads this symbol from the rebuilt dylib and updates all registered handlers
-4. Uses `module_path!()` + function name as unique identifier (e.g., `"my_crate::sidebar"`)
+2. The CLI builds the project as a dylib and loads this symbol
+3. The preview app renders the view using native rendering pipeline
 
-**Requirements:**
+**Usage:**
 
-- Function must return `impl View`
-- Enable hot reload with `WATERUI_HOT_RELOAD_HOST` and `WATERUI_HOT_RELOAD_PORT` environment variables (set by `water run`)
-- Build hot reload library with `RUSTFLAGS="--cfg waterui_hot_reload_lib" cargo build`
+```bash
+# Preview a view function and save as PNG
+water preview sidebar --platform macos --output sidebar.png
+```
 
 ## API Overview
 
@@ -254,7 +247,7 @@ fn main() -> impl View {
 ### Attribute Macros
 
 - **`#[form]`** - Convenience macro for form structs (combines multiple derives)
-- **`#[hot_reload]`** - Enable per-function hot reloading
+- **`#[preview]`** - Enable instant view previews
 
 ### Function-like Macros
 

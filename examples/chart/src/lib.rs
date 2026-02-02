@@ -115,7 +115,6 @@ fn mode_buttons(modes: &[ChartMode], mode: &Binding<ChartMode>) -> HStack<(Vec<A
 }
 
 /// Main View - demonstrates different chart types
-#[hot_reload]
 fn main() -> impl View {
     let mode = binding(ChartMode::default());
 

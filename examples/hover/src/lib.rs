@@ -181,7 +181,6 @@ fn interactive_buttons_section() -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     let hover_count = binding(0);
     let is_hovered = binding(false);

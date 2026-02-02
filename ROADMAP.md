@@ -14,7 +14,7 @@
 - [x] MVP of Android backend
 - [x] CLI — shipped via the [`cli`](cli/) crate; future plugin scaffolding continues under 0.3 milestones.
 - [x] Gesture support
-- [x] Hot reload
+- [x] Preview system
 - [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
 - [x] Styling (Theme system)
 - [ ] Document all completed features in our book (👷WIP)
@@ -27,7 +27,6 @@
 - [ ] Persistence
 - [ ] Automation UI test
 - [ ] Some platform-specific APIs (notification, camera, etc.)
-- [ ] Faster hot reload
 - [x] Accessibility
 
 ## 0.4.0 - Self-Rendering MVP
@@ -46,7 +45,7 @@
 
 # 0.7.0 - Developing Enhancement
 
-- [ ] Preview a view
+- [x] Preview a view
 - [ ] VSCode plugin
 
 ## 0.8.0 - Animated Self-Rendering

@@ -132,7 +132,6 @@ fn custom_url_section() -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     scroll(
         vstack((

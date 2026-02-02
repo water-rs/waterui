@@ -122,7 +122,6 @@ From `/Users/lexoliu/Coding/waterui/examples/markdown/src/lib.rs`:
 ```rust
 use waterui::prelude::*;
 
-#[hot_reload]
 fn main() -> impl View {
     scroll(include_markdown!("example.md").padding())
 }

@@ -349,7 +349,6 @@ fn layout_demo() -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     waterui::log::warn!("[ShapeExample] main() called - this log should appear");
     let show_hdr = binding(true);

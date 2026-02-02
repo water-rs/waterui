@@ -76,9 +76,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Build options with optional output directory
     let build_options = if let Some(ref output_dir) = args.output_dir {
-        BuildOptions::new(args.release, false).with_output_dir(output_dir)
+        BuildOptions::new(args.release).with_output_dir(output_dir)
     } else {
-        BuildOptions::new(args.release, false)
+        BuildOptions::new(args.release)
     };
     let mode = if args.release { "release" } else { "debug" };
 

@@ -454,7 +454,6 @@ fn hdr_gradient_section() -> impl View {
     .padding()
 }
 
-#[cfg_attr(debug_assertions, hot_reload)]
 fn main() -> impl View {
     scroll(
         vstack((

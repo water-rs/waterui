@@ -383,7 +383,6 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
     .padding()
 }
 
-#[hot_reload]
 fn main() -> impl View {
     // State for transform sections
     let scale = Binding::f32(1.0);

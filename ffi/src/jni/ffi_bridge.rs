@@ -264,50 +264,6 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallWindowM
     }
 }
 
-// ============================================================================
-// Hot Reload Functions
-// ============================================================================
-
-/// Configure hot reload endpoint.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloadEndpoint<
-    'local,
->(
-    mut _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    host: JString<'local>,
-    port: jint,
-) {
-    let host: std::string::String = _env
-        .get_string(&host)
-        .expect("configureHotReloadEndpoint: host")
-        .into();
-    // Rust 2024: modifying the process environment is `unsafe` due to potential data races.
-    unsafe {
-        std::env::set_var("WATERUI_HOT_RELOAD_HOST", host);
-        std::env::set_var("WATERUI_HOT_RELOAD_PORT", format!("{port}"));
-    }
-}
-
-/// Configure hot reload directory.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_configureHotReloadDirectory<
-    'local,
->(
-    mut _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    path: JString<'local>,
-) {
-    let path: std::string::String = _env
-        .get_string(&path)
-        .expect("configureHotReloadDirectory: path")
-        .into();
-    // Rust 2024: modifying the process environment is `unsafe` due to potential data races.
-    unsafe {
-        std::env::set_var("WATERUI_HOT_RELOAD_DIR", path);
-    }
-}
-
 // =============================================================================
 // Environment service shims (Rust -> Java)
 // =============================================================================
