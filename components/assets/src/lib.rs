@@ -1,0 +1,56 @@
+//! Asset management for WaterUI.
+//!
+//! This crate provides types and utilities for managing assets in WaterUI applications:
+//!
+//! - [`Data`] - Small binary files loaded into memory (configs, shaders, JSON)
+//! - [`LargeFile`] - Large files using memory-mapping (ML models, large binaries)
+//! - [`AssetKind`] - Asset type classification based on file extension
+//! - [`AssetError`] - Error types for asset operations
+//!
+//! # Usage with `asset!` macro
+//!
+//! The `asset!` macro (from `waterui-assets-macros`) provides compile-time type inference:
+//!
+//! ```ignore
+//! // Media types (Photo, Video, Audio) - sync, URL-based
+//! let photo: Photo = asset!("logo.png");
+//! let video: Video = asset!("intro.mp4");
+//!
+//! // Data type - sync for local, async for remote
+//! let config: Data = asset!("config.json");
+//! let remote: Data = asset!("https://api.example.com/data.json").await;
+//!
+//! // LargeFile - always async (mmap setup required)
+//! let model: LargeFile = asset!("model.onnx").await;
+//! model.warm().await;  // Pre-warm pages before access
+//! ```
+//!
+//! # Memory-Mapped Files Warning
+//!
+//! [`LargeFile`] uses memory-mapping for efficient access to large files.
+//! However, accessing data without warming may cause blocking due to page faults.
+//! Under memory pressure, even warmed pages may be evicted by the OS.
+//!
+//! **Recommendation**: Use [`LargeFile`] on background threads for best performance.
+
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
+mod kind;
+mod error;
+mod data;
+mod large_file;
+
+pub use kind::AssetKind;
+pub use error::AssetError;
+pub use data::Data;
+pub use large_file::LargeFile;
+
+/// Prelude for common imports.
+pub mod prelude {
+    pub use crate::{AssetKind, AssetError, Data, LargeFile};
+}
