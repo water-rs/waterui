@@ -136,7 +136,7 @@ pub async fn run(args: Args) -> Result<()> {
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Created Cargo.toml and src/lib.rs");
+    success!("Created Cargo.toml, src/lib.rs, and assets/");
 
     // Initialize backends (skip for playground projects)
     if !args.playground {

@@ -94,6 +94,9 @@ pub mod prelude {
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Material, Shader};
 
+    // Asset types
+    pub use super::{AssetError, AssetKind, Data, LargeFile, asset};
+
     // Re-export macros
     pub use waterui_macros::*;
 }
@@ -113,6 +116,13 @@ pub use waterui_navigation as navigation;
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 pub use waterui_webview as webview;
+pub use waterui_assets as assets;
+
+// Asset types re-exported for convenience
+#[doc(inline)]
+pub use waterui_assets::{AssetError, AssetKind, Data, LargeFile};
+#[doc(inline)]
+pub use waterui_assets_macros::asset;
 pub mod metadata;
 pub mod shape;
 pub mod style;
