@@ -19,6 +19,7 @@ exclude = [
   ".github",
   ".claude",
   "*.png",
+  "kit",
 ]
 
 
@@ -95,8 +96,10 @@ waterui-icons-lucide = { version = "0.1.0", path = "icon-packs/lucide" }
 waterui-icons-native = { version = "0.1.0", path = "icon-packs/native" }
 waterui-locale = { version = "0.1.0", path = "utils/locale" }
 waterui-map = { version = "0.1.0", path = "components/map" }
-waterkit-location = { version = "0.1.0", path = "../waterkit/location" }
-waterkit-audio = { version = "0.1.0", path = "../waterkit/audio" }
+waterkit-location = { version = "0.1.0", path = "kit/location" }
+waterkit-audio = { version = "0.1.0", path = "kit/audio" }
+waterkit-permission = { version = "0.1.0", path = "kit/permission" }
+waterkit-build = { version = "0.1.0", path = "kit/waterkit-build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core" }
 filtrate = { version = "0.1.0", path = "utils/filtrate" }
 filtrate-core = { version = "0.1.0", path = "utils/filtrate-core" }
@@ -128,6 +131,15 @@ gdk4 = "0.9"
 glib = "0.20"
 cairo-rs = { version = "0.20", features = ["v1_18"] }
 pollster = "0.4"
+jiff = "0.2"
+async-channel = "2.3"
+rodio = "0.19"
+cpal = "0.15"
+swift-bridge = "0.1"
+swift-bridge-build = "0.1"
+jni = "0.21"
+windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
+zbus = "5"
 
 
 [dependencies]
