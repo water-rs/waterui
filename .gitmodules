@@ -6,3 +6,6 @@
 	path = backends/apple
 	url = https://github.com/water-rs/apple-backend.git
 	branch = .
+[submodule "kit"]
+	path = kit
+	url = https://github.com/water-rs/kit.git
